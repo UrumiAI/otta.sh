@@ -101,17 +101,18 @@
  * `recordPayment` was a dependency of the previous one's. They implement ADR-0019's
  * R2: the SQL's OR-and-negation claim predicate becomes the single denormalized
  * {@link OrderDoc.emailDueAt} index, and the claim re-applies that predicate to the
- * entry it picked inside one compare-and-set. The lease's OWN contract cases (the
- * crashed dispatcher, the exhausted retry) are still the lists increment's, as is the
- * `outbox_keys` locator {@link EmdashOrderStore.#updateOutboxEntry} owes.
+ * entry it picked inside one compare-and-set.
  *
- * ## What this increment does NOT implement
+ * ## The whole port is implemented
  *
- * The lists, the search and the customer view (INC-B4) throw
- * {@link NotImplementedInIncrementError} naming their increment — a loud, typed
- * refusal rather than a wrong answer. Their FIELDS and INDEXES are already in the
- * document shape (see `order-documents.ts`), so that increment adds behaviour
- * without reshaping a collection that holds live orders.
+ * Every `OrderStore` method has a real implementation: the lists, the search, the
+ * counts, the customer view, guest linking and the outbox settle path were the last
+ * four, and there is no `NotImplementedInIncrementError` left to throw anywhere in this
+ * package. What the ADMIN LIST cannot do is narrower and is a matter of SEMANTICS rather
+ * than of a missing method: the port's `search` documents an unanchored `buyer_ref`
+ * SUBSTRING, and the host's filter algebra has no substring operator — so that arm is
+ * served as a PREFIX (ADR-0019 §6.1's ratified narrowing). See
+ * {@link EmdashOrderStore.listOrders} and the package README.
  */
 import {
 	cents,
@@ -134,9 +135,12 @@ import {
 	type OrderEvent,
 	type OrderId,
 	type OrderLine,
+	type OrderCustomerKey,
+	type OrderListCursor,
 	type OrderListFilter,
 	type OrderListPage,
 	type OrderListResult,
+	type OrderSummary,
 	type OrderState,
 	type OrderStore,
 	type OrderTransitionInput,
@@ -163,9 +167,10 @@ import {
 } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
 import {
-	NotImplementedInIncrementError,
+	DerivedPointerConflictError,
 	OrderIdCollisionError,
 	OrderNotFoundError,
+	OutboxEntryUnlocatableError,
 	PaymentRefConflictError,
 	ScanPageLimitError,
 } from "./errors.js";
@@ -178,6 +183,7 @@ import {
 	finalizedRefundTotal,
 	findOutboxEntry,
 	findRefund,
+	foldBuyerRef,
 	type HoldIntentDoc,
 	isOutstanding,
 	newHoldIntent,
@@ -186,7 +192,13 @@ import {
 	type OrderDoc,
 	type OrderItemDoc,
 	type OrderKeyDoc,
+	ORDER_SKU_INDEX_COLLECTION,
+	type OrderSkuIndexDoc,
+	orderSkuIndexId,
+	orderSkuKeys,
 	ORDERS_COLLECTION,
+	OUTBOX_KEYS_COLLECTION,
+	type OutboxKeyDoc,
 	PAYMENT_REFS_COLLECTION,
 	type PaymentRefDoc,
 	type OutboxEntryDoc,
@@ -195,8 +207,15 @@ import {
 	REFUND_KEYS_COLLECTION,
 	type RefundEntryDoc,
 	type RefundKeyDoc,
+	searchKeyFor,
 } from "./order-documents.js";
-import type { StorageAccess, StorageCollection } from "./storage-access.js";
+import type {
+	OrderBy,
+	StorageAccess,
+	StorageCollection,
+	WhereClause,
+	WhereValue,
+} from "./storage-access.js";
 
 export interface EmdashOrderStoreOptions {
 	/** The collections the plugin descriptor declared; see `ORDER_COLLECTIONS`. */
@@ -237,6 +256,15 @@ export interface EmdashOrderStoreOptions {
 	 * budget is not agreeing to raise the other.
 	 */
 	maxOutboxPages?: number;
+	/**
+	 * Override how many pages the LIST scans will walk before they refuse to loop
+	 * further (default {@link MAX_LIST_PAGES}).
+	 *
+	 * Its own budget for the reason the other two have their own: the list scans are
+	 * bounded by how many orders match a filter, which has nothing to do with the
+	 * hold-expiry backlog or the number of messages in flight.
+	 */
+	maxListPages?: number;
 }
 
 /** How many pages `listExpirable` will walk before it refuses to loop further. */
@@ -250,6 +278,23 @@ const EXPIRY_PAGE_SIZE = 100;
 
 /** The same, for the outbox scans — declared separately for the reason the budget is. */
 const OUTBOX_PAGE_SIZE = 100;
+
+/** How many pages a list / count / link scan will walk before it refuses to loop. */
+const MAX_LIST_PAGES = 1000;
+
+/**
+ * The page the list scans ask the host for. 100 is the host's own ceiling, so this is
+ * "as wide as it will give".
+ *
+ * The host clamps `limit` at 100 and the PORT's `limit` is the caller's page size, so an
+ * adapter that simply forwarded it would truncate a larger page silently. It does not:
+ * the scan pages internally until it has `limit + 1` rows. In practice that loop is a
+ * correctness guarantee rather than a hot path, because **the 100-row cap on what a
+ * caller may ask for lives at the ROUTE** (`@otta-sh/service`'s admin-orders query
+ * schema), not here — so a page bigger than one host page is a programmatic caller, not
+ * the console.
+ */
+const LIST_PAGE_SIZE = 100;
 
 /** The outcome of a hold-bracket completion: what landed, and what was lost. */
 export interface HoldCompletionResult {
@@ -270,23 +315,29 @@ export class EmdashOrderStore implements OrderStore {
 	readonly #keys: StorageCollection<OrderKeyDoc>;
 	readonly #paymentRefs: StorageCollection<PaymentRefDoc>;
 	readonly #refundKeys: StorageCollection<RefundKeyDoc>;
+	readonly #skuIndex: StorageCollection<OrderSkuIndexDoc>;
+	readonly #outboxKeys: StorageCollection<OutboxKeyDoc>;
 	readonly #inventory: InventoryStore;
 	readonly #idGen: IdGen;
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 	readonly #maxExpiryPages: number;
 	readonly #maxOutboxPages: number;
+	readonly #maxListPages: number;
 
 	constructor(options: EmdashOrderStoreOptions) {
 		this.#orders = collectionOf<OrderDoc>(options.storage, ORDERS_COLLECTION);
 		this.#keys = collectionOf<OrderKeyDoc>(options.storage, ORDER_KEYS_COLLECTION);
 		this.#paymentRefs = collectionOf<PaymentRefDoc>(options.storage, PAYMENT_REFS_COLLECTION);
 		this.#refundKeys = collectionOf<RefundKeyDoc>(options.storage, REFUND_KEYS_COLLECTION);
+		this.#skuIndex = collectionOf<OrderSkuIndexDoc>(options.storage, ORDER_SKU_INDEX_COLLECTION);
+		this.#outboxKeys = collectionOf<OutboxKeyDoc>(options.storage, OUTBOX_KEYS_COLLECTION);
 		this.#inventory = options.inventory;
 		this.#idGen = options.idGen;
 		this.#clock = options.clock;
 		this.#maxExpiryPages = options.maxExpiryPages ?? MAX_EXPIRY_PAGES;
 		this.#maxOutboxPages = options.maxOutboxPages ?? MAX_OUTBOX_PAGES;
+		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,
 			onAttempts: options.onCasAttempts,
@@ -787,14 +838,16 @@ export class EmdashOrderStore implements OrderStore {
 					fullyRefunded = true;
 				}
 				const written = await this.#orders.compareAndSet(orderId, current.revision, next);
-				return written.applied
-					? casDone({
-							found: true,
-							alreadyFinalized: false,
-							refund: toRefundRecord(finalized, orderId as OrderId),
-							fullyRefunded,
-						})
-					: CAS_RETRY;
+				if (!written.applied) return CAS_RETRY;
+				// The full-refund path composes `#flipped` rather than `#flip`, so it brackets
+				// its own locator — same ordering, same reason.
+				if (fullyRefunded) await this.#recordOutboxLocator(next, "refunded");
+				return casDone({
+					found: true,
+					alreadyFinalized: false,
+					refund: toRefundRecord(finalized, orderId as OrderId),
+					fullyRefunded,
+				});
 			},
 		);
 		const order = result.refund === null ? null : await this.getById(orderId as OrderId);
@@ -921,36 +974,185 @@ export class EmdashOrderStore implements OrderStore {
 		return { cancelled: won, order: await this.getById(input.orderId) };
 	}
 
-	// -- INC-B4: lists, search, the customer view, the outbox lease ------------
+	// -- lists, search, counts, the customer view, guest linking ---------------
 
-	listForCustomer(_customerId: CustomerId): Promise<Order[]> {
-		throw new NotImplementedInIncrementError("listForCustomer", "INC-B4");
-	}
-
-	listOrders(_filter: OrderListFilter, _page: OrderListPage): Promise<OrderListResult> {
-		throw new NotImplementedInIncrementError("listOrders", "INC-B4");
-	}
-
-	countOrders(_filter: OrderListFilter): Promise<number> {
-		throw new NotImplementedInIncrementError("countOrders", "INC-B4");
-	}
-
-	linkGuestOrders(_customerId: CustomerId, _buyerRef: string): Promise<number> {
-		throw new NotImplementedInIncrementError("linkGuestOrders", "INC-B4");
+	/**
+	 * Every order a customer owns, `createdAt ASC, id ASC` — the SQL's own ordering.
+	 *
+	 * The SQL predicate is `customer_id = :customerId`, an EQUALITY and not the list's
+	 * union: this read is reached from a session whose identity is already resolved, and
+	 * a guest order that has not been back-linked yet is not yet this customer's. The
+	 * denormalized {@link OrderDoc.customerKey} holds the linked id whenever there is
+	 * one, so the equality is expressible directly — and the in-memory re-check on
+	 * `customerId` is what keeps a guest order whose folded buyer reference HAPPENS to
+	 * spell a customer id out of somebody else's history.
+	 */
+	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
+		const docs = await this.#scanOrders(
+			"listForCustomer",
+			{ customerKey: customerId },
+			{ createdAt: "asc" },
+			Number.POSITIVE_INFINITY,
+			(doc) => doc.customerId === customerId,
+		);
+		return docs.map((doc) => toOrder(doc));
 	}
 
 	/**
-	 * Claim the next dispatchable outbox entry — **pulled forward from INC-B4**, and
-	 * only as far as this increment's own suites need.
+	 * The admin Orders list: a keyset page of `OrderSummary` projections, newest first.
 	 *
-	 * The fulfillment and cancellation contracts both assert that exactly one shipped
-	 * / cancelled email DRAINS, which runs `dispatchOrderEmails` — so the lease is a
-	 * dependency of this increment's gate exactly as `recordPayment` was a dependency
-	 * of INC-B2's. It is R2's design: the SQL's OR-and-negation predicate becomes the
-	 * one denormalized {@link OrderDoc.emailDueAt} index, and the claim is one
-	 * compare-and-set that re-applies the same predicate to the entry it picked.
-	 * INC-B4 still owns the lease's own contract cases (the crashed-dispatcher and
-	 * failed-send ones are still `test.todo` there) and may reshape this.
+	 * **Four arms at most, one page, and still one row per order.** The port's predicate
+	 * has TWO places that need an OR, and `WhereClause` is AND-only (ADR-0019 §6.1):
+	 *
+	 * | Dimension | Alternatives | Served by |
+	 * |---|---|---|
+	 * | `search` | folded order-id PREFIX | `startsWith` on {@link OrderDoc.searchKey} |
+	 * | | folded buyer-reference PREFIX | `startsWith` on {@link OrderDoc.buyerRefLower} |
+	 * | | exact folded line sku | the derived `order_sku_index` documents |
+	 * | `customer` | the linked customer id | `customerKey` equality |
+	 * | | the folded buyer reference | `buyerRefLower` equality |
+	 *
+	 * The two indexed `search` alternatives are crossed with the two indexed `customer`
+	 * ones, so a fully-specified filter issues up to FOUR indexed queries plus the sku
+	 * arm; the results are merged and de-duplicated by order id, because a document
+	 * satisfying two arms is the same row twice — exactly the double-count the port's
+	 * `EXISTS` and its "OR is not additive" both exist to prevent.
+	 *
+	 * The port documents the buyer-reference arm as an unanchored SUBSTRING and this
+	 * serves it as a PREFIX. That is the ratified narrowing, and it is the ONLY semantic
+	 * difference from the SQL; the sku arm reads the FROZEN lines and stays exact.
+	 *
+	 * **The merge is exact, and the cursor is why.** The port's `OrderListCursor` is a
+	 * VALUE position (`{ createdAt, id }`), not an opaque token, so "strictly after this
+	 * position under `createdAt DESC, id DESC`" is decidable against a row from ANY arm
+	 * without re-reading the cursor row. Each arm contributes its own top `limit + 1`
+	 * rows after the cursor — drained to the end of its boundary TIE GROUP, see
+	 * {@link byNewestFirst} — and the top `limit + 1` of the merge is the true page.
+	 */
+	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
+		const cursor = page.cursor ?? null;
+		const search = foldSearch(filter.search);
+		// `limit + 1` is the port's own next-page probe: one row past the page decides
+		// whether `nextCursor` is a position or null.
+		const wanted = page.limit + 1;
+		const found = new Map<string, OrderDoc>();
+		const after = (candidate: OrderDoc): boolean => isAfterCursor(candidate, cursor);
+		for (const where of orderListWhereArms(filter, cursor, search)) {
+			const arm = await this.#scanOrders("listOrders", where, { createdAt: "desc" }, wanted, after);
+			for (const doc of arm) if (!found.has(doc.orderId)) found.set(doc.orderId, doc);
+		}
+		for (const doc of await this.#ordersMatchingSku(search, filter, cursor, wanted)) {
+			if (!found.has(doc.orderId)) found.set(doc.orderId, doc);
+		}
+		// Sorted in CODE-UNIT order here, which is the adapter's total order; every arm was
+		// drained past its boundary tie group so this slice cannot drop a tied row that the
+		// host's collation happened to order differently.
+		const merged = [...found.values()].toSorted(byNewestFirst).slice(0, wanted);
+		const returned = merged.length > page.limit ? merged.slice(0, page.limit) : merged;
+		const last = returned.at(-1);
+		const nextCursor =
+			merged.length > page.limit && last !== undefined
+				? { createdAt: last.createdAt, id: last.orderId as OrderId }
+				: null;
+		return { orders: returned.map((doc) => toSummary(doc)), nextCursor };
+	}
+
+	/**
+	 * The count that captions the page — the SAME predicate, by construction.
+	 *
+	 * A count cannot merge rows the way the list does, so each OR dimension is counted by
+	 * **inclusion–exclusion**: for a union of `k` alternatives,
+	 * `|∪| = Σ over nonempty subsets S of (-1)^(|S|+1) · |∩S|`, and every intersection is
+	 * one more AND clause on one more indexed field. Two dimensions multiply, so a filter
+	 * carrying both a search and a two-half customer key issues 3 × 3 = 9 indexed
+	 * `count()` calls. That is the price of an order matching several arms being counted
+	 * exactly ONCE, which is what the contract pins.
+	 *
+	 * The sku arm is added afterwards as a **set difference** — only the sku-matched
+	 * orders no indexed arm already counted — decided in memory from each document's own
+	 * `searchKey`/`buyerRefLower`. Unlike the list's, this arm is NOT keyset-bounded: a
+	 * count is a cardinality over the whole matching set, so it resolves every pointer the
+	 * sku collected, `O(matches)`. See {@link #ordersMatchingSku} for the ceiling.
+	 */
+	async countOrders(filter: OrderListFilter): Promise<number> {
+		const search = foldSearch(filter.search);
+		const base = orderListBaseWhere(filter, null, search);
+		let total = 0;
+		for (const term of inclusionExclusionTerms(base, orderListDimensions(filter, search))) {
+			total += term.sign * (await this.#orders.count(term.where));
+		}
+		if (search === undefined) return total;
+		for (const doc of await this.#ordersMatchingSku(
+			search,
+			filter,
+			null,
+			Number.POSITIVE_INFINITY,
+		)) {
+			if (!matchesSearchArms(doc, search)) total++;
+		}
+		return total;
+	}
+
+	/**
+	 * Attach a just-authenticated customer's guest orders to their account.
+	 *
+	 * The SQL is `WHERE lower(buyer_ref) = :folded AND customer_id IS NULL`, and the
+	 * document model adds one thing (ADR-0019 R3): the write must REWRITE
+	 * {@link OrderDoc.customerKey} as well, or the customer filter would stop finding
+	 * the order the instant it was linked. An unlinked order's key IS the folded buyer
+	 * reference, so the index finds exactly the rows the SQL's `WHERE` did.
+	 *
+	 * Idempotent in the only way that matters here: the second login finds nothing,
+	 * because every order it would have matched now keys on the customer id. The guard
+	 * is re-applied INSIDE each compare-and-set, so a peer login racing the same inbox
+	 * links each order once and the loser counts it as not its own.
+	 */
+	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
+		const folded = foldBuyerRef(buyerRef);
+		const claimable = (doc: OrderDoc): boolean =>
+			doc.customerId === null && foldBuyerRef(doc.buyerRef) === folded;
+		// Collected in full FIRST, then written: paging an index while rewriting the very
+		// field it is ordered under would shift the window under the cursor.
+		const docs = await this.#scanOrders(
+			"linkGuestOrders",
+			{ customerKey: folded },
+			{ createdAt: "asc" },
+			Number.POSITIVE_INFINITY,
+			claimable,
+		);
+		let linked = 0;
+		for (const found of docs) {
+			const won = await this.#casOrder<boolean>("linkGuestOrders", async () => {
+				const current = await this.#orders.getVersioned(found.orderId);
+				if (current === null) return casDone(false);
+				const doc = normalizeOrderDoc(current.value);
+				if (!claimable(doc)) return casDone(false);
+				const written = await this.#orders.compareAndSet(found.orderId, current.revision, {
+					...doc,
+					customerId,
+					customerKey: customerKeyFor(customerId, doc.buyerRef),
+					updatedAt: this.#clock.now().toISOString(),
+				});
+				return written.applied ? casDone(true) : CAS_RETRY;
+			});
+			if (won) linked++;
+		}
+		return linked;
+	}
+
+	/**
+	 * Claim the next dispatchable outbox entry.
+	 *
+	 * ADR-0019 R2's design: the SQL claimed on `sent_at IS NULL AND status != 'failed'
+	 * AND (lease_until IS NULL OR lease_until <= :now)`, an OR and a negation the filter
+	 * algebra cannot express, so it becomes the ONE denormalized
+	 * {@link OrderDoc.emailDueAt} index — `null` when the message is sent or failed,
+	 * otherwise `max(dueAt, leaseUntil)` — and the claim is one compare-and-set that
+	 * re-applies the same due predicate to the entry it picked. Only one dispatcher wins,
+	 * and a crashed run's entry is claimable again the moment its lease lapses.
+	 *
+	 * Proven by `test/outbox-dispatch.dialects.test.ts` (the crashed-dispatcher and
+	 * failed-send cases, ported from the SQL adapters' own suite).
 	 */
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
 		let cursor: string | undefined;
@@ -1022,10 +1224,14 @@ export class EmdashOrderStore implements OrderStore {
 			paymentMethod: input.paymentMethod,
 			buyerRef: input.buyerRef,
 			customerId: null,
-			// R3: the fallback value. `linkGuestOrders` (INC-B4) rewrites it.
+			// R3: the fallback value. `linkGuestOrders` rewrites it; `buyerRefLower` is
+			// frozen alongside `buyerRef` and is the second arm of the customer union.
 			customerKey: customerKeyFor(null, input.buyerRef),
-			// INC-B4 fills both; declared now so the collection is never reshaped.
-			searchKey: null,
+			buyerRefLower: foldBuyerRef(input.buyerRef),
+			// The one prefix-searchable arm a single indexed field can serve; the line-sku
+			// arm lives in `order_sku_index`, written right after this document lands.
+			searchKey: searchKeyFor(input.orderId),
+			// Derived from `emailOutbox`, which is empty until the first flip enqueues.
 			emailDueAt: null,
 			items,
 			totals: {
@@ -1085,6 +1291,12 @@ export class EmdashOrderStore implements OrderStore {
 		if (!written.applied && stored.idempotencyKey !== key) {
 			throw new OrderIdCollisionError(prepared.orderId, key, stored.idempotencyKey);
 		}
+		// BEFORE the key is promoted, deliberately. The by-sku index is derived, so it
+		// needs no atomicity — but it does need a heal path, and the cheapest correct one
+		// is the claim completion that already exists: a crash here leaves the key
+		// `claimed`, and any replayer re-runs this write. Promote first and the same crash
+		// would leave a terminal key over an order the search cannot find by sku.
+		await this.#indexOrderSkus(normalizeOrderDoc(stored));
 		await this.#terminalizeKey(key, prepared.orderId);
 		return toOrder(normalizeOrderDoc(stored));
 	}
@@ -1112,7 +1324,16 @@ export class EmdashOrderStore implements OrderStore {
 		if (claim === null) return null;
 		if (claim.state === "claimed") return this.#finishClaim(key, claim.doc);
 		const doc = await this.#orders.get(claim.orderId);
-		return doc === null ? null : toOrder(normalizeOrderDoc(doc));
+		if (doc === null) return null;
+		const order = normalizeOrderDoc(doc);
+		// HEAL ON READ for the derived by-sku index, the same device the outbox locator
+		// uses. A crash between the order document and its index documents can also leave
+		// the key already TERMINAL, and then the claim-completion path above never runs —
+		// so every resolve re-asserts the pointers. They are create-if-absent per
+		// `(sku, orderId)` pair, so re-asserting them is idempotent and writes nothing on
+		// the overwhelmingly common path where they are already there.
+		await this.#indexOrderSkus(order);
+		return toOrder(order);
 	}
 
 	/**
@@ -1367,7 +1588,11 @@ export class EmdashOrderStore implements OrderStore {
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);
-			return written.applied ? casDone<FlipOutcome>({ won: true, doc: next }) : CAS_RETRY;
+			if (!written.applied) return CAS_RETRY;
+			// The locator, bracketed AFTER the flip (see `#recordOutboxLocator`). Only the
+			// enqueueing flip has one to record.
+			if (input.enqueueEmail) await this.#recordOutboxLocator(next, input.toState);
+			return casDone<FlipOutcome>({ won: true, doc: next });
 		});
 	}
 
@@ -1479,6 +1704,194 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
+	 * Page the `orders` index under one where clause, keeping the documents a
+	 * predicate accepts, until `need` of them are collected or the pages run out.
+	 *
+	 * The host's own cursor drives the paging INSIDE one call, which is safe here for
+	 * the reason it is not safe across calls: the row it re-reads to seek is a row this
+	 * same call just read. Across calls the port's value-position cursor is used instead
+	 * — see `listOrders`.
+	 *
+	 * The budget behaves exactly as `listExpirable`'s does: reaching it with pages still
+	 * unread and rows still owed is a typed {@link ScanPageLimitError}, never a silently
+	 * short list.
+	 */
+	async #scanOrders(
+		operation: string,
+		where: WhereClause,
+		orderBy: OrderBy,
+		need: number,
+		keep: (doc: OrderDoc) => boolean,
+	): Promise<OrderDoc[]> {
+		const collected: OrderDoc[] = [];
+		// The `createdAt` of the row that reached `need`. Once it is set, the arm keeps
+		// draining until the FIRST row with a different `createdAt`: see `byNewestFirst`
+		// for why stopping at `need` would be collation-dependent.
+		let boundary: string | null = null;
+		let cursor: string | undefined;
+		for (let page = 0; page < this.#maxListPages; page++) {
+			const result = await this.#orders.query({ where, orderBy, limit: LIST_PAGE_SIZE, cursor });
+			for (const { data } of result.items) {
+				const doc = normalizeOrderDoc(data);
+				// Checked BEFORE `keep`, because the ordering is on `createdAt` alone: once it
+				// differs from the boundary the tie group is over, whatever the filter says.
+				if (boundary !== null && doc.createdAt !== boundary) return collected;
+				if (!keep(doc)) continue;
+				collected.push(doc);
+				if (boundary === null && collected.length >= need) boundary = doc.createdAt;
+			}
+			if (!result.hasMore || result.cursor === undefined) return collected;
+			cursor = result.cursor;
+		}
+		throw new ScanPageLimitError(operation, this.#maxListPages, collected.length, "maxListPages");
+	}
+
+	/**
+	 * The search's line-sku arm: the orders whose FROZEN lines carry this exact folded
+	 * sku, ordered `createdAt DESC` and bounded the same way every other arm is.
+	 *
+	 * Empty for a search that is absent or the empty string — the empty string is the
+	 * WIDEST filter on the id arm (every string starts with it), so this arm could add
+	 * nothing to it, and `sku = ''` is no real sku.
+	 *
+	 * **It is a KEYSET arm, not a full resolve.** The pointer documents carry the order's
+	 * frozen `createdAt` and are indexed `[sku, createdAt]`, so the list reads them
+	 * newest-first and opens only the orders it could actually return — `need` of them,
+	 * drained past the boundary tie group like any other arm. The pointer gives an order
+	 * ID; the document is then read by id, which is one read per order the arm returns
+	 * rather than an N+1 over the table.
+	 *
+	 * **The COUNT passes `Infinity` and is therefore `O(matches)`.** A cardinality has no
+	 * page to stop at, so counting a sku resolves every order that ever bought it. The
+	 * ceiling is real and typed: `maxListPages × LIST_PAGE_SIZE` pointers (1000 × 100 =
+	 * 100 000 by default), past which the call raises `ScanPageLimitError` naming
+	 * `maxListPages` rather than returning a short count. A sku with more matching orders
+	 * than that needs the budget raised, and would deserve a materialized counter first.
+	 *
+	 * The pointer is DERIVED, so the frozen lines stay the authority: a pointer whose
+	 * order is gone, or whose sku is no longer on the lines it names, is not a row.
+	 */
+	async #ordersMatchingSku(
+		search: string | undefined,
+		filter: OrderListFilter,
+		cursor: OrderListCursor | null,
+		need: number,
+	): Promise<OrderDoc[]> {
+		if (search === undefined || search === "") return [];
+		const range = createdAtRange(filter, cursor);
+		const where: WhereClause = range === null ? { sku: search } : { sku: search, createdAt: range };
+		const docs: OrderDoc[] = [];
+		let boundary: string | null = null;
+		let indexCursor: string | undefined;
+		for (let page = 0; page < this.#maxListPages; page++) {
+			const result = await this.#skuIndex.query({
+				where,
+				orderBy: { createdAt: "desc" },
+				limit: LIST_PAGE_SIZE,
+				cursor: indexCursor,
+			});
+			for (const { data } of result.items) {
+				if (boundary !== null && data.createdAt !== boundary) return docs;
+				const stored = await this.#orders.get(data.orderId);
+				// A pointer with no order behind it, or one the lines no longer bear, is not a
+				// row: the pointer is derived and may never widen the predicate.
+				if (stored === null) continue;
+				const doc = normalizeOrderDoc(stored);
+				if (!orderSkuKeys(doc).includes(search)) continue;
+				if (!matchesOrderFilter(doc, filter) || !isAfterCursor(doc, cursor)) continue;
+				docs.push(doc);
+				if (boundary === null && docs.length >= need) boundary = data.createdAt;
+			}
+			if (!result.hasMore || result.cursor === undefined) return docs;
+			indexCursor = result.cursor;
+		}
+		throw new ScanPageLimitError("listOrders", this.#maxListPages, docs.length, "maxListPages");
+	}
+
+	/**
+	 * Write the derived by-sku index documents for one order. Create-if-absent per pair,
+	 * so a replay, a heal and a multi-line order carrying one sku twice all converge on
+	 * the same single row.
+	 */
+	async #indexOrderSkus(doc: OrderDoc): Promise<void> {
+		for (const sku of orderSkuKeys(doc)) {
+			const id = orderSkuIndexId(sku, doc.orderId);
+			const written = await this.#skuIndex.compareAndSet(id, null, {
+				sku,
+				orderId: doc.orderId,
+				// The order's own creation instant, frozen: what makes the arm a keyset arm.
+				createdAt: doc.createdAt,
+			});
+			// A refused create means "already there", which is the point — but it is only SAFE
+			// if the incumbent agrees, so it is read back and compared rather than assumed.
+			await this.#assertPointerAgrees(
+				written.applied,
+				ORDER_SKU_INDEX_COLLECTION,
+				id,
+				doc.orderId,
+				() => this.#skuIndex.get(id),
+			);
+		}
+	}
+
+	/**
+	 * The shared read-back for the two DERIVED pointer collections.
+	 *
+	 * `compareAndSet(id, null, …)` returning `applied: false` means the row exists. That
+	 * is the ordinary outcome of a replay or a peer, and the pointer is idempotent — but
+	 * "idempotent" is a claim about the CONTENT, so the content is checked. A disagreeing
+	 * incumbent is an id collision, and adopting it would mis-route a settle or make the
+	 * sku search answer with somebody else's order.
+	 *
+	 * An incumbent that has vanished between the refused write and the read-back is NOT an
+	 * error: there is nothing to disagree with, and the next heal writes it again.
+	 */
+	async #assertPointerAgrees(
+		applied: boolean,
+		collection: string,
+		pointerId: string,
+		expectedOrderId: string,
+		read: () => Promise<{ orderId: string } | null>,
+	): Promise<void> {
+		if (applied) return;
+		const incumbent = await read();
+		if (incumbent === null || incumbent.orderId === expectedOrderId) return;
+		throw new DerivedPointerConflictError(
+			collection,
+			pointerId,
+			expectedOrderId,
+			incumbent.orderId,
+		);
+	}
+
+	/**
+	 * Record the outbox locator for the entry a won flip just enqueued.
+	 *
+	 * Bracketed, not atomic — it is a second document, and there is no transaction. The
+	 * ordering is deliberate: the locator is written AFTER the flip, so the only
+	 * reachable tear is "entry exists, locator does not", which the settle path heals
+	 * with one bounded walk of the `emailDueAt` index. The reverse ordering would leave
+	 * a locator pointing at an entry that does not exist, which nothing can heal.
+	 */
+	async #recordOutboxLocator(doc: OrderDoc, toState: OrderState): Promise<void> {
+		const entry = findOutboxEntry(doc, toState);
+		if (entry === undefined) return;
+		const written = await this.#outboxKeys.compareAndSet(entry.id, null, {
+			orderId: doc.orderId,
+		});
+		// A refused write is the ordinary "this flip re-recorded an entry that already had
+		// its locator" — unless the incumbent names another order, in which case an entry id
+		// collided and a settle would land on the wrong document.
+		await this.#assertPointerAgrees(
+			written.applied,
+			OUTBOX_KEYS_COLLECTION,
+			entry.id,
+			doc.orderId,
+			() => this.#outboxKeys.get(entry.id),
+		);
+	}
+
+	/**
 	 * Claim the earliest due entry on ONE order, re-applying the due predicate inside
 	 * the write — so only one dispatcher can win a claim, and a lapsed lease is
 	 * claimable again.
@@ -1523,36 +1936,95 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
-	 * Apply a transform to the outbox entry with this id, wherever it lives.
+	 * Apply a transform to the outbox entry with this id, via the locator.
 	 *
-	 * The dispatcher settles a row by ENTRY id alone, and an entry embedded in an
-	 * order document cannot be found by one without a locator. Every non-terminal
-	 * entry is in the `emailDueAt` index by construction, and a claimed one is due at
-	 * its lease — so the search is that index, bounded by the in-flight backlog
-	 * rather than by the order count.
+	 * The dispatcher settles a row by ENTRY id alone, and an entry embedded in an order
+	 * document cannot be found by one — so `outbox_keys/{entryId} → { orderId }` is the
+	 * locator, and this is a single `get` followed by one guarded compare-and-set. It
+	 * replaces the walk of the `emailDueAt` index the transitions increment shipped as
+	 * declared debt.
 	 *
-	 * **This scan is KNOWN DEBT, owed to the lists increment.** The locator it should
-	 * have is one more claim document — `outbox_keys/{entryId} → { orderId }`, written
-	 * by the same compare-and-set that enqueues the entry, exactly as
-	 * `payment_refs` and `refund_keys` are — which turns this index walk into a single
-	 * `get`. It is not written here because the collection would have to be declared
-	 * on the descriptor before the increment that owns the lease's contract cases, and
-	 * the scan is correct meanwhile: it is ordered by the same index the claim uses and
-	 * every entry it must find is in it.
+	 * **The walk survives as the HEAL, once** — and an unresolvable id is LOUD, not a
+	 * no-op. The locator is a second document written after the flip, so "entry enqueued,
+	 * locator missing" is reachable; a settle that finds no locator walks the bounded index
+	 * once and writes the locator it found, so the next settle is a `get` again. If the
+	 * walk and one more locator read both come up empty the call raises
+	 * {@link OutboxEntryUnlocatableError} — see {@link #locateOutboxEntry} for why a quiet
+	 * return there is the one outcome that could cause a double send. `maxOutboxPages`
+	 * bounds only the fallback.
 	 *
-	 * **The write is guarded on `status === "sending"`**, which is the same discipline
-	 * every other write in this file follows: only a CLAIMED entry may be settled. A
-	 * DOUBLE settle — the dispatcher marking sent, or rescheduling, a row it has
-	 * already settled — is therefore a no-op twice over: the entry has usually left the
-	 * due index already (so the scan does not reach it at all), and if a sibling entry
-	 * keeps the order in that index, the guard refuses it. The port's `void` return is
-	 * what makes a no-op the correct outcome rather than a lost write, and the same is
-	 * true of an order that has since vanished.
+	 * **The write is guarded on `status === "sending"`.** Only a CLAIMED entry may be
+	 * settled, so a double settle is a no-op: the entry is already terminal and the guard
+	 * refuses it. The port's `void` return is what makes a no-op the correct outcome
+	 * rather than a lost write, and the same is true of an order that has since vanished.
 	 */
 	async #updateOutboxEntry(
 		id: string,
 		transform: (entry: OutboxEntryDoc) => OutboxEntryDoc,
 	): Promise<void> {
+		const orderId = await this.#locateOutboxEntry(id);
+		await this.#casOrder<void>("settleEmail", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeOrderDoc(current.value);
+			const entry = doc.emailOutbox.find((row) => row.id === id);
+			// Only a CLAIMED entry is settleable. A `pending` entry was never handed out,
+			// and a `sent`/`failed` one is terminal — settling either would be this file's
+			// only unguarded write.
+			if (entry === undefined || entry.status !== "sending") return casDone(undefined);
+			const next = replaceOutboxEntry(doc, transform(entry));
+			const written = await this.#orders.compareAndSet(orderId, current.revision, next);
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	/**
+	 * Resolve an outbox entry id to the order that holds it: locator, then heal, then FAIL.
+	 *
+	 * The three steps are deliberate, and the third is the correction this increment's
+	 * review forced. An earlier version returned `undefined` when the walk found nothing
+	 * and let the settle be a no-op — which conflates two states that are not equivalent:
+	 *
+	 * - an **already-drained** entry has a locator, so it never reaches the walk at all,
+	 *   and its settle is a guarded no-op inside the compare-and-set;
+	 * - an entry whose locator was lost and whose row the walk MISSED is still `sending`.
+	 *   The `emailDueAt` index churns under concurrent claims and settles, so a walk really
+	 *   can pass a row that another dispatcher is moving. Returning quietly there leaves a
+	 *   live lease to lapse and the message to be claimed and sent a SECOND time.
+	 *
+	 * So the walk is followed by one more locator read — a peer completing the same heal is
+	 * the likeliest explanation for a missed row — and if that is still empty the call
+	 * raises {@link OutboxEntryUnlocatableError}. Loud, typed and retryable: nothing was
+	 * written, and the next tick may well resolve it.
+	 */
+	async #locateOutboxEntry(id: string): Promise<string> {
+		const direct = await this.#outboxKeys.get(id);
+		if (direct !== null) return direct.orderId;
+		const walked = await this.#walkForOutboxEntry(id);
+		if (walked !== undefined) {
+			const written = await this.#outboxKeys.compareAndSet(id, null, { orderId: walked });
+			await this.#assertPointerAgrees(written.applied, OUTBOX_KEYS_COLLECTION, id, walked, () =>
+				this.#outboxKeys.get(id),
+			);
+			return walked;
+		}
+		// A peer may have healed it while this call was walking; that is a success, not a
+		// race to lose.
+		const second = await this.#outboxKeys.get(id);
+		if (second !== null) return second.orderId;
+		throw new OutboxEntryUnlocatableError(id, this.#maxOutboxPages);
+	}
+
+	/**
+	 * One bounded walk of the same `emailDueAt` index the claim uses, looking for the order
+	 * that holds an entry whose locator is missing.
+	 *
+	 * A CLAIMED entry is in that index by construction (its lease is its due time), so this
+	 * is a heal and not a guess — but it is not a proof either, because the index moves
+	 * under concurrent dispatchers. `undefined` therefore means "not found in this pass",
+	 * and the caller decides what that means; it never means "settled".
+	 */
+	async #walkForOutboxEntry(id: string): Promise<string | undefined> {
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxOutboxPages; page++) {
 			const result = await this.#orders.query({
@@ -1562,23 +2034,9 @@ export class EmdashOrderStore implements OrderStore {
 				cursor,
 			});
 			for (const { data } of result.items) {
-				if (!(data.emailOutbox ?? []).some((entry) => entry.id === id)) continue;
-				await this.#casOrder<void>("settleEmail", async () => {
-					const current = await this.#orders.getVersioned(data.orderId);
-					if (current === null) return casDone(undefined);
-					const doc = normalizeOrderDoc(current.value);
-					const entry = doc.emailOutbox.find((row) => row.id === id);
-					// Only a CLAIMED entry is settleable. A `pending` entry was never handed
-					// out, and a `sent`/`failed` one is terminal — settling either would be
-					// this file's only unguarded write.
-					if (entry === undefined || entry.status !== "sending") return casDone(undefined);
-					const next = replaceOutboxEntry(doc, transform(entry));
-					const written = await this.#orders.compareAndSet(data.orderId, current.revision, next);
-					return written.applied ? casDone(undefined) : CAS_RETRY;
-				});
-				return;
+				if ((data.emailOutbox ?? []).some((entry) => entry.id === id)) return data.orderId;
 			}
-			if (!result.hasMore || result.cursor === undefined) return;
+			if (!result.hasMore || result.cursor === undefined) return undefined;
 			cursor = result.cursor;
 		}
 		throw new ScanPageLimitError("settleEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
@@ -1628,6 +2086,332 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 }
 
 /** Plain code-unit comparison — never `localeCompare`, so every tier agrees. */
+/**
+ * The search string, folded — or `undefined` when the filter carries none.
+ *
+ * The fold is applied ONCE, here, so the two arms (a `startsWith` on `searchKey` and an
+ * equality on the index's `sku`) cannot disagree about which side was folded. Both
+ * stored sides are already folded at write time, so this is the whole of the "lower()
+ * on both operands" the SQL spelled out.
+ *
+ * The empty string is kept as the empty string, not collapsed to `undefined`: the port
+ * pins it as the WIDEST filter on the id arm, which `startsWith("")` gives for free.
+ * Literal `%`, `_` and `\` need no handling — the host escapes the prefix before it
+ * builds the `LIKE`, so a metacharacter in a search is a character.
+ */
+function foldSearch(search: string | undefined): string | undefined {
+	return search === undefined ? undefined : search.toLowerCase();
+}
+
+/**
+ * The customer key's arms — the SQL's `customer_id = :id OR lower(buyer_ref) = :ref`, as
+ * one `WhereClause` per arm.
+ *
+ * `null` when the key is absent or carries neither half, which is the port's own rule
+ * ("adapters ignore a key with neither half"). One arm when one half is set, two when both
+ * are — and the two are UNIONED, never ANDed: an order is this person's if EITHER holds,
+ * and one matching both is still one row.
+ *
+ * The `customerId` half reads {@link OrderDoc.customerKey}, which is that id verbatim on a
+ * linked order (ADR-0019 R3). The one value it could over-reach is an UNLINKED order whose
+ * folded buyer reference literally spells a customer id — customer ids are uuids and buyer
+ * references are email addresses, so the two value spaces do not overlap; and because the
+ * LIST uses this same clause, a count could not disagree with its page even if they did.
+ */
+function customerKeyArms(customer: OrderCustomerKey | undefined): WhereClause[] | null {
+	if (customer === undefined) return null;
+	const arms: WhereClause[] = [];
+	if (customer.customerId !== undefined) arms.push({ customerKey: customer.customerId });
+	if (customer.buyerRef !== undefined)
+		arms.push({ buyerRefLower: foldBuyerRef(customer.buyerRef) });
+	return arms.length === 0 ? null : arms;
+}
+
+/**
+ * The search's INDEXED arms — the two of its three the filter algebra can express.
+ *
+ * The order-id arm is an anchored prefix on `searchKey` and reproduces the SQL exactly.
+ * The buyer-reference arm is a prefix on `buyerRefLower` where the SQL had an unanchored
+ * SUBSTRING: that is the ratified narrowing (ADR-0019 §6.1), and it is a prefix rather than
+ * nothing because the index already exists for the customer key and a prefix is what
+ * restores the operator workflow the arm is FOR — typing an address, or its local part, and
+ * finding the order. The third arm, the exact line sku, is not a clause at all; it rides
+ * the derived `order_sku_index` documents.
+ *
+ * `null` when there is no search. An EMPTY search yields arms that match everything, which
+ * is the port's own boundary ("every string starts with `\"\"`").
+ */
+function searchArms(search: string | undefined): WhereClause[] | null {
+	if (search === undefined) return null;
+	return [{ searchKey: { startsWith: search } }, { buyerRefLower: { startsWith: search } }];
+}
+
+/** The list predicate's OR dimensions, in a fixed order so list and count agree. */
+function orderListDimensions(filter: OrderListFilter, search: string | undefined): WhereClause[][] {
+	const dimensions: WhereClause[][] = [];
+	const bySearch = searchArms(search);
+	if (bySearch !== null) dimensions.push(bySearch);
+	const byCustomer = customerKeyArms(filter.customer);
+	if (byCustomer !== null) dimensions.push(byCustomer);
+	return dimensions;
+}
+
+/** True when a document satisfies either INDEXED search arm — the sku arm's overlap test. */
+function matchesSearchArms(doc: OrderDoc, search: string): boolean {
+	return (doc.searchKey ?? "").startsWith(search) || (doc.buyerRefLower ?? "").startsWith(search);
+}
+
+/**
+ * AND two or more `WhereClause`s, or `null` when the conjunction is unsatisfiable.
+ *
+ * Needed because the dimensions are crossed and TWO of them can name the same field:
+ * `buyerRefLower` carries the search's prefix arm and the customer key's exact arm. A plain
+ * object spread would silently drop one of the two predicates, so the overlap is resolved
+ * arithmetically instead — an exact value ANDed with a prefix is that value iff it has the
+ * prefix, and two prefixes are the longer iff it extends the shorter.
+ *
+ * Any other repeated field would be a programming error (nothing else is written by two
+ * dimensions), and it throws rather than guessing.
+ */
+function andWhere(parts: readonly WhereClause[]): WhereClause | null {
+	const merged: WhereClause = {};
+	for (const part of parts) {
+		for (const [field, value] of Object.entries(part)) {
+			const held = merged[field];
+			if (held === undefined) {
+				merged[field] = value;
+				continue;
+			}
+			const reconciled = reconcileClause(field, held, value);
+			if (reconciled === null) return null;
+			merged[field] = reconciled;
+		}
+	}
+	return merged;
+}
+
+/** The prefix a `startsWith` clause carries, or `null` for any other predicate shape. */
+function prefixOf(value: WhereValue): string | null {
+	return typeof value === "object" && value !== null && "startsWith" in value
+		? value.startsWith
+		: null;
+}
+
+/** The one overlap {@link andWhere} can meet: an exact fold against a prefix of it. */
+function reconcileClause(field: string, a: WhereValue, b: WhereValue): WhereValue | null {
+	const aPrefix = prefixOf(a);
+	const bPrefix = prefixOf(b);
+	if (typeof a === "string" && typeof b === "string") return a === b ? a : null;
+	if (typeof a === "string" && bPrefix !== null) return a.startsWith(bPrefix) ? a : null;
+	if (typeof b === "string" && aPrefix !== null) return b.startsWith(aPrefix) ? b : null;
+	if (aPrefix !== null && bPrefix !== null) {
+		if (aPrefix.startsWith(bPrefix)) return a;
+		if (bPrefix.startsWith(aPrefix)) return b;
+		return null;
+	}
+	throw new Error(
+		`cannot AND two predicates on '${field}' — only an exact fold and a prefix of it are ` +
+			"expected to overlap, so this is a programming error in the predicate builder",
+	);
+}
+
+/**
+ * Inclusion–exclusion over the OR dimensions, as the terms a count sums.
+ *
+ * For one dimension of `k` alternatives,
+ * `|∪| = Σ over nonempty S of (-1)^(|S|+1) · |∩S|`. Dimensions are independent AND
+ * factors, so their term lists multiply and the signs multiply with them. Terms whose
+ * conjunction is unsatisfiable drop out (they count zero).
+ */
+function inclusionExclusionTerms(
+	base: WhereClause,
+	dimensions: readonly WhereClause[][],
+): { where: WhereClause; sign: number }[] {
+	let terms: { parts: WhereClause[]; sign: number }[] = [{ parts: [base], sign: 1 }];
+	for (const arms of dimensions) {
+		const next: { parts: WhereClause[]; sign: number }[] = [];
+		for (const term of terms) {
+			for (const subset of nonEmptySubsets(arms)) {
+				next.push({
+					parts: [...term.parts, ...subset],
+					sign: term.sign * (subset.length % 2 === 1 ? 1 : -1),
+				});
+			}
+		}
+		terms = next;
+	}
+	const out: { where: WhereClause; sign: number }[] = [];
+	for (const term of terms) {
+		const where = andWhere(term.parts);
+		if (where !== null) out.push({ where, sign: term.sign });
+	}
+	return out;
+}
+
+/** Every non-empty subset of a small alternative list, as bitmasks. */
+function nonEmptySubsets<T>(items: readonly T[]): T[][] {
+	const subsets: T[][] = [];
+	for (let mask = 1; mask < 1 << items.length; mask++) {
+		const subset: T[] = [];
+		for (const [index, item] of items.entries()) {
+			if ((mask & (1 << index)) !== 0) subset.push(item);
+		}
+		subsets.push(subset);
+	}
+	return subsets;
+}
+
+/** The half-open window plus the cursor's coarse bound, or `null` when unconstrained. */
+function createdAtRange(
+	filter: OrderListFilter,
+	cursor: OrderListCursor | null,
+): { gte?: string; lt?: string; lte?: string } | null {
+	const range: { gte?: string; lt?: string; lte?: string } = {};
+	if (filter.from !== undefined) range.gte = filter.from;
+	if (filter.to !== undefined) range.lt = filter.to; // EXCLUSIVE — half-open (MOD-7)
+	if (cursor !== null) range.lte = cursor.createdAt;
+	return Object.keys(range).length === 0 ? null : range;
+}
+
+/**
+ * The AND-only half of the list predicate: states, the window and the cursor's coarse
+ * bound. Shared verbatim by `listOrders` and `countOrders` — the document-store analogue
+ * of the SQL adapters' `orderFilterConditions`, and the reason a count can never disagree
+ * with the page it captions.
+ *
+ * `state` is an `in` set and the window is HALF-OPEN `[from, to)` as `gte`/`lt`. The OR
+ * dimensions (the search's two indexed arms, the customer key's two) are NOT here — they
+ * are crossed onto this base by {@link orderListWhereArms} for the list and summed by
+ * {@link inclusionExclusionTerms} for the count.
+ *
+ * The `search` argument is accepted and deliberately unused in the clause: it is the
+ * dimensions' business. It stays in the signature so a caller cannot build a base that
+ * silently disagrees about whether a search is present.
+ */
+function orderListBaseWhere(
+	filter: OrderListFilter,
+	cursor: OrderListCursor | null,
+	_search: string | undefined,
+): WhereClause {
+	const where: WhereClause = {};
+	if (filter.states !== undefined && filter.states.length > 0) {
+		where.state = { in: [...filter.states] };
+	}
+	const range = createdAtRange(filter, cursor);
+	if (range !== null) where.createdAt = range;
+	return where;
+}
+
+/** The base predicate crossed with every OR dimension: one indexed query each. */
+function orderListWhereArms(
+	filter: OrderListFilter,
+	cursor: OrderListCursor | null,
+	search: string | undefined,
+): WhereClause[] {
+	const base = orderListBaseWhere(filter, cursor, search);
+	let arms: WhereClause[] = [base];
+	for (const dimension of orderListDimensions(filter, search)) {
+		const next: WhereClause[] = [];
+		for (const arm of arms) {
+			for (const alternative of dimension) {
+				const merged = andWhere([arm, alternative]);
+				if (merged !== null) next.push(merged);
+			}
+		}
+		arms = next;
+	}
+	return arms;
+}
+
+/**
+ * The same predicate as {@link orderListBaseWhere} plus the customer arms, MINUS the
+ * search and the cursor, decided in memory.
+ *
+ * It exists for the sku arm alone: those documents arrive by id from the derived index
+ * rather than from a filtered query, so the rest of the predicate has to be applied to
+ * them here. It is deliberately the same clause list in the same order, so a change to
+ * one is visibly a change to the other.
+ */
+function matchesOrderFilter(doc: OrderDoc, filter: OrderListFilter): boolean {
+	if (filter.states !== undefined && filter.states.length > 0) {
+		if (!filter.states.includes(doc.state)) return false;
+	}
+	if (filter.from !== undefined && doc.createdAt < filter.from) return false;
+	if (filter.to !== undefined && doc.createdAt >= filter.to) return false; // EXCLUSIVE
+	const customer = filter.customer;
+	if (
+		customer !== undefined &&
+		(customer.customerId !== undefined || customer.buyerRef !== undefined)
+	) {
+		const byId = customer.customerId !== undefined && doc.customerKey === customer.customerId;
+		const byRef =
+			customer.buyerRef !== undefined && doc.buyerRefLower === foldBuyerRef(customer.buyerRef);
+		if (!byId && !byRef) return false; // the UNION, not an intersection
+	}
+	return true;
+}
+
+/**
+ * True when the document sits strictly AFTER a cursor position under
+ * `createdAt DESC, id DESC` — the port's own ordering.
+ *
+ * The port's cursor is a value position rather than an opaque token, so this is
+ * decidable against any document from any arm without re-reading the cursor's row. That
+ * is what makes a DELETED cursor row a non-event here: the position still describes
+ * itself, and paging continues from it.
+ */
+function isAfterCursor(doc: OrderDoc, cursor: OrderListCursor | null): boolean {
+	if (cursor === null) return true;
+	if (doc.createdAt !== cursor.createdAt) return doc.createdAt < cursor.createdAt;
+	return doc.orderId < cursor.id;
+}
+
+/**
+ * `createdAt DESC, id DESC` — the list's total order, for the in-adapter merge.
+ *
+ * **THE INVARIANT, because two orderings are in play.** The adapter's total order is
+ * `createdAt DESC, id DESC` in **code-unit** order (`<` on JS strings, via
+ * {@link compare}), which is the ordering the port's cursor position and
+ * {@link isAfterCursor} are defined in. The HOST's `order by` breaks its `createdAt` ties
+ * on the storage `id` COLUMN under the database's collation — and Postgres's default
+ * collation is not code-unit order: it ignores punctuation at the primary level, so `oa`
+ * and `o-b` sort in one order there and the other order here.
+ *
+ * That only matters where rows are DROPPED, so the rule is: **an arm is drained to the end
+ * of its boundary tie group before anything is sliced.** `#scanOrders` and
+ * `#ordersMatchingSku` both keep reading past `need` until `createdAt` changes, and only
+ * then does `listOrders` sort by this comparator and slice. Truncating at `need` in the
+ * host's row order would let a tied row that Postgres ordered differently fall off one page
+ * without appearing on the next — a silent gap, on one dialect only.
+ *
+ * `createdAt` itself is safe to compare either way: it is fixed-width ISO-8601 UTC, so
+ * lexical, chronological and collated order coincide.
+ */
+function byNewestFirst(a: OrderDoc, b: OrderDoc): number {
+	return compare(b.createdAt, a.createdAt) || compare(b.orderId, a.orderId);
+}
+
+/**
+ * The document → `OrderSummary` projection: the admin table's columns and nothing else.
+ *
+ * `total` comes off the embedded totals (the SQL's 1:1 `order_totals` join, now a
+ * field), and `reconciliationFlag` is narrowed to a BOOLEAN badge on purpose — the list
+ * never leaks the free-text anomaly detail.
+ */
+function toSummary(doc: OrderDoc): OrderSummary {
+	return {
+		id: doc.orderId as OrderId,
+		state: doc.state,
+		currency: doc.currency,
+		buyerRef: doc.buyerRef,
+		customerId: doc.customerId,
+		paymentMethod: doc.paymentMethod,
+		createdAt: doc.createdAt,
+		total: doc.totals.total,
+		reconciliationFlag: doc.reconciliationFlag !== null,
+	};
+}
+
 function compare(a: string, b: string): number {
 	return a === b ? 0 : a < b ? -1 : 1;
 }

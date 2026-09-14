@@ -72,10 +72,12 @@ import {
 	type StorageCollection,
 	CARTS_COLLECTION,
 	customerKeyFor,
+	foldBuyerRef,
 	normalizeInventoryDoc,
 	ORDER_KEYS_COLLECTION,
 	ORDERS_COLLECTION,
 	RESERVATION_INDEX_COLLECTION,
+	searchKeyFor,
 	uuidIdGen,
 } from "../src/index.js";
 
@@ -391,7 +393,11 @@ export function makeOrderHarness(
 				buyerRef: row.buyerRef,
 				customerId: row.customerId ?? null,
 				customerKey: customerKeyFor(row.customerId ?? null, row.buyerRef),
-				searchKey: null,
+				buyerRefLower: foldBuyerRef(row.buyerRef),
+				// The same denormalization `#prepare` writes — a seeded order is searchable
+				// by its id prefix exactly as a checked-out one is. A bare seed has no lines,
+				// so it owes no `order_sku_index` documents.
+				searchKey: searchKeyFor(row.id),
 				emailDueAt: null,
 				items: [],
 				totals: {

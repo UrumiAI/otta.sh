@@ -56,12 +56,20 @@
  * aggregate. One of the two corrections to ADR-0019 §4 recorded in this file (the
  * other is {@link PAYMENT_REFS_COLLECTION}).
  *
- * **What is declared but not yet written.** `searchKey` and `emailDueAt` are part
- * of the shape NOW, so INC-B4 (lists, search, the outbox lease) adds behaviour
- * without reshaping a collection that already holds live orders. `refunds`,
- * `fulfillment`, `cancellation` and `reconciliationResolution` were in the same
- * position and are now written — by INC-B3's refund ceiling, its guarded
- * `→ shipped`/`→ cancelled` flips and its compare-and-clear resolve.
+ * **Every declared field is now written.** `searchKey` and `emailDueAt` were the last
+ * two declared-but-unwritten fields, and INC-B4 (lists, search, the customer view, the
+ * outbox lease) is what writes them.
+ *
+ * Declaring them early was worth doing and did NOT buy what an earlier draft of this
+ * docblock claimed. It bought one thing: the descriptor's index list and this file's
+ * stopped needing an edit per increment. It did not make the shape final — the same
+ * increment had to ADD a field (`buyerRefLower`, once a contract case pinned the edge
+ * ADR-0019 R3 left conditional) and two derived collections
+ * ({@link ORDER_SKU_INDEX_COLLECTION} for the search's line-sku arm,
+ * {@link OUTBOX_KEYS_COLLECTION} for the outbox locator). Neither collection holds truth
+ * the order document does not, and nothing is deployed, so "reshaping a collection that
+ * holds live orders" was never the constraint it was described as; the real constraint is
+ * that a declared index is a READ CONTRACT and an undeclared field throws.
  */
 import type {
 	Cents,
@@ -117,6 +125,35 @@ export const PAYMENT_REFS_COLLECTION = "payment_refs";
 export const REFUND_KEYS_COLLECTION = "refund_keys";
 
 /**
+ * Collection name: the derived by-sku index over the orders' FROZEN lines — one
+ * document per `(foldedSku, orderId)` pair, id `${foldedSku}:${orderId}`.
+ *
+ * ADR-0019 §6.2. The orders-list search has a line-sku arm the port spells as a
+ * correlated `EXISTS`, and neither an `EXISTS` nor a reach inside an array field is
+ * something `WhereClause` can express — so the arm is denormalized into documents the
+ * `sku` index can answer with an equality. Two properties make it safe to write
+ * OUTSIDE the order's own compare-and-set: it is DERIVED (nothing here is truth that
+ * the order document does not already hold), and its document id is the pair, so
+ * writing it twice — a multi-line order carrying the same sku twice, a replay, a heal —
+ * is the same single row. That is also what makes the list's "one row per order"
+ * structural rather than a de-duplication step: a sku matches an order once.
+ */
+export const ORDER_SKU_INDEX_COLLECTION = "order_sku_index";
+
+/**
+ * Collection name: the outbox-entry locator — `outbox_keys/{entryId} → { orderId }`.
+ *
+ * The dispatcher settles a row by ENTRY id alone (`markEmailSent(id, …)`,
+ * `rescheduleEmail(id, …)`), and an entry embedded in an order document cannot be
+ * found by one. The transitions increment walked the `emailDueAt` index to find it and
+ * recorded the debt; this is the locator that pays it, the same device `payment_refs` and `refund_keys`
+ * are. It is a SECOND document, so it is bracketed rather than atomic: written right
+ * after the flip that enqueued the entry, and healed on read — a settle that finds no
+ * locator falls back to the bounded index walk ONCE and writes the locator it found.
+ */
+export const OUTBOX_KEYS_COLLECTION = "outbox_keys";
+
+/**
  * One collection as the plugin descriptor declares it, widened past
  * `CollectionIndexDeclaration` in exactly one direction: an index entry may be a
  * COMPOSITE (`["state", "createdAt"]`), which ADR-0019 §4 declares for `orders`
@@ -132,18 +169,18 @@ export interface OrderCollectionIndexDeclaration {
 }
 
 /**
- * The four collections `EmdashOrderStore` reads and writes, with the indexes each
+ * The six collections `EmdashOrderStore` reads and writes, with the indexes each
  * must declare. A declared index is a **read contract**, not a performance knob:
  * a `where`/`orderBy` on an undeclared field is a runtime `StorageQueryError`, so
  * this list and the descriptor's must not drift.
  *
- * Every index ADR-0019 §4 names for `orders` is declared HERE, in this
- * increment, including the four fields only later increments query
- * (`customerKey`, `searchKey`, `emailDueAt` and the `[state, createdAt]`
- * compound) — so INC-B3/B4 add methods without reshaping a collection that
- * already holds live orders. `holdExpiresAt` is the one §4 does not spell out and
- * the port forces: `listExpirable` scans `state = 'pending' AND
- * hold_expires_at <= :now`, and neither half may be an undeclared field.
+ * Every index ADR-0019 §4 names for `orders` is declared here, plus three it does
+ * not: `holdExpiresAt` and `holdsPendingAt`, which the port and the sweeper force
+ * (`listExpirable` scans `state = 'pending' AND hold_expires_at <= :now`, and neither
+ * half may be an undeclared field), and `buyerRefLower`, which ADR-0019 R3 left
+ * CONDITIONAL on a contract case pinning the edge its `customerKey` collapse narrows —
+ * a case does pin it, so the field is declared and the customer union is resolved as two
+ * merged arms. `buyerRefLower` also carries the search's buyer-reference arm.
  *
  * `order_keys`, `payment_refs` and `refund_keys` declare none — every access to
  * each is by document id, which is the whole point of keying a claim by the key
@@ -155,6 +192,7 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"state",
 			"createdAt",
 			"customerKey",
+			"buyerRefLower",
 			"searchKey",
 			"emailDueAt",
 			"holdExpiresAt",
@@ -166,6 +204,15 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 	[PAYMENT_REFS_COLLECTION]: {},
 	// Every access is by document id — the whole point of keying a claim by the key.
 	[REFUND_KEYS_COLLECTION]: {},
+	// The search's line-sku arm: an exact-lower equality on `sku`, ORDERED by the
+	// order's frozen `createdAt` so the arm takes its own keyset top `limit + 1`
+	// instead of resolving every pointer a sku ever collected. Declared as a
+	// COMPOSITE because that is what the arm's predicate is; the host folds it into
+	// the queryable-field allow-list field by field, so both halves are usable
+	// separately too. `orderId` is NOT declared — it is read off the document.
+	[ORDER_SKU_INDEX_COLLECTION]: { indexes: [["sku", "createdAt"]] },
+	// Every access is by entry id; that is the whole point of a locator.
+	[OUTBOX_KEYS_COLLECTION]: {},
 };
 
 /**
@@ -325,24 +372,76 @@ export interface OrderDoc {
 	 *
 	 * The customer filter is a UNION, not a collapsible OR — an order is born
 	 * `customerId: null` and back-linked only at the customer's NEXT login — so the
-	 * union moves into the VALUE SET: INC-B4 filters `customerKey in [customerId,
-	 * foldedBuyerRef]`, which is one clause on one indexed field and matches each
-	 * document once. `linkGuestOrders` rewrites this field, or the filter would
-	 * stop finding an order the moment it was linked.
+	 * union moves into the VALUE SET. R3 collapsed it to one clause on this one field;
+	 * the pinned edge below ({@link OrderDoc.buyerRefLower}) forced the OR back out, so the
+	 * filter is now this field's arm ANDed-or-merged with that one. `linkGuestOrders`
+	 * rewrites this field, or the filter would stop finding an order the moment it was
+	 * linked.
 	 */
 	customerKey: string;
 	/**
-	 * DECLARED INDEX. The denormalized prefix-searchable key (ADR-0019 §6.1).
-	 * **Written by INC-B4**; `null` until then, which is why the field is nullable
-	 * rather than absent — a declared index over a field nothing writes is a read
-	 * contract with no reader, and this one has a reader coming.
+	 * DECLARED INDEX, and the ONE field ADR-0019 R3 left conditional: `lower(buyerRef)`.
+	 *
+	 * R3 ruled that the customer filter's union collapses into `customerKey`, and handed
+	 * the lists increment one question — whether any contract case pins the edge that
+	 * collapse narrows, an order owned by a customer id whose buyer reference ALSO folds
+	 * to the queried reference. **A case does pin it**: `listOrders customer key with a
+	 * single half set filters on that half alone` asserts that a `buyerRef`-only key
+	 * returns the LINKED order too, whose `customerKey` holds its customer id and can
+	 * never match the reference. So R3's conditional applies and this field is kept.
+	 *
+	 * With it the customer key becomes the SQL's own OR again —
+	 * `customerKey = :customerId OR buyerRefLower = :folded` — resolved as two indexed
+	 * arms the adapter merges under the port's value-position cursor, with the count
+	 * taken by inclusion–exclusion so it still shares the list's predicate exactly. It
+	 * ALSO carries the search's buyer-reference arm, as a `startsWith`.
+	 *
+	 * Frozen at creation, like `buyerRef` itself: `linkGuestOrders` rewrites
+	 * `customerKey` and never this.
+	 *
+	 * **Nullable for the same reason `searchKey` is, and with the same non-remedy.** A
+	 * document written before INC-B4 carries neither field, and a `startsWith` or an
+	 * equality over SQL NULL is NULL — so such an order is simply unreachable by the
+	 * arms that read them (it is still listed, filtered, counted and paged like any
+	 * other). **No backfill is owed, because nothing is deployed**: this collection has
+	 * never held a production order, and the `null` exists so the adapter's own
+	 * normalization has a defined value rather than to describe data anyone must migrate.
+	 * Neither field is ever null on a document this build writes.
+	 */
+	buyerRefLower: string | null;
+	/**
+	 * DECLARED INDEX. The denormalized prefix-searchable key (ADR-0019 §6.1), and it
+	 * is exactly {@link searchKeyFor}: the FOLDED ORDER ID and nothing else.
+	 *
+	 * `WhereClause` is AND-only and offers one `startsWith` per field — no substring, no
+	 * OR — so ONE indexed field can serve exactly ONE anchored prefix arm. The port's
+	 * `search` is three ORed arms, and each has its own home:
+	 *
+	 * - the order-id PREFIX arm is THIS field, reproduced exactly (anchored, folded on
+	 *   both sides, a whole id is its own prefix, and `""` matches every row because
+	 *   every string starts with it);
+	 * - the `buyer_ref` arm is a `startsWith` on {@link OrderDoc.buyerRefLower} — served,
+	 *   but ANCHORED where the port documents an unanchored SUBSTRING. That prefix is the
+	 *   whole of the user-visible narrowing ADR-0019 §6.1 ratified: an operator can type
+	 *   an address or its local part, and loses only the MID-STRING reach. Re-spelling the
+	 *   port's arm as a prefix is a `[Domain]` change with its own PR;
+	 * - the exact line-sku arm is {@link ORDER_SKU_INDEX_COLLECTION}.
+	 *
+	 * The adapter queries the two indexed arms separately and merges them, which is exact
+	 * because the port's cursor is a self-describing value position — see
+	 * `EmdashOrderStore.listOrders`.
+	 *
+	 * Still nullable, for the reason {@link OrderDoc.buyerRefLower} spells out: documents
+	 * written before this increment carry neither field, and a `startsWith` over SQL NULL
+	 * is NULL, so such an order is unreachable by these arms (never unlisted). No backfill
+	 * is owed — nothing is deployed — and it is never null on a document this build writes.
 	 */
 	searchKey: string | null;
 	/**
 	 * DECLARED INDEX, ADR-0019 R2: `null` when the message is sent or failed,
-	 * otherwise `max(dueAt, leaseUntil)`. **Written by INC-B4** — the outbox lease
-	 * is one `updateIf` guarded on this field, and this increment only enqueues the
-	 * entries it will claim.
+	 * otherwise `max(dueAt, leaseUntil)`. Re-derived by {@link computeEmailDueAt} on every
+	 * write that touches `emailOutbox`, never incremented, so the indexed scalar cannot
+	 * drift from the entries it summarizes.
 	 */
 	emailDueAt: string | null;
 	/**
@@ -430,13 +529,73 @@ export function foldBuyerRef(buyerRef: string): string {
 }
 
 /**
- * R3's denormalized customer key: the linked customer id when there is one, else
- * the folded buyer reference. INC-B4's filter is
- * `customerKey in [customerId, foldedBuyerRef]`, which is why the FALLBACK value
- * lives here rather than both halves.
+ * R3's denormalized customer key: the linked customer id when there is one, else the
+ * folded buyer reference — which is why the FALLBACK value lives here rather than both
+ * halves. The list's `customerId` arm is an equality on this field; its buyer-reference
+ * arm reads {@link OrderDoc.buyerRefLower}, because an order already linked to a customer
+ * keeps its id here and would otherwise drop out of its own buyer reference's results.
  */
 export function customerKeyFor(customerId: string | null, buyerRef: string): string {
 	return customerId ?? foldBuyerRef(buyerRef);
+}
+
+/**
+ * The folded, prefix-searchable key — the order id, lowercased.
+ *
+ * Ids this domain mints are lowercase hex already, so the fold is a no-op on the
+ * STORED side; it is here to forgive the TYPED side (a uuid pasted back from a client
+ * that upper-cased it), exactly as the SQL's `lower(id) LIKE lower(:s || '%')` was.
+ */
+export function searchKeyFor(orderId: string): string {
+	return orderId.toLowerCase();
+}
+
+/** The sku fold both sides of the sku arm share — `lower()` on the stored value. */
+export function foldSku(sku: string): string {
+	return sku.toLowerCase();
+}
+
+/** `order_sku_index/{foldedSku}:{orderId}` — the pair IS the document id. */
+export function orderSkuIndexId(foldedSku: string, orderId: string): string {
+	return `${foldedSku}:${orderId}`;
+}
+
+/**
+ * The DISTINCT folded skus of an order's frozen lines — what the by-sku index holds
+ * for it.
+ *
+ * Distinct because the index's document id is the pair: an order with two lines of
+ * one sku owes ONE index document, which is the structural half of the port's "an
+ * order carrying two matching lines appears once".
+ */
+export function orderSkuKeys(doc: Pick<OrderDoc, "items">): string[] {
+	return [...new Set((doc.items ?? []).map((item) => foldSku(item.sku)))];
+}
+
+/** `order_sku_index/{foldedSku}:{orderId}` — a derived pointer, never truth. */
+export interface OrderSkuIndexDoc {
+	/** DECLARED INDEX: the folded sku the search arm matches with an equality. */
+	sku: string;
+	orderId: string;
+	/**
+	 * DECLARED INDEX: the order's own `createdAt`, copied here.
+	 *
+	 * It is what makes the sku arm a KEYSET arm rather than a full resolve: the list
+	 * orders these pointers `createdAt DESC` and reads only the `limit + 1` orders it can
+	 * actually return, instead of opening every order that ever bought the sku. Frozen,
+	 * like the `createdAt` it copies — an order's creation instant never moves, so this
+	 * denormalization has no update path and cannot drift.
+	 *
+	 * A pointer written before this field existed is invisible to the arm (a `createdAt`
+	 * range over a missing key extracts NULL and matches nothing). Nothing is deployed,
+	 * so no backfill is owed; a replay of the order's idempotency key rewrites it.
+	 */
+	createdAt: string;
+}
+
+/** `outbox_keys/{entryId}` — which order document holds that outbox entry. */
+export interface OutboxKeyDoc {
+	orderId: string;
 }
 
 /**
@@ -451,6 +610,11 @@ export function customerKeyFor(customerId: string | null, buyerRef: string): str
 export function normalizeOrderDoc(doc: OrderDoc): OrderDoc {
 	return {
 		...doc,
+		// The two denormalized read keys INC-B4 added. A pre-INC-B4 document carries
+		// neither; normalizing them to `null` is what keeps the field DEFINED (and so
+		// round-trippable through a compare-and-set) rather than silently absent.
+		searchKey: doc.searchKey ?? null,
+		buyerRefLower: doc.buyerRefLower ?? null,
 		items: doc.items ?? [],
 		events: doc.events ?? [],
 		emailOutbox: doc.emailOutbox ?? [],

@@ -466,10 +466,12 @@ document per order**, plus one claim collection the idempotency key forces.
 
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
-| `orders` | order id | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
+| `orders` | order id | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`buyerRefLower`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
 | `order_keys` | order idempotency key | the claim (carrying the whole prepared document), then its terminal record | — |
 | `payment_refs` | payment provider reference | `{ orderId }` — the GLOBAL once-only claim for a capture | — |
 | `refund_keys` | refund idempotency key | the claim (carrying the whole prepared refund row), then its terminal record | — |
+| `order_sku_index` | `${foldedSku}:${orderId}` | `{ sku, orderId, createdAt }` — the DERIVED pointer the search's line-sku arm reads | `[sku, createdAt]` |
+| `outbox_keys` | outbox entry id | `{ orderId }` — which order document holds that email-outbox entry | — |
 
 **Two corrections to ADR-0019 §4, to be recorded when that ADR is next amended.**
 First, `payments.provider_ref` UNIQUE was a GLOBAL constraint, and the ADR maps it
@@ -484,6 +486,24 @@ money-path document a function of how much support wrote about the order. INC-B8
 `EmdashOrderNotesStore` gets a child collection instead,
 `order_notes/{orderId}:{noteId}` indexed on `orderId` — its port only reads notes by
 order and appends one at a time, so nothing it does needs them in the aggregate.
+
+**Two deviations from ADR-0019 §6, owed to the same amendment (director rulings).** §6.1
+ratified a single prefix-only `searchKey`; this adapter ships a SECOND `startsWith` arm, on
+`buyerRefLower`, so the buyer-reference half of the search survives as a prefix instead of
+disappearing. And §6 rejected "issue two queries and merge"; this adapter does merge arms —
+upheld as exact, because the port's `OrderListCursor` is a self-describing VALUE position
+rather than an opaque per-query token, so each arm can contribute its own top `limit + 1`
+and the count is taken by inclusion–exclusion over the same predicate. Both are recorded
+here until §6 is amended.
+
+**One intentional divergence from the SQL adapter's behaviour.** `markEmailSent` and
+`rescheduleEmail` raise the typed, retryable `OutboxEntryUnlocatableError` for an entry id
+no locator names and no bounded walk finds, where the SQL adapter's guarded `UPDATE …
+WHERE id = :id` simply matches 0 rows and no-ops. The port's docstring describes the
+no-op, so this is a deliberate difference and not a bug: on a document store a quiet return
+there cannot be distinguished from a still-`sending` entry whose locator was lost, and that
+one leaves a live lease to lapse into a double send. The port docstring will be tightened
+with the ADR amendment.
 
 **Two methods landed early, and one whole seam did.** `recordPayment` and
 `flagReconciliation` are both on `settleOrder`'s path — between the paid flip and
@@ -667,10 +687,179 @@ heard of) mean the same thing to the caller — a paid order with no hold, the
 `COMMIT_LOST` anomaly. Letting the second escape would wedge the sweeper on that one
 order forever and abandon the ids listed after it.
 
+### The admin list, the search and the keyset cursor
+
+This is where the document store diverges MOST from the SQL it replaces, so it is worth
+stating exactly, including what an operator loses.
+
+**The filter algebra.** `query({ where, orderBy, limit, cursor })` supports exact match,
+`null`, `in`, the four range comparisons and a prefix — joined with `AND` only. There is
+**no substring, no negation and no OR**, and a `where`/`orderBy` on an undeclared field
+is a runtime `StorageQueryError` rather than a slow scan. The port's `listOrders`
+predicate needs an OR in two places, and each is resolved differently.
+
+**The search is an OR of three arms; all three are served, one of them narrowed.** The
+port spells it as a folded order-id PREFIX **or** a folded `buyer_ref` SUBSTRING **or** an
+exact folded purchase-time line sku.
+
+| Arm | Served by | Status |
+|---|---|---|
+| order-id PREFIX (anchored, folded on both sides, a whole id is its own prefix, `""` matches everything) | `startsWith` on `searchKey` = `orderId.toLowerCase()` | **unchanged** |
+| exact folded line sku, over the FROZEN lines, one row per order | `order_sku_index/{foldedSku}:{orderId}` — an equality on `sku`, keyset-ordered on the pointer's copy of `createdAt` | **unchanged** |
+| `buyer_ref` **SUBSTRING** | `startsWith` on `buyerRefLower` | **NARROWED to a PREFIX** |
+
+The third row is the ratified narrowing (ADR-0019 §6.1): the filter algebra has no
+substring operator, so the arm is anchored. It is a prefix rather than nothing because the
+index exists anyway for the customer key, and a prefix is what the arm is FOR — an
+operator types an address, or the local part of one, and finds the order. What is genuinely
+lost is the MID-STRING reach: a domain (`example.com`), or any fragment that does not start
+the address, returns **nothing** — not an error and not a partial answer. The screen's empty
+state says so at the UI increment, and widening it back out is a `[Domain]` change with its
+own PR.
+
+Four `orderStoreContract` cases stay registered as named todos until then, and they are
+exactly the assertions a prefix cannot make: the mid-string fragment, a bare `%`/`_`, a
+bare `\`, and `countOrders` taken under the substring predicate.
+`test/order-store-contract-narrowed.ts` is the copy that holds them (43 of the suite's 47
+cases run for real).
+
+The metacharacter guarantees survive intact: the host escapes `%`, `_` and `\` before it
+builds the `LIKE`, so a prefix search is literal, and the sku arm is an equality with no
+pattern language at all.
+
+**The sku arm cannot double-count, by construction.** Its documents are keyed by the
+`(sku, orderId)` PAIR, so an order with two lines of one sku owns ONE pointer — the
+port's "an order carrying two matching lines must appear once" becomes a property of the
+document id rather than a de-duplication step someone can forget. `countOrders` adds the
+sku set as a **set difference** (only the sku-matched orders no indexed arm already
+counted, membership decided in memory from each document's own `searchKey` and
+`buyerRefLower`), so a count can never disagree with the page it captions.
+
+**The sku arm is keyset-bounded for the LIST and `O(matches)` for the COUNT, and the
+ceiling is typed.** The pointer carries the order's frozen `createdAt` and the collection
+declares `[sku, createdAt]`, so the list reads pointers newest-first and opens only the
+`limit + 1` orders it could return — not every order that ever bought the sku. A COUNT has
+no page to stop at, so it does resolve them all: the bound is
+`maxListPages × LIST_PAGE_SIZE` pointers — **1000 × 100 = 100 000** by default — past which
+the call raises `ScanPageLimitError` naming `maxListPages`, never a short count. A sku with
+more matching orders than that wants the budget raised, and would want a materialized
+counter first.
+
+**The customer key stays a UNION, and it needs a second index.** ADR-0019 R3 collapsed
+`customer_id = :id OR lower(buyer_ref) = :ref` into one `customerKey in [...]`, and handed
+this increment the edge that narrows: an order owned by a customer id whose buyer
+reference ALSO folds to the queried reference. **A contract case pins that edge** —
+"listOrders customer key with a single half set filters on that half alone" requires a
+`buyerRef`-only key to return the LINKED order too, whose `customerKey` holds its customer
+id. So R3's conditional applies: the document carries a second declared index,
+`buyerRefLower`, and the OR is resolved as **two indexed arms the adapter merges**. The
+count takes them by **inclusion–exclusion** (`|C1| + |C2| − |C1 ∧ C2|`, the intersection
+being one more AND clause), which is what keeps an order matching both halves counted
+once.
+
+**The cursor: the port's value position wins, the host's opaque token is ignored.** The
+host mints an opaque cursor whose seek RE-READS the cursor row by id (`select … where
+id = :cursorId`), so a deleted cursor row breaks it — and ADR-0019 §6.3 left the mapping
+to this increment. The decision is **option (2), re-derive**: the port's
+`OrderListCursor` is a value position (`{ createdAt, id }`) that describes itself, so the
+adapter seeks with a COARSE `createdAt: { lte: cursor.createdAt }` on the declared index
+and applies the exact `createdAt DESC, id DESC` tie-break in memory (a true keyset
+tie-break needs an OR). Two consequences, both deliberate:
+
+- **a deleted cursor row is not a paging fault.** The position still describes itself and
+  paging continues from it. That is the opposite of the host token's failure mode, and it
+  is the reason the mapping was chosen; `test/order-list-cases.ts` pins it, and no such
+  case existed anywhere in the tree before;
+- **it is what makes the merge exact.** Because "strictly after this position" is
+  decidable for a document from ANY arm, each arm can contribute its own top `limit + 1`
+  rows and the top `limit + 1` of the merge is the true page. Merging arms under an
+  opaque per-query token could not do that, which is exactly why ADR-0019 §6 rejected it.
+
+**Two orderings are in play, and the invariant that reconciles them.** The adapter's total
+order is `createdAt DESC, id DESC` in **code-unit** order — that is the order the port's
+cursor position is defined in. The HOST's `order by` breaks its `createdAt` ties on the
+storage `id` COLUMN under the **database's collation**, and Postgres's default collation is
+not code-unit order: it ignores punctuation at the primary level, so ids like `oa` and `o-b`
+sort one way there and the other way here. That matters only where rows are dropped, so the
+rule is: **an arm is drained to the end of its boundary TIE GROUP before anything is
+sliced.** Both scans keep reading past `need` until `createdAt` changes, and only then does
+`listOrders` sort in code-unit order and slice. Truncating at `need` in the host's row order
+would let a tied row Postgres ordered differently fall off one page without appearing on the
+next — a silent gap, on one dialect only. `test/order-list-cases.ts` pins it with four
+orders at one instant and ids `oa`, `o-b`, `o-c`, `o-d` paged one at a time; with the drain
+removed that case fails on Postgres (dropping `oa`) and passes on SQLite, whose BINARY
+collation happens to agree with code units.
+
+The host's `limit` clamp (50 default, 100 ceiling) is invisible to the caller: the
+adapter pages at 100 internally until it has `limit + 1` rows, and a page budget
+exhausted with pages still unread is a typed `ScanPageLimitError` (`maxListPages`), never
+a silently short list.
+
+**`listForCustomer` and `linkGuestOrders`.** The first is the SQL's `customer_id = :id`
+equality — not the list's union — read off `customerKey` with an in-memory re-check, and
+ordered `createdAt ASC, id ASC`. The second is `lower(buyer_ref) = :folded AND
+customer_id IS NULL`, collected in full and then rewritten one compare-and-set at a time,
+re-applying the guard inside each write. It **rewrites `customerKey`** (R3) — without
+that the customer filter would stop finding the order the moment it was linked — and
+leaves `buyerRefLower` frozen alongside `buyer_ref` itself.
+
+**Pre-INC-B4 documents carry no `searchKey` and no `buyerRefLower`.** A `startsWith` or an
+equality over SQL NULL is NULL, so such an order is unreachable by the arms that read those
+fields (it is still listed, filtered, counted and paged like any other). **No backfill is
+owed, because nothing is deployed** — this collection has never held a production order.
+Both fields are typed `string | null` and defaulted in `normalizeOrderDoc` so the value is
+DEFINED and round-trippable through a compare-and-set, not so that anyone must migrate data.
+The same applies to the by-sku pointer's `createdAt`.
+
+### The outbox locator
+
+The dispatcher settles a row by ENTRY id alone, and an entry embedded in an order
+document cannot be found by one. `outbox_keys/{entryId} → { orderId }` is the locator —
+the same device `payment_refs` and `refund_keys` are — and it replaces the `emailDueAt`
+index walk the transitions increment shipped as known debt.
+
+It is a **second** document, so it is bracketed rather than atomic, and the bracket has a
+direction: the locator is written **after** the flip that enqueued the entry. The only
+reachable tear is therefore "entry exists, locator does not", and the settle path **heals**
+it — one bounded walk of the same `emailDueAt` index, then the locator is written so the next
+settle is a single `get`. The reverse ordering would leave a locator pointing at an entry
+that does not exist, which nothing could heal. `maxOutboxPages` bounds only that fallback.
+
+**An unresolvable entry id is LOUD, and that is a deliberate correction.** A claimed entry
+is in the `emailDueAt` index by construction — but the index CHURNS under concurrent claims
+and settles, so a walk really can pass a row another dispatcher is moving. Returning quietly
+when the walk finds nothing would conflate two states that are not equivalent: an
+already-drained entry HAS a locator (so it never reaches the walk, and its settle is a
+guarded no-op), while an entry whose locator was lost and whose row the walk missed is still
+`sending` — and a quiet return there leaves a live lease to lapse and the message to be
+claimed and sent a SECOND time. So the walk is followed by one more locator read (a peer
+completing the same heal is the likeliest explanation), and if that is still empty the call
+raises the typed, retryable `OutboxEntryUnlocatableError`. Nothing was written, so a retry
+or the next dispatcher tick is the remedy.
+
+**Both pointer collections read their refusals back.** `compareAndSet(id, null, …)`
+returning `applied: false` means the row exists, which is the ordinary outcome of a replay
+or a peer — but "idempotent" is a claim about the CONTENT, so the incumbent is read and its
+`orderId` compared. A disagreement is an id collision and raises
+`DerivedPointerConflictError`: adopting it would mis-route a settle onto another order's
+document, or make the sku search answer with it.
+
+The write stays guarded on `status === "sending"`: only a CLAIMED entry is settleable, so
+a double settle — or a settle of an entry nothing ever minted — is a no-op, which is what
+the port's `void` return makes the correct outcome rather than a lost write.
+
+**The by-sku index heals the same way, in the other direction.** It is written after the
+order document and **before** the key is promoted, so a crash between them leaves a
+`claimed` key and any resolve of that key re-asserts the pointers; each is
+create-if-absent on its pair, so the heal writes one document however many times it runs.
+**The heal fires only on a key REPLAY** (anything that goes through `#resolveKey`): a
+crashed create whose pointer never landed and whose key is never replayed stays a residual
+for the sweeper, not something a read repairs.
+
 ### Order crash seams proven
 
-`test/order-crash-seams.dialects.test.ts` opens every window on real storage. Ten of
-the twelve cases INJECT a fault with the shared helper — the writes before the gap land
+`test/order-crash-seams.dialects.test.ts` opens every window on real storage. Twelve of
+the fourteen cases INJECT a fault with the shared helper — the writes before the gap land
 for real, the write at the gap throws or is parked, and the documents are READ BACK
 before anything replays, so what the replay heals is the state the store really leaves
 behind. The remaining two inject nothing and say so: they are COMPLETION-ROBUSTNESS

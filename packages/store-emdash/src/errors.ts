@@ -104,50 +104,6 @@ export class OrderIdCollisionError extends Error {
 }
 
 /**
- * A port method this adapter will implement, but not in the increment that is
- * shipped: the `OrderStore` port is delivered across three increments (creation +
- * transitions + hold intents here; refunds, reconciliation resolution,
- * fulfillment and cancellation next; then the lists, search, customer view and
- * outbox lease).
- *
- * It exists so a caller reaching a not-yet-built method gets a TYPED, named
- * refusal that says which increment owns it — never a plausible wrong answer
- * (`[]`, `0`, `null`), which is the failure mode that would make a half-delivered
- * port look like a working one. Every case in the contract suites that needs one
- * of these is registered as a `test.todo` naming the same increment, so the two
- * halves of the staging cannot drift apart silently.
- */
-export class NotImplementedInIncrementError extends Error {
-	override readonly name = "NotImplementedInIncrementError";
-	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
-	readonly code = "NOT_IMPLEMENTED_IN_INCREMENT";
-	/** The port method that was called. */
-	readonly method: string;
-	/** The increment that owns it, e.g. `INC-B3`. */
-	readonly increment: string;
-
-	constructor(method: string, increment: string) {
-		super(
-			`${method} is not implemented by this adapter yet — it lands in ${increment}. ` +
-				"The document shape already declares its fields, so nothing is reshaped when it does.",
-		);
-		this.method = method;
-		this.increment = increment;
-	}
-}
-
-/** Structural test for {@link NotImplementedInIncrementError}. */
-export function isNotImplementedInIncrementError(
-	err: unknown,
-): err is NotImplementedInIncrementError {
-	return (
-		typeof err === "object" &&
-		err !== null &&
-		(err as { code?: unknown }).code === "NOT_IMPLEMENTED_IN_INCREMENT"
-	);
-}
-
-/**
  * `recordPayment` was handed an order id that has no document.
  *
  * The SQL adapter's insert would have failed its foreign key; the document store has
@@ -275,5 +231,91 @@ export function isScanPageLimitError(err: unknown): err is ScanPageLimitError {
 		typeof err === "object" &&
 		err !== null &&
 		(err as { code?: unknown }).code === "SCAN_PAGE_LIMIT"
+	);
+}
+
+/**
+ * A settle arrived for an outbox entry no locator names and no index walk can find.
+ *
+ * Thrown by `markEmailSent` / `rescheduleEmail` — and deliberately, rather than the
+ * silent no-op the earlier walk-only implementation returned. The two cases a silent
+ * return conflated are NOT equivalent: an entry that is already terminal has a LOCATOR
+ * (so it never reaches the walk at all, and its settle is a guarded no-op), while an
+ * entry whose locator was lost and whose row the walk missed is still `sending` — and
+ * returning quietly there leaves a live lease to lapse and the message to be claimed and
+ * sent a second time. So the unresolvable case is loud.
+ *
+ * `retryable` is true because nothing was written and the locator may simply have been
+ * written by a peer a moment later; the caller's own retry, or the next dispatcher tick,
+ * is the remedy. It is not a promise that an unchanged retry will find it.
+ */
+export class OutboxEntryUnlocatableError extends Error {
+	override readonly name = "OutboxEntryUnlocatableError";
+	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
+	readonly code = "OUTBOX_ENTRY_UNLOCATABLE";
+	readonly retryable = true as const;
+	readonly entryId: string;
+	/** How many pages the fallback walk read before giving up on finding it. */
+	readonly pages: number;
+
+	constructor(entryId: string, pages: number) {
+		super(
+			`outbox entry ${entryId} could not be located: no outbox_keys locator names it and ` +
+				`${String(pages)} page(s) of the emailDueAt index do not hold it — refusing to settle ` +
+				"silently, because a lost locator over a still-claimed entry would leave its lease to " +
+				"lapse and the message to be sent twice",
+		);
+		this.entryId = entryId;
+		this.pages = pages;
+	}
+}
+
+/** Structural test for {@link OutboxEntryUnlocatableError}. */
+export function isOutboxEntryUnlocatableError(err: unknown): err is OutboxEntryUnlocatableError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "OUTBOX_ENTRY_UNLOCATABLE"
+	);
+}
+
+/**
+ * A DERIVED pointer document already exists and names a different order.
+ *
+ * The two pointer collections — `order_sku_index` and `outbox_keys` — are written
+ * create-if-absent, and a refused write normally means "a peer or a replay already wrote
+ * exactly this". That is only safe if the incumbent agrees, so the refusal is READ BACK
+ * and compared. A disagreement means an id source collided (a duplicated outbox entry id,
+ * a hand-written pointer), and adopting it would mis-route a settle onto somebody else's
+ * order or make the sku search answer with it — loud, never adopted.
+ */
+export class DerivedPointerConflictError extends Error {
+	override readonly name = "DerivedPointerConflictError";
+	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
+	readonly code = "DERIVED_POINTER_CONFLICT";
+	readonly collection: string;
+	readonly pointerId: string;
+	readonly expectedOrderId: string;
+	readonly foundOrderId: string;
+
+	constructor(collection: string, pointerId: string, expected: string, found: string) {
+		super(
+			`${collection}/${pointerId} already points at order ${found}, not ${expected} — the ` +
+				"pointer is derived, so adopting a disagreeing incumbent would silently attach this " +
+				"order's reads to another order's document",
+		);
+		this.collection = collection;
+		this.pointerId = pointerId;
+		this.expectedOrderId = expected;
+		this.foundOrderId = found;
+	}
+}
+
+/** Structural test for {@link DerivedPointerConflictError}. */
+export function isDerivedPointerConflictError(err: unknown): err is DerivedPointerConflictError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "DERIVED_POINTER_CONFLICT"
 	);
 }
