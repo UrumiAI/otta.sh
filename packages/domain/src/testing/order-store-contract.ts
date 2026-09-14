@@ -481,22 +481,29 @@ export function orderStoreContract(
 			expect(upper.orders.map((o) => o.id)).toEqual(["ord-7e4ce728"]);
 		});
 
-		test("listOrders search matches a buyer_ref SUBSTRING, case-folded on both sides", async () => {
+		test("listOrders search matches a buyer_ref PREFIX, case-folded on both sides", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "Buyer@Example.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "someone-else@example.com" }));
-			// The whole address, folded — the pre-substring behaviour, preserved.
+			// The whole address, folded — an address is its own prefix, so an exact
+			// lookup still works.
 			const whole = await h.store.listOrders({ search: "buyer@example.com" }, { limit: 25 });
 			expect(whole.orders.map((o) => o.id)).toEqual(["ord-a"]);
-			// A local-part fragment.
+			// A LEADING fragment of the address, folded on both sides — the guarantee
+			// the ratified narrowing (ADR-0019 §6) fixes for every adapter: this arm
+			// is ANCHORED, like the id arm.
 			const local = await h.store.listOrders({ search: "BUY" }, { limit: 25 });
 			expect(local.orders.map((o) => o.id)).toEqual(["ord-a"]);
-			// A mid-string fragment — UNANCHORED, unlike the id half.
-			const domain = await h.store.listOrders({ search: "example.COM" }, { limit: 25 });
-			expect(domain.orders.map((o) => o.id).toSorted()).toEqual(["ord-a", "ord-b"]);
 			// A fragment of neither column matches nothing.
 			const miss = await h.store.listOrders({ search: "nobody" }, { limit: 25 });
 			expect(miss.orders).toHaveLength(0);
+			// DELIBERATELY NOT ASSERTED: what a MID-STRING fragment ("example.com")
+			// does. The contract fixes the FLOOR every adapter must reach, and an
+			// adapter may match more — a store whose SQL can serve an unanchored
+			// `LIKE` offers substring as a superset of the prefix, and stays
+			// conformant. A store whose filter algebra has no substring operator
+			// serves the prefix alone and pins its own narrower behaviour in its own
+			// package tests. Asserting the negative here would outlaw the superset.
 		});
 
 		test("listOrders search treats `%` and `_` as LITERAL characters, never wildcards", async () => {
@@ -505,34 +512,52 @@ export function orderStoreContract(
 			await h.seedOrder(summaryRow({ id: "ord-plain", buyerRef: "50xoff@example.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-us", buyerRef: "a_b@example.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-any", buyerRef: "axb@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-pct-lead", buyerRef: "%off@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-us-lead", buyerRef: "_x@example.com" }));
 			// `%` unescaped would make this pattern match `50xoff@…` too.
 			const pct = await h.store.listOrders({ search: "50%off" }, { limit: 25 });
 			expect(pct.orders.map((o) => o.id)).toEqual(["ord-pct"]);
 			// `_` unescaped is LIKE's single-character wildcard — it would match `axb`.
 			const us = await h.store.listOrders({ search: "a_b" }, { limit: 25 });
 			expect(us.orders.map((o) => o.id)).toEqual(["ord-us"]);
-			// A bare `%` is a character to search for, not "match everything".
-			const bare = await h.store.listOrders({ search: "%" }, { limit: 25 });
-			expect(bare.orders.map((o) => o.id)).toEqual(["ord-pct"]);
-			// And a bare `_` likewise.
-			const bareUs = await h.store.listOrders({ search: "_" }, { limit: 25 });
-			expect(bareUs.orders.map((o) => o.id)).toEqual(["ord-us"]);
+			// A search that is nothing BUT a metacharacter is a search for that
+			// character: it reaches the address that literally STARTS with it, and it
+			// does not reach an address free of the character — which is exactly what
+			// a wildcard reading would sweep in. Asserted by membership rather than
+			// as the whole page, because an adapter offering substring as a superset
+			// also reaches `50%off@…`/`a_b@…` here and is conformant either way.
+			const bare = (await h.store.listOrders({ search: "%" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bare).toContain("ord-pct-lead");
+			expect(bare).not.toContain("ord-plain");
+			const bareUs = (await h.store.listOrders({ search: "_" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bareUs).toContain("ord-us-lead");
+			expect(bareUs).not.toContain("ord-plain");
 		});
 
 		test("listOrders search treats `\\` — the ESCAPE character itself — LITERALLY", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-bs", buyerRef: "a\\b@example.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-nobs", buyerRef: "ab@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-bs-lead", buyerRef: "\\lead@example.com" }));
 			// The metacharacter the `%`/`_` cases cannot catch. Unescaped, a search
-			// for `a\b` compiles to the pattern `%a\b%`, where `\b` means "a literal
-			// b" — it matches `ab@…` and MISSES the address that actually contains
-			// the backslash. Exactly inverted, on both halves of the OR.
+			// for `a\b` compiles to the pattern `a\b%`, where `\b` means "a literal
+			// b" — it would match `ab@…` and MISS the address that actually contains
+			// the backslash. Exactly inverted, on both text arms of the OR.
 			const both = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
 			expect(both.orders.map((o) => o.id)).toEqual(["ord-bs"]);
-			// A bare backslash finds the one address containing one, and nothing else
-			// — it is a character, not an escape introducer, once it reaches the store.
-			const bare = await h.store.listOrders({ search: "\\" }, { limit: 25 });
-			expect(bare.orders.map((o) => o.id)).toEqual(["ord-bs"]);
+			// A bare backslash is a character, not an escape introducer, once it
+			// reaches the store: it reaches the address that starts with one and
+			// leaves the address that has none alone. Membership again — a substring
+			// superset also reaches `a\b@…`, and that is conformant.
+			const bare = (await h.store.listOrders({ search: "\\" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bare).toContain("ord-bs-lead");
+			expect(bare).not.toContain("ord-nobs");
 		});
 
 		test("listOrders search of the EMPTY string matches every order (it constrains nothing)", async () => {
@@ -677,16 +702,21 @@ export function orderStoreContract(
 				skus: ["SKU-COUNTED"],
 				buyerRef: "dee@lined.test",
 			});
-			// The id half (prefix), the buyer_ref half (substring) and the line-sku
-			// half (exact) all count, under the one shared predicate.
+			// An order reachable through TWO arms at once — its id starts with the
+			// string AND one of its lines carries it as a sku — is still one row, so
+			// the count is one: the union is over rows, never over arms.
+			await seedLinedOrder(h.store, { id: "sku-both", skus: ["SKU-BOTH"] });
+			// The id arm (prefix), the buyer_ref arm (prefix) and the line-sku arm
+			// (exact) all count, under the one shared predicate.
 			expect(await h.store.countOrders({ search: "ord-" })).toBe(2);
-			expect(await h.store.countOrders({ search: "example.com" })).toBe(2);
-			expect(await h.store.countOrders({ search: "other.test" })).toBe(1);
+			expect(await h.store.countOrders({ search: "amy@" })).toBe(1);
 			expect(await h.store.countOrders({ search: "SKU-COUNTED" })).toBe(1);
-			const { orders } = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
-			expect(orders).toHaveLength(await h.store.countOrders({ search: "ord-" }));
-			const lined = await h.store.listOrders({ search: "SKU-COUNTED" }, { limit: 25 });
-			expect(lined.orders).toHaveLength(await h.store.countOrders({ search: "SKU-COUNTED" }));
+			expect(await h.store.countOrders({ search: "SKU-BOTH" })).toBe(1);
+			// And the caption can never disagree with the page it captions.
+			for (const search of ["ord-", "amy@", "SKU-COUNTED", "SKU-BOTH"]) {
+				const { orders } = await h.store.listOrders({ search }, { limit: 25 });
+				expect(orders).toHaveLength(await h.store.countOrders({ search }));
+			}
 		});
 
 		test("listOrders paginates forward with a keyset cursor — no overlap, no gap", async () => {
