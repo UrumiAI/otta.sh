@@ -138,6 +138,43 @@ describeEachDialect("identity crash seams", (ctx) => {
 		expect(await customers.count()).toBe(1);
 	});
 
+	test("a registrant parked past the abandon window is fenced out by its own re-assertion", async () => {
+		const live = healthy();
+		const claims = collectionOf<CustomerEmailDoc>(bound.storage, CUSTOMER_EMAILS_COLLECTION);
+		const customers = collectionOf<CustomerDoc>(bound.storage, CUSTOMERS_COLLECTION);
+		// Park the RE-ASSERTION — the update write on the claim this registrant already
+		// holds — so the parked call sits between its claim and its account write, which
+		// is exactly the gap the fence exists for.
+		const parked = parkCall(claims, isUpdateWrite);
+		const stalled = crashing(
+			withCollection(bound.storage, CUSTOMER_EMAILS_COLLECTION, parked.collection),
+			live,
+		);
+
+		const registration = settleOne(
+			stalled.customerStore.create({ email: email("stalled@example.com") }),
+		);
+		await parked.arrived;
+		// It holds the claim and has written nothing else.
+		expect((await claims.get("stalled@example.com"))?.customerId).toMatch(/^crashed-/);
+		expect(await customers.count()).toBe(0);
+
+		// The registrant stops being alive for longer than its lease, and a peer takes
+		// the address over and registers it.
+		live.advance(ABANDON_AFTER_MS + 1);
+		const peer = await live.customerStore.create({ email: email("stalled@example.com") });
+
+		// The stalled call wakes up. Its re-assertion is the fence: it is pinned to the
+		// revision the peer's takeover replaced, so it refuses BEFORE any account write.
+		parked.release();
+		expect(await registration).toBeInstanceOf(DuplicateCustomerEmailError);
+
+		// One account owns the address, it is the peer's, and the claim names it.
+		expect(await customers.count()).toBe(1);
+		expect((await live.customerStore.getByEmail(email("stalled@example.com")))?.id).toBe(peer.id);
+		expect((await claims.get("stalled@example.com"))?.customerId).toBe(peer.id);
+	});
+
 	test("an account whose claim is gone is still found by address, and the read writes the claim back", async () => {
 		const live = healthy();
 		const registered = await live.customerStore.create({ email: email("lost@example.com") });

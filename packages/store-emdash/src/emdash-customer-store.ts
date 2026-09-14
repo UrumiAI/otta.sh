@@ -49,6 +49,7 @@ import {
 import {
 	CAS_RETRY,
 	casDone,
+	isStorageContentionError,
 	withCasRetry,
 	type CasRetryOptions,
 	type CasStep,
@@ -263,20 +264,32 @@ export class EmdashCustomerStore implements CustomerStore {
 	 * constraint gave for free. So of N concurrent registrations of one address
 	 * exactly one reaches a customer write at all, and the losers throw
 	 * `DuplicateCustomerEmailError` having written nothing.
+	 *
+	 * The re-assertion is a **heartbeat**, not a formality: it stamps a fresh
+	 * `claimedAt`, so a registrant that is slow but alive — retrying inside the
+	 * compare-and-set budget — keeps its lease, while one that stopped lets the
+	 * lease lapse and is taken over. And it is the FENCE: a registrant parked past
+	 * the window wakes up to a refused re-assertion and never writes the account it
+	 * no longer has the right to write.
 	 */
 	async create(input: CreateCustomerInput): Promise<Customer> {
-		const now = this.#docs.clock.now().toISOString();
+		const createdAt = this.#docs.clock.now().toISOString();
 		const emailLower = foldEmail(input.email);
 		const customerId = this.#idGen.newId();
-		let claimRevision = await this.#claimEmail(input.email, emailLower, customerId, now);
-		const mine: CustomerEmailDoc = { emailLower, customerId, claimedAt: now };
+		let claimRevision = await this.#claimEmail(input.email, emailLower, customerId, createdAt);
 		let ownsClaim = true;
 		try {
 			return await this.#docs.cas<Customer>("createCustomer", async () => {
 				// Re-asserted on EVERY attempt, with the revision carried forward from this
 				// write's own result: a claim a peer has taken over fails HERE, before an
-				// account could be written under an address this call no longer holds.
-				const reasserted = await this.#docs.emails.compareAndSet(emailLower, claimRevision, mine);
+				// account could be written under an address this call no longer holds. The
+				// `claimedAt` it writes is the CURRENT instant, which is what makes the
+				// window a renewing lease rather than a deadline fixed at the first claim.
+				const reasserted = await this.#docs.emails.compareAndSet(emailLower, claimRevision, {
+					emailLower,
+					customerId,
+					claimedAt: this.#docs.clock.now().toISOString(),
+				});
 				if (!reasserted.applied) {
 					ownsClaim = false;
 					throw new DuplicateCustomerEmailError(input.email);
@@ -295,7 +308,7 @@ export class EmdashCustomerStore implements CustomerStore {
 					emailLower,
 					displayName: input.displayName ?? null,
 					emailVerifiedAt: null,
-					createdAt: now,
+					createdAt,
 					addresses: held?.doc.addresses ?? [],
 				};
 				const written = await this.#docs.customers.compareAndSet(
@@ -307,8 +320,10 @@ export class EmdashCustomerStore implements CustomerStore {
 			});
 		} catch (err) {
 			// The account was not written, so the address must not stay claimed — a retry
-			// with the same address would otherwise collide with this call's own
-			// abandoned claim. Never released when a peer already owns it.
+			// with the same address would otherwise wait out the window against this
+			// call's own abandoned claim. Never released when a peer already owns it, and
+			// BEST-EFFORT: the release absorbs its own contention rather than replacing
+			// the failure the caller actually needs to see (see `#releaseEmailClaim`).
 			if (ownsClaim) await this.#releaseEmailClaim(emailLower, customerId);
 			throw err;
 		}
@@ -389,6 +404,13 @@ export class EmdashCustomerStore implements CustomerStore {
 	 * The refusal in case 2 is the accepted residual, and it points the safe way: an
 	 * address is refused for at most one abandon window after a crash, rather than
 	 * ever being registered twice.
+	 *
+	 * **Clock skew costs a spurious refusal, never data.** The window is stamped from
+	 * the holder's clock and compared against the reader's, so a reader running a full
+	 * window ahead can call a live claim abandoned and take it over. That is rule (a)
+	 * working rather than failing: the holder's next re-assertion is refused, so it
+	 * loses — and the one that loses is the slow or skewed registrant, never the
+	 * uniqueness of the address. No invariant depends on the two clocks agreeing.
 	 */
 	async #claimEmail(
 		email: Email,
@@ -440,14 +462,31 @@ export class EmdashCustomerStore implements CustomerStore {
 	 * is closed.
 	 */
 	async #releaseEmailClaim(emailLower: string, expectedCustomerId: string): Promise<void> {
-		const current = await this.#docs.emails.getVersioned(emailLower);
-		if (current === null || current.value.customerId !== expectedCustomerId) return;
-		const holder = await this.#docs.customers.get(current.value.customerId);
-		if (holder !== null) {
-			const doc = normalizeCustomerDoc(holder);
-			if (hasCustomerRow(doc) && doc.emailLower === emailLower) return;
+		try {
+			await this.#docs.cas<void>("createCustomer.release", async () => {
+				const current = await this.#docs.emails.getVersioned(emailLower);
+				if (current === null || current.value.customerId !== expectedCustomerId) {
+					return casDone(undefined);
+				}
+				const holder = await this.#docs.customers.get(current.value.customerId);
+				if (holder !== null) {
+					const doc = normalizeCustomerDoc(holder);
+					if (hasCustomerRow(doc) && doc.emailLower === emailLower) return casDone(undefined);
+				}
+				const removed = await this.#docs.emails.compareAndDelete(emailLower, current.revision);
+				// A refusal means a peer re-claimed or re-asserted the claim, which is the
+				// state this call wanted to reach; re-reading settles which.
+				return removed.applied ? casDone(undefined) : CAS_RETRY;
+			});
+		} catch (err) {
+			// BEST-EFFORT, and deliberately so: this runs inside `create`'s catch, on a
+			// path that is already failing. A contention error raised here would REPLACE
+			// the failure the caller has to see with one about the compensation, and it
+			// would buy nothing — an unreleased claim is an orphan the abandon window
+			// heals. It is the same trade `#releaseSlot` makes in the verifier, for the
+			// same reason. Every other contention failure in this store propagates.
+			if (!isStorageContentionError(err)) throw err;
 		}
-		await this.#docs.emails.compareAndDelete(emailLower, current.revision);
 	}
 }
 

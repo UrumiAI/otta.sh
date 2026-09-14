@@ -1,5 +1,5 @@
 /**
- * The two identity residues, on **D1**.
+ * The identity residues, the claim fence and the address ownership check, on **D1**.
  *
  * The Node tiers prove the seams across both their dialects; what this tier adds is
  * that the two healing paths work through the host's OWN Kysely wiring, because both
@@ -10,11 +10,24 @@
  * either.
  *
  * It cannot race — miniflare runs the file in one `workerd` isolate on one thread —
- * so the concurrency questions stay in the Postgres suites. These are the
- * deterministic residues, driven the same way.
+ * so the concurrency questions stay in the Postgres suites. Promises do interleave at
+ * `await` points, which is all the claim-fence case needs: it parks one write, moves
+ * the clock, lets a peer through, and releases.
+ *
+ * The cross-customer address cases are here rather than only on the Node tiers because
+ * they are a SECURITY invariant, and an invariant pinned on two of three tiers is
+ * pinned on the wrong number of them.
  */
-import { email, DuplicateCustomerEmailError } from "@otta-sh/domain";
+import { customerId, email, DuplicateCustomerEmailError } from "@otta-sh/domain";
 import { expect, test } from "vitest";
+import {
+	collectionOf,
+	CUSTOMER_EMAILS_COLLECTION,
+	CUSTOMERS_COLLECTION,
+	type CustomerDoc,
+	type CustomerEmailDoc,
+} from "../../src/index.js";
+import { isUpdateWrite, parkCall, settleOne, withCollection } from "../helpers/fault-injection.js";
 import { IDENTITY_LAYOUT } from "../identity-collections.js";
 import {
 	CHALLENGE_TTL_MS,
@@ -68,4 +81,62 @@ test("the prune's two arms remove consumed and expired challenges and nothing li
 	expect(await h.verifier.pruneChallenges(h.now())).toBe(2);
 	expect(await h.verifier.pruneChallenges(h.now())).toBe(0);
 	expect((await h.verifier.verifyChallenge(live.challengeId, live.token)).ok).toBe(true);
+});
+
+test("a registrant parked past the abandon window is fenced out by its own re-assertion", async () => {
+	const ABANDON_AFTER_MS = 10_000;
+	const live = makeIdentityHarness(bound.storage, { claimAbandonAfterMs: ABANDON_AFTER_MS });
+	const claims = collectionOf<CustomerEmailDoc>(bound.storage, CUSTOMER_EMAILS_COLLECTION);
+	const customers = collectionOf<CustomerDoc>(bound.storage, CUSTOMERS_COLLECTION);
+	// Park the RE-ASSERTION, so the parked call sits between its claim and its account
+	// write — the gap the fence exists for.
+	const parked = parkCall(claims, isUpdateWrite);
+	const stalled = makeIdentityHarness(bound.storage, {
+		claimAbandonAfterMs: ABANDON_AFTER_MS,
+		clock: live.clock,
+		idPrefix: "stalled-",
+		storageForStore: withCollection(bound.storage, CUSTOMER_EMAILS_COLLECTION, parked.collection),
+	});
+
+	const registration = settleOne(
+		stalled.customerStore.create({ email: email("fenced@example.com") }),
+	);
+	await parked.arrived;
+	expect(await customers.count()).toBe(0);
+
+	live.advance(ABANDON_AFTER_MS + 1);
+	const peer = await live.customerStore.create({ email: email("fenced@example.com") });
+
+	parked.release();
+	expect(await registration).toBeInstanceOf(DuplicateCustomerEmailError);
+	// One account owns the address, and it is the peer's.
+	expect(await customers.count()).toBe(1);
+	expect((await live.customerStore.getByEmail(email("fenced@example.com")))?.id).toBe(peer.id);
+	expect((await claims.get("fenced@example.com"))?.customerId).toBe(peer.id);
+});
+
+test("an address write is refused to anyone but its owner", async () => {
+	const h = makeIdentityHarness(bound.storage);
+	const a = customerId("owner-a");
+	const b = customerId("owner-b");
+	const theirs = await h.addressStore.create(a, {
+		kind: "shipping",
+		name: "Ada Lovelace",
+		line1: "1 Analytical Way",
+		city: "London",
+		postalCode: "EC1",
+		country: "GB",
+	});
+
+	// The ownership check is on the address inside the CALLER's own document, so B's
+	// attempt is a miss rather than a hijack — and there is no address collection it
+	// could have reached A's row through.
+	expect(await h.addressStore.update(b, theirs.id, { city: "Hijacked" })).toBeNull();
+	expect(await h.addressStore.delete(b, theirs.id)).toBe(false);
+	expect((await h.addressStore.list(a)).map((x) => x.city)).toEqual(["London"]);
+	// A's own writes work, which is what makes the refusal above about ownership.
+	expect((await h.addressStore.update(a, theirs.id, { city: "Cambridge" }))?.city).toBe(
+		"Cambridge",
+	);
+	expect(await h.addressStore.delete(a, theirs.id)).toBe(true);
 });

@@ -1473,6 +1473,21 @@ Per-shape depth and contention, as the suite reports them per case:
 | 10 partial refunds fitting one ceiling (N=20, gateway latency) | 11 | 0 |
 | N=24 full refunds on one ceiling | 2 | 0 |
 | N=30 reconciliation resolves on one flagged order | 2 | 0 |
+| 40 concurrent challenge requests at a per-address cap of 3 (15 loops) | 4 | 0 |
+| two concurrent crowds of 20 on two addresses, cap 3 each | 3 | 0 |
+| a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
+| 30 concurrent registrations of one address (15 loops) | 1 | 0 |
+| 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+
+The last two rows are the identity races (`login-challenge-race.pg.test.ts`,
+`customer-email-claim-race.pg.test.ts`), and the pair is worth reading together. The
+registration stampede measures **1**: the first writer takes the claim and every peer is
+then refused by reading it, so nothing contends. The get-or-create measures **8**, and
+that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
+until the winner's account document is readable, because the claim refuses a second
+registration from the moment it is taken, which is a moment before the account behind it
+exists. It is measured at N=12 and grows with how long the winner takes, not with the
+crowd.
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by
@@ -1761,12 +1776,17 @@ No sweeper is required, because every slot carries the expiry of the challenge i
 names and the next admission drops it. That is also the one place the window is
 pruned: a refusal does not write.
 
-**One deliberate swallow, and only one.** `releaseChallengeSlot` does not propagate
+**Two deliberate swallows, and only two.** `releaseChallengeSlot` and the email claim's
+compensating release (`createCustomer.release`) do not propagate
 `StorageContentionError`. It runs only after the write it compensates for has already
 been decided, so raising would turn a login that has already succeeded into an error
 the user cannot retry — the challenge is spent, so the replay answers `CONSUMED` — in
 exchange for freeing a slot a moment earlier. Not raising leaves an over-refusal that
-expires by itself. Every other contention failure in this package propagates.
+expires by itself. The email release is the same trade on the same shape: it runs inside
+`create`'s catch, on a path that is already failing, and raising there would REPLACE the
+failure the caller has to see with one about the compensation — while an unreleased claim
+is just an orphan the abandon window heals. Every other contention failure in this
+package propagates.
 
 ### The email claim needs an abandon window, and the race proved it
 
@@ -1784,6 +1804,25 @@ holds is taken over only once it is older than the window; until then the addres
 refused as a duplicate — which is what it is about to become, and which for a genuinely
 crashed holder is an over-refusal bounded by one window rather than a duplicate account
 that is forever.
+
+**The re-assertion is a heartbeat, so the lease renews.** Every attempt stamps a fresh
+`claimedAt` alongside the revision it re-asserts, exactly as the sku claim and the coupon
+bump right do. A registrant that is slow but alive — retrying inside the compare-and-set
+budget — therefore keeps its lease however long the retries take, and only one that
+stopped writing lets the window lapse. A fixed deadline stamped at the first claim would
+have made the window a timeout on the whole call instead.
+
+**The fence, and what clock skew costs.** Renewal is half of it; the other half is that a
+holder which DID lapse must not commit the work it no longer has the right to do. That is
+the re-assertion's other job: it is pinned to the revision the takeover replaced, so a
+registrant parked past its window wakes to a refused re-assertion and returns
+`DuplicateCustomerEmailError` with no account written — pinned by "a registrant parked
+past the abandon window is fenced out by its own re-assertion", on all three tiers, and
+that case fails if the refusal is removed. The window is stamped from the holder's clock
+and read against the taker's, so a reader a full window ahead can call a live claim
+abandoned and take it over: the holder's next re-assertion then refuses, which is the
+fence working rather than failing. Skew costs a spurious refusal for the slow or skewed
+registrant, never a second account, and no invariant depends on the two clocks agreeing.
 
 One caller feels that refusal legitimately: the verifier's get-or-create behind a
 redeem. The claim refuses a second registration from the moment it is taken, which is
@@ -1845,6 +1884,8 @@ residue back before proving what a later caller sees:
 | slot taken, challenge write **and** release lost | a held slot | one admission fewer until the slot's expiry |
 | consume committed, release lost | a held slot for a spent challenge | the replay is `CONSUMED`; the window resets at the expiry |
 | an address update that loses its revision to a concurrent delete | none | the retry re-checks ownership and answers the miss rather than resurrecting the address |
+| a registrant parked past its lease, overtaken by a peer | none | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's |
+| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
 
 ### What the identity tier does NOT carry
 
