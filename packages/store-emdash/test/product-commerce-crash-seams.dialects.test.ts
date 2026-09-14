@@ -51,6 +51,7 @@ import {
 	delegatingCollection,
 	failCall,
 	InjectedCrashError,
+	isClaimWrite,
 	isUpdateWrite,
 	onId,
 	parkCall,
@@ -416,9 +417,16 @@ describeEachDialect("sku-rename crash seams", (ctx) => {
 			isUpdateWrite,
 			{ mode: "instead" },
 		);
-		const owners = failCall(bound.collection<SkuOwnerDoc>(SKU_OWNERS_COLLECTION), isUpdateWrite, {
-			mode: "instead",
-		});
+		// The claim itself is a CREATE and must land; so must the pre-commit heartbeat,
+		// which is the first UPDATE on it. What must NOT land is the RELEASE the `finally`
+		// runs — the second update — because a real crash never gets to run it. Counting
+		// is how the two are told apart: they are the same method on the same document.
+		let ownerUpdates = 0;
+		const owners = failCall(
+			bound.collection<SkuOwnerDoc>(SKU_OWNERS_COLLECTION),
+			(call) => isUpdateWrite(call) && ++ownerUpdates >= 2,
+			{ mode: "instead" },
+		);
 		const rawInventory = bound.collection<InventoryDoc>(INVENTORY_COLLECTION);
 		const inventory = delegatingCollection(rawInventory, {
 			compareAndDelete(id) {
@@ -493,5 +501,61 @@ describeEachDialect("sku-rename crash seams", (ctx) => {
 		// The crashed product is untouched throughout — it never committed anything.
 		expect((await h.store.getByProductId(productId("prod-wedge")))?.sku).toBe("WEDGE-FROM");
 		expect(await h.onHandOf("WEDGE-FROM")).toBe(9);
+	});
+
+	test("a writer stalled past the lease is overtaken, and REFUSES at the commit instead of minting a second owner", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		const wm = await seedStocked(h, "prod-tko", "TKO-FROM", 20);
+
+		// Park the carry's target claim — the write that lands AFTER the sku claim and
+		// BEFORE the pre-commit heartbeat. That is exactly the stall this case is about: a
+		// writer holding a sku claim it took a while ago and has not yet committed against.
+		const parked = parkCall(
+			bound.collection<InventoryDoc>(INVENTORY_COLLECTION),
+			onId("TKO-TO", isClaimWrite),
+		);
+		const stalled = makeProductCommerceHarness(bound.storage, {
+			storageForStore: withCollection(bound.storage, INVENTORY_COLLECTION, parked.collection),
+		});
+		const rename = stalled.store.updateCommerceFields(
+			{ productId: productId("prod-tko"), sku: sku("TKO-TO") },
+			idempotencyKey("tko-1"),
+			wm,
+		);
+		await parked.arrived;
+		expect(await claimOf("TKO-TO")).toMatchObject({ live: true, ownerId: "prod-tko" });
+
+		// Time passes — on the INJECTED clock, never the wall — and a second owner finds a
+		// live claim that nothing backs and nobody owes a carry from. It takes it over and
+		// commits, which is the correct answer from everything it can see.
+		h.clock.advance(61_000);
+		const newcomer = await h.store.upsert(
+			{ productId: productId("prod-tko-other"), sku: sku("TKO-TO") },
+			idempotencyKey("tko-other"),
+		);
+		expect(newcomer.sku).toBe("TKO-TO");
+		expect(await claimOf("TKO-TO")).toMatchObject({ live: true, ownerId: "prod-tko-other" });
+
+		// The stalled writer resumes. Its product compare-and-set would still succeed —
+		// that document has not moved — so nothing but the re-assertion of the claim can
+		// stop it, and it must.
+		parked.release();
+		await expect(rename).rejects.toBeInstanceOf(SkuConflictError);
+
+		// Its product document was NOT written: same sku, same replay key as the seed.
+		const stalledRow = await h.store.getByProductId(productId("prod-tko"));
+		expect(stalledRow?.sku).toBe("TKO-FROM");
+		expect(stalledRow?.idempotencyKey).toBe("seed-prod-tko");
+		// EXACTLY ONE live row owns the sku.
+		const owners = [
+			stalledRow?.sku,
+			(await h.store.getByProductId(productId("prod-tko-other")))?.sku,
+		];
+		expect(owners.filter((s) => s === "TKO-TO")).toHaveLength(1);
+		// And the units never moved: the carry the stalled writer was going to run was
+		// abandoned before it recorded anything.
+		expect(await h.onHandOf("TKO-FROM")).toBe(20);
+		expect((await h.onHandOf("TKO-TO")) ?? 0).toBe(0);
+		expect(((await h.onHandOf("TKO-FROM")) ?? 0) + ((await h.onHandOf("TKO-TO")) ?? 0)).toBe(20);
 	});
 });

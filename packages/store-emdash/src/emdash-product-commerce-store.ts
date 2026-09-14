@@ -186,6 +186,12 @@ export interface EmdashProductCommerceStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for the admin list's bounded scan. Default 1000. */
 	maxListPages?: number;
+	/**
+	 * Override the sku-claim lease, in milliseconds. Defaults to
+	 * {@link CLAIM_ABANDON_AFTER_MS}; see that constant for why 60 s, and lower it only
+	 * where the whole retry budget is known to be shorter.
+	 */
+	claimAbandonAfterMs?: number;
 }
 
 /**
@@ -200,6 +206,25 @@ interface SkuPreparation {
 	readonly carry: PendingRenameDoc | null;
 	/** The source sku's claim to release once the write has committed. */
 	readonly releaseSku: string | null;
+	/**
+	 * The sku claim this write is standing on, to be RE-ASSERTED immediately before the
+	 * product document commits. Null when the write took no claim.
+	 */
+	readonly hold: SkuHold | null;
+}
+
+/**
+ * A sku claim this call holds, and the revision it last saw it at.
+ *
+ * The revision is what turns "we claimed it earlier" into a checkable fact at commit
+ * time: a compare-and-set at that revision both proves the claim is still ours and
+ * re-stamps its lease. See {@link EmdashProductCommerceStore.#heartbeatClaim}.
+ */
+interface SkuHold {
+	readonly sku: string;
+	revision: string;
+	/** Carried so the heartbeat rewrites the claim without losing what it recorded. */
+	readonly createsTarget: boolean;
 }
 
 /**
@@ -249,6 +274,8 @@ interface SkuClaim {
 	 * is no stock question to ask (a first sku assignment).
 	 */
 	readonly occupiedAtClaim: boolean;
+	/** The claim document's revision as this call last saw it. */
+	readonly revision: string;
 }
 
 export class EmdashProductCommerceStore implements ProductCommerceStore {
@@ -259,6 +286,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
+	readonly #claimAbandonAfterMs: number;
 
 	constructor(options: EmdashProductCommerceStoreOptions) {
 		this.#products = collectionOf<ProductCommerceDoc>(options.storage, PRODUCT_COMMERCE_COLLECTION);
@@ -272,6 +300,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			random: options.random,
 		};
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
+		this.#claimAbandonAfterMs = options.claimAbandonAfterMs ?? CLAIM_ABANDON_AFTER_MS;
 		this.#transfer = new SkuStockTransfer({
 			inventory: this.#inventory,
 			// The rename ledger shares `inventory_movements` with the per-key movement
@@ -653,6 +682,12 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					updatedAt: now,
 				};
 				if (current === null) throw new Error("unreachable: a read row has a revision");
+				// The claim is re-asserted HERE, adjacent to the commit, so a takeover that
+				// happened while this call was in flight refuses it instead of letting two
+				// live rows name one sku.
+				if (prepared.hold !== null && !(await this.#heartbeatClaim(prepared.hold, ref, ledger))) {
+					return CAS_RETRY;
+				}
 				const written = await this.#products.compareAndSet(input.productId, current.revision, next);
 				if (!written.applied) return CAS_RETRY;
 				ledger.committed = true;
@@ -692,6 +727,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				createdAt: now,
 				updatedAt: now,
 			};
+			if (prepared.hold !== null && !(await this.#heartbeatClaim(prepared.hold, ref, ledger))) {
+				return CAS_RETRY;
+			}
 			const written = await this.#products.compareAndSet(
 				input.productId,
 				current?.revision ?? null,
@@ -805,6 +843,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				idempotencyKey: key,
 				updatedAt: this.#clock.now().toISOString(),
 			};
+			if (prepared.hold !== null && !(await this.#heartbeatClaim(prepared.hold, ref, ledger))) {
+				return CAS_RETRY;
+			}
 			const written = await this.#products.compareAndSet(input.productId, current.revision, next);
 			if (!written.applied) return CAS_RETRY;
 			ledger.committed = true;
@@ -1117,6 +1158,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				idempotencyKey: key,
 				updatedAt: this.#clock.now().toISOString(),
 			};
+			if (prepared.hold !== null && !(await this.#heartbeatClaim(prepared.hold, ref, ledger))) {
+				return CAS_RETRY;
+			}
 			const written = await this.#products.compareAndSet(input.productId, current.revision, {
 				...doc,
 				variants: { ...doc.variants, [input.variantKey]: updated },
@@ -1207,10 +1251,17 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		nextSku: Sku | undefined,
 		commandKey: string,
 	): Promise<SkuPreparation | typeof CONTENDED> {
-		if (nextSku === undefined) return { carry: null, releaseSku: null };
+		if (nextSku === undefined) return { carry: null, releaseSku: null, hold: null };
 		const claim = await this.#claimSku(nextSku, ref, currentSku);
 		if (claim.createdNow) ledger.claimed = nextSku;
-		if (currentSku === null || currentSku === nextSku) return { carry: null, releaseSku: null };
+		const hold: SkuHold = {
+			sku: nextSku,
+			revision: claim.revision,
+			createsTarget: currentSku !== null && currentSku !== nextSku && !claim.occupiedAtClaim,
+		};
+		if (currentSku === null || currentSku === nextSku) {
+			return { carry: null, releaseSku: null, hold };
+		}
 		let outcome: "created" | "adopted" | "contended";
 		try {
 			outcome = await this.#transfer.prepare(currentSku, nextSku, {
@@ -1240,7 +1291,74 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				commandKey,
 			},
 			releaseSku: currentSku,
+			hold,
 		};
+	}
+
+	/**
+	 * RE-ASSERT the sku claim immediately before the product document commits, and
+	 * re-stamp its lease while doing it.
+	 *
+	 * **The hole this closes.** `#claimSku` proves ownership when the claim is taken,
+	 * not when the write lands, and the two are different instants. A writer that
+	 * stalls past {@link CLAIM_ABANDON_AFTER_MS} between them has its claim taken over
+	 * as abandoned — correctly, from the newcomer's point of view — and then resumes and
+	 * commits its product document anyway, because that compare-and-set guards the
+	 * PRODUCT document's revision and can see nothing at all about the claim. Two live
+	 * rows would then name one sku, and the stalled writer's carry would deposit its
+	 * units under a sku the newcomer owns.
+	 *
+	 * So the claim is compare-and-set at the revision this call last saw, carrying a
+	 * fresh `claimedAt`. That single write does both jobs: it PROVES the claim is still
+	 * ours (a takeover changed the revision, so the write fails), and it restarts the
+	 * lease from the commit attempt, so a writer that is merely slow — a retry storm on
+	 * a contended document — keeps its claim instead of being reaped for being busy. It
+	 * runs on EVERY attempt of the retry loop, for that reason.
+	 *
+	 * Returns false when the claim moved but is still ours (a peer of the same owner
+	 * heartbeat it first): the step re-runs. Throws `SkuConflictError` — the port's
+	 * own live-sku refusal, already mapped to 409 at the boundary — when it is gone,
+	 * and the product document is NOT written.
+	 *
+	 * **The residual, stated exactly.** Two-document atomicity does not exist here, so
+	 * this closes the window down to the gap between two ADJACENT statements: the
+	 * heartbeat and the product compare-and-set. A pause of the FULL lease length in
+	 * that gap would still be overtaken. That is the residual every lease scheme has,
+	 * and 60 s is what makes it unreachable in practice: the entire retry budget is
+	 * `CAS_MAX_ATTEMPTS` (24) attempts with each sleep capped at `CAS_MAX_DELAY_MS`
+	 * (50 ms), under two seconds end to end, so a pause thirty times longer than the
+	 * whole budget would have to land between two consecutive awaits.
+	 *
+	 * **Clock skew.** The lease compares the READER's clock against the CLAIMANT's
+	 * `claimedAt`, so two workers whose clocks disagree measure different ages: a
+	 * reader running fast may judge a live claim abandoned early, one running slow may
+	 * wait longer than a minute. The heartbeat decides who loses, and it is always the
+	 * SLOW writer rather than the data: an early takeover moves the claim's revision,
+	 * so the original writer's pre-commit compare-and-set fails and it refuses typed
+	 * instead of committing a second live row. Skew therefore costs a merchant a
+	 * spurious retry, never a sku with two owners.
+	 */
+	async #heartbeatClaim(hold: SkuHold, ref: SkuOwnerRef, ledger: SkuClaimLedger): Promise<boolean> {
+		const at = this.#clock.now().toISOString();
+		const written = await this.#skuOwners.compareAndSet(
+			hold.sku,
+			hold.revision,
+			newSkuOwnerDoc(hold.sku, ref, at, hold.createsTarget),
+		);
+		if (written.applied) {
+			hold.revision = written.revision;
+			return true;
+		}
+		const current = await this.#skuOwners.get(hold.sku);
+		// Still ours, at a revision we had not seen: a peer of this same owner got there
+		// first. Nothing is lost — the step re-reads and re-decides.
+		if (current !== null && current.live && isOwnedBy(current, ref)) return false;
+		// Gone. Neither the claim nor anything under it is ours to give back now, so the
+		// undo must not touch them: releasing a claim we no longer hold is a no-op, but
+		// withdrawing an inventory document the newcomer has adopted would not be.
+		ledger.claimed = null;
+		ledger.createdTarget = null;
+		throw new SkuConflictError(hold.sku);
 	}
 
 	/**
@@ -1448,6 +1566,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					alreadyOurs: false,
 					createdNow: true,
 					occupiedAtClaim: occupied,
+					revision: written.revision,
 				});
 			}
 			if (current.value.live) {
@@ -1456,6 +1575,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 						alreadyOurs: true,
 						createdNow: false,
 						occupiedAtClaim: false,
+						revision: current.revision,
 					});
 				}
 				const status = await this.#claimStatus(current.value, sku);
@@ -1483,6 +1603,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				// Re-read: a takeover that just withdrew a residue must not remember the
 				// document it removed as an occupancy.
 				occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
+				revision: written.revision,
 			});
 		});
 	}
@@ -1509,7 +1630,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (owesCarryFrom(doc, claim, sku)) return "owed";
 		}
 		const age = this.#clock.now().getTime() - new Date(claim.claimedAt).getTime();
-		return age >= CLAIM_ABANDON_AFTER_MS ? "abandoned" : "in-flight";
+		return age >= this.#claimAbandonAfterMs ? "abandoned" : "in-flight";
 	}
 
 	/**

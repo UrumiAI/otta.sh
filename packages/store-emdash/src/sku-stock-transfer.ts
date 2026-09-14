@@ -374,8 +374,13 @@ export class SkuStockTransfer {
 			if (doc.transferOut !== undefined) return;
 			await this.#inventory.compareAndDelete(toSku, current.revision);
 		} catch {
-			// Deliberately swallowed: the refusal the caller is about to see is the
-			// answer that matters, and an empty inventory document is not a wrong one.
+			// Deliberately swallowed, on BOTH paths that reach here. For a refused carry,
+			// the refusal the caller is about to see is the answer that matters and an empty
+			// inventory document is not a wrong one. For a claim TAKEOVER, the withdrawal is
+			// the residue-clearing half: losing it leaves the document exactly as it was, so
+			// the takeover still stands and the next attempt at that sku withdraws it then.
+			// Neither case may fail the operation it is attached to, and neither loses stock:
+			// this only ever removes a document holding nothing.
 		}
 	}
 

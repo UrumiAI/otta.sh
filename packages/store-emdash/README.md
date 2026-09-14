@@ -1074,13 +1074,49 @@ exactly as it is for every other document write in this package.
   then never commits gives it back in a `finally`. A process that DIES in that window
   cannot, and both residues are durable: a live claim nothing backs, plus — for a rename
   — an empty inventory document under the target, which "occupied is occupied" would
-  otherwise refuse forever. So the claim is a LEASE. A live claim is taken over when
-  nothing backs it, nobody owes a carry away from it, and it is older than
-  `CLAIM_ABANDON_AFTER_MS` (60 s — far beyond the whole retry budget, so an in-flight
-  writer is never mistaken for a dead one); the takeover also withdraws the empty
-  inventory document, and only that one, which is what `SkuOwnerDoc.createsTarget`
-  records. A seeded empty row is never withdrawn, so "occupied is occupied" still holds
-  for real stock.
+  otherwise refuse forever. So the claim is a LEASE, and a live claim held by another
+  owner resolves to one of four states:
+
+  | `ClaimStatus` | Meaning | Outcome |
+  |---|---|---|
+  | `held` | the owner's live product row (or non-orphaned variant) carries this sku | `SkuConflictError` |
+  | `owed` | the owner no longer carries it but still OWES a stock carry away from it | refused, at any age |
+  | `in-flight` | nothing backs it, and it is younger than the lease | refused |
+  | `abandoned` | nothing backs it, nobody owes it, and it is older than the lease | taken over |
+
+  A takeover also withdraws the empty inventory document, and only that one, which is
+  what `SkuOwnerDoc.createsTarget` records; a seeded empty row is never withdrawn, so
+  "occupied is occupied" still holds for real stock. `CLAIM_ABANDON_AFTER_MS` defaults to
+  60 s and is overridable per store.
+
+  **What a merchant sees.** Retrying a rename whose first attempt died mid-write is
+  refused — `SKU_TAKEN`, or `SKU_STOCK_CONFLICT` where the target already had units —
+  for up to the lease, and then succeeds. Nothing else is affected: a sku nobody was
+  half-way through claiming behaves exactly as before.
+- **A writer overtaken while it was stalled.** The claim is proven when it is TAKEN, and
+  the product document commits later; a writer that stalls past the lease between the two
+  is legitimately overtaken, and its product compare-and-set — which guards the product
+  document's revision — can see nothing about that. So the claim is RE-ASSERTED
+  immediately before the commit, by a compare-and-set at the revision the call last saw:
+  one write that both proves the claim is still ours and restarts the lease from the
+  commit attempt, so a merely slow writer (a retry storm) is never reaped for being busy.
+  It runs on every attempt of the retry loop. A claim that has gone refuses typed and the
+  product document is not written.
+
+  **The residual, stated exactly.** Two-document atomicity does not exist here, so this
+  closes the window down to the gap between two ADJACENT statements — the heartbeat and
+  the product compare-and-set — and a pause of the full lease length in that gap would
+  still be overtaken. It is the residual every lease scheme has. 60 s is what makes it
+  unreachable in practice: the whole retry budget is 24 attempts with each sleep capped at
+  50 ms, under two seconds end to end, so the pause would have to be thirty times the
+  entire budget and land between two consecutive awaits.
+
+  **Clock skew.** The lease compares the READER's clock against the CLAIMANT's
+  `claimedAt`, so workers whose clocks disagree measure different ages. The re-assertion
+  decides who loses, and it is always the slow WRITER rather than the data: an early
+  takeover moves the claim's revision, so the original writer's pre-commit
+  compare-and-set fails and it refuses typed instead of committing a second live row.
+  Skew costs a merchant a spurious retry, never a sku with two owners.
 - **The audit trail of a swept carry.** A carry finished by
   `completeRecordedRenames`/`completePendingSkuTransfer` writes NO `rename_out`/`rename_in`
   pair: the entry ids derive from the write's idempotency key, which a completion does not
