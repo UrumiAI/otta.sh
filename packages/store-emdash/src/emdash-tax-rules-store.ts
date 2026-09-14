@@ -119,10 +119,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 
 	constructor(options: EmdashTaxRulesStoreOptions) {
 		this.#classes = collectionOf<TaxClassDoc>(options.storage, TAX_CLASSES_COLLECTION);
-		this.#rateOwners = collectionOf<TaxRateOwnerDoc>(
-			options.storage,
-			TAX_RATE_OWNERS_COLLECTION,
-		);
+		this.#rateOwners = collectionOf<TaxRateOwnerDoc>(options.storage, TAX_RATE_OWNERS_COLLECTION);
 		this.#clock = options.clock;
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,

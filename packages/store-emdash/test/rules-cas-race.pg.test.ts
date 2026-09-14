@@ -199,9 +199,7 @@ describe.skipIf(!PG_ENABLED)("shipping-rate updateRate CAS race [postgres]", () 
 
 				const persisted = await store.getRate(methodId, USD);
 				const wonCents = winners[0]?.ok === true ? winners[0].rate.amountCents : undefined;
-				expect(persisted?.amountCents, `loop ${String(loop)}: persisted == winner`).toBe(
-					wonCents,
-				);
+				expect(persisted?.amountCents, `loop ${String(loop)}: persisted == winner`).toBe(wonCents);
 				expect(persisted?.amountCents).not.toBe(599);
 				await store.deleteRate(methodId, USD);
 				await store.deleteMethod(methodId);

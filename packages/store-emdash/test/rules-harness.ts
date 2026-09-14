@@ -79,10 +79,7 @@ export function makeShippingRulesHarness(
 		clock,
 		store,
 		zones: collectionOf<ShippingZoneDoc>(storage, SHIPPING_ZONES_COLLECTION),
-		methodOwners: collectionOf<ShippingMethodOwnerDoc>(
-			storage,
-			SHIPPING_METHOD_OWNERS_COLLECTION,
-		),
+		methodOwners: collectionOf<ShippingMethodOwnerDoc>(storage, SHIPPING_METHOD_OWNERS_COLLECTION),
 	};
 }
 

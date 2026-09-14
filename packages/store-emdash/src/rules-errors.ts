@@ -192,7 +192,5 @@ export function isTaxRateIdCollisionError(err: unknown): err is TaxRateIdCollisi
 }
 
 function hasCode(err: unknown, code: string): boolean {
-	return (
-		typeof err === "object" && err !== null && (err as { code?: unknown }).code === code
-	);
+	return typeof err === "object" && err !== null && (err as { code?: unknown }).code === code;
 }

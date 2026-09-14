@@ -262,19 +262,16 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			type: input.type,
 			rates: {},
 		};
-		const embedded = await this.#cas<"embedded" | "no_zone">(
-			"createShippingMethod",
-			async () => {
-				const held = await this.#heldZone(input.zoneId);
-				if (held === null) return casDone<"embedded" | "no_zone">("no_zone");
-				const written = await this.#zones.compareAndSet(
-					input.zoneId,
-					held.revision,
-					withMethod(held.doc, method),
-				);
-				return written.applied ? casDone<"embedded" | "no_zone">("embedded") : CAS_RETRY;
-			},
-		);
+		const embedded = await this.#cas<"embedded" | "no_zone">("createShippingMethod", async () => {
+			const held = await this.#heldZone(input.zoneId);
+			if (held === null) return casDone<"embedded" | "no_zone">("no_zone");
+			const written = await this.#zones.compareAndSet(
+				input.zoneId,
+				held.revision,
+				withMethod(held.doc, method),
+			);
+			return written.applied ? casDone<"embedded" | "no_zone">("embedded") : CAS_RETRY;
+		});
 		if (embedded === "no_zone") {
 			// The zone the foreign key pointed at is not there. Give the id back before
 			// throwing, or a retry with a real zone would collide with this call's own

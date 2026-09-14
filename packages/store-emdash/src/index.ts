@@ -168,10 +168,7 @@ export {
 	EmdashShippingRulesStore,
 	type EmdashShippingRulesStoreOptions,
 } from "./emdash-shipping-rules-store.js";
-export {
-	EmdashTaxRulesStore,
-	type EmdashTaxRulesStoreOptions,
-} from "./emdash-tax-rules-store.js";
+export { EmdashTaxRulesStore, type EmdashTaxRulesStoreOptions } from "./emdash-tax-rules-store.js";
 export {
 	methodsOf,
 	newShippingRateDoc,

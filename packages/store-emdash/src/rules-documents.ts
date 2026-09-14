@@ -76,12 +76,11 @@ export interface RulesCollectionIndexDeclaration {
  * paged scan, and both are index-free — a `where`/`orderBy` is what needs a
  * declaration, and this store issues none.
  */
-export const SHIPPING_RULES_COLLECTIONS: Readonly<
-	Record<string, RulesCollectionIndexDeclaration>
-> = {
-	[SHIPPING_ZONES_COLLECTION]: {},
-	[SHIPPING_METHOD_OWNERS_COLLECTION]: {},
-};
+export const SHIPPING_RULES_COLLECTIONS: Readonly<Record<string, RulesCollectionIndexDeclaration>> =
+	{
+		[SHIPPING_ZONES_COLLECTION]: {},
+		[SHIPPING_METHOD_OWNERS_COLLECTION]: {},
+	};
 
 /** The collections `EmdashTaxRulesStore` needs. Index-free, as above. */
 export const TAX_RULES_COLLECTIONS: Readonly<Record<string, RulesCollectionIndexDeclaration>> = {

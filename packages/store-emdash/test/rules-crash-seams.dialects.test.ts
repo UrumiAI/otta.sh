@@ -24,12 +24,11 @@
  */
 import { cents, currency } from "@otta-sh/domain";
 import { expect, test } from "vitest";
-import { normalizeZoneDoc, type StorageAccess } from "../src/index.js";
+import { normalizeZoneDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import {
 	failCall,
 	InjectedCrashError,
-	isClaimWrite,
 	isUpdateWrite,
 	onId,
 	parkCall,
@@ -193,7 +192,12 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 		const raw = bound.storage;
 		const plain = makeShippingRulesHarness(raw);
 		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
-		await plain.store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+		await plain.store.createMethod({
+			id: "m-flat",
+			zoneId: "z-us",
+			name: "Flat",
+			type: "flat_rate",
+		});
 		await plain.store.createRate({
 			methodId: "m-flat",
 			currency: USD,
@@ -396,8 +400,9 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		}).store;
 		const a = slow.updateRate("r1", { rateBps: 1000, appliesToShipping: false }, 725);
 		await parked.arrived;
-		expect((await plain.store.updateRate("r1", { rateBps: 900, appliesToShipping: false }, 725)).ok)
-			.toBe(true);
+		expect(
+			(await plain.store.updateRate("r1", { rateBps: 900, appliesToShipping: false }, 725)).ok,
+		).toBe(true);
 		parked.release();
 
 		const result = await a;
