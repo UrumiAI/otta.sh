@@ -27,6 +27,38 @@ export {
 	type CartMutationIndexDoc,
 	type CartMutationRecord,
 } from "./cart-documents.js";
+export {
+	COUPON_CODES_COLLECTION,
+	COUPON_COLLECTIONS,
+	COUPON_CUSTOMER_CAPS_COLLECTION,
+	COUPON_REDEMPTIONS_COLLECTION,
+	COUPONS_COLLECTION,
+	couponCustomerCapId,
+	couponRedemptionDocId,
+	foldCouponCode,
+	holdsUseFor,
+	normalizeCouponDoc,
+	normalizeCustomerCapDoc,
+	normalizeRedemptionDoc,
+	toCouponRecord,
+	toCouponSummary,
+	type CouponCodeDoc,
+	type CouponCollectionIndexDeclaration,
+	type CouponCustomerCapDoc,
+	type CouponDoc,
+	type CouponRedemptionDoc,
+	type RedemptionHoldsUse,
+	type RedemptionOutcome,
+} from "./coupon-documents.js";
+export {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	CouponNotFoundError,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+	isCouponNotFoundError,
+} from "./coupon-errors.js";
+export { EmdashCouponStore, type EmdashCouponStoreOptions } from "./emdash-coupon-store.js";
 export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
 export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-store.js";
