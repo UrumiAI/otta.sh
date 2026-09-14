@@ -285,3 +285,67 @@ export function alwaysLosingCollection<T>(raw: StorageCollection<T>): StorageCol
 		},
 	});
 }
+
+/** A per-method tally of the calls a collection received. */
+export interface CallCounts {
+	/** How many times `method` was called. */
+	of(method: StorageMethodName): number;
+	/** The ids `method` was called with, in order. */
+	idsFor(method: StorageMethodName): string[];
+	/** The largest number of calls that were in flight at once. */
+	peakConcurrency(): number;
+}
+
+/** A collection that counts what it was asked, and a handle to read the tally. */
+export interface CountingCollection<T> {
+	readonly collection: StorageCollection<T>;
+	readonly counts: CallCounts;
+}
+
+/**
+ * Count the calls a collection receives, delegating every one of them for real.
+ *
+ * This is how a query-count invariant is pinned on a document store. The SQL
+ * adapters could count ROOT STATEMENTS through a Kysely plugin and assert "exactly
+ * one for a batch of N"; here the unit is a storage-port call, and what a batch
+ * read must not do is issue one per id. The tally also records PEAK CONCURRENCY,
+ * because "no round trip per row" is the property that actually matters and a
+ * sequential `for await` loop over N reads would pass a pure count assertion while
+ * paying N latencies.
+ */
+export function countingCollection<T>(raw: StorageCollection<T>): CountingCollection<T> {
+	const calls = new Map<StorageMethodName, string[]>();
+	let inFlight = 0;
+	let peak = 0;
+	const record = (method: StorageMethodName, id: string): void => {
+		const seen = calls.get(method) ?? [];
+		seen.push(id);
+		calls.set(method, seen);
+	};
+	const track = async <R>(method: StorageMethodName, id: string, run: () => Promise<R>) => {
+		record(method, id);
+		inFlight++;
+		peak = Math.max(peak, inFlight);
+		try {
+			return await run();
+		} finally {
+			inFlight--;
+		}
+	};
+	return {
+		collection: delegatingCollection(raw, {
+			get: (id) => track("get", id, () => raw.get(id)),
+			getVersioned: (id) => track("getVersioned", id, () => raw.getVersioned(id)),
+			query: (options) => track("query", "", () => raw.query(options)),
+			count: (where) => track("count", "", () => raw.count(where)),
+			put: (id, data) => track("put", id, () => raw.put(id, data)),
+			compareAndSet: (id, revision, data) =>
+				track("compareAndSet", id, () => raw.compareAndSet(id, revision, data)),
+		}),
+		counts: {
+			of: (method) => calls.get(method)?.length ?? 0,
+			idsFor: (method) => [...(calls.get(method) ?? [])],
+			peakConcurrency: () => peak,
+		},
+	};
+}

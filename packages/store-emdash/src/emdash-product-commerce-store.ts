@@ -48,6 +48,7 @@ import {
 	MissingProductIdError,
 	MissingVariantKeyError,
 	SkuConflictError,
+	SkuStockConflictError,
 	type Clock,
 	type IdempotencyKey,
 	type ProductCommerce,
@@ -212,13 +213,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * round trip this method exists to buy.
 	 */
 	async getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>> {
-		const unique = [...new Set(productIds)];
-		const docs = await Promise.all(unique.map((id) => this.#products.get(id)));
 		const result = new Map<ProductId, ProductCommerce>();
-		for (const [index, doc] of docs.entries()) {
-			const id = unique[index];
-			if (id === undefined || doc === null || !hasProductRow(doc)) continue;
-			result.set(id, toProductCommerce(doc));
+		for (const doc of await this.#readBatch(productIds)) {
+			if (!hasProductRow(doc)) continue;
+			result.set(doc.productId, toProductCommerce(doc));
 		}
 		return result;
 	}
@@ -234,11 +232,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * document store for is a single statement.
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
-		const unique = [...new Set(productIds)];
-		const docs = await Promise.all(unique.map((id) => this.#products.get(id)));
-		const complete = docs.filter(
-			(doc): doc is ProductCommerceDoc =>
-				doc !== null && doc.lifecycle === "live" && doc.sku !== null && doc.price !== null,
+		const complete = (await this.#readBatch(productIds)).filter(
+			(doc) => doc.lifecycle === "live" && doc.sku !== null && doc.price !== null,
 		);
 		const stock = this.#stockReader();
 		return Promise.all(
@@ -256,6 +251,36 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				};
 			}),
 		);
+	}
+
+	/**
+	 * One batch of product documents, read with `productId in [...]` rather than a
+	 * `get` per id — the anti-N+1 shape both batch methods exist for.
+	 *
+	 * Chunked at the host's `limit` ceiling of 100, so a batch of N ids is
+	 * `ceil(N / 100)` statements and the common case is ONE. Missing ids are simply
+	 * absent (never a null entry, never an error) and duplicates collapse, because a
+	 * document matches a value set once. No ordering is requested: the port
+	 * guarantees none and says to look results up by id.
+	 */
+	async #readBatch(productIds: readonly ProductId[]): Promise<ProductCommerceDoc[]> {
+		const unique = [...new Set(productIds)];
+		if (unique.length === 0) return [];
+		const docs: ProductCommerceDoc[] = [];
+		for (let start = 0; start < unique.length; start += LIST_PAGE_SIZE) {
+			const chunk = unique.slice(start, start + LIST_PAGE_SIZE);
+			let cursor: string | undefined;
+			do {
+				const result = await this.#products.query({
+					where: { productId: { in: [...chunk] } },
+					limit: LIST_PAGE_SIZE,
+					cursor,
+				});
+				for (const { data } of result.items) docs.push(normalizeProductDoc(data));
+				cursor = result.hasMore ? result.cursor : undefined;
+			} while (cursor !== undefined);
+		}
+		return docs;
 	}
 
 	async listVariants(productId: ProductId): Promise<ProductVariantSummary[]> {
@@ -947,7 +972,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		commandKey: string,
 	): Promise<SkuTakeover> {
 		if (nextSku === undefined) return { releaseSku: null };
-		const claim = await this.#claimSku(nextSku, ref);
+		const claim = await this.#claimSku(nextSku, ref, currentSku);
 		if (currentSku === null || currentSku === nextSku) return { releaseSku: null };
 		try {
 			await this.#transfer.carry(currentSku, nextSku, commandKey, claim.alreadyOurs);
@@ -973,12 +998,28 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 *  - a RELEASED document (`live: false`) ⇒ taken over by compare-and-set on its
 	 *    revision, which is how a sku freed by a soft delete or an orphaning is
 	 *    reused;
-	 *  - a LIVE document held by somebody else ⇒ `SkuConflictError`, the one refusal
-	 *    that outranks both stock refusals;
+	 *  - a LIVE document held by somebody else ⇒ a refusal, whose KIND depends on
+	 *    whether the claim is BACKED (see below);
 	 *  - a LIVE document already held by `ref` ⇒ nothing to do, and the caller is
 	 *    told it was already ours.
+	 *
+	 * **Why a live claim is checked for BACKING.** A claim is written before the
+	 * document that will hold the sku, so for one round trip a live claim can exist
+	 * that no committed product or variant actually holds — an in-flight writer, or
+	 * one that is a moment away from being refused and releasing it. Answering
+	 * `SkuConflictError` there would state something false ("another live product
+	 * holds this sku") about a peer that holds nothing. So an UNBACKED live claim
+	 * falls through to the stock question: if the target sku already has an inventory
+	 * document then the honest refusal is `SkuStockConflictError`, which is what the
+	 * operator can act on and what the SQL adapter answered, since its partial unique
+	 * index had nothing to say about a sku no live row held. Only when there is no
+	 * inventory document either does an unbacked claim refuse as a sku conflict —
+	 * somebody is taking this sku right now, which is the truthful reading.
+	 *
+	 * `fromSku` is the sku the write is moving away from, needed to name both ends of
+	 * a stock refusal; `null` for a first assignment, which has no stock question.
 	 */
-	#claimSku(sku: string, ref: SkuOwnerRef): Promise<SkuClaim> {
+	#claimSku(sku: string, ref: SkuOwnerRef, fromSku: string | null): Promise<SkuClaim> {
 		return this.#cas<SkuClaim>("claimSku", async () => {
 			const current = await this.#skuOwners.getVersioned(sku);
 			const at = this.#clock.now().toISOString();
@@ -996,6 +1037,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				if (isOwnedBy(current.value, ref)) {
 					return casDone<SkuClaim>({ alreadyOurs: true, createdNow: false });
 				}
+				if (await this.#claimIsBacked(current.value, sku)) throw new SkuConflictError(sku);
+				if (fromSku !== null && (await this.#inventory.get(sku)) !== null) {
+					throw new SkuStockConflictError(fromSku, sku);
+				}
 				throw new SkuConflictError(sku);
 			}
 			const written = await this.#skuOwners.compareAndSet(
@@ -1010,6 +1055,23 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
+	 * Does the document this claim names actually hold this sku, committed?
+	 *
+	 * A claim whose owner holds the sku on a live product row (or a non-orphaned
+	 * variant) is BACKED, and refusing it is a statement of fact. An unbacked live
+	 * claim is an in-flight write — see {@link EmdashProductCommerceStore.#claimSku}.
+	 */
+	async #claimIsBacked(claim: SkuOwnerDoc, sku: string): Promise<boolean> {
+		const stored = await this.#products.get(claim.ownerId);
+		if (stored === null) return false;
+		const doc = normalizeProductDoc(stored);
+		if (claim.ownerKind === "product") return doc.lifecycle === "live" && doc.sku === sku;
+		if (claim.variantKey === null) return false;
+		const variant = doc.variants[claim.variantKey];
+		return variant !== undefined && variant.orphanedAt === null && variant.sku === sku;
+	}
+
+	/**
 	 * Re-claim a sku for a RESURRECTING variant, reporting whether it is still
 	 * available — never throwing, because a declare states a fact about the CMS and
 	 * cannot be refused.
@@ -1019,7 +1081,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 */
 	async #reclaimSku(sku: string, ref: SkuOwnerRef): Promise<boolean> {
 		try {
-			await this.#claimSku(sku, ref);
+			// `null` as the source: a resurrect moves no stock, so there is no stock
+			// question and a refusal here can only be the sku conflict it reports.
+			await this.#claimSku(sku, ref, null);
 			return true;
 		} catch (err) {
 			if (err instanceof SkuConflictError) return false;

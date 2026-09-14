@@ -73,6 +73,13 @@ export interface CollectionIndexDeclaration {
  * a `where`/`orderBy` on an undeclared field is a runtime `StorageQueryError`, so
  * this list and the descriptor's must not drift.
  *
+ * `productId` is declared — even though it IS the document id — because the two
+ * BATCH reads (`getManyByProductId`, `listCommerceByIds`) fetch a whole batch with
+ * one `productId in [...]` query instead of a `get` per id. That is the surviving
+ * half of the port's anti-N+1 invariant: a document store has no join, so the stock
+ * a view needs is still one read per distinct sku, but the product half stays one
+ * statement per 100 ids exactly as the SQL was one statement per batch.
+ *
  * `lifecycle`, `publishKey`, `productKind` and `taxClass` are the equality axes the
  * admin list and `countByTaxClass` filter on; `createdAt` is what the list
  * ORDERS by, and ordering on an undeclared field throws exactly as filtering on
@@ -100,7 +107,7 @@ export interface CollectionIndexDeclaration {
  */
 export const PRODUCT_COMMERCE_COLLECTIONS: Readonly<Record<string, CollectionIndexDeclaration>> = {
 	[PRODUCT_COMMERCE_COLLECTION]: {
-		indexes: ["lifecycle", "publishKey", "productKind", "taxClass", "createdAt"],
+		indexes: ["productId", "lifecycle", "publishKey", "productKind", "taxClass", "createdAt"],
 	},
 	[SKU_OWNERS_COLLECTION]: { uniqueIndexes: ["sku"] },
 };
@@ -157,6 +164,7 @@ export interface ProductVariantDoc {
  * the indexed lifecycle discriminator.
  */
 export interface ProductCommerceDoc {
+	/** INDEXED — the document id, repeated as a field so a batch can be read with `in`. */
 	productId: ProductId;
 	/** INDEXED. See {@link ProductLifecycle}. */
 	lifecycle: ProductLifecycle;
