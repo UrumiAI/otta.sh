@@ -9,9 +9,11 @@
  * - **`customers.email` UNIQUE** becomes `customer_emails/{emailLower}`, a
  *   create-if-absent claim naming the customer that holds the address. It is taken
  *   BEFORE any customer document is written, so a loser leaves no half-registered
- *   account behind, and it is RE-ASSERTED immediately before the write it guards
+ *   account behind; it is RE-ASSERTED immediately before the write it guards
  *   (ADR-0019's cross-cutting rule (a)) so a claim a peer has taken over cannot be
- *   written under.
+ *   written under; and it carries an ABANDON WINDOW (rule (d)), because a holder a
+ *   moment from writing its account and a holder that crashed are the same document
+ *   and only a lease tells them apart.
  * - **`WHERE id = :addressId AND customer_id = :customerId`** becomes an explicit
  *   ownership check inside the caller's own document (ADR-0019 §7.17). The
  *   document id of an address carries no owner — nothing does, once the addresses
@@ -84,6 +86,21 @@ const LOOKUP_PAGE_SIZE = 100;
  */
 const MAX_LOOKUP_PAGES = 100;
 
+/**
+ * How long an email claim that no account holds is left alone before another
+ * registration may take it over.
+ *
+ * It is the `sku_owners` abandon window, for the identical reason and justified
+ * against the same retry budget: a write that retries at most `CAS_MAX_ATTEMPTS`
+ * times with each sleep capped at 50 ms cannot legitimately hold a step for more
+ * than about a second, so 60 seconds is two orders of magnitude of headroom over the
+ * slowest honest holder — long enough that a registration in flight is never
+ * mistaken for a dead one, short enough that a crashed one's address is usable again
+ * without an operator. Overridable because a test needs to open the window
+ * deterministically and an operator on a slower host may need to widen it.
+ */
+export const CLAIM_ABANDON_AFTER_MS = 60_000;
+
 export interface EmdashCustomerStoreOptions {
 	/** The collections the descriptor declared (`IDENTITY_COLLECTIONS`). */
 	storage: StorageAccess;
@@ -101,6 +118,8 @@ export interface EmdashCustomerStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for the email lookup's fallback query. Default 100. */
 	maxLookupPages?: number;
+	/** Abandon window for an email claim. Defaults to {@link CLAIM_ABANDON_AFTER_MS}. */
+	claimAbandonAfterMs?: number;
 }
 
 /** One customer document as read, with the revision the next write is guarded on. */
@@ -225,10 +244,12 @@ class CustomerDocuments {
 export class EmdashCustomerStore implements CustomerStore {
 	readonly #docs: CustomerDocuments;
 	readonly #idGen: IdGen;
+	readonly #abandonAfterMs: number;
 
 	constructor(options: EmdashCustomerStoreOptions) {
 		this.#docs = new CustomerDocuments(options);
 		this.#idGen = options.idGen;
+		this.#abandonAfterMs = options.claimAbandonAfterMs ?? CLAIM_ABANDON_AFTER_MS;
 	}
 
 	/**
@@ -337,18 +358,37 @@ export class EmdashCustomerStore implements CustomerStore {
 	}
 
 	/**
-	 * Claim an address store-wide, taking over an ORPHANED claim.
+	 * Claim an address store-wide, taking over an ABANDONED claim.
 	 *
-	 * A claim is orphaned when no account holds the address — the
-	 * crash-between-claim-and-write state. Taking one over is what keeps an address
-	 * from being stranded forever; a claim whose account really exists is the
-	 * UNIQUE violation, and is reported as the domain's own duplicate error so the
-	 * login use-case's re-read still works unchanged.
+	 * Three states, and the middle one is the whole reason this claim carries a
+	 * timestamp:
 	 *
-	 * The collision test goes through the HEALING lookup rather than through the
-	 * claim alone: an account that exists while its claim is missing must still
-	 * refuse this create, or one address would end up on two accounts — the one way
-	 * a claim could be worse than no claim at all.
+	 * 1. **No claim, or this call's own claim.** Take it (the second case is this
+	 *    step's own retry finding its own write).
+	 * 2. **A claim no account holds, taken recently.** A registration is IN FLIGHT.
+	 *    Refuse as a duplicate — which is what it is about to become — and write
+	 *    nothing. This is the case that must NOT be treated as orphaned: "the holder
+	 *    is a moment from writing its account" and "the holder is gone" are the same
+	 *    document, and taking the claim from the first of those produces two accounts
+	 *    on one address. Re-asserting the revision before the account write closes
+	 *    the window down to two adjacent statements, but only the abandon window
+	 *    keeps a live holder from being overtaken at all (ADR-0019's rules (a) and
+	 *    (d): the owner's revision is the owner token, and the lease constant is an
+	 *    operating parameter).
+	 * 3. **A claim no account holds, older than {@link CLAIM_ABANDON_AFTER_MS}.** The
+	 *    crash-between-claim-and-write state. Take it over, or the address would be
+	 *    stranded forever.
+	 *
+	 * A claim whose account really exists is the UNIQUE violation, and is reported as
+	 * the domain's own duplicate error so the login use-case's re-read still works
+	 * unchanged. The existence test goes through the HEALING lookup rather than
+	 * through the claim alone: an account that exists while its claim is missing must
+	 * still refuse this create, or one address would end up on two accounts — the one
+	 * way a claim could be worse than no claim at all.
+	 *
+	 * The refusal in case 2 is the accepted residual, and it points the safe way: an
+	 * address is refused for at most one abandon window after a crash, rather than
+	 * ever being registered twice.
 	 */
 	async #claimEmail(
 		email: Email,
@@ -361,6 +401,15 @@ export class EmdashCustomerStore implements CustomerStore {
 			const live = await this.#docs.findByEmail(emailLower);
 			if (live !== null) throw new DuplicateCustomerEmailError(email);
 			const current = await this.#docs.emails.getVersioned(emailLower);
+			if (current !== null && current.value.customerId !== customerId) {
+				const claimedAt = Date.parse(current.value.claimedAt);
+				const age = this.#docs.clock.now().getTime() - claimedAt;
+				// An unparseable timestamp counts as abandoned: no path in this store writes
+				// one, and refusing forever would strand the address with no way back.
+				if (!Number.isNaN(claimedAt) && age < this.#abandonAfterMs) {
+					throw new DuplicateCustomerEmailError(email);
+				}
+			}
 			const written = await this.#docs.emails.compareAndSet(
 				emailLower,
 				current?.revision ?? null,

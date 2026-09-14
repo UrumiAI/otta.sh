@@ -63,6 +63,16 @@ export interface IdentityHarnessOptions {
 	maxHistoryPages?: number;
 	/** Page ceiling per prune arm. */
 	maxPrunePages?: number;
+	/** Override the per-address challenge cap (the throttle race widens it). */
+	maxActiveChallenges?: number;
+	/** Override the email claim's abandon window (a seam opens it deterministically). */
+	claimAbandonAfterMs?: number;
+	/**
+	 * Prefix the ids this harness mints, so a second harness over the same storage
+	 * has its own id space — which is what a second PROCESS would have, and what a
+	 * crash seam needs if its replayer is not to collide with the crashed call's ids.
+	 */
+	idPrefix?: string;
 }
 
 /**
@@ -98,6 +108,7 @@ export function makeIdentityHarness(
 	options: IdentityHarnessOptions = {},
 ): IdentityHarness {
 	const clock = options.clock ?? new FixedClock(new Date(IDENTITY_EPOCH.getTime()));
+	const prefix = options.idPrefix ?? "";
 	const written = options.storageForStore ?? storage;
 	const shared = {
 		storage: written,
@@ -107,25 +118,26 @@ export function makeIdentityHarness(
 	};
 	const customerStore = new EmdashCustomerStore({
 		...shared,
-		idGen: new CountingIdGen("cust"),
+		idGen: new CountingIdGen(`${prefix}cust`),
 		maxLookupPages: options.maxLookupPages,
+		claimAbandonAfterMs: options.claimAbandonAfterMs,
 	});
 	const addressStore = new EmdashAddressStore({
 		...shared,
-		idGen: new CountingIdGen("addr"),
+		idGen: new CountingIdGen(`${prefix}addr`),
 	});
 	const sessionStore = new EmdashSessionStore({
 		...shared,
-		idGen: new CountingIdGen("sess"),
+		idGen: new CountingIdGen(`${prefix}sess`),
 		ttlMs: SESSION_TTL_MS,
 		maxHistoryPages: options.maxHistoryPages,
 	});
 	const verifier = new EmdashCredentialVerifier({
 		...shared,
 		customerStore,
-		idGen: new CountingIdGen("chal"),
+		idGen: new CountingIdGen(`${prefix}chal`),
 		ttlMs: CHALLENGE_TTL_MS,
-		maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
+		maxActiveChallenges: options.maxActiveChallenges ?? MAX_ACTIVE_CHALLENGES,
 		maxPrunePages: options.maxPrunePages,
 	});
 
@@ -205,6 +217,6 @@ export function makeVerifierHarness(
 		},
 		now: () => harness.now(),
 		challengeTtlMs: CHALLENGE_TTL_MS,
-		maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
+		maxActiveChallenges: options.maxActiveChallenges ?? MAX_ACTIVE_CHALLENGES,
 	};
 }

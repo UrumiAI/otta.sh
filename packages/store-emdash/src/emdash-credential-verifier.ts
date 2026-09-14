@@ -358,18 +358,33 @@ export class EmdashCredentialVerifier implements CustomerCredentialVerifier {
 		}
 	}
 
-	/** Get-or-create, resolving the create's own duplicate race by re-reading. */
+	/**
+	 * Get-or-create the account behind a redeemed address, resolving the create's own
+	 * duplicate race by re-reading.
+	 *
+	 * The re-read is inside the bounded retry rather than after it, and that is not
+	 * cosmetic. The duplicate a concurrent registration raises can arrive BEFORE the
+	 * winner's account document is readable: the email claim refuses a second
+	 * registration from the moment it is taken, which is a moment before the account
+	 * behind it exists (the claim's abandon window, `emdash-customer-store.ts`). A
+	 * single re-read would then find nothing and surface a duplicate error for an
+	 * address this caller is legitimately logging into. So the step is re-run with the
+	 * package's own jittered backoff until the winner's account is readable, and only
+	 * an exhausted budget is reported — as the typed, retryable contention failure,
+	 * never as a duplicate.
+	 */
 	async #resolveCustomer(email: Email): Promise<CustomerId> {
-		const existing = await this.#customerStore.getByEmail(email);
-		if (existing !== null) return existing.id;
-		try {
-			return (await this.#customerStore.create({ email })).id;
-		} catch (err) {
-			if (!isDuplicateEmailError(err)) throw err;
-			const raced = await this.#customerStore.getByEmail(email);
-			if (raced === null) throw err;
-			return raced.id;
-		}
+		return this.#cas<CustomerId>("verifyChallenge.resolveCustomer", async () => {
+			const existing = await this.#customerStore.getByEmail(email);
+			if (existing !== null) return casDone(existing.id);
+			try {
+				return casDone((await this.#customerStore.create({ email })).id);
+			} catch (err) {
+				if (!isDuplicateEmailError(err)) throw err;
+				const raced = await this.#customerStore.getByEmail(email);
+				return raced === null ? CAS_RETRY : casDone(raced.id);
+			}
+		});
 	}
 
 	#cas<T>(operation: string, step: () => Promise<CasStep<T>>): Promise<T> {

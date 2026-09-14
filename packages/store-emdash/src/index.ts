@@ -279,6 +279,7 @@ export {
 	type WhereValue,
 } from "./storage-access.js";
 export {
+	CLAIM_ABANDON_AFTER_MS,
 	EmdashAddressStore,
 	EmdashCustomerStore,
 	type EmdashCustomerStoreOptions,
