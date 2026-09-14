@@ -2182,7 +2182,7 @@ of the four reports moved to write time and two did not:
 | Document | Contents |
 |---|---|
 | `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: `stateCounts`, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents` |
-| `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed — and, once a recompute has counted it absolutely, `absorbedAt` |
+| `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed — and, once a recompute has counted it absolutely, `absorbedAt`. Indexed by `date` (how a recompute pages a day's claims) and `orderId` (the diagnostic axis) |
 
 **The day is the grain, and the other two intervals are folds over it.** A week is the
 seven day documents from its ISO Monday and a month is its own days, so nothing is keyed
@@ -2289,13 +2289,24 @@ re-run and can leave the residue below. The page budget is per day, so a long ra
 bounded by construction — a caller sweeping a large history should still chunk it, a month
 at a time, to keep one call's work and one call's retries bounded.
 
-**The absorb pass is budgeted and indexed.** The claims for a day are read one `orderId`
-page per scanned order rather than one read per reconstructed event, and every round trip
-is charged to the same per-day budget a page of orders is: one unit per claim-index page
-(100 claims) and one unit per claim that actually needs absorbing. That is not
-bookkeeping — a round trip per transition an order has ever made would be paid on every
-attempt and every sweep, and each one widens the window in which a live delta invalidates
-the pin.
+**The absorb pass is budgeted and indexed.** A day's claims are read by the axis they are
+filed under — `date`, which is the order's creation day and so the day being recomputed —
+as pages of ONE indexed query, and the pass costs **one unit per claim-index page and one
+unit per claim absorbed**, the same unit a page of orders costs. A claim an earlier run
+already absorbed costs neither, being skipped before any spend and any write.
+
+Both shapes this replaced were unbounded in something that grows: a read per reconstructed
+event is a round trip per transition every order has ever made, paid on every attempt and
+every sweep, and a query per ORDER makes the cost a function of how many orders the day
+holds — so a large day would exhaust its budget and never heal. Every extra round trip also
+widens the window in which a live delta invalidates the pin.
+
+The ceiling that follows: at the default budget a day whose claims are already absorbed —
+the steady state, and every closed day after its first heal — costs about
+`orders/100 + claims/100` units and clears tens of thousands of orders; a day healed from
+nothing pays a unit per claim as well, which is where the real limit sits at a few hundred
+orders' worth of first-time absorption per call. Chunk a bigger history, or raise the
+budget.
 
 **The residues, all in the under-counting direction.** A transition that lands after the
 scan read its order but before the absorb reaches its claim is absorbed without having been
