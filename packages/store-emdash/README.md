@@ -2295,18 +2295,24 @@ as pages of ONE indexed query, and the pass costs **one unit per claim-index pag
 unit per claim absorbed**, the same unit a page of orders costs. A claim an earlier run
 already absorbed costs neither, being skipped before any spend and any write.
 
+A budget refusal from this pass arrives as a `ScanPageLimitError` naming operation
+`absorbReportingClaims` and option `maxReconcilePages`: the operation says it was the claims
+rather than the orders that exhausted the budget, and the option is the same knob either way.
+
 Both shapes this replaced were unbounded in something that grows: a read per reconstructed
 event is a round trip per transition every order has ever made, paid on every attempt and
 every sweep, and a query per ORDER makes the cost a function of how many orders the day
 holds — so a large day would exhaust its budget and never heal. Every extra round trip also
 widens the window in which a live delta invalidates the pin.
 
-The ceiling that follows: at the default budget a day whose claims are already absorbed —
-the steady state, and every closed day after its first heal — costs about
-`orders/100 + claims/100` units and clears tens of thousands of orders; a day healed from
-nothing pays a unit per claim as well, which is where the real limit sits at a few hundred
-orders' worth of first-time absorption per call. Chunk a bigger history, or raise the
-budget.
+The ceiling that follows is a function of how many claims an order carries — one per
+transition and one per finalized refund — rather than of the order count alone. At the
+default budget, for a day whose claims are already absorbed (the steady state, and every
+closed day after its first heal), the cost is `orders/100 + claims/100` units: at about two
+claims per order that clears tens of thousands of orders in a day, and more claims each
+lowers it proportionally. A day healed from nothing pays a unit per claim as well, which is
+where the real limit sits at a few hundred orders' worth of first-time absorption per call.
+Chunk a bigger history, or raise the budget.
 
 **The residues, all in the under-counting direction.** A transition that lands after the
 scan read its order but before the absorb reaches its claim is absorbed without having been

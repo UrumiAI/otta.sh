@@ -136,12 +136,17 @@ export interface EmdashReportingStoreOptions {
 	 * of the read budget: the two are bounded by different things (documents versus orders).
 	 *
 	 * One day's attempt spends one unit per page of orders, one per page of that day's
-	 * claims, and one per claim it has to absorb. So at the default of 1000 a day whose
-	 * claims are already absorbed — the steady state, and every closed day after its first
-	 * heal — costs about `orders/100 + claims/100` units and clears roughly 50,000 orders
-	 * in a day; a day being healed from nothing pays a unit per claim as well, which is
-	 * where the real limit sits: a few hundred orders' worth of first-time absorption per
-	 * call. Raise this, or chunk the range, for a history bigger than that.
+	 * claims, and one per claim it has to absorb. So the ceiling is a function of how many
+	 * claims an order carries — an order accumulates one per transition and one per
+	 * finalized refund — and not of the order count alone.
+	 *
+	 * At the default of 1000, and for a day whose claims are already absorbed (the steady
+	 * state, and every closed day after its first heal), the cost is
+	 * `orders/100 + claims/100` units: at about two claims per order that clears roughly
+	 * 30,000 orders in a day, and an order history with more claims each lowers it
+	 * proportionally. A day being healed from nothing pays a unit per claim as well, which
+	 * is where the real limit sits — a few hundred orders' worth of first-time absorption
+	 * per call. Raise this, or chunk the range, for a day bigger than that.
 	 */
 	maxReconcilePages?: number;
 	/**
@@ -495,6 +500,12 @@ export class EmdashReportingStore implements ReportingStore {
 	 * orders costs. A claim an earlier run already absorbed costs neither: it is skipped
 	 * before any spend and before any write, which is what makes a steady-state recompute
 	 * cheap and a first heal the only expensive one.
+	 *
+	 * A budget refusal from this pass is a `ScanPageLimitError` naming operation
+	 * `absorbReportingClaims` and option `maxReconcilePages` — the pair an operator sees, and
+	 * the reason the two are worth stating together: the operation says it was the CLAIMS
+	 * rather than the orders that ran the budget out, while the option is the same knob
+	 * either way.
 	 */
 	async #absorbDayClaims(
 		day: string,
@@ -521,7 +532,9 @@ export class EmdashReportingStore implements ReportingStore {
 			const seen = present.get(claimId);
 			// Already absorbed by an earlier run — nothing to pay and nothing to write.
 			if (seen !== undefined && isAbsorbed(seen)) continue;
-			this.#spend(budget, "absorbReportingClaims", claims);
+			// `present.size` in both of this pass's refusals, so the number in the error means
+			// one thing: how many of the day's claims had been read when the budget ran out.
+			this.#spend(budget, "absorbReportingClaims", present.size);
 			const outcome = await this.#absorbClaim(event, claimId, now);
 			if (outcome === "retry") return "retry";
 			if (outcome === "absorbed") claims++;
