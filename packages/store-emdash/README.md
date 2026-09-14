@@ -2182,7 +2182,7 @@ of the four reports moved to write time and two did not:
 | Document | Contents |
 |---|---|
 | `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: `stateCounts`, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents` |
-| `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed |
+| `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed — and, once a recompute has counted it absolutely, `absorbedAt` |
 
 **The day is the grain, and the other two intervals are folds over it.** A week is the
 seven day documents from its ISO Monday and a month is its own days, so nothing is keyed
@@ -2211,7 +2211,18 @@ which is what keeps a fully refunded order's money reportable.
 EXISTENCE is decided: the SQL emitted a row as soon as either half contributed, so a
 genuinely zero-total order in a revenue-counting state is a row at `revenueCents: 0` and
 not an absence. Counting the contributors rather than testing the sums is the only way to
-tell those two apart.
+tell those two apart. **The money is part of the test as well**, though: a bucket is
+reported when either counter is above zero OR either sum is non-zero, because a counter
+that drift has taken to zero over a non-zero sum is a day that is holding money, and
+dropping it would hide exactly the figure a merchant would come looking for.
+
+**Flooring is announced, because it is proof of drift.** A decrement that would take a
+counter below zero is clamped — no report should be able to show negative revenue — and
+`EmdashReportingStoreOptions.onAnomaly` is called with the counter, the day document, the
+order and the two numbers. An operator seeing one should run a recompute over that day.
+The flag deliberately does NOT live on the document: a recompute would erase it in the
+same write that fixes the day, so the record of the drift would disappear with the drift
+itself, whereas the observer has already reached the log.
 
 ### The claim is written first, and the residue is an under-count
 
@@ -2241,24 +2252,43 @@ negative and report negative revenue, a number no report should be able to show.
 ### The recompute is the definition
 
 `reconcile(range)` rebuilds each day document from a paged scan of the orders created that
-day, and it is what a scheduled sweep will call. Two properties make it usable:
+day. A recompute commits an ABSOLUTE value while a live event commits a DELTA, so running
+both against one document has exactly two failure modes — the recompute erasing a
+transition it did not see, and a delta landing on top of a recompute that already counted
+it. Three mechanisms close them, in the order the code does them:
 
-- **It is safe to run while events are landing**, because each day's write is pinned to the
-  revision the recompute read. A live event that commits first makes the recompute lose
-  that write, RE-SCAN the day and recompute — so the value committed is always derived
-  from a snapshot of the orders taken after the peer's write. The hook writes the ORDER
-  before it writes the rollup, which is what makes a re-scan sound rather than a clobber.
-  The one interleaving left is an event whose order write landed and whose rollup did not,
-  and that is the under-count the routine exists for.
-- **It marks the claims for the events it folded in**, read off the order itself: its
-  append-only audit log carries every `(fromState → toState)` pair, its refunds ledger
-  every finalized refund, and the arrival into its original state is the event creation
-  owes. Without that, a rollup collection restored from nothing would accept a redelivered
-  event that the recomputed counters already count.
+1. **Pin before scanning.** Every day document an attempt may write has its revision read
+   BEFORE the orders are scanned, so a live delta landing in between costs the recompute
+   its commit and forces a re-scan. Scanning first and pinning afterwards is the bug that
+   ordering exists to prevent: the value in hand would predate the transition and the
+   revision would not say so.
+2. **Absorb the claims the scan proves, before committing.** A claim is the right to move
+   these counters; a recompute that has counted the event absolutely spends that right, and
+   `absorbedAt` is how the claim says so. The claims absorbed are exactly the ones
+   RECONSTRUCTED from the scanned orders — never every claim an order has — because a
+   transition that is not in the scanned document is one the recompute did not count, and
+   absorbing it would drop its delta.
+3. **Every delta re-reads its claim immediately before every bucket write** and skips
+   itself when it has been absorbed (cross-cutting rule (a): the token is re-asserted
+   before each write it guards, on every attempt, because this path retries with backoff
+   and a writer parked past the moment its right was revoked must not commit anyway).
+
+The claims are reconstructed from the order itself: its append-only audit log carries every
+`(fromState → toState)` pair, its refunds ledger every finalized refund, and the arrival
+into its original state is the event creation owes. An amount carried on a reconstructed
+claim is diagnostic only — nothing recomputes from a claim.
 
 A day that has lost every order keeps a ZEROED document rather than being deleted: a live
 event racing that write needs a revision to lose to, and an all-zero document reads as no
 bucket at all.
+
+**The residues, all in the under-counting direction.** A transition that lands after the
+scan read its order but before the absorb reaches its claim is absorbed without having been
+counted, and its delta is then skipped; a process that dies between the absorb and the
+commit leaves the same shape; and a range whose later days exhaust the page budget leaves
+the earlier days committed and the rest untouched. Every one of them is a day that reads
+low until the next run, and none of them can double-count, because nothing applies a delta
+whose claim is absorbed.
 
 ### The hook on the order store is additive, and never fatal
 
@@ -2275,16 +2305,17 @@ the worst possible lie about a payment. What is lost instead is a counter, in th
 under-counting direction, and the recompute restores it. The retry helper would not absorb
 the throw either: it only re-runs on a retryable storage abort.
 
-### Window semantics are day-granular — the one read divergence
+### The window is exact, whatever instants it names
 
-A window is resolved to whole UTC days, because the day is the grain. A day-aligned window
-— which is what this port is asked for, and what the domain's own contract windows are —
-is therefore EXACT against the SQL's `created_at BETWEEN from AND to`. A window that cuts a
-day in half is not: this adapter includes the whole of both edge days. The divergence is in
-the direction of reporting more of an edge day rather than less, and closing it would mean
-keeping a document per order, which is the read-time scan this design replaced.
-`topProducts` scans the orders themselves, so it applies the EXACT window and has no such
-divergence.
+A day document is the counters for a WHOLE day, so it can only answer for a day the window
+covers whole. The interior of a window is therefore read from the documents, and each EDGE
+day the window truncates — at most two, and only when a bound is not midnight — is computed
+from an instant-filtered scan of that day's orders, the same machinery `topProducts` uses.
+
+So `created_at BETWEEN from AND to` means the same thing here as it did in the statement
+this replaced: there is no day-granular approximation and no divergence to accept. The cost
+of a ragged window is visible and bounded — two extra order scans, paid only by the caller
+that asks for one — and the aligned windows a day-bounded report asks for pay nothing.
 
 ### Reporting crash seams proven
 
@@ -2306,6 +2337,13 @@ legitimately moves a counter, so nothing refuses anybody and a writer can lose i
 once per peer that commits ahead of it. That is the shipping/tax-rules shape, not the
 inventory one.
 
+**The shape that would exceed it is a BATCH**, not a busy shop: a hold-expiry sweep or a
+bulk fulfilment run flips many orders at once, and if those orders were placed on the same
+day they all contend for one document. Past roughly the ceiling the surplus writers raise
+the typed contention refusal — which the order store's hook swallows, because reporting
+must never fail a transition — so the day reads low until a recompute fixes it. That chain
+is the designed degradation: batch → contention → swallowed → under-count → healed.
+
 **Measured max CAS attempts: 12 at N=24 transitions into one day document (4 loops),
 against `CAS_MAX_ATTEMPTS` = 24** — `test/reporting-bucket-race.pg.test.ts`, which also
 races N=16 deliveries of ONE event and asserts a single delta. No contention refusal occurs
@@ -2314,8 +2352,14 @@ it before the typed, retryable refusal rather than reporting a wrong total.
 
 ### What the reporting tier does NOT carry
 
-- **No scheduling.** `reconcile` is a method, not a cron job. Wiring it to a periodic hook
-  belongs to the sweeper increment, along with every other heal this package owes.
+- **Nothing constructs it yet.** No caller builds `EmdashReportingStore`, and nothing passes
+  `reporting` to the order store, so the tier is dormant: the rollups are written only by a
+  store that was explicitly wired to write them. **Both collections must also be declared on
+  the plugin descriptor before any read can answer** — an undeclared collection is a
+  missing-collection error, and an undeclared index is a runtime query error, so the
+  declaration is part of turning this on rather than a detail of it.
+- **No scheduling.** `reconcile` is a method, not a cron job. Wiring it to a periodic hook is
+  a later change, along with every other heal this package owes.
 - **No product or stock rollups.** `topProducts` and `lowStock` are computed on read, for
   the reasons above. If either ever needs a rollup it needs its own document, not another
   field on the day.

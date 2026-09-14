@@ -33,13 +33,19 @@ reports move to write time.
   `(order, transition)` or `(order, refund)` makes a redelivered event a no-op; the
   counters follow under the usual bounded compare-and-set retry. A crash between them
   therefore leaves an UNDER-count — less revenue than came in, and never one order
-  counted in two state buckets at once — rather than money counted twice.
-- **`reconcile(range)` is the definition the counters are a cache of.** It recomputes
-  each day from a paged scan of the orders, commits each document pinned to the revision
-  it read (a lost race re-scans that day rather than clobbering a live delta), and marks
-  the claims for the events it folded in, so a redelivery after a heal cannot move a
-  counter that already counts it. It is safe to run while events are landing, and it is
-  what a scheduled sweep will call.
+  counted in two state buckets at once — rather than money counted twice. A decrement that
+  would go below zero is clamped and ANNOUNCED through an anomaly observer: flooring is
+  proof that something was lost, and a bucket holding money is reported even when its
+  contributor count has drifted to zero.
+- **`reconcile(range)` is the definition the counters are a cache of**, and it is safe to
+  run while events are landing. A recompute commits an absolute value where a live event
+  commits a delta, so three things keep them from spoiling each other: every day document
+  is pinned BEFORE the orders are scanned (a delta landing in between costs the recompute
+  its commit and forces a re-scan); the recompute absorbs the claims its scan proves —
+  never every claim an order has — before it commits a single counter; and every delta
+  re-reads its claim immediately before every bucket write and skips itself once absorbed.
+  What is left is under-counting residues that the next run lifts. The page budget is per
+  day, so a long range is safe by construction.
 - **The order store gained one option, `reporting`, defaulted to a no-op.** It is called
   only after the order write it describes is durable, exactly once per won write, and a
   writer that throws is swallowed: reporting is derived data and a transition is not, so
@@ -50,6 +56,8 @@ string was parsed. Folding day documents in JS moves the precision risk into the
 addition, so the guard and its focused test moved with it — a sum that leaves the safe
 range throws rather than silently rounding a money figure.
 
-Window semantics are day-granular, which is exact for the day-aligned windows this port
-is asked for and includes the whole of a partial edge day otherwise — the one read
-divergence from the SQL tier, and a property of the grain rather than a defect.
+Windows are EXACT, whatever instants they name. A day document can only answer for a day a
+window covers whole, so the interior comes from the documents and each truncated edge day
+is computed from an instant-filtered scan of that day's orders — at most two, and only when
+a bound is not midnight. `created_at BETWEEN from AND to` therefore means the same thing
+here as it did in the statement this replaced.
