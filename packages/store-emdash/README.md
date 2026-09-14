@@ -2164,3 +2164,161 @@ and a dedupe row that landed makes the retry a redelivery.
   validates nothing either.
 - **No anomaly read surface.** See the forward reference above: anomalies are written to
   be alerted on, nothing reads them back, and the prune that will need indexes is owed.
+
+## Reporting rollup document model
+
+Reporting is the one port whose SQL was pure read-time aggregation — one `GROUP BY` over
+`orders` joined to `order_totals`, `order_items` and `refunds`, with the period bucket as
+a dialect-branched truncation. There is no join, no aggregate and no raw SQL here, so two
+of the four reports moved to write time and two did not:
+
+| Report | Where it is computed |
+|---|---|
+| `revenueByPeriod` | `reporting_daily`, paged by the `date` range, folded to day / week / month |
+| `ordersByStatus` | the same scan, folded over `stateCounts` |
+| `topProducts` | on read — a scan of `orders` over the FROZEN line snapshots |
+| `lowStock` | on read — a scan of `inventory`, titled through the live sku claim |
+
+| Document | Contents |
+|---|---|
+| `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: `stateCounts`, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents` |
+| `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed |
+
+**The day is the grain, and the other two intervals are folds over it.** A week is the
+seven day documents from its ISO Monday and a month is its own days, so nothing is keyed
+by a week or a month and no second aggregate can disagree with the first. That is only
+sound because every boundary is UTC and every coarser bucket is a union of whole UTC
+days — which is exactly what `date_trunc(…, AT TIME ZONE 'UTC')` and `strftime(…)`
+computed, so the fold and the statement agree by construction rather than by testing.
+
+**The bucket is the order's CREATION day, never the day anything happened to it.** A
+transition on an order placed three months ago moves three-month-old counters, and a
+refund issued today lands in the day the order was placed. Both follow from the port:
+revenue is bucketed on `orders.created_at` and counts only orders whose CURRENT state is
+in the allow-list, and a bucket's `refundedCents` answers "what did the orders placed in
+this period give back", which is the only reading under which the two figures in one row
+are comparable.
+
+**A transition is a MOVE, and revenue moves with it.** `ordersByStatus` needs every state,
+including the excluded ones, so the state the order leaves is decremented and the state it
+enters is incremented. The revenue figure cannot be derived from those counts — it sums
+totals rather than counting orders — so the event carries the order's net total and
+revenue enters or leaves according to the allow-list. A refund is not a transition and is
+not driven by one: it adds to the day's returned money whatever the order's state is,
+which is what keeps a fully refunded order's money reportable.
+
+**`revenueOrders` and `refundEntries` are not decoration.** They are how a bucket's
+EXISTENCE is decided: the SQL emitted a row as soon as either half contributed, so a
+genuinely zero-total order in a revenue-counting state is a row at `revenueCents: 0` and
+not an absence. Counting the contributors rather than testing the sums is the only way to
+tell those two apart.
+
+### The claim is written first, and the residue is an under-count
+
+One event is two documents and there is no transaction between them:
+
+```
+claim     reporting_applied/{claim} create-if-absent — the once-only gate
+counters  reporting_daily/{currency}:{day} compare-and-set — the value
+stamp     the claim's `appliedAt`, best-effort, as a DIAGNOSTIC
+```
+
+A crash between the first two leaves the event spent and the counters short: the report
+says less money than came in and leaves the order in a state bucket it has already left.
+The other order — counters first — would leave an event unclaimed whose delta had already
+landed, and its redelivery would count the same money twice. Between an under-count that
+heals and an over-count that compounds, this tier resolves toward the first (cross-cutting
+rule (c)).
+
+`appliedAt` is therefore never a gate. A claim with a null stamp may or may not have moved
+the counters, because the crash could have landed on either side of the write, so nothing
+reads it to decide whether to apply — it exists to make the residue legible.
+
+Every decrement is also **floored at zero**, which is the one place this adapter tolerates
+being wrong: a decrement whose matching increment was lost would otherwise drive a counter
+negative and report negative revenue, a number no report should be able to show.
+
+### The recompute is the definition
+
+`reconcile(range)` rebuilds each day document from a paged scan of the orders created that
+day, and it is what a scheduled sweep will call. Two properties make it usable:
+
+- **It is safe to run while events are landing**, because each day's write is pinned to the
+  revision the recompute read. A live event that commits first makes the recompute lose
+  that write, RE-SCAN the day and recompute — so the value committed is always derived
+  from a snapshot of the orders taken after the peer's write. The hook writes the ORDER
+  before it writes the rollup, which is what makes a re-scan sound rather than a clobber.
+  The one interleaving left is an event whose order write landed and whose rollup did not,
+  and that is the under-count the routine exists for.
+- **It marks the claims for the events it folded in**, read off the order itself: its
+  append-only audit log carries every `(fromState → toState)` pair, its refunds ledger
+  every finalized refund, and the arrival into its original state is the event creation
+  owes. Without that, a rollup collection restored from nothing would accept a redelivered
+  event that the recomputed counters already count.
+
+A day that has lost every order keeps a ZEROED document rather than being deleted: a live
+event racing that write needs a revision to lose to, and an all-zero document reads as no
+bucket at all.
+
+### The hook on the order store is additive, and never fatal
+
+`EmdashOrderStoreOptions.reporting` defaults to a no-op. It is called after the order
+write it describes is durable — inside the guarded flip, past the compare-and-set that
+committed and past the outbox locator, so it fires exactly once per WON write and a lost
+flip owes nothing — and the four sites are the flip, `recordRefund`'s finalized insert,
+`finalizeRefund`, and the create-if-absent that lands a new order (whose arrival into
+`pending` the status counts need).
+
+Every call is wrapped in a try/catch that swallows. By the time it runs the state write
+has committed, so a throw would tell the caller its transition failed when it did not —
+the worst possible lie about a payment. What is lost instead is a counter, in the
+under-counting direction, and the recompute restores it. The retry helper would not absorb
+the throw either: it only re-runs on a retryable storage abort.
+
+### Window semantics are day-granular — the one read divergence
+
+A window is resolved to whole UTC days, because the day is the grain. A day-aligned window
+— which is what this port is asked for, and what the domain's own contract windows are —
+is therefore EXACT against the SQL's `created_at BETWEEN from AND to`. A window that cuts a
+day in half is not: this adapter includes the whole of both edge days. The divergence is in
+the direction of reporting more of an edge day rather than less, and closing it would mean
+keeping a document per order, which is the read-time scan this design replaced.
+`topProducts` scans the orders themselves, so it applies the EXACT window and has no such
+divergence.
+
+### Reporting crash seams proven
+
+`test/reporting-crash-seams.dialects.test.ts`, each case reading the documents back before
+it heals:
+
+| Seam | What survives | What heals it |
+|---|---|---|
+| claim landed, counters did not | claim, un-stamped; counters short | `reconcile`, and the redelivery is then a no-op |
+| counters landed, the caller never learned | counters moved; claim present | nothing to heal; the redelivery is refused by the claim |
+| crash before the claim | nothing applied | the redelivery applies it exactly once |
+| transition durable, rollup lost | the order in its OLD state bucket, no revenue claimed | `reconcile` |
+| refund durable, rollup lost | the order's day at `refundedCents: 0` | `reconcile`, into the order's creation day — never the day the refund was issued |
+
+### Reporting contention, measured
+
+The day document's bound is the CROWD rather than the document: every distinct event
+legitimately moves a counter, so nothing refuses anybody and a writer can lose its revision
+once per peer that commits ahead of it. That is the shipping/tax-rules shape, not the
+inventory one.
+
+**Measured max CAS attempts: 12 at N=24 transitions into one day document (4 loops),
+against `CAS_MAX_ATTEMPTS` = 24** — `test/reporting-bucket-race.pg.test.ts`, which also
+races N=16 deliveries of ONE event and asserts a single delta. No contention refusal occurs
+at that size; the headroom is what the extra attempts buy, and a busier day spends more of
+it before the typed, retryable refusal rather than reporting a wrong total.
+
+### What the reporting tier does NOT carry
+
+- **No scheduling.** `reconcile` is a method, not a cron job. Wiring it to a periodic hook
+  belongs to the sweeper increment, along with every other heal this package owes.
+- **No product or stock rollups.** `topProducts` and `lowStock` are computed on read, for
+  the reasons above. If either ever needs a rollup it needs its own document, not another
+  field on the day.
+- **No cash-flow view.** Refunds are bucketed by the ORDER's creation day, which answers
+  "what did the orders placed in this period give back". "What refunds were ISSUED in this
+  period" is a genuinely different report and would need its own document and endpoint.
