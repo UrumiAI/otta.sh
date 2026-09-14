@@ -145,72 +145,74 @@ export class SkuStockTransfer {
 	}
 
 	/**
-	 * Carry `fromSku`'s units onto `toSku`, or refuse — the whole of THE SKU-RENAME
-	 * RULE, called only by a write that is actually applying.
+	 * PHASE 1 — decide, without moving anything.
 	 *
-	 * Throws `SkuHeldStockError` (the source still has a live hold) or
-	 * `SkuStockConflictError` (the target already has an inventory document). A
-	 * refusal on either writes NOTHING the caller can observe: the hold refusal
-	 * fires before the target is claimed, and a lost claim is a write that never
-	 * happened.
+	 * Runs the two refusals in the port's order and claims the target, so that by the
+	 * time the caller commits its product write the carry can no longer be refused
+	 * for either reason it could have been refused for:
+	 *
+	 *  0. REFUSE while a live hold names the source (`SkuHeldStockError`). A read:
+	 *     atomicity for this one comes from the re-check inside {@link move}.
+	 *  1. CLAIM the target, create-if-absent (`SkuStockConflictError` on a lost
+	 *     claim). The claim IS the occupancy test, and holding it is what guarantees
+	 *     nobody can occupy the target between this phase and the move.
+	 *
+	 * A refusal writes nothing the caller can observe: the hold refusal fires before
+	 * the claim, and a lost claim is a write that never happened.
+	 *
+	 * Returns true when this call CREATED the target document, which is what the
+	 * caller needs in order to withdraw it again if it ends up not committing.
 	 *
 	 * `targetIsOurs` says the caller ALREADY held the target sku's live claim before
 	 * this call — it did not take it just now. That is the one case in which an
 	 * existing target document is NOT a conflict, and the distinction cannot be made
 	 * from the inventory documents alone:
 	 *
-	 * - a genuine conflict is a target the caller has just claimed the SKU for and
-	 *   whose inventory document nonetheless exists, i.e. units that belong to
-	 *   nobody living, which is precisely what must never be merged;
+	 * - a genuine conflict is a target whose SKU the caller has just claimed and whose
+	 *   inventory document nonetheless exists, i.e. units belonging to nobody living,
+	 *   which is precisely what must never be merged;
 	 * - `targetIsOurs` means the sku is already this owner's, so an existing document
-	 *   under it is this owner's too — a pristine claim from an earlier attempt of
-	 *   this very rename, `seedOnHand`'s always-attempt row, or the finished result
-	 *   of a peer attempt. There is no second party's count to reconcile, so the
-	 *   carry proceeds and the intent-claim's own idempotence decides how much (in
-	 *   the peer-finished case, nothing: the source is already empty and unstamped).
+	 *   under it is this owner's too — a claim from an earlier attempt of this very
+	 *   rename, `seedOnHand`'s always-attempt document, or the finished result of a
+	 *   peer attempt. There is no second party's count to reconcile.
 	 *
 	 * Without it, two concurrent writes renaming ONE product onto the SAME sku would
-	 * have the second refuse a conflict the operator never created — which the SQL
-	 * adapter avoided by making the second block on the product row's lock and then
-	 * read `from === to`.
+	 * have the second refuse a conflict the operator never created.
 	 */
-	async carry(
-		fromSku: string,
-		toSku: string,
-		commandKey: string,
-		targetIsOurs = false,
-	): Promise<void> {
-		if (fromSku === toSku) return;
-		const token = skuTransferToken(commandKey, fromSku, toSku);
-
-		// Step 0, as a plain read FIRST: the target must not be claimed by a write
-		// the holds are about to refuse. The same check runs again inside the source
-		// compare-and-set below, which is the one that is actually atomic — this one
-		// exists so the refusal leaves no trace in the ordinary, uncontended case the
-		// contract pins ("the target sku was never even claimed").
+	async prepare(fromSku: string, toSku: string, targetIsOurs: boolean): Promise<boolean> {
 		await this.#refuseOnLiveHolds(fromSku);
-
-		// Step 1. The claim IS the occupancy test; a conflict means the target already
-		// has a document, whatever it holds.
 		const claimed = await this.#inventory.compareAndSet(toSku, null, newInventoryDoc(toSku, 0));
 		if (!claimed.applied && !targetIsOurs) throw new SkuStockConflictError(fromSku, toSku);
+		return claimed.applied;
+	}
 
-		// Step 2. Stamp the intent and zero the source in ONE write. The quantity is
-		// decided INSIDE that write, never from an earlier read: a restock landing
-		// under the old label between the two would otherwise be carried as a count
-		// that no longer holds, or dropped.
-		let qty: number;
-		try {
-			qty = await this.#stampSource(fromSku, toSku, token);
-		} catch (err) {
-			// A hold that arrived after the pre-read: the refusal is correct and the
-			// claim we just made is a pristine, never-stocked document nothing can
-			// reference yet, so it is withdrawn rather than left as litter.
-			await this.#withdrawPristineClaim(toSku);
-			throw err;
-		}
+	/**
+	 * PHASE 2 — move the units, AFTER the product write has committed.
+	 *
+	 * The ordering is load-bearing and was learned the hard way: a carry that runs
+	 * BEFORE its product write can have that write lose a compare-and-set, and then
+	 * the units sit under a sku the product does not hold, with no error raised
+	 * anywhere. Worse, the source reads `0` for the duration, so a concurrent writer
+	 * renaming the same product carries nothing and strands them for good. The
+	 * product document's own compare-and-set is therefore the mutual exclusion: only
+	 * the writer that won it moves the stock, and it records the intent in that same
+	 * write so the move is completable by anybody if it dies here.
+	 *
+	 * One `compareAndSet` on the source sets `onHand → 0` and stamps
+	 * `transferOut: { token, toSku, qty }`; the target then adds `qty` iff its
+	 * `appliedTransfers` ring lacks the token; then the source clears the stamp. Each
+	 * step is a no-op once it has happened.
+	 *
+	 * Throws `SkuHeldStockError` if a hold arrived between {@link prepare} and here.
+	 * The product write is already committed at that point, so the caller must NOT
+	 * turn that into a refusal: it leaves the recorded intent in place and lets the
+	 * sweeper finish the move once the hold resolves. Stock is conserved throughout —
+	 * the units are still on the source.
+	 */
+	async move(fromSku: string, toSku: string, token: string, commandKey: string): Promise<void> {
+		if (fromSku === toSku) return;
+		const qty = await this.#stampSource(fromSku, toSku, token);
 		if (qty === 0) return;
-
 		const resultOnHand = await this.#applyToTarget(toSku, token, qty);
 		await this.#clearSource(fromSku, token);
 		await this.#record(commandKey, token, fromSku, toSku, qty, resultOnHand);
@@ -338,7 +340,9 @@ export class SkuStockTransfer {
 	}
 
 	/**
-	 * Withdraw a target claim this call made and then refused to use.
+	 * Withdraw a target claim a caller made and then did not use — because the carry
+	 * was refused after the claim, or because the product write it belonged to never
+	 * committed.
 	 *
 	 * The ONLY document this ever removes is one it created moments ago that has
 	 * never held a unit, never carried a hold, and can therefore be referenced by
@@ -347,7 +351,7 @@ export class SkuStockTransfer {
 	 * means somebody else has taken the document over, and it is left alone.
 	 * Best-effort: a failure here costs an empty document, never a wrong answer.
 	 */
-	async #withdrawPristineClaim(toSku: string): Promise<void> {
+	async withdrawPristineClaim(toSku: string): Promise<void> {
 		try {
 			const current = await this.#inventory.getVersioned(toSku);
 			if (current === null) return;

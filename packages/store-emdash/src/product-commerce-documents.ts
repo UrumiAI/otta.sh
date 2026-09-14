@@ -140,6 +140,32 @@ export function publishKeyFor(active: boolean): PublishKey {
 	return active ? "active" : "inactive";
 }
 
+/**
+ * A stock carry a committed write still owes — the product-level half of the
+ * sku-rename intent-claim (ADR-0019 §3, decision D2).
+ *
+ * A rename moves units between two inventory documents, and the write that decides
+ * the rename lives in a third. Recording the intent in the SAME compare-and-set
+ * that commits the new sku is what makes the move completable: whoever finds the
+ * record — the writer itself, the next write on this product, or the sweeper —
+ * finishes it, exactly once, from the record alone.
+ *
+ * It is also why the move runs AFTER the product write rather than before. A carry
+ * that ran first could have its product write lose the compare-and-set, leaving the
+ * units under a sku the product does not hold; and while such a carry is in flight
+ * the source reads `0`, so a concurrent writer renaming the same product carries
+ * nothing and strands them for good. The product document's compare-and-set is the
+ * mutual exclusion that removes both.
+ */
+export interface PendingRenameDoc {
+	/** The carry's once-only token; see `skuTransferToken`. */
+	token: string;
+	fromSku: string;
+	toSku: string;
+	/** The write's idempotency key, which the audit entries derive their ids from. */
+	commandKey: string;
+}
+
 /** One embedded variant — a sellable unit of its product, keyed by its own key. */
 export interface ProductVariantDoc {
 	/** The CMS repeater row's stable, immutable key; also the map key. */
@@ -156,6 +182,12 @@ export interface ProductVariantDoc {
 	contentUpdatedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+	/**
+	 * Stock carries this variant's committed renames still owe, by token. Keyed
+	 * rather than singular so a second write never destroys an outstanding intent;
+	 * see {@link PendingRenameDoc}. Normally absent.
+	 */
+	pendingRenames?: Record<string, PendingRenameDoc>;
 }
 
 /**
@@ -205,6 +237,11 @@ export interface ProductCommerceDoc {
 	updatedAt: string;
 	/** The embedded sellable units, keyed by `variantKey`. */
 	variants: Record<string, ProductVariantDoc>;
+	/**
+	 * Stock carries this product row's committed renames still owe, by token; see
+	 * {@link PendingRenameDoc}. Normally absent.
+	 */
+	pendingRenames?: Record<string, PendingRenameDoc>;
 }
 
 /** Which grain holds a sku claim. */
