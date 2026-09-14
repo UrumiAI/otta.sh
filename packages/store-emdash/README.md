@@ -1177,6 +1177,128 @@ Both are reported per FILE by a final case that asserts them at or below
 `CAS_MAX_ATTEMPTS` (24) and strictly above zero, so a shape that silently stopped
 contending would fail rather than pass quietly.
 
+## Coupon document model
+
+`EmdashCouponStore` implements the whole `CouponStore` port. Four documents:
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `coupons` | coupon id | the economics, the window, `usesCount`, and the `lastRedeemedKey` witness the guarded bump stamps | `createdAt` |
+| `coupon_codes` | folded code | `{ code, couponId }` — the code-uniqueness claim, and the only way to reach a coupon by code | — |
+| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, then its RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
+| `coupon_customer_caps` | `${couponId}:${customerId}` | the keys currently holding a per-customer slot | — |
+
+| The SQL | Here |
+|---|---|
+| `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses` | two client-side branches — a guarded `updateIf` when capped, a plain delta when not |
+| `coupon_redemptions (coupon_id, idempotency_key)` UNIQUE | the document id, claimed create-if-absent |
+| a per-customer `COUNT(*)` taken under the coupon row's lock | the per-customer counter document, claimed BEFORE the bump |
+| `ROLLBACK` undoing a per-customer refusal | an explicit, idempotent compensation |
+| `uses_count - 1 WHERE uses_count > 0` | the mirror-image `updateIf` guard |
+| `DELETE … WHERE NOT EXISTS (redemptions)` | a `count()` on the coupon's redemptions holding a use, read before the delete |
+
+### The redemption state machine
+
+The coupon is read first and nothing is written until it is found. Then:
+
+1. **claim** `coupon_redemptions/{couponId}:{key}` create-if-absent, carrying the whole
+   intent with no outcome. A claim that already carries an outcome is the replay answer
+   and no counter is touched — including for a REFUSAL.
+2. **claim the per-customer slot**, when the customer is identified and a cap is in
+   force: add this key to `coupon_customer_caps/…`. The cap is full ⇒ record
+   `COUPON_MAX_PER_CUSTOMER`, having consumed no global headroom at all.
+3. **bump the global counter** with one guarded statement.
+4. **record the outcome** on the key document.
+
+**Why the per-customer claim is a key SET and not a count.** A count needs a second
+write to say "this key already consumed a slot", and a crash between the two either
+double-counts (the customer loses a slot they hold) or loses the claim (the cap is
+breached). The keys of the redemptions currently holding a slot answer both questions
+from one document: the count is `keys.length`, claiming is adding a key that may already
+be there, and the compensation is removing one that may already be gone. So the claim
+and the compensation are idempotent by construction, a compensation can never release
+another key's slot, and the array is bounded by the cap it enforces.
+
+**Why the capped bump pins a witness.** The guarded statement is a compare-and-set on
+TWO fields: `usesCount < maxUses` is the invariant, and `lastRedeemedKey = <the value
+just read>` is what makes the write once-only. Without that second half, a crowd
+completing the SAME idempotency key — which is what concurrent callers of one key are —
+would each see headroom and each add one. The refusal DECISION is taken from the read
+(`usesCount >= maxUses`), never from `applied: false`, because `updateIf` conflates a
+failed guard with an absent row: a refused write here always means "the document moved,
+read it again". An UNCAPPED coupon takes a plain delta, because there is no invariant to
+violate and pinning a witness would make an unbounded crowd contend for no safety.
+
+**The attempt depth is a property of the coupon, not of the crowd.** A retry happens only
+when a DIFFERENT redemption committed, and for a capped coupon the number of those is
+bounded by the headroom left: once it is spent the read refuses without writing at all.
+N racers on a coupon with M uses left therefore retry at most M + 1 times, whatever N is.
+
+### Coupon crash seams proven
+
+`test/coupon-crash-seams.dialects.test.ts`, with the shared fault injector:
+
+- **a PARKED guarded update** — the claim has landed and the counter has NOT moved. This
+  is also the proof that the helper really intercepts `updateIf`; without it every seam
+  below could pass while injecting nothing.
+- **after the per-customer slot, before the `+1`** — the replay completes the bump and
+  takes no second slot: counters exact.
+- **after the `+1`, before the outcome record** — the replay records the answer and does
+  NOT bump again, because the bump stamped its own witness: counters exact.
+- **a refused `+1`** — the slot is given back and the refusal recorded, so a per-customer
+  rejection consumes no global headroom and a global refusal leaves no slot consumed.
+- **after the compensation, before the outcome record** — the replay refuses again and
+  releases nothing twice.
+- **between a release's delete and its decrement** — the accepted residual, asserted
+  rather than papered over: the counter is left one HIGH, never low, and a second release
+  is a no-op rather than a second decrement. A release claims its decrement by DELETING
+  the record, which is what makes a double release impossible; the price is that a crash
+  in between leaves one use nobody holds. That refuses a redemption that might have fit
+  and never grants one that does not, and it is the only direction a two-document release
+  can fail in without a transaction.
+
+### Four deviations from the design's index table, all forced
+
+ADR-0019 §4 lists `coupons` keyed by **code** with a `createdAt` index, and
+`coupon_redemptions` indexed on `couponId` and `orderId`. What shipped:
+
+| Change | Why |
+|---|---|
+| `coupons` is keyed by **coupon id**, and the code becomes a claim document | `redeem`, `findById`, `update` and `delete` are all given an id, and the money path must not pay a lookup to reach the counter. The admin list is keyset-ordered on `(createdAt, id)` — which is the host's own total order only when the document id IS that id. The ADR's own `uniqueIndexes` table offers exactly this alternative for `coupons.code`: "the document id, or a claim document". The coupon's index list is unchanged at `createdAt` alone as a result, and the code search needs no index because it is a document read |
+| `coupon_redemptions` adds `createdAt` | `listRedemptionsCreatedBefore` both RANGES and ORDERS on it, and ordering by an undeclared field throws exactly as filtering on one does |
+| `coupon_redemptions` adds `redemptionId` | `release` is given the GENERATED id, not the document id — the port hands back an opaque id exactly as the SQL adapter did |
+| `coupon_redemptions` adds `holdsUse` | a refused key keeps a document (that is what lets a replay answer the same way twice), and it must stay out of the delete guard, `releaseByOrder` and the reconciliation sweep. A boolean cannot be bound as a filter value on one dialect, so it is a STRING mirror — the same pattern as the product gate's `publishKey`, not a second invention |
+
+### Two accepted divergences from the SQL adapter
+
+Both are narrowings, both are documented rather than discovered:
+
+- **A refusal is recorded permanently**, so a replay of an exhausted key answers
+  `COUPON_EXHAUSTED` again even if headroom has since been released. The SQL adapter
+  rolled its refusal back and kept no record, so a retry there could later succeed. A
+  stable answer per idempotency key is the property the document model is built on.
+- **Codes are unique after case folding**, where the SQL unique index was
+  case-sensitive. That is the rule the admin list's case-insensitive exact search already
+  implies. `findByCode` stays case-SENSITIVE, by comparing the code the claim stores.
+
+A per-customer counter document exists only while `maxUsesPerCustomer` is in force, so
+RAISING a cap from null counts only the redemptions made while a cap was set; the SQL
+counted rows, which had no such window. Bounded arrays were preferred to a faithful
+unbounded one here, and the alternative is a per-customer index on the redemptions.
+
+### Coupon contention, measured
+
+| shape | max CAS attempts |
+|---|---|
+| 50 racers on a 5-use cap (20 loops) | 6 |
+| two same-customer racers on a per-customer cap of 1 (15 loops) | 2 |
+| 20 racers completing ONE idempotency key | 1–2 |
+| 40 racers on an UNCAPPED coupon | 1 (nothing is pinned, so nothing contends) |
+
+`test/coupon-no-over-redeem.pg.test.ts` asserts these against its own
+`CAS_ATTEMPT_BUDGET` of 8 — deliberately tighter than `CAS_MAX_ATTEMPTS`, so raising the
+package ceiling can never turn a shape green by accident.
+
 ## Contention budget
 
 R2 has no structural fix — the aggregate is written by read-modify-write, so a hot
