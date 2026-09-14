@@ -987,7 +987,7 @@ superset stays conformant.
 
 | Old guard | Invariant | Now guaranteed by | Proven by |
 |---|---|---|---|
-| settings `update`: read the recorded mutation and return it if present, else claim `ON CONFLICT (idempotency_key) DO NOTHING` and apply | a replayed settings key returns the recorded result and never re-applies the patch | `settings_mutations/{key}` as a claim document carrying the recorded result | `settings-store-contract` "update replayed with the same idempotencyKey returns the recorded result and does not re-apply" |
+| **†** settings `update`: read the recorded mutation and return it if present, else claim `ON CONFLICT (idempotency_key) DO NOTHING` and apply, both inside one transaction | a replayed settings key returns the recorded result and never re-applies the patch — and a stale replay never clobbers a newer update | `settings_mutations/{key}` as a claim document carrying the PATCH and the settings revision it was decided against; the result is stamped onto it once, after the write lands. So a replay returns the landed result; a claim that never landed may be completed by a non-creator **only** by a compare-and-set at that recorded revision, and past it is refused as superseded rather than re-merged. There was no transaction to inherit, so the pin is what the transaction used to be | `settings-store-contract` "update replayed with the same idempotencyKey returns the recorded result and does not re-apply", plus the adapter seams "a crash between the mutation claim and the settings write is completed by the replay" and "an un-landed mutation overtaken by a newer update never clobbers it and is never double-applied" |
 | entitlement `grant`: `ON CONFLICT (grant_idempotency_key) DO NOTHING`, then re-select and return the original | a grant is issued once | the grant key **is** the document id | `entitlement-store-contract` "grant is idempotent under grantIdempotencyKey — a replay grants once" |
 | **†** entitlement `check`: **a query with neither an order nor a buyer reference is refused** | an **authorization boundary** — delivery must be scoped, and an unscoped check must never be a wildcard pass (ADR-0011) | a typed `EntitlementScopeRequiredError`, raised before any read — LOUDER than the SQL's `false`, which is a divergence in loudness and never in outcome (both fail closed, and nothing is served on either path) | `entitlement-store-contract`, plus the adapter case "a scopeless delivery check is refused with a typed error, and authorizes nothing", which is what now names the empty-scope branch |
 | address `update`/`delete`: `WHERE id = :addressId AND customer_id = :customerId` on **both** | **cross-customer isolation** — a security invariant, not a convenience | an **explicit ownership check** on the address inside the customer's own document, since a document id alone carries no owner. This must be written as a check, not inherited from a key shape | `address-book-contract` "update is customer-scoped: B cannot touch A's address (returns null)"; "delete is customer-scoped: B cannot delete A's address" |
@@ -1065,10 +1065,9 @@ by the same bounded budget.
   coupon per-customer refusal above all — the document model must write an explicit, idempotent
   compensation, and get its ordering right.
 - **Reporting becomes write-time work**, with past-bucket decrements and paged reads.
-- **†** **32 rows naming 35 collections** to declare and keep in step with the descriptor, their index
-  lists part of the read contract. The count rose from the ~22 first
-  estimated, and every addition is a claim or locator document standing in for a lookup the port
-  signatures force (§4).
+- **†** **32 rows naming 35 collections** to declare and keep in step with the descriptor — their
+  index lists part of the read contract. The count rose from the ~22 first estimated, and every
+  addition is a claim or locator document standing in for a lookup the port signatures force (§4).
 - **The orders search narrows** as recorded in 6.1.
 
 **Rejected alternatives.**
