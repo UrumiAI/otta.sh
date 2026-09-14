@@ -19,12 +19,16 @@
  * Two of those shapes carry the whole once-only story, so they are worth stating
  * plainly.
  *
- * **The redemption document is the record, not a ring entry.** Its id is
- * `${couponId}:${idempotencyKey}`, so create-if-absent IS the once-only guard
- * (the storage table's primary key), and the recorded {@link CouponRedemptionDoc
- * .outcome} is what a replay reads back — for a refusal exactly as much as for a
- * success. Nothing about that is bounded: there is no eviction, so no replay can
- * ever lose its witness.
+ * **The redemption document is the record, not a ring entry — and it owns the
+ * right to bump.** Its id is `${couponId}:${idempotencyKey}`, so create-if-absent
+ * IS the once-only guard (the storage table's primary key), and the recorded
+ * {@link CouponRedemptionDoc.outcome} is what a replay reads back — for a refusal
+ * exactly as much as for a success. Nothing about that is bounded: there is no
+ * eviction, so no replay can ever lose its witness. Its
+ * {@link CouponRedemptionDoc.state} is what makes the counter's `+1` once-only per
+ * key: exactly one completer wins the move into `bumping`, so the guarded
+ * statement itself carries only the CAP and a redemption never contends with a
+ * peer redemption of the same coupon.
  *
  * **The per-customer counter stores KEYS, not a count.** A count would need a
  * second write to say "this key already consumed a slot", and a crash between the
@@ -75,7 +79,8 @@ export interface CouponCollectionIndexDeclaration {
  * - `createdAt` — `listRedemptionsCreatedBefore` both RANGES and ORDERS on it.
  * - `redemptionId` — `release` is given the generated id, not the document id.
  * - `holdsUse` — the text mirror that keeps a REFUSED key out of all three of
- *   those reads (see {@link holdsUseFor}).
+ *   those reads (see {@link holdsUseFor}). The `state` it mirrors is NOT indexed:
+ *   nothing queries by it, and every reader that needs it has the document.
  *
  * The two counter collections are reached by document id alone and declare
  * nothing. Neither declares a unique index: uniqueness here is the claim
@@ -112,10 +117,14 @@ export type RedemptionOutcome =
  * The coupon aggregate.
  *
  * `usesCount` is the one field under real concurrency, and the only one written
- * by a guarded delta rather than by a read-modify-write. `lastRedeemedKey` is
- * written by the SAME guarded statement as the delta, which is what makes it a
- * witness rather than a log line: see `EmdashCouponStore`'s redemption state
- * machine for the crash window it closes.
+ * by a guarded delta rather than by a read-modify-write. The guard is the cap and
+ * NOTHING else, so a redemption never waits on another redemption of the same
+ * coupon: the retry depth is bounded by the headroom, not by the crowd.
+ *
+ * `lastRedeemedKey` is stamped by that same statement, but it is NOT what makes
+ * the bump once-only — the redemption document's own state machine is (see
+ * `EmdashCouponStore`). It is a best-effort WITNESS for one crash seam, and a
+ * peer's bump overwrites it, which is exactly why it may never be load-bearing.
  */
 export interface CouponDoc {
 	readonly couponId: string;
@@ -152,11 +161,37 @@ export interface CouponCodeDoc {
 }
 
 /**
- * One redemption key: the claim first, then its recorded outcome.
+ * How far one redemption key has got. The document OWNS the right to bump the
+ * global counter, and this field is that ownership:
  *
- * An `outcome` of `null` is the claimed-but-unapplied marker — there is no
- * `state` field, and an absent outcome IS the unfinished marker, exactly as an
- * absent `applied` is for a movement claim. Any later replayer completes it.
+ * ```
+ * claimed ──(revision CAS, exactly one winner)──► bumping ──► applied
+ *                                                        └──► refused
+ * ```
+ *
+ * The transition into `bumping` is a compare-and-set on the document's revision,
+ * so of N callers completing one key exactly ONE reaches the counter and the rest
+ * read the answer back. That is what makes the guarded `+1` once-only per key
+ * WITHOUT the guard having to carry a witness — and therefore what keeps the
+ * counter's contention bounded by the coupon's headroom instead of by the crowd.
+ *
+ * `bumping` carries a LEASE, so a live owner is never overtaken and a crashed one
+ * does not hold the step forever.
+ *
+ * The states are strictly forward-moving, which is what lets `release` decide
+ * whether a use was consumed by READING the state rather than by guessing:
+ * `claimed` means the counter was provably never touched (the bump runs only
+ * after `bumping` is durable), and `applied` means it provably was. `bumping` is
+ * the one ambiguous state, and a reader that needs the answer completes it rather
+ * than guessing — see `EmdashCouponStore`.
+ */
+export type RedemptionState = "claimed" | "bumping" | "applied" | "refused";
+
+/**
+ * One redemption key: the claim, the bump right, and then the recorded outcome.
+ *
+ * A non-terminal {@link RedemptionState} IS the unfinished marker; there is no
+ * separate flag. Any later replayer completes it.
  */
 export interface CouponRedemptionDoc {
 	/** The id the port hands back, and the only handle `release` is given. */
@@ -166,9 +201,19 @@ export interface CouponRedemptionDoc {
 	readonly customerId: string | null;
 	readonly idempotencyKey: string;
 	readonly createdAt: string;
+	/** How far this key has got, and who owns the bump — {@link RedemptionState}. */
+	readonly state: RedemptionState;
+	/**
+	 * While `bumping`: when the owner's claim on the step lapses, so a crashed owner
+	 * cannot hold the step forever and a LIVE one is never overtaken. `null` in every
+	 * other state. It is the same device the email-outbox lease uses, for the same
+	 * reason: without it, "the owner is taking a while" and "the owner is gone" are
+	 * indistinguishable, and a taker that guesses wrong bumps the counter twice.
+	 */
+	readonly bumpLeaseUntil: string | null;
 	/** The indexed mirror of "this document holds a use" — {@link holdsUseFor}. */
 	readonly holdsUse: RedemptionHoldsUse;
-	/** `null` while the claim is unapplied; the recorded answer once it is not. */
+	/** `null` until the state is terminal; the recorded answer once it is. */
 	readonly outcome: RedemptionOutcome | null;
 	/**
 	 * Whether this key took a per-customer slot. ADVISORY only: the slot's real
@@ -191,17 +236,22 @@ export interface CouponCustomerCapDoc {
 }
 
 /**
- * The ONE derivation of the indexed mirror from the outcome, so the two cannot
+ * The ONE derivation of the indexed mirror from the state, so the two cannot
  * drift.
  *
- * A claim whose outcome is not yet recorded counts as holding a use: it may be
- * about to, and treating an in-flight redemption as absent would let a coupon be
- * deleted out from under it. A REFUSED key holds nothing — the SQL adapter rolled
- * its row back entirely, and a refusal must not forbid a delete, appear in the
- * reconciliation sweep, or be released by order.
+ * Anything short of `refused` counts as holding a use: `claimed` and `bumping`
+ * may be about to consume one, and treating an in-flight redemption as absent
+ * would let a coupon be deleted out from under it. A REFUSED key holds nothing —
+ * the SQL adapter rolled its row back entirely, and a refusal must not forbid a
+ * delete, appear in the reconciliation sweep, or be released by order.
  */
-export function holdsUseFor(outcome: RedemptionOutcome | null): RedemptionHoldsUse {
-	return outcome === null || outcome.ok ? "yes" : "no";
+export function holdsUseFor(state: RedemptionState): RedemptionHoldsUse {
+	return state === "refused" ? "no" : "yes";
+}
+
+/** Is this state one the document will never move out of? */
+export function isTerminalRedemption(state: RedemptionState): boolean {
+	return state === "applied" || state === "refused";
 }
 
 /**
@@ -236,11 +286,13 @@ export function normalizeCouponDoc(doc: CouponDoc): CouponDoc {
 
 /** As above, for a redemption document. */
 export function normalizeRedemptionDoc(doc: CouponRedemptionDoc): CouponRedemptionDoc {
-	const outcome = doc.outcome ?? null;
+	const state = doc.state ?? "claimed";
 	return {
 		...doc,
-		outcome,
-		holdsUse: holdsUseFor(outcome),
+		state,
+		bumpLeaseUntil: doc.bumpLeaseUntil ?? null,
+		outcome: doc.outcome ?? null,
+		holdsUse: holdsUseFor(state),
 		capClaimed: doc.capClaimed ?? false,
 	};
 }

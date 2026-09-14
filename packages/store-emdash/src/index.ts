@@ -58,7 +58,11 @@ export {
 	isCouponIdCollisionError,
 	isCouponNotFoundError,
 } from "./coupon-errors.js";
-export { EmdashCouponStore, type EmdashCouponStoreOptions } from "./emdash-coupon-store.js";
+export {
+	COUPON_BUMP_LEASE_MS,
+	EmdashCouponStore,
+	type EmdashCouponStoreOptions,
+} from "./emdash-coupon-store.js";
 export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
 export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-store.js";

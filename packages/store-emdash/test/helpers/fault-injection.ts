@@ -78,6 +78,24 @@ export const isUpdateWrite: CallMatcher = (call) =>
 	call.expectedRevision !== null &&
 	call.expectedRevision !== undefined;
 
+/**
+ * Narrow a matcher to the Nth matching call (1-based), so a seam can target the
+ * SECOND write of a kind on one document.
+ *
+ * Stateful, and therefore single-use: build a fresh one per injector. It exists
+ * because a matcher sees the method, the id and the guarded revision but never the
+ * DATA, so two writes that differ only in what they store — a state machine's
+ * successive transitions on one document — can be told apart only by counting.
+ */
+export function nthCall(n: number, match: CallMatcher): CallMatcher {
+	let seen = 0;
+	return (call) => {
+		if (!match(call)) return false;
+		seen++;
+		return seen === n;
+	};
+}
+
 /** Narrow a matcher to one document id. */
 export function onId(id: string, match: CallMatcher): CallMatcher {
 	return (call) => call.id === id && match(call);

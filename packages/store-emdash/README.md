@@ -1183,15 +1183,16 @@ contending would fail rather than pass quietly.
 
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
-| `coupons` | coupon id | the economics, the window, `usesCount`, and the `lastRedeemedKey` witness the guarded bump stamps | `createdAt` |
+| `coupons` | coupon id | the economics, the window, `usesCount`, and a best-effort `lastRedeemedKey` witness | `createdAt` |
 | `coupon_codes` | folded code | `{ code, couponId }` — the code-uniqueness claim, and the only way to reach a coupon by code | — |
-| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, then its RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
+| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, the bump-right `state` and its lease, then the RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
 | `coupon_customer_caps` | `${couponId}:${customerId}` | the keys currently holding a per-customer slot | — |
 
 | The SQL | Here |
 |---|---|
 | `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses` | two client-side branches — a guarded `updateIf` when capped, a plain delta when not |
 | `coupon_redemptions (coupon_id, idempotency_key)` UNIQUE | the document id, claimed create-if-absent |
+| the insert conflict that made a second caller of one key WAIT for the winner | that document's own `state`: `claimed → bumping` is a revision compare-and-set exactly one completer wins, under a lease |
 | a per-customer `COUNT(*)` taken under the coupon row's lock | the per-customer counter document, claimed BEFORE the bump |
 | `ROLLBACK` undoing a per-customer refusal | an explicit, idempotent compensation |
 | `uses_count - 1 WHERE uses_count > 0` | the mirror-image `updateIf` guard |
@@ -1202,37 +1203,46 @@ contending would fail rather than pass quietly.
 The coupon is read first and nothing is written until it is found. Then:
 
 1. **claim** `coupon_redemptions/{couponId}:{key}` create-if-absent, carrying the whole
-   intent with no outcome. A claim that already carries an outcome is the replay answer
-   and no counter is touched — including for a REFUSAL.
+   intent in state `claimed`. A claim that is already TERMINAL is the replay answer and
+   no counter is touched — including for a REFUSAL.
 2. **claim the per-customer slot**, when the customer is identified and a cap is in
    force: add this key to `coupon_customer_caps/…`. The cap is full ⇒ record
    `COUPON_MAX_PER_CUSTOMER`, having consumed no global headroom at all.
-3. **bump the global counter** with one guarded statement.
-4. **record the outcome** on the key document.
+3. **take the bump right**: `claimed → bumping`, a compare-and-set on the key
+   document's revision. Exactly one completer wins it, and only the winner reaches the
+   counter. A caller that loses reads the winner's answer back.
+4. **bump the counter** with one guarded statement — the cap and nothing else.
+5. **record** `applied` (or `refused`, after compensating) on the key document.
 
-**Why the per-customer claim is a key SET and not a count.** A count needs a second
-write to say "this key already consumed a slot", and a crash between the two either
-double-counts (the customer loses a slot they hold) or loses the claim (the cap is
-breached). The keys of the redemptions currently holding a slot answer both questions
-from one document: the count is `keys.length`, claiming is adding a key that may already
-be there, and the compensation is removing one that may already be gone. So the claim
-and the compensation are idempotent by construction, a compensation can never release
-another key's slot, and the array is bounded by the cap it enforces.
+**Why step 3 exists, and why the guard carries nothing but the cap.** N callers
+completing ONE idempotency key — which is what a retried checkout looks like — must add
+exactly one use. Making the guarded statement itself once-only would mean pinning a
+per-key witness into its `where`, which turns the delta into a revision compare-and-set:
+every redemption then contends with every OTHER redemption of the same coupon, and the
+retry depth grows with the CROWD rather than with the headroom (50 racers against the
+24-attempt ceiling can exhaust it on a coupon with 95 uses left). Worse, it is not even
+sufficient: a peer's bump overwrites the shared witness field, and a same-key replayer
+that no longer sees its own key there bumps again. So once-only lives in the key
+document, where it is per KEY and contends with nothing, and the counter's guard is the
+invariant alone. Both halves are pinned by `coupon-no-over-redeem.pg.test.ts`: 20
+completers of one key while 20 peer keys commit, capped and uncapped.
 
-**Why the capped bump pins a witness.** The guarded statement is a compare-and-set on
-TWO fields: `usesCount < maxUses` is the invariant, and `lastRedeemedKey = <the value
-just read>` is what makes the write once-only. Without that second half, a crowd
-completing the SAME idempotency key — which is what concurrent callers of one key are —
-would each see headroom and each add one. The refusal DECISION is taken from the read
-(`usesCount >= maxUses`), never from `applied: false`, because `updateIf` conflates a
-failed guard with an absent row: a refused write here always means "the document moved,
-read it again". An UNCAPPED coupon takes a plain delta, because there is no invariant to
-violate and pinning a witness would make an unbounded crowd contend for no safety.
+**The bump right is leased, because "slow" and "gone" look identical.** A step held by a
+live owner and one held by a crashed owner are the same document, and a taker that
+guesses wrong bumps twice. So `bumping` carries `bumpLeaseUntil` and a waiter takes the
+step over only once that lapses; until then it re-reads, and if it runs out of patience
+it raises the typed retryable `StorageContentionError` so the caller's own retry reads
+the recorded answer. That is the email-outbox lease (ADR-0019 R2) applied to the same
+problem, and `coupon-crash-seams.dialects.test.ts` pins it from the forbidden side: with
+the owner's `+1` PARKED, a second completer of the same key must refuse retryably rather
+than add a use behind its back.
 
-**The attempt depth is a property of the coupon, not of the crowd.** A retry happens only
-when a DIFFERENT redemption committed, and for a capped coupon the number of those is
-bounded by the headroom left: once it is spent the read refuses without writing at all.
-N racers on a coupon with M uses left therefore retry at most M + 1 times, whatever N is.
+**The counter's attempt depth is 2, whatever the crowd.** A redemption's guarded `+1`
+can be refused for exactly one reason — the coupon reached its cap — and the next read
+settles that, so the step never retries more than once (plus one per concurrent RELEASE
+that hands headroom back mid-flight). Capped redemptions of one coupon are therefore NOT
+serialized against each other: nothing is pinned but the invariant, so nothing contends
+until the invariant actually binds.
 
 ### Coupon crash seams proven
 
@@ -1241,21 +1251,41 @@ N racers on a coupon with M uses left therefore retry at most M + 1 times, whate
 - **a PARKED guarded update** — the claim has landed and the counter has NOT moved. This
   is also the proof that the helper really intercepts `updateIf`; without it every seam
   below could pass while injecting nothing.
+- **a LIVE owner is never overtaken** — the peer of a parked owner refuses retryably, and
+  the counter does not move behind the owner's back.
+- **after the key-doc create, before the slot claim** — the replay takes the slot once
+  and bumps once; the record was still `claimed`, which provably owns nothing.
 - **after the per-customer slot, before the `+1`** — the replay completes the bump and
   takes no second slot: counters exact.
-- **after the `+1`, before the outcome record** — the replay records the answer and does
-  NOT bump again, because the bump stamped its own witness: counters exact.
+- **after the `+1`, before the recorded answer** — the witness survives, so the taker
+  recognises the bump and does not repeat it: counters exact.
+- **the same, with a PEER bump overwriting the witness** — the documented residual,
+  asserted rather than argued: two redemptions, three uses. ONE HIGH, never low.
 - **a refused `+1`** — the slot is given back and the refusal recorded, so a per-customer
   rejection consumes no global headroom and a global refusal leaves no slot consumed.
-- **after the compensation, before the outcome record** — the replay refuses again and
+- **after the refusal, BEFORE its compensation** — the replay re-runs both, and the slot
+  still comes back.
+- **after the compensation, before the recorded answer** — the replay refuses again and
   releases nothing twice.
-- **between a release's delete and its decrement** — the accepted residual, asserted
-  rather than papered over: the counter is left one HIGH, never low, and a second release
-  is a no-op rather than a second decrement. A release claims its decrement by DELETING
-  the record, which is what makes a double release impossible; the price is that a crash
-  in between leaves one use nobody holds. That refuses a redemption that might have fit
-  and never grants one that does not, and it is the only direction a two-document release
-  can fail in without a transaction.
+- **two CONCURRENT replayers of a refused key** — one answer, one compensation. The loser
+  can take its slot AFTER the winner has compensated, which is why the compensation is
+  re-asserted by every caller that is told `COUPON_EXHAUSTED` rather than only by the one
+  that ran the refusal.
+- **between a release's slot-free and its delete** — the replay deletes and decrements
+  exactly once.
+- **between a release's delete and its decrement** — the second accepted residual,
+  asserted rather than papered over: the counter is left one HIGH, never low, and a second
+  release is a no-op rather than a second decrement. A release claims its decrement by
+  DELETING the record, which is what makes a double release impossible; the price is that
+  a crash in between leaves one use nobody holds.
+
+**The two residuals are the same residual, in the same direction.** A guarded delta in
+one document cannot be made idempotent by a witness in another, so each of the two
+places where a crash can fall between the counter and its record leaves the count at
+most ONE HIGH per crash. High refuses a redemption that might have fit; it never grants
+one that does not. Nothing here can leave it low, which is the direction that would
+over-redeem. Making either one exact needs a recount of the coupon's redemption
+documents — a sweeper job, and not this store's to do on a request path.
 
 ### Four deviations from the design's index table, all forced
 
@@ -1269,6 +1299,9 @@ ADR-0019 §4 lists `coupons` keyed by **code** with a `createdAt` index, and
 | `coupon_redemptions` adds `redemptionId` | `release` is given the GENERATED id, not the document id — the port hands back an opaque id exactly as the SQL adapter did |
 | `coupon_redemptions` adds `holdsUse` | a refused key keeps a document (that is what lets a replay answer the same way twice), and it must stay out of the delete guard, `releaseByOrder` and the reconciliation sweep. A boolean cannot be bound as a filter value on one dialect, so it is a STRING mirror — the same pattern as the product gate's `publishKey`, not a second invention |
 
+The redemption's `state` and its lease are NOT indexed: nothing queries by them, and
+every reader that needs them already has the document.
+
 ### Two accepted divergences from the SQL adapter
 
 Both are narrowings, both are documented rather than discovered:
@@ -1276,7 +1309,9 @@ Both are narrowings, both are documented rather than discovered:
 - **A refusal is recorded permanently**, so a replay of an exhausted key answers
   `COUPON_EXHAUSTED` again even if headroom has since been released. The SQL adapter
   rolled its refusal back and kept no record, so a retry there could later succeed. A
-  stable answer per idempotency key is the property the document model is built on.
+  stable answer per idempotency key is the property the document model is built on. A
+  refused record is also never removed by `delete` — it holds no use, so it never forbids
+  one; it stays because it is that answer, and because document ids are not reused.
 - **Codes are unique after case folding**, where the SQL unique index was
   case-sensitive. That is the rule the admin list's case-insensitive exact search already
   implies. `findByCode` stays case-SENSITIVE, by comparing the code the claim stores.
@@ -1288,16 +1323,24 @@ unbounded one here, and the alternative is a per-customer index on the redemptio
 
 ### Coupon contention, measured
 
-| shape | max CAS attempts |
-|---|---|
-| 50 racers on a 5-use cap (20 loops) | 6 |
-| two same-customer racers on a per-customer cap of 1 (15 loops) | 2 |
-| 20 racers completing ONE idempotency key | 1–2 |
-| 40 racers on an UNCAPPED coupon | 1 (nothing is pinned, so nothing contends) |
+`test/coupon-no-over-redeem.pg.test.ts` measures the counter step (`redeem`) separately
+from the bounded wait a caller spends reading a peer's answer (`redeemAwait`), because
+they are different costs: one is a WRITE contending for an invariant, the other is reads.
 
-`test/coupon-no-over-redeem.pg.test.ts` asserts these against its own
-`CAS_ATTEMPT_BUDGET` of 8 — deliberately tighter than `CAS_MAX_ATTEMPTS`, so raising the
-package ceiling can never turn a shape green by accident.
+| shape | counter depth | wait depth |
+|---|---|---|
+| 50 racers on a 5-use cap (20 loops) | 2 | 1 |
+| two same-customer racers on a per-customer cap of 1 (15 loops) | 2 | 1 |
+| 20 racers completing ONE idempotency key | 1 | 4 |
+| 20 completers of one key WHILE 20 peer keys commit, capped and uncapped | 1 | — |
+| 40 racers on an UNCAPPED coupon | 1 | 1 |
+| 50 racers on a coupon with 95 uses left | 1 | 1 |
+
+The counter step is asserted at `<= 2` — a hard bound, not a measurement — and the
+overall depth against a hand-set `CAS_ATTEMPT_BUDGET` of 8, deliberately tighter than
+`CAS_MAX_ATTEMPTS`, so raising the package ceiling can never turn a shape green by
+accident. The last row is the one that says the depth follows the headroom and not the
+crowd: 50 racers, a 24-attempt ceiling, and nobody retries at all.
 
 ## Contention budget
 

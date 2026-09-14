@@ -14,6 +14,7 @@
  * | The SQL | Here |
  * |---|---|
  * | the `OR` inside one guard | TWO client-side branches: a guarded `updateIf` when `maxUses` is set, an unguarded delta when it is not — an uncapped coupon has no invariant to violate |
+ * | the insert conflict that made one caller of a key wait for the winner | the key document's OWN state: `claimed → bumping` is a revision compare-and-set exactly one completer wins |
  * | the unique `(coupon_id, idempotency_key)` | the document id `coupon_redemptions/{couponId}:{idempotencyKey}`, claimed create-if-absent |
  * | the per-customer `COUNT(*)` under the row lock | `coupon_customer_caps/{couponId}:{customerId}`, claimed BEFORE the bump |
  * | `ROLLBACK` undoing a per-customer refusal | an explicit, idempotent compensation — the inverted order is what makes one possible |
@@ -28,44 +29,67 @@
  *
  * ## The redemption state machine
  *
+ * The key document `coupon_redemptions/{couponId}:{idempotencyKey}` OWNS the right
+ * to move the counter, and its state is that ownership:
+ *
  * ```
  *   read coupons/{couponId}            (no write yet: an unknown coupon throws)
  *        │
- *   1. claim coupon_redemptions/{couponId}:{key}     create-if-absent, carries the
- *        │                                          full intent, outcome = null
- *        ├── already present WITH an outcome ──────► return the RECORDED answer
- *        │                                          (no counter is touched)
+ *   1. claim the key document          create-if-absent, full intent, `claimed`
+ *        ├── already TERMINAL ───────► return the RECORDED answer; no counter moves
+ *        │
  *   2. claim the per-customer slot     add the key to coupon_customer_caps/…
  *        │                            (idempotent: the key may already be there)
  *        ├── the cap is full ────────► record COUPON_MAX_PER_CUSTOMER, and NO
  *        │                            global headroom was ever consumed
- *   3. bump the global counter        updateIf: guarded +1 when capped, plain +1
- *        │                            when not; the same statement stamps
- *        │                            lastRedeemedKey
- *        ├── refused ────────────────► release the per-customer slot (idempotent),
- *        │                            record COUPON_EXHAUSTED
- *   4. record { ok: true } on the key document
+ *   3. take the BUMP RIGHT             `claimed → bumping`, a revision CAS that
+ *        │                            exactly ONE completer wins, under a LEASE
+ *        ├── lost ──────────────────► read the winner's answer back; take over only
+ *        │                            once their lease has lapsed
+ *   4. bump the counter                updateIf guarded on the CAP ALONE when
+ *        │                            capped, a plain delta when not
+ *        ├── refused ───────────────► release the slot (idempotent), record
+ *        │                            COUPON_EXHAUSTED
+ *   5. record `applied` on the key document
  * ```
  *
- * **Every step is idempotent, and the ORDER is the invariant.** A per-customer
- * rejection never consumes global headroom, because step 3 is not reached. A
- * refused global bump never leaves a per-customer count consumed, because step 3's
- * refusal path compensates step 2 — and that compensation is "remove this key from
- * the set", so it cannot run twice and cannot release a slot that is not this
- * key's.
+ * **Why step 3 exists, and why the guard carries nothing but the cap.** N callers
+ * completing ONE idempotency key — which is what a retried checkout looks like —
+ * must add exactly one use. Making the guarded statement itself once-only would mean
+ * pinning a per-key witness in its `where`, which turns the delta into a revision
+ * compare-and-set: every redemption would then contend with every other redemption
+ * of the same coupon, and the retry depth would grow with the CROWD (50 racers
+ * against a 24-attempt ceiling exhaust it on a coupon with 95 uses left). So
+ * once-only lives in the key document instead, where it is per KEY and contends with
+ * nothing, and the counter's guard is the invariant and nothing else. A redemption's
+ * guard can then fail for exactly one reason — the coupon reached its cap — which
+ * the next read settles, so the counter's attempt depth is 2 in the worst case
+ * however large the crowd.
  *
- * **The two crash seams, and how each is recovered.** A crash between steps 2 and
- * 3 leaves a claimed-but-unapplied key: any later replayer (or the sweeper) reads
- * the claim, finds its own key already in the per-customer set, and completes the
- * bump — counters exact. A crash between steps 3 and 4 is the one a delta cannot
- * make idempotent by itself, so the bump WRITES ITS WITNESS: `lastRedeemedKey` is
- * set by the same guarded statement, and a replayer that finds its own key there
- * knows the `+1` landed and records the outcome without repeating it — counters
- * exact. If a peer's redemption commits inside that window the witness is
- * overwritten and the replay bumps a second time; the guard still holds on every
- * bump, so `usesCount` can only ever OVER-count. That direction refuses a
- * redemption that might have fit; it never grants one that does not. No
- * over-redeem is unconditional.
+ * **Every step is idempotent, and the ORDER is the invariant.** A per-customer
+ * rejection never consumes global headroom, because step 4 is not reached. A refused
+ * bump never leaves a per-customer count consumed, because step 4's refusal path
+ * compensates step 2 — and that compensation is "remove this key from the set", so it
+ * cannot run twice and cannot release a slot that is not this key's.
+ *
+ * **The lease is what makes the takeover safe.** A step held by a live owner and a
+ * step held by a crashed one look identical, and a taker that guesses wrong bumps
+ * twice — which is why `bumping` carries `bumpLeaseUntil` and a waiter takes over
+ * only after it lapses. Until then it reads, and if it runs out of patience it raises
+ * the typed retryable failure so the caller's own retry observes the answer. This is
+ * the email-outbox lease, applied to the same problem.
+ *
+ * **The seams, and the one that is inexact.** A crash between 2 and 4 leaves a
+ * claimed-but-unapplied key that any later replayer completes with counters exact: it
+ * finds its own key already in the slot set, wins the bump right, and bumps once. A
+ * crash between 4 and 5 leaves the key `bumping`, and THAT is the one seam a guarded
+ * delta cannot make exact from another document: the taker recognises a surviving
+ * `lastRedeemedKey` witness and does not repeat the bump, but a peer's redemption can
+ * overwrite the witness, and then the taker re-bumps. The counter therefore ends at
+ * most ONE HIGH per crash in that seam — never low. High refuses a redemption that
+ * might have fit; it never grants one that does not, which is the same direction as
+ * the release residual below, and it is asserted rather than argued in
+ * `test/coupon-crash-seams.dialects.test.ts`.
  *
  * ## Reading a coupon by code
  *
@@ -98,8 +122,12 @@ import {
 	type UpdateCouponResult,
 } from "@otta-sh/domain";
 import {
+	CAS_BASE_DELAY_MS,
+	CAS_MAX_ATTEMPTS,
+	CAS_MAX_DELAY_MS,
 	CAS_RETRY,
 	casDone,
+	isStorageContentionError,
 	StorageContentionError,
 	withCasRetry,
 	type CasRetryOptions,
@@ -115,6 +143,7 @@ import {
 	couponRedemptionDocId,
 	foldCouponCode,
 	holdsUseFor,
+	isTerminalRedemption,
 	normalizeCouponDoc,
 	normalizeCustomerCapDoc,
 	normalizeRedemptionDoc,
@@ -154,6 +183,32 @@ const MAX_LIST_PAGES = 1000;
  */
 const CLAIM_ROUNDS = 2;
 
+/**
+ * How long a completer owns the bump step before another may take it over, in
+ * milliseconds.
+ *
+ * It is a LEASE, and it is what makes the takeover safe rather than a guess: a live
+ * owner needs one round trip to finish and is therefore never overtaken, while a
+ * crashed one's key becomes completable the moment its lease lapses. Ten seconds is
+ * generous against a redemption whose whole retry budget is under a second, and
+ * short against any human-noticeable wait; it is the same device — and the same
+ * reasoning — as the email-outbox lease.
+ */
+export const COUPON_BUMP_LEASE_MS = 10_000;
+
+/**
+ * How many times a completer that LOST the bump right re-reads the key document
+ * while its owner's lease is still live.
+ *
+ * This is LATENCY, not correctness: the lease above decides whether a takeover is
+ * allowed at all, and this only decides how long a caller is willing to wait for an
+ * answer it can read instead of recompute. It shares the package's one budget knob
+ * (`maxCasAttempts`), so a suite that wants a short wait asks for a short budget. Running out is the typed retryable
+ * failure, never a takeover of a live owner. Backoff is the same jittered schedule
+ * the retry loop uses.
+ */
+const BUMP_WAIT_ATTEMPTS = CAS_MAX_ATTEMPTS;
+
 export interface EmdashCouponStoreOptions {
 	/** The collections the plugin descriptor declared (`COUPON_COLLECTIONS`). */
 	storage: StorageAccess;
@@ -171,6 +226,8 @@ export interface EmdashCouponStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for the bounded scans. Default 1000. */
 	maxListPages?: number;
+	/** Override the bump step's lease, in ms. Defaults to {@link COUPON_BUMP_LEASE_MS}. */
+	bumpLeaseMs?: number;
 }
 
 /** What one resolved redemption claim is: the document, and how it got there. */
@@ -190,6 +247,7 @@ export class EmdashCouponStore implements CouponStore {
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
+	readonly #bumpLeaseMs: number;
 
 	constructor(options: EmdashCouponStoreOptions) {
 		this.#coupons = collectionOf<CouponDoc>(options.storage, COUPONS_COLLECTION);
@@ -211,6 +269,7 @@ export class EmdashCouponStore implements CouponStore {
 			random: options.random,
 		};
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
+		this.#bumpLeaseMs = options.bumpLeaseMs ?? COUPON_BUMP_LEASE_MS;
 	}
 
 	// -- the coupon row --------------------------------------------------------
@@ -245,7 +304,13 @@ export class EmdashCouponStore implements CouponStore {
 			createdAt: now,
 		};
 		const written = await this.#coupons.compareAndSet(input.id, null, doc);
-		if (!written.applied) throw new CouponIdCollisionError(input.id);
+		if (!written.applied) {
+			// The code claim was taken for a coupon this call is NOT going to create. Give
+			// it back, or the code is stranded pointing at a coupon that carries a
+			// different one — an alias no reader could ever resolve correctly.
+			await this.#releaseCode(doc);
+			throw new CouponIdCollisionError(input.id);
+		}
 		return toCouponRecord(doc);
 	}
 
@@ -305,6 +370,13 @@ export class EmdashCouponStore implements CouponStore {
 	 * rolled back and never existed) from forbidding a delete. A redemption still
 	 * in flight counts as holding one, which is the conservative direction.
 	 *
+	 * **A refused key's document is NOT removed by a delete, and outlives the coupon.**
+	 * It holds no use, so it never forbids the delete; it stays because it is the
+	 * record that makes a replay of that idempotency key answer the same way twice,
+	 * and because document ids are never reused. Nothing reads it after its coupon is
+	 * gone — `redeem` reads the coupon first and throws — so it is inert history,
+	 * collectable by a sweep and by nothing on a request path.
+	 *
 	 * The count and the delete are two statements, where the SQL was one
 	 * conditional `DELETE`. A `redeem` that reads the coupon between them can still
 	 * claim a key against a coupon this call then removes; nothing is miscounted
@@ -331,8 +403,21 @@ export class EmdashCouponStore implements CouponStore {
 		// and the branch decision needs `maxUses` and `maxUsesPerCustomer`.
 		const coupon = await this.#requireCoupon(input.couponId);
 		const claim = await this.#resolveClaim(input);
-		if (claim.doc.outcome !== null) return replayOf(claim.doc, claim.doc.outcome);
-		return this.#applyRedemption(coupon, claim);
+		const answer = await this.#advance(coupon, claim);
+		// The compensation is a property of the ANSWER, not of one code path. A caller
+		// that lost the bump right can claim its slot AFTER the winner has already
+		// refused and compensated, so re-asserting it here is what makes "a global
+		// refusal never leaves a per-customer count consumed" true for every caller
+		// rather than for the one that ran the refusal. Removing a key that is already
+		// gone is a no-op, which is why this can be unconditional.
+		if (
+			!answer.ok &&
+			answer.reason === "COUPON_EXHAUSTED" &&
+			capInForce(coupon, claim.doc) !== null
+		) {
+			await this.#releaseCustomerSlot(claim.doc);
+		}
+		return answer;
 	}
 
 	/**
@@ -520,7 +605,9 @@ export class EmdashCouponStore implements CouponStore {
 				customerId: input.customerId ?? null,
 				idempotencyKey: input.idempotencyKey,
 				createdAt: input.createdAt,
-				holdsUse: holdsUseFor(null),
+				state: "claimed",
+				holdsUse: holdsUseFor("claimed"),
+				bumpLeaseUntil: null,
 				outcome: null,
 				capClaimed: false,
 			};
@@ -535,26 +622,157 @@ export class EmdashCouponStore implements CouponStore {
 		throw new StorageContentionError("redeem", CLAIM_ROUNDS);
 	}
 
-	/** Steps 2–4 of the state machine, over an already-claimed key. */
-	async #applyRedemption(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
-		// A cap applies only to an identified customer: a guest checkout carries no
-		// customer id and degrades to the global cap alone, exactly as the SQL did.
-		const cap = claim.doc.customerId === null ? null : coupon.maxUsesPerCustomer;
-		if (cap !== null) {
-			if (!(await this.#claimCustomerSlot(claim.doc, cap))) {
-				await this.#record(claim, { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" }, false);
-				return { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" };
+	/** Drive a resolved claim to its answer, from whichever state it is in. */
+	async #advance(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
+		const { state, outcome } = claim.doc;
+		if (isTerminalRedemption(state) && outcome !== null) return answerOf(claim.doc, outcome, true);
+		if (state === "bumping") return this.#awaitOrTakeOver(coupon, claim);
+		return this.#fromClaimed(coupon, claim);
+	}
+
+	/**
+	 * The ordinary path: take the per-customer slot, then take the RIGHT to bump.
+	 *
+	 * Losing the right is not a failure and not a retry of the bump — it means a peer
+	 * completing the same key owns the counter write, and this caller's job is to read
+	 * that caller's answer.
+	 */
+	async #fromClaimed(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
+		const cap = capInForce(coupon, claim.doc);
+		if (cap !== null && !(await this.#claimCustomerSlot(claim.doc, cap))) {
+			// Step 3 was never reached, so no global headroom was consumed and there is
+			// nothing to compensate.
+			return this.#finish(claim, { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
+		}
+		const owned = await this.#takeBumpRight(claim, cap !== null, "fresh");
+		if (owned === null) return this.#awaitOrTakeOver(coupon, claim);
+		return this.#runBump(coupon, { ...claim, doc: owned }, cap !== null);
+	}
+
+	/**
+	 * Move the key document into `bumping` on its own revision — the once-only gate
+	 * on the counter.
+	 *
+	 * Of N callers holding the same revision exactly one wins, and the winner is the
+	 * only one that touches `usesCount`. WHICH state it is allowed to move out of is
+	 * the caller's to say, and it is load-bearing:
+	 *
+	 * - `"fresh"` takes the step only from `claimed`. A caller that arrives to find the
+	 *   step already owned must NOT take it, or a late completer of the same key would
+	 *   walk straight past a live owner and bump a second time.
+	 * - `"lapsed"` takes it from a `bumping` document whose lease has run out — the
+	 *   healing path, re-checking the lease against the revision it is about to write,
+	 *   so an owner that renewed in the meantime is not overtaken.
+	 *
+	 * Returns the document as written, or `null` when the step was not available.
+	 */
+	async #takeBumpRight(
+		claim: ResolvedClaim,
+		capClaimed: boolean,
+		from: "fresh" | "lapsed",
+	): Promise<CouponRedemptionDoc | null> {
+		const current = await this.#redemptions.getVersioned(claim.docId);
+		if (current === null) return null;
+		const doc = normalizeRedemptionDoc(current.value);
+		if (isTerminalRedemption(doc.state)) return null;
+		if (from === "fresh" ? doc.state !== "claimed" : !this.#leaseLapsed(doc)) return null;
+		const next: CouponRedemptionDoc = {
+			...doc,
+			state: "bumping",
+			holdsUse: holdsUseFor("bumping"),
+			bumpLeaseUntil: new Date(this.#clock.now().getTime() + this.#bumpLeaseMs).toISOString(),
+			capClaimed: doc.capClaimed || capClaimed,
+		};
+		const written = await this.#redemptions.compareAndSet(claim.docId, current.revision, next);
+		return written.applied ? next : null;
+	}
+
+	/**
+	 * Somebody else owns the bump: read their answer back, and take the step over only
+	 * once their LEASE has lapsed.
+	 *
+	 * The lease is what separates "slow" from "gone". A live owner is never overtaken,
+	 * however long this caller has been waiting, so a crowd completing one key adds
+	 * exactly one use no matter how the crowd is scheduled. A lapsed lease means the
+	 * owner is not coming back, and then the takeover is the healing path.
+	 *
+	 * Running out of patience while the lease is still live is the typed RETRYABLE
+	 * failure — the caller's own retry will read the recorded answer — never a
+	 * takeover. A document that VANISHES while being waited on was released underneath
+	 * this call, and there is no honest answer to return for that either.
+	 */
+	async #awaitOrTakeOver(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
+		const patience = this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS;
+		for (let attempt = 1; attempt <= patience; attempt++) {
+			const doc = await this.#redemptions.get(claim.docId);
+			if (doc === null) throw new StorageContentionError("redeem", attempt);
+			const settled = normalizeRedemptionDoc(doc);
+			if (settled.outcome !== null) {
+				this.#retry.onAttempts?.("redeemAwait", attempt);
+				return answerOf(settled, settled.outcome, true);
 			}
+			if (this.#leaseLapsed(settled)) {
+				this.#retry.onAttempts?.("redeemAwait", attempt);
+				return this.#takeOverBump(coupon, { ...claim, doc: settled });
+			}
+			await this.#backoff(attempt);
 		}
-		if (!(await this.#bumpGlobal(coupon.couponId, claim.doc.idempotencyKey))) {
-			// The compensation the transaction used to be. Idempotent, and scoped to
-			// this key's own slot, so a second replayer cannot release it twice.
-			if (cap !== null) await this.#releaseCustomerSlot(claim.doc);
-			await this.#record(claim, { ok: false, reason: "COUPON_EXHAUSTED" }, false);
-			return { ok: false, reason: "COUPON_EXHAUSTED" };
+		this.#retry.onAttempts?.("redeemAwait", patience);
+		throw new StorageContentionError("redeem", patience);
+	}
+
+	/** Has the owner of this step stopped owning it? A `claimed` doc owns nothing. */
+	#leaseLapsed(doc: CouponRedemptionDoc): boolean {
+		if (doc.state !== "bumping") return true;
+		const until = doc.bumpLeaseUntil;
+		return until === null || until <= this.#clock.now().toISOString();
+	}
+
+	/**
+	 * Finish a step whose owner never came back.
+	 *
+	 * THE ONE INEXACT SEAM, stated plainly. The predecessor may have crashed after
+	 * its `+1` landed but before it recorded the answer, and a guarded delta cannot
+	 * be made idempotent from another document. Where the witness survives — the
+	 * common case, since a crash window is short — the bump is recognised and NOT
+	 * repeated. Where a peer's redemption has overwritten it, this taker re-bumps, so
+	 * the counter ends at most ONE HIGH per crash in this seam. High refuses a
+	 * redemption that might have fit; it never grants one that does not, which is the
+	 * same direction (and the same reasoning) as the release residual.
+	 */
+	async #takeOverBump(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
+		const cap = capInForce(coupon, claim.doc);
+		// Idempotent by key: re-claiming a slot this key already holds is a no-op, and
+		// a takeover from `claimed` may be the first to take it at all.
+		if (cap !== null && !(await this.#claimCustomerSlot(claim.doc, cap))) {
+			return this.#finish(claim, { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
 		}
-		await this.#record(claim, { ok: true }, cap !== null);
-		return { ok: true, redemptionId: claim.doc.redemptionId, replayed: claim.replayed };
+		const owned = await this.#takeBumpRight(claim, cap !== null, "lapsed");
+		if (owned === null) {
+			const doc = await this.#redemptions.get(claim.docId);
+			const settled = doc === null ? null : normalizeRedemptionDoc(doc);
+			if (settled !== null && settled.outcome !== null) {
+				return answerOf(settled, settled.outcome, true);
+			}
+			throw new StorageContentionError("redeem", this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS);
+		}
+		const taken = { ...claim, doc: owned };
+		const live = await this.#coupons.get(coupon.couponId);
+		if (live !== null && normalizeCouponDoc(live).lastRedeemedKey === owned.idempotencyKey) {
+			return this.#finish(taken, { ok: true });
+		}
+		return this.#runBump(coupon, taken, cap !== null);
+	}
+
+	/** The counter write itself, plus the compensation its refusal owes. */
+	async #runBump(coupon: CouponDoc, claim: ResolvedClaim, capped: boolean): Promise<RedeemResult> {
+		if (await this.#bumpGlobal(coupon.couponId, claim.doc.idempotencyKey)) {
+			return this.#finish(claim, { ok: true });
+		}
+		// The compensation the transaction used to be. Idempotent, and scoped to this
+		// key's own slot, so a second replayer cannot release it twice.
+		if (capped) await this.#releaseCustomerSlot(claim.doc);
+		return this.#finish(claim, { ok: false, reason: "COUPON_EXHAUSTED" });
 	}
 
 	/**
@@ -611,55 +829,36 @@ export class EmdashCouponStore implements CouponStore {
 	/**
 	 * The guarded `+1` — the no-over-redeem statement, in its two branches.
 	 *
-	 * A CAPPED coupon takes ONE statement that is a compare-and-set on two fields at
-	 * once: `usesCount < maxUses` is the invariant, and `lastRedeemedKey = <the value
-	 * just read>` is what makes the write once-only. Without that second half, two
-	 * callers completing the SAME key concurrently — which is exactly what a crowd
-	 * sharing one idempotency key is — would each see headroom and each add one. With
-	 * it, one of them commits and the other's guard fails, re-reads, finds ITS OWN key
-	 * stamped, and reports the bump as already applied. The refusal DECISION is taken
-	 * from the read (`usesCount >= maxUses`), never from `applied: false`, because
-	 * `updateIf` conflates a failed guard with an absent row; a refused write here
-	 * always means "the document moved, read it again".
-	 *
-	 * An UNCAPPED coupon takes a plain delta: there is no invariant to violate, and
-	 * pinning the witness would make an unbounded crowd contend for no safety. The
-	 * pre-read witness check still short-circuits a crash replay; what remains is that
-	 * two callers completing the same key at the same instant may each add one, which
-	 * an uncapped counter can absorb — it over-counts, and there is no cap for an
-	 * over-count to breach. `updateIf` never inserts, so a refusal there can only mean
+	 * A CAPPED coupon is guarded on `usesCount < maxUses` and on NOTHING ELSE, which
+	 * is what keeps a redemption from ever waiting on a peer redemption of the same
+	 * coupon: once-only per key is the key document's job (see {@link #takeBumpRight}),
+	 * not the guard's. An UNCAPPED one takes a plain delta — there is no invariant to
+	 * violate — and because `updateIf` never inserts, a refusal there can only mean
 	 * the document is gone.
 	 *
-	 * **The attempt depth is a property of the coupon, not of the crowd.** A retry
-	 * happens only when a DIFFERENT redemption committed, and for a capped coupon the
-	 * number of those is bounded by the remaining headroom: after it is spent the read
-	 * refuses without writing at all. So N racers on a coupon with M uses left retry at
-	 * most M + 1 times, whatever N is.
+	 * The refusal DECISION is taken from the READ (`usesCount >= maxUses`), never from
+	 * `applied: false`, because `updateIf` conflates a failed guard with an absent
+	 * row. So a refused write means only "the document moved, read it again" — and the
+	 * ONLY thing that can move it into refusing is the coupon reaching its cap, which
+	 * the next read settles. The attempt depth is therefore 2 in the worst case, plus
+	 * one per concurrent RELEASE that hands headroom back mid-flight.
 	 */
 	async #bumpGlobal(couponId: string, key: string): Promise<boolean> {
 		return this.#cas<boolean>("redeem", async () => {
 			const live = await this.#coupons.get(couponId);
 			if (live === null) throw new CouponNotFoundError(couponId);
-			const doc = normalizeCouponDoc(live);
-			// Our own key is stamped: the `+1` landed, whoever ran it.
-			if (doc.lastRedeemedKey === key) return casDone(true);
-			const max = doc.maxUses;
-			if (max === null) {
-				const result = await this.#coupons.updateIf(couponId, {
-					where: {},
-					set: { lastRedeemedKey: key },
-					delta: { usesCount: { inc: 1 } },
-				});
-				if (!result.applied) throw new CouponNotFoundError(couponId);
-				return casDone(true);
-			}
-			if (doc.usesCount >= max) return casDone(false);
+			const max = normalizeCouponDoc(live).maxUses;
+			if (max !== null && normalizeCouponDoc(live).usesCount >= max) return casDone(false);
 			const result = await this.#coupons.updateIf(couponId, {
-				where: { usesCount: { lt: max }, lastRedeemedKey: doc.lastRedeemedKey },
+				where: max === null ? {} : { usesCount: { lt: max } },
+				// A best-effort witness for the takeover seam, never a guard: see
+				// `#takeOverBump`, and `CouponDoc.lastRedeemedKey`.
 				set: { lastRedeemedKey: key },
 				delta: { usesCount: { inc: 1 } },
 			});
-			return result.applied ? casDone(true) : CAS_RETRY;
+			if (result.applied) return casDone(true);
+			if (max === null) throw new CouponNotFoundError(couponId);
+			return CAS_RETRY;
 		});
 	}
 
@@ -674,51 +873,103 @@ export class EmdashCouponStore implements CouponStore {
 		});
 	}
 
-	/** Record the terminal answer on the key document — the replay's only source. */
-	async #record(
-		claim: ResolvedClaim,
-		outcome: RedemptionOutcome,
-		capClaimed: boolean,
-	): Promise<void> {
-		await this.#cas<void>("redeem", async () => {
+	/**
+	 * Record the terminal state on the key document — the replay's only source.
+	 *
+	 * Returns the answer that is ACTUALLY recorded, which is not always the one this
+	 * caller computed: a taker and a slow owner can both finish, and the first write
+	 * is the truth for everybody.
+	 */
+	async #finish(claim: ResolvedClaim, outcome: RedemptionOutcome): Promise<RedeemResult> {
+		const recorded = await this.#cas<RedemptionOutcome>("redeem", async () => {
 			const current = await this.#redemptions.getVersioned(claim.docId);
 			// Released underneath us: there is nothing left to record an answer on, and
 			// the release already undid whatever this key held.
-			if (current === null) return casDone(undefined);
+			if (current === null) return casDone(outcome);
 			const doc = normalizeRedemptionDoc(current.value);
-			if (doc.outcome !== null) return casDone(undefined);
+			if (doc.outcome !== null) return casDone(doc.outcome);
+			const state = outcome.ok ? "applied" : "refused";
 			const written = await this.#redemptions.compareAndSet(claim.docId, current.revision, {
 				...doc,
+				state,
+				holdsUse: holdsUseFor(state),
+				bumpLeaseUntil: null,
 				outcome,
-				holdsUse: holdsUseFor(outcome),
-				capClaimed: doc.capClaimed || capClaimed,
 			});
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(outcome) : CAS_RETRY;
 		});
+		return answerOf(claim.doc, recorded, claim.replayed);
+	}
+
+	/** The jittered wait between two reads of a key somebody else owns. */
+	async #backoff(attempt: number): Promise<void> {
+		const sleep = this.#retry.sleep ?? defaultSleep;
+		const random = this.#retry.random ?? Math.random;
+		await sleep(random() * Math.min(CAS_BASE_DELAY_MS * 2 ** (attempt - 1), CAS_MAX_DELAY_MS));
 	}
 
 	/**
-	 * Free one redemption's slot, delete it, and decrement if it held a use.
+	 * Free one redemption's slot, delete it, and decrement iff it consumed a use.
 	 *
-	 * "Held a use" is the recorded `{ ok: true }` OR the coupon's witness naming this
-	 * key: a redemption whose bump landed but whose outcome record was lost to a
-	 * crash still consumed a use, and releasing it must give that use back. Returns
-	 * whether THIS call was the one that deleted the record.
+	 * "Consumed a use" is read off the key document's STATE, not guessed from a
+	 * witness a peer may have overwritten. The state is authoritative because the
+	 * counter is only ever touched AFTER `bumping` is durable: `claimed` provably
+	 * never bumped, and `applied` provably did. `bumping` is the one ambiguous state,
+	 * and it is COMPLETED first rather than guessed at — so a release can never
+	 * delete an applied redemption without giving its use back.
+	 *
+	 * Returns whether THIS call was the one that deleted the record.
 	 */
 	async #releaseClaim(docId: string, doc: CouponRedemptionDoc): Promise<boolean> {
-		await this.#releaseCustomerSlot(doc);
-		const coupon = await this.#coupons.get(doc.couponId);
-		const applied =
-			doc.outcome?.ok === true ||
-			(coupon !== null && normalizeCouponDoc(coupon).lastRedeemedKey === doc.idempotencyKey);
+		const settled = doc.state === "bumping" ? await this.#settleForRelease(docId, doc) : doc;
+		if (settled === null) return false;
+		await this.#releaseCustomerSlot(settled);
+		const consumed = settled.state === "applied";
 		const deleted = await this.#cas<boolean>("releaseCoupon", async () => {
 			const current = await this.#redemptions.getVersioned(docId);
 			if (current === null) return casDone(false);
 			const written = await this.#redemptions.compareAndDelete(docId, current.revision);
 			return written.applied ? casDone(true) : CAS_RETRY;
 		});
-		if (deleted && applied) await this.#decrementGlobal(doc.couponId);
+		if (deleted && consumed) await this.#decrementGlobal(settled.couponId);
 		return deleted;
+	}
+
+	/**
+	 * Drive a mid-flight redemption to a terminal state so a release can read its
+	 * answer instead of guessing.
+	 *
+	 * Completing it may bump the counter that this release is about to decrement.
+	 * That is net zero and it is the point: the alternative is deciding `applied`
+	 * from a witness, which is exactly the guess this method exists to remove.
+	 *
+	 * Losing the takeover to a live completer is not a failure — it means somebody
+	 * else is recording the answer, and the re-read below finds it. A document still
+	 * `bumping` after that is left to the witness as a last resort, in the
+	 * conservative direction: not decrementing leaves the counter HIGH, never low.
+	 */
+	async #settleForRelease(
+		docId: string,
+		doc: CouponRedemptionDoc,
+	): Promise<CouponRedemptionDoc | null> {
+		const coupon = await this.#coupons.get(doc.couponId);
+		if (coupon !== null) {
+			try {
+				// Through the lease-aware waiter, not straight into the takeover: a release
+				// must not overtake a live completer any more than a redemption may.
+				await this.#awaitOrTakeOver(normalizeCouponDoc(coupon), { docId, doc, replayed: true });
+			} catch (err) {
+				if (!isStorageContentionError(err)) throw err;
+			}
+		}
+		const reread = await this.#redemptions.get(docId);
+		if (reread === null) return null;
+		const settled = normalizeRedemptionDoc(reread);
+		if (settled.state !== "bumping") return settled;
+		const live = coupon === null ? null : await this.#coupons.get(doc.couponId);
+		const bumped =
+			live !== null && normalizeCouponDoc(live).lastRedeemedKey === settled.idempotencyKey;
+		return bumped ? { ...settled, state: "applied" } : settled;
 	}
 
 	/** The redemption a generated id names — the port's `release` handle. */
@@ -806,12 +1057,30 @@ export class EmdashCouponStore implements CouponStore {
 
 // -- predicates and projections ---------------------------------------------
 
-/** What a recorded outcome answers a replay with. */
-function replayOf(doc: CouponRedemptionDoc, outcome: RedemptionOutcome): RedeemResult {
+/** What a recorded outcome answers with. A refusal carries no replay flag. */
+function answerOf(
+	doc: CouponRedemptionDoc,
+	outcome: RedemptionOutcome,
+	replayed: boolean,
+): RedeemResult {
 	return outcome.ok
-		? { ok: true, redemptionId: doc.redemptionId, replayed: true }
+		? { ok: true, redemptionId: doc.redemptionId, replayed }
 		: { ok: false, reason: outcome.reason };
 }
+
+/**
+ * A cap applies only to an IDENTIFIED customer: a guest checkout carries no
+ * customer id and degrades to the global cap alone, exactly as the SQL did.
+ */
+function capInForce(coupon: CouponDoc, doc: CouponRedemptionDoc): number | null {
+	return doc.customerId === null ? null : coupon.maxUsesPerCustomer;
+}
+
+/** The wait between two reads of a key document somebody else owns. */
+const defaultSleep = (ms: number): Promise<void> =>
+	new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
 
 /**
  * The pushed-down half of the list predicate: the cursor's COARSE `createdAt`
