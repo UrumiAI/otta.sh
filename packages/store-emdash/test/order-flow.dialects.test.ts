@@ -20,7 +20,9 @@
  * write against a real database.
  */
 import {
+	cents,
 	createOrderFromCart,
+	currency,
 	expireOrders,
 	getCart,
 	idempotencyKey,
@@ -33,11 +35,14 @@ import {
 } from "@otta-sh/domain";
 import { expect, test } from "vitest";
 import {
+	collectionOf,
 	EmdashOrderStore,
 	isOrderNotFoundError,
 	isPaymentRefConflictError,
 	isScanPageLimitError,
 	normalizeOrderDoc,
+	REFUND_KEYS_COLLECTION,
+	type RefundKeyDoc,
 	uuidIdGen,
 } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
@@ -728,13 +733,56 @@ describeEachDialect("order flow", (ctx) => {
 		}
 		const doc = await h.orders.get(res.order.id);
 		const afterFive = JSON.stringify(doc).length;
+
+		// The MONEY ledgers are the other half of the growth, and INC-B3 is where they
+		// start being written: two captures and three refunds on top of the five
+		// transitions, which is a busier order than the shape admits in practice (a
+		// split capture plus three partial returns). The ceiling is 7,404 — three lines
+		// of two at 1,234 — so the three refunds stay well inside it and drive no flip.
+		const half = 3702;
+		for (const [i, amount] of [half, half].entries()) {
+			await h.store.recordPayment({
+				orderId: res.order.id,
+				gateway: "stripe",
+				providerRef: `pi-size-${String(i)}`,
+				amount: cents(amount),
+				currency: currency("USD"),
+				status: "succeeded",
+			});
+		}
+		for (let i = 0; i < 3; i++) {
+			const recorded = await h.store.recordRefund({
+				orderId: res.order.id,
+				amount: cents(1000),
+				currency: currency("USD"),
+				kind: "manual",
+				gateway: "stripe",
+				refundRef: null,
+				reason: "partial return",
+				refundedBy: "admin@shop",
+				idempotencyKey: idempotencyKey(`rf-size-${String(i)}`),
+			});
+			expect(recorded.outcome).toBe("recorded");
+		}
+		const withLedgers = await h.orders.get(res.order.id);
+		const afterLedgers = JSON.stringify(withLedgers).length;
+		// The refund claim, measured like the order key's: it is the other document a
+		// refund writes, and its terminal form is what stays.
+		const refundKeys = collectionOf<RefundKeyDoc>(bound.storage, REFUND_KEYS_COLLECTION);
+		const terminalClaim = JSON.stringify(await refundKeys.get("rf-size-0")).length;
 		console.info(
 			`[order-doc-size] created=${String(created)}B afterFiveTransitions=${String(afterFive)}B ` +
+				`withTwoPaymentsThreeRefunds=${String(afterLedgers)}B ` +
+				`refundKeyTerminal=${String(terminalClaim)}B ` +
 				`events=${String(doc?.events.length)} outbox=${String(doc?.emailOutbox.length)}`,
 		);
+		expect(terminalClaim).toBeLessThan(ORDER_DOC_SIZE_CAP);
 		expect(doc?.events).toHaveLength(5);
+		expect(withLedgers?.payments).toHaveLength(2);
+		expect(withLedgers?.refunds).toHaveLength(3);
 		expect(created).toBeLessThan(ORDER_DOC_SIZE_CAP);
 		expect(afterFive).toBeLessThan(ORDER_DOC_SIZE_CAP);
+		expect(afterLedgers).toBeLessThan(ORDER_DOC_SIZE_CAP);
 	});
 
 	test("commit against a released reservation throws the loud ReservationCommitLostError; against a committed one it is a benign no-op (guard-first)", async () => {

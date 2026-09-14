@@ -60,7 +60,13 @@
  * |---|---|---|---|
  * | adopt | `createFromCart` (before the use-case's `adoptMany`) | `adoptMany`, idempotent per reservation id | {@link EmdashOrderStore.completeHoldAdoption} |
  * | commit | the `→ paid` flip (before settle's `commitMany`) | singular `commit` per id | {@link EmdashOrderStore.completeHoldCommit} |
- * | release | the `→ expired` flip | `releaseAdopted` per id, order-scoped | {@link EmdashOrderStore.completeHoldRelease} |
+ * | release | the `→ expired` AND `→ cancelled` flips | `releaseAdopted` per id, order-scoped | {@link EmdashOrderStore.completeHoldRelease} |
+ *
+ * The cancellation leg is the one the SQL adapter had no analogue for (its cancel was
+ * a pure envelope write): a cancelled order no longer claims its holds, so it records
+ * the same intent expiry does. `releaseAdopted`'s ADOPTED-ONLY guard is what makes that
+ * safe on a PAID order cancelled after settle — a `committed` hold is not adopted, so
+ * the release is an unconditional no-op and spent units are never returned.
  *
  * An intent whose `completedAt` is `null` is the marker that work is owed; each
  * completion is idempotent and callable by ANY replayer, which is what makes a
@@ -69,17 +75,49 @@
  * `commitMany` SKIPS an already-`committed` id: a SKU caught between its terminal
  * record and its prune is finished by the singular call, never by the batch.
  *
+ * ## The refund ceiling is one write on this document
+ *
+ * `min(Σ captured, frozen total)` was computed under a row lock on `orders` so two
+ * concurrent refunds could not each read the same headroom. Here `payments[]` and
+ * `refunds[]` are fields of the very document the refund is appended to, so the
+ * ceiling, the ACTIVE-capacity arbitration and the row all live inside ONE
+ * compare-and-set — the revision doing what the lock did. The four-state capacity
+ * lifecycle (ADR-0019 R6) is read and written in that same step: `reserved` and
+ * `unverified` HOLD capacity, `voided` releases it, and `finalizeRefund` is
+ * status-guarded and NEVER re-arbitrates, because its reservation already holds what
+ * it is about to finalize. `refund_keys/{key}` exists because the settle half of the
+ * protocol carries only the key — and, like `order_keys`, it carries the whole
+ * prepared row so a crash before the order write is completed rather than re-minted.
+ *
+ * Fulfillment and cancellation ride the same guarded flip as every other state
+ * change (`#flip`'s `envelope`), never a parallel copy of it; cancellation also
+ * records the release intent, because a cancelled order no longer claims its holds.
+ *
+ * ## The email-outbox lease landed here, ahead of its increment
+ *
+ * The fulfillment and cancellation specs both assert that exactly ONE notification
+ * DRAINS, which runs `dispatchOrderEmails` — so `claimNextEmail`, `markEmailSent`
+ * and `rescheduleEmail` are a dependency of this increment's own gate, the way
+ * `recordPayment` was a dependency of the previous one's. They implement ADR-0019's
+ * R2: the SQL's OR-and-negation claim predicate becomes the single denormalized
+ * {@link OrderDoc.emailDueAt} index, and the claim re-applies that predicate to the
+ * entry it picked inside one compare-and-set. The lease's OWN contract cases (the
+ * crashed dispatcher, the exhausted retry) are still the lists increment's, as is the
+ * `outbox_keys` locator {@link EmdashOrderStore.#updateOutboxEntry} owes.
+ *
  * ## What this increment does NOT implement
  *
- * Refunds, reconciliation resolution, fulfillment and cancellation (INC-B3) and
- * the lists, search, customer view and outbox lease (INC-B4) throw
+ * The lists, the search and the customer view (INC-B4) throw
  * {@link NotImplementedInIncrementError} naming their increment — a loud, typed
  * refusal rather than a wrong answer. Their FIELDS and INDEXES are already in the
- * document shape (see `order-documents.ts`), so those increments add behaviour
+ * document shape (see `order-documents.ts`), so that increment adds behaviour
  * without reshaping a collection that holds live orders.
  */
 import {
 	cents,
+	computeRefundCeiling,
+	emailTemplateForState,
+	isLegalOrderTransition,
 	type CancelOrderInput,
 	type CancelOrderStoreResult,
 	type CapturedPayment,
@@ -109,6 +147,7 @@ import {
 	type RecordFulfillmentStoreResult,
 	ReservationNotFoundError,
 	type RecordPaymentInput,
+	type RefundStatus,
 	type RecordRefundInput,
 	type RecordRefundStoreResult,
 	type RefundRecord,
@@ -131,9 +170,14 @@ import {
 	ScanPageLimitError,
 } from "./errors.js";
 import {
+	activeRefundTotal,
+	capturedPaymentTotal,
+	computeEmailDueAt,
 	computeHoldsPendingAt,
 	customerKeyFor,
+	finalizedRefundTotal,
 	findOutboxEntry,
+	findRefund,
 	type HoldIntentDoc,
 	isOutstanding,
 	newHoldIntent,
@@ -145,7 +189,12 @@ import {
 	ORDERS_COLLECTION,
 	PAYMENT_REFS_COLLECTION,
 	type PaymentRefDoc,
+	type OutboxEntryDoc,
+	outboxDueAt,
 	physicalReservationIds,
+	REFUND_KEYS_COLLECTION,
+	type RefundEntryDoc,
+	type RefundKeyDoc,
 } from "./order-documents.js";
 import type { StorageAccess, StorageCollection } from "./storage-access.js";
 
@@ -177,13 +226,30 @@ export interface EmdashOrderStoreOptions {
 	 * ceiling is a typed `ScanPageLimitError`, never a silently short list.
 	 */
 	maxExpiryPages?: number;
+	/**
+	 * Override how many pages the EMAIL scans will walk before they refuse to loop
+	 * further (default {@link MAX_OUTBOX_PAGES}).
+	 *
+	 * Separate from {@link maxExpiryPages} on purpose: the two scans are bounded by
+	 * different things — the expiry scan by how many orders are past their hold
+	 * deadline, the outbox scans by how many messages are in flight — so a suite that
+	 * squeezes one must not silently squeeze the other, and an operator raising one
+	 * budget is not agreeing to raise the other.
+	 */
+	maxOutboxPages?: number;
 }
 
 /** How many pages `listExpirable` will walk before it refuses to loop further. */
 const MAX_EXPIRY_PAGES = 1000;
 
+/** How many pages the outbox claim / settle scans will walk before refusing. */
+const MAX_OUTBOX_PAGES = 1000;
+
 /** The host clamps `limit` at 100; asking for it is asking for the widest page. */
 const EXPIRY_PAGE_SIZE = 100;
+
+/** The same, for the outbox scans — declared separately for the reason the budget is. */
+const OUTBOX_PAGE_SIZE = 100;
 
 /** The outcome of a hold-bracket completion: what landed, and what was lost. */
 export interface HoldCompletionResult {
@@ -203,20 +269,24 @@ export class EmdashOrderStore implements OrderStore {
 	readonly #orders: StorageCollection<OrderDoc>;
 	readonly #keys: StorageCollection<OrderKeyDoc>;
 	readonly #paymentRefs: StorageCollection<PaymentRefDoc>;
+	readonly #refundKeys: StorageCollection<RefundKeyDoc>;
 	readonly #inventory: InventoryStore;
 	readonly #idGen: IdGen;
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 	readonly #maxExpiryPages: number;
+	readonly #maxOutboxPages: number;
 
 	constructor(options: EmdashOrderStoreOptions) {
 		this.#orders = collectionOf<OrderDoc>(options.storage, ORDERS_COLLECTION);
 		this.#keys = collectionOf<OrderKeyDoc>(options.storage, ORDER_KEYS_COLLECTION);
 		this.#paymentRefs = collectionOf<PaymentRefDoc>(options.storage, PAYMENT_REFS_COLLECTION);
+		this.#refundKeys = collectionOf<RefundKeyDoc>(options.storage, REFUND_KEYS_COLLECTION);
 		this.#inventory = options.inventory;
 		this.#idGen = options.idGen;
 		this.#clock = options.clock;
 		this.#maxExpiryPages = options.maxExpiryPages ?? MAX_EXPIRY_PAGES;
+		this.#maxOutboxPages = options.maxOutboxPages ?? MAX_OUTBOX_PAGES;
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,
 			onAttempts: options.onCasAttempts,
@@ -569,12 +639,14 @@ export class EmdashOrderStore implements OrderStore {
 	 * per id, which is order-scoped and an unconditional no-op on any miss, then
 	 * mark the intent complete.
 	 *
-	 * **It completes only while the order is `expired`.** `releaseAdopted` is already
-	 * order-scoped and cannot touch another order's hold, so the guard is not what
-	 * makes it safe — it is what keeps a stale intent from returning units under an
-	 * order that has since been paid (a settle racing a sweep), which
-	 * `releaseAdopted` would happily do while the hold is still adopted by this very
-	 * order. Stamp-only on any other state.
+	 * **It completes only while the order is `expired` or `cancelled`.**
+	 * `releaseAdopted` is already order-scoped and cannot touch another order's hold,
+	 * so the guard is not what makes it safe — it is what keeps a stale intent from
+	 * returning units under an order that has since been paid (a settle racing a
+	 * sweep), which `releaseAdopted` would happily do while the hold is still adopted
+	 * by this very order. Both states are terminal ways for an order to stop claiming
+	 * its holds, and `cancelOrder` records the same intent the expiry flip does.
+	 * Stamp-only on any other state.
 	 */
 	async completeHoldRelease(orderId: OrderId): Promise<HoldCompletionResult> {
 		const doc = await this.#orders.get(orderId);
@@ -582,7 +654,7 @@ export class EmdashOrderStore implements OrderStore {
 		if (doc === null || !isOutstanding(intent) || intent === null) {
 			return { completed: false, lost: [] };
 		}
-		if (doc.state === "expired") {
+		if (doc.state === "expired" || doc.state === "cancelled") {
 			for (const reservationId of intent.reservationIds) {
 				await this.#inventory.releaseAdopted(reservationId, orderId);
 			}
@@ -591,52 +663,262 @@ export class EmdashOrderStore implements OrderStore {
 		return { completed: true, lost: [] };
 	}
 
-	// -- INC-B3: refunds, reconciliation resolution, fulfillment, cancellation --
+	// -- the refunds ledger, and its capacity ---------------------------------
 
-	getCapturedPayments(_orderId: OrderId): Promise<CapturedPayment[]> {
-		throw new NotImplementedInIncrementError("getCapturedPayments", "INC-B3");
+	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
+		const doc = await this.#orders.get(orderId);
+		if (doc === null) return [];
+		return normalizeOrderDoc(doc).payments.map((payment) => ({
+			gateway: payment.gateway,
+			providerRef: payment.providerRef,
+			amount: payment.amount,
+			currency: payment.currency,
+			status: payment.status,
+		}));
 	}
 
-	listRefunds(_orderId: OrderId): Promise<RefundRecord[]> {
-		throw new NotImplementedInIncrementError("listRefunds", "INC-B3");
+	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
+		const doc = await this.#orders.get(orderId);
+		if (doc === null) return [];
+		// `(created_at ASC, id ASC)` — the SQL's own order. `createdAt` is fixed-width
+		// ISO-8601 text, so lexical order IS chronological, and `id` is the stable
+		// tie-break when two refunds share a timestamp under a fixed clock.
+		return [...normalizeOrderDoc(doc).refunds]
+			.toSorted((a, b) =>
+				a.createdAt === b.createdAt ? compare(a.id, b.id) : compare(a.createdAt, b.createdAt),
+			)
+			.map((refund) => toRefundRecord(refund, orderId));
 	}
 
-	getRefundByIdempotencyKey(_key: IdempotencyKey): Promise<RefundRecord | null> {
-		throw new NotImplementedInIncrementError("getRefundByIdempotencyKey", "INC-B3");
+	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
+		// The key alone: `refund_keys/{key}` is the only handle this signature has, and
+		// it is why the collection exists (ADR-0019 §3's refunds row). A `claimed` key
+		// whose entry never landed answers NULL — the truth, and what makes the
+		// use-case re-reserve, which then COMPLETES the claim from its carried intent.
+		const claim = await this.#refundKeys.get(key);
+		if (claim === null) return null;
+		const doc = await this.#orders.get(claim.orderId);
+		if (doc === null) return null;
+		const entry = findRefund(normalizeOrderDoc(doc), key);
+		return entry === undefined ? null : toRefundRecord(entry, claim.orderId as OrderId);
 	}
 
-	recordRefund(_input: RecordRefundInput): Promise<RecordRefundStoreResult> {
-		throw new NotImplementedInIncrementError("recordRefund", "INC-B3");
+	recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// The MANUAL / record-only one-shot: no gateway leg exists, so reserve and
+		// finalize collapse into one write — the row lands `recorded` and a ceiling-
+		// reaching FINALIZED sum drives `→ refunded` in that same write.
+		return this.#insertRefund(input, { status: "recorded", driveFlip: true });
 	}
 
-	reserveRefund(_input: RecordRefundInput): Promise<RecordRefundStoreResult> {
-		throw new NotImplementedInIncrementError("reserveRefund", "INC-B3");
+	reserveRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// RESERVE the slot before the provider is ever called: the same arbitration,
+		// but the row lands `reserved` and NEVER drives the flip — capacity held is
+		// not money moved. A caller rejected here never reaches the gateway, which is
+		// what makes "issued but unrecorded" unreachable.
+		return this.#insertRefund(input, { status: "reserved", driveFlip: false });
 	}
 
-	finalizeRefund(_input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult> {
-		throw new NotImplementedInIncrementError("finalizeRefund", "INC-B3");
+	async finalizeRefund(input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult> {
+		const claim = await this.#refundKeys.get(input.idempotencyKey);
+		// No claim at all: there is no order to open, so this is the loud residual the
+		// use-case surfaces — never a silent drop of a provider reference.
+		if (claim === null) return MISSING_FINALIZE;
+		const orderId = claim.orderId;
+		const result = await this.#casOrder<Omit<FinalizeRefundStoreResult, "order">>(
+			"finalizeRefund",
+			async () => {
+				const current = await this.#orders.getVersioned(orderId);
+				if (current === null) return casDone(MISSING_FINALIZE_INNER);
+				const doc = normalizeOrderDoc(current.value);
+				const entry = findRefund(doc, input.idempotencyKey);
+				if (entry === undefined) return casDone(MISSING_FINALIZE_INNER);
+				// ALREADY finalized: the BENIGN duplicate iff the reference is the same one
+				// (a concurrent same-key caller finalized first, and the provider's native
+				// idempotency guarantees one refund). A DIFFERENT reference is the loud
+				// residual, and the recorded row is left exactly as it is.
+				if (entry.status === "recorded") {
+					return casDone(
+						entry.refundRef === input.refundRef
+							? {
+									found: true,
+									alreadyFinalized: true,
+									refund: toRefundRecord(entry, orderId as OrderId),
+									fullyRefunded: doc.state === "refunded",
+								}
+							: MISSING_FINALIZE_INNER,
+					);
+				}
+				// STATUS-GUARDED, exactly as the SQL's `WHERE status IN
+				// ('reserved','unverified')` was: a stray finalize can never resurrect a
+				// `voided` row's released capacity.
+				if (entry.status !== "reserved" && entry.status !== "unverified") {
+					return casDone(MISSING_FINALIZE_INNER);
+				}
+
+				const now = this.#clock.now().toISOString();
+				const finalized: RefundEntryDoc = {
+					...entry,
+					status: "recorded",
+					refundRef: input.refundRef,
+				};
+				const refunds = doc.refunds.map((row) =>
+					row.idempotencyKey === input.idempotencyKey ? finalized : row,
+				);
+				let next: OrderDoc = { ...doc, refunds, updatedAt: now };
+				// NO re-arbitration. The reservation already holds this capacity, so a
+				// finalize arriving after a concurrent void of some OTHER row still
+				// finalizes — the SQL's semantics, and the port's.
+				const ceiling = computeRefundCeiling(
+					cents(capturedPaymentTotal(doc.payments)),
+					doc.totals.total,
+				);
+				let fullyRefunded = false;
+				if (
+					finalizedRefundTotal(refunds) === ceiling &&
+					isLegalOrderTransition(doc.state, "refunded")
+				) {
+					next = this.#flipped(next, {
+						fromState: doc.state,
+						toState: "refunded",
+						enqueueEmail: emailTemplateForState("refunded") !== null,
+						actor: entry.refundedBy,
+						now,
+					});
+					fullyRefunded = true;
+				}
+				const written = await this.#orders.compareAndSet(orderId, current.revision, next);
+				return written.applied
+					? casDone({
+							found: true,
+							alreadyFinalized: false,
+							refund: toRefundRecord(finalized, orderId as OrderId),
+							fullyRefunded,
+						})
+					: CAS_RETRY;
+			},
+		);
+		const order = result.refund === null ? null : await this.getById(orderId as OrderId);
+		return { ...result, order };
 	}
 
-	voidRefund(_idempotencyKey: IdempotencyKey): Promise<boolean> {
-		throw new NotImplementedInIncrementError("voidRefund", "INC-B3");
+	voidRefund(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → voided`: the gateway leg definitively did not issue, so
+		// the row RELEASES its ceiling capacity (it leaves the active sum) and stays
+		// as an audit record of the attempt.
+		return this.#flipRefundStatus(idempotencyKey, "voided");
 	}
 
-	markRefundUnverified(_idempotencyKey: IdempotencyKey): Promise<boolean> {
-		throw new NotImplementedInIncrementError("markRefundUnverified", "INC-B3");
+	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → unverified`: an ambiguous outcome KEEPS holding capacity
+		// — the safe direction — until a human re-checks the provider.
+		return this.#flipRefundStatus(idempotencyKey, "unverified");
 	}
 
-	resolveReconciliation(
-		_input: ResolveReconciliationInput,
+	// -- the reconciliation envelope ------------------------------------------
+
+	async resolveReconciliation(
+		input: ResolveReconciliationInput,
 	): Promise<ResolveReconciliationStoreResult> {
-		throw new NotImplementedInIncrementError("resolveReconciliation", "INC-B3");
+		// A compare-and-CLEAR: the guard is EQUALITY against the flag the admin
+		// reviewed, not "is flagged". That is what defends a stale review — a NEW
+		// anomaly re-flagged since the page loaded no longer matches, so the write is
+		// a clean no-op rather than a blind clear. The document revision adds a second
+		// guard, which is what makes exactly one concurrent caller win.
+		// `input.idempotencyKey` is deliberately unused: dedupe is structural here.
+		const resolved = await this.#casOrder<boolean>("resolveReconciliation", async () => {
+			const current = await this.#orders.getVersioned(input.orderId);
+			if (current === null) return casDone(false);
+			const doc = normalizeOrderDoc(current.value);
+			if (doc.reconciliationFlag !== input.expectedFlag) return casDone(false);
+			const now = this.#clock.now().toISOString();
+			const written = await this.#orders.compareAndSet(input.orderId, current.revision, {
+				...doc,
+				reconciliationFlag: null,
+				reconciliationResolution: {
+					outcome: input.outcome,
+					reason: input.reason,
+					resolvedBy: input.resolvedBy,
+					resolvedAt: now,
+				},
+				// NEVER `state`, `items` or `totals` — only the mutable envelope.
+				updatedAt: now,
+			});
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
+		return { resolved, order: await this.getById(input.orderId) };
 	}
 
-	recordFulfillment(_input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
-		throw new NotImplementedInIncrementError("recordFulfillment", "INC-B3");
+	// -- fulfillment and cancellation ------------------------------------------
+
+	async recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
+		// Recording fulfillment IS shipping: the envelope rides the SAME guarded flip
+		// as every other state change (`#flip`'s `envelope`), so no reachable state is
+		// "shipped with no fulfillment recorded" or "fulfilled but not shipped", and
+		// the shipped email that drains carries the tracking. The `fromState` guard is
+		// the use-case's — validated against the state machine — so an order a
+		// concurrent cancel already moved is a 0-row miss, never shipped behind it.
+		// `input.idempotencyKey` is unused: dedupe is the guard plus the outbox's
+		// first-wins entry.
+		const { won } = await this.#flip({
+			orderId: input.orderId,
+			fromState: input.fromState,
+			toState: "shipped",
+			enqueueEmail: input.enqueueEmail,
+			// The recorder is the actor this domain knows for a fulfillment flip.
+			actor: input.recordedBy,
+			envelope: (now) => ({
+				fulfillment: {
+					carrier: input.carrier,
+					trackingNumber: input.trackingNumber,
+					trackingUrl: input.trackingUrl,
+					// A blank ship time is the store clock — the SAME instant the record
+					// was stamped, which is what the port documents.
+					shippedAt: input.shippedAt ?? now,
+					recordedBy: input.recordedBy,
+					recordedAt: now,
+				},
+			}),
+		});
+		return { recorded: won, order: await this.getById(input.orderId) };
 	}
 
-	cancelOrder(_input: CancelOrderInput): Promise<CancelOrderStoreResult> {
-		throw new NotImplementedInIncrementError("cancelOrder", "INC-B3");
+	async cancelOrder(input: CancelOrderInput): Promise<CancelOrderStoreResult> {
+		// The same guarded flip, the same envelope seam: no reachable state is
+		// "cancelled with no reason recorded", and a replay/lost race records nothing
+		// — which is why a second cancel never overwrites the first reason.
+		//
+		// It also records the RELEASE intent, because a cancelled order's holds are no
+		// longer claimed by it. That is the one thing the SQL adapter had no analogue
+		// for (its cancel was a pure envelope write), and it is a cross-aggregate edge
+		// like expiry's: intent in the same write as the flip, `releaseAdopted` per id
+		// (order-scoped, an unconditional no-op on any miss), completion after.
+		const { won } = await this.#flip({
+			orderId: input.orderId,
+			fromState: input.fromState,
+			toState: "cancelled",
+			enqueueEmail: input.enqueueEmail,
+			actor: input.cancelledBy,
+			intent: "release",
+			envelope: (now) => ({
+				cancellation: {
+					reason: input.reason,
+					detail: input.detail,
+					cancelledBy: input.cancelledBy,
+					cancelledAt: now,
+				},
+			}),
+		});
+		if (won) {
+			// Same reasoning as `expire`: the flip is durable, so a failing completion
+			// must not turn a won cancellation into a thrown call. The intent is left
+			// outstanding and `holdsPendingAt` keeps it findable for the sweeper.
+			try {
+				await this.completeHoldRelease(input.orderId);
+			} catch (err) {
+				await this.#noteReleaseFailure(input.orderId, err, "cancellation");
+			}
+		}
+		return { cancelled: won, order: await this.getById(input.orderId) };
 	}
 
 	// -- INC-B4: lists, search, the customer view, the outbox lease ------------
@@ -657,16 +939,54 @@ export class EmdashOrderStore implements OrderStore {
 		throw new NotImplementedInIncrementError("linkGuestOrders", "INC-B4");
 	}
 
-	claimNextEmail(_now: string, _leaseUntil: string): Promise<OutboxEmail | null> {
-		throw new NotImplementedInIncrementError("claimNextEmail", "INC-B4");
+	/**
+	 * Claim the next dispatchable outbox entry — **pulled forward from INC-B4**, and
+	 * only as far as this increment's own suites need.
+	 *
+	 * The fulfillment and cancellation contracts both assert that exactly one shipped
+	 * / cancelled email DRAINS, which runs `dispatchOrderEmails` — so the lease is a
+	 * dependency of this increment's gate exactly as `recordPayment` was a dependency
+	 * of INC-B2's. It is R2's design: the SQL's OR-and-negation predicate becomes the
+	 * one denormalized {@link OrderDoc.emailDueAt} index, and the claim is one
+	 * compare-and-set that re-applies the same predicate to the entry it picked.
+	 * INC-B4 still owns the lease's own contract cases (the crashed-dispatcher and
+	 * failed-send ones are still `test.todo` there) and may reshape this.
+	 */
+	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
+		let cursor: string | undefined;
+		for (let page = 0; page < this.#maxOutboxPages; page++) {
+			const result = await this.#orders.query({
+				where: { emailDueAt: { lte: now } },
+				orderBy: { emailDueAt: "asc" },
+				limit: OUTBOX_PAGE_SIZE,
+				cursor,
+			});
+			for (const { data } of result.items) {
+				const claimed = await this.#claimOutboxEntry(data.orderId, now, leaseUntil);
+				if (claimed !== null) return claimed;
+			}
+			if (!result.hasMore || result.cursor === undefined) return null;
+			cursor = result.cursor;
+		}
+		throw new ScanPageLimitError("claimNextEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
 	}
 
-	markEmailSent(_id: string, _now: string): Promise<void> {
-		throw new NotImplementedInIncrementError("markEmailSent", "INC-B4");
+	/** Mark a claimed entry delivered. Terminal — it leaves the due index. */
+	async markEmailSent(id: string, now: string): Promise<void> {
+		await this.#updateOutboxEntry(id, (entry) => ({ ...entry, status: "sent", sentAt: now }));
 	}
 
-	rescheduleEmail(_id: string, _retryAt: string | null): Promise<void> {
-		throw new NotImplementedInIncrementError("rescheduleEmail", "INC-B4");
+	/**
+	 * Return a claimed entry to `pending` for a later tick, or park it `failed` when
+	 * the retries are exhausted. `retryAt` moves the due time FORWARD so the row is
+	 * not re-picked inside the same drain loop.
+	 */
+	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+		await this.#updateOutboxEntry(id, (entry) =>
+			retryAt === null
+				? { ...entry, status: "failed", leaseUntil: null }
+				: { ...entry, status: "pending", leaseUntil: null, dueAt: retryAt },
+		);
 	}
 
 	// -- internals -------------------------------------------------------------
@@ -796,6 +1116,200 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
+	 * The refund write both entry points share: the `refund_keys` claim, then ONE
+	 * compare-and-set on the order document that arbitrates the ceiling against that
+	 * document's own `payments[]` and `refunds[]` and appends the row.
+	 *
+	 * **The ceiling is computed INSIDE the write, from the document read on THIS
+	 * attempt.** That is the whole reason payments and refunds are embedded: the SQL
+	 * took a row lock on `orders` and summed under it so two concurrent refunds could
+	 * not each read the same headroom, and the document revision does exactly that job
+	 * — a peer that committed between this read and this write loses the compare-and-
+	 * set, and the retry re-reads the sums it must respect. A ceiling taken from a
+	 * pre-read would be the one bug this shape exists to make impossible.
+	 *
+	 * **The claim comes first, and carries the whole prepared row.** A crash between
+	 * the claim and the order write leaves a `claimed` key whose entry never landed;
+	 * every path that meets one re-runs the arbitration from the CARRIED intent, so
+	 * the replay completes with the same refund id, amount and `createdAt` rather than
+	 * minting a second row. A rejected arbitration leaves the same state, and that is
+	 * deliberate: the SQL inserted no row when the ceiling refused a refund, so the key
+	 * stayed usable, and here the two cases are one code path.
+	 */
+	async #insertRefund(
+		input: RecordRefundInput,
+		opts: { status: Extract<RefundStatus, "recorded" | "reserved">; driveFlip: boolean },
+	): Promise<RecordRefundStoreResult> {
+		const now = this.#clock.now().toISOString();
+		const prepared: RefundEntryDoc = {
+			id: this.#idGen.newId(),
+			amount: input.amount,
+			currency: input.currency,
+			kind: input.kind,
+			gateway: input.gateway,
+			refundRef: input.refundRef,
+			reason: input.reason,
+			refundedBy: input.refundedBy,
+			status: opts.status,
+			idempotencyKey: input.idempotencyKey,
+			createdAt: now,
+		};
+		let orderId: string = input.orderId;
+		let intent = prepared;
+		let driveFlip = opts.driveFlip;
+		const claimed = await this.#refundKeys.compareAndSet(input.idempotencyKey, null, {
+			state: "claimed",
+			orderId,
+			refund: prepared,
+			driveFlip,
+			claimedAt: now,
+		});
+		if (!claimed.applied) {
+			const held = await this.#refundKeys.get(input.idempotencyKey);
+			if (held !== null) {
+				// The key's own order wins, not the caller's: `refunds.idempotency_key`
+				// UNIQUE was GLOBAL, so a key already used against another order dedupes
+				// against THAT order's row rather than minting a second one here.
+				orderId = held.orderId;
+				if (held.state === "claimed") {
+					intent = held.refund;
+					driveFlip = held.driveFlip;
+				}
+			}
+		}
+
+		const result = await this.#casOrder<Omit<RecordRefundStoreResult, "order">>(
+			"recordRefund",
+			async () => {
+				const current = await this.#orders.getVersioned(orderId);
+				if (current === null) {
+					return casDone({
+						outcome: "order_not_found" as const,
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal: cents(0),
+						frozenTotal: cents(0),
+					});
+				}
+				const doc = normalizeOrderDoc(current.value);
+				// Both authoritative bounds, read in this attempt: the use-case picks
+				// `REFUND_EXCEEDS_CAPTURED` vs `_TOTAL` from them, never from a pre-check.
+				const capturedTotal = cents(capturedPaymentTotal(doc.payments));
+				const frozenTotal = doc.totals.total; // FROZEN — never recomputed from products
+				const existing = findRefund(doc, input.idempotencyKey);
+				if (existing !== undefined) {
+					return casDone({
+						outcome: "duplicate" as const,
+						refund: toRefundRecord(existing, orderId as OrderId),
+						fullyRefunded: doc.state === "refunded",
+						capturedTotal,
+						frozenTotal,
+					});
+				}
+				const ceiling = computeRefundCeiling(capturedTotal, frozenTotal);
+				// ACTIVE capacity (R6): every non-`voided` row consumes it — finalized
+				// money, held reservations and unverified attempts alike.
+				const activePrior = activeRefundTotal(doc.refunds);
+				if (activePrior + intent.amount > ceiling) {
+					return casDone({
+						outcome: "exceeds_ceiling" as const,
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal,
+						frozenTotal,
+					});
+				}
+
+				const writtenAt = this.#clock.now().toISOString();
+				const refunds = [...doc.refunds, intent];
+				let next: OrderDoc = { ...doc, refunds, updatedAt: writtenAt };
+				let fullyRefunded = false;
+				// A FULL refund flips `→ refunded` in THIS write, through the same flip
+				// transform every other state change uses — so the state, the audit event,
+				// the outbox entry and the ledger row commit together. Only the FINALIZED
+				// sum counts: a held reservation never flips an order.
+				if (
+					driveFlip &&
+					finalizedRefundTotal(refunds) === ceiling &&
+					isLegalOrderTransition(doc.state, "refunded")
+				) {
+					next = this.#flipped(next, {
+						fromState: doc.state,
+						toState: "refunded",
+						enqueueEmail: emailTemplateForState("refunded") !== null,
+						actor: intent.refundedBy,
+						now: writtenAt,
+					});
+					fullyRefunded = true;
+				}
+				const applied = await this.#orders.compareAndSet(orderId, current.revision, next);
+				return applied.applied
+					? casDone({
+							outcome: "recorded" as const,
+							refund: toRefundRecord(intent, orderId as OrderId),
+							fullyRefunded,
+							capturedTotal,
+							frozenTotal,
+						})
+					: CAS_RETRY;
+			},
+		);
+		if (result.refund !== null) {
+			await this.#terminalizeRefundKey(input.idempotencyKey, orderId, result.refund.id);
+		}
+		return { ...result, order: await this.getById(orderId as OrderId) };
+	}
+
+	/**
+	 * A guarded refund-status flip, out of `reserved` only — `voidRefund` and
+	 * `markRefundUnverified`, which differ in nothing but the target state and in
+	 * whether the row keeps its capacity.
+	 */
+	async #flipRefundStatus(
+		key: IdempotencyKey,
+		to: Extract<RefundStatus, "voided" | "unverified">,
+	): Promise<boolean> {
+		const claim = await this.#refundKeys.get(key);
+		if (claim === null) return false;
+		const orderId = claim.orderId;
+		return this.#casOrder<boolean>(`refund:${to}`, async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(false);
+			const doc = normalizeOrderDoc(current.value);
+			const entry = findRefund(doc, key);
+			// The guard the SQL's `WHERE status = 'reserved'` was: capacity is released
+			// or held deliberately, never by accident.
+			if (entry === undefined || entry.status !== "reserved") return casDone(false);
+			const now = this.#clock.now().toISOString();
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				refunds: doc.refunds.map((row) =>
+					row.idempotencyKey === key ? { ...row, status: to } : row,
+				),
+				updatedAt: now,
+			});
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
+	}
+
+	/** Promote a refund claim to `terminal`, dropping the carried payload. */
+	async #terminalizeRefundKey(
+		key: IdempotencyKey,
+		orderId: string,
+		refundId: string,
+	): Promise<void> {
+		const current = await this.#refundKeys.getVersioned(key);
+		if (current === null || current.value.state === "terminal") return;
+		// An unapplied write means a peer promoted it first — the same outcome.
+		await this.#refundKeys.compareAndSet(key, current.revision, {
+			state: "terminal",
+			orderId,
+			refundId,
+			recordedAt: this.#clock.now().toISOString(),
+		});
+	}
+
+	/**
 	 * THE guarded flip: `state === fromState` (and the deadline, when asked), the
 	 * new state, the appended audit event, the first-wins outbox entry and any hold
 	 * intent — ONE compare-and-set.
@@ -810,6 +1324,14 @@ export class EmdashOrderStore implements OrderStore {
 		holdExpiresBefore?: string;
 		/** Which cross-aggregate intent this flip records, if any. */
 		intent?: "commit" | "release";
+		/**
+		 * The mutable envelope that rides the guarded write — the SQL's `extraSet`
+		 * (PR #63's precedent), which is how `recordFulfillment` and `cancelOrder`
+		 * record their columns in the SAME write as the flip instead of owning a
+		 * second, drift-prone copy of it. Computed from the store clock, so it is a
+		 * callback rather than a value.
+		 */
+		envelope?: (now: string) => Partial<OrderDoc>;
 	}): Promise<FlipOutcome> {
 		return this.#casOrder<FlipOutcome>("transition", async () => {
 			const current = await this.#orders.getVersioned(input.orderId);
@@ -825,37 +1347,14 @@ export class EmdashOrderStore implements OrderStore {
 			const now = this.#clock.now().toISOString();
 			const reservationIds = physicalReservationIds(doc);
 			const next: OrderDoc = {
-				...doc,
-				state: input.toState,
-				updatedAt: now,
-				// Append-only audit, in THIS write: a row exists iff the flip won.
-				events: [
-					...doc.events,
-					{
-						id: this.#idGen.newId(),
-						at: now,
-						kind: "state_change",
-						fromState: input.fromState,
-						toState: input.toState,
-						actor: input.actor ?? null,
-					},
-				],
-				// First-wins per `(orderId, toState)` — NOT per event.
-				emailOutbox:
-					input.enqueueEmail && findOutboxEntry(doc, input.toState) === undefined
-						? [
-								...doc.emailOutbox,
-								{
-									id: this.#idGen.newId(),
-									toState: input.toState,
-									status: "pending",
-									attempts: 0,
-									leaseUntil: null,
-									sentAt: null,
-									createdAt: now,
-								},
-							]
-						: doc.emailOutbox,
+				...this.#flipped(doc, {
+					fromState: input.fromState,
+					toState: input.toState,
+					enqueueEmail: input.enqueueEmail,
+					actor: input.actor ?? null,
+					now,
+				}),
+				...(input.envelope === undefined ? {} : input.envelope(now)),
 				...(input.intent === "commit"
 					? { holdsCommitted: newHoldIntent(reservationIds, now) }
 					: {}),
@@ -870,6 +1369,68 @@ export class EmdashOrderStore implements OrderStore {
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);
 			return written.applied ? casDone<FlipOutcome>({ won: true, doc: next }) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * THE guarded flip's write, as a pure document transform: the new state, the
+	 * appended audit event and the first-wins outbox entry.
+	 *
+	 * It exists so the flip has ONE implementation even where it cannot be its own
+	 * compare-and-set. A full refund has to flip `→ refunded` in the SAME write that
+	 * appends the refund row (the ceiling and the flip are one decision on one
+	 * document), so it composes this transform rather than calling {@link #flip} —
+	 * which is the document-model analogue of the SQL's rule that every state change
+	 * rides `#flipAndEnqueue` and never a parallel copy.
+	 *
+	 * The caller owns the GUARD (`state === fromState`) and the write; this owns what
+	 * the write contains.
+	 */
+	#flipped(
+		doc: OrderDoc,
+		input: {
+			fromState: OrderState;
+			toState: OrderState;
+			enqueueEmail: boolean;
+			actor: string | null;
+			now: string;
+		},
+	): OrderDoc {
+		const next: OrderDoc = {
+			...doc,
+			state: input.toState,
+			updatedAt: input.now,
+			// Append-only audit, in THIS write: a row exists iff the flip won.
+			events: [
+				...doc.events,
+				{
+					id: this.#idGen.newId(),
+					at: input.now,
+					kind: "state_change",
+					fromState: input.fromState,
+					toState: input.toState,
+					actor: input.actor,
+				},
+			],
+			// First-wins per `(orderId, toState)` — NOT per event.
+			emailOutbox:
+				input.enqueueEmail && findOutboxEntry(doc, input.toState) === undefined
+					? [
+							...doc.emailOutbox,
+							{
+								id: this.#idGen.newId(),
+								toState: input.toState,
+								status: "pending",
+								attempts: 0,
+								leaseUntil: null,
+								sentAt: null,
+								createdAt: input.now,
+							},
+						]
+					: doc.emailOutbox,
+		};
+		// R2's denormalized due time, derived in the SAME write that enqueued the entry
+		// — the only way `claimNextEmail` can find it.
+		return { ...next, emailDueAt: computeEmailDueAt(next) };
 	}
 
 	/** Mark one hold intent complete. Idempotent; a missing intent is a no-op. */
@@ -905,21 +1466,165 @@ export class EmdashOrderStore implements OrderStore {
 	 * (and the `holdsPendingAt` index that finds it) is still the durable record of
 	 * the owed work, which is what the sweeper actually acts on.
 	 */
-	async #noteReleaseFailure(orderId: OrderId, cause: unknown): Promise<void> {
+	async #noteReleaseFailure(orderId: OrderId, cause: unknown, label = "expiry"): Promise<void> {
 		const detail = cause instanceof Error ? cause.message : String(cause);
 		try {
 			await this.flagReconciliation(
 				orderId,
-				`expiry released no holds: ${detail} — the release intent is still outstanding`,
+				`${label} released no holds: ${detail} — the release intent is still outstanding`,
 			);
 		} catch {
 			// Deliberately swallowed: see the docblock. Never turn a won flip into a throw.
 		}
 	}
 
+	/**
+	 * Claim the earliest due entry on ONE order, re-applying the due predicate inside
+	 * the write — so only one dispatcher can win a claim, and a lapsed lease is
+	 * claimable again.
+	 */
+	async #claimOutboxEntry(
+		orderId: string,
+		now: string,
+		leaseUntil: string,
+	): Promise<OutboxEmail | null> {
+		return this.#casOrder<OutboxEmail | null>("claimNextEmail", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone<OutboxEmail | null>(null);
+			const doc = normalizeOrderDoc(current.value);
+			let picked: OutboxEntryDoc | undefined;
+			let pickedDue: string | undefined;
+			for (const entry of doc.emailOutbox) {
+				const due = outboxDueAt(entry);
+				if (due === null || due > now) continue;
+				if (pickedDue === undefined || due < pickedDue) {
+					picked = entry;
+					pickedDue = due;
+				}
+			}
+			if (picked === undefined) return casDone<OutboxEmail | null>(null);
+			const claimed: OutboxEntryDoc = {
+				...picked,
+				status: "sending",
+				leaseUntil,
+				attempts: picked.attempts + 1,
+			};
+			const next = replaceOutboxEntry(doc, claimed);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, next);
+			return written.applied
+				? casDone<OutboxEmail | null>({
+						id: claimed.id,
+						orderId: doc.orderId as OrderId,
+						toState: claimed.toState,
+						attempts: claimed.attempts,
+					})
+				: CAS_RETRY;
+		});
+	}
+
+	/**
+	 * Apply a transform to the outbox entry with this id, wherever it lives.
+	 *
+	 * The dispatcher settles a row by ENTRY id alone, and an entry embedded in an
+	 * order document cannot be found by one without a locator. Every non-terminal
+	 * entry is in the `emailDueAt` index by construction, and a claimed one is due at
+	 * its lease — so the search is that index, bounded by the in-flight backlog
+	 * rather than by the order count.
+	 *
+	 * **This scan is KNOWN DEBT, owed to the lists increment.** The locator it should
+	 * have is one more claim document — `outbox_keys/{entryId} → { orderId }`, written
+	 * by the same compare-and-set that enqueues the entry, exactly as
+	 * `payment_refs` and `refund_keys` are — which turns this index walk into a single
+	 * `get`. It is not written here because the collection would have to be declared
+	 * on the descriptor before the increment that owns the lease's contract cases, and
+	 * the scan is correct meanwhile: it is ordered by the same index the claim uses and
+	 * every entry it must find is in it.
+	 *
+	 * **The write is guarded on `status === "sending"`**, which is the same discipline
+	 * every other write in this file follows: only a CLAIMED entry may be settled. A
+	 * DOUBLE settle — the dispatcher marking sent, or rescheduling, a row it has
+	 * already settled — is therefore a no-op twice over: the entry has usually left the
+	 * due index already (so the scan does not reach it at all), and if a sibling entry
+	 * keeps the order in that index, the guard refuses it. The port's `void` return is
+	 * what makes a no-op the correct outcome rather than a lost write, and the same is
+	 * true of an order that has since vanished.
+	 */
+	async #updateOutboxEntry(
+		id: string,
+		transform: (entry: OutboxEntryDoc) => OutboxEntryDoc,
+	): Promise<void> {
+		let cursor: string | undefined;
+		for (let page = 0; page < this.#maxOutboxPages; page++) {
+			const result = await this.#orders.query({
+				where: { emailDueAt: { lte: FAR_FUTURE } },
+				orderBy: { emailDueAt: "asc" },
+				limit: OUTBOX_PAGE_SIZE,
+				cursor,
+			});
+			for (const { data } of result.items) {
+				if (!(data.emailOutbox ?? []).some((entry) => entry.id === id)) continue;
+				await this.#casOrder<void>("settleEmail", async () => {
+					const current = await this.#orders.getVersioned(data.orderId);
+					if (current === null) return casDone(undefined);
+					const doc = normalizeOrderDoc(current.value);
+					const entry = doc.emailOutbox.find((row) => row.id === id);
+					// Only a CLAIMED entry is settleable. A `pending` entry was never handed
+					// out, and a `sent`/`failed` one is terminal — settling either would be
+					// this file's only unguarded write.
+					if (entry === undefined || entry.status !== "sending") return casDone(undefined);
+					const next = replaceOutboxEntry(doc, transform(entry));
+					const written = await this.#orders.compareAndSet(data.orderId, current.revision, next);
+					return written.applied ? casDone(undefined) : CAS_RETRY;
+				});
+				return;
+			}
+			if (!result.hasMore || result.cursor === undefined) return;
+			cursor = result.cursor;
+		}
+		throw new ScanPageLimitError("settleEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
+	}
+
 	#casOrder<T>(operation: string, step: (attempt: number) => Promise<CasStep<T>>): Promise<T> {
 		return withCasRetry(operation, step, this.#retry);
 	}
+}
+
+/** Beyond any timestamp this domain writes — the upper bound of the due-index scan. */
+const FAR_FUTURE = "9999-12-31T23:59:59.999Z";
+
+/** Swap one outbox entry for its successor, re-deriving R2's due index. */
+function replaceOutboxEntry(doc: OrderDoc, entry: OutboxEntryDoc): OrderDoc {
+	const emailOutbox = doc.emailOutbox.map((row) => (row.id === entry.id ? entry : row));
+	return { ...doc, emailOutbox, emailDueAt: computeEmailDueAt({ emailOutbox }) };
+}
+
+/** The no-held-row finalize disposition: the loud residual the use-case surfaces. */
+const MISSING_FINALIZE_INNER = {
+	found: false,
+	alreadyFinalized: false,
+	refund: null,
+	fullyRefunded: false,
+} as const;
+
+/** The same, with the order the port's result shape carries. */
+const MISSING_FINALIZE: FinalizeRefundStoreResult = { ...MISSING_FINALIZE_INNER, order: null };
+
+/** The embedded ledger row → the port's `RefundRecord`. */
+function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord {
+	return {
+		id: refund.id,
+		orderId,
+		amount: refund.amount,
+		currency: refund.currency,
+		kind: refund.kind,
+		gateway: refund.gateway,
+		refundRef: refund.refundRef,
+		reason: refund.reason,
+		refundedBy: refund.refundedBy,
+		status: refund.status,
+		idempotencyKey: refund.idempotencyKey,
+		createdAt: refund.createdAt,
+	};
 }
 
 /** Plain code-unit comparison — never `localeCompare`, so every tier agrees. */

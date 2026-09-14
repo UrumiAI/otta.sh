@@ -2,18 +2,17 @@
  * The domain's `orderTransitionContract` against `EmdashOrderStore`, on both Node
  * dialects — **staged** (see `test/order-contract-b2.ts`).
  *
- * Only two of its eleven cases run here, and the reason is worth stating: every
- * other case counts DELIVERED emails, which drains the outbox through
- * `claimNextEmail` — the `updateIf` lease on the denormalized `emailDueAt` field
- * that ADR-0019 R2 hands to INC-B4. This increment WRITES the outbox entry (inside
- * the same compare-and-set as the flip, at most one per `(orderId, toState)`); it
- * does not yet claim one. The entry's existence and its once-only-ness are
- * therefore asserted on the DOCUMENT, in `order-crash-seams.dialects.test.ts`,
- * until the lease lands and these todos become real cases.
+ * Eight of its eleven cases run here. Six of them count DELIVERED emails, which
+ * drains the outbox through `claimNextEmail` — ADR-0019 R2's `emailDueAt` lease — and
+ * they were todos until the refunds increment landed it. Of the three that remain,
+ * two need `listForCustomer`/`linkGuestOrders` (the lists increment).
  *
- * `forceFailedTransition` is deliberately not supplied: there is no transaction to
- * abort. The property it pins — flip + event + outbox are one atom — is proven by
- * parking the single compare-and-set instead (same crash-seams file).
+ * The third will not become a real case here at all: `forceFailedTransition` is
+ * deliberately not supplied, because there is no transaction to abort on a document
+ * store, so a green would be vacuous. The property it pins — flip + event + outbox
+ * are one atom — is proven instead by PARKING the single compare-and-set in
+ * `order-crash-seams.dialects.test.ts` and asserting none of the three has landed,
+ * which is a stronger statement than aborting a transaction would be.
  */
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";

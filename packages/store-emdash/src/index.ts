@@ -56,9 +56,13 @@ export {
 	ScanPageLimitError,
 } from "./errors.js";
 export {
+	activeRefundTotal,
+	capturedPaymentTotal,
 	computeHoldsPendingAt,
 	customerKeyFor,
+	finalizedRefundTotal,
 	findOutboxEntry,
+	findRefund,
 	foldBuyerRef,
 	isOutstanding,
 	newHoldIntent,
@@ -68,6 +72,7 @@ export {
 	ORDERS_COLLECTION,
 	PAYMENT_REFS_COLLECTION,
 	physicalReservationIds,
+	REFUND_KEYS_COLLECTION,
 	type HoldIntentDoc,
 	type OrderCollectionIndexDeclaration,
 	type OrderDoc,
@@ -80,6 +85,7 @@ export {
 	type PaymentEntryDoc,
 	type PaymentRefDoc,
 	type RefundEntryDoc,
+	type RefundKeyDoc,
 } from "./order-documents.js";
 export {
 	adjustClaimId,

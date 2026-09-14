@@ -469,6 +469,7 @@ document per order**, plus one claim collection the idempotency key forces.
 | `orders` | order id | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
 | `order_keys` | order idempotency key | the claim (carrying the whole prepared document), then its terminal record | — |
 | `payment_refs` | payment provider reference | `{ orderId }` — the GLOBAL once-only claim for a capture | — |
+| `refund_keys` | refund idempotency key | the claim (carrying the whole prepared refund row), then its terminal record | — |
 
 **Two corrections to ADR-0019 §4, to be recorded when that ADR is next amended.**
 First, `payments.provider_ref` UNIQUE was a GLOBAL constraint, and the ADR maps it
@@ -484,28 +485,33 @@ money-path document a function of how much support wrote about the order. INC-B8
 `order_notes/{orderId}:{noteId}` indexed on `orderId` — its port only reads notes by
 order and appends one at a time, so nothing it does needs them in the aggregate.
 
-**Two methods landed here although they belong to INC-B3's area.** `recordPayment`
-and `flagReconciliation` are both on `settleOrder`'s path — between the paid flip and
+**Two methods landed early, and one whole seam did.** `recordPayment` and
+`flagReconciliation` are both on `settleOrder`'s path — between the paid flip and
 `commitMany`, and on every anomaly branch — so the checkout races and five
-`order-flow` cases cannot run without them. `recordPayment` is the claim-backed
-append above; `flagReconciliation` is the deliberately unguarded, last-writer-wins
-field write ADR-0019 §7.13 describes. Everything else in the refunds area, including
-the ceiling that READS `payments` and the guarded compare-and-clear
-`resolveReconciliation`, stays INC-B3's.
+`order-flow` cases could not run without them at INC-B2. `recordPayment` is the
+claim-backed append above; `flagReconciliation` is the deliberately unguarded,
+last-writer-wins field write ADR-0019 §7.13 describes. For the same reason the
+**email-outbox lease** (`claimNextEmail` / `markEmailSent` / `rescheduleEmail`)
+landed with the refunds increment rather than with the lists: the fulfillment and
+cancellation specs both assert that exactly one shipped / cancelled email DRAINS,
+which runs `dispatchOrderEmails`, so the lease is a dependency of that increment's
+own gate. It is R2's design — the SQL's OR-and-negation claim predicate becomes the
+single denormalized `emailDueAt` index, and the claim re-applies the same predicate
+to the entry it picked inside one compare-and-set — and the lease's OWN contract
+cases (the crashed-dispatcher and failed-send ones) are still the list increment's.
 
-**The port is delivered across three increments, and the SHAPE is complete in the
+**The port is delivered across three increments, and the SHAPE was complete in the
 first.** Creation, the guarded transitions, the audit spine, expiry and the hold
-intents are built. Refunds, the reconciliation resolution, fulfillment and
-cancellation are the next increment's; the lists, the search, the customer view and
-the outbox lease are the one after. Their FIELDS and their INDEXES are declared
-here regardless — `refunds`, `fulfillment`, `cancellation`,
-`reconciliationResolution`, `searchKey`, `emailDueAt`, `customerKey` and the
-`[state, createdAt]` compound — so neither increment reshapes a collection that
-already holds live orders. Every method they own throws a typed
-`NotImplementedInIncrementError` naming its increment, and every contract case that
-needs one is registered as a matching `test.todo` (see
-`test/order-contract-b2.ts`): a loud refusal and a visible count, never a plausible
-empty answer.
+intents came first; refunds, the reconciliation resolution, fulfillment and
+cancellation are described below. What remains is the lists, the search and the
+customer view. Their FIELDS and their INDEXES were declared from the start —
+`refunds`, `fulfillment`, `cancellation`, `reconciliationResolution`, `searchKey`,
+`emailDueAt`, `customerKey` and the `[state, createdAt]` compound — so no increment
+reshapes a collection that already holds live orders. Every method the last one owns
+throws a typed `NotImplementedInIncrementError` naming it, and every contract case
+that needs one is registered as a matching `test.todo` (see
+`test/order-contract-b2.ts`, which is down to 39): a loud refusal and a visible
+count, never a plausible empty answer.
 
 **Six SQL features disappear into the shape.** `orders.idempotency_key` UNIQUE
 becomes the `order_keys` claim document. `order_items` as a child table becomes the
@@ -543,6 +549,69 @@ transaction; `order-crash-seams.dialects.test.ts` proves it here by PARKING that
 write and asserting all three facts are absent, then releasing it and asserting all
 three are present — a stronger statement than aborting a transaction would be.
 
+### The refund lifecycle
+
+A refund is a claim, then ONE compare-and-set on the order document:
+
+1. **Claim** `refund_keys/{refundIdempotencyKey}` create-if-absent, carrying the
+   whole prepared ledger row — id, amount, `createdAt` — plus the order id and
+   whether a full refund may flip the order.
+2. **Arbitrate and append** in one write on `orders/{orderId}`: the ceiling
+   `min(Σ captured, frozen total)` is computed from THAT document's own `payments[]`
+   and `totals.total`, the ACTIVE capacity `Σ refunds WHERE status != 'voided'` from
+   its own `refunds[]`, and the row is appended iff `activePrior + amount ≤ ceiling`.
+3. **Promote** the claim to `terminal`, dropping the payload.
+
+**The ceiling is computed INSIDE that write, never before it.** The SQL took a row
+lock on `orders` — a real `UPDATE … SET updated_at` touch, not a self-assignment —
+and summed under it, so two concurrent refunds could not each read the same headroom.
+Embedding both ledgers in the document makes the revision do the same job: a peer that
+committed between this read and this write makes the compare-and-set lose, and the
+retry re-reads the sums it must respect. A ceiling taken from a pre-read would be the
+one bug this shape exists to make impossible. `refund-race.pg.test.ts` is the proof
+under contention; the frozen total is read from `totals`, never recomputed from
+products, which is the snapshot invariant on the money side.
+
+**`refund_keys` exists because the settle half of the protocol carries only the key.**
+`finalizeRefund`, `voidRefund`, `markRefundUnverified` and
+`getRefundByIdempotencyKey` are all key-only signatures, and an array embedded in an
+order document cannot be found by a key without scanning every order. The claim is
+also what replaces `refunds.idempotency_key` UNIQUE, and — as with `order_keys` — it
+carries the payload so the one window is HEALED rather than tolerated: a crash between
+the claim and the order write leaves a `claimed` key, and every path that meets one
+re-runs the arbitration from the CARRIED intent, so the replay completes with the same
+refund id instead of reserving twice. A REJECTED arbitration leaves exactly the same
+state, deliberately: the SQL inserted no row when the ceiling refused a refund, so the
+key stayed usable, and here the crash case and the rejection case are one code path.
+
+**Capacity has four states (ADR-0019 R6), and all four live in that same write.**
+
+| Status | Capacity | Set by |
+|---|---|---|
+| `recorded` | held; the only status that counts toward the `→ refunded` flip | `recordRefund` (the manual one-shot) or `finalizeRefund` |
+| `reserved` | held — a slot won before the provider was called | `reserveRefund` |
+| `unverified` | held, the safe direction, until a human re-checks the provider | `markRefundUnverified` |
+| `voided` | RELEASED; the row stays as an audit record of the attempt | `voidRefund` |
+
+`finalizeRefund` is status-guarded (`reserved` or `unverified` only) and **never
+re-arbitrates** — its reservation already holds the capacity, so a finalize arriving
+after a concurrent void of some other row still finalizes, which is the SQL's
+semantics and the port's. A stray finalize over a `voided` row is a 0-row miss that
+leaves the row untouched; a re-finalize with the SAME provider reference is a benign
+duplicate; a DIFFERENT reference is the loud residual the use-case surfaces. A full
+refund — the FINALIZED sum reaching the ceiling — drives `→ refunded` through the same
+flip transform every other state change uses, in the same write as the row, so
+"refunded with no refund recorded" is unreachable.
+
+**Fulfillment and cancellation ride that flip, not a copy of it.** The tracking
+envelope and the cancellation reason are passed to the guarded write as its
+`envelope`, which is where the SQL's `extraSet` went: one guarded-flip
+implementation, so a state change can never drift from the audit event and outbox
+entry that accompany it. Cancellation also records the **release intent** — a
+cancelled order no longer claims its holds — which the SQL adapter had no analogue
+for; it is the same cross-aggregate bracket expiry uses, and `completeHoldRelease` is
+guarded on `cancelled` as well as `expired`.
+
 ### The three hold intents
 
 Adopting, committing and releasing an order's reservations writes N inventory
@@ -554,7 +623,7 @@ order document by the same write as the state change that implies it:
 |---|---|---|---|
 | adopt | `createFromCart`, before the use-case's `adoptMany` | `adoptMany` (idempotent per reservation id) | `completeHoldAdoption` |
 | commit | the `→ paid` flip, before settle's `commitMany` | the **singular** `commit` per id | `completeHoldCommit` |
-| release | the `→ expired` flip | `releaseAdopted` per id, order-scoped | `completeHoldRelease` |
+| release | the `→ expired` **and `→ cancelled`** flips | `releaseAdopted` per id, order-scoped | `completeHoldRelease` |
 
 **`holdsPendingAt` is how the sweeper FINDS the work.** An intent lives inside a
 field, and the filter algebra can neither reach into one nor OR three together, so
@@ -565,7 +634,7 @@ from what it summarizes, and it goes `null` exactly when the last intent closes.
 
 **Each completion is guarded on the order's STATE, and that guard is not cosmetic.**
 Adoption completes only while `pending`, commit only while `paid`, release only while
-`expired`; on any other state the intent is closed stamp-only, with no inventory call
+`expired` or `cancelled`; on any other state the intent is closed stamp-only, with no inventory call
 and nothing reported lost. The adoption case is the sharp one: after a paid order's
 holds are committed and pruned, `adoptMany` over the same ids reports every one of
 them `lost`, so an unguarded completion would hand a sweeper a stock anomaly that has
@@ -583,13 +652,13 @@ and its prune is finished by the singular call and by nothing else.
 itself and never tells the order store, so `holdsCommitted` stays outstanding until
 a completion pass runs. That is the sweeper's work, and it is a no-op when it
 arrives — both checkout races assert exactly that: `completeHoldCommit` after a
-successful settle reports `lost: []` and closes the intent. `expire` is the one
-bracket the store completes itself, because it is the store's own method — and if
+successful settle reports `lost: []` and closes the intent. `expire` and `cancelOrder` are the two
+brackets the store completes itself, because both are the store's own methods — and if
 that completion FAILS after the flip is durable, the failure is swallowed: the port
-documents the return as "did this call win the guarded expiry", so a throw would make
-a sweep that really expired the order look like one that did not. The intent is left
-outstanding (and `holdsPendingAt` keeps it findable), and the reason is recorded on
-the order's reconciliation envelope.
+documents each return as "did this call win the guarded flip", so a throw would make a
+sweep that really expired the order (or a cancel that really cancelled it) look like
+one that did not. The intent is left outstanding (and `holdsPendingAt` keeps it
+findable), and the reason is recorded on the order's reconciliation envelope.
 
 **The commit completion folds two per-id errors into `lost`.**
 `ReservationCommitLostError` (the hold was released or failed) and
@@ -600,8 +669,8 @@ order forever and abandon the ids listed after it.
 
 ### Order crash seams proven
 
-`test/order-crash-seams.dialects.test.ts` opens every window on real storage. Six of
-the eight cases INJECT a fault with the shared helper — the writes before the gap land
+`test/order-crash-seams.dialects.test.ts` opens every window on real storage. Ten of
+the twelve cases INJECT a fault with the shared helper — the writes before the gap land
 for real, the write at the gap throws or is parked, and the documents are READ BACK
 before anything replays, so what the replay heals is the state the store really leaves
 behind. The remaining two inject nothing and say so: they are COMPLETION-ROBUSTNESS
@@ -633,26 +702,48 @@ cart section draws, for the same reason:
 - **(inject ×2) expiry crashing after the flip, and after one release** — the release intent
   survives, the completion returns each sku's units exactly once, and a late sweep
   finds nothing owed.
+- **(inject) a refund claim landed, the order write did not** — the key answers NULL (so
+  the use-case re-reserves rather than resuming), and that re-reserve COMPLETES the claim
+  with the SAME refund id; a further replay is the benign duplicate, and the ledger holds
+  one row throughout.
+- **(inject) a reserve whose finalize crashed** — the row is still `reserved` with no
+  provider reference stamped, and the status-guarded replay finalizes it exactly once
+  (a second same-ref finalize is benign and writes nothing).
+- **(inject) a void whose write crashed** — the reservation is still holding the whole
+  ceiling (a peer's full refund is refused), the replay wins the guarded flip, a second
+  void is a 0-row no-op, and a fresh refund then reclaims the released capacity.
+- **(inject) a cancellation crashing after the flip** — the cancel still reports
+  `cancelled` (the flip is durable), the release intent is owed and findable, the
+  failure is on the reconciliation envelope, and the completion returns the units once.
 
 ### Measured document size
 
-A three-line order with a full ship-to snapshot: **2,207 B on creation**, and
-**4,029 B after five transitions** (five audit events plus five outbox entries) —
+A three-line order with a full ship-to snapshot: **2,237 B on creation**, **4,081 B
+after five transitions** (five audit events plus five outbox entries), and **5,164 B
+with two captured payments and three refunds on top of those five transitions** —
 measured on the sqlite tier, `JSON.stringify(doc).length`. The `order_keys` document
 is **109 B** once terminal, and roughly the size of the order itself (~2.3 KB) for
-the instant it is a claim carrying the payload.
+the instant it is a claim carrying the payload; a `refund_keys` document is **159 B**
+once terminal, and ~400 B while it is a claim carrying the prepared row.
 
-Both figures are asserted, not remembered: `order-flow.dialects.test.ts` builds that
-order, prints the two sizes and holds them under an **8 KB cap**, so a row-size
-regression (an unbounded ledger, a re-embedded snapshot) fails a test instead of
-surfacing as a slow read.
+The 4,081 B figure is 22 B above the one the transitions alone used to cost, because
+`emailDueAt` is now a populated timestamp rather than `null` once an outbox entry
+exists. (Two earlier-recorded figures, 2,207 and 4,029 B, read 30 B low against this
+same case on the tier it was re-measured on; the creation path has not changed.)
+
+All three figures are asserted, not remembered: `order-flow.dialects.test.ts` builds
+that order, prints the sizes and holds them under an **8 KB cap** — unchanged, since
+the busiest shape measured is still under two thirds of it — so a row-size regression
+(an unbounded ledger, a re-embedded snapshot) fails a test instead of surfacing as a
+slow read.
 
 `events` is deliberately UNBOUNDED. It is the audit spine the port promises in
 chronological order, and dropping an entry would be a lie about an order's history;
 the bound is the state machine itself, which admits at most nine transitions per
-order, so the growth above is the whole of it (~360 B per transition, event plus
+order, so the growth above is the whole of it (~370 B per transition, event plus
 outbox entry). `payments` and `refunds` are bounded the same way — by how many times
-money can move on one order. The one ledger with no natural bound, per-order notes,
+money can move on one order (~180 B per capture, ~220 B per refund row, measured on
+the case above). The one ledger with no natural bound, per-order notes,
 is therefore NOT in this document at all (see the ADR corrections above).
 
 ## Contention budget
@@ -663,31 +754,67 @@ than an interim number. `test/inventory-crash-seams.dialects.test.ts` exports
 `CAS_ATTEMPT_BUDGET` and asserts it on Postgres:
 
 **Contention budget: measured max CAS attempts M=5/N=50 (20 loops) → 5–6,
-M=1/N=100 → 2; budget asserted at 8 (< `CAS_MAX_ATTEMPTS` = 12).**
+M=1/N=100 → 2; budget asserted at 8 (< `CAS_MAX_ATTEMPTS` = 24).**
+
+**`CAS_MAX_ATTEMPTS` is 24, and it was 12.** The ceiling has to cover the WORSE of the
+two document bounds, and the refunds increment showed that it did not. The inventory
+bound is the units: at most M writes succeed before the guard turns every remaining
+caller into a clean `OUT_OF_STOCK`, so depth tracks M. The ORDER-document bound is
+money movements, and it is roughly `2 × (refunds that fit) + 1` — each gateway refund
+writes twice (reserve, then finalize) and the ceiling-reaching one folds the
+`→ refunded` flip into its second write — so a 1,000-cent ceiling refunded 100 at a
+time is 21 peer writes on one document. The extra attempts only buy jittered backoff
+(capped at `CAS_MAX_DELAY_MS` = 50 ms per sleep) on a path that would otherwise raise
+`StorageContentionError`; no invariant depends on the number, and every per-shape
+assertion bounds the measured depth AT or BELOW the constant, so raising it cannot
+turn a failing shape green. The one hand-set budget, `CAS_ATTEMPT_BUDGET` = 8, is
+unchanged.
 
 The ORDER races measure the same budget on a different shape, and one of them sits
 closer to the ceiling: single-line checkout (M=5, N=40, 8 loops) → **6–7**, and
-multi-line checkout (M=8/sku, N=10 carts, 3 lines, 6 loops) → **9–10** of 12. The
+multi-line checkout (M=8/sku, N=10 carts, 3 lines, 6 loops) → **9–10** of 24. The
 multi-line figure is higher because each cart contends for three aggregates at once
 and its three adds race each other as well as the crowd. Both files assert only
 `< CAS_MAX_ATTEMPTS`, deliberately: tightening the order races to the inventory
 suite's 8 would fail on the shape that legitimately reaches 10, and loosening the
-ceiling itself would hide a real regression. The headroom there is **2 attempts** —
-worth re-measuring if the line count per order grows.
+ceiling itself would hide a real regression.
 
-Both figures are stable across repeated runs, and both sit at M+1: only M writes can
+The REFUND races measure the same budget on the order document. Ten partial refunds
+fitting under one ceiling (N=20 callers, 100 each against 1,000, with injected gateway
+latency so the reserve and finalize legs interleave) measured a depth of **11** — under
+the old ceiling of 12 by one attempt, which is what moved the constant; the
+full-ceiling shapes measure 2, because a loser is refused by arbitration before it
+writes anything. Every refund race now ASSERTS the depth against `CAS_MAX_ATTEMPTS`
+rather than only printing it. The theoretical worst case for the gateway-partial shape
+is the `2 × 10 + 1` above; an exhausted budget there is still a typed retryable refusal
+and never an over-refund, because a losing writer never applies its update.
+
+**The embedded ledgers have a practical bound, and it is the row budget, not the
+algebra.** A three-line order with a full ship-to and five transitions is 4,081 B, and
+each further money entry costs ~180 B (a capture) to ~220 B (a refund row) — so roughly
+**14 more ledger entries** fit on that order before the 8 KB document budget the size
+test asserts. That is far beyond what the state machine and a real refund ceiling admit
+on one order, which is why the ledgers are embedded and per-order notes are not.
+
+Both inventory figures are stable across repeated runs, and both sit at M+1: only M writes can
 succeed before the guard turns every remaining caller into a clean `OUT_OF_STOCK`
 with no write at all, so a writer loses at most M times. Depth tracks the UNITS on
 one document, not the size of the crowd.
 
 The merchant shape is the exception worth naming: twenty guarded `removeStock`
 calls racing twenty `reserve`s on one document — where a REFUSED removal still
-writes its ledger entry, so the writes are not bounded by the units — does reach
-the ceiling and does raise `StorageContentionError`.
+writes its ledger entry, so the writes are not bounded by the units — is the one shape
+that reached the old ceiling and raised `StorageContentionError`. It is also the shape
+the raised ceiling most visibly served: same depth-plus-a-little, no typed failures.
 
 **Removal shape (20 removals racing 20 reserves on 12 units, 15 loops = 600 calls):
-measured max CAS attempts 12 (the ceiling), measured typed contention failures 11–29
-per run; asserted at `<= CAS_MAX_ATTEMPTS` and `<= 90` (15% of the calls) respectively.**
+measured max CAS attempts 15, measured typed contention failures 0; asserted at
+`<= CAS_MAX_ATTEMPTS` and `<= 90` (15% of the calls) respectively.** Both numbers moved
+when the ceiling did: at 12 this shape sat AT the ceiling and raised 11–29 typed
+contention failures per run, and at 24 it goes two or three attempts deeper and raises
+none. That is the whole of what the extra attempts buy — callers who were being told
+"too busy" are now served — and both assertions are upper bounds, so they held across
+the change without being touched.
 
 Per-shape depth and contention, as the suite reports them per case:
 
@@ -695,9 +822,12 @@ Per-shape depth and contention, as the suite reports them per case:
 |---|---|---|
 | restock same key ×24 | 2 | 0 |
 | removeStock same key ×24 | 2 | 0 |
-| restock +10 racing 40 reserves on 5 units | 12 | 2–6 |
-| restock then 40 reserves on 15 units (sequenced) | 12 | 0–1 |
-| 20 removals racing 20 reserves on 12 units | 12 | 11–29 |
+| restock +10 racing 40 reserves on 5 units | 13 | 0 |
+| restock then 40 reserves on 15 units (sequenced) | 12 | 0 |
+| 20 removals racing 20 reserves on 12 units | 15 | 0 |
+| 10 partial refunds fitting one ceiling (N=20, gateway latency) | 11 | 0 |
+| N=24 full refunds on one ceiling | 2 | 0 |
+| N=30 reconciliation resolves on one flagged order | 2 | 0 |
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by

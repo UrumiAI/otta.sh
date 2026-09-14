@@ -17,6 +17,19 @@
  * against a store that cannot serve most of them yet, which is the very thing the
  * staging exists to avoid; and the thing at risk is the TITLE, which is text.
  *
+ * **What it does NOT check, stated plainly: the case BODIES.** It compares title sets
+ * and nothing else, so a domain-side edit to a copied case's assertions passes here.
+ * That residual is why the copy's own rule is "the only edits it may receive are
+ * DELETIONS", and why the staging's end state is a deletion rather than a long life:
+ * the guard catches a case that was added, removed or renamed, not one that was
+ * rewritten in place.
+ *
+ * INC-B3 un-todo'd 13 cases (copying each body verbatim); of the 33 that remain, 32
+ * are INC-B4's and one is NOT COVERAGE at all — the forced-rollback case, which cannot
+ * be driven on a document store. So the suffix this file accepts is either
+ * `— lands in INC-B4` (optionally with a parenthesized reason) or an explicit
+ * `— not coverage: …`, and nothing else.
+ *
  * When INC-B4 lands the last method, this file and the staged copy go away together:
  * the three `.dialects.test.ts` files call the domain suites directly and there is no
  * copy left to drift.
@@ -60,20 +73,36 @@ function activeTitles(source: string): string[] {
 	return [...source.matchAll(/\btest\(\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1] ?? "");
 }
 
-/** Every title registered by `test.todo("…")`, with the increment suffix stripped. */
+/**
+ * The marker a todo name must end with: either the owning increment (optionally
+ * followed by a parenthesized note saying what the case is waiting for), or an
+ * explicit `not coverage: <reason>` for the one case that will never become real here
+ * — the property it pins cannot be driven on a document store at all, so naming an
+ * increment would promise work nobody should do.
+ */
+const TODO_SUFFIX = / — (?:lands in INC-B4(?: \([^)]*\))?|not coverage: .+)$/;
+
+/** Every `test.todo("…")` title, exactly as registered (the marker still attached). */
+function todoSourceTitles(source: string): string[] {
+	return [...source.matchAll(/\btest\.todo\(\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1] ?? "");
+}
+
+/** The same, reduced to the DOMAIN title the todo stands in for. */
 function todoTitles(source: string): string[] {
-	return [...source.matchAll(/\btest\.todo\(\s*"((?:[^"\\]|\\.)*)"/g)].map((m) =>
-		(m[1] ?? "").replace(/ — lands in INC-B[34]$/, ""),
-	);
+	return todoSourceTitles(source).map((title) => title.replace(TODO_SUFFIX, ""));
 }
 
 describe("staged order contract slices do not drift from the domain suites", () => {
 	const staged = read(STAGED);
-	// `test.todo(` also matches `test(`, so the active set is the difference.
 	const stagedTodos = todoTitles(staged);
-	const stagedActive = activeTitles(staged).filter(
-		(title) => !stagedTodos.some((todo) => title.startsWith(todo)),
-	);
+	// `\btest\(` does NOT match `test.todo(` — the `(` has to follow `test`
+	// immediately — so the two scans are already disjoint and no subtraction is
+	// needed. This filter exists only to keep the two sets disjoint if a future
+	// spelling (`test . todo`, a renamed wrapper) ever made `activeTitles` pick a
+	// todo up, and it compares titles EXACTLY: a `startsWith` test would quietly
+	// swallow any active case whose title merely begins with a todo's, which is a
+	// real hazard here (several domain titles share a long prefix).
+	const stagedActive = activeTitles(staged).filter((title) => !stagedTodos.includes(title));
 
 	test("every domain case is either copied or registered as a named todo, and nothing else is", () => {
 		const domain = SUITES.flatMap((name) => activeTitles(read(new URL(name, DOMAIN_TESTING))));
@@ -88,14 +117,15 @@ describe("staged order contract slices do not drift from the domain suites", () 
 	});
 
 	test("every todo names the increment that owns it, and every copied case is active", () => {
-		const todoSource = [...staged.matchAll(/\btest\.todo\(\s*"((?:[^"\\]|\\.)*)"/g)].map(
-			(m) => m[1] ?? "",
-		);
+		const todoSource = todoSourceTitles(staged);
 		for (const title of todoSource) {
-			expect(title, `todo without an owning increment: ${title}`).toMatch(/ — lands in INC-B[34]$/);
+			expect(title, `todo without an owning increment: ${title}`).toMatch(TODO_SUFFIX);
 		}
-		// The two halves of the staging, in the proportions the evidence publishes.
-		expect(todoSource).toHaveLength(46);
-		expect(stagedActive).toHaveLength(22);
+		// The two halves of the staging, in the proportions the evidence publishes:
+		// INC-B2's 22 plus INC-B3's 13 (7 of its own, 6 the email-outbox lease made
+		// servable), against the 33 that remain — 32 the lists increment owes, and one
+		// that is not coverage on this store at all.
+		expect(todoSource).toHaveLength(33);
+		expect(stagedActive).toHaveLength(35);
 	});
 });

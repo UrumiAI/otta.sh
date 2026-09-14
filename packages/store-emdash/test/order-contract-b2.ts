@@ -13,21 +13,30 @@
  * unchanged from `@otta-sh/domain/testing`.
  *
  * The `OrderStore` port is delivered across three increments (creation, transitions
- * and the hold intents here; refunds, reconciliation resolution, fulfillment and
+ * and the hold intents in INC-B2; refunds, reconciliation resolution, fulfillment and
  * cancellation in INC-B3; the lists, search, customer view and outbox lease in
- * INC-B4). Registering all 68 cases today would mean 46 failing cases on every run,
- * which is not a gate anyone reads. So the staging is explicit and mechanical:
+ * INC-B4). Registering all 68 cases at INC-B2 would have meant 46 failing cases on
+ * every run, which is not a gate anyone reads. So the staging is explicit and
+ * mechanical:
+ *
+ * INC-B3 has since un-todo'd 13 of them, by copying each body verbatim: the three
+ * guarded `resolveReconciliation` cases, the four timeline cases that reach for
+ * `recordFulfillment`/`cancelOrder`/the reconciliation pair, and the six transition
+ * cases that count DELIVERED emails, which the email-outbox lease it landed made
+ * servable. 33 todos remain, all INC-B4's.
  *
  * - the cases INC-B2 owns are copied from the domain suites and are **semantically
  *   verbatim**: the assertions, the fixtures and the titles are byte-for-byte, and
  *   the only edits are HELPER RENAMES forced by putting three suites in one module
  *   (`pendingInput` → `transitionPendingInput`/`timelinePendingInput`, `seed` →
- *   `seedTransitionOrder`, `drive` → `driveTransition`/`driveTimeline`);
+ *   `seedTransitionOrder`, `drive` → `driveTransition`/`driveTimeline`, `dispatch` →
+ *   `dispatchTransition`);
  * - every other case is registered as `test.todo("<original title> — lands in
- *   INC-B3|B4")`, so the count of unbuilt behaviour is VISIBLE in the run output and
- *   neither increment can quietly skip one;
+ *   INC-B4")`, so the count of unbuilt behaviour is VISIBLE in the run output and the
+ *   increment that owns it cannot quietly skip one;
  * - the method behind each todo throws `NotImplementedInIncrementError` naming the
- *   same increment.
+ *   same increment — with ONE exception, the forced-rollback case, whose todo name
+ *   says why it can never become a real case on a document store.
  *
  * **One todo's label deliberately differs from the increment its method belongs to.**
  * "resolveReconciliation clears the flag and records the disposition; state/lines
@@ -52,14 +61,18 @@
  * `workerd`.
  */
 import {
+	cancelOrder,
 	cents,
 	currency,
 	getOrderTimeline,
 	idempotencyKey,
 	orderId,
 	productId,
+	recordFulfillment,
 	reservationId,
+	resolveReconciliation,
 	sku,
+	dispatchOrderEmails,
 	transitionOrder,
 	type AppendOrderNoteInput,
 	type CreateOrderInput,
@@ -70,10 +83,23 @@ import type {
 	OrderStoreHarness,
 	OrderTimelineHarness,
 	OrderTransitionHarness,
+	SeedOrderSummaryRow,
 } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 
 const USD = currency("USD");
+
+/** A summary-row seed with sensible defaults; overridable per admin-list case. */
+function summaryRow(overrides: Partial<SeedOrderSummaryRow> & { id: string }): SeedOrderSummaryRow {
+	return {
+		state: "paid",
+		currency: "USD",
+		buyerRef: "buyer@example.com",
+		createdAt: "2026-07-10T00:00:00.000Z",
+		totalCents: 1000,
+		...overrides,
+	};
+}
 
 /** A valid `CreateOrderInput` with a single physical line; overridable per case. */
 function physicalInput(overrides: Partial<CreateOrderInput> = {}): CreateOrderInput {
@@ -173,6 +199,11 @@ function timelinePendingInput(
 	};
 }
 
+/** `dispatch` under the rename this module's three-suites-in-one-file forces. */
+function dispatchTransition(h: OrderTransitionHarness) {
+	return dispatchOrderEmails({ orderStore: h.store, emailSender: h.emailSender, clock: h.clock });
+}
+
 function driveTimeline(h: OrderTimelineHarness, id: OrderId, to: OrderState) {
 	return transitionOrder(
 		{ orderStore: h.orderStore },
@@ -193,9 +224,9 @@ function addNote(
 }
 
 /**
- * The INC-B2 slice of `orderStoreContract`: the 14 creation / replay / snapshot /
- * transition / expiry cases, verbatim, plus a named `todo` for each of the 33 that
- * need a method INC-B3 or INC-B4 owns.
+ * The staged slice of `orderStoreContract`: INC-B2's 14 creation / replay / snapshot /
+ * transition / expiry cases plus INC-B3's 3 guarded-`resolveReconciliation` ones,
+ * verbatim, and a named `todo` for each of the 30 that need a method INC-B4 owns.
  */
 export function orderStoreContractB2(
 	makeHarness: () => Promise<OrderStoreHarness>,
@@ -579,36 +610,115 @@ export function orderStoreContractB2(
 			"resolveReconciliation clears the flag and records the disposition; state/lines untouched — lands in INC-B4",
 		);
 
-		test.todo(
-			"resolveReconciliation with a STALE expectedFlag is a 0-row miss: the re-flagged anomaly survives — lands in INC-B3",
-		);
+		test("resolveReconciliation with a STALE expectedFlag is a 0-row miss: the re-flagged anomaly survives", async () => {
+			const h = await makeHarness();
+			// The admin reviewed "commit lost" — but a NEW anomaly re-flagged the order
+			// before they submitted. The equality guard must NOT clear the new flag.
+			await h.seedOrder(
+				summaryRow({ id: "ord-stale", state: "paid", reconciliationFlag: "paid flip lost" }),
+			);
+			const res = await h.store.resolveReconciliation({
+				orderId: orderId("ord-stale"),
+				expectedFlag: "commit lost", // stale — the displayed flag, not the live one
+				outcome: "written_off",
+				reason: "reviewed the old anomaly",
+				resolvedBy: "ops@shop.test",
+				idempotencyKey: idempotencyKey("res-stale"),
+			});
+			expect(res.resolved).toBe(false);
+			const after = await h.store.getById(orderId("ord-stale"));
+			// The LIVE flag is untouched and no disposition was fabricated.
+			expect(after?.reconciliationFlag).toBe("paid flip lost");
+			expect(after?.reconciliationResolution).toBeNull();
+		});
 
-		test.todo(
-			"resolveReconciliation on a NON-flagged order is a guarded 0-row no-op (resolved:false) — lands in INC-B3",
-		);
+		test("resolveReconciliation on a NON-flagged order is a guarded 0-row no-op (resolved:false)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-clean", state: "paid" })); // no flag
+			const res = await h.store.resolveReconciliation({
+				orderId: orderId("ord-clean"),
+				expectedFlag: "anything",
+				outcome: "written_off",
+				reason: "n/a",
+				resolvedBy: "ops@shop.test",
+				idempotencyKey: idempotencyKey("res-2"),
+			});
+			expect(res.resolved).toBe(false);
+			const after = await h.store.getById(orderId("ord-clean"));
+			// Nothing recorded — a resolve never fabricates a disposition on a clean order.
+			expect(after?.reconciliationResolution).toBeNull();
+		});
 
-		test.todo(
-			"resolveReconciliation is once-only: a second resolve is a 0-row no-op, disposition unchanged — lands in INC-B3",
-		);
+		test("resolveReconciliation is once-only: a second resolve is a 0-row no-op, disposition unchanged", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(
+				summaryRow({ id: "ord-once", state: "paid", reconciliationFlag: "paid flip lost" }),
+			);
+			const first = await h.store.resolveReconciliation({
+				orderId: orderId("ord-once"),
+				expectedFlag: "paid flip lost",
+				outcome: "refunded",
+				reason: "refunded the buyer, stock was gone",
+				resolvedBy: "alice",
+				idempotencyKey: idempotencyKey("res-3a"),
+			});
+			expect(first.resolved).toBe(true);
+			// A second, different resolve attempt finds the flag already cleared.
+			const second = await h.store.resolveReconciliation({
+				orderId: orderId("ord-once"),
+				expectedFlag: "paid flip lost",
+				outcome: "written_off",
+				reason: "different call",
+				resolvedBy: "bob",
+				idempotencyKey: idempotencyKey("res-3b"),
+			});
+			expect(second.resolved).toBe(false);
+			// The FIRST disposition is authoritative — the loser never overwrote it.
+			const after = await h.store.getById(orderId("ord-once"));
+			expect(after?.reconciliationResolution?.outcome).toBe("refunded");
+			expect(after?.reconciliationResolution?.resolvedBy).toBe("alice");
+		});
 	});
 }
 
 /**
- * The INC-B2 slice of `orderTransitionContract`: the two cases that assert the
- * transition TABLE without draining the outbox. Every other case in that suite
- * counts delivered emails through `dispatchOrderEmails`, which claims outbox rows
- * — INC-B4's lease.
+ * The staged slice of `orderTransitionContract`: INC-B2's two table cases plus the
+ * six INC-B3 made servable by landing the email-outbox lease, verbatim.
+ *
+ * Three todos remain, and none of them is about a transition: two need `listOrders`/
+ * `linkGuestOrders` (the lists increment), and the forced-rollback case needs a
+ * `forceFailedTransition` hook the document harness deliberately does not have —
+ * there is no transaction to abort here, so a green would be vacuous. The property
+ * that case exists to prove is pinned instead by
+ * `order-crash-seams.dialects.test.ts`, which PARKS the single compare-and-set and
+ * asserts neither the state change nor the outbox row has landed.
  */
 export function orderTransitionContractB2(
 	makeHarness: () => Promise<OrderTransitionHarness>,
 	opts: { dialect: string },
 ): void {
 	describe(`orderTransitionContract [${opts.dialect}] — INC-B2 slice`, () => {
-		test.todo(
-			"pending → paid transitions once and enqueues exactly one order-confirmation email — lands in INC-B4",
-		);
+		test("pending → paid transitions once and enqueues exactly one order-confirmation email", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			const res = await driveTransition(h, id, "paid");
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.transitioned).toBe(true);
+			expect((await h.store.getById(id))?.state).toBe("paid");
+			expect(await dispatchTransition(h)).toBe(1);
+			expect(h.emailSender.countByTemplate("order-confirmation", id)).toBe(1);
+		});
 
-		test.todo("paid → processing enqueues exactly one order-processing email — lands in INC-B4");
+		test("paid → processing enqueues exactly one order-processing email", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			await driveTransition(h, id, "paid");
+			await dispatchTransition(h); // drain the confirmation email
+			const res = await driveTransition(h, id, "processing");
+			expect(res.ok).toBe(true);
+			await dispatchTransition(h);
+			expect(h.emailSender.countByTemplate("order-processing", id)).toBe(1);
+		});
 
 		test("the full fulfillment path transitions each step exactly once", async () => {
 			const h = await makeHarness();
@@ -621,9 +731,15 @@ export function orderTransitionContractB2(
 			expect((await h.store.getById(id))?.state).toBe("completed");
 		});
 
-		test.todo(
-			"pending → shipped is rejected INVALID_TRANSITION and enqueues zero emails — lands in INC-B4",
-		);
+		test("pending → shipped is rejected INVALID_TRANSITION and enqueues zero emails", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			const res = await driveTransition(h, id, "shipped");
+			expect(res).toEqual({ ok: false, reason: "INVALID_TRANSITION" });
+			expect((await h.store.getById(id))?.state).toBe("pending");
+			expect(await dispatchTransition(h)).toBe(0);
+			expect(h.emailSender.sends).toHaveLength(0);
+		});
 
 		test("a Phase-5 state cannot hop back into a Phase-4 state (paid → pending / paid → expired rejected)", async () => {
 			const h = await makeHarness();
@@ -640,38 +756,98 @@ export function orderTransitionContractB2(
 			expect((await h.store.getById(id))?.state).toBe("paid");
 		});
 
+		test("pending → expired is accepted (Phase-4-authoritative) and enqueues exactly one order-expired email", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			const res = await driveTransition(h, id, "expired");
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.transitioned).toBe(true);
+			expect((await h.store.getById(id))?.state).toBe("expired");
+			expect(await dispatchTransition(h)).toBe(1);
+			expect(h.emailSender.countByTemplate("order-expired", id)).toBe(1);
+		});
+
+		test("replaying the same transition is a no-op and sends exactly one email (headline 5)", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			const first = await driveTransition(h, id, "paid");
+			const replay = await driveTransition(h, id, "paid");
+			expect(first.ok).toBe(true);
+			expect(replay.ok).toBe(true);
+			if (replay.ok) expect(replay.transitioned).toBe(false); // already paid ⇒ no-op
+			expect(await dispatchTransition(h)).toBe(1);
+			expect(h.emailSender.countByTemplate("order-confirmation", id)).toBe(1);
+		});
+
+		test("pending → cancelled sends exactly one order-cancelled email", async () => {
+			const h = await makeHarness();
+			const id = await seedTransitionOrder(h);
+			await driveTransition(h, id, "cancelled");
+			await dispatchTransition(h);
+			expect(h.emailSender.countByTemplate("order-cancelled", id)).toBe(1);
+		});
+
 		test.todo(
-			"pending → expired is accepted (Phase-4-authoritative) and enqueues exactly one order-expired email — lands in INC-B4",
+			"listForCustomer returns only that customer's orders (headline 1) — lands in INC-B4 (needs listForCustomer)",
 		);
 
 		test.todo(
-			"replaying the same transition is a no-op and sends exactly one email (headline 5) — lands in INC-B4",
+			"linkGuestOrders matches buyer_ref case-insensitively — a mixed-case guest checkout still links (H2) — lands in INC-B4 (needs linkGuestOrders, which also rewrites customerKey)",
 		);
 
-		test.todo("pending → cancelled sends exactly one order-cancelled email — lands in INC-B4");
-
-		test.todo("listForCustomer returns only that customer's orders (headline 1) — lands in INC-B4");
-
+		// NOT a lease gap and not deferred work: the document harness has no
+		// `forceFailedTransition` because there is no transaction to abort, so a green
+		// here would be vacuous. `order-crash-seams.dialects.test.ts` parks the single
+		// compare-and-set and asserts the same property instead — which is why this
+		// todo's suffix says NOT COVERAGE rather than naming an increment that will
+		// come back for it.
 		test.todo(
-			"linkGuestOrders matches buyer_ref case-insensitively — a mixed-case guest checkout still links (H2) — lands in INC-B4",
-		);
-
-		test.todo(
-			"a forced rollback mid-transition leaves neither the state change nor the outbox row — lands in INC-B4",
+			"a forced rollback mid-transition leaves neither the state change nor the outbox row — not coverage: no transaction to abort on a document store, pinned by order-crash-seams instead",
 		);
 	});
 }
 
-/** The INC-B2 slice of `orderTimelineContract`: the six cases whose spine is the
- *  state-change audit plus the notes merge. */
+/** The staged slice of `orderTimelineContract`: INC-B2's six cases (the state-change
+ *  audit spine plus the notes merge) and INC-B3's four (the fulfillment, cancellation
+ *  and reconciliation artifacts) — the whole suite, with no todo left. */
 export function orderTimelineContractB2(
 	makeHarness: () => Promise<OrderTimelineHarness>,
 	opts: { dialect: string },
 ): void {
 	describe(`orderTimelineContract [${opts.dialect}] — INC-B2 slice`, () => {
-		test.todo(
-			"each guarded state flip records exactly one state_change event (from/to/actor) — lands in INC-B3",
-		);
+		test("each guarded state flip records exactly one state_change event (from/to/actor)", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-audit-1");
+			await h.orderStore.createFromCart(timelinePendingInput("ord-audit-1", "key-a1"));
+			h.tick(1000);
+			await driveTimeline(h, id, "paid");
+			h.tick(1000);
+			await driveTimeline(h, id, "processing");
+			h.tick(1000);
+			await recordFulfillment(
+				{ orderStore: h.orderStore },
+				{
+					orderId: id,
+					carrier: "UPS",
+					trackingNumber: "1Z-1",
+					recordedBy: "dispatch-desk",
+					idempotencyKey: idempotencyKey(`f:${id}`),
+				},
+			);
+
+			const events = await h.orderStore.listEventsForOrder(id);
+			expect(events.map((e) => [e.fromState, e.toState])).toEqual([
+				["pending", "paid"],
+				["paid", "processing"],
+				["processing", "shipped"],
+			]);
+			// Bare transitions carry no modeled actor; the fulfillment flip stamps the
+			// recorder as its actor.
+			expect(events.map((e) => e.actor)).toEqual([null, null, "dispatch-desk"]);
+			expect(events.every((e) => e.kind === "state_change")).toBe(true);
+			// createFromCart is NOT a flip — creation is derived, never an event.
+			expect(events).toHaveLength(3);
+		});
 
 		test("a replayed transition records no duplicate event (a 0-row flip audits nothing)", async () => {
 			const h = await makeHarness();
@@ -685,9 +861,28 @@ export function orderTimelineContractB2(
 			expect(events[0]).toMatchObject({ fromState: "pending", toState: "paid" });
 		});
 
-		test.todo(
-			"cancel records a cancelled state_change event with the canceller as actor — lands in INC-B3",
-		);
+		test("cancel records a cancelled state_change event with the canceller as actor", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-audit-3");
+			await h.orderStore.createFromCart(timelinePendingInput("ord-audit-3", "key-a3"));
+			await cancelOrder(
+				{ orderStore: h.orderStore },
+				{
+					orderId: id,
+					reason: "customer_request",
+					detail: null,
+					cancelledBy: "ops@shop",
+					idempotencyKey: idempotencyKey(`c:${id}`),
+				},
+			);
+			const events = await h.orderStore.listEventsForOrder(id);
+			expect(events).toHaveLength(1);
+			expect(events[0]).toMatchObject({
+				fromState: "pending",
+				toState: "cancelled",
+				actor: "ops@shop",
+			});
+		});
 
 		test("expire records an expired state_change event", async () => {
 			const h = await makeHarness();
@@ -740,13 +935,86 @@ export function orderTimelineContractB2(
 			expect(kinds[3]).toMatchObject({ kind: "note", author: "bob" });
 		});
 
-		test.todo(
-			"the timeline places the fulfillment, cancellation, and reconciliation artifacts at their timestamps — lands in INC-B3",
-		);
+		test("the timeline places the fulfillment, cancellation, and reconciliation artifacts at their timestamps", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-tl-2");
+			await h.orderStore.createFromCart(timelinePendingInput("ord-tl-2", "key-tl2"));
+			h.tick(1000);
+			await driveTimeline(h, id, "paid");
+			h.tick(1000);
+			await driveTimeline(h, id, "processing");
+			h.tick(1000);
+			await recordFulfillment(
+				{ orderStore: h.orderStore },
+				{
+					orderId: id,
+					carrier: "DHL",
+					trackingNumber: "DH-9",
+					recordedBy: "shipper",
+					idempotencyKey: idempotencyKey(`f:${id}`),
+				},
+			);
 
-		test.todo(
-			"a historical order (no events) still yields a partial timeline and degrades gracefully — lands in INC-B3",
-		);
+			const timeline = await getOrderTimeline(
+				{ orderStore: h.orderStore, orderNotesStore: h.orderNotesStore },
+				id,
+			);
+			const entries = timeline?.entries ?? [];
+			// created, →paid, →processing, →shipped, then the fulfillment detail (same
+			// instant as the shipped flip — the state_change sorts before it).
+			expect(entries.map((e) => e.kind)).toEqual([
+				"created",
+				"state_change",
+				"state_change",
+				"state_change",
+				"fulfillment",
+			]);
+			expect(entries.at(-1)).toMatchObject({
+				kind: "fulfillment",
+				carrier: "DHL",
+				recordedBy: "shipper",
+			});
+			expect(entries[3]).toMatchObject({ kind: "state_change", toState: "shipped" });
+		});
+
+		test("a historical order (no events) still yields a partial timeline and degrades gracefully", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-hist");
+			await h.orderStore.createFromCart(timelinePendingInput("ord-hist", "key-hist"));
+			// Flag then resolve reconciliation — a resolve is NOT a state flip, so it
+			// records no event; the order thus has zero state_change events.
+			await h.orderStore.flagReconciliation(id, "commit lost for reservation res-1");
+			h.tick(1000);
+			await resolveReconciliation(
+				{ orderStore: h.orderStore },
+				{
+					orderId: id,
+					expectedFlag: "commit lost for reservation res-1",
+					outcome: "written_off",
+					reason: "false alarm",
+					resolvedBy: "ops@shop",
+					idempotencyKey: idempotencyKey(`rr:${id}`),
+				},
+			);
+			h.tick(1000);
+			await addNote(h, { orderId: id, author: "ops", body: "closed out", key: "n-h" });
+
+			const timeline = await getOrderTimeline(
+				{ orderStore: h.orderStore, orderNotesStore: h.orderNotesStore },
+				id,
+			);
+			expect(timeline?.stateChangesAudited).toBe(false);
+			expect(timeline?.entries.map((e) => e.kind)).toEqual([
+				"created",
+				"reconciliation_resolved",
+				"note",
+			]);
+			expect(timeline?.entries[1]).toMatchObject({
+				kind: "reconciliation_resolved",
+				outcome: "written_off",
+				resolvedBy: "ops@shop",
+			});
+		});
 
 		test("same-instant entries keep a deterministic order via the kind rank", async () => {
 			// No tick: creation, the note, and the paid flip all share T0. The kind
