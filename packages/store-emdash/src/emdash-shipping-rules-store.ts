@@ -41,15 +41,32 @@
  * inside that window and asserts the outcome, and
  * `test/rules-cas-race.pg.test.ts` drives it with a real crowd.
  *
- * ## The method-id claim
+ * ## The method-id claim, and its three rules
  *
- * Six port methods take a method id with no zone (`getMethod`, `updateMethod`,
- * `deleteMethod`, and the three rate methods), so the claim document is the only
- * way to reach the holding zone — and, because no declared index is a physical
- * unique index here, it is also the only thing that keeps one method id from
- * landing in two zones. A claim whose zone no longer holds the method is ORPHANED
- * and is taken over by the next create, so a crash between claiming an id and
- * embedding the method never strands the id.
+ * SEVEN port methods here take a method id with no zone (`getMethod`,
+ * `updateMethod`, `deleteMethod`, `createRate`, `getRate`, `updateRate`,
+ * `deleteRate`; the tax store adds two more of its own), so the claim document is
+ * the fast way to reach the holding zone — and, because no declared index is a
+ * physical unique index in any tier, it is also what keeps one method id from
+ * landing in two zones.
+ *
+ * 1. **A create RE-ASSERTS the claim immediately before the embed**, at the
+ *    revision the claim step returned, and again on every revision-loss retry. The
+ *    revision is the owner token: a claim a peer has adopted or a deleter has
+ *    released fails the re-assertion, so a method is never embedded under an id
+ *    this call no longer holds, and a release already in flight against the older
+ *    revision can no longer land.
+ * 2. **A delete releases the claim only AFTER the method has left its zone**,
+ *    pinned to a revision read after that write, only while the claim still names
+ *    the zone it emptied, and only while that zone does not hold the method again.
+ * 3. **The claim is not the definition of existence.** `getMethod` and the rate
+ *    methods fall back to a bounded scan when the claim does not resolve, and
+ *    re-establish it — so a method that is embedded while its claim is missing (the
+ *    crash between an embed and its re-assertion, or the narrow same-zone
+ *    interleaving rule 1 cannot close) is rediscovered and made editable again
+ *    rather than becoming an unreachable priced row. The create path's collision
+ *    test goes through that same lookup, which is what stops the residue from
+ *    becoming one id in two zones.
  */
 import {
 	type Cents,
@@ -247,15 +264,21 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	// -- methods ---------------------------------------------------------------
 
 	/**
-	 * Mint a method: claim its id store-wide, then embed it in its zone.
+	 * Mint a method: claim its id store-wide, then embed it in its zone — with the
+	 * claim RE-ASSERTED adjacent to the embed.
 	 *
 	 * The claim comes FIRST, as every claim in this package does: a claim that
 	 * outlives the embed is an orphan the next create takes over, whereas an embed
-	 * that outlives its claim would be a method no id-taking method could reach.
+	 * that outlives its claim would be a method no id-taking method could reach by
+	 * id. The re-assertion is what makes the second case unreachable in the
+	 * interleaving that could otherwise produce it — a peer adopting the orphan
+	 * while a deleter is mid-release — because the claim's revision is the owner
+	 * token and re-asserting at it both PROVES the id is still ours and invalidates
+	 * any release already in flight against the revision it read.
 	 */
 	async createMethod(input: CreateShippingMethodInput): Promise<ShippingMethod> {
 		const now = this.#clock.now().toISOString();
-		await this.#claimMethodId(input.id, input.zoneId, now);
+		let claimRevision = await this.#claimMethodId(input.id, input.zoneId, now);
 		const method: ShippingMethodDoc = {
 			methodId: input.id,
 			name: input.name,
@@ -265,6 +288,20 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 		const embedded = await this.#cas<"embedded" | "no_zone">("createShippingMethod", async () => {
 			const held = await this.#heldZone(input.zoneId);
 			if (held === null) return casDone<"embedded" | "no_zone">("no_zone");
+			// Re-asserted on EVERY attempt, with the revision carried forward from this
+			// write's own result: a claim a peer has adopted, or a deleter has released,
+			// fails here — BEFORE a method could be embedded under an id this call no
+			// longer holds.
+			const reasserted = await this.#methodOwners.compareAndSet(input.id, claimRevision, {
+				methodId: input.id,
+				zoneId: input.zoneId,
+				claimedAt: now,
+			});
+			if (!reasserted.applied) {
+				const taken = await this.#methodOwners.get(input.id);
+				throw new ShippingMethodIdCollisionError(input.id, taken?.zoneId ?? "a concurrent create");
+			}
+			claimRevision = reasserted.revision;
 			const written = await this.#zones.compareAndSet(
 				input.zoneId,
 				held.revision,
@@ -453,19 +490,60 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	}
 
 	/**
-	 * Follow the id claim to the zone document that holds the method.
+	 * Follow the id claim to the zone document that holds the method — and, when the
+	 * claim does not resolve, FIND the method by a bounded scan and re-establish it.
 	 *
-	 * Returns `null` for an unknown id AND for an ORPHANED claim — a claim whose
-	 * zone does not (or no longer) holds the method. That is the same answer the
-	 * SQL gave for a row that was never inserted, which is what makes the crash
-	 * between the claim and the embed invisible to every reader.
+	 * The claim is the fast path and the uniqueness device; it is deliberately NOT
+	 * the definition of existence. A method that is embedded while its claim is
+	 * missing or points at the wrong zone would otherwise be a method the lists
+	 * return but no id-taking method can reach — an unreachable priced row, and the
+	 * one residue this design could leave behind (a crash between an embed and its
+	 * claim re-assertion, or a release that raced an adoption). Rediscovering it here
+	 * makes that state self-healing instead of operator work: the scan is over a
+	 * collection whose size is the merchant's zone count, it runs only on the path
+	 * where the claim did not resolve, and the claim it writes back is create-if-absent
+	 * (or a re-point at the zone that really holds the method), so two concurrent
+	 * healers cannot disagree.
+	 *
+	 * An id with no method anywhere still answers `null`, which is the answer the SQL
+	 * gave for a row that was never inserted.
 	 */
 	async #findMethod(
 		methodId: string,
 	): Promise<{ zone: HeldZone; method: ShippingMethodDoc } | null> {
 		const owner = await this.#methodOwners.get(methodId);
-		if (owner === null) return null;
-		const zone = await this.#heldZone(owner.zoneId);
+		if (owner !== null) {
+			const zone = await this.#heldZone(owner.zoneId);
+			const method = zone?.doc.methods[methodId];
+			if (zone !== null && method !== undefined) return { zone, method };
+		}
+		return this.#healMethodClaim(methodId);
+	}
+
+	/**
+	 * The healing half of {@link #findMethod}: scan for the method, and re-establish
+	 * its claim when one is found holding it.
+	 */
+	async #healMethodClaim(
+		methodId: string,
+	): Promise<{ zone: HeldZone; method: ShippingMethodDoc } | null> {
+		const zones = await this.#scanZones("findMethod");
+		const holder = zones.find((zone) => zone.methods[methodId] !== undefined);
+		if (holder === undefined) return null;
+		const current = await this.#methodOwners.getVersioned(methodId);
+		const mine: ShippingMethodOwnerDoc = {
+			methodId,
+			zoneId: holder.zoneId,
+			claimedAt: this.#clock.now().toISOString(),
+		};
+		// A refusal is somebody else having written the claim in the meantime, which is
+		// the state this wanted to reach; the read below is what the caller gets either
+		// way.
+		if (current === null) await this.#methodOwners.compareAndSet(methodId, null, mine);
+		else if (current.value.zoneId !== holder.zoneId) {
+			await this.#methodOwners.compareAndSet(methodId, current.revision, mine);
+		}
+		const zone = await this.#heldZone(holder.zoneId);
 		const method = zone?.doc.methods[methodId];
 		if (zone === null || method === undefined) return null;
 		return { zone, method };
@@ -479,36 +557,55 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	 * before releasing leaves. Taking one over is what keeps an id from being
 	 * stranded forever; a claim whose method really is embedded is a collision, and
 	 * is the primary key the SQL enforced.
+	 *
+	 * Returns the claim's REVISION — the owner token `createMethod` re-asserts at.
+	 * It reports its attempt depth under its own operation name, so the claim step's
+	 * contention and the embed step's are two budgets rather than one number.
 	 */
-	async #claimMethodId(methodId: string, zoneId: string, now: string): Promise<void> {
+	async #claimMethodId(methodId: string, zoneId: string, now: string): Promise<string> {
 		const mine: ShippingMethodOwnerDoc = { methodId, zoneId, claimedAt: now };
-		return this.#cas<void>("createShippingMethod", async () => {
+		return this.#cas<string>("createShippingMethod.claim", async () => {
+			// The collision test goes through the HEALING lookup, not through the claim
+			// alone: a method that is embedded while its claim is missing must refuse this
+			// create, or the same id would end up embedded in two zones — the one way an
+			// id claim could be worse than no claim at all.
+			const live = await this.#findMethod(methodId);
+			if (live !== null) throw new ShippingMethodIdCollisionError(methodId, live.zone.doc.zoneId);
 			const current = await this.#methodOwners.getVersioned(methodId);
 			if (current === null) {
 				const written = await this.#methodOwners.compareAndSet(methodId, null, mine);
-				return written.applied ? casDone(undefined) : CAS_RETRY;
+				return written.applied ? casDone(written.revision) : CAS_RETRY;
 			}
-			const held = current.value;
-			const holder = await this.#zones.get(held.zoneId);
-			if (holder !== null && normalizeZoneDoc(holder).methods[methodId] !== undefined) {
-				throw new ShippingMethodIdCollisionError(methodId, held.zoneId);
-			}
-			// Orphaned. Re-point it at this call's zone (a no-op when it already points
-			// there, which is the same-zone replay of an abandoned create).
+			// Orphaned (the lookup above proved no method holds it). Re-point it at this
+			// call's zone — a no-op when it already points there, which is the same-zone
+			// replay of an abandoned create.
 			const written = await this.#methodOwners.compareAndSet(methodId, current.revision, mine);
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
 	}
 
 	/**
-	 * Give a method id back, but only while it is still THIS zone's claim.
+	 * Give a method id back — never a LIVE method's, and only ever after the method
+	 * has already left its zone.
 	 *
-	 * Two things stop a release from taking a LIVE method's id away: the claim must
-	 * still name the zone this call worked on, and that zone must not hold the
-	 * method — the state a peer that re-created the id in the meantime would be in.
-	 * The `compareAndDelete` at the revision just read closes the rest of the
-	 * window, and a refusal means a peer re-claimed the id, which is exactly the
-	 * state this call wanted to reach.
+	 * The ORDER is the guarantee, and it is exactly the reverse of the create's:
+	 *
+	 * 1. the caller has already committed the un-embed (or never embedded at all),
+	 * 2. the claim is read HERE, after that write, so the revision this release is
+	 *    pinned to is one observed after the method was gone,
+	 * 3. the claim must still name the zone this call worked on — a peer that adopted
+	 *    it for another zone keeps it,
+	 * 4. that zone must not hold the method again — a peer that re-created the same id
+	 *    keeps its claim,
+	 * 5. `compareAndDelete` at the revision from step 2 — so an adoption or a
+	 *    re-assertion that happened after that read makes this release refuse rather
+	 *    than take a live claim away.
+	 *
+	 * Step 5 is what pairs with `createMethod`'s re-assertion: a peer that adopts the
+	 * orphan bumps the revision immediately before its embed, so this release can no
+	 * longer land, and the interleaving that would leave a method embedded with no
+	 * claim is closed. A refusal means a peer re-claimed the id, which is the state
+	 * this call wanted to reach anyway.
 	 */
 	async #releaseMethodClaim(methodId: string, expectedZoneId: string): Promise<void> {
 		const current = await this.#methodOwners.getVersioned(methodId);

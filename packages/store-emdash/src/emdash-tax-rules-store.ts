@@ -218,11 +218,18 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	/**
 	 * Mint a rate: claim its id store-wide, then embed it in its class document —
 	 * creating that document when the class was never declared, which is what the
-	 * missing foreign key allowed.
+	 * missing foreign key allowed — with the claim RE-ASSERTED adjacent to the embed.
+	 *
+	 * The claim's revision is the owner token (the shipping store's header states the
+	 * device in full): re-asserting at it immediately before the embed both proves
+	 * the id is still ours and invalidates any release already in flight against the
+	 * revision it read, which is what closes the interleaving that would otherwise
+	 * leave a money-bearing rate embedded with no claim — a rate no admin could edit
+	 * or delete.
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
 		const now = this.#clock.now().toISOString();
-		await this.#claimRateId(input.id, input.taxClassId, now);
+		let claimRevision = await this.#claimRateId(input.id, input.taxClassId, now);
 		const rate: TaxRateDoc = {
 			rateId: input.id,
 			zoneId: input.zoneId,
@@ -230,6 +237,18 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			appliesToShipping: input.appliesToShipping,
 		};
 		await this.#cas<void>("createTaxRate", async () => {
+			// Re-asserted on EVERY attempt, with the revision carried forward from this
+			// write's own result.
+			const reasserted = await this.#rateOwners.compareAndSet(input.id, claimRevision, {
+				rateId: input.id,
+				taxClassId: input.taxClassId,
+				claimedAt: now,
+			});
+			if (!reasserted.applied) {
+				const taken = await this.#rateOwners.get(input.id);
+				throw new TaxRateIdCollisionError(input.id, taken?.taxClassId ?? "a concurrent create");
+			}
+			claimRevision = reasserted.revision;
 			const held = await this.#heldClass(input.taxClassId);
 			if (held === null) {
 				const written = await this.#classes.compareAndSet(input.taxClassId, null, {
@@ -360,42 +379,94 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	}
 
 	/**
-	 * Follow the id claim to the class document that holds the rate. An unknown id
-	 * and an ORPHANED claim both answer `null` — the same answer the SQL gave for a
-	 * row that was never inserted.
+	 * Follow the id claim to the class document that holds the rate — and, when the
+	 * claim does not resolve, FIND the rate by a bounded scan and re-establish it.
+	 *
+	 * The claim is the fast path and the uniqueness device, deliberately not the
+	 * definition of existence: a rate embedded while its claim is missing or points at
+	 * the wrong class would otherwise be a live, money-bearing rate that the checkout
+	 * reads and the admin can neither edit nor delete. Rediscovering it here makes
+	 * that state self-healing rather than operator work — the scan is over a
+	 * collection whose size is the merchant's tax-class count, it runs only where the
+	 * claim did not resolve, and the claim written back is create-if-absent (or a
+	 * re-point at the class that really holds the rate), so two concurrent healers
+	 * cannot disagree.
+	 *
+	 * An id with no rate anywhere still answers `null`, as the missing row did.
 	 */
 	async #findRate(rateId: string): Promise<{ held: HeldClass; rate: TaxRateDoc } | null> {
 		const owner = await this.#rateOwners.get(rateId);
-		if (owner === null) return null;
-		const held = await this.#heldClass(owner.taxClassId);
+		if (owner !== null) {
+			const held = await this.#heldClass(owner.taxClassId);
+			const rate = held?.doc.rates[rateId];
+			if (held !== null && rate !== undefined) return { held, rate };
+		}
+		return this.#healRateClaim(rateId);
+	}
+
+	/**
+	 * The healing half of {@link #findRate}: scan for the rate, and re-establish its
+	 * claim when a class is found holding it.
+	 */
+	async #healRateClaim(rateId: string): Promise<{ held: HeldClass; rate: TaxRateDoc } | null> {
+		const docs = await this.#scanClasses("findRate");
+		const holder = docs.find((doc) => doc.rates[rateId] !== undefined);
+		if (holder === undefined) return null;
+		const current = await this.#rateOwners.getVersioned(rateId);
+		const mine: TaxRateOwnerDoc = {
+			rateId,
+			taxClassId: holder.taxClassId,
+			claimedAt: this.#clock.now().toISOString(),
+		};
+		// A refusal is somebody else having written the claim in the meantime, which is
+		// the state this wanted to reach.
+		if (current === null) await this.#rateOwners.compareAndSet(rateId, null, mine);
+		else if (current.value.taxClassId !== holder.taxClassId) {
+			await this.#rateOwners.compareAndSet(rateId, current.revision, mine);
+		}
+		const held = await this.#heldClass(holder.taxClassId);
 		const rate = held?.doc.rates[rateId];
 		if (held === null || rate === undefined) return null;
 		return { held, rate };
 	}
 
-	/** Claim a rate id store-wide, taking over an ORPHANED claim (see the header). */
-	async #claimRateId(rateId: string, taxClassId: string, now: string): Promise<void> {
+	/**
+	 * Claim a rate id store-wide, taking over an ORPHANED claim (see the header).
+	 *
+	 * Returns the claim's REVISION — the owner token `createRate` re-asserts at — and
+	 * reports its attempt depth under its own operation name, so the claim step's
+	 * contention and the embed step's stay two budgets rather than one number.
+	 */
+	async #claimRateId(rateId: string, taxClassId: string, now: string): Promise<string> {
 		const mine: TaxRateOwnerDoc = { rateId, taxClassId, claimedAt: now };
-		return this.#cas<void>("createTaxRate", async () => {
+		return this.#cas<string>("createTaxRate.claim", async () => {
+			// Through the HEALING lookup, not the claim alone: a rate embedded while its
+			// claim is missing must refuse this create, or one rate id would end up in two
+			// class documents.
+			const live = await this.#findRate(rateId);
+			if (live !== null) throw new TaxRateIdCollisionError(rateId, live.held.doc.taxClassId);
 			const current = await this.#rateOwners.getVersioned(rateId);
 			if (current === null) {
 				const written = await this.#rateOwners.compareAndSet(rateId, null, mine);
-				return written.applied ? casDone(undefined) : CAS_RETRY;
-			}
-			const held = current.value;
-			const holder = await this.#classes.get(held.taxClassId);
-			if (holder !== null && normalizeTaxClassDoc(holder).rates[rateId] !== undefined) {
-				throw new TaxRateIdCollisionError(rateId, held.taxClassId);
+				return written.applied ? casDone(written.revision) : CAS_RETRY;
 			}
 			const written = await this.#rateOwners.compareAndSet(rateId, current.revision, mine);
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
 	}
 
 	/**
-	 * Give a rate id back, but only while the claim still names the class this call
-	 * emptied and that class does not hold the id again — the guards that keep a
-	 * release from taking a peer's freshly created rate out of reach.
+	 * Give a rate id back — never a LIVE rate's, and only ever after the rate has
+	 * already left its class document.
+	 *
+	 * The ORDER is the guarantee, and it is the reverse of the create's: the un-embed
+	 * is already committed, the claim is READ HERE (so the revision this release pins
+	 * itself to was observed after the rate was gone), the claim must still name the
+	 * class this call emptied, that class must not hold the rate again, and the
+	 * `compareAndDelete` is at the revision from that read. The last condition is what
+	 * pairs with `createRate`'s re-assertion: a peer that adopts the orphan bumps the
+	 * revision immediately before its embed, so this release refuses instead of taking
+	 * a live claim away.
 	 */
 	async #releaseRateClaim(rateId: string, expectedClassId: string): Promise<void> {
 		const current = await this.#rateOwners.getVersioned(rateId);

@@ -12,7 +12,7 @@ behind it.
   transaction: the emptiness test reads the very document the delete is guarded on, so
   a child created in between makes the delete refuse and the retry reports
   `in_use_by_methods` / `in_use_by_rates` rather than orphaning the child.
-- **A claim document per child id.** Eight port methods take a method or rate id with
+- **A claim document per child id.** Nine port methods take a method or rate id with
   no parent, and a document store has no primary key to make one unique across
   parents; the claim is both — created if absent, released on delete, taken over when
   it is orphaned by a crash, and loud when the child it names is really there.

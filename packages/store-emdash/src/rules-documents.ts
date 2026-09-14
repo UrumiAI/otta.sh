@@ -16,10 +16,10 @@
  * | `tax_classes/{classId}` | the class registry entry (`name`) and its `rates` map keyed by rate id |
  * | `tax_rate_owners/{rateId}` | `{ taxClassId }` — the rate-id uniqueness claim, and the only way to reach a rate from an id alone |
  *
- * **Why the two claim documents exist.** Six port methods take a child id with no
- * parent: `getMethod`, `updateMethod`, `deleteMethod` and the three rate methods
- * keyed by `methodId` on the shipping side; `updateRate` and `deleteRate` on the
- * tax side. With the children embedded there is no document to read, and a scan
+ * **Why the two claim documents exist.** NINE port methods take a child id with no
+ * parent: `getMethod`, `updateMethod`, `deleteMethod`, `createRate`, `getRate`,
+ * `updateRate` and `deleteRate` on the shipping side (the last four keyed by
+ * `methodId`); `updateRate` and `deleteRate` on the tax side. With the children embedded there is no document to read, and a scan
  * would answer the question ambiguously the moment two zones could hold the same
  * method id — which SQL made impossible with a primary key and which no declared
  * index enforces here (see the README's "no physical indexes"). The claim

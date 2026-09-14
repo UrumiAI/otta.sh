@@ -1559,9 +1559,10 @@ assertion that would fail if the write order were reversed.
 
 ### Why two claim collections, where the design table names none
 
-Eight port methods take a child id with **no parent**: `getMethod`,
-`updateMethod`, `deleteMethod` and the three shipping-rate methods keyed by
-`methodId`, plus tax's `updateRate` and `deleteRate` keyed by rate id. With the
+**Nine** port methods take a child id with **no parent**: `getMethod`,
+`updateMethod`, `deleteMethod`, `createRate`, `getRate`, `updateRate` and
+`deleteRate` on the shipping side (the last four keyed by `methodId`), plus tax's
+`updateRate` and `deleteRate` keyed by rate id. With the
 children embedded there is no document to read for those, and a scan would answer
 ambiguously the moment one child id could sit in two parents — which SQL made
 impossible with a primary key and which **no declared index enforces here** (see
@@ -1612,6 +1613,17 @@ really spent and the guard still admits exactly one editor.
 The first two sit at 2 for the reason the guard exists: a loser's second attempt
 re-reads a value that has moved and stops, so depth does not grow with the crowd.
 
+**The exception to "depth is a property of the document, not the crowd".** The three
+structural edits — `updateZone`, `updateMethod`, `updateClass` — are LAST-WRITER-WINS
+by port contract: they have no guard to refuse them, so every one of N writers of the
+same document eventually commits, and a writer can lose its revision once per peer
+that commits ahead of it. Their worst-case depth is therefore the CROWD SIZE, not a
+property of the document: measured 12 at N=24 above, and past roughly N > 40 on one
+document the budget runs out and the caller gets `StorageContentionError` — nothing
+written, safe to retry. That is the documented shape of a rename storm on one zone or
+class, not a money path: no invariant is at risk either way, and every money edit on
+the same document still refuses cleanly as `stale`.
+
 ### Rules crash seams proven
 
 `test/rules-crash-seams.dialects.test.ts`, over the one multi-document step each
@@ -1632,3 +1644,33 @@ store has:
   carrying the peer's value.
 - **a parent delete racing a child create** refuses with the referential reason
   rather than orphaning the child.
+- **a release cannot take a claim a peer has adopted**: the deleter is held between
+  its claim read and its `compareAndDelete`, the peer adopts the id for another
+  parent and embeds it, and the release then refuses — the peer's claim survives and
+  the child is reachable by id.
+- **a peer whose embed lands AFTER a release** still ends up reachable, editable and
+  in exactly ONE parent, and its id is refused to a second home. This is the
+  interleaving below.
+- **a child embedded with NO claim** — the residue, constructed directly — is
+  rediscovered, re-claimed, and editable and deletable again.
+- **`createRate` refuses a second rate for one `(method, currency)`**, the SQL
+  primary key's refusal, leaving the quoted price untouched.
+
+### The one residue, and why it is healed rather than prevented
+
+The create's re-assertion closes every interleaving in which a release could take a
+LIVE child's claim away, bar one: a peer adopting the orphan **for the same parent**,
+with the deleter's claim read landing after the peer's re-assertion and its
+`compareAndDelete` landing before the peer's embed. The deleter's parent check then
+sees no child (it is not embedded yet) and its revision is current, so the release
+lands and the child arrives a moment later with no claim. The same state is reachable
+by a crash between an embed and the next re-assertion.
+
+Preventing it would need a post-embed compensation — undo the embed when a
+re-assertion fails — which has a crash window of its own and would leave exactly the
+same residue. So it is **healed instead**: `getMethod` and the rate methods fall back
+to a bounded scan when the claim does not resolve and re-establish the claim, and the
+create path's collision test runs through that same lookup, so the residue can never
+become one id in two parents either. The heal is automatic, not operator work, and
+both halves are pinned by the two seam cases above. What a caller can observe in the
+meantime is one extra scan of a collection sized by the merchant's zone/class count.

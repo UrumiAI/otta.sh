@@ -24,9 +24,10 @@
  */
 import { cents, currency } from "@otta-sh/domain";
 import { expect, test } from "vitest";
-import { normalizeZoneDoc } from "../src/index.js";
+import { normalizeZoneDoc, type StorageCollection } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import {
+	delegatingCollection,
 	failCall,
 	InjectedCrashError,
 	isUpdateWrite,
@@ -43,6 +44,46 @@ const USD = currency("USD");
 
 /** The claim RELEASE — the second half of a delete's two-document step. */
 const isRelease: CallMatcher = (call) => call.method === "compareAndDelete";
+
+/**
+ * Hold the first `getVersioned(id)` a collection is asked for, BEFORE it happens.
+ *
+ * `parkCall` hooks the four write methods, which is enough for every ordering seam
+ * in this package but not for this one: the state the reviewer of these stores asked
+ * to be pinned is a deleter whose claim READ observes a revision a peer has already
+ * adopted and re-asserted, and that is a read. Everything else delegates for real, so
+ * the document the release then pins itself to is the one the host really holds.
+ */
+function parkBeforeRead<T>(
+	raw: StorageCollection<T>,
+	id: string,
+): { collection: StorageCollection<T>; arrived: Promise<void>; release(): void } {
+	let announce: (() => void) | undefined;
+	let open: (() => void) | undefined;
+	const arrived = new Promise<void>((resolve) => {
+		announce = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	let held = false;
+	return {
+		collection: delegatingCollection(raw, {
+			async getVersioned(readId) {
+				if (readId === id && !held) {
+					held = true;
+					announce?.();
+					await gate;
+				}
+				return raw.getVersioned(readId);
+			},
+		}),
+		arrived,
+		release() {
+			open?.();
+		},
+	};
+}
 
 describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 	const bound = ctx.useStorage(SHIPPING_RULES_LAYOUT);
@@ -254,6 +295,143 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 		expect(await deleting).toEqual({ ok: false, reason: "in_use_by_methods" });
 		expect(await plain.store.getZone("z-us")).not.toBeNull();
 		expect((await plain.store.getMethod("m-x"))?.zoneId).toBe("z-us");
+	});
+	test("(h) a release cannot take a claim a peer has adopted — the delete refuses", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createZone({ id: "z-eu", name: "EU", regions: null });
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" });
+
+		// The deleter is held between its claim read and its release.
+		const parked = parkCall(raw["shipping_method_owners"] ?? never(), isRelease);
+		const deleter = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_method_owners", parked.collection),
+		}).store;
+		const deleting = deleter.deleteMethod("m-x");
+		await parked.arrived;
+
+		// A peer adopts the now-orphaned id for ANOTHER zone and embeds it there.
+		const adopted = await plain.store.createMethod({
+			id: "m-x",
+			zoneId: "z-eu",
+			name: "X",
+			type: "flat_rate",
+		});
+		expect(adopted.zoneId).toBe("z-eu");
+
+		parked.release();
+		expect(await deleting).toEqual({ ok: true });
+		// The peer's claim survived the release, and the method is reachable by id.
+		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-eu");
+		expect((await plain.store.getMethod("m-x"))?.zoneId).toBe("z-eu");
+	});
+
+	test("(i) a peer whose embed lands AFTER a release still ends up reachable and single-homed", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createZone({ id: "z-eu", name: "EU", regions: null });
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" });
+
+		// The peer is held immediately before its embed, having already adopted AND
+		// re-asserted the claim; the deleter's claim read is held until that point, so it
+		// observes the peer's revision — the exact interleaving the release's revision
+		// guard cannot close, because the peer's method is not embedded YET.
+		const peerPark = parkCall(raw["shipping_zones"] ?? never(), onId("z-us", isUpdateWrite));
+		const readPark = parkBeforeRead(raw["shipping_method_owners"] ?? never(), "m-x");
+		const deleter = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_method_owners", readPark.collection),
+		}).store;
+		const peer = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_zones", peerPark.collection),
+		}).store;
+
+		const deleting = deleter.deleteMethod("m-x");
+		await readPark.arrived;
+		const creating = peer.createMethod({
+			id: "m-x",
+			zoneId: "z-us",
+			name: "X2",
+			type: "flat_rate",
+		});
+		await peerPark.arrived;
+		readPark.release();
+		expect(await deleting).toEqual({ ok: true });
+		peerPark.release();
+		await creating;
+
+		// Whatever happened to the claim, the method the peer embedded is REACHABLE by
+		// id, editable, and in exactly one zone — the residue is healed by the lookup
+		// rather than left as a row the lists return and no id-taking method can see.
+		expect((await plain.store.getMethod("m-x"))?.zoneId).toBe("z-us");
+		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-us");
+		expect((await plain.store.listMethods("z-us")).map((m) => m.id)).toEqual(["m-x"]);
+		expect(await plain.store.listMethods("z-eu")).toEqual([]);
+		expect(await plain.store.updateMethod("m-x", { name: "X3", type: "flat_rate" })).toMatchObject({
+			ok: true,
+		});
+		// And the id is NOT free for a second home.
+		const err = await settleOne(
+			plain.store.createMethod({ id: "m-x", zoneId: "z-eu", name: "X", type: "flat_rate" }),
+		);
+		expect((err as { code?: unknown }).code).toBe("SHIPPING_METHOD_ID_COLLISION");
+		// The parent is deletable again once the method really goes.
+		expect(await plain.store.deleteMethod("m-x")).toEqual({ ok: true });
+		expect(await plain.store.deleteZone("z-us")).toEqual({ ok: true });
+	});
+
+	test("(j) a method embedded with NO claim is rediscovered and re-claimed", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" });
+		await plain.store.createRate({
+			methodId: "m-x",
+			currency: USD,
+			amountCents: cents(599),
+			minSubtotalCents: null,
+		});
+		// The residue, constructed directly: the claim is gone, the priced method is not.
+		expect(await plain.methodOwners.delete("m-x")).toBe(true);
+
+		expect((await plain.store.getMethod("m-x"))?.zoneId).toBe("z-us");
+		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-us");
+		expect((await plain.store.getRate("m-x", USD))?.amountCents).toBe(599);
+		expect(
+			await plain.store.updateRate(
+				"m-x",
+				USD,
+				{ amountCents: cents(650), minSubtotalCents: null },
+				cents(599),
+			),
+		).toMatchObject({ ok: true });
+		expect(await plain.store.deleteRate("m-x", USD)).toEqual({ ok: true });
+		expect(await plain.store.deleteMethod("m-x")).toEqual({ ok: true });
+	});
+
+	test("(k) createRate refuses a second rate for the same (method, currency)", async () => {
+		const plain = makeShippingRulesHarness(bound.storage);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" });
+		await plain.store.createRate({
+			methodId: "m-x",
+			currency: USD,
+			amountCents: cents(599),
+			minSubtotalCents: null,
+		});
+		// The SQL primary key `(method_id, currency)` refused this; so does the map key.
+		const err = await settleOne(
+			plain.store.createRate({
+				methodId: "m-x",
+				currency: USD,
+				amountCents: cents(100),
+				minSubtotalCents: null,
+			}),
+		);
+		expect((err as { code?: unknown }).code).toBe("SHIPPING_RATE_EXISTS");
+		// The price a shopper is being quoted is untouched.
+		expect((await plain.store.getRate("m-x", USD))?.amountCents).toBe(599);
 	});
 });
 
@@ -471,6 +649,121 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		});
 		expect(await plain.store.deleteRate("r2")).toEqual({ ok: true });
 		expect(await plain.classes.get("ghost2")).toBeNull();
+	});
+	test("(h) a release cannot take a claim a peer has adopted — the delete refuses", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		const parked = parkCall(raw["tax_rate_owners"] ?? never(), isRelease);
+		const deleter = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_rate_owners", parked.collection),
+		}).store;
+		const deleting = deleter.deleteRate("r1");
+		await parked.arrived;
+
+		// A peer adopts the orphaned id for ANOTHER class and embeds it there.
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "reduced",
+			zoneId: "z-us",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+
+		parked.release();
+		expect(await deleting).toEqual({ ok: true });
+		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("reduced");
+		expect((await plain.store.getRate("reduced", "z-us"))?.rateBps).toBe(500);
+		expect(
+			await plain.store.updateRate("r1", { rateBps: 600, appliesToShipping: false }, 500),
+		).toMatchObject({ ok: true });
+	});
+
+	test("(i) a peer whose embed lands AFTER a release still ends up reachable and single-homed", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createClass({ id: "standard", name: "Standard" });
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		const peerPark = parkCall(raw["tax_classes"] ?? never(), onId("standard", isUpdateWrite));
+		const readPark = parkBeforeRead(raw["tax_rate_owners"] ?? never(), "r1");
+		const deleter = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_rate_owners", readPark.collection),
+		}).store;
+		const peer = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", peerPark.collection),
+		}).store;
+
+		const deleting = deleter.deleteRate("r1");
+		await readPark.arrived;
+		const creating = peer.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-eu",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		await peerPark.arrived;
+		readPark.release();
+		expect(await deleting).toEqual({ ok: true });
+		peerPark.release();
+		await creating;
+
+		// The money-bearing rate the peer embedded is reachable, editable and deletable —
+		// never a live rate no admin can touch.
+		expect((await plain.store.getRate("standard", "z-eu"))?.rateBps).toBe(2000);
+		expect(await plain.store.countRatesByClass("standard")).toBe(1);
+		// The id-keyed edit is the path that heals the claim, because it is the path that
+		// needs it: the `(class, zone)` read above never consults one.
+		expect(
+			await plain.store.updateRate("r1", { rateBps: 2100, appliesToShipping: false }, 2000),
+		).toMatchObject({ ok: true });
+		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("standard");
+		const err = await settleOne(
+			plain.store.createRate({
+				id: "r1",
+				taxClassId: "reduced",
+				zoneId: "z-us",
+				rateBps: 1,
+				appliesToShipping: false,
+			}),
+		);
+		expect((err as { code?: unknown }).code).toBe("TAX_RATE_ID_COLLISION");
+		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
+		expect(await plain.store.deleteClass("standard")).toEqual({ ok: true });
+	});
+
+	test("(j) a rate embedded with NO claim is rediscovered and re-claimed", async () => {
+		const plain = makeTaxRulesHarness(bound.storage);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		// The residue, constructed directly: the claim is gone, the priced rate is not.
+		expect(await plain.rateOwners.delete("r1")).toBe(true);
+
+		expect(
+			await plain.store.updateRate("r1", { rateBps: 825, appliesToShipping: false }, 725),
+		).toMatchObject({ ok: true });
+		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("standard");
+		expect((await plain.store.getRate("standard", "z-us"))?.rateBps).toBe(825);
+		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
 	});
 });
 
