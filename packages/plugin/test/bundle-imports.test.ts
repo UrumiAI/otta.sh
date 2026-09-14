@@ -84,33 +84,80 @@ function bareSpecifiers(source: string): string[] {
 	return [...found];
 }
 
+/**
+ * Comments removed, so the scan sees CODE. Several docblocks legitimately cite the
+ * host — one of them even shows the import a sandboxed plugin would write — and a
+ * scan that counted those would be a scan nobody could keep green. Crude on
+ * purpose: `.d.mts` output carries no string literal that could hide a `//` or a
+ * `/*`, so there is nothing here for a cleverer stripper to save.
+ */
+function withoutComments(source: string): string {
+	return source.replaceAll(/\/\*[\s\S]*?\*\//g, " ").replaceAll(/\/\/[^\n]*/g, " ");
+}
+
 let outDir = "";
 let emitted: Array<{ file: string; source: string; specifiers: string[] }> = [];
+let declarations: Array<{ file: string; source: string }> = [];
 
 describe("emitted plugin bundle carries no un-bundled workspace or host import", () => {
 	beforeAll(async () => {
 		outDir = await mkdtemp(path.join(tmpdir(), "otta-plugin-bundle-"));
 		const entry = (tsdownConfig.entry as string[]).map((e) => path.resolve(PKG_DIR, e));
-		await build({
-			...tsdownConfig,
-			entry,
-			outDir,
-			// Types are irrelevant to what a specifier scan can see, and dts
-			// generation is most of this build's wall clock.
-			dts: false,
-			logLevel: "silent",
-		});
+		// EXACTLY the package's own build, declarations included. The `dts: false`
+		// this used to pass was defensible while declarations were a per-file
+		// compile of this package alone — but `src/` now imports two workspace
+		// packages for their VALUES, and a declaration emit across that boundary is
+		// the half of the build that breaks first (it needs the TypeScript PROJECT,
+		// and it drags the host's type graph in unless that stays external). Skipping
+		// it left this guard green against a build that could not run at all, which is
+		// the one failure a packaging guard exists to catch. It costs this suite about
+		// twenty seconds and buys back the whole build.
+		await build({ ...tsdownConfig, entry, outDir, logLevel: "silent" });
 		const files = (await readdir(outDir)).filter((f) => f.endsWith(".mjs"));
+		const declarationFiles = (await readdir(outDir)).filter((f) => f.endsWith(".d.mts"));
+		declarations = await Promise.all(
+			declarationFiles.map(async (file) => ({
+				file,
+				source: await readFile(path.join(outDir, file), "utf8"),
+			})),
+		);
 		emitted = await Promise.all(
 			files.map(async (file) => {
 				const source = await readFile(path.join(outDir, file), "utf8");
 				return { file, source, specifiers: bareSpecifiers(source) };
 			}),
 		);
-	}, 180_000);
+	}, 300_000);
 
 	afterAll(async () => {
 		if (outDir.length > 0) await rm(outDir, { recursive: true, force: true });
+	});
+
+	/**
+	 * THE PUBLISHED TYPES MUST NAME NO HOST PACKAGE, and this is the guard for it.
+	 *
+	 * The plugin's context carries the injected document store, so its shape is
+	 * public API — and describing it with the host's own types (directly, or through
+	 * an adapter package that `import type`s them) puts `import … from "emdash"` in
+	 * the emitted declarations of a package whose manifest declares the host
+	 * NOWHERE and must not. A consumer would then have to resolve a dependency we
+	 * deliberately do not have, and it resolved for us only by accident, through the
+	 * adapter package's peer.
+	 *
+	 * The fix is a hand-mirrored structural shape in `src/types.ts`, checked for
+	 * drift at the composition site. This asserts the outcome: no import, export or
+	 * dynamic import in any emitted `.d.mts` names the host. Prose that mentions the
+	 * host is fine and is deliberately not matched — several docblocks cite it.
+	 */
+	test("NO emitted declaration imports from the host (`emdash` / `@emdash-cms/*`)", () => {
+		expect(declarations.length).toBeGreaterThan(0);
+		const hostImport =
+			/\b(?:from|import)\s*\(?\s*["'](emdash(?:\/[^"']*)?|@emdash-cms\/[^"']+)["']/;
+		for (const { file, source } of declarations) {
+			expect(hostImport.test(withoutComments(source)), `${file} must not import host types`).toBe(
+				false,
+			);
+		}
 	});
 
 	test("the build emits at least the three declared entrypoints", () => {

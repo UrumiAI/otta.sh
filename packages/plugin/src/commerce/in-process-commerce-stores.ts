@@ -23,6 +23,22 @@
  * Everything else shares state through the collections rather than through an
  * object, which is why it takes no sibling store.
  *
+ * TWO TTLs TAKE THE DOMAIN'S DEFAULTS HERE, AND THAT IS A PARITY GAP, not a
+ * design choice — say so plainly, because the knob exists in both places this
+ * composition replaces. The deployment documentation carries one environment
+ * variable that drives BOTH the cart hold and the checkout hold, and the settings
+ * aggregate this function builds a store for carries a hold-TTL setting of its
+ * own. Neither is read here: nothing in the plugin reads a TTL yet, so a
+ * deployment that had moved its hold window would silently get fifteen minutes
+ * back.
+ *
+ * Reading it belongs with the settings and scheduled-sweep wiring, where the
+ * value is loaded once and the sweeps that expire holds run — a TTL read
+ * per-request off a store is a read on the hot path for a value that changes
+ * almost never. It is a MUST-CLOSE item before a deployment flips to this
+ * transport, and it is recorded as one rather than left for someone to discover
+ * from a shorter hold.
+ *
  * SANDBOX-CLEAN. Nothing here opens a connection, reads an environment or
  * imports host code: the storage arrives injected on `ctx`, the clock is `Date`
  * and the id source is WebCrypto off `globalThis`. That is the whole reason the
@@ -60,6 +76,7 @@ import {
 	systemClock,
 	uuidIdGen,
 } from "@otta-sh/store-emdash";
+import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
 import type { PluginContext } from "../types.js";
 
 /** Test-facing overrides. A deploy passes none of them. */
@@ -111,7 +128,16 @@ export function createInProcessCommerceStores(
 	ctx: PluginContext,
 	options: InProcessCommerceStoresOptions = {},
 ): InProcessCommerceStores {
-	const storage = ctx.storage;
+	/**
+	 * THE ONE PLACE THE TWO SHAPES MEET, and the reason the plugin's context can
+	 * describe the document store without naming the host's types. `ctx.storage` is
+	 * declared against this package's own structural mirror (see `types.ts`); the
+	 * adapters are written against theirs. This assignment is what proves the two
+	 * agree — a drift in either is a typecheck failure HERE rather than a runtime
+	 * surprise in a store method, and it costs nothing at runtime: the annotation
+	 * emits no code.
+	 */
+	const storage: AdapterStorageAccess | undefined = ctx.storage;
 	if (storage === undefined) throw new Error(MISSING_STORAGE_MESSAGE);
 
 	const clock = options.clock ?? systemClock;
