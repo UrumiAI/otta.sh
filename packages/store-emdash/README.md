@@ -1473,6 +1473,21 @@ Per-shape depth and contention, as the suite reports them per case:
 | 10 partial refunds fitting one ceiling (N=20, gateway latency) | 11 | 0 |
 | N=24 full refunds on one ceiling | 2 | 0 |
 | N=30 reconciliation resolves on one flagged order | 2 | 0 |
+| 40 concurrent challenge requests at a per-address cap of 3 (15 loops) | 4 | 0 |
+| two concurrent crowds of 20 on two addresses, cap 3 each | 3 | 0 |
+| a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
+| 30 concurrent registrations of one address (15 loops) | 1 | 0 |
+| 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+
+The last two rows are the identity races (`login-challenge-race.pg.test.ts`,
+`customer-email-claim-race.pg.test.ts`), and the pair is worth reading together. The
+registration stampede measures **1**: the first writer takes the claim and every peer is
+then refused by reading it, so nothing contends. The get-or-create measures **8**, and
+that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
+until the winner's account document is readable, because the claim refuses a second
+registration from the moment it is taken, which is a moment before the account behind it
+exists. It is measured at N=12 and grows with how long the winner takes, not with the
+crowd.
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by
@@ -1692,3 +1707,192 @@ both halves are pinned by the two seam cases above.
 Both stores are admin-surface stores over collections sized by the merchant's zone and
 tax-class count, and the checkout reads are in the first two rows, which is what makes
 that trade the right way round.
+
+## Identity document model
+
+`EmdashCustomerStore`, `EmdashAddressStore`, `EmdashSessionStore` and
+`EmdashCredentialVerifier` implement the whole `CustomerStore`, `AddressStore`,
+`SessionStore` and `CustomerCredentialVerifier` ports. One aggregate, two claims,
+two ledgers:
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `customers` | customer id | the account fields and the embedded `addresses` list | `emailLower` |
+| `customer_emails` | folded email | `{ customerId, claimedAt }` — the address-uniqueness claim, and the FAST way from an address to its account (the indexed query below is the fallback) | `emailLower` (unique) |
+| `sessions` | token **hash** | `{ sessionId, customerId, createdAt, expiresAt, revokedAt }` | `customerId` |
+| `login_challenges` | challenge id | `{ emailLower, tokenHash, expiresAt, consumedAt }` plus the `consumed` text mirror | `consumed`, `expiresAt` |
+| `login_challenge_claims` | folded email | the slots currently holding the per-address window | — |
+
+| The SQL | Here |
+|---|---|
+| `customers.email` NOT NULL UNIQUE | the `customer_emails` claim, created if absent, taken **before** any customer write and re-asserted immediately before it |
+| `addresses.customer_id` with no foreign key | the addresses are embedded, and a `null` email is the "no account here" case the missing row produced |
+| `UPDATE/DELETE addresses WHERE id = :addressId AND customer_id = :customerId` | an explicit ownership check inside the caller's own document, taken on the read the write is guarded on |
+| `ORDER BY created_at, id` on the address book | sorted in code; the list is inside one document, so there is nothing to page |
+| `customer_sessions.token_hash` UNIQUE | the hash **is** the document id |
+| `WHERE token_hash = :hash AND revoked_at IS NULL AND expires_at > :now` | one document read, then two field reads on it |
+| `SET revoked_at = :now WHERE revoked_at IS NULL` | a compare-and-set guarded on the revision of a document whose `revokedAt` was still absent |
+| `ORDER BY created_at DESC, id DESC` on the session history | sorted in code after a bounded paged read on the `customerId` index |
+| `SET consumed_at = :now WHERE id = :id AND consumed_at IS NULL` | the same, on the challenge document; a lost race re-reads and answers `CONSUMED` |
+| `DELETE … WHERE consumed_at IS NOT NULL OR expires_at <= :now` | two bounded arms, because the filter algebra has no OR; the deletes deduplicate the overlap |
+| `SELECT count(*) … WHERE email = ? AND consumed_at IS NULL AND expires_at > :now`, **then** `INSERT` | the `login_challenge_claims` document: the count and the admission are one compare-and-set |
+
+### The throttle was a race, and it is retired by construction
+
+The SQL counted a per-address window and then inserted, in two statements, with no
+transaction and **no unique constraint on `login_challenges` at all**. Two requests
+that both read a count below the cap both insert, so the cap could be exceeded by as
+many callers as arrive together. ADR-0019 §7.17 names that and refuses to let it be
+inherited silently.
+
+The window is a claim document instead, and the state machine is small:
+
+```
+admit    : read the claim → drop lapsed slots → refuse if the rest fill the cap
+           → compare-and-set the value it counted, with this slot added
+write    : create-if-absent the challenge the slot names
+consume  : compare-and-set the challenge (revision + consumedAt absent)
+release  : remove this slot at the revision read AFTER the consume committed,
+           deleting the document when it empties
+```
+
+Of N concurrent admissions exactly one wins each revision, so the cap is **exact**,
+not approximate — 40 concurrent requests at a cap of 3 admit 3, and a freed slot is
+worth exactly one more admission and never two (`login-challenge-race.pg.test.ts`,
+measured depth 4). A refusal writes nothing at all: the response is identical to the
+success case either way, which is the port's own rule about throttling not becoming an
+enumeration oracle.
+
+Every residual points the same way, which is the direction ADR-0019's rule (c)
+requires:
+
+| Crash | Residue | Cost | Heals by |
+|---|---|---|---|
+| after the admission, before the challenge write | a slot naming a challenge nobody can redeem | one admission refused | the slot's own expiry |
+| after the consume, before the release | a slot for a spent challenge | one admission refused | the slot's own expiry |
+| the compensating release itself is lost | as above | one admission refused | the slot's own expiry |
+
+No sweeper is required, because every slot carries the expiry of the challenge it
+names and the next admission drops it. That is also the one place the window is
+pruned: a refusal does not write.
+
+**Two deliberate swallows, and only two.** `releaseChallengeSlot` and the email claim's
+compensating release (`createCustomer.release`) do not propagate
+`StorageContentionError`. It runs only after the write it compensates for has already
+been decided, so raising would turn a login that has already succeeded into an error
+the user cannot retry — the challenge is spent, so the replay answers `CONSUMED` — in
+exchange for freeing a slot a moment earlier. Not raising leaves an over-refusal that
+expires by itself. The email release is the same trade on the same shape: it runs inside
+`create`'s catch, on a path that is already failing, and raising there would REPLACE the
+failure the caller has to see with one about the compensation — while an unreleased claim
+is just an orphan the abandon window heals. Every other contention failure in this
+package propagates.
+
+### The email claim needs an abandon window, and the race proved it
+
+The claim is taken before the account document is written and re-asserted immediately
+before that write (rule (a)). That is not sufficient on its own: a peer that read the
+claim between the re-assertion and the account write saw a claim with no account
+behind it, called it orphaned, took it over — and both callers then wrote an account
+under one address. The first run of `customer-email-claim-race.pg.test.ts` found
+exactly that.
+
+So the claim carries `claimedAt` and a `CLAIM_ABANDON_AFTER_MS` window (60 s, option
+`claimAbandonAfterMs`), for the reason the sku claim carries one: **a holder a moment
+from writing and a holder that is gone are the same document.** A claim no account
+holds is taken over only once it is older than the window; until then the address is
+refused as a duplicate — which is what it is about to become, and which for a genuinely
+crashed holder is an over-refusal bounded by one window rather than a duplicate account
+that is forever.
+
+**The re-assertion is a heartbeat, so the lease renews.** Every attempt stamps a fresh
+`claimedAt` alongside the revision it re-asserts, exactly as the sku claim and the coupon
+bump right do. A registrant that is slow but alive — retrying inside the compare-and-set
+budget — therefore keeps its lease however long the retries take, and only one that
+stopped writing lets the window lapse. A fixed deadline stamped at the first claim would
+have made the window a timeout on the whole call instead.
+
+**The fence, and what clock skew costs.** Renewal is half of it; the other half is that a
+holder which DID lapse must not commit the work it no longer has the right to do. That is
+the re-assertion's other job: it is pinned to the revision the takeover replaced, so a
+registrant parked past its window wakes to a refused re-assertion and returns
+`DuplicateCustomerEmailError` with no account written — pinned by "a registrant parked
+past the abandon window is fenced out by its own re-assertion", on all three tiers, and
+that case fails if the refusal is removed. The window is stamped from the holder's clock
+and read against the taker's, so a reader a full window ahead can call a live claim
+abandoned and take it over: the holder's next re-assertion then refuses, which is the
+fence working rather than failing. Skew costs a spurious refusal for the slow or skewed
+registrant, never a second account, and no invariant depends on the two clocks agreeing.
+
+One caller feels that refusal legitimately: the verifier's get-or-create behind a
+redeem. The claim refuses a second registration from the moment it is taken, which is
+a moment before the account behind it is readable, so a single re-read after the
+duplicate could find nothing and report a duplicate for an address the caller was
+logging into. Its re-read is therefore **inside** the bounded retry, and only an
+exhausted budget is reported — as the typed retryable contention failure, never as a
+duplicate (measured depth 8 at N=12, which is the wait, not contention).
+
+### The claim is the fast path; the email lookup heals
+
+`getByEmail` follows the claim, and when it does not resolve it queries the declared
+`emailLower` index, takes the lowest customer id deterministically, and re-establishes
+the claim. So the read **may write**, and it may raise `ScanPageLimitError` where the
+SQL could only answer `null` — both the price of never leaving a registered account
+unreachable by its own address. The cost is asymmetric on purpose:
+
+| Call | Extra reads |
+|---|---|
+| `getByEmail` whose claim RESOLVES | **none** — one claim read plus the document |
+| `get`, `update`, and every address and session method | **none** — none of them consults a claim |
+| `create` | one lookup per compare-and-set attempt of the claim step, because the collision test runs through the healing lookup |
+| `getByEmail` for an address nobody holds | one bounded indexed query, before answering `null` |
+| `getByEmail` whose claim is missing or stale | one bounded indexed query, plus the one claim write that re-establishes it |
+
+### A customer document can exist without a customer
+
+`addresses` had no foreign key to `customers`, and the address-book contract relies on
+it: a book is written for a customer id nobody registered. So `email` is what says
+whether an account was ever created. `null` is the undeclared case — `get`,
+`getByEmail` and `update` answer for it exactly as the missing row did, a later
+`create` for that id **adopts** it rather than colliding (its addresses are that
+customer's), and it is deleted along with its last address so an address-only document
+leaves no litter. It is the device the tax store uses for a rate whose class nobody
+declared, and for the same reason.
+
+### Nothing stores a token
+
+`create` mints an opaque session token, returns it once and persists only its SHA-256.
+The challenge stores only the hash of the token it emailed. Both hashes come from
+WebCrypto off `globalThis` — never `node:crypto`, which does not exist in the sandbox —
+and the challenge's comparison is a hand-written constant-time one, because
+`timingSafeEqual` does not exist there either. A session is reachable by exactly two
+routes: the hash of a token somebody holds, or the `customerId` index the port's own
+history read requires. `SessionSummary` carries a separate `sessionId`, so no
+credential material has a path onto an admin surface even by accident.
+
+### Identity crash seams proven
+
+`test/identity-crash-seams.dialects.test.ts`, both Node dialects, each reading the
+residue back before proving what a later caller sees:
+
+| Seam | Residue | What a later caller gets |
+|---|---|---|
+| claim taken, account write lost | none — the compensating release gives the address back | the address registers cleanly |
+| claim taken, account write **and** release lost | an orphan claim | refused for one abandon window, then taken over; no account is ever visible under the address meanwhile |
+| an account whose claim was deleted | none, after the next lookup | the account is found by address and the claim is written back |
+| slot taken, challenge write lost | none — the slot goes back | the full window is admittable |
+| slot taken, challenge write **and** release lost | a held slot | one admission fewer until the slot's expiry |
+| consume committed, release lost | a held slot for a spent challenge | the replay is `CONSUMED`; the window resets at the expiry |
+| an address update that loses its revision to a concurrent delete | none | the retry re-checks ownership and answers the miss rather than resurrecting the address |
+| a registrant parked past its lease, overtaken by a peer | none | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's |
+| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
+
+### What the identity tier does NOT carry
+
+- **No email change and no customer delete.** `UpdateCustomerInput` patches
+  `displayName` and `emailVerifiedAt` only, and there is no delete on either port. So
+  the release ordering has exactly one site — the compensating release when an account
+  write did not land — and the "un-embed, then release at a post-write revision" rule
+  has nothing else to guard here.
+- **No sweeper.** Both claims heal in path: the email claim by the lookup's fallback,
+  the throttle by the expiry every slot carries.
