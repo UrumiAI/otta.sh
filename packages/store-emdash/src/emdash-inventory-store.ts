@@ -804,7 +804,7 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * deadline is the cart's, and the only reason the inventory aggregate has to
 	 * write it is that the hold lives inside the inventory document.
 	 */
-	async stampHoldDeadline(reservationId: string, expiresAt: string | null): Promise<boolean> {
+	async stampHoldDeadline(reservationId: string, expiresAt: string): Promise<boolean> {
 		const index = await this.#index.get(reservationId);
 		if (index === null) return false;
 		// A settled reservation is never stampable, even while its hold is still in the

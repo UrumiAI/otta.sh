@@ -372,7 +372,12 @@ export class EmdashCartStore implements CartStore {
 			// adjust stamp was likewise unguarded. A hold that has gone simply keeps
 			// whatever deadline it last had, and the qty derivation above has already
 			// fallen back to the caller's absolute target.
-			if (existing.reservationId !== null) {
+			// The null check is the stamper's narrowed signature, not a new condition:
+			// a reservation-bearing adjust always carries a deadline, and a null one
+			// would ask for a hold with no deadline — which adoption, scoped
+			// `expires_at > :now`, would classify as lost. Skipping the stamp leaves the
+			// deadline the hold already had, exactly as a refused stamp does.
+			if (existing.reservationId !== null && input.expiresAt !== null) {
 				await this.#inventory.stampHoldDeadline(existing.reservationId, input.expiresAt);
 			}
 
@@ -669,6 +674,18 @@ export class EmdashCartStore implements CartStore {
 	}> {
 		const index = await this.#reservationIndex.get(reservationId);
 		if (index === null) throw new HoldExpiredError(reservationId);
+		// The stamper takes a NON-NULL deadline (see `HoldDeadlineStamper`): a hold
+		// with none could never be adopted, because adoption is scoped
+		// `expires_at > :now`. The port's `expiresAt` is nullable only because a
+		// DIGITAL line carries neither a reservation nor a deadline, and such a line
+		// never reaches here — so a null at this point is a caller bug, and it is
+		// loud rather than silently written into a hold checkout would then lose.
+		if (expiresAt === null) {
+			throw new Error(
+				`cart line for reservation ${reservationId} carries no hold deadline — ` +
+					"a reservation-bearing line must always supply one",
+			);
+		}
 		const stamped = await this.#inventory.stampHoldDeadline(reservationId, expiresAt);
 		if (!stamped) throw new HoldExpiredError(reservationId);
 		return { reserveKey: index.idempotencyKey };

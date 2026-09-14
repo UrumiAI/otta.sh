@@ -341,6 +341,13 @@ cannot supply it from being injected by mistake — and is what makes the two
 tolerated `release` refusals in `expireHold` safe to recognize by TYPE, since the
 errors that `release` can raise are then known rather than assumed.
 
+Its `expiresAt` is **non-null**, narrowed from the first cut: a stamp is always the
+attach of a line to a LIVE hold, and `adopt`/`adoptMany` are scoped
+`expires_at > :now`, so a hold stamped with no deadline is exactly the hold checkout
+would classify as lost. The domain never asks for one either — a cart line's
+`expiresAt` is null only when its `reservationId` is, and such a line never reaches a
+stamp — so the type is what keeps it that way.
+
 It also refuses a reservation whose TERMINAL record has been written but whose hold
 is not yet pruned — a state the ordered settle really passes through — so a cart can
 never attach a line to units that are already spent. Same gate, same reason, as the
@@ -452,6 +459,202 @@ typed error rather than a crash. The file says so, rather than claiming otherwis
   the expiry can classify, rather than a bare `Error` a caller would have to match by
   message.
 
+## Order document model
+
+`EmdashOrderStore` implements the domain's `OrderStore` over **one aggregate
+document per order**, plus one claim collection the idempotency key forces.
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `orders` | order id | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
+| `order_keys` | order idempotency key | the claim (carrying the whole prepared document), then its terminal record | — |
+| `payment_refs` | payment provider reference | `{ orderId }` — the GLOBAL once-only claim for a capture | — |
+
+**Two corrections to ADR-0019 §4, to be recorded when that ADR is next amended.**
+First, `payments.provider_ref` UNIQUE was a GLOBAL constraint, and the ADR maps it
+onto "the provider reference keys the entry inside `payments[]`" — a per-ORDER
+dedupe. A redelivery routed at the wrong order id would be recorded twice, once per
+order, and `Σ captured` is the refund ceiling; so the replacement is a claim
+document, `payment_refs/{providerRef}`, and a reference already held by another
+order is refused with a typed `PaymentRefConflictError` rather than recorded.
+Second, per-order NOTES do not belong in this document: a note is operator-supplied
+free text with no natural bound, so embedding it would make the size of the hot
+money-path document a function of how much support wrote about the order. INC-B8's
+`EmdashOrderNotesStore` gets a child collection instead,
+`order_notes/{orderId}:{noteId}` indexed on `orderId` — its port only reads notes by
+order and appends one at a time, so nothing it does needs them in the aggregate.
+
+**Two methods landed here although they belong to INC-B3's area.** `recordPayment`
+and `flagReconciliation` are both on `settleOrder`'s path — between the paid flip and
+`commitMany`, and on every anomaly branch — so the checkout races and five
+`order-flow` cases cannot run without them. `recordPayment` is the claim-backed
+append above; `flagReconciliation` is the deliberately unguarded, last-writer-wins
+field write ADR-0019 §7.13 describes. Everything else in the refunds area, including
+the ceiling that READS `payments` and the guarded compare-and-clear
+`resolveReconciliation`, stays INC-B3's.
+
+**The port is delivered across three increments, and the SHAPE is complete in the
+first.** Creation, the guarded transitions, the audit spine, expiry and the hold
+intents are built. Refunds, the reconciliation resolution, fulfillment and
+cancellation are the next increment's; the lists, the search, the customer view and
+the outbox lease are the one after. Their FIELDS and their INDEXES are declared
+here regardless — `refunds`, `fulfillment`, `cancellation`,
+`reconciliationResolution`, `searchKey`, `emailDueAt`, `customerKey` and the
+`[state, createdAt]` compound — so neither increment reshapes a collection that
+already holds live orders. Every method they own throws a typed
+`NotImplementedInIncrementError` naming its increment, and every contract case that
+needs one is registered as a matching `test.todo` (see
+`test/order-contract-b2.ts`): a loud refusal and a visible count, never a plausible
+empty answer.
+
+**Six SQL features disappear into the shape.** `orders.idempotency_key` UNIQUE
+becomes the `order_keys` claim document. `order_items` as a child table becomes the
+`readonly items` array, written only by the creating write. `order_totals.order_id`
+as PRIMARY KEY becomes a field, so one totals row per order is tautological.
+`order_events` becomes the embedded append-only `events`, appended in the same
+write as the flip it records. `order_emails_outbox (order_id, to_state)` UNIQUE
+becomes the first-wins `emailOutbox` entry. And `hold_expires_at <= now` as a scan
+target becomes the declared `holdExpiresAt` index, without which `listExpirable`
+could not find work at all.
+
+**Creation is a claim, then a create-if-absent, then a promotion — in that order.**
+The claim carries the WHOLE prepared document, so a replayer finishes the create
+byte for byte, reusing the recorded order id AND the minted line ids rather than
+producing a second set. The promotion to `terminal` (which drops the payload)
+happens LAST: a terminal key over a missing order would read as "already minted"
+and lose the checkout. The one window — claim written, order document not yet
+created — is healed by `createFromCart` and `getByIdempotencyKey` alike, which is
+why the payload is carried at all.
+
+**Snapshot immutability is structural rather than a discipline.** `items` is
+`readonly OrderItemDoc[]` with every element field `readonly`, and every later write
+is `{ ...doc, … }` — which carries that same array by reference. There is no code
+path, and cannot be one without a compile error, that rewrites a price or a title
+after purchase. `order-flow.dialects.test.ts` pins both halves: a product edit after
+creation leaves the line untouched, and the array is identical (element ids
+included) after a flip, a payment, an intent completion and a reconciliation flag.
+
+**The transition is ONE write.** The guarded flip, the appended audit event and the
+first-wins outbox entry are a single `compareAndSet` guarded on the revision AND on
+`state === fromState` (plus, for expiry, on the deadline). So "flipped but no event"
+is unreachable, the outbox once-only is per `(orderId, toState)` rather than per
+event, and a lost race writes nothing at all. The SQL adapter got this from a
+transaction; `order-crash-seams.dialects.test.ts` proves it here by PARKING that one
+write and asserting all three facts are absent, then releasing it and asserting all
+three are present — a stronger statement than aborting a transaction would be.
+
+### The three hold intents
+
+Adopting, committing and releasing an order's reservations writes N inventory
+documents, and no primitive brackets them with the order write. Each is therefore
+**intent → per-id idempotent write → completion**, with the intent recorded in the
+order document by the same write as the state change that implies it:
+
+| Bracket | Intent recorded by | Per-id write | Completed by |
+|---|---|---|---|
+| adopt | `createFromCart`, before the use-case's `adoptMany` | `adoptMany` (idempotent per reservation id) | `completeHoldAdoption` |
+| commit | the `→ paid` flip, before settle's `commitMany` | the **singular** `commit` per id | `completeHoldCommit` |
+| release | the `→ expired` flip | `releaseAdopted` per id, order-scoped | `completeHoldRelease` |
+
+**`holdsPendingAt` is how the sweeper FINDS the work.** An intent lives inside a
+field, and the filter algebra can neither reach into one nor OR three together, so
+the earliest `recordedAt` among the outstanding intents is denormalized onto one
+declared index — the same device `carts.holdExpiresAt` is. It is recomputed from the
+three intents on every write that touches one, never incremented, so it cannot drift
+from what it summarizes, and it goes `null` exactly when the last intent closes.
+
+**Each completion is guarded on the order's STATE, and that guard is not cosmetic.**
+Adoption completes only while `pending`, commit only while `paid`, release only while
+`expired`; on any other state the intent is closed stamp-only, with no inventory call
+and nothing reported lost. The adoption case is the sharp one: after a paid order's
+holds are committed and pruned, `adoptMany` over the same ids reports every one of
+them `lost`, so an unguarded completion would hand a sweeper a stock anomaly that has
+not happened, on the happiest possible path. `order-crash-seams` pins it from that
+side — it asserts what `adoptMany` WOULD have returned, then asserts the completion
+returns nothing lost.
+
+An intent whose `completedAt` is `null` is the marker that work is owed; each
+completion is idempotent and callable by any replayer. The commit completion drives
+the **singular** `commit`, not a re-run of `commitMany`, because `commitMany` skips
+an already-`committed` id (ADR-0019 §2): a SKU caught between its terminal record
+and its prune is finished by the singular call and by nothing else.
+
+**One honest consequence.** On the happy path the settle use-case runs `commitMany`
+itself and never tells the order store, so `holdsCommitted` stays outstanding until
+a completion pass runs. That is the sweeper's work, and it is a no-op when it
+arrives — both checkout races assert exactly that: `completeHoldCommit` after a
+successful settle reports `lost: []` and closes the intent. `expire` is the one
+bracket the store completes itself, because it is the store's own method — and if
+that completion FAILS after the flip is durable, the failure is swallowed: the port
+documents the return as "did this call win the guarded expiry", so a throw would make
+a sweep that really expired the order look like one that did not. The intent is left
+outstanding (and `holdsPendingAt` keeps it findable), and the reason is recorded on
+the order's reconciliation envelope.
+
+**The commit completion folds two per-id errors into `lost`.**
+`ReservationCommitLostError` (the hold was released or failed) and
+`ReservationNotFoundError` (an id the order snapshot names and inventory has never
+heard of) mean the same thing to the caller — a paid order with no hold, the
+`COMMIT_LOST` anomaly. Letting the second escape would wedge the sweeper on that one
+order forever and abandon the ids listed after it.
+
+### Order crash seams proven
+
+`test/order-crash-seams.dialects.test.ts` opens every window on real storage. Six of
+the eight cases INJECT a fault with the shared helper — the writes before the gap land
+for real, the write at the gap throws or is parked, and the documents are READ BACK
+before anything replays, so what the replay heals is the state the store really leaves
+behind. The remaining two inject nothing and say so: they are COMPLETION-ROBUSTNESS
+cases, driving a completion against a state the ordinary path reaches on its own (a
+paid order, an id inventory never knew) to pin what it must NOT do. The same split the
+cart section draws, for the same reason:
+
+- **(inject) the key claim landed, the order document did not** — the replay completes it
+  from the payload, with the SAME line id, and promotes the key.
+- **(inject) the order document landed, the key was never promoted** — an ordinary read
+  heals it, and exactly one order exists for the key.
+- **(inject) a partial `adoptMany` across three SKUs** — one adopted, two still held; the
+  completion re-adopts idempotently and closes the intent, and a second completion
+  is a no-op.
+- **(inject ×2) a partial commit, one id terminal-committed with its hold unpruned** — the state
+  is READ BACK before the replay (all three reservations `committed`, two holds still
+  live), then the singular per-id completion finishes the set and every hold is
+  pruned. That last assertion is what fails if the completion ever re-ran
+  `commitMany`, which `continue`s an already-committed id without touching the
+  aggregate — leaving a live hold over spent units.
+- **(completion robustness) adopt completion on a paid order** — stamp-only,
+  `lost: []`, stock untouched, against an `adoptMany` that would have reported every id
+  lost. No fault is injected: `markPaid` + `commitMany` is the ordinary path there.
+- **(completion robustness) commit completion on an unknown reservation id** — folded
+  into `lost`, intent still closed, sweeper not wedged. Nothing is injected either: the
+  order is minted naming an id inventory has never heard of.
+- **(inject, parked) the transition parked** — none of flip, event, outbox has landed; released, all
+  three have, and a lost second flip adds nothing to either array.
+- **(inject ×2) expiry crashing after the flip, and after one release** — the release intent
+  survives, the completion returns each sku's units exactly once, and a late sweep
+  finds nothing owed.
+
+### Measured document size
+
+A three-line order with a full ship-to snapshot: **2,207 B on creation**, and
+**4,029 B after five transitions** (five audit events plus five outbox entries) —
+measured on the sqlite tier, `JSON.stringify(doc).length`. The `order_keys` document
+is **109 B** once terminal, and roughly the size of the order itself (~2.3 KB) for
+the instant it is a claim carrying the payload.
+
+Both figures are asserted, not remembered: `order-flow.dialects.test.ts` builds that
+order, prints the two sizes and holds them under an **8 KB cap**, so a row-size
+regression (an unbounded ledger, a re-embedded snapshot) fails a test instead of
+surfacing as a slow read.
+
+`events` is deliberately UNBOUNDED. It is the audit spine the port promises in
+chronological order, and dropping an entry would be a lie about an order's history;
+the bound is the state machine itself, which admits at most nine transitions per
+order, so the growth above is the whole of it (~360 B per transition, event plus
+outbox entry). `payments` and `refunds` are bounded the same way — by how many times
+money can move on one order. The one ledger with no natural bound, per-order notes,
+is therefore NOT in this document at all (see the ADR corrections above).
+
 ## Contention budget
 
 R2 has no structural fix — the aggregate is written by read-modify-write, so a hot
@@ -461,6 +664,16 @@ than an interim number. `test/inventory-crash-seams.dialects.test.ts` exports
 
 **Contention budget: measured max CAS attempts M=5/N=50 (20 loops) → 5–6,
 M=1/N=100 → 2; budget asserted at 8 (< `CAS_MAX_ATTEMPTS` = 12).**
+
+The ORDER races measure the same budget on a different shape, and one of them sits
+closer to the ceiling: single-line checkout (M=5, N=40, 8 loops) → **6–7**, and
+multi-line checkout (M=8/sku, N=10 carts, 3 lines, 6 loops) → **9–10** of 12. The
+multi-line figure is higher because each cart contends for three aggregates at once
+and its three adds race each other as well as the crowd. Both files assert only
+`< CAS_MAX_ATTEMPTS`, deliberately: tightening the order races to the inventory
+suite's 8 would fail on the shape that legitimately reaches 10, and loosening the
+ceiling itself would hide a real regression. The headroom there is **2 attempts** —
+worth re-measuring if the line count per order grows.
 
 Both figures are stable across repeated runs, and both sit at M+1: only M writes can
 succeed before the guard turns every remaining caller into a clean `OUT_OF_STOCK`
