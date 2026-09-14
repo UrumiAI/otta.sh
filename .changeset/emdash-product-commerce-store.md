@@ -17,8 +17,12 @@ variants embedded and the sku-rename stock carry as a completable intent.
 - **Live-sku uniqueness is a claim document.** `sku_owners/{sku}` names the one live
   sellable unit that holds a sku, across products and variants, and its `live` flag is
   what "unique among live rows only" means now that the two partial unique indexes are
-  gone. A soft delete, an orphaning or a rename away releases it; the next claimant
-  takes it over by compare-and-set. The claim is checked for BACKING before it refuses,
+  gone. A soft delete or an orphaning releases it at once; a rename away releases
+  the SOURCE only once its stock carry is terminal, so a sku that still holds units the
+  carry has not moved never looks free. The next claimant takes a released claim over by
+  compare-and-set — and a claim left LIVE by a process that died mid-write only after its
+  lease elapses (`claimAbandonAfterMs`, default 60 s), which is also when the empty
+  inventory document such a crash leaves behind is withdrawn. The claim is checked for BACKING before it refuses,
   so a claim written a round trip ahead of the row that will hold it never reports
   "another live product holds this sku" about a peer holding nothing.
 - **The sku rename is an intent-claim, and the order of its steps is load-bearing.**

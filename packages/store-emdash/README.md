@@ -1117,6 +1117,15 @@ exactly as it is for every other document write in this package.
   takeover moves the claim's revision, so the original writer's pre-commit
   compare-and-set fails and it refuses typed instead of committing a second live row.
   Skew costs a merchant a spurious retry, never a sku with two owners.
+
+  **One residue an overtaken writer can leave.** If its empty target inventory document
+  had already landed before the takeover, it survives under the NEWCOMER's sku, and no
+  claim can withdraw it afterwards: the withdrawal is gated on the claim that created it,
+  and that claim is gone. Nothing is lost — the document holds no units, and it is exactly
+  what `seedOnHand` would have created for that sku anyway. The only visible effect is
+  that a THIRD writer renaming onto that sku is refused `SkuStockConflictError` on an
+  occupancy nobody chose, until the newcomer stocks the sku (at which point the document
+  is legitimately occupied) or a sweep clears it.
 - **The audit trail of a swept carry.** A carry finished by
   `completeRecordedRenames`/`completePendingSkuTransfer` writes NO `rename_out`/`rename_in`
   pair: the entry ids derive from the write's idempotency key, which a completion does not

@@ -558,4 +558,46 @@ describeEachDialect("sku-rename crash seams", (ctx) => {
 		expect((await h.onHandOf("TKO-TO")) ?? 0).toBe(0);
 		expect(((await h.onHandOf("TKO-FROM")) ?? 0) + ((await h.onHandOf("TKO-TO")) ?? 0)).toBe(20);
 	});
+
+	test("the claim records whether IT created the target — a pre-existing empty row is never marked as ours to withdraw", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		// An empty inventory document that belongs to nobody's rename: the state
+		// `seedOnHand` leaves, and the one a takeover must never delete.
+		await h.seedStock("CT-SEEDED", 0);
+
+		// A FIRST-sku assignment ADOPTS it. The claim it writes must say so, and the
+		// pre-commit heartbeat must persist the same answer rather than re-deriving one.
+		const first = await h.store.upsert(
+			{ productId: productId("prod-ct"), sku: sku("CT-SEEDED") },
+			idempotencyKey("ct-1"),
+		);
+		expect(first.sku).toBe("CT-SEEDED");
+		expect(await claimOf("CT-SEEDED")).toMatchObject({ live: true, createsTarget: false });
+
+		// Re-supplying the SAME sku is an already-ours write whose target pre-exists — the
+		// branch that used to be told "not occupied" by a hardcoded false and could persist
+		// `createsTarget: true` on a document it never created.
+		const again = await h.store.upsert(
+			{ productId: productId("prod-ct"), sku: sku("CT-SEEDED"), title: "Re-synced" },
+			idempotencyKey("ct-2"),
+		);
+		expect(again.title).toBe("Re-synced");
+		expect(await claimOf("CT-SEEDED")).toMatchObject({ live: true, createsTarget: false });
+
+		// And the positive case, so the flag is not simply always false: a rename onto a
+		// sku that has NO document does create one, and records it.
+		await h.seedStock("CT-FROM", 7);
+		const renamer = await h.store.upsert(
+			{ productId: productId("prod-ct-2"), sku: sku("CT-FROM") },
+			idempotencyKey("ct-3"),
+		);
+		const res = await h.store.updateCommerceFields(
+			{ productId: productId("prod-ct-2"), sku: sku("CT-FRESH") },
+			idempotencyKey("ct-4"),
+			renamer.updatedAt.toISOString(),
+		);
+		expect(res.ok).toBe(true);
+		expect(await claimOf("CT-FRESH")).toMatchObject({ live: true, createsTarget: true });
+		expect(await h.onHandOf("CT-FRESH")).toBe(7);
+	});
 });

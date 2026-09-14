@@ -274,6 +274,12 @@ interface SkuClaim {
 	 * is no stock question to ask (a first sku assignment).
 	 */
 	readonly occupiedAtClaim: boolean;
+	/**
+	 * Whether THIS write is the one that creates the sku's inventory document — the
+	 * single source for {@link SkuOwnerDoc.createsTarget}, derived once inside
+	 * `#claimSku` from its own occupancy read rather than re-derived by the caller.
+	 */
+	readonly createsTarget: boolean;
 	/** The claim document's revision as this call last saw it. */
 	readonly revision: string;
 }
@@ -1031,8 +1037,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				(existing.contentUpdatedAt === null || input.contentUpdatedAt > existing.contentUpdatedAt);
 			let sku = existing.sku;
 			let price = existing.price;
+			let reclaimed: SkuHold | null = null;
 			if (resurrecting) {
-				if (sku !== null && !(await this.#reclaimSku(sku, ref))) {
+				if (sku !== null) reclaimed = await this.#reclaimSku(sku, ref);
+				if (sku !== null && reclaimed === null) {
 					// An orphan cannot reclaim what was legitimately reused while it was
 					// gone. This is the ONE case where a sku goes back to null: the row is
 					// not being edited, it is losing a claim it no longer has.
@@ -1053,6 +1061,27 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				contentUpdatedAt: input.contentUpdatedAt ?? existing.contentUpdatedAt,
 				updatedAt: now,
 			};
+			// The re-assertion a resurrect owes, for the same reason every other sku-taking
+			// write owes one: the claim was proven when it was taken and this commit is
+			// later. A claim that has gone means the sku was reused inside the window, which
+			// for THIS channel is not a refusal but a fact to revalidate — so the step
+			// re-runs, `#reclaimSku` reports the sku unavailable, and the resurrect hands it
+			// back as absent. The CMS channel still never fails.
+			if (reclaimed !== null) {
+				let held: boolean;
+				try {
+					held = await this.#heartbeatClaim(reclaimed, ref, {
+						claimed: null,
+						createdTarget: null,
+						committed: false,
+						contended: 0,
+					});
+				} catch (err) {
+					if (!(err instanceof SkuConflictError)) throw err;
+					return CAS_RETRY;
+				}
+				if (!held) return CAS_RETRY;
+			}
 			const written = await this.#products.compareAndSet(input.productId, current.revision, {
 				...doc,
 				variants: { ...doc.variants, [input.variantKey]: updated },
@@ -1257,7 +1286,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		const hold: SkuHold = {
 			sku: nextSku,
 			revision: claim.revision,
-			createsTarget: currentSku !== null && currentSku !== nextSku && !claim.occupiedAtClaim,
+			createsTarget: claim.createsTarget,
 		};
 		if (currentSku === null || currentSku === nextSku) {
 			return { carry: null, releaseSku: null, hold };
@@ -1556,16 +1585,26 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			// write on every rename.
 			const occupied = await this.#occupiedNow(sku, fromSku);
 			const at = this.#clock.now().toISOString();
-			const mine = (): SkuOwnerDoc =>
-				newSkuOwnerDoc(sku, ref, at, fromSku !== null && fromSku !== sku && !occupied);
+			// ONE derivation, used both for the document written and for the answer
+			// returned, so the persisted flag and the caller's copy cannot disagree. A
+			// claim creates the target only when this write is a rename AND the sku had no
+			// inventory document when the claim was won.
+			const creates = (occupiedNow: boolean): boolean =>
+				fromSku !== null && fromSku !== sku && !occupiedNow;
 
 			if (current === null) {
-				const written = await this.#skuOwners.compareAndSet(sku, null, mine());
+				const createsTarget = creates(occupied);
+				const written = await this.#skuOwners.compareAndSet(
+					sku,
+					null,
+					newSkuOwnerDoc(sku, ref, at, createsTarget),
+				);
 				if (!written.applied) return CAS_RETRY;
 				return casDone<SkuClaim>({
 					alreadyOurs: false,
 					createdNow: true,
 					occupiedAtClaim: occupied,
+					createsTarget,
 					revision: written.revision,
 				});
 			}
@@ -1574,7 +1613,14 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					return casDone<SkuClaim>({
 						alreadyOurs: true,
 						createdNow: false,
+						// Already ours means the occupancy question was settled when the claim
+						// was won, so there is nothing here for the carry to refuse on. The
+						// creation question is NOT settled the same way, and must come from
+						// the fresh read: a peer of this owner — or `seedOnHand` — may have
+						// created the document since, in which case this write creates
+						// nothing and a later takeover must not withdraw what it finds.
 						occupiedAtClaim: false,
+						createsTarget: creates(occupied),
 						revision: current.revision,
 					});
 				}
@@ -1595,14 +1641,21 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					await this.#transfer.withdrawPristineClaim(sku);
 				}
 			}
-			const written = await this.#skuOwners.compareAndSet(sku, current.revision, mine());
+			// Re-read: a takeover that just withdrew a residue must not remember the
+			// document it removed, as an occupancy or as something it did not create.
+			const afterOccupied = await this.#occupiedNow(sku, fromSku);
+			const createsTarget = creates(afterOccupied);
+			const written = await this.#skuOwners.compareAndSet(
+				sku,
+				current.revision,
+				newSkuOwnerDoc(sku, ref, at, createsTarget),
+			);
 			if (!written.applied) return CAS_RETRY;
 			return casDone<SkuClaim>({
 				alreadyOurs: false,
 				createdNow: true,
-				// Re-read: a takeover that just withdrew a residue must not remember the
-				// document it removed as an occupancy.
-				occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
+				occupiedAtClaim: afterOccupied,
+				createsTarget,
 				revision: written.revision,
 			});
 		});
@@ -1647,21 +1700,24 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
-	 * Re-claim a sku for a RESURRECTING variant, reporting whether it is still
-	 * available — never throwing, because a declare states a fact about the CMS and
-	 * cannot be refused.
+	 * Re-claim a sku for a RESURRECTING variant, reporting the claim it won or `null`
+	 * when the sku is no longer available — never throwing, because a declare states a
+	 * fact about the CMS and cannot be refused.
 	 *
-	 * False means another live sellable unit took the sku while this variant was
-	 * orphaned, and the resurrect clears it.
+	 * `null` means another live sellable unit took the sku while this variant was
+	 * orphaned, and the resurrect clears it. The claim it DOES win is returned as a hold
+	 * so the caller can re-assert it before committing, exactly like every other write
+	 * that takes a sku: a resurrect is slower than most (it resolves the product's
+	 * currency too), so it is no less exposed to being overtaken while it works.
 	 */
-	async #reclaimSku(sku: string, ref: SkuOwnerRef): Promise<boolean> {
+	async #reclaimSku(sku: string, ref: SkuOwnerRef): Promise<SkuHold | null> {
 		try {
 			// `null` as the source: a resurrect moves no stock, so there is no stock
 			// question and a refusal here can only be the sku conflict it reports.
-			await this.#claimSku(sku, ref, null);
-			return true;
+			const claim = await this.#claimSku(sku, ref, null);
+			return { sku, revision: claim.revision, createsTarget: claim.createsTarget };
 		} catch (err) {
-			if (err instanceof SkuConflictError) return false;
+			if (err instanceof SkuConflictError) return null;
 			throw err;
 		}
 	}
