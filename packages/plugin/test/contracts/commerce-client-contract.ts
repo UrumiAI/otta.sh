@@ -101,9 +101,13 @@ export interface ArrangedProduct {
 
 /**
  * One minted customer session — the ONLY credential any identity-bearing method
- * takes. `customerId` is what the tier's session store resolved the bearer to; a
- * tier that cannot see it omits it, so a case may assert on it only when it is
- * defined.
+ * takes. `customerId` is what the tier's session store resolved the bearer to.
+ *
+ * It is typed optional because a bearer that resolves to nothing is a real outcome
+ * the hook must be able to report, but the isolation case REQUIRES it and asserts
+ * it present: a tier that minted a session whose bearer it cannot resolve has not
+ * minted a session, and failing there is better than silently skipping the
+ * cross-customer comparison that follows.
  */
 export interface ArrangedSession {
 	readonly bearer: string;
@@ -1023,11 +1027,13 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const mine = await tier.arrange.session("id-mine@example.test");
 			const theirs = await tier.arrange.session("id-theirs@example.test");
 			expect(mine.bearer).not.toBe(theirs.bearer);
-			// Where the tier can see which customer a bearer resolved to, the two must be
-			// different customers and not merely different tokens.
-			if (mine.customerId !== undefined && theirs.customerId !== undefined) {
-				expect(mine.customerId).not.toBe(theirs.customerId);
-			}
+			// Two different customers, not merely two different tokens — which is the half a
+			// filter-based implementation can fake and a derivation-based one cannot. Both
+			// ids are asserted PRESENT first, so a tier that stopped resolving them fails
+			// here instead of quietly skipping the comparison that follows.
+			expect(mine.customerId, "the tier must resolve the bearer it minted").toBeDefined();
+			expect(theirs.customerId, "the tier must resolve the bearer it minted").toBeDefined();
+			expect(mine.customerId).not.toBe(theirs.customerId);
 
 			// Addresses are the cheapest per-customer state there is, and they exercise
 			// the same derivation every `my` read uses.
@@ -1597,10 +1603,18 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				),
 				"variantKey",
 			);
+			// A SPACE rather than an empty string, deliberately: an empty key makes the
+			// other transport build a path with an empty segment, which misses its route
+			// entirely — so an empty-key case would be asserting a route miss on one tier
+			// and the bound on the other. The empty-string arm is asserted where the
+			// refusal is structural, on the tier that checks the bound before any call.
 			await expectRejectedInput(
-				client.deactivateProductVariant("prod-bnd-vk", "", "bnd-vk-3", watermark),
+				client.deactivateProductVariant("prod-bnd-vk", " ", "bnd-vk-3", watermark),
 				"variantKey",
 			);
+			// NOTHING WAS DECLARED: a refused key must not leave a row behind under some
+			// trimmed or coerced name, which is the failure a rejection alone would hide.
+			expect(await client.listProductVariants("prod-bnd-vk")).toEqual([]);
 		});
 
 		test("an empty title is refused — the field is omitted to preserve, nulled to clear, never blanked", async () => {
@@ -1621,6 +1635,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				),
 				"title",
 			);
+			// Neither write landed. A blank title that was refused and then written anyway
+			// would be worse than one accepted openly: the row would claim a name it does
+			// not have, and the refusal would say it could not happen.
+			expect(await client.getProductCommerce("prod-bnd-title")).toBeNull();
+			expect(await client.listProductVariants("prod-bnd-title")).toEqual([]);
 		});
 
 		test("a zero variant price is refused, and the row stays UNPRICED rather than priced at zero", async () => {
@@ -1653,12 +1672,24 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		});
 
 		test("a batch read over the cap is refused as a whole, never silently truncated", async () => {
-			await expectRejectedInput(
-				client.getCommerceBatch(
-					Array.from({ length: 101 }, (_, i) => `prod-bnd-batch-${String(i)}`),
-				),
-				"productIds",
+			const overCap = Array.from({ length: 101 }, (_, i) => `prod-bnd-batch-${String(i)}`);
+			await expectRejectedInput(client.getCommerceBatch(overCap), "productIds");
+			// REFUSED, not trimmed to the cap and answered: a truncated read looks like a
+			// complete one to its caller, so the assertion is that no items came back at
+			// all rather than merely that something was raised.
+			let items: unknown = "the call resolved";
+			await client.getCommerceBatch(overCap).then(
+				(value) => {
+					items = value;
+				},
+				() => {
+					items = undefined;
+				},
 			);
+			expect(items).toBeUndefined();
+			// And the cap is the ONLY reason: the same ids one under the cap read cleanly,
+			// so the refusal is about the request's size and not about the ids in it.
+			expect(await client.getCommerceBatch(overCap.slice(0, 100))).toEqual([]);
 		});
 	});
 }

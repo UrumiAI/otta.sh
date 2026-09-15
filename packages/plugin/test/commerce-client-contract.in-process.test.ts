@@ -243,6 +243,25 @@ describe("in-process commerce refuses malformed shopper input before any store c
 		await harness.close();
 	});
 
+	// THE EMPTY VARIANT KEY, here rather than in the shared contract. The shared
+	// case asserts a whitespace key on all three writers, because an EMPTY one makes
+	// the other transport build a path with an empty segment and miss its route
+	// altogether — so a shared empty-key case would assert a route miss on that tier
+	// and the bound on this one. The bound itself still deserves an assertion, and
+	// this is the tier that checks it before any call, so it is asserted here.
+	test("an empty variant key is refused by the bound, not by a missing route", async () => {
+		await expectRefusal(
+			client.deactivateProductVariant(
+				"prod-vk-empty",
+				"",
+				"vk-empty-1",
+				"2026-09-14T00:00:00.000Z",
+			),
+			"variantKey",
+		);
+		expect(await client.listProductVariants("prod-vk-empty")).toEqual([]);
+	});
+
 	test("the shopper-facing bounds hold: quantity and cart ids", async () => {
 		const cartId = (await client.createCart("USD")).cartId;
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 0, "q-1"), "qty");

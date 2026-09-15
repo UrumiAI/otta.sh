@@ -85,11 +85,18 @@ function httpTier(options: HttpTierOptions): CommerceClientTier {
 		const live = serviceOrThrow();
 		const c = await clientOrThrow();
 		await c.requestLoginLink(email);
+		// BY RECIPIENT AS WELL AS TEMPLATE. The capture is cumulative for the whole
+		// slice, so "the last login message" is whichever case logged in most recently —
+		// which would hand this call another shopper's challenge and mint a session for
+		// the wrong customer. A case asserting cross-customer isolation would then be
+		// comparing one customer against themselves, and would pass while proving nothing.
 		const captured = live.emailSender.sends.filter(
-			(sent) => sent.template === "customer-login-link",
+			(sent) => sent.template === "customer-login-link" && String(sent.to) === email,
 		);
 		const last = captured[captured.length - 1];
-		if (last === undefined) throw new Error("arrange.session: no login message was dispatched");
+		if (last === undefined) {
+			throw new Error(`arrange.session: no login message was dispatched to ${email}`);
+		}
 		const challengeId = last.data["challengeId"];
 		const token = last.data["token"];
 		if (typeof challengeId !== "string" || typeof token !== "string") {
