@@ -84,11 +84,17 @@ that exists to be free of it.
 **What could not be shared, and why.** Two families stayed with the in-process transport, and
 neither is a case that was merely inconvenient:
 
-- the **cart-facing bounds** (quantity, cart-id charset) and the **egress count** — the other
-  transport normalizes a bad cart value into one of the port's typed cart tokens rather than
-  rejecting, so the same input produces a rejection on one tier and a resolved `{ ok: false,
-  reason }` on the other. A shared case would have to assert one loosely enough to accept the
-  other, which is exactly the softening that makes an equivalence proof worthless;
+- the **cart-facing bounds** (quantity, cart-id charset) — the other transport normalizes a bad
+  cart value into one of the port's typed cart tokens rather than rejecting, so the same input
+  produces a rejection on one tier and a resolved `{ ok: false, reason }` on the other. A shared
+  case would have to assert one loosely enough to accept the other, which is exactly the softening
+  that makes an equivalence proof worthless;
+- the **empty variant key** — an empty key makes the other transport build a path with an empty
+  segment and miss its route altogether, so a shared case would assert a route miss there and the
+  bound here. The shared case uses a *whitespace* key on all three writers instead, and the empty
+  one is asserted on the tier that checks the bound before any call;
+- the **egress count** — the other transport's whole job is egress, so it has nothing to assert;
+  "nothing reached for `ctx.http`" is only a claim one of the two can make at all;
 - the **two pinned gaps** — "checkout composes no gateway, and the refusal damages nothing" and "a
   login records one challenge and dispatches no mail" — because in each the *other* transport does
   the very thing this one does not, so there is no single outcome for a shared case to assert.
