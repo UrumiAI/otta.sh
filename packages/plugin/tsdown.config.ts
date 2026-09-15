@@ -6,7 +6,23 @@ export default defineConfig({
 	// for em-dash's `plugins: []` / `adaptSandboxEntry`).
 	entry: ["src/index.ts", "src/plugin.ts", "src/sandbox-entry.ts"],
 	format: ["esm"],
-	dts: true,
+	/**
+	 * `build: true` — declaration emit goes through the TypeScript PROJECT, not
+	 * through a per-file compile.
+	 *
+	 * WHY IT IS REQUIRED NOW. `src/` imports `@otta-sh/store-emdash` and
+	 * `@otta-sh/domain` for their VALUES (the in-process commerce client
+	 * constructs adapters and use-cases), and both are workspace packages whose
+	 * `exports` point at TypeScript SOURCE. A per-file declaration compile tries
+	 * to load those sources as if they belonged to this package and fails, because
+	 * they belong to a referenced project and are compiled by it. Project mode
+	 * reads the reference and consumes the emitted declarations instead, which is
+	 * also what `pnpm typecheck` already does.
+	 *
+	 * It is the JS bundle's `noExternal` below that keeps the shipped artifact
+	 * self-contained; this setting only concerns the `.d.mts` files beside it.
+	 */
+	dts: { build: true },
 	/**
 	 * BUNDLE the two commerce workspace packages into the emitted plugin rather
 	 * than leaving them as bare specifiers. The in-process commerce client

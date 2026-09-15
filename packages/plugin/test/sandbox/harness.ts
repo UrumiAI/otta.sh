@@ -14,6 +14,19 @@
  * `manifest.ts` with the test's `allowedHosts`/`commerceServiceBaseUrl`
  * before bundling (plan §6 step 1 / §8 Risk 5), so `pnpm build`'s real
  * package output is never test-specific.
+ *
+ * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
+ * asks for storage (`storage: true`). The isolate cannot build a document store (it
+ * is a database, and the isolate has no driver and must never acquire one), so the
+ * store lives in this process and the copy's collections proxy to it over loopback.
+ *
+ * THAT IS OPT-IN, and the reason is a claim several suites make: with a single
+ * baked `allowedHost`, the stub server's recorded requests ARE the plugin's entire
+ * egress. The bridge's proxy calls `fetch` directly — it is the host's side of a
+ * bridge, not plugin egress, so it is not subject to `allowedHosts` — and binding
+ * it into every boot would quietly make that claim false. A suite that does not ask
+ * for a document store therefore does not get one, and keeps a context byte-identical
+ * to the one it always had.
  */
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -23,13 +36,30 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
+import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
+import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "../..");
 const PLUGIN_SRC = path.join(PLUGIN_ROOT, "src");
-/** The one workspace package `src/` imports at runtime (INC-20) — see
- *  {@link materializePresentationPackage}. */
-const PRESENTATION_SRC = path.resolve(PLUGIN_ROOT, "..", "admin-presentation", "src");
+/**
+ * The workspace packages `src/` imports AT RUNTIME — see
+ * {@link materializeWorkspacePackages}. `admin-presentation` is the console's
+ * shared formatting; `domain` and `store-emdash` are what in-process commerce is
+ * MADE of, so they arrived the moment the plugin stopped talking to a service.
+ *
+ * Each entry names the package's own `exports` map as its package.json declares
+ * it at dev time, so the scratch copy resolves the identical files a plain test
+ * run does.
+ */
+const WORKSPACE_PACKAGES: ReadonlyArray<{
+	readonly name: string;
+	readonly exports: Record<string, string>;
+}> = [
+	{ name: "admin-presentation", exports: { ".": "./src/index.ts" } },
+	{ name: "domain", exports: { ".": "./src/index.ts", "./testing": "./src/testing/index.ts" } },
+	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
+];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
  *  resolves via this package's own `node_modules/workerd` (a direct
  *  devDependency). */
@@ -52,6 +82,15 @@ export interface SandboxOptions {
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
 	 *  the same `createSandboxWorker` bridge by pointing here. */
 	entry?: string;
+	/**
+	 * Bind a REAL document store to `ctx.storage` for this boot (default: no).
+	 *
+	 * OPT-IN on purpose — see this module's doc: the bridge that carries it calls
+	 * `fetch` directly, so binding it unconditionally would falsify the "the stub's
+	 * recorded requests are the plugin's entire egress" claim every proxy suite
+	 * makes. Ask for it only in a suite that exercises storage.
+	 */
+	storage?: boolean;
 }
 
 export type InvocationOutcome = { result: unknown } | { error: string };
@@ -208,60 +247,58 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 }
 
 /**
- * Put `@otta-sh/admin-presentation` where the scratch copy of `src/` can resolve
- * it — the one workspace package the plugin imports at runtime (INC-20).
+ * Put every workspace package the plugin imports at runtime where the scratch copy
+ * of `src/` can resolve it.
  *
  * WHY ANYTHING IS NEEDED. The copy lives under the OS temp directory, so Node's
  * resolution walks the scratch directory's own `node_modules`, then
  * `/tmp/node_modules`, then `/node_modules`, and finds nothing: a bare
- * `@otta-sh/admin-presentation`
- * specifier would be left external by the bundler and workerd would fail to load
- * a module that imports a package it has no way to fetch. That is exactly the
- * constraint `presentation/money.ts` has documented since Phase 2, and it is why
- * INC-20's shared package could not simply be added as an ordinary dependency
- * and left there.
+ * `@otta-sh/…` specifier would be left external by the bundler and workerd would
+ * fail to load a module that imports a package it has no way to fetch.
  *
- * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED
- * BUNDLE IS SELF-CONTAINED. Materialising the package here makes the specifier
- * resolvable, and `noExternal` at the `build()` call makes tsdown INLINE it
- * into the single `.mjs` workerd loads — so the bundle stays exactly as
- * self-contained as before, and the suites still prove it by running.
+ * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED BUNDLE
+ * IS SELF-CONTAINED. Materialising the packages here makes the specifiers
+ * resolvable, and `noExternal` at the `build()` call makes tsdown INLINE them into
+ * the single `.mjs` workerd loads — so the bundle stays exactly as self-contained
+ * as before, and the suites still prove it by running.
  *
- * THE INLINING IS DECLARED, NOT INHERITED, and the first cut of this comment
- * got that wrong. It claimed the scratch tree "has no package.json declaring
- * externals, so tsdown inlines it" — but tsdown resolves its externals from the
- * package.json nearest the CWD, not the entry, and the CWD is the process's.
- * From the repo root (`pnpm test`) that is a manifest with no `dependencies`
- * and the inlining happened by accident; from
- * `pnpm --filter @otta-sh/plugin exec vitest` it is THIS package's manifest,
- * where `@otta-sh/admin-presentation` is a real dependency, so tsdown left it
- * external and all 98 workerd tests failed to boot. Measured, both ways. The
- * `noExternal` below states the requirement instead of inheriting it, so the
- * suites pass from any working directory.
+ * THE INLINING IS DECLARED, NOT INHERITED, and the first cut of this comment got
+ * that wrong. It claimed the scratch tree "has no package.json declaring externals,
+ * so tsdown inlines it" — but tsdown resolves its externals from the package.json
+ * nearest the CWD, not the entry, and the CWD is the process's. From the repo root
+ * that is a manifest with no `dependencies` and the inlining happened by accident;
+ * from this package's own directory it is THIS manifest, where the workspace
+ * packages are real dependencies, so tsdown left them external and every workerd
+ * test failed to boot. Measured, both ways. The `noExternal` below states the
+ * requirement instead of inheriting it, so the suites pass from any working
+ * directory.
  *
- * ONLY `src/` IS COPIED, never the package's own `node_modules` (symlinks into
- * the pnpm store for tsdown/vitest/typescript, none of which belong in a worker
+ * ONLY `src/` IS COPIED, never a package's own `node_modules` (symlinks into the
+ * pnpm store for tsdown/vitest/typescript, none of which belong in a worker
  * bundle's resolution graph), and the generated manifest points `exports` at the
- * TypeScript source — the same dev-time `exports` the real package.json
- * declares, so this resolves the identical files a `pnpm test` run does.
+ * TypeScript source — the same dev-time `exports` the real package.json declares.
  */
-async function materializePresentationPackage(workDir: string): Promise<void> {
-	const packageDir = path.join(workDir, "node_modules", "@otta-sh", "admin-presentation");
-	await cp(PRESENTATION_SRC, path.join(packageDir, "src"), { recursive: true });
-	await writeFile(
-		path.join(packageDir, "package.json"),
-		JSON.stringify(
-			{
-				name: "@otta-sh/admin-presentation",
-				version: "0.0.0-sandbox",
-				type: "module",
-				exports: { ".": "./src/index.ts" },
-			},
-			null,
-			2,
-		),
-		"utf8",
-	);
+async function materializeWorkspacePackages(workDir: string): Promise<void> {
+	for (const pkg of WORKSPACE_PACKAGES) {
+		const packageDir = path.join(workDir, "node_modules", "@otta-sh", pkg.name);
+		await cp(path.resolve(PLUGIN_ROOT, "..", pkg.name, "src"), path.join(packageDir, "src"), {
+			recursive: true,
+		});
+		await writeFile(
+			path.join(packageDir, "package.json"),
+			JSON.stringify(
+				{
+					name: `@otta-sh/${pkg.name}`,
+					version: "0.0.0-sandbox",
+					type: "module",
+					exports: pkg.exports,
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+	}
 }
 
 export async function loadPluginInSandbox(options: SandboxOptions): Promise<SandboxHandle> {
@@ -269,7 +306,21 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	const srcDir = path.join(workDir, "src");
 	await cp(PLUGIN_SRC, srcDir, { recursive: true });
 	await writeFile(path.join(srcDir, "manifest.ts"), manifestSource(options), "utf8");
-	await materializePresentationPackage(workDir);
+	await materializeWorkspacePackages(workDir);
+
+	// The worker side of the document-store bridge, written over the scratch copy
+	// exactly as `manifest.ts` is — and ONLY for a boot that asked for storage, so
+	// a proxy suite's egress claim stays true. `src/` stays free of it either way,
+	// which is what keeps the egress guard's "one sanctioned fetch call site" claim
+	// about the real sources honest.
+	if (options.storage === true) {
+		const bridge = await storageBridge();
+		await writeFile(
+			path.join(srcDir, "sandbox-storage.ts"),
+			sandboxStorageSource(bridge.baseUrl, COMMERCE_STORAGE_COLLECTION_NAMES),
+			"utf8",
+		);
+	}
 
 	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");
@@ -280,7 +331,7 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		dts: false,
 		logLevel: "silent",
 		// EVERY workspace package the plugin imports is INLINED, always, from any
-		// working directory. See `materializePresentationPackage` — tsdown reads
+		// working directory. See `materializeWorkspacePackages` — tsdown reads
 		// externals from the package.json nearest the CWD, so without this the
 		// bundle is self-contained under `pnpm test` and broken under
 		// `pnpm --filter @otta-sh/plugin exec vitest`. The pattern is the SCOPE

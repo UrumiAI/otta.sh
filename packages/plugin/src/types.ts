@@ -75,17 +75,163 @@ export interface KvAccess {
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 }
 
+// -- the document store (ADR-0018) ------------------------------------------
+//
+// HAND-MIRRORED, LIKE EVERYTHING ELSE IN THIS FILE, and here the mirroring is
+// load-bearing rather than stylistic. These shapes are the PUBLIC type of the
+// plugin's context, so they end up in this package's emitted declarations — and
+// naming the host's types (directly, or through the adapter package that
+// `import type`s them) would put `import … from "emdash"` in the published types
+// of a package whose manifest declares the host nowhere and must not
+// (ADR-0018: zero EmDash dependency for the plugin package, in either manifest
+// section). A consumer would then need a dependency we deliberately do not have.
+//
+// The mirror is checked rather than trusted: the composition root assigns
+// `ctx.storage` to the adapter package's own `StorageAccess`, so if these shapes
+// drift from the ones the adapters bind, `pnpm typecheck` fails there. Nothing
+// here executes anything — they are types, and the implementation arrives
+// injected.
+
+/** A range predicate on one field. */
+export interface StorageRangeFilter {
+	gt?: number | string;
+	gte?: number | string;
+	lt?: number | string;
+	lte?: number | string;
+}
+
+/** A set-membership predicate. */
+export interface StorageInFilter {
+	in: Array<string | number>;
+}
+
+/** A prefix predicate. */
+export interface StorageStartsWithFilter {
+	startsWith: string;
+}
+
+/** One `where` predicate: a scalar, a range, a set or a prefix. */
+export type StorageWhereValue =
+	| string
+	| number
+	| boolean
+	| null
+	| StorageRangeFilter
+	| StorageInFilter
+	| StorageStartsWithFilter;
+
+/**
+ * A filter, field by field. Only fields the collection DECLARED as indexes may
+ * appear: a declared index is a read contract, and an undeclared field is a
+ * runtime error rather than a slow query.
+ */
+export type StorageWhereClause = Record<string, StorageWhereValue>;
+
+/** `query`'s options. `limit` is clamped by the host, so a caller that needs more
+ *  than one page asks for the next one with `cursor`. */
+export interface StorageQueryOptions {
+	where?: StorageWhereClause;
+	orderBy?: Record<string, "asc" | "desc">;
+	limit?: number;
+	cursor?: string;
+}
+
+/** One page of documents. */
+export interface StorageQueryPage<T> {
+	items: Array<{ id: string; data: T }>;
+	cursor?: string;
+	hasMore: boolean;
+}
+
+/** `{ value, revision }`. The revision is opaque and valid only for the id it
+ *  was read from. */
+export interface StorageVersionedValue<T = unknown> {
+	value: T;
+	revision: string;
+}
+
+/** A compare-and-set outcome. A rejected write reports no revision — the caller
+ *  re-reads rather than guessing which one won. */
+export type StorageConditionalWriteResult =
+	| { applied: true; revision: string }
+	| { applied: false };
+
+export interface StorageConditionalDeleteResult {
+	applied: boolean;
+}
+
+/** One per-field integer delta. Never clamped: pair a `dec: k` with a `gte: k`
+ *  guard, or the value can go negative. */
+export type StorageNumericDelta = { inc: number } | { dec: number };
+
+/** A guarded update's arguments. An empty `where` matches unconditionally, which
+ *  is a footgun in exactly the case this primitive exists for. */
+export interface StorageUpdateIfArgs<T> {
+	where: StorageWhereClause;
+	set?: Partial<T>;
+	delta?: { [K in keyof T]?: StorageNumericDelta };
+}
+
+/** A guarded update's outcome. `applied: false` conflates "row absent" and
+ *  "guard failed", deliberately: one statement cannot tell them apart. */
+export type StorageUpdateIfResult<T> = { applied: true; data: T } | { applied: false };
+
+/**
+ * One document collection — the methods commerce truth is built on. Every one is
+ * a single statement against one row or one index: there is no transaction here,
+ * which is why the conditional-write trio is the only atomicity primitive.
+ */
+export interface StorageCollection<T = unknown> {
+	get(id: string): Promise<T | null>;
+	put(id: string, data: T): Promise<void>;
+	delete(id: string): Promise<boolean>;
+	query(options?: StorageQueryOptions): Promise<StorageQueryPage<T>>;
+	count(where?: StorageWhereClause): Promise<number>;
+	updateIf(id: string, args: StorageUpdateIfArgs<T>): Promise<StorageUpdateIfResult<T>>;
+	getVersioned(id: string): Promise<StorageVersionedValue<T> | null>;
+	compareAndSet(
+		id: string,
+		expectedRevision: string | null,
+		data: T,
+	): Promise<StorageConditionalWriteResult>;
+	compareAndDelete(id: string, expectedRevision: string): Promise<StorageConditionalDeleteResult>;
+}
+
+/** The collections the host built from the descriptor's declaration, keyed by
+ *  collection name — the shape of `ctx.storage`. */
+export type StorageAccess = Record<string, StorageCollection>;
+
 /**
  * The context passed to every hook/route handler. Otta's plugin declares
  * only `content:read` + `network:request` (manifest.ts) — so `http` is the
- * only capability-gated surface it ever receives. `kv` is available WITHOUT a
- * capability (verified above) and holds only non-secret display prefs. No
- * `content`/`media`/`users`/`email`/`storage`/`db` — declaring any of those
- * would fail the sandbox-clean guard (DEVELOPMENT.md §5).
+ * only capability-gated surface it ever receives. `kv` and `storage` are both
+ * available WITHOUT a capability: the host builds each on an always-available
+ * path, and there is no `storage` capability string in its vocabulary to declare
+ * (ADR-0018 decision 4). No `content`/`media`/`users`/`email`/`db` — declaring
+ * any of those would fail the sandbox-clean guard (DEVELOPMENT.md §5).
  */
 export interface PluginContext {
 	http: HttpAccess;
 	kv: KvAccess;
+	/**
+	 * The per-plugin DOCUMENT store commerce truth lives in (ADR-0018/0019):
+	 * collection name → that collection, built by the host from the descriptor's
+	 * declared `storage` collections and injected on every invocation.
+	 *
+	 * The type is this file's OWN structural mirror (above), naming nothing from
+	 * the host — because this is public API and the published declarations must not
+	 * make a consumer resolve a package this one does not depend on. The mirror is
+	 * checked where it matters: the composition root assigns this to the adapter
+	 * package's `StorageAccess`, so a drift fails the typecheck there.
+	 *
+	 * OPTIONAL, and that is a statement about the TRANSPORT rather than about the
+	 * host. A deploy always has it. The HTTP transport never reads it, and every
+	 * unit suite that hand-builds a `ctx` around a fake `http`/`kv` pair has no
+	 * document store to offer — so the in-process composition demands it by name
+	 * and fails loudly when a caller has none, which is a better failure than a
+	 * required field no existing caller could satisfy.
+	 */
+	storage?: StorageAccess;
 }
 
 // -- routes -------------------------------------------------------------------
