@@ -108,9 +108,9 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		// this used to pass was defensible while declarations were a per-file
 		// compile of this package alone — but `src/` now imports two workspace
 		// packages for their VALUES, and a declaration emit across that boundary is
-		// the half of the build that breaks first (it needs the TypeScript PROJECT,
-		// and it drags the host's type graph in unless that stays external). Skipping
-		// it left this guard green against a build that could not run at all, which is
+		// the half of the build that breaks first (it needs the TypeScript PROJECT).
+		// Skipping it left this guard green against a build that could not run at all,
+		// which is
 		// the one failure a packaging guard exists to catch. It costs this suite about
 		// twenty seconds and buys back the whole build.
 		await build({ ...tsdownConfig, entry, outDir, logLevel: "silent" });
