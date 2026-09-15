@@ -5,14 +5,16 @@
  * commerce service and no egress at all (ADR-0018).
  *
  * WHAT THIS CLASS IS, AND WHAT IT IS NOT. It is a TRANSPORT adapter that happens
- * to have no wire: every method checks its inputs against the bounds the wire's
- * request schemas used to enforce (`commerce-input.ts` — read its doc, the
- * watermark format is load-bearing), brands them, calls one use-case, and
- * serializes the result into the same value the HTTP client returns. It holds no commerce rule of its own — a rule here would be a rule the
- * contract suites cannot see, and the port's whole value is that the two
- * implementations are interchangeable. Where the surface this replaces did
- * something beyond calling a use-case (the add's sku guard, the quote's per-line
- * price resolution), that work is mirrored here and says so: it is part of the
+ * to have no wire: every method checks its inputs against the bounds the request
+ * schemas used to enforce (`commerce-input.ts` — read its doc, the watermark
+ * format is load-bearing), brands them, calls one use-case, and serializes the
+ * result into the same value the other transport returns.
+ *
+ * It holds no commerce rule of its own. A rule here would be a rule the contract
+ * suites cannot see, and the port's whole value is that the two implementations
+ * are interchangeable. Where the surface this replaces did something beyond
+ * calling a use-case — the add's sku guard, the quote's per-line price
+ * resolution — that work is mirrored here and says so: it is part of the
  * behaviour a caller depends on, not part of any HTTP framing.
  *
  * TWO RULES ARE LOAD-BEARING AND NEITHER IS NEGOTIABLE.

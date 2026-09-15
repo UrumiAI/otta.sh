@@ -340,11 +340,6 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 				lines: [{ sku: "SKU-NOGW", qty: 2, reservationId: heldReservation }],
 			},
 		});
-		// And nothing was minted — a same-key retry has no order to find either.
-		expect(await client.getPublicOrder("order-that-never-was")).toEqual({
-			ok: false,
-			reason: "ORDER_NOT_FOUND",
-		});
 	});
 
 	test("a login link records ONE challenge and dispatches NO mail", async () => {

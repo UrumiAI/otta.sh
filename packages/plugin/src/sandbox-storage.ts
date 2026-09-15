@@ -20,13 +20,18 @@
  * entry, the production one and the test fixtures alike, with no per-entry
  * plumbing to forget.
  *
+ * TYPED AGAINST THE PLUGIN'S OWN SHAPE (`types.js`), not the adapter package's:
+ * this is the value that becomes `ctx.storage`, and the context's type is the one
+ * that must stay free of host names. The two shapes are proven equivalent at the
+ * composition root.
+ *
  * HERE IT IS ABSENT, and absent is the honest answer: this copy has no database
  * behind it, and a bundle built from it carries no document store, no driver and
  * no egress. The in-process commerce composition asks for the store by name and
  * fails loudly when there is none, which is the failure a caller should get.
  */
 
-import type { StorageAccess } from "@otta-sh/store-emdash";
+import type { StorageAccess } from "./types.js";
 
 /** The store for this bundle: none, unless something replaced this module. */
 export function sandboxStorage(): StorageAccess | undefined {

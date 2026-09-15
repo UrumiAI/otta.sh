@@ -77,7 +77,7 @@ import {
 	uuidIdGen,
 } from "@otta-sh/store-emdash";
 import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
-import type { PluginContext } from "../types.js";
+import type { PluginContext, StorageAccess as PluginStorageAccess } from "../types.js";
 
 /** Test-facing overrides. A deploy passes none of them. */
 export interface InProcessCommerceStoresOptions {
@@ -136,9 +136,19 @@ export function createInProcessCommerceStores(
 	 * agree — a drift in either is a typecheck failure HERE rather than a runtime
 	 * surprise in a store method, and it costs nothing at runtime: the annotation
 	 * emits no code.
+	 *
+	 * BOTH DIRECTIONS are checked, by this assignment and by the mutual-assignability
+	 * pair below it. One direction alone would let the mirror drift WIDER — a method
+	 * the adapters need but the mirror does not describe still satisfies "mirror is
+	 * assignable to adapter" for every field they share, and the gap would surface
+	 * only when a store called the missing method.
 	 */
 	const storage: AdapterStorageAccess | undefined = ctx.storage;
 	if (storage === undefined) throw new Error(MISSING_STORAGE_MESSAGE);
+	// The other direction, type-only: what the adapters accept is also describable by
+	// the mirror, so neither shape can quietly gain or lose a method.
+	const mirrored: PluginStorageAccess = storage;
+	void mirrored;
 
 	const clock = options.clock ?? systemClock;
 	const idGen = options.idGen ?? uuidIdGen;

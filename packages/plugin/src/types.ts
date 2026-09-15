@@ -127,8 +127,8 @@ export type StorageWhereValue =
  */
 export type StorageWhereClause = Record<string, StorageWhereValue>;
 
-/** `query`'s options. `limit` is clamped by the host, so a caller that needs
- *  more pages with `cursor`. */
+/** `query`'s options. `limit` is clamped by the host, so a caller that needs more
+ *  than one page asks for the next one with `cursor`. */
 export interface StorageQueryOptions {
 	where?: StorageWhereClause;
 	orderBy?: Record<string, "asc" | "desc">;

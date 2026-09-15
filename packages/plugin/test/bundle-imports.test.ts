@@ -88,8 +88,9 @@ function bareSpecifiers(source: string): string[] {
  * Comments removed, so the scan sees CODE. Several docblocks legitimately cite the
  * host — one of them even shows the import a sandboxed plugin would write — and a
  * scan that counted those would be a scan nobody could keep green. Crude on
- * purpose: `.d.mts` output carries no string literal that could hide a `//` or a
- * `/*`, so there is nothing here for a cleverer stripper to save.
+ * purpose: the emitted `.d.mts` output does not today carry a string literal that
+ * could hide a `//` or a `/*` inside it, so there is nothing here for a cleverer
+ * stripper to save. If one ever appears, anchor the scan to line starts instead.
  */
 function withoutComments(source: string): string {
 	return source.replaceAll(/\/\*[\s\S]*?\*\//g, " ").replaceAll(/\/\/[^\n]*/g, " ");
