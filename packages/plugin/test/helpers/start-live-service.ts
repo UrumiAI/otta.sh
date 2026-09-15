@@ -1,4 +1,11 @@
 import { serve } from "@hono/node-server";
+import type {
+	AddressStore,
+	CouponStore,
+	OrderStore,
+	SessionStore,
+	ShippingRulesStore,
+} from "@otta-sh/domain";
 import { FakeEmailSender, FixedClock } from "@otta-sh/domain/testing";
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { createApp } from "@otta-sh/service/app";
@@ -26,12 +33,31 @@ import { createIsolatedPgSchema } from "@otta-sh/store-postgres/testing";
 /** The Stripe webhook signing secret the live test service verifies against. */
 export const LIVE_STRIPE_WEBHOOK_SECRET = "whsec_plugin_live_test";
 
+/**
+ * The stores a caller needs in order to SEED state this service's own client
+ * surface cannot write — a guest order, a customer's address, a shipping rule, a
+ * coupon. Every one of them is a `@otta-sh/domain` PORT, and that is the point:
+ * the other transport's harness seeds the very same ports over its own adapters,
+ * so a shared case's arrangement is identical on both and a difference in outcome
+ * can only come from the transport under test.
+ */
+export interface LiveServiceStores {
+	orderStore: OrderStore;
+	addressStore: AddressStore;
+	sessionStore: SessionStore;
+	shippingRules: ShippingRulesStore;
+	couponStore: CouponStore;
+}
+
 export interface LiveService {
 	baseUrl: string;
 	host: string;
 	/** The in-memory email sender — the account tests read the emitted magic-link
 	 *  token from here to complete a login over the wire. */
 	emailSender: FakeEmailSender;
+	/** See {@link LiveServiceStores}. The same instances the app was built with,
+	 *  so a seeded row is a row this service reads. */
+	stores: LiveServiceStores;
 	/** The X-Internal-Token the service accepts (undefined ⇒ guarded admin routes
 	 *  answer 503). Exposed so the admin-orders live-client test can drive the
 	 *  guarded `/admin/orders` reads. */
@@ -86,6 +112,8 @@ export async function startLiveService(
 		clock,
 	});
 	const emailSender = new FakeEmailSender();
+	const shippingRules = new KyselyShippingRulesStore({ db });
+	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 	const app = createApp({
 		store,
 		productCommerce,
@@ -94,9 +122,9 @@ export async function startLiveService(
 		orderNotesStore,
 		entitlementStore,
 		paymentEventStore,
-		shippingRules: new KyselyShippingRulesStore({ db }),
+		shippingRules,
 		taxRules: new KyselyTaxRulesStore({ db }),
-		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen, clock }),
+		couponStore,
 		reportingStore: new KyselyReportingStore({ db, dialect: "postgres" }),
 		settingsStore: new KyselySettingsStore({ db, clock }),
 		customerStore,
@@ -121,6 +149,7 @@ export async function startLiveService(
 		baseUrl: `http://127.0.0.1:${port}`,
 		host: "127.0.0.1",
 		emailSender,
+		stores: { orderStore, addressStore, sessionStore, shippingRules, couponStore },
 		internalToken: options.internalToken,
 		serviceToken: options.serviceToken,
 		async stop() {

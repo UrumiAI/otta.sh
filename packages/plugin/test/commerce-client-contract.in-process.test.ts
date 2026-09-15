@@ -28,38 +28,63 @@
  *
  * Rows ARE cleared per case here, which is what makes `reset()` a real reset in
  * this tier rather than the documented no-op the HTTP tier implements.
+ *
+ * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE, and the other tier
+ * declares the reverse. Neither is a tier excusing itself: the two gaps are real,
+ * they are opposite, and each is pinned by a case that names its own gate — so a
+ * test report says which tier skipped what and why. The clock is offerable HERE
+ * because this backend is rebuilt per case, so winding it forward costs nothing
+ * `reset()` cannot put back. The gateways are not offerable here YET, because the
+ * payment adapters have not moved in-process; when they do, the payments hook
+ * appears and the shared checkout case starts running with no edit to any case.
  */
+import { email as toEmail } from "@otta-sh/domain";
+import { FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
 import {
-	makeInProcessCommerce,
-	type InProcessCommerceHarness,
-} from "./helpers/in-process-commerce.js";
-import {
 	storefrontCommerceClientContract,
 	type CommerceClientTier,
 } from "./contracts/commerce-client-contract.js";
+import { sharedTierSeeders } from "./helpers/commerce-tier-arrange.js";
+import {
+	makeInProcessCommerce,
+	type InProcessCommerceHarness,
+} from "./helpers/in-process-commerce.js";
 
 /**
- * The in-process tier. `arrange` programs state through the client's own writes,
- * exactly as the HTTP tier does — so the two tiers seed identically and a
- * difference in a case's outcome can only come from the transport under test.
+ * The in-process tier. `arrange` programs state through the client's own writes
+ * and through the domain PORTS, exactly as the HTTP tier does — so the two tiers
+ * seed identically and a difference in a case's outcome can only come from the
+ * transport under test.
  */
 function inProcessTier(): CommerceClientTier {
 	let harness: InProcessCommerceHarness | undefined;
 	let client: CommerceClient | undefined;
+	/**
+	 * Anchored at the real instant the suite started rather than at a fixed literal,
+	 * so nothing here reads as "long ago" to a store comparing against an absolute
+	 * value — and constructed HERE rather than inside `setup()`, because the contract
+	 * decides at COLLECTION time which cases this tier's hooks let it run.
+	 */
+	const clock = new FixedClock(new Date());
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
 		return client;
 	}
 
+	function harnessOrThrow(): InProcessCommerceHarness {
+		if (harness === undefined) throw new Error("tier not set up");
+		return harness;
+	}
+
 	return {
 		name: "in-process, plugin storage, sqlite",
 		async setup() {
 			if (harness !== undefined) return; // one database per tier, however many slices ask
-			harness = await makeInProcessCommerce();
+			harness = await makeInProcessCommerce({ clock });
 			client = harness.client;
 		},
 		async teardown() {
@@ -77,7 +102,57 @@ function inProcessTier(): CommerceClientTier {
 		async makeClient() {
 			return clientOrThrow();
 		},
+		// The lever the elapsed-deadline case needs. It moves the ONE clock every store
+		// in this composition shares — the client's own stores and the harness's second
+		// set — because a deadline stamped by one store has to be the same instant the
+		// next store compares against.
+		clock: {
+			async advance(ms: number) {
+				clock.advance(ms);
+			},
+		},
 		arrange: {
+			...sharedTierSeeders({
+				get orderStore() {
+					return harnessOrThrow().stores.orderStore;
+				},
+				get addressStore() {
+					return harnessOrThrow().stores.addressStore;
+				},
+				get sessionStore() {
+					return harnessOrThrow().stores.sessionStore;
+				},
+				get shippingRules() {
+					return harnessOrThrow().stores.shippingRules;
+				},
+				get couponStore() {
+					return harnessOrThrow().stores.couponStore;
+				},
+			}),
+			/**
+			 * A real login, end to end through the real stores: issue the challenge,
+			 * redeem it THROUGH THE CLIENT, keep the session token.
+			 *
+			 * The challenge is issued through the verifier rather than through
+			 * `requestLoginLink` for one reason — this transport dispatches no mail yet,
+			 * and the emitted token is part of no reply, so there is no message to
+			 * capture and this is the only way to hold a token a shopper would have
+			 * received. The other tier, which does dispatch, captures the mail instead.
+			 * The redemption is the client's own on both, which is the half the cases
+			 * are actually about.
+			 */
+			async session(email) {
+				const open = harnessOrThrow();
+				const issued = await open.stores.credentialVerifier.issueChallenge(toEmail(email));
+				if (!issued.ok) throw new Error(`arrange.session: challenge not issued (${issued.reason})`);
+				const verified = await clientOrThrow().verifyLogin(issued.challengeId, issued.token);
+				if (!verified.ok) throw new Error(`arrange.session: login failed (${verified.reason})`);
+				const customerId = await open.stores.sessionStore.validate(verified.sessionToken);
+				return {
+					bearer: verified.sessionToken,
+					...(customerId === null ? {} : { customerId }),
+				};
+			},
 			async product(spec) {
 				await clientOrThrow().upsertProductCommerce(
 					spec.productId,
@@ -109,21 +184,22 @@ describe("commerceClientContract over InProcessCommerceClient", () => {
 });
 
 /**
- * THE INPUT BOUNDS, in this tier only and deliberately so.
+ * WHAT STAYS IN THIS FILE, AND WHY EACH ONE CANNOT BE SHARED.
  *
- * These are not contract cases: the shared contract is about what a client DOES
- * with well-formed input, and the other transport refuses malformed input at its
- * wire with a status this port does not carry. What has to be proven here is that
- * removing that wire did not remove the refusal — so each case asserts an AWAITED
- * rejection carrying the structural code, and asserts that NOTHING was written.
+ * Most of what this file used to assert alone now lives in the shared contract and
+ * runs on both transports: the watermark, variant-key, title, zero-price and
+ * batch-cap refusals, and every identity case. Each moved because the OTHER
+ * transport can be held to it too — a bound proven on one implementation is not
+ * evidence about the port.
  *
- * The watermark case is the one that matters most. The stored watermark is
- * compared as raw text, so one garbage high-sorting value accepted once would
- * make every later legitimate sync a stale no-op forever, and the ordinary write
- * path preserves that value rather than healing it. A rejection here is the only
- * thing between a bad caller and a product nobody can sync again.
+ * What is left below is what genuinely does not survive the move, with the reason
+ * recorded per block rather than left to be rediscovered. None of it is a case that
+ * was merely inconvenient to share.
  */
-/** Every refusal is this shape: awaited, structural, and it names the field. */
+
+/** Every refusal is this shape: awaited, structural, and it names the field. This
+ *  is the STRICTER assertion the shared contract cannot make — see its
+ *  `expectRejectedInput`, which drops the code on a transport that carries none. */
 async function expectRefusal(call: Promise<unknown>, field: string): Promise<void> {
 	await call.then(
 		() => {
@@ -137,7 +213,22 @@ async function expectRefusal(call: Promise<unknown>, field: string): Promise<voi
 	);
 }
 
-describe("in-process commerce refuses malformed input before any store call", () => {
+/**
+ * THE BOUNDS WHOSE REFUSAL IS NOT COMPARABLE ACROSS TRANSPORTS.
+ *
+ * These two are here rather than in the shared contract because the other transport
+ * does not REJECT on them: its cart and quote routes normalize a bad value into one
+ * of the port's typed cart tokens, so the same input produces a rejection on this
+ * tier and a resolved `{ ok: false, reason }` on that one. Those are two different
+ * behaviours, and a shared case would have to assert one of them loosely enough to
+ * accept the other — exactly the softening that makes an equivalence proof
+ * worthless. So the strict assertion lives on the tier that can make it, and the
+ * difference is named instead of papered over.
+ *
+ * The egress count is here for a simpler reason: the other transport's whole job is
+ * egress, so it has nothing to assert.
+ */
+describe("in-process commerce refuses malformed shopper input before any store call", () => {
 	let harness: InProcessCommerceHarness;
 	let client: CommerceClient;
 
@@ -152,129 +243,11 @@ describe("in-process commerce refuses malformed input before any store call", ()
 		await harness.close();
 	});
 
-	test("a garbage watermark is refused on the upsert, and the product is NOT written", async () => {
-		await expectRefusal(
-			client.upsertProductCommerce(
-				"prod-wm",
-				{ sku: "SKU-WM", price: { amount: 100, currency: "USD" }, contentUpdatedAt: "ZZZZ" },
-				"wm-1",
-			),
-			"contentUpdatedAt",
-		);
-		// Refused BEFORE the store: nothing exists to have been wedged.
-		expect(await client.getProductCommerce("prod-wm")).toBeNull();
-	});
-
-	test("a garbage watermark is refused on every lifecycle and variant transition that carries one", async () => {
-		await client.upsertProductCommerce(
-			"prod-wm2",
-			{ sku: "SKU-WM2", price: { amount: 100, currency: "USD" } },
-			"wm-2",
-		);
-		await expectRefusal(
-			client.activateProductCommerce("prod-wm2", "wm-act", "2026-09-14"),
-			"contentUpdatedAt",
-		);
-		await expectRefusal(
-			client.deactivateProductCommerce("prod-wm2", "wm-deact", "not-a-date"),
-			"contentUpdatedAt",
-		);
-		await expectRefusal(
-			client.upsertProductVariant("prod-wm2", "large", { contentUpdatedAt: "9999" }, "wm-decl"),
-			"contentUpdatedAt",
-		);
-		await expectRefusal(
-			client.deactivateProductVariant("prod-wm2", "large", "wm-drop", "2026-09-14T00:00:00Z"),
-			"contentUpdatedAt",
-		);
-		await expectRefusal(
-			client.updateProductVariantFields(
-				"prod-wm2",
-				"large",
-				{ price: { amount: 100, currency: "USD" } },
-				"whenever",
-				"wm-edit",
-			),
-			"expectedUpdatedAt",
-		);
-		// The publish gate is still closed and still honest — no transition landed.
-		expect((await client.getProductCommerce("prod-wm2"))?.active).toBe(false);
-	});
-
-	test("a whitespace-only variant key is refused on all three variant writers", async () => {
-		const watermark = "2026-09-14T00:00:00.000Z";
-		await expectRefusal(
-			client.upsertProductVariant("prod-vk", "   ", { contentUpdatedAt: watermark }, "vk-1"),
-			"variantKey",
-		);
-		await expectRefusal(
-			client.updateProductVariantFields(
-				"prod-vk",
-				"\t",
-				{ price: { amount: 100, currency: "USD" } },
-				watermark,
-				"vk-2",
-			),
-			"variantKey",
-		);
-		await expectRefusal(
-			client.deactivateProductVariant("prod-vk", "", "vk-3", watermark),
-			"variantKey",
-		);
-	});
-
-	test("an empty title is refused — the field is omitted to preserve, nulled to clear, never blanked", async () => {
-		await expectRefusal(
-			client.upsertProductCommerce("prod-title", { sku: "SKU-TITLE", title: "" }, "title-1"),
-			"title",
-		);
-		await expectRefusal(
-			client.upsertProductVariant(
-				"prod-title",
-				"large",
-				{ title: "", contentUpdatedAt: "2026-09-14T00:00:00.000Z" },
-				"title-2",
-			),
-			"title",
-		);
-	});
-
-	test("a zero variant price is refused BEFORE the use-case, so this tier does not answer where the other one throws", async () => {
-		await client.upsertProductCommerce(
-			"prod-zero",
-			{ sku: "SKU-ZERO", price: { amount: 1000, currency: "USD" } },
-			"zero-1",
-		);
-		const declared = await client.upsertProductVariant(
-			"prod-zero",
-			"large",
-			{ title: "Large", contentUpdatedAt: "2026-09-14T00:00:00.000Z" },
-			"zero-declare",
-		);
-		await expectRefusal(
-			client.updateProductVariantFields(
-				"prod-zero",
-				"large",
-				{ price: { amount: 0, currency: "USD" } },
-				declared.updatedAt,
-				"zero-edit",
-			),
-			"price.amount",
-		);
-		// And the row is untouched: still unpriced, not priced at zero.
-		const listed = await client.listProductVariants("prod-zero");
-		expect(listed[0]?.price).toBeNull();
-	});
-
-	test("the shopper-facing bounds hold: quantity, batch size and cart ids", async () => {
+	test("the shopper-facing bounds hold: quantity and cart ids", async () => {
 		const cartId = (await client.createCart("USD")).cartId;
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 0, "q-1"), "qty");
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 1.5, "q-2"), "qty");
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 10_001, "q-3"), "qty");
-		await expectRefusal(
-			client.getCommerceBatch(Array.from({ length: 101 }, (_, i) => `p-${String(i)}`)),
-			"productIds",
-		);
 		await expectRefusal(client.getCart("has a space"), "cartId");
 	});
 
@@ -286,10 +259,12 @@ describe("in-process commerce refuses malformed input before any store call", ()
 /**
  * THE TWO GAPS, PINNED.
  *
- * Both are deliberate and both are invisible unless a test says so, which is the
- * reason for this block: a gap nobody asserts is indistinguishable from a bug
- * nobody noticed. Each case fails the day the missing piece lands, which is
- * exactly when someone should come back and delete it.
+ * Both are deliberate, both are invisible unless a test says so, and NEITHER can be
+ * a shared case — because in each the other transport does the very thing this one
+ * does not, so there is no single outcome for a shared case to assert. They are the
+ * two places the transports genuinely differ today, recorded here rather than only
+ * in prose so the difference has a test standing over it. Each fails the day the
+ * missing piece lands, which is exactly when someone should come back and delete it.
  */
 describe("in-process commerce: what is deliberately not wired yet", () => {
 	let harness: InProcessCommerceHarness;
@@ -303,6 +278,10 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		await harness.close();
 	});
 
+	// THE HEADLINE DIFFERENCE between the tiers, seen from this side: the other one
+	// composes a gateway and checks out successfully, which is why the shared
+	// checkout-replay case runs there and skips here. What this case adds — and the
+	// shared one cannot — is that the refusal damages nothing.
 	test("checkout has NO payment gateway: a real cart with a held line survives the refusal intact", async () => {
 		// A genuine cart, priced, with stock held for its line — so the refusal is
 		// asserted against the state it must not damage rather than against nothing.
@@ -342,6 +321,9 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		});
 	});
 
+	// NOT SHAREABLE for the mirror-image reason: the other transport DOES dispatch the
+	// login mail — the shared identity cases mint their sessions by capturing it — so
+	// "no mail left the process" is true here and false there, by design on both.
 	test("a login link records ONE challenge and dispatches NO mail", async () => {
 		const challenges = harness.ctx.storage?.["login_challenges"];
 		if (challenges === undefined)
