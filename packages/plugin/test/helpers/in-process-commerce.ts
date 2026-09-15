@@ -16,6 +16,7 @@
  * and a suite can assert on the count, which is what turns "sends no mail" from a
  * claim into a test.
  */
+import type { Clock } from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
@@ -40,6 +41,14 @@ export interface InProcessCommerceHarness {
 	 */
 	readonly stores: InProcessCommerceStores;
 	readonly ctx: PluginContext;
+	/**
+	 * The clock every store in this harness shares — the caller's own instance when
+	 * it passed one, so a suite that needs to move time forward moves THIS and both
+	 * the client's stores and the harness's see it. Sharing one is not tidiness: a
+	 * checkout stamps a hold deadline through one store and compares it through
+	 * another, so two clocks would make hold expiry disagree with itself.
+	 */
+	readonly clock: Clock;
 	/** How many times anything reached for egress. Always 0 in this transport. */
 	egressAttempts(): number;
 	/** Empty the rows, keep the schema (and its triggers). */
@@ -67,7 +76,15 @@ function makeKv(): KvAccess {
 	};
 }
 
-export async function makeInProcessCommerce(): Promise<InProcessCommerceHarness> {
+export interface MakeInProcessCommerceOptions {
+	/** A clock the caller keeps a handle on, for a suite whose subject is an
+	 *  elapsed deadline. Omitted ⇒ real time, which is what a deployment gets. */
+	clock?: Clock;
+}
+
+export async function makeInProcessCommerce(
+	options: MakeInProcessCommerceOptions = {},
+): Promise<InProcessCommerceHarness> {
 	const db: DialectStorage = await makeSqliteStorage(commerceStorageLayout());
 	let egress = 0;
 	const ctx: PluginContext = {
@@ -82,11 +99,15 @@ export async function makeInProcessCommerce(): Promise<InProcessCommerceHarness>
 		kv: makeKv(),
 		storage: db.storage,
 	};
-	const stores = createInProcessCommerceStores(ctx);
+	// ONE options object for both constructions, so the client's own stores and the
+	// harness's second set share whatever clock the caller passed.
+	const shared = options.clock !== undefined ? { clock: options.clock } : {};
+	const stores = createInProcessCommerceStores(ctx, shared);
 	return {
-		client: new InProcessCommerceClient(ctx),
+		client: new InProcessCommerceClient(ctx, shared),
 		stores,
 		ctx,
+		clock: stores.clock,
 		egressAttempts: () => egress,
 		reset: () => db.reset(),
 		close: () => db.close(),
