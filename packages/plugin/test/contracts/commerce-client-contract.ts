@@ -52,8 +52,13 @@ import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/c
 
 /** The admin orders surface the contract exercises. Empty until INC-B10b. */
 export type OrdersClientSurface = Pick<AdminOrdersClient, "listOrders">;
-/** The admin products surface the contract exercises. Empty until INC-B10b. */
-export type ProductsClientSurface = Pick<AdminProductsClient, "listProducts">;
+/** The admin products surface the contract exercises — the class's WHOLE public
+ *  surface, named method by method, because INC-B10b-i folds all six in-process
+ *  and a surface that listed fewer would let one be forgotten silently. */
+export type ProductsClientSurface = Pick<
+	AdminProductsClient,
+	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
+>;
 /** The rules surface the contract exercises (shipping, tax, coupons). */
 export type RulesClientSurface = Pick<
 	AdminRulesClient,
@@ -79,11 +84,27 @@ export type RulesClientSurface = Pick<
 /** The reporting + settings surface. Empty until INC-B10c. */
 export type ReportingClientSurface = Pick<ReportingSettingsClient, "getRevenue">;
 
+/**
+ * What a tier's admin composition hands back.
+ *
+ * EVERY SURFACE EXCEPT `products` IS OPTIONAL, and that is a statement about the
+ * world rather than a convenience: only products is folded in-process today
+ * (INC-B10b-i). Orders arrives with INC-B10b-ii, rules and reporting with
+ * INC-B10c, so the in-process tier genuinely has none of the three yet.
+ *
+ * THE ALTERNATIVE WAS A STUB — an empty `listOrders`, an empty `listCoupons`, a
+ * zeroed `getRevenue` — and a stub would make those slices PASS against an
+ * implementation that does nothing. A green suite asserting the absence of
+ * behaviour is worse than a missing one, because it is indistinguishable from
+ * evidence. An absent surface makes its slice fail loudly instead
+ * (`requireSurface`), so the gap shows up in a test report and closes by wiring,
+ * never by softening a case.
+ */
 export interface AdminClientSurfaces {
-	orders: OrdersClientSurface;
+	orders?: OrdersClientSurface;
 	products: ProductsClientSurface;
-	rules: RulesClientSurface;
-	reporting: ReportingClientSurface;
+	rules?: RulesClientSurface;
+	reporting?: ReportingClientSurface;
 }
 
 /** One `product_commerce` row — the only backend state the lifted cases seed
@@ -176,6 +197,10 @@ export interface CommerceClientTierArrange {
 	shippingMethod(spec: ArrangedShippingMethod): Promise<void>;
 	/** Seed one coupon. */
 	coupon(spec: ArrangedCoupon): Promise<void>;
+	/** Seed one tax-class registry entry. Seeded through the port on both tiers —
+	 *  the admin rules client that would otherwise create one is a surface the
+	 *  products slice must not depend on. */
+	taxClass(spec: { id: string; name: string }): Promise<void>;
 }
 
 /**
@@ -278,6 +303,24 @@ function assertAdminClients(
 		);
 	}
 	return tier.makeAdminClients.bind(tier);
+}
+
+/** One admin surface, or a loud failure naming the tier and the surface it does
+ *  not have. The counterpart to `AdminClientSurfaces`' optional members: a slice
+ *  bound to a tier that lacks its surface FAILS rather than running against a
+ *  stub that would agree with anything. */
+function requireSurface<K extends keyof AdminClientSurfaces>(
+	tier: CommerceClientTier,
+	surfaces: AdminClientSurfaces,
+	key: K,
+): NonNullable<AdminClientSurfaces[K]> {
+	const surface = surfaces[key];
+	if (surface === undefined) {
+		throw new Error(
+			`commerceClientContract: tier "${tier.name}" provides no admin ${key} surface, so it cannot run the slice that exercises it`,
+		);
+	}
+	return surface as NonNullable<AdminClientSurfaces[K]>;
 }
 
 // WHICH SEEDING PATH. A case whose SUBJECT is a write method calls that method
@@ -1697,24 +1740,570 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 // ── Slice 2: admin orders + products (INC-B10b) ───────────────────────────
 
 /**
- * INTENTIONALLY EMPTY, and that is the finding, not an oversight: no test file
- * in `packages/plugin/test/` ever exercised `AdminOrdersClient` (15 methods) or
- * `AdminProductsClient` (9). There was nothing to lift. INC-B10b writes these
- * cases first, against this tier interface, and they will then run on both
- * transports for free.
+ * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
+ * test file in `packages/plugin/test/` ever exercised `AdminOrdersClient` or
+ * `AdminProductsClient`. There was nothing to move, so the cases below are
+ * written against the tier interface from the start and run on both transports
+ * for free.
  *
- * Gaps to cover (the two classes' full public surfaces): orders —
- * `listOrders`, `getOrder`, `transitionOrder`, `resolveReconciliation`,
- * `recordFulfillment`, `cancelOrder`, `getCustomerContext`, `getTimeline`,
- * `getRefunds`, `refundOrder`, `listNotes`, `addNote`; products —
- * `updateProduct`, `restock`, `removeStock`, `listProducts`, `getProduct`,
- * `getTaxClasses`.
+ * PRODUCTS IS COVERED (INC-B10b-i) — all six methods: `listProducts`,
+ * `getProduct`, `updateProduct`, `restock`, `removeStock`, `getTaxClasses`.
+ *
+ * ORDERS IS NOT, YET. INC-B10b-ii folds `AdminOrdersClient` in and writes its
+ * cases here: `listOrders`, `getOrder`, `transitionOrder`,
+ * `resolveReconciliation`, `recordFulfillment`, `cancelOrder`,
+ * `getCustomerContext`, `getTimeline`, `getRefunds`, `refundOrder`,
+ * `listNotes`, `addNote`.
+ *
+ * WHAT THE SHARED ARRANGE SURFACE CANNOT REACH, recorded so it is not mistaken
+ * for a decision: `arrange.product` goes through `upsertProductCommerce`, which
+ * holds the invariant "a product with a sku has an inventory row" by seeding one
+ * at `0`. So a product with NO sku, a sku with NO inventory row, and therefore
+ * the `onHand: null` ("unknown") reading, the `no_sku` refusal and the
+ * `no_inventory_row` refusal are all unreachable from here. The `null`/`0`
+ * distinction is still asserted in the direction this surface can reach — a
+ * seeded zero stays `0` and never becomes `null` — and the unreachable half is
+ * held by the in-process client's own unit coverage.
+ *
+ * TWO STATES THE ADMIN SURFACE READS AND CANNOT WRITE are arranged through the
+ * tier's STOREFRONT client instead, because they have exactly one writer each: a
+ * soft-deleted row (`softDeleteProductCommerce`) and a sku under a live cart hold
+ * (`addCartLine`). Both are load-bearing — `deletedAt` is what the console draws
+ * the archived badge from and what the stock-movement tombstone guard turns on,
+ * and `sku_held_stock` is a rename refusal with its own copy and its own
+ * `liveHolds` operand — so neither may be left to a hand-written stub on one
+ * tier.
+ *
+ * THE ONE `getTaxClasses` READING NOT ASSERTED HERE is the empty registry, and
+ * deliberately: the registry is STORE-WIDE and one tier's `reset()` is a
+ * documented no-op, so "no classes exist" is a claim no case in a shared file can
+ * make without depending on every other case's ordering — the exact coupling this
+ * contract's disjoint-ids rule exists to forbid. The branch that reads an empty
+ * registry is the console's `readTaxClasses` backstop, and it is pinned where it
+ * lives, in `products-console-route.sandbox.test.ts`.
  */
 export function adminOrdersProductsClientContract(tier: CommerceClientTier): void {
-	// No cases yet — but the tier is still held to the slice's requirement, so
-	// INC-B10b's first case does not discover a mis-wired tier.
-	assertAdminClients(tier);
+	describe(`commerceClientContract — admin products [${tier.name}]`, () => {
+		let client: ProductsClientSurface;
+		/** THE STOREFRONT CLIENT, for the two states the admin surface can read but
+		 *  cannot produce: a soft-deleted row (`softDeleteProductCommerce`) and a sku
+		 *  under a live cart hold (`addCartLine`). Both are admin-facing outcomes
+		 *  reached only through a shopper-facing write, and both tiers have it. */
+		let storefront: CommerceClient;
+
+		const makeAdminClients = assertAdminClients(tier);
+		beforeAll(async () => {
+			await tier.setup();
+			client = (await makeAdminClients()).products;
+			storefront = await tier.makeClient();
+		});
+		beforeEach(async () => {
+			await tier.reset();
+		});
+
+		/** Seed one product and hand back the watermark an edit has to present.
+		 *  Read through `getProduct` rather than taken from the seed, because the
+		 *  watermark a console holds is the one the READ gave it. */
+		async function seed(spec: {
+			productId: string;
+			sku: string;
+			price?: CommerceMoney;
+			title?: string;
+			onHand?: number;
+		}): Promise<string> {
+			await tier.arrange.product({ ...spec, idempotencyKey: `seed-${spec.productId}` });
+			const read = await client.getProduct(spec.productId);
+			if (read === null) throw new Error(`arrange: ${spec.productId} did not read back`);
+			return read.updatedAt;
+		}
+
+		// ── listProducts + getProduct ─────────────────────────────────────
+
+		test("a listed row and the detail leaf carry EVERY field, with on-hand never folded", async () => {
+			await seed({
+				productId: "adm-p-shape",
+				sku: "ADM-SHAPE",
+				title: "Shape",
+				price: { amount: 2599, currency: "USD" },
+				onHand: 7,
+			});
+			// A SECOND product with no stock figure of its own — which seeds a row at
+			// zero, so this is the `0` half of the pair `onHand` must keep apart.
+			await seed({ productId: "adm-p-zero", sku: "ADM-ZERO", title: "Zero" });
+
+			const page = await client.listProducts({ search: "ADM-SHAPE" });
+			expect(page.total).toBe(1);
+			expect(page.nextCursor).toBeNull();
+			// `toEqual` against a written-out object, deliberately: it fails on a
+			// MISSING key as loudly as on a wrong value, which is the only way a
+			// narrowed projection is caught here — the console's own types are
+			// structural mirrors and would not notice.
+			expect(page.products[0]).toEqual({
+				productId: "adm-p-shape",
+				sku: "ADM-SHAPE",
+				title: "Shape",
+				priceCents: 2599,
+				currency: "USD",
+				productKind: expect.any(String) as unknown as string,
+				active: expect.any(Boolean) as unknown as boolean,
+				onHand: 7,
+				deletedAt: null,
+				createdAt: expect.any(String) as unknown as string,
+			});
+
+			const detail = await client.getProduct("adm-p-shape");
+			expect(detail).toEqual({
+				productId: "adm-p-shape",
+				sku: "ADM-SHAPE",
+				title: "Shape",
+				priceCents: 2599,
+				currency: "USD",
+				taxClass: null,
+				compareAtCents: null,
+				compareAtCurrency: null,
+				unitCostCents: null,
+				unitCostCurrency: null,
+				inventoryPolicy: expect.any(String) as unknown as string,
+				weightGrams: null,
+				lengthMm: null,
+				widthMm: null,
+				heightMm: null,
+				productKind: expect.any(String) as unknown as string,
+				active: expect.any(Boolean) as unknown as boolean,
+				deletedAt: null,
+				onHand: 7,
+				createdAt: expect.any(String) as unknown as string,
+				updatedAt: expect.any(String) as unknown as string,
+			});
+
+			// A KNOWN ZERO IS A ZERO. `null` here would say "unknown" about a sku that
+			// has an inventory row, which is the fold this field exists to prevent.
+			const zero = await client.getProduct("adm-p-zero");
+			expect(zero?.onHand).toBe(0);
+		});
+
+		test("getProduct: an id that never existed is null, not an error", async () => {
+			expect(await client.getProduct("adm-p-missing")).toBeNull();
+		});
+
+		test("a soft-deleted product reads back as a tombstone, lists only under deleted, and takes no stock movement", async () => {
+			await seed({
+				productId: "adm-del-1",
+				sku: "ADM-DEL-1",
+				title: "adm-del-fixture",
+				onHand: 9,
+			});
+			// Soft-deleted through the STOREFRONT surface, the only writer of this
+			// state — the admin surface can read a tombstone and never mint one.
+			await storefront.softDeleteProductCommerce("adm-del-1", "adm-del-1-delete");
+
+			// A TOMBSTONE IS A READ, NOT A 404. `deletedAt` is the field the console
+			// renders the archived badge from, so a tier that folded it to `null` — or
+			// answered `null` for the whole row — would take the badge with it.
+			const detail = await client.getProduct("adm-del-1");
+			expect(detail).not.toBeNull();
+			expect(detail?.deletedAt).not.toBeNull();
+			expect(detail?.active).toBe(false);
+			expect(detail?.sku).toBe("ADM-DEL-1"); // commercial data preserved, not wiped
+
+			// THE TOMBSTONE AXIS IS EITHER/OR. The default page is the live catalog
+			// and excludes it; `deleted: true` is the archive view and is the only
+			// place it appears.
+			const live = await client.listProducts({ search: "adm-del-fixture" });
+			expect(live.products.map((p) => p.productId)).toEqual([]);
+			const archived = await client.listProducts({ search: "adm-del-fixture", deleted: true });
+			expect(archived.products.map((p) => p.productId)).toEqual(["adm-del-1"]);
+			expect(archived.products[0]?.deletedAt).not.toBeNull();
+
+			// AND A DELETED ROW TAKES NO MOVEMENT, either way. The sku still exists and
+			// its inventory row still holds nine units, so nothing but an explicit
+			// tombstone check stands between an operator and a restock against a
+			// product that is not for sale. `not_found` rather than a typed refusal of
+			// its own: to this surface an archived product is not there.
+			expect(await client.restock("adm-del-1", 1, "adm-del-1-restock")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			expect(await client.removeStock("adm-del-1", 1, "adm-del-1-remove")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			// The refusals moved nothing.
+			const after = await client.listProducts({ search: "adm-del-fixture", deleted: true });
+			expect(after.products[0]).toMatchObject({ onHand: 9 });
+		});
+
+		test("search matches a sku exactly and a title by substring, case-insensitively", async () => {
+			await seed({ productId: "adm-s-1", sku: "ADM-SEARCH-ALPHA", title: "Winter Parka" });
+			await seed({ productId: "adm-s-2", sku: "ADM-SEARCH-BETA", title: "Summer Hat" });
+
+			// THE SKU ARM IS EXACT, and lower-cased on the way in to prove the match
+			// is case-insensitive rather than literal.
+			const bySku = await client.listProducts({ search: "adm-search-alpha" });
+			expect(bySku.products.map((p) => p.productId)).toEqual(["adm-s-1"]);
+
+			// THE TITLE ARM IS A SUBSTRING — an interior fragment, not a prefix, so a
+			// tier that could only match prefixes would fail here rather than pass by
+			// accident. Both adapters implement the same predicate; there is no
+			// prefix/substring divergence on this surface.
+			const byTitle = await client.listProducts({ search: "arka" });
+			expect(byTitle.products.map((p) => p.productId)).toEqual(["adm-s-1"]);
+
+			// A partial sku is NOT a sku match, and matches no title either.
+			expect((await client.listProducts({ search: "adm-search" })).products).toEqual([]);
+		});
+
+		test("lowStockThreshold keeps only the rows at or under it, and counts only those", async () => {
+			await seed({ productId: "adm-l-low", sku: "ADM-LOW", title: "adm-low-fixture", onHand: 1 });
+			await seed({ productId: "adm-l-ok", sku: "ADM-OK", title: "adm-low-fixture", onHand: 50 });
+
+			const page = await client.listProducts({ search: "adm-low-fixture", lowStockThreshold: 5 });
+			expect(page.products.map((p) => p.productId)).toEqual(["adm-l-low"]);
+			// The count describes the SAME predicate as the page — a total that
+			// counted the unfiltered catalog would caption one row as two.
+			expect(page.total).toBe(1);
+		});
+
+		test("paging walks the whole filtered set once, and the last page names no cursor", async () => {
+			for (const n of [1, 2, 3]) {
+				await seed({
+					productId: `adm-pg-${String(n)}`,
+					sku: `ADM-PG-${String(n)}`,
+					title: "adm-pg",
+				});
+			}
+
+			const seen: string[] = [];
+			let cursor: string | null = null;
+			for (let page = 0; page < 5; page++) {
+				const result: ProductsListResultShape = await client.listProducts(
+					{ search: "adm-pg" },
+					{ limit: 2, ...(cursor === null ? {} : { cursor }) },
+				);
+				expect(result.cursorRejected).toBeUndefined();
+				expect(result.total).toBe(3);
+				seen.push(...result.products.map((p) => p.productId));
+				cursor = result.nextCursor;
+				if (cursor === null) break;
+			}
+			expect(cursor).toBeNull();
+			// EVERY ROW ONCE: sorted because the page order is the store's, and what
+			// is under test here is that paging neither repeats nor drops a row.
+			expect(seen.toSorted()).toEqual(["adm-pg-1", "adm-pg-2", "adm-pg-3"]);
+		});
+
+		test("an undecodable cursor yields page one, flagged — never an error and never a silent reset", async () => {
+			await seed({ productId: "adm-c-1", sku: "ADM-C-1", title: "adm-cursor" });
+
+			const result = await client.listProducts(
+				{ search: "adm-cursor" },
+				{ cursor: "not-a-real-cursor" },
+			);
+			// THE FLAG IS THE POINT. The rows come back so a console that wants a page
+			// has one, and the flag is what lets it say the page is not the one asked
+			// for. A tier that returned the rows without the flag would look identical
+			// to a successful page.
+			expect(result.cursorRejected).toBe(true);
+			expect(result.products.map((p) => p.productId)).toEqual(["adm-c-1"]);
+		});
+
+		test("a cursor whose filter disagrees with the request is refused, and the REQUEST's filter wins the retry", async () => {
+			await seed({ productId: "adm-d-1", sku: "ADM-D-1", title: "adm-dis-one" });
+			await seed({ productId: "adm-d-2", sku: "ADM-D-2", title: "adm-dis-two" });
+
+			// A cursor minted under one predicate…
+			const first = await client.listProducts({ search: "adm-dis" }, { limit: 1 });
+			expect(first.nextCursor).not.toBeNull();
+			const cursor = first.nextCursor;
+			if (cursor === null) throw new Error("arrange: the first page named no cursor");
+
+			// …presented beside a DIFFERENT one. Honouring the token would answer with
+			// rows from the old predicate under the new caption, which is the failure
+			// this fail-closed check exists to prevent.
+			const mismatched = await client.listProducts({ search: "adm-dis-two" }, { limit: 1, cursor });
+			expect(mismatched.cursorRejected).toBe(true);
+			expect(mismatched.products.map((p) => p.productId)).toEqual(["adm-d-2"]);
+			expect(mismatched.total).toBe(1);
+		});
+
+		test("listProducts rejects a page size outside the port's bounds", async () => {
+			await expectRejectedInput(client.listProducts({}, { limit: 0 }), "limit");
+			await expectRejectedInput(client.listProducts({}, { limit: 1000 }), "limit");
+		});
+
+		// ── updateProduct ─────────────────────────────────────────────────
+
+		test("an edit applies on the watermark it was loaded with, and reports the row's own", async () => {
+			const watermark = await seed({
+				productId: "adm-e-ok",
+				sku: "ADM-E-OK",
+				price: { amount: 1000, currency: "USD" },
+			});
+
+			const applied = await client.updateProduct(
+				"adm-e-ok",
+				{
+					expectedUpdatedAt: watermark,
+					price: { amount: 1250, currency: "USD" },
+					compareAtPrice: { amount: 1800, currency: "USD" },
+					unitCost: { amount: 400, currency: "USD" },
+					weightGrams: 250,
+				},
+				"adm-e-ok-1",
+			);
+			expect(applied.ok).toBe(true);
+
+			const read = await client.getProduct("adm-e-ok");
+			// THE WATERMARK COMES BACK, and it is the row's own — the value the next
+			// read reports — so a console can hold it and edit again without a reload.
+			// Whether it MOVED is deliberately not asserted: the tiers stamp `updatedAt`
+			// from different clocks (one frozen for the whole suite), so "it advanced"
+			// is a property of the harness rather than of the port.
+			expect(applied.ok && applied.updatedAt).toBe(read?.updatedAt);
+			expect(read).toMatchObject({
+				priceCents: 1250,
+				currency: "USD",
+				compareAtCents: 1800,
+				compareAtCurrency: "USD",
+				unitCostCents: 400,
+				unitCostCurrency: "USD",
+				weightGrams: 250,
+			});
+		});
+
+		test("a stale watermark is refused and hands back the current one", async () => {
+			const watermark = await seed({
+				productId: "adm-e-stale",
+				sku: "ADM-E-STALE",
+				price: { amount: 1000, currency: "USD" },
+			});
+			// A WATERMARK FROM BEFORE THE ROW EXISTED, which is what an admin who
+			// loaded the form long ago is holding. Stated as a literal rather than
+			// produced by editing twice, because the two tiers stamp `updatedAt` from
+			// different clocks — one frozen for the whole suite — so "edit, then reuse
+			// the old watermark" is only stale on a tier whose clock moves.
+			const stale = await client.updateProduct(
+				"adm-e-stale",
+				{ expectedUpdatedAt: "2020-01-01T00:00:00.000Z", weightGrams: 20 },
+				"adm-e-stale-1",
+			);
+			expect(stale).toMatchObject({ ok: false, reason: "stale" });
+			// The CURRENT watermark travels with the refusal, so the console can offer
+			// a reload that actually succeeds rather than a second guess.
+			expect(stale.ok === false && stale.reason === "stale" && stale.currentUpdatedAt).toBe(
+				watermark,
+			);
+			// And nothing was applied.
+			expect((await client.getProduct("adm-e-stale"))?.weightGrams).toBeNull();
+		});
+
+		test("editing a product that does not exist is not_found, not an error", async () => {
+			const result = await client.updateProduct(
+				"adm-e-missing",
+				{ expectedUpdatedAt: "2026-01-01T00:00:00.000Z", weightGrams: 1 },
+				"adm-e-missing-1",
+			);
+			expect(result).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("a price in another currency is refused as a currency mismatch, naming the one in force", async () => {
+			const watermark = await seed({
+				productId: "adm-e-cur",
+				sku: "ADM-E-CUR",
+				price: { amount: 1000, currency: "USD" },
+			});
+			const result = await client.updateProduct(
+				"adm-e-cur",
+				{ expectedUpdatedAt: watermark, price: { amount: 900, currency: "EUR" } },
+				"adm-e-cur-1",
+			);
+			expect(result).toEqual({ ok: false, reason: "currency_mismatch", currency: "USD" });
+			// The refusal changed nothing — a half-applied currency switch is the
+			// outcome this refusal exists to prevent.
+			expect(await client.getProduct("adm-e-cur")).toMatchObject({
+				priceCents: 1000,
+				currency: "USD",
+			});
+		});
+
+		test("renaming a sku onto one another live product holds is refused, naming it", async () => {
+			const watermark = await seed({ productId: "adm-e-sku-a", sku: "ADM-E-SKU-A" });
+			await seed({ productId: "adm-e-sku-b", sku: "ADM-E-SKU-B" });
+
+			const result = await client.updateProduct(
+				"adm-e-sku-a",
+				{ expectedUpdatedAt: watermark, sku: "ADM-E-SKU-B" },
+				"adm-e-sku-1",
+			);
+			expect(result).toMatchObject({ ok: false });
+			// EITHER refusal is correct and both are honest: the target sku belongs to
+			// a live product AND has its own inventory row, and which guard fires first
+			// is the store's business rather than the port's. What the contract pins is
+			// that the rename is refused whole and names the sku involved.
+			expect(result.ok === false && result.reason).toMatch(/^sku_(taken|stock_conflict)$/);
+			expect(await client.getProduct("adm-e-sku-a")).toMatchObject({ sku: "ADM-E-SKU-A" });
+		});
+
+		test("renaming a sku a live cart hold is against is refused, carrying the hold count", async () => {
+			const watermark = await seed({
+				productId: "adm-e-held",
+				sku: "ADM-E-HELD",
+				title: "Held",
+				price: { amount: 1500, currency: "USD" },
+				onHand: 10,
+			});
+			// THE HOLD IS A REAL RESERVATION, taken through the storefront's own add —
+			// the only writer of one. A seeded row would prove nothing about the state
+			// the refusal is actually guarding.
+			const cartId = await tier.arrange.cart();
+			const added = await storefront.addCartLine(
+				cartId,
+				"ADM-E-HELD",
+				"adm-e-held",
+				2,
+				"adm-e-held-add",
+			);
+			expect(added.ok).toBe(true);
+
+			const result = await client.updateProduct(
+				"adm-e-held",
+				{ expectedUpdatedAt: watermark, sku: "ADM-E-HELD-NEW" },
+				"adm-e-held-1",
+			);
+			// ITS OWN MEMBER, not `sku_taken`: the target sku is free and the operator
+			// is being asked to WAIT rather than to pick another name, which is a
+			// different sentence and a different next action.
+			expect(result).toMatchObject({ ok: false, reason: "sku_held_stock", sku: "ADM-E-HELD" });
+			// THE COUNT IS A POSITIVE INTEGER OR `null`, never `0`. It is the operand
+			// the copy is composed from — "held by 1 cart" — and a `0` beside a
+			// refusal caused by holds reads as "no holds", so a non-integer is
+			// normalised to "some, number unknown" instead. One live hold here.
+			expect(result.ok === false && result.reason === "sku_held_stock" && result.liveHolds).toBe(1);
+			// Refused whole: the sku did not move, and neither did the stock.
+			const after = await client.getProduct("adm-e-held");
+			expect(after).toMatchObject({ sku: "ADM-E-HELD" });
+			expect(after?.onHand).toBe(8);
+		});
+
+		test("a malformed edit field is refused as a typed result, never a throw", async () => {
+			const watermark = await seed({ productId: "adm-e-bad", sku: "ADM-E-BAD" });
+
+			// An empty sku and a negative dimension: both outside the edit body's
+			// declared bounds. `field` is NOT asserted — one transport refuses at a
+			// schema that names no field, so pinning it would fail a tier over the
+			// shape of its refusal rather than over the refusal.
+			for (const [n, body] of [
+				{ expectedUpdatedAt: watermark, sku: "" },
+				{ expectedUpdatedAt: watermark, weightGrams: -1 },
+			].entries()) {
+				const result = await client.updateProduct("adm-e-bad", body, `adm-e-bad-${String(n)}`);
+				expect(result).toMatchObject({ ok: false, reason: "invalid" });
+			}
+			// A refusal at the boundary wrote nothing.
+			expect(await client.getProduct("adm-e-bad")).toMatchObject({
+				sku: "ADM-E-BAD",
+				weightGrams: null,
+			});
+		});
+
+		// ── restock / removeStock ─────────────────────────────────────────
+
+		test("a restock adds units and reports the new count", async () => {
+			await seed({ productId: "adm-r-ok", sku: "ADM-R-OK", onHand: 4 });
+
+			expect(await client.restock("adm-r-ok", 6, "adm-r-ok-1")).toEqual({ ok: true, onHand: 10 });
+			// The count the movement reported is the count the read agrees with.
+			expect((await client.getProduct("adm-r-ok"))?.onHand).toBe(10);
+		});
+
+		test("a restock replays under the same key instead of adding twice", async () => {
+			await seed({ productId: "adm-r-replay", sku: "ADM-R-REPLAY", onHand: 0 });
+
+			// ADDITIVE AND THEREFORE NOT IDEMPOTENT BY NATURE: only the key makes the
+			// second call a replay, which is why the key is required on this surface.
+			expect(await client.restock("adm-r-replay", 5, "adm-r-replay-1")).toEqual({
+				ok: true,
+				onHand: 5,
+			});
+			expect(await client.restock("adm-r-replay", 5, "adm-r-replay-1")).toEqual({
+				ok: true,
+				onHand: 5,
+			});
+			expect((await client.getProduct("adm-r-replay"))?.onHand).toBe(5);
+		});
+
+		test("a removal takes units off, and one larger than the stock is refused with the count", async () => {
+			await seed({ productId: "adm-rm", sku: "ADM-RM", onHand: 3 });
+
+			expect(await client.removeStock("adm-rm", 1, "adm-rm-1")).toEqual({ ok: true, onHand: 2 });
+			// THE GUARDED FLOOR: the refusal carries the current count, so the operator
+			// is told what is actually there rather than only that they asked for too
+			// much — and stock never goes negative.
+			expect(await client.removeStock("adm-rm", 99, "adm-rm-2")).toEqual({
+				ok: false,
+				reason: "insufficient_stock",
+				onHand: 2,
+			});
+			expect((await client.getProduct("adm-rm"))?.onHand).toBe(2);
+		});
+
+		test("a stock movement against a product that does not exist is not_found", async () => {
+			expect(await client.restock("adm-sm-missing", 1, "adm-sm-missing-1")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			expect(await client.removeStock("adm-sm-missing", 1, "adm-sm-missing-2")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("a malformed quantity or a missing key is refused as a typed result", async () => {
+			await seed({ productId: "adm-sm-bad", sku: "ADM-SM-BAD", onHand: 5 });
+
+			for (const qty of [0, -1, 1.5]) {
+				expect(await client.restock("adm-sm-bad", qty, "adm-sm-bad-q")).toMatchObject({
+					ok: false,
+					reason: "invalid",
+				});
+			}
+			// AN EMPTY KEY IS REFUSED rather than defaulted: a movement this surface
+			// cannot dedupe is one a double-submit would apply twice.
+			expect(await client.restock("adm-sm-bad", 1, "")).toMatchObject({
+				ok: false,
+				reason: "invalid",
+			});
+			expect(await client.removeStock("adm-sm-bad", 0, "adm-sm-bad-r")).toMatchObject({
+				ok: false,
+				reason: "invalid",
+			});
+			// Nothing moved.
+			expect((await client.getProduct("adm-sm-bad"))?.onHand).toBe(5);
+		});
+
+		// ── getTaxClasses ─────────────────────────────────────────────────
+
+		test("the tax-class registry comes back whole, id and name", async () => {
+			await tier.arrange.taxClass({ id: "adm-tc-standard", name: "Standard" });
+			await tier.arrange.taxClass({ id: "adm-tc-reduced", name: "Reduced" });
+
+			const classes = await client.getTaxClasses();
+			// A CONTAINS rather than an equality: the registry is store-wide and a tier
+			// whose `reset()` is a documented no-op carries other slices' classes too.
+			// What is under test is that the entries arrive unfiltered and unprojected.
+			expect(classes).toEqual(
+				expect.arrayContaining([
+					{ id: "adm-tc-standard", name: "Standard" },
+					{ id: "adm-tc-reduced", name: "Reduced" },
+				]),
+			);
+		});
+	});
 }
+
+/** The list result's shape, borrowed from the client the surface is `Pick`ed
+ *  from — the paging loop above needs to name it to annotate its accumulator. */
+type ProductsListResultShape = Awaited<ReturnType<ProductsClientSurface["listProducts"]>>;
 
 // ── Slice 3: admin rules + reporting (INC-B10c) ───────────────────────────
 
@@ -1725,7 +2314,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		const makeAdminClients = assertAdminClients(tier);
 		beforeAll(async () => {
 			await tier.setup();
-			client = (await makeAdminClients()).rules;
+			client = requireSurface(tier, await makeAdminClients(), "rules");
 		});
 		beforeEach(async () => {
 			await tier.reset();

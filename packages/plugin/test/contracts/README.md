@@ -12,10 +12,21 @@ not. Three slices: `storefrontCommerceClientContract` (the 25-method `CommerceCl
 All a transport supplies: `name` (labels every `describe`), `setup()`/`teardown()` (once per
 slice), `reset()`, `makeClient()`, `makeAdminClients()`, and `arrange` — `product(spec)` (one
 commerce row: sku plus optional price in integer minor units, title, on-hand), `cart(currency?)`,
-`session(email)`, `order(spec)`, `address(session, spec)`, `shippingMethod(spec)`, `coupon(spec)`.
+`session(email)`, `order(spec)`, `address(session, spec)`, `shippingMethod(spec)`, `coupon(spec)`,
+`taxClass(spec)` (one tax-class registry entry: id + name).
 
 - `makeAdminClients()` is **optional**. The storefront slice never asks; an admin slice handed a
-  tier without it throws at collection rather than running empty.
+  tier without it throws at collection rather than running empty (`assertAdminClients`).
+- **`AdminClientSurfaces` is optional per surface, and `requireSurface` is how a slice reads one.**
+  Only `products` is non-optional, because only products has both tiers today (INC-B10b-i);
+  `orders` arrives with INC-B10b-ii, `rules` and `reporting` with INC-B10c. The alternative was a
+  stub — an empty `listOrders`, a zeroed `getRevenue` — and a stub makes a slice *pass* against an
+  implementation that does nothing, which is worse than a missing run because it is
+  indistinguishable from evidence. So a slice reads its surface through
+  `requireSurface(tier, surfaces, key)`, which throws naming the tier and the surface it lacks: the
+  gap lands in a test report and closes by wiring, never by softening a case. It is wired for
+  `rules` today; `orders` and `reporting` are optional but **unread**, so there is no live hole —
+  the increment that first reads either must take it through `requireSurface` rather than `?.`.
 - `reset()` may be a no-op **only while every case uses disjoint ids and no case depends on
   another's leftovers**. One tier does the real thing (it rebuilds cheaply); the other documents
   the no-op, which is why **every case addresses disjoint ids, skus, cart ids, coupon codes, zone
@@ -26,14 +37,19 @@ commerce row: sku plus optional price in integer minor units, title, on-hand), `
   credential verifier, because it dispatches no mail yet and the token rides in no reply; the other
   is started with a capturing mail sender and reads the challenge out of the captured message. Both
   redeem it through the **client's own** `verifyLogin`, which is the half the cases are about.
-- **`order`/`address`/`shippingMethod`/`coupon` seed through the `@otta-sh/domain` ports**, in one
+- **`order`/`address`/`shippingMethod`/`coupon`/`taxClass` seed through the `@otta-sh/domain`
+  ports**, in one
   shared implementation (`test/helpers/commerce-tier-arrange.ts`) that both tiers hand their own
   adapters to. Two hand-written copies of an arrangement drift, and a case that then fails on one
   tier says nothing about the transport, because the setups were not the same.
 - **Which seeding path:** a case whose *subject* is a write method calls it directly —
   `upsertProductCommerce`, `createCart`, `addCartLine`, `createOrder` are under test in their own
   cases and must not hide behind `arrange`. A case that merely needs a product, cart, session,
-  order, address or rule uses `tier.arrange.*`.
+  order, address or rule uses `tier.arrange.*`. **A state with exactly one writer is arranged
+  through that writer**, even across slices: the admin products cases reach a soft-deleted row and a
+  sku under a live cart hold through the tier's own *storefront* client
+  (`softDeleteProductCommerce`, `addCartLine`), because the admin surface reads both and mints
+  neither, and a hand-seeded row would prove nothing about the state the refusal guards.
 - **A product that will be ORDERED must be arranged with a `title`.** Order pricing snapshots the
   price *and* the title onto the line at purchase time, so an untitled row is refused
   `PRODUCT_NOT_PRICED` — the same token an unpriced row gets.

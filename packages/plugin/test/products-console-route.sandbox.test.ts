@@ -749,6 +749,26 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect((result["taxClasses"] as Array<{ id: string }>).map((c) => c.id)).toContain("standard");
 	});
 
+	test("an EMPTY tax registry degrades to the static defaults too, not to an empty select", async () => {
+		service.respondWith(
+			"GET",
+			responder({
+				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
+				// A registry that answered, and answered with nothing — a store whose
+				// merchant has never created a class. Distinct from the failed read
+				// above, and the same fallback: an empty select is a form the operator
+				// cannot complete, so the defaults stand in either way.
+				[TAX_CLASSES_ROUTE]: () => ({ status: 200, body: { classes: [] } }),
+				[SETTINGS_ROUTE]: () => settingsBody(50),
+			}),
+		);
+		const result = await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
+		expect(result["ok"]).toBe(true);
+		const classes = result["taxClasses"] as Array<{ id: string }>;
+		expect(classes.length).toBeGreaterThan(0);
+		expect(classes.map((c) => c.id)).toContain("standard");
+	});
+
 	test("an unknown product is a refusal with copy, at HTTP 200 (G5)", async () => {
 		service.respondWith("GET", () => ({ status: 404, body: {} }));
 		const result = await invoke({ type: READ, resource: "products.detail", productId: "nope" });

@@ -75,6 +75,10 @@ export {
 } from "./admin/products-actions.js";
 export {
 	AdminProductsClient,
+	// The TIER-AGNOSTIC surface, and the type `dispatchProductsAction`'s third
+	// parameter now has (work order 02, INC-B10b-i). Exported from the entry point
+	// because a parameter type a consumer cannot name is not a usable signature.
+	type AdminProductsSurface,
 	type ProductDetailWire,
 	type ProductsListFilter,
 	type ProductsListResult,

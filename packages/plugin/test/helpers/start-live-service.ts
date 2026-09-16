@@ -5,6 +5,7 @@ import type {
 	OrderStore,
 	SessionStore,
 	ShippingRulesStore,
+	TaxRulesStore,
 } from "@otta-sh/domain";
 import { FakeEmailSender, FixedClock } from "@otta-sh/domain/testing";
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
@@ -47,6 +48,10 @@ export interface LiveServiceStores {
 	sessionStore: SessionStore;
 	shippingRules: ShippingRulesStore;
 	couponStore: CouponStore;
+	/** The tax-class + tax-rate registry. Exposed so a tier can seed a tax class
+	 *  through the PORT — the admin products contract needs one to exist before it
+	 *  can assert that `getTaxClasses` returns the registry. */
+	taxRules: TaxRulesStore;
 }
 
 export interface LiveService {
@@ -114,6 +119,7 @@ export async function startLiveService(
 	const emailSender = new FakeEmailSender();
 	const shippingRules = new KyselyShippingRulesStore({ db });
 	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
+	const taxRules = new KyselyTaxRulesStore({ db });
 	const app = createApp({
 		store,
 		productCommerce,
@@ -123,7 +129,7 @@ export async function startLiveService(
 		entitlementStore,
 		paymentEventStore,
 		shippingRules,
-		taxRules: new KyselyTaxRulesStore({ db }),
+		taxRules,
 		couponStore,
 		reportingStore: new KyselyReportingStore({ db, dialect: "postgres" }),
 		settingsStore: new KyselySettingsStore({ db, clock }),
@@ -149,7 +155,7 @@ export async function startLiveService(
 		baseUrl: `http://127.0.0.1:${port}`,
 		host: "127.0.0.1",
 		emailSender,
-		stores: { orderStore, addressStore, sessionStore, shippingRules, couponStore },
+		stores: { orderStore, addressStore, sessionStore, shippingRules, couponStore, taxRules },
 		internalToken: options.internalToken,
 		serviceToken: options.serviceToken,
 		async stop() {

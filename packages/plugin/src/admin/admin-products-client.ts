@@ -224,6 +224,26 @@ export interface AdminProductsClientOptions {
 	serviceToken?: string;
 }
 
+/**
+ * THE ADMIN PRODUCTS SURFACE, structurally — what a caller may do, with no claim
+ * about how it gets done.
+ *
+ * Two implementations answer to this now (work order 02, INC-B10b-i): the
+ * `ctx.http` client below, and `InProcessAdminProductsClient`, which composes the
+ * same behaviour over the plugin's own document store. `AdminProductsClient`
+ * itself cannot be that type — its `#`-private fields make it nominal, so no
+ * second class is ever assignable to it — hence a `Pick` over its methods, the
+ * same idiom the contract suite's surfaces already use.
+ *
+ * EVERY METHOD IS LISTED. Written out rather than derived, so adding a method to
+ * the client without deciding what the in-process tier does about it is a compile
+ * error here rather than a surface that silently exists on one transport only.
+ */
+export type AdminProductsSurface = Pick<
+	AdminProductsClient,
+	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
+>;
+
 export class AdminProductsClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;

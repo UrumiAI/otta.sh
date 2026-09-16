@@ -32,6 +32,7 @@ import {
 	type OrderStore,
 	type SessionStore,
 	type ShippingRulesStore,
+	type TaxRulesStore,
 } from "@otta-sh/domain";
 import type { CommerceClientTierArrange } from "../contracts/commerce-client-contract.js";
 
@@ -42,14 +43,15 @@ export interface CommerceTierSeedPorts {
 	sessionStore: SessionStore;
 	shippingRules: ShippingRulesStore;
 	couponStore: CouponStore;
+	taxRules: TaxRulesStore;
 }
 
-/** The four seeding hooks every tier shares. The two it does not share — `product`
+/** The seeding hooks every tier shares. The two it does not share — `product`
  *  and `cart`, which go through the client's own writes — and `session` stay with
  *  the tier. */
 export type SharedTierSeeders = Pick<
 	CommerceClientTierArrange,
-	"order" | "address" | "shippingMethod" | "coupon"
+	"order" | "address" | "shippingMethod" | "coupon" | "taxClass"
 >;
 
 /**
@@ -133,6 +135,15 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 					minSubtotalCents: null,
 				});
 			}
+		},
+
+		// THE TAX-CLASS REGISTRY, seeded through the port on both tiers. The admin
+		// products contract needs a class to EXIST before it can assert that
+		// `getTaxClasses` hands back the registry unfiltered — and creating one
+		// through the rules client instead would make a products case depend on a
+		// surface that is not folded in yet.
+		async taxClass(spec) {
+			await ports.taxRules.createClass({ id: spec.id, name: spec.name });
 		},
 
 		async coupon(spec) {
