@@ -3156,6 +3156,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 		test("a report window wider than the cap is REFUSED, on both transports", async () => {
 			const now = Date.now();
+			// `"from"` IS A LABEL HERE, NOT AN ASSERTION. The width cap is enforced by
+			// the use-case, which raises `ReportRangeTooWideError` — an error carrying
+			// no `code`, so `expectRejectedInput` stops at "both transports rejected"
+			// and never reaches the field check. Only the malformed-instant call below,
+			// refused at the input boundary with a structural `INVALID_INPUT`, is held
+			// to the field. Both live in one case because what is contracted is that
+			// neither window reaches the store.
 			await expectRejectedInput(
 				reporting.getRevenue(
 					{

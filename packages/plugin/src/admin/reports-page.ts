@@ -303,10 +303,11 @@ function periodSuffix(range: ResolvedRange): string {
  * surface `makeAdminClients` hands over — in-process against the plugin's own
  * document store, or over `ctx.http`, and this screen does not know which (work
  * order 02, INC-B10c-ii). Fails CLOSED either way: any error from that surface
- * (an allowlist rejection, a non-2xx, or an in-process store failure) renders the
- * E-7 fail-closed banner rather than throwing into the host. Also handles the (currently unreachable)
- * `reports:page` no-op action by re-rendering the page unchanged, and the
- * period form's `reports:apply-range` submit by re-rendering it for the
+ * — an allowlist rejection, a non-2xx, or an in-process store failure, including
+ * one raised while the surface is being CONSTRUCTED — renders the E-7 fail-closed
+ * banner rather than throwing into the host. Also handles the (currently
+ * unreachable) `reports:page` no-op action by re-rendering the page unchanged,
+ * and the period form's `reports:apply-range` submit by re-rendering it for the
  * submitted period — this function reads its range from `routeCtx.input`
  * (top-level, or a form submit's `values`) regardless of which of the three
  * interaction types delivered it.
@@ -318,13 +319,20 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
-		// The composition root sources the guarded reads' `X-Internal-Token` from
-		// write-only kv on the http branch (em-dash's `page_load` carries NO token,
-		// so it can only come from there) and reads nothing at all on the in-process
-		// branch, where there is no service to authenticate to (ADR-0014 D3). This
-		// handler holds no tokens of its own either way.
-		const { reporting: client } = await makeAdminClients(ctx);
 		try {
+			// The composition root sources the guarded reads' `X-Internal-Token` from
+			// write-only kv on the http branch (em-dash's `page_load` carries NO
+			// token, so it can only come from there) and reads nothing at all on the
+			// in-process branch, where there is no service to authenticate to
+			// (ADR-0014 D3). This handler holds no tokens of its own either way.
+			//
+			// CONSTRUCTED INSIDE THE TRY, deliberately. The http client's constructor
+			// could not fail, so this line used to sit outside; the in-process branch
+			// builds every commerce adapter over `ctx.storage` and THROWS at
+			// construction when that store is absent. Outside the try that throw would
+			// escape into the host — the one in-process failure this page's fail-closed
+			// promise did not actually keep.
+			const { reporting: client } = await makeAdminClients(ctx);
 			const [revenue, statuses, top, low, settings] = await Promise.all([
 				client.getRevenue(range, interval),
 				client.getOrdersByStatus(range),

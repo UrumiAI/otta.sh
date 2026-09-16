@@ -119,8 +119,10 @@ export interface ReportingSettingsClientOptions {
 	 *  which is admin surface too (ADR-0010). Received here as a constructor
 	 *  option; the handlers source it from write-only `ctx.kv`
 	 *  (`settings:internalToken`) via `readAdminTokens`. The client itself never
-	 *  persists it. (The privileged `PUT /settings` write takes its own
-	 *  `adminToken` per-call — see `updateSettings`.) */
+	 *  persists it. The privileged `PUT /settings` write uses THIS token too:
+	 *  `updateSettings` attaches `opts.adminToken ?? this.#adminToken`, so a
+	 *  per-call token overrides it and the constructor's is the fallback — which is
+	 *  the only path production takes, because the sole caller passes none. */
 	adminToken?: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
 	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).

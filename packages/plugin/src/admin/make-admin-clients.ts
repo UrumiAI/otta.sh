@@ -113,6 +113,16 @@ export async function makeAdminClientsFor(
 			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
 			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
 		}),
+		// BOTH TOKENS, where the products console's old inline construction carried
+		// the admin token alone ("a GET-only surface has no business holding the
+		// token that writes"). That posture was per-CALL-SITE, and there is no
+		// per-call-site construction any more: ONE `reporting` surface now answers
+		// the Reports page and the products console (GET-only) AND the Settings
+		// form, whose `PUT /settings` is a non-GET the ADR-0007 write gate blocks
+		// without `X-Service-Token`. Withholding it here would break the save.
+		// Least privilege still holds where it is observable — on the WIRE: `#getJson`
+		// attaches neither token but the admin one, so no read this factory serves
+		// ever carries the write-gate token, whichever route made it.
 		reporting: new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
