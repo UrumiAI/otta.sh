@@ -7,12 +7,10 @@
  * constructing them, which is what makes the tier a ONE-LINE change instead of a
  * diff spread across six route files with six chances to miss one.
  *
- * WHAT IS ROUTED THROUGH HERE TODAY: products, orders and rules. INC-B10c-ii
- * folds the remaining reporting surface in; until then the reports route
- * constructs its HTTP client as it always did, and this factory does not pretend
- * otherwise by handing back a stub. An absent surface is ABSENT — an empty
- * implementation would answer "no revenue" in in-process mode, which is a wrong
- * answer rather than a missing one.
+ * WHAT IS ROUTED THROUGH HERE TODAY: products, orders, rules and — since
+ * INC-B10c-ii — reporting + settings. That is the WHOLE admin surface: no
+ * console route constructs a commerce client of its own any more, which is the
+ * property that makes the tier one line instead of a diff across six files.
  *
  * NO ADMIN AUTH IN THE IN-PROCESS BRANCH, deliberately (ADR-0014 D3). The
  * console routes are already gated by EmDash's own admin auth and CSRF; the
@@ -39,19 +37,26 @@ import { AdminRulesClient, type AdminRulesSurface } from "./admin-rules-client.j
 import { InProcessAdminOrdersClient } from "./in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "./in-process-admin-products-client.js";
 import { InProcessAdminRulesClient } from "./in-process-admin-rules-client.js";
+import { InProcessReportingSettingsClient } from "./in-process-reporting-settings-client.js";
+import { ReportingSettingsClient, type ReportingSettingsSurface } from "./reporting-client.js";
 import { type AdminTokens, readAdminTokens } from "./scaffold/tokens.js";
 
 /**
  * The admin surfaces a console route may ask for.
  *
- * `products`, `orders` and `rules` are non-optional, because each has both
- * tiers. The rest arrive as their increments land; a route that needs one it did
- * not get must say so out loud rather than degrade quietly.
+ * EVERY MEMBER IS NON-OPTIONAL, because every one of them now has both tiers.
+ * There is no longer a surface a route can ask for and not get, and the day a new
+ * one is added it belongs here on BOTH branches or on neither — a stub on one
+ * branch would answer "no revenue" where the honest answer is "not wired yet".
  */
 export interface AdminClients {
 	products: AdminProductsSurface;
 	orders: AdminOrdersSurface;
 	rules: AdminRulesSurface;
+	/** Reports (revenue, orders-by-status, top products, low stock) AND the
+	 *  operational settings tier — one surface because one client serves both on
+	 *  either tier. */
+	reporting: ReportingSettingsSurface;
 }
 
 /**
@@ -62,13 +67,11 @@ export interface AdminClients {
  * write-only kv. The in-process branch reads NO token and the signature stays
  * `Promise`-shaped so the call sites do not change again when the branch goes.
  *
- * A CALLER THAT ALREADY HOLDS THE TOKENS PASSES THEM, and the products console
- * does: it still builds its own settings client inline until INC-B10c folds the
- * reporting surface in, and that client carries the admin token. Without the
- * parameter each of them read write-only kv separately — two `readAdminTokens`,
- * four `ctx.kv.get`s, per render — for one request's worth of tokens. The
- * parameter is optional so a route with nothing to share stays a one-argument
- * call, and it goes when the http branch does.
+ * A CALLER THAT ALREADY HOLDS THE TOKENS PASSES THEM. Without the parameter a
+ * route that had already read them would read write-only kv a second time — two
+ * `readAdminTokens`, four `ctx.kv.get`s, per render — for one request's worth of
+ * tokens. The parameter is optional so a route with nothing to share stays a
+ * one-argument call, and it goes when the http branch does.
  *
  * The in-process client constructs every commerce adapter over `ctx.storage`, so
  * a context with no document store fails HERE, at construction, naming what is
@@ -84,6 +87,7 @@ export async function makeAdminClientsFor(
 			products: new InProcessAdminProductsClient(ctx),
 			orders: new InProcessAdminOrdersClient(ctx),
 			rules: new InProcessAdminRulesClient(ctx),
+			reporting: new InProcessReportingSettingsClient(ctx),
 		};
 	}
 
@@ -104,6 +108,12 @@ export async function makeAdminClientsFor(
 			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
 		}),
 		rules: new AdminRulesClient({
+			fetch: ctx.http.fetch,
+			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
+			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
+		}),
+		reporting: new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),

@@ -66,12 +66,45 @@ export interface DateRangeInput {
 	to: string;
 }
 
-/** PUT /settings returns a discriminated result rather than throwing, so the
- *  form can surface a `400` validation error INLINE instead of swallowing it
- *  into a generic failure (§5.3). */
+/**
+ * WHY a settings save fails, STRUCTURALLY — the field a caller branches on
+ * (work order 02, INC-B10c-ii).
+ *
+ *  - `validation` — the patch itself was refused. The `message` is the one worth
+ *    showing inline beside the field.
+ *  - `superseded` — the mutation lost a compare-and-set race against a
+ *    concurrent save and was NOT applied. Not retryable under the same key: the
+ *    key already decided, and the decision was "someone else got there first".
+ *    Re-read and offer the fresh values rather than re-submitting.
+ *  - `unavailable` — the store could not answer. Nothing is known about whether
+ *    the patch applied; a re-read is the only honest next step.
+ */
+export type UpdateSettingsFailureReason = "validation" | "superseded" | "unavailable";
+
+/**
+ * PUT /settings returns a discriminated result rather than throwing, so the
+ * form can surface a validation error INLINE instead of swallowing it into a
+ * generic failure (§5.3).
+ *
+ * `reason` IS THE FIELD TO BRANCH ON, and `status` is the LEGACY fallback the
+ * HTTP tier alone still carries. The in-process tier has no wire and therefore
+ * no status: it refuses to synthesize one, because a fabricated `409` would be
+ * indistinguishable from a real one and would teach a caller to read a transport
+ * artefact that does not exist on that transport (the ratified INC-B10a rule —
+ * a typed failure is represented structurally in-process, never mapped onto an
+ * invented HTTP status). So BOTH keys are optional: a caller branches on
+ * `reason` first and falls back to `status` only when `reason` is absent.
+ */
 export type UpdateSettingsResult =
 	| { ok: true; settings: OperationalSettingsWire }
-	| { ok: false; status: number; message: string };
+	| {
+			ok: false;
+			/** Present on every tier that can say WHY. Branch on this first. */
+			reason?: UpdateSettingsFailureReason;
+			/** The HTTP status, on the HTTP tier only. Never synthesized elsewhere. */
+			status?: number;
+			message: string;
+	  };
 
 export interface HttpErrorEnvelope {
 	error?: string;
@@ -164,7 +197,13 @@ export class ReportingSettingsClient {
 			"content-type": "application/json",
 			"Idempotency-Key": opts.idempotencyKey,
 		};
-		if (opts.adminToken !== undefined) headers["X-Internal-Token"] = opts.adminToken;
+		// The per-call token wins, and the constructor's is the fallback — NOT the
+		// other way round, and not "per-call only", which is what this did before
+		// INC-B10c-ii. A client constructed WITH an admin token (as `makeAdminClients`
+		// constructs it) would otherwise send none on the one call that needs it most
+		// and take a 401 on a save whose reads all succeeded.
+		const adminToken = opts.adminToken ?? this.#adminToken;
+		if (adminToken !== undefined) headers["X-Internal-Token"] = adminToken;
 		// PUT /settings is gated by BOTH the write gate (X-Service-Token) AND the
 		// route's admin token (X-Internal-Token) when both service secrets are set.
 		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
@@ -215,3 +254,27 @@ export class ReportingSettingsClient {
 		return (await res.json()) as T;
 	}
 }
+
+/**
+ * The TIER-AGNOSTIC reporting + settings surface: what the Reports page, the
+ * Settings form and the Products console hold, whichever transport serves it
+ * (work order 02, INC-B10c-ii).
+ *
+ * A `Pick` rather than an `interface` the class implements, because the class is
+ * NOMINAL — its `#`-private fields mean a structurally identical in-process twin
+ * is not assignable to it — and a structural surface is what lets one page hold
+ * either.
+ *
+ * EVERY METHOD IS LISTED, and that is the point. Adding a method to this client
+ * without deciding what the in-process tier does about it has to be a compile
+ * error here, not a runtime gap on whichever screen reached for it first.
+ */
+export type ReportingSettingsSurface = Pick<
+	ReportingSettingsClient,
+	| "getRevenue"
+	| "getOrdersByStatus"
+	| "getTopProducts"
+	| "getLowStock"
+	| "getSettings"
+	| "updateSettings"
+>;

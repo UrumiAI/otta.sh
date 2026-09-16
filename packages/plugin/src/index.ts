@@ -31,9 +31,17 @@ export {
 	ReportingSettingsClient,
 	type LowStockWire,
 	type OperationalSettingsWire,
+	// The TIER-AGNOSTIC surface the Reports page, the Settings form and the
+	// Products console now hold (work order 02, INC-B10c-ii). Exported from the
+	// entry point because a parameter type a consumer cannot name is not a usable
+	// signature.
+	type ReportingSettingsSurface,
 	type RevenueBucketWire,
 	type StatusCountWire,
 	type TopProductWire,
+	// WHY a settings save failed, structurally — the field a caller branches on
+	// before falling back to the HTTP tier's legacy `status`.
+	type UpdateSettingsFailureReason,
 	type UpdateSettingsResult,
 } from "./admin/reporting-client.js";
 // The Orders WRITE path (INC-R2, ADR-0015). It replaces the Block Kit Orders
