@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL, SERVICE_TOKEN_KEY } from "../manifest.js";
+import { SERVICE_TOKEN_KEY } from "../manifest.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
@@ -9,7 +9,8 @@ import type {
 	RouteHandler,
 	SettingsFieldSpec,
 } from "../types.js";
-import { type OperationalSettingsWire, ReportingSettingsClient } from "./reporting-client.js";
+import { makeAdminClients } from "./make-admin-clients.js";
+import type { OperationalSettingsWire, ReportingSettingsSurface } from "./reporting-client.js";
 import {
 	type AdminTokens,
 	carriedForm,
@@ -232,13 +233,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// first-ever save cannot report the token it just persisted as "not set".
 		// Re-reading kv would say the same thing at the cost of another get.
 		let tokens = await readAdminTokens(ctx);
-		const { adminToken, serviceToken } = tokens;
-		const client = new ReportingSettingsClient({
-			fetch: ctx.http.fetch,
-			baseUrl: COMMERCE_SERVICE_BASE_URL,
-			...(adminToken !== undefined ? { adminToken } : {}),
-			...(serviceToken !== undefined ? { serviceToken } : {}),
-		});
+		// THE COMPOSITION ROOT, not a constructor (work order 02, INC-B10c-ii):
+		// this screen no longer knows which transport serves it. The tokens READ
+		// ABOVE are handed in so the http branch does not read write-only kv a
+		// second time — `readAdminTokens` runs exactly ONCE per request, which is
+		// the bug class every page cutover in this sub-effort has had to re-check.
+		// On the in-process branch the tokens are ignored entirely (ADR-0014 D3):
+		// there is no service to authenticate to.
+		const { reporting: client } = await makeAdminClients(ctx, tokens);
 
 		// -- kv save path: display name, S-5/S-5a ------------------------------
 		if (action === "save-display") {
@@ -345,14 +347,23 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
 					: `settings-${Date.now()}`;
-			// The privileged PUT's token is the SAME write-only-kv admin token read
-			// above (em-dash's page_load/form_submit carries NO token) — one read,
-			// no chance of the read and the write disagreeing.
-			const result = await client.updateSettings(patch, { idempotencyKey: key, adminToken });
+			// NO per-call token: the client was built from this request's tokens at
+			// the top of the handler, so the write authenticates exactly as the reads
+			// do — and on the in-process tier there is nothing to authenticate.
+			const result = await client.updateSettings(patch, { idempotencyKey: key });
 			// This branch writes no token and no display name, so the state read at
 			// the top of the handler is still current (INC-15).
 			const state = await readPageState(ctx, tokens);
 			if (!result.ok) {
+				// WHY THE SAVE FAILED, from the STRUCTURAL field first. `reason` is
+				// stated by every tier that can say why; `status` is the HTTP tier's
+				// legacy fallback and is read ONLY when `reason` is absent, because the
+				// in-process tier refuses to synthesize an HTTP status it does not have
+				// (INC-B10a). A lost compare-and-set is the one outcome worth its own
+				// words: re-submitting the same patch under the same key cannot win it,
+				// so the banner says reload rather than "try again".
+				const superseded =
+					result.reason === "superseded" || (result.reason === undefined && result.status === 409);
 				// Surface the service's validation error INLINE (never a generic
 				// "save failed" that hides the real reason). Re-render the ATTEMPTED
 				// value for edited fields over the STORED value for un-edited ones (J6)
@@ -381,11 +392,16 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						persisted: stored,
 						notice: {
 							variant: "error",
-							title: "Settings not saved",
-							description: `Could not save settings: ${result.message}`,
+							title: superseded ? "Settings changed by someone else" : "Settings not saved",
+							description: superseded
+								? `${result.message} Nothing was saved.`
+								: `Could not save settings: ${result.message}`,
 						},
 					}),
-					toast: { message: "Settings not saved", type: "error" },
+					toast: {
+						message: superseded ? "Settings changed by someone else" : "Settings not saved",
+						type: "error",
+					},
 				} satisfies BlockResponse;
 			}
 			return {
@@ -428,7 +444,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
  */
 async function renderPage(
 	ctx: PluginContext,
-	client: ReportingSettingsClient,
+	client: ReportingSettingsSurface,
 	tokens: AdminTokens,
 	notice?: Notice,
 ): Promise<BlockResponse> {

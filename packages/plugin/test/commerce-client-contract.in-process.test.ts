@@ -46,6 +46,7 @@ import type { CommerceClient } from "../src/product-commerce/commerce-client.js"
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
 import { InProcessAdminRulesClient } from "../src/admin/in-process-admin-rules-client.js";
+import { InProcessReportingSettingsClient } from "../src/admin/in-process-reporting-settings-client.js";
 import {
 	adminOrdersProductsClientContract,
 	adminRulesReportingClientContract,
@@ -109,11 +110,11 @@ function inProcessTier(): CommerceClientTier {
 			return clientOrThrow();
 		},
 		/**
-		 * The admin surfaces this tier has: products (INC-B10b-i), orders
-		 * (INC-B10b-ii) and rules (INC-B10c-i). Reporting is NOT stubbed — an empty
-		 * implementation would let its slice pass against nothing, answering "no
-		 * revenue" where the honest answer is "not wired yet" — so its key is simply
-		 * absent and the slice that needs it fails loudly until INC-B10c-ii.
+		 * The admin surfaces this tier has — ALL FOUR of them: products (INC-B10b-i),
+		 * orders (INC-B10b-ii), rules (INC-B10c-i) and reporting + settings
+		 * (INC-B10c-ii). None is stubbed and none is absent: an empty implementation
+		 * would let its slice pass against nothing, answering "no revenue" where the
+		 * honest answer would have been "not wired yet".
 		 *
 		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that is the design rather
 		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticate a caller TO
@@ -127,6 +128,7 @@ function inProcessTier(): CommerceClientTier {
 				orders: new InProcessAdminOrdersClient(ctx, { clock }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
 				rules: new InProcessAdminRulesClient(ctx, { clock }),
+				reporting: new InProcessReportingSettingsClient(ctx, { clock }),
 			};
 		},
 		// The lever the elapsed-deadline case needs. It moves the ONE clock every store

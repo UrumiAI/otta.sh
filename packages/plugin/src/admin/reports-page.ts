@@ -1,7 +1,6 @@
 // `orderStateCell` is imported from the shared presentation package directly:
 // it used to be re-exported by `orders-page.ts`, which ADR-0015 retires.
 import { orderStateCell } from "@otta-sh/admin-presentation";
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -25,14 +24,13 @@ import {
 	formatDay,
 	startOfDay,
 } from "./scaffold/index.js";
-import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
-import {
-	type LowStockWire,
-	type OperationalSettingsWire,
-	ReportingSettingsClient,
-	type RevenueBucketWire,
-	type StatusCountWire,
-	type TopProductWire,
+import { makeAdminClients } from "./make-admin-clients.js";
+import type {
+	LowStockWire,
+	OperationalSettingsWire,
+	RevenueBucketWire,
+	StatusCountWire,
+	TopProductWire,
 } from "./reporting-client.js";
 
 /** The admin Reports page's `admin.pages` manifest entry (§4.1). The page
@@ -301,12 +299,15 @@ function periodSuffix(range: ResolvedRange): string {
 
 /**
  * The Reports page (§4.1 skeleton; `docs/admin/ADMIN-CONSOLE.md` §12.5).
- * Composes four Block Kit sections, each backed by one `/reports/*` call over
- * `ctx.http` via `ReportingSettingsClient`. Fails CLOSED: any `ctx.http` error
- * (allowlist rejection or a non-2xx) renders the E-7 fail-closed banner rather
- * than throwing into the host. Also handles the (currently unreachable)
- * `reports:page` no-op action by re-rendering the page unchanged, and the
- * period form's `reports:apply-range` submit by re-rendering it for the
+ * Composes four Block Kit sections, each backed by one reporting call on the
+ * surface `makeAdminClients` hands over — in-process against the plugin's own
+ * document store, or over `ctx.http`, and this screen does not know which (work
+ * order 02, INC-B10c-ii). Fails CLOSED either way: any error from that surface
+ * — an allowlist rejection, a non-2xx, or an in-process store failure, including
+ * one raised while the surface is being CONSTRUCTED — renders the E-7 fail-closed
+ * banner rather than throwing into the host. Also handles the (currently
+ * unreachable) `reports:page` no-op action by re-rendering the page unchanged,
+ * and the period form's `reports:apply-range` submit by re-rendering it for the
  * submitted period — this function reads its range from `routeCtx.input`
  * (top-level, or a form submit's `values`) regardless of which of the three
  * interaction types delivered it.
@@ -318,16 +319,20 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
-		// The guarded /reports/* reads need X-Internal-Token, but em-dash's
-		// page_load carries NO token — source it from write-only kv (set via the
-		// Settings form's masked secret field), never from the interaction.
-		const adminToken = (await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? undefined;
-		const client = new ReportingSettingsClient({
-			fetch: ctx.http.fetch,
-			baseUrl: COMMERCE_SERVICE_BASE_URL,
-			...(adminToken !== undefined ? { adminToken } : {}),
-		});
 		try {
+			// The composition root sources the guarded reads' `X-Internal-Token` from
+			// write-only kv on the http branch (em-dash's `page_load` carries NO
+			// token, so it can only come from there) and reads nothing at all on the
+			// in-process branch, where there is no service to authenticate to
+			// (ADR-0014 D3). This handler holds no tokens of its own either way.
+			//
+			// CONSTRUCTED INSIDE THE TRY, deliberately. The http client's constructor
+			// could not fail, so this line used to sit outside; the in-process branch
+			// builds every commerce adapter over `ctx.storage` and THROWS at
+			// construction when that store is absent. Outside the try that throw would
+			// escape into the host — the one in-process failure this page's fail-closed
+			// promise did not actually keep.
+			const { reporting: client } = await makeAdminClients(ctx);
 			const [revenue, statuses, top, low, settings] = await Promise.all([
 				client.getRevenue(range, interval),
 				client.getOrdersByStatus(range),

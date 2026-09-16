@@ -20,15 +20,21 @@ commerce row: sku plus optional price in integer minor units, title, on-hand), `
 - **`AdminClientSurfaces` is optional per surface, and `requireSurface` is how a slice reads one.**
   Only `products` is non-optional, because it was folded in first (INC-B10b-i); `orders` has both
   tiers too now (INC-B10b-ii) and stays typed optional deliberately, so that it is read the way
-  every later surface will be, and so does `rules` (INC-B10c-i); `reporting` arrives with
-  INC-B10c-ii. The alternative was a
+  every later surface will be, and so does `rules` (INC-B10c-i) and `reporting` (INC-B10c-ii,
+  which is the whole admin surface). The alternative was a
   stub — an empty `listOrders`, a zeroed `getRevenue` — and a stub makes a slice *pass* against an
   implementation that does nothing, which is worse than a missing run because it is
   indistinguishable from evidence. So a slice reads its surface through
   `requireSurface(tier, surfaces, key)`, which throws naming the tier and the surface it lacks: the
-  gap lands in a test report and closes by wiring, never by softening a case. It is wired for
-  `orders` and for `rules` today; `reporting` is optional but **unread**, so there is no live hole —
-  the increment that first reads it must take it through `requireSurface` rather than `?.`.
+  gap lands in a test report and closes by wiring, never by softening a case. Every surface is
+  wired and read through it today — `orders`, `rules` and `reporting` alike — so there is no
+  surface a slice can reach for and not get, and the next one added must arrive the same way
+  rather than through `?.`.
+- **The reporting cases read their window back out of the data, never off the wall clock.** Each
+  tier stamps `createdAt` from its own clock and only one of them has a hook, so a case seeds
+  first, reads the instant its own order came back with, and asks for the four-day window around
+  that (`windowAroundOrder`). A pinned literal, or `Date.now()`, passes on one tier and silently
+  reports an empty period on the other.
 - **No new `arrange` hook came with the rules slice, on purpose.** Its one cross-aggregate case —
   `deleteTaxClass` refusing with `in_use_by_products` — points a product at a class through the
   **`products` surface** the same composition already hands back (`getProduct` for the CAS token,

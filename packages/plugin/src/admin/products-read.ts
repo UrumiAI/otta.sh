@@ -20,7 +20,7 @@ import {
 	type ProductSummaryWire,
 	type TaxClassWire,
 } from "./admin-products-client.js";
-import { ReportingSettingsClient } from "./reporting-client.js";
+import type { ReportingSettingsSurface } from "./reporting-client.js";
 import { readString } from "./scaffold/index.js";
 import { PRODUCT_KIND_LABELS } from "@otta-sh/admin-presentation";
 import type { SelectOption } from "../types.js";
@@ -146,7 +146,7 @@ export function readOnHand(p: ProductSummaryWire): number | null | undefined {
  *  here costs the `Low` band alone — a count still renders and `0` still reads
  *  `Out of stock`, neither of which needs a threshold. */
 export async function readLowStockThreshold(
-	client: ReportingSettingsClient,
+	client: ReportingSettingsSurface,
 ): Promise<number | null> {
 	try {
 		const { lowStockThreshold } = await client.getSettings();
@@ -154,7 +154,10 @@ export async function readLowStockThreshold(
 			? lowStockThreshold
 			: null;
 	} catch {
-		// A settings read is never allowed to take the screen with it (E-1).
+		// A settings read is never allowed to take the screen with it (E-1) — and
+		// that holds for BOTH tiers since INC-B10c-ii. The in-process client throws
+		// a typed store error where the http one threw on a non-2xx; either way the
+		// `Low` band is what is lost, never the Products screen.
 		return null;
 	}
 }

@@ -46,7 +46,6 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
 	type AdminProductsSurface,
@@ -84,8 +83,8 @@ import {
 	toClientFilter,
 } from "./products-read.js";
 import { makeAdminClients } from "./make-admin-clients.js";
-import { ReportingSettingsClient } from "./reporting-client.js";
-import { readAdminTokens, readString } from "./scaffold/index.js";
+import type { ReportingSettingsSurface } from "./reporting-client.js";
+import { readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
  *  per service endpoint: the detail fans out to three reads in PARALLEL, because
@@ -214,7 +213,7 @@ export interface ProductsConsoleInput {
 
 interface ProductsConsoleClient {
 	products: AdminProductsSurface;
-	settings: ReportingSettingsClient;
+	settings: ReportingSettingsSurface;
 }
 
 /**
@@ -226,29 +225,19 @@ interface ProductsConsoleClient {
  * (work order 02, INC-B10b-i). In http mode it constructs exactly the client
  * this function used to build here, write-gate token included.
  *
- * The SETTINGS client is still built inline, because INC-B10c owns the reporting
- * surface and has not folded it in yet. It carries the admin token ALONE: a
- * GET-only surface has no business holding the token that writes.
+ * The SETTINGS surface now comes from the same factory (work order 02,
+ * INC-B10c-ii). It used to be constructed inline here because the reporting
+ * client had no in-process tier; it has one now, so nothing on this screen picks
+ * a transport any more.
  *
- * ONE TOKEN READ PER REQUEST, sequenced deliberately. Both clients want the same
- * write-only-kv pair, so this reads it once and hands it to the factory rather
- * than letting each of them read it — the alternative was two `readAdminTokens`
- * (four `ctx.kv.get`s) per render for one request's worth of tokens. The await
- * is not parallelised away because there is only one IO round here now; when
- * INC-B10c takes the settings client through the factory too, this line and the
- * token argument both go.
+ * ONE TOKEN READ PER REQUEST, still. The factory reads the write-only-kv pair
+ * itself when nothing is handed to it, and this route has nothing else to do
+ * with the tokens now that neither client is built here — so the read happens
+ * once, inside the factory, and this route holds no token values at all.
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
-	const tokens = await readAdminTokens(ctx);
-	const clients = await makeAdminClients(ctx, tokens);
-	return {
-		products: clients.products,
-		settings: new ReportingSettingsClient({
-			fetch: ctx.http.fetch,
-			baseUrl: COMMERCE_SERVICE_BASE_URL,
-			...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-		}),
-	};
+	const clients = await makeAdminClients(ctx);
+	return { products: clients.products, settings: clients.reporting };
 }
 
 /**
