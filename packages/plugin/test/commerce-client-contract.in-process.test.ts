@@ -43,8 +43,11 @@ import { FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
+import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
 import {
+	adminOrdersProductsClientContract,
 	storefrontCommerceClientContract,
+	type AdminClientSurfaces,
 	type CommerceClientTier,
 } from "./contracts/commerce-client-contract.js";
 import { sharedTierSeeders } from "./helpers/commerce-tier-arrange.js";
@@ -102,6 +105,22 @@ function inProcessTier(): CommerceClientTier {
 		async makeClient() {
 			return clientOrThrow();
 		},
+		/**
+		 * The admin surfaces this tier has: products, and only products
+		 * (INC-B10b-i). Orders, rules and reporting are NOT stubbed — an empty
+		 * implementation would let their slices pass against nothing — so their keys
+		 * are simply absent and the slices that need them fail loudly until
+		 * INC-B10b-ii / INC-B10c wire them.
+		 *
+		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that is the design rather
+		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticate a caller TO
+		 * THE SERVICE, and there is no service here. EmDash's own admin auth and CSRF
+		 * gate the console routes (ADR-0014 D3), so the gated tier's auth-rejection
+		 * cases are transport cases and stay in the HTTP tier's own file.
+		 */
+		async makeAdminClients(): Promise<AdminClientSurfaces> {
+			return { products: new InProcessAdminProductsClient(harnessOrThrow().ctx, { clock }) };
+		},
 		// The lever the elapsed-deadline case needs. It moves the ONE clock every store
 		// in this composition shares — the client's own stores and the harness's second
 		// set — because a deadline stamped by one store has to be the same instant the
@@ -127,6 +146,9 @@ function inProcessTier(): CommerceClientTier {
 				},
 				get couponStore() {
 					return harnessOrThrow().stores.couponStore;
+				},
+				get taxRules() {
+					return harnessOrThrow().stores.taxRules;
 				},
 			}),
 			/**
@@ -181,6 +203,19 @@ describe("commerceClientContract over InProcessCommerceClient", () => {
 		await storefront.teardown();
 	});
 	storefrontCommerceClientContract(storefront);
+});
+
+/** The admin slice gets its OWN tier instance — its own database and its own
+ *  `reset()` — so the console cases and the storefront cases cannot seed over
+ *  each other, exactly as the HTTP file stands a second service for its admin
+ *  slice. */
+const admin = inProcessTier();
+
+describe("commerceClientContract over the in-process admin clients", () => {
+	afterAll(async () => {
+		await admin.teardown();
+	});
+	adminOrdersProductsClientContract(admin);
 });
 
 /**

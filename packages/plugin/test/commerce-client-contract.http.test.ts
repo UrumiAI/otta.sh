@@ -187,6 +187,9 @@ function httpTier(options: HttpTierOptions): CommerceClientTier {
 				get couponStore() {
 					return serviceOrThrow().stores.couponStore;
 				},
+				get taxRules() {
+					return serviceOrThrow().stores.taxRules;
+				},
 			}),
 			session: login,
 			async product(spec) {
