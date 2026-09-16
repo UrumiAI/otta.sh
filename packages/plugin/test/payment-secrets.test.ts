@@ -28,12 +28,16 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	constantTimeEquals,
 	EMAIL_API_KEY_KEY,
 	PAYMENT_SECRET_KEYS,
 	readPaymentSecrets,
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_HEADER,
+	WEBHOOK_EDGE_TOKEN_KEY,
+	webhookEdgeTokenFromKv,
 	X402_FACILITATOR_SECRET_KEY,
 } from "../src/payment-secrets.js";
 import { SERVICE_TOKEN_KEY } from "../src/manifest.js";
@@ -87,7 +91,15 @@ describe("the payment/email secret kv keys", () => {
 		expect(X402_FACILITATOR_SECRET_KEY).toBe("settings:x402FacilitatorSecret");
 	});
 
-	test("PAYMENT_SECRET_KEYS is EXACTLY those four — a fifth needs a deliberate edit here", () => {
+	test("the INC-C1b edge token key and header are pinned by name", () => {
+		// Both names are a CONTRACT with the calling site: it provisions this exact
+		// kv key from Settings and attaches this exact header. A rename on either
+		// side alone silently turns every forwarded webhook into a 401.
+		expect(WEBHOOK_EDGE_TOKEN_KEY).toBe("settings:otta-wh-token");
+		expect(WEBHOOK_EDGE_TOKEN_HEADER).toBe("X-Otta-Wh-Token");
+	});
+
+	test("PAYMENT_SECRET_KEYS is EXACTLY those five — a sixth needs a deliberate edit here", () => {
 		// Exact set, not containment: this list drives the Settings provisioning
 		// forms and the no-echo pins below, so an accidentally-added key would
 		// otherwise ship an unreviewed secret surface, and an accidentally-dropped
@@ -98,6 +110,7 @@ describe("the payment/email secret kv keys", () => {
 				STRIPE_SECRET_KEY_KEY,
 				STRIPE_WEBHOOK_SECRET_KEY,
 				X402_FACILITATOR_SECRET_KEY,
+				WEBHOOK_EDGE_TOKEN_KEY,
 			].toSorted(),
 		);
 	});
@@ -174,12 +187,14 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
 			[EMAIL_API_KEY_KEY]: "email_key_abc",
 			[X402_FACILITATOR_SECRET_KEY]: "x402_abc",
+			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
 		});
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: "sk_test_abc",
 			stripeWebhookSecret: "whsec_abc",
 			emailApiKey: "email_key_abc",
 			x402FacilitatorSecret: "x402_abc",
+			webhookEdgeToken: "edge_abc",
 		});
 	});
 
@@ -190,6 +205,7 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 			stripeWebhookSecret: undefined,
 			emailApiKey: undefined,
 			x402FacilitatorSecret: undefined,
+			webhookEdgeToken: undefined,
 		});
 	});
 
@@ -216,7 +232,82 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 			stripeWebhookSecret: undefined,
 			emailApiKey: undefined,
 			x402FacilitatorSecret: undefined,
+			webhookEdgeToken: undefined,
 		});
+	});
+});
+
+/**
+ * INC-C1b's edge token, whose reader is the same fail-closed
+ * `readWriteOnlySecret` and whose comparison is the part that must not be a
+ * `===`.
+ */
+describe("the webhook edge token (INC-C1b)", () => {
+	test("webhookEdgeTokenFromKv reads its own key and nothing else", async () => {
+		const { ctx } = makeCtx({
+			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
+			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
+		});
+		await expect(webhookEdgeTokenFromKv(ctx)).resolves.toBe("edge_abc");
+	});
+
+	test("UNSET, EMPTY, NON-STRING and a REJECTING kv all fold to undefined", async () => {
+		// All four are one outcome on purpose: the gate reads `undefined` as "the
+		// operator never provisioned one" and passes through, so any state that is
+		// not a usable token must arrive as exactly that value — an empty string
+		// reaching the comparison would make "" the accepted token.
+		await expect(webhookEdgeTokenFromKv(makeCtx().ctx)).resolves.toBeUndefined();
+		await expect(
+			webhookEdgeTokenFromKv(makeCtx({ [WEBHOOK_EDGE_TOKEN_KEY]: "" }).ctx),
+		).resolves.toBeUndefined();
+		await expect(
+			webhookEdgeTokenFromKv(makeCtx({ [WEBHOOK_EDGE_TOKEN_KEY]: 42 }).ctx),
+		).resolves.toBeUndefined();
+		await expect(
+			webhookEdgeTokenFromKv(
+				makeCtx({ [WEBHOOK_EDGE_TOKEN_KEY]: "edge_never" }, new Set([WEBHOOK_EDGE_TOKEN_KEY])).ctx,
+			),
+		).resolves.toBeUndefined();
+	});
+});
+
+describe("constantTimeEquals", () => {
+	// WHY NOT `===`: string equality returns at the first differing byte, so the
+	// time it takes leaks how much of a guess was right, one character per
+	// request. This comparison XORs EVERY byte of an equal-length pair and never
+	// exits early. `node:crypto.timingSafeEqual` is not an option — the plugin
+	// runs in workerd, where `node:crypto` is not importable.
+	test("is true only for an exact match", () => {
+		expect(constantTimeEquals("otta_edge_abc", "otta_edge_abc")).toBe(true);
+		expect(constantTimeEquals("", "")).toBe(true);
+	});
+
+	test("is false for a differing byte at any position — first, middle or last", () => {
+		expect(constantTimeEquals("Xbcdef", "abcdef")).toBe(false);
+		expect(constantTimeEquals("abcXef", "abcdef")).toBe(false);
+		expect(constantTimeEquals("abcdeX", "abcdef")).toBe(false);
+	});
+
+	test("is false for a prefix, a suffix and any other length mismatch", () => {
+		expect(constantTimeEquals("abcde", "abcdef")).toBe(false);
+		expect(constantTimeEquals("abcdefg", "abcdef")).toBe(false);
+		expect(constantTimeEquals("", "abcdef")).toBe(false);
+		expect(constantTimeEquals("abcdef", "")).toBe(false);
+	});
+
+	test("compares BYTES, not UTF-16 code units (a multi-byte token still works)", () => {
+		expect(constantTimeEquals("tökén-π", "tökén-π")).toBe(true);
+		expect(constantTimeEquals("tökén-π", "tökén-p")).toBe(false);
+	});
+
+	test("does not exit early: every byte of an equal-length pair is examined", () => {
+		// Behavioural proxy for the timing property, which cannot be asserted
+		// directly without a flaky clock: two same-length inputs differing ONLY in
+		// the final byte must still be false, and the accumulate-then-compare shape
+		// is what makes the work identical to the all-match case.
+		const long = "a".repeat(4096);
+		expect(constantTimeEquals(long, long)).toBe(true);
+		expect(constantTimeEquals(`${long.slice(0, -1)}b`, long)).toBe(false);
 	});
 });
 
@@ -235,6 +326,12 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 			"whsec_NEVER_RENDER",
 		],
 		["save-email-api-key", "emailApiKey", EMAIL_API_KEY_KEY, "email_NEVER_RENDER"],
+		[
+			"save-webhook-edge-token",
+			"webhookEdgeToken",
+			WEBHOOK_EDGE_TOKEN_KEY,
+			"otta_edge_NEVER_RENDER",
+		],
 		[
 			"save-x402-facilitator-secret",
 			"x402FacilitatorSecret",
@@ -329,6 +426,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 				"stripeWebhookSecret",
 				"emailApiKey",
 				"x402FacilitatorSecret",
+				"webhookEdgeToken",
 			]).not.toContain(name);
 		}
 	});

@@ -58,15 +58,49 @@ export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
 export const X402_FACILITATOR_SECRET_KEY = "settings:x402FacilitatorSecret";
 
 /**
+ * The shared EDGE token the calling site attaches to a webhook it forwards
+ * (`X-Otta-Wh-Token`), checked by `webhooks/stripe/settle` BEFORE it reads any
+ * other secret (INC-C1b).
+ *
+ * THE ONE KEY HERE THAT IS NOT A RENAMED SERVICE ENV VAR, and it is worth being
+ * precise about what it is and is not. It is NOT the trust anchor: a forged
+ * webhook is stopped by the Stripe HMAC, which the route verifies
+ * unconditionally and which no edge token can switch off. This is the cheap
+ * outer gate — it lets the route refuse an unattributed request before doing any
+ * expensive work, and it is deliberately PASS-THROUGH WHEN UNSET, mirroring
+ * `service/src/auth.ts`'s `requireServiceToken` ("token unset ⇒ next()"), so an
+ * un-provisioned deploy degrades to "HMAC only" rather than to "nothing works"
+ * — and never to "nothing is checked".
+ *
+ * NAMING. The four keys above are camelCase because each is a service env var
+ * transliterated. This one is spelled `settings:otta-wh-token` verbatim at the
+ * operator's instruction; it names no env var, so there is nothing to
+ * transliterate from. The header it is compared against is `X-Otta-Wh-Token`.
+ */
+export const WEBHOOK_EDGE_TOKEN_KEY = "settings:otta-wh-token";
+
+/** The request header `webhooks/stripe/settle` compares against
+ *  {@link WEBHOOK_EDGE_TOKEN_KEY}. A CUSTOM `X-…` header on purpose: the
+ *  host's sandbox sanitizer (`sanitizeHeadersForSandbox`, em-dash
+ *  `packages/core/src/plugins/request-meta.ts`) strips a FIXED set — `cookie`,
+ *  `set-cookie`, `authorization`, `proxy-authorization`, the three `cf-access-*`
+ *  headers and `x-emdash-request` — and a custom `X-…` name is in none of those
+ *  families, so it survives into the handler. The settle route's sandbox suite
+ *  proves the surviving half end to end on the workerd tier; the host's own
+ *  sanitizer is upstream code and is not exercised from this repo. */
+export const WEBHOOK_EDGE_TOKEN_HEADER = "X-Otta-Wh-Token";
+
+/**
  * The complete set, in one place, so the Settings provisioning forms and the
- * no-echo test pins are driven from the same list rather than three hand-kept
- * copies. Adding a fifth secret means editing this and nothing else.
+ * no-echo test pins are driven from the same list rather than five hand-kept
+ * copies. Adding a sixth secret means editing this and nothing else.
  */
 export const PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	EMAIL_API_KEY_KEY,
 	X402_FACILITATOR_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_KEY,
 ] as const;
 
 export type PaymentSecretKey = (typeof PAYMENT_SECRET_KEYS)[number];
@@ -115,26 +149,46 @@ export interface PaymentSecrets {
 	stripeWebhookSecret: string | undefined;
 	emailApiKey: string | undefined;
 	x402FacilitatorSecret: string | undefined;
+	/** The `X-Otta-Wh-Token` edge token. `undefined` is MEANINGFUL here and only
+	 *  here: it means the token gate is off (pass-through), not that the route is
+	 *  disabled — see {@link WEBHOOK_EDGE_TOKEN_KEY}. */
+	webhookEdgeToken: string | undefined;
 }
 
 /**
- * Read all four in one round trip.
+ * Read all five in one round trip.
  *
- * `Promise.all` over four INDEPENDENTLY fail-closed reads, deliberately: each
+ * `Promise.all` over five INDEPENDENTLY fail-closed reads, deliberately: each
  * `readWriteOnlySecret` already absorbs its own rejection, so a Stripe kv blip
  * degrades Stripe and nothing else. Wrapping raw `ctx.kv.get` calls in a single
  * `Promise.all` would instead reject the whole batch and disarm email and x402
  * along with it.
+ *
+ * NOT used by the settle route, on purpose: that route reads the edge token
+ * FIRST and ALONE, and only reads the webhook secret after the token gate has
+ * passed (INC-C1b test iii). Batching them here would read both every time.
  */
 export async function readPaymentSecrets(ctx: PluginContext): Promise<PaymentSecrets> {
-	const [stripeSecretKey, stripeWebhookSecret, emailApiKey, x402FacilitatorSecret] =
-		await Promise.all([
-			readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY),
-			readWriteOnlySecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
-			readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
-			readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY),
-		]);
-	return { stripeSecretKey, stripeWebhookSecret, emailApiKey, x402FacilitatorSecret };
+	const [
+		stripeSecretKey,
+		stripeWebhookSecret,
+		emailApiKey,
+		x402FacilitatorSecret,
+		webhookEdgeToken,
+	] = await Promise.all([
+		readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY),
+		readWriteOnlySecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
+		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
+		readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY),
+		readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY),
+	]);
+	return {
+		stripeSecretKey,
+		stripeWebhookSecret,
+		emailApiKey,
+		x402FacilitatorSecret,
+		webhookEdgeToken,
+	};
 }
 
 /** The Stripe webhook signing secret, by name — INC-C1b's settle route reads
@@ -157,4 +211,42 @@ export async function emailApiKeyFromKv(ctx: PluginContext): Promise<string | un
 /** The x402 facilitator's shared secret, by name. */
 export async function x402FacilitatorSecretFromKv(ctx: PluginContext): Promise<string | undefined> {
 	return readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY);
+}
+
+/** The `X-Otta-Wh-Token` edge token, by name — the settle route's FIRST read and,
+ *  on a rejection, its only one. */
+export async function webhookEdgeTokenFromKv(ctx: PluginContext): Promise<string | undefined> {
+	return readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY);
+}
+
+/**
+ * CONSTANT-TIME string equality, in pure JS.
+ *
+ * `node:crypto`'s `timingSafeEqual` is unavailable here — the plugin runs inside
+ * workerd and `node:*` is banned by the sandbox-clean perimeter — and a plain
+ * `===` on a secret is a timing oracle: V8 compares byte by byte and returns at
+ * the first difference, so an attacker can recover the token one character at a
+ * time from response latency.
+ *
+ * What this does instead: UTF-8 encode both sides, return early ONLY on a length
+ * mismatch (the length is not the secret — an attacker who learns it learns
+ * nothing about the bytes, and padding to a common length would compare a
+ * fabricated value), then XOR every byte pair into an accumulator across the FULL
+ * length with no branch and no early exit. The result is one comparison against
+ * zero, so the running time depends on the length alone and never on WHERE the
+ * first difference is.
+ */
+export function constantTimeEquals(a: string, b: string): boolean {
+	const encoder = new TextEncoder();
+	const left = encoder.encode(a);
+	const right = encoder.encode(b);
+	if (left.length !== right.length) return false;
+	let diff = 0;
+	for (let i = 0; i < left.length; i += 1) {
+		// `noUncheckedIndexedAccess` makes these `number | undefined`; the loop
+		// bound and the equal-length check above make them always present, and the
+		// `?? 0` fallback is branch-free.
+		diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+	}
+	return diff === 0;
 }

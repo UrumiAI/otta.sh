@@ -43,11 +43,11 @@
 	"dependencies": {
 		"@otta-sh/admin-presentation": "workspace:*",
 		"@otta-sh/domain": "workspace:*",
+		"@otta-sh/payments-stripe": "workspace:*",
 		"@otta-sh/store-emdash": "workspace:*"
 	},
 	"devDependencies": {
 		"@hono/node-server": "catalog:",
-		"@otta-sh/payments-stripe": "workspace:*",
 		"@otta-sh/service": "workspace:*",
 		"@otta-sh/store-postgres": "workspace:*",
 		"@types/node": "catalog:",

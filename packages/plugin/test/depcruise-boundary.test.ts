@@ -49,6 +49,8 @@ const STUB_PACKAGES = [
 	"admin-react",
 	"store-emdash",
 	"store-postgres",
+	"payments-stripe",
+	"payments-x402",
 	"plugin",
 ] as const;
 
@@ -203,9 +205,56 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
+
+	test("a THIRD payment adapter is still forbidden — INC-C1b admitted two, not the family", () => {
+		// The carve-out is spelled as a negative lookahead on exactly
+		// `payments-(stripe|x402)`, so a payments-* package added later is banned by
+		// default rather than by anyone remembering to add it — the same discipline
+		// the store-emdash narrowing follows. Unresolved on purpose: this also
+		// re-exercises the bare-specifier clause.
+		expect(
+			rulesViolatedBy(
+				"plugin",
+				'import { stub } from "@otta-sh/payments-adyen";\nexport const x = stub;\n',
+			),
+		).toEqual(["plugin-is-sandbox-clean"]);
+	});
+
+	test("a payments-* name that merely STARTS with an admitted one is forbidden", () => {
+		// `payments-stripey` must not slip through the lookahead: the carve-out is
+		// anchored with `(/|$)`, so only the exact package (or a subpath of it) is
+		// admitted.
+		expect(
+			rulesViolatedBy(
+				"plugin",
+				'import { stub } from "@otta-sh/payments-stripey";\nexport const x = stub;\n',
+			),
+		).toEqual(["plugin-is-sandbox-clean"]);
+	});
 });
 
 describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => {
+	test("the Stripe payment adapter is admitted — INC-C1b's webhook settle route", () => {
+		// The plugin verifies the Stripe webhook HMAC itself now (an unauthenticated
+		// webhook only ever reaches a `public: true` plugin route), and the adapter
+		// is WebCrypto-only with @otta-sh/domain as its sole import.
+		expect(
+			rulesViolatedBy(
+				"plugin",
+				'import { stub } from "@otta-sh/payments-stripe";\nexport const x = stub;\n',
+			),
+		).toEqual([]);
+	});
+
+	test("the x402 payment adapter is admitted — the same ratified carve-out", () => {
+		expect(
+			rulesViolatedBy(
+				"plugin",
+				'import { stub } from "@otta-sh/payments-x402";\nexport const x = stub;\n',
+			),
+		).toEqual([]);
+	});
+
 	test("the domain is admitted — it is IO-free by construction, enforced separately", () => {
 		expect(
 			rulesViolatedBy(

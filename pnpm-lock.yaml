@@ -209,6 +209,9 @@ importers:
       '@otta-sh/domain':
         specifier: workspace:*
         version: link:../domain
+      '@otta-sh/payments-stripe':
+        specifier: workspace:*
+        version: link:../payments-stripe
       '@otta-sh/store-emdash':
         specifier: workspace:*
         version: link:../store-emdash
@@ -216,9 +219,6 @@ importers:
       '@hono/node-server':
         specifier: 'catalog:'
         version: 2.0.8(hono@4.12.29)
-      '@otta-sh/payments-stripe':
-        specifier: workspace:*
-        version: link:../payments-stripe
       '@otta-sh/service':
         specifier: workspace:*
         version: link:../service

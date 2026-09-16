@@ -634,6 +634,16 @@ function headerCaseInsensitive(headers: Record<string, string>, name: string): s
 // these run unchanged in the Node test suites and inside the plugin's sandbox —
 // which is the whole reason this package no longer imports `node:crypto`
 // (CLAUDE.md: the plugin is sandbox-clean, `node:` imports are banned).
+//
+// Three helpers below are annotated `Uint8Array<ArrayBuffer>` rather than the
+// bare `Uint8Array`, and that is a TYPE change with no runtime half: a bare
+// `Uint8Array` means `Uint8Array<ArrayBufferLike>`, which the DOM lib's
+// `BufferSource` rejects because `ArrayBufferLike` admits `SharedArrayBuffer`.
+// Every value here is a `new Uint8Array(n)` — already backed by a plain
+// `ArrayBuffer` — so saying so costs nothing and lets `crypto.subtle.verify` and
+// `sign` accept them under a DOM-lib compile. It started mattering at work order
+// 02 INC-C1b, when the plugin began importing this adapter and so pulled it into
+// the e2e project's `lib: ["ES2023", "DOM"]` typecheck.
 
 /** Stripe signs with HMAC-SHA256 over `{t}.{rawBody}` — the one algorithm here. */
 const HMAC_SHA256 = { name: "HMAC", hash: "SHA-256" } as const;
@@ -660,7 +670,7 @@ function toHex(bytes: ArrayBuffer): string {
  * because a truncated buffer then failed `timingSafeEqual`'s length check and was
  * caught as `false`. Upper-case is accepted, as `Buffer.from` accepted it.
  */
-function fromHex(hex: string): Uint8Array | undefined {
+function fromHex(hex: string): Uint8Array<ArrayBuffer> | undefined {
 	if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/u.test(hex)) return undefined;
 	const out = new Uint8Array(hex.length / 2);
 	for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -668,7 +678,7 @@ function fromHex(hex: string): Uint8Array | undefined {
 }
 
 /** Byte-concat — the `Buffer.concat` this file used before, without the Node global. */
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
 	const out = new Uint8Array(a.length + b.length);
 	out.set(a, 0);
 	out.set(b, a.length);
@@ -676,7 +686,7 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
 }
 
 /** HMAC-SHA256 the payload with `secret`, hex-encoded (the Stripe `v1` tag form). */
-async function hmacHex(secret: string, payload: Uint8Array): Promise<string> {
+async function hmacHex(secret: string, payload: Uint8Array<ArrayBuffer>): Promise<string> {
 	const key = await importHmacKey(secret, "sign");
 	return toHex(await crypto.subtle.sign("HMAC", key, payload));
 }

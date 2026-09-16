@@ -4,6 +4,7 @@ import {
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_KEY,
 	X402_FACILITATOR_SECRET_KEY,
 } from "../payment-secrets.js";
 import type {
@@ -172,6 +173,28 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		label: "x402 facilitator secret",
 		noun: "x402 facilitator secret",
 		short: "x402",
+	},
+	{
+		// INC-C1b. Not a renamed service env var like the four above — it is the
+		// shared edge token the site attaches (`X-Otta-Wh-Token`) to a Stripe
+		// webhook it forwards to the plugin's `webhooks/stripe/settle` route. It
+		// gets the identical write-only treatment because it is a shared secret,
+		// and it is provisioned HERE because this is the only screen an operator
+		// has. Leaving it unset is a supported configuration (the route falls back
+		// to Stripe-HMAC-only), which is why the group label calls it optional.
+		actionId: "save-webhook-edge-token",
+		fieldId: "webhookEdgeToken",
+		kvKey: WEBHOOK_EDGE_TOKEN_KEY,
+		genKey: "settings:otta-wh-tokenGen",
+		label: "Stripe webhook edge token (optional)",
+		noun: "Webhook edge token",
+		// "edge", not "wh token": a fifth entry pushes the all-missing group label
+		// ("Payments & email — no stripe key, webhook, email, x402, …") against
+		// X-11's 60-character budget, and overflowing it makes `valueLabel` elide
+		// the list — so the fresh-install label, the one case where every name
+		// matters, would be the one that loses a name. Four characters keep it
+		// exactly inside the budget with nothing truncated.
+		short: "edge",
 	},
 ];
 

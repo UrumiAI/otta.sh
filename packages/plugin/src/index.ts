@@ -163,6 +163,7 @@ export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode
 // so INC-C1b's settle route can reach the Stripe webhook secret, without either
 // restating the key strings.
 export {
+	constantTimeEquals,
 	emailApiKeyFromKv,
 	EMAIL_API_KEY_KEY,
 	type PaymentSecretKey,
@@ -174,9 +175,23 @@ export {
 	STRIPE_SECRET_KEY_KEY,
 	stripeWebhookSecretFromKv,
 	STRIPE_WEBHOOK_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_HEADER,
+	WEBHOOK_EDGE_TOKEN_KEY,
+	webhookEdgeTokenFromKv,
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_SECRET_KEY,
 } from "./payment-secrets.js";
+// INC-C1b — the PUBLIC Stripe webhook settle route. The constant and the result
+// shape are exported because the calling site has to name the route and
+// reconstruct Stripe's expected status from the response.
+export {
+	createStripeWebhookSettleHandler,
+	settleResultToResponse,
+	STRIPE_WEBHOOK_SETTLE_ROUTE,
+	type StripeWebhookSettleInput,
+	type StripeWebhookSettleReason,
+	type StripeWebhookSettleResult,
+} from "./webhooks/stripe-settle-route.js";
 export {
 	CommerceClientError,
 	type CartFailureReason,
