@@ -15,7 +15,7 @@
  * reads one.
  */
 import {
-	AdminProductsClient,
+	type AdminProductsSurface,
 	type ProductsListFilter,
 	type ProductSummaryWire,
 	type TaxClassWire,
@@ -174,7 +174,7 @@ const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
 
 /** The live tax-class registry, falling back to {@link DEFAULT_TAX_CLASSES} on
  *  a failed or empty read — a registry read must never break the detail (E-1). */
-export async function readTaxClasses(client: AdminProductsClient): Promise<TaxClassWire[]> {
+export async function readTaxClasses(client: AdminProductsSurface): Promise<TaxClassWire[]> {
 	try {
 		const fetched = await client.getTaxClasses();
 		return fetched.length > 0 ? fetched : DEFAULT_TAX_CLASSES;

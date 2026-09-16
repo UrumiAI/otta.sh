@@ -49,7 +49,7 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
-	AdminProductsClient,
+	type AdminProductsSurface,
 	type ProductDetailWire,
 	type ProductsListResult,
 	type ProductSummaryWire,
@@ -83,6 +83,7 @@ import {
 	resolveStockContext,
 	toClientFilter,
 } from "./products-read.js";
+import { makeAdminClients } from "./make-admin-clients.js";
 import { ReportingSettingsClient } from "./reporting-client.js";
 import { readAdminTokens, readString } from "./scaffold/index.js";
 
@@ -212,30 +213,32 @@ export interface ProductsConsoleInput {
 }
 
 interface ProductsConsoleClient {
-	products: AdminProductsClient;
+	products: AdminProductsSurface;
 	settings: ReportingSettingsClient;
 }
 
 /**
- * Both service surfaces this screen reads — the products client carrying the
- * write-gate service token (the edit PATCH and the stock-movement POSTs are
- * non-GETs the gate blocks without it) and the settings client carrying the
- * admin token alone, because a GET-only surface has no business holding the
- * token that writes.
+ * Both surfaces this screen reads.
+ *
+ * The PRODUCTS surface now comes from the admin composition root, so which tier
+ * answers it — the commerce service over `ctx.http`, or the plugin's own
+ * document store — is that factory's single decision rather than this route's
+ * (work order 02, INC-B10b-i). In http mode it constructs exactly the client
+ * this function used to build here, write-gate token included.
+ *
+ * The SETTINGS client is still built inline, because INC-B10c owns the reporting
+ * surface and has not folded it in yet. It carries the admin token ALONE: a
+ * GET-only surface has no business holding the token that writes.
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
-	const tokens = await readAdminTokens(ctx);
-	const transport = {
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-	};
+	const [clients, tokens] = await Promise.all([makeAdminClients(ctx), readAdminTokens(ctx)]);
 	return {
-		products: new AdminProductsClient({
-			...transport,
-			...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
+		products: clients.products,
+		settings: new ReportingSettingsClient({
+			fetch: ctx.http.fetch,
+			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
 		}),
-		settings: new ReportingSettingsClient(transport),
 	};
 }
 
