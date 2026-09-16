@@ -69,12 +69,12 @@ describe.skipIf(PG === undefined)("orders + webhook + entitlements HTTP contract
 		return { orderId: order["id"] as string, totalCents: totals["totalCents"]! };
 	}
 
-	function stripeWebhook(
+	async function stripeWebhook(
 		orderId: string,
 		amountCents: number,
 		opts: { eventId?: string; badSecret?: boolean } = {},
 	) {
-		const signed = signStripeWebhook(
+		const signed = await signStripeWebhook(
 			{
 				eventId: opts.eventId ?? `evt_${orderId}`,
 				type: "payment_intent.succeeded",

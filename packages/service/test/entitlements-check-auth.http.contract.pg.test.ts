@@ -95,7 +95,7 @@ describe.skipIf(PG === undefined)("entitlements/check auth HTTP contract", () =>
 		const order = (await json(coRes))["order"] as Record<string, unknown>;
 		const orderId = order["id"] as string;
 		const totalCents = (order["totals"] as Record<string, number>)["totalCents"]!;
-		const signed = signStripeWebhook(
+		const signed = await signStripeWebhook(
 			{
 				eventId: `evt_${orderId}`,
 				type: "payment_intent.succeeded",

@@ -32,7 +32,7 @@ describe("X402PaymentGateway seam hardening", () => {
 	test("rejects a proof settled on a network outside the gateway's accepts", async () => {
 		const res = await gateway.verifyConfirmation({
 			kind: "page_gate",
-			proof: proofOn("eip155:1"), // validly signed, wrong network
+			proof: await proofOn("eip155:1"), // validly signed, wrong network
 		});
 		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
@@ -40,7 +40,7 @@ describe("X402PaymentGateway seam hardening", () => {
 	test("accepts the same proof on an accepted network", async () => {
 		const res = await gateway.verifyConfirmation({
 			kind: "page_gate",
-			proof: proofOn("eip155:8453"),
+			proof: await proofOn("eip155:8453"),
 		});
 		expect(res.ok).toBe(true);
 	});
