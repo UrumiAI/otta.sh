@@ -1,4 +1,3 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -13,8 +12,9 @@ import type {
 	SelectOption,
 	TableBlock,
 } from "../types.js";
+import { makeAdminClients } from "./make-admin-clients.js";
 import {
-	AdminRulesClient,
+	type AdminRulesSurface,
 	type RulesCasUpdateResult,
 	type RulesCreateResult,
 	type RulesDeleteResult,
@@ -50,7 +50,7 @@ import {
 /**
  * The admin Shipping console page (design spec §12.4 — the deepest of the
  * seven admin screens, drilling zones → methods → rates). Built on the shared
- * list/detail scaffold (`./scaffold`) and `AdminRulesClient`, both already
+ * list/detail scaffold (`./scaffold`) and `AdminRulesSurface`, both already
  * proven by `orders-page.ts`/`tax-page.ts` — this is the FIRST production
  * screen to actually reach depth 3 (the scaffold's own synthetic geo fixture,
  * `scaffold/testing/geo-screen.ts`, is what proved the N-level nav core works
@@ -62,7 +62,7 @@ import {
  * 25` — otherwise a `table` + a standalone `combobox` drill-in form (L-7),
  * with editing moving to the next level's list. Both branches ship; the
  * sandbox suite asserts the branch at 25 rows and at 26. The zones/methods
- * registries have no real cursor pagination (`AdminRulesClient.listZones`/
+ * registries have no real cursor pagination (`AdminRulesSurface.listZones`/
  * `listMethods` return everything in one GET), so in practice `nextCursor` is
  * always `null` and the branch is decided by row count alone.
  *
@@ -275,13 +275,20 @@ function isRegistryAccordion(nextToken: string | undefined, itemCount: number): 
 export function createShippingPageHandler(): RouteHandler<ShippingPageInput> {
 	return createListDetailHandler<ShippingRenderState>({
 		actions: SHIPPING_ACTIONS,
+		// THE TIER IS THE FACTORY'S DECISION, not this screen's (work order 02,
+		// INC-B10c-i): `makeAdminClients` hands back either the `ctx.http` client
+		// this line used to construct or the in-process one over the plugin's own
+		// document store, and the page cannot tell which — everything below is
+		// typed against `AdminRulesSurface`, the structural surface both answer to.
+		//
+		// The tokens are read ONCE, here, and PASSED IN rather than re-read inside
+		// the factory. They are transport credentials (`X-Internal-Token` /
+		// `X-Service-Token`) that the in-process tier has nothing to check against
+		// and deliberately ignores (ADR-0014 D3).
 		async createClient(ctx) {
 			const tokens = await readAdminTokens(ctx);
-			return new AdminRulesClient({
-				fetch: ctx.http.fetch,
-				baseUrl: COMMERCE_SERVICE_BASE_URL,
-				...tokens,
-			});
+			const clients = await makeAdminClients(ctx, tokens);
+			return clients.rules;
 		},
 		// The zones level's per-row "View methods" BUTTON and the methods
 		// level's per-row "View rates" BUTTON (§12.7) carry the FULL encoded
@@ -317,21 +324,23 @@ export function createShippingPageHandler(): RouteHandler<ShippingPageInput> {
 // -- level 0: shipping zones ---------------------------------------------------
 
 function zonesLevel() {
-	return listLevel<AdminRulesClient, Record<string, never>, ShippingZoneWire, ShippingRenderState>({
-		// No service-side pagination on the zones registry (`GET
-		// /admin/shipping/zones` returns the full list) — same small-registry
-		// shape as the Tax console's classes level.
-		limit: 200,
-		filterFromValues: () => ({}),
-		async fetchPage(client) {
-			const zones = await client.listZones();
-			return { items: zones, nextCursor: null };
+	return listLevel<AdminRulesSurface, Record<string, never>, ShippingZoneWire, ShippingRenderState>(
+		{
+			// No service-side pagination on the zones registry (`GET
+			// /admin/shipping/zones` returns the full list) — same small-registry
+			// shape as the Tax console's classes level.
+			limit: 200,
+			filterFromValues: () => ({}),
+			async fetchPage(client) {
+				const zones = await client.listZones();
+				return { items: zones, nextCursor: null };
+			},
+			render({ items, nextToken, notice, renderState }) {
+				return zonesBlocks(items, nextToken, notice, renderState);
+			},
+			onError: () => zonesFailClosed(),
 		},
-		render({ items, nextToken, notice, renderState }) {
-			return zonesBlocks(items, nextToken, notice, renderState);
-		},
-		onError: () => zonesFailClosed(),
-	});
+	);
 }
 
 /**
@@ -449,7 +458,7 @@ function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
 /** Full-replace edit (LWW, no CAS — a zone carries no money): the form always
  *  submits BOTH `name` and `regions`, pre-filled from the loaded row, so an
  *  edit can never silently omit `regions` (the service 400s an omitted key —
- *  `AdminRulesClient.updateZone`'s doc). `zoneId` rides invisibly in the
+ *  `AdminRulesSurface.updateZone`'s doc). `zoneId` rides invisibly in the
  *  carrier, not as a visible field (F-2, F-3 — no more single-option
  *  "carrier" select). */
 function editZoneForm(zone: ShippingZoneWire): FormBlock {
@@ -624,7 +633,7 @@ function zonesFailClosed() {
 // -- level 1: a zone's shipping methods -----------------------------------------
 
 function methodsLevel() {
-	return listLevel<AdminRulesClient, MethodsFilterForm, MethodRow, ShippingRenderState>({
+	return listLevel<AdminRulesSurface, MethodsFilterForm, MethodRow, ShippingRenderState>({
 		limit: 200,
 		filterFromValues: methodsFilterFromValues,
 		async fetchPage(client, path, filter) {
@@ -687,7 +696,7 @@ interface MethodRow extends ShippingMethodWire {
  * every admin read, not with a label change.
  */
 async function pricedMethods(
-	client: AdminRulesClient,
+	client: AdminRulesSurface,
 	methods: ShippingMethodWire[],
 	filter: MethodsFilterForm,
 ): Promise<MethodRow[]> {
@@ -710,7 +719,7 @@ async function pricedMethods(
  *  the client is the service's own "no rate in that currency" 404 — a fact,
  *  reported as such; a throw is an absence of information, reported as such. */
 async function methodPrice(
-	client: AdminRulesClient,
+	client: AdminRulesSurface,
 	methodId: string,
 	currency: string,
 ): Promise<MethodPrice> {
@@ -1057,7 +1066,7 @@ function methodsFailClosed() {
 // -- level 2: a method's rates (currency-keyed, L-9a EXEMPT from the accordion list) --
 
 function ratesLevel() {
-	return listLevel<AdminRulesClient, RatesFilterForm, ShippingRateWire>({
+	return listLevel<AdminRulesSurface, RatesFilterForm, ShippingRateWire>({
 		limit: 1, // a rate is keyed by (methodId, currency) — at most one row per filter
 		filterFromValues: currencyFromValues,
 		async fetchPage(client, path, filter) {
@@ -1267,7 +1276,7 @@ function ratesFailClosed() {
 // -- custom action: create a zone ------------------------------------------------
 
 function createZoneAction() {
-	return customAction<AdminRulesClient, ShippingRenderState>(
+	return customAction<AdminRulesSurface, ShippingRenderState>(
 		async ({ input, client, showList }) => {
 			const values = input.values ?? {};
 			const id = (readString(values.id) ?? "").trim();
@@ -1325,7 +1334,7 @@ function createZoneNotice(
 // -- custom action: edit a zone (LWW) ---------------------------------------------
 
 function saveZoneAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
 		if (zoneId === undefined) return showList();
 		const values = input.values ?? {};
@@ -1365,7 +1374,7 @@ function saveZoneNotice(result: RulesUpdateResult<ShippingZoneWire>): Notice {
 // -- custom action: delete a zone (forbid-if-methods) ------------------------------
 
 function deleteZoneAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, client, showList }) => {
 		const payload = asRecord(input.value);
 		const zoneId = readString(payload?.zoneId);
 		if (zoneId === undefined) return showList();
@@ -1405,7 +1414,7 @@ function deleteZoneNotice(result: RulesDeleteResult): Notice {
 /** INC-14's promoted button, and E-2's empty-state button — one verb, because
  *  they are one act. No draft: nothing has been typed yet. */
 function openCreateZoneAction() {
-	return customAction<AdminRulesClient, ShippingRenderState>(async ({ showList }) => {
+	return customAction<AdminRulesSurface, ShippingRenderState>(async ({ showList }) => {
 		return showList(undefined, undefined, { kind: "new-zone" });
 	});
 }
@@ -1414,7 +1423,7 @@ function openCreateZoneAction() {
  *  `value` names (the root registry when it carries none). Whatever was typed
  *  is dropped, and only ever by this explicit click. */
 function cancelNewAction() {
-	return customAction<AdminRulesClient, ShippingRenderState>(async ({ carriedPath, showList }) =>
+	return customAction<AdminRulesSurface, ShippingRenderState>(async ({ carriedPath, showList }) =>
 		showList(carriedPath),
 	);
 }
@@ -1422,7 +1431,7 @@ function cancelNewAction() {
 // -- custom action: create a method -----------------------------------------------
 
 function createMethodAction() {
-	return customAction<AdminRulesClient, ShippingRenderState>(
+	return customAction<AdminRulesSurface, ShippingRenderState>(
 		async ({ input, carried, client, showList }) => {
 			const zoneId = carried?.zoneId;
 			if (zoneId === undefined) return showList();
@@ -1483,7 +1492,7 @@ function createMethodNotice(
 // -- custom action: edit a method (LWW) --------------------------------------------
 
 function saveMethodAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
 		const methodId = carried?.methodId;
 		if (zoneId === undefined || methodId === undefined) return showList();
@@ -1524,7 +1533,7 @@ function saveMethodNotice(result: RulesUpdateResult<ShippingMethodWire>): Notice
 // -- custom action: delete a method (forbid-if-rates) -------------------------------
 
 function deleteMethodAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, client, showList }) => {
 		const payload = asRecord(input.value);
 		const zoneId = readString(payload?.zoneId);
 		const methodId = readString(payload?.methodId);
@@ -1566,7 +1575,7 @@ function deleteMethodNotice(result: RulesDeleteResult): Notice {
  *  path in `value` (L-6): without it the create screen would open at the root
  *  registry, which is the one failure this level's depth makes possible. */
 function openCreateMethodAction() {
-	return customAction<AdminRulesClient, ShippingRenderState>(async ({ carriedPath, showList }) => {
+	return customAction<AdminRulesSurface, ShippingRenderState>(async ({ carriedPath, showList }) => {
 		return showList(carriedPath, undefined, { kind: "new-method" });
 	});
 }
@@ -1574,7 +1583,7 @@ function openCreateMethodAction() {
 // -- custom action: create a rate ---------------------------------------------------
 
 function createRateAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
 		const methodId = carried?.methodId;
 		if (zoneId === undefined || methodId === undefined) return showList();
@@ -1631,7 +1640,7 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 // -- custom action: edit a rate (CAS on amountCents) ---------------------------------
 
 function saveRateAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
 		const methodId = carried?.methodId;
 		const currency = carried?.currency;
@@ -1710,7 +1719,7 @@ function saveRateNotice(result: RulesCasUpdateResult<ShippingRateWire>): Notice 
 // -- custom action: delete a rate ------------------------------------------------------
 
 function deleteRateAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, client, showList }) => {
 		const payload = asRecord(input.value);
 		const zoneId = readString(payload?.zoneId);
 		const methodId = readString(payload?.methodId);
