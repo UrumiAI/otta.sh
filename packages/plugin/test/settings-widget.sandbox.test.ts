@@ -465,6 +465,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 			["save-stripe-webhook-secret", "stripeWebhookSecret", "qa-whsec-NEVER-RENDER"],
 			["save-email-api-key", "emailApiKey", "qa-email-key-NEVER-RENDER"],
 			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
+			// INC-C1b's webhook edge token — a secret like the four above, held to
+			// the identical no-echo discipline by every assertion in this case.
+			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
 
 		// Each SAVE's own response must already be clean — the receipt is the
@@ -493,7 +496,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			expect(JSON.stringify(loaded)).not.toContain(value);
 		}
 
-		// The group's label states WHICH credentials are missing — with all four
+		// The group's label states WHICH credentials are missing — with all five
 		// set, it says so without naming any of them.
 		expect(groupLabels(blocks).get("settings:payments")).toBe("Payments & email — configured");
 	});
@@ -662,7 +665,11 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"Service connection — token not set · service token not set",
 		);
 		expect(labels.get("settings:payments")).toBe(
-			"Payments & email — no stripe key, webhook, email, x402",
+			// Exactly 60 characters — the X-11 budget, with nothing elided. A sixth
+			// secret (or a longer short name for the fifth) would push the list over
+			// and start truncating the fresh-install label; this pin is what would
+			// say so.
+			"Payments & email — no stripe key, webhook, email, x402, edge",
 		);
 		// X-11: mechanically enforced by assertBlockContract too, pinned here as
 		// the rule these four strings were composed against.

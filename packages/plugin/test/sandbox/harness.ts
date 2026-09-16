@@ -58,6 +58,12 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 }> = [
 	{ name: "admin-presentation", exports: { ".": "./src/index.ts" } },
 	{ name: "domain", exports: { ".": "./src/index.ts", "./testing": "./src/testing/index.ts" } },
+	// INC-C1b: the `webhooks/stripe/settle` route verifies the webhook HMAC INSIDE
+	// the isolate, so the Stripe adapter became a runtime import like the two
+	// beside it — and it is bundled into the deployed artifact for the same reason
+	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
+	// boot at all with `No such module "@otta-sh/payments-stripe"`.
+	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —

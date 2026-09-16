@@ -24,7 +24,7 @@ export default defineConfig({
 	 */
 	dts: { build: true },
 	/**
-	 * BUNDLE the two commerce workspace packages into the emitted plugin rather
+	 * BUNDLE the three commerce workspace packages into the emitted plugin rather
 	 * than leaving them as bare specifiers. The in-process commerce client
 	 * (work order 02, Phase B/C) constructs `@otta-sh/domain` use-cases over
 	 * `@otta-sh/store-emdash` adapters, and the plugin runs inside workerd —
@@ -33,9 +33,12 @@ export default defineConfig({
 	 * `test/bundle-imports.test.ts` asserts on the emitted output for exactly
 	 * that reason. (`@otta-sh/admin-presentation` is deliberately NOT here: it
 	 * is a real `dependencies` entry, IO-free, and shared with
-	 * `@otta-sh/admin-react`.)
+	 * `@otta-sh/admin-react`.) `@otta-sh/payments-stripe` joined them at INC-C1b:
+	 * the `webhooks/stripe/settle` route verifies the webhook HMAC INSIDE the
+	 * isolate, so the adapter has to be in the bundle for the same reason the
+	 * other two are.
 	 */
-	noExternal: ["@otta-sh/domain", "@otta-sh/store-emdash"],
+	noExternal: ["@otta-sh/domain", "@otta-sh/payments-stripe", "@otta-sh/store-emdash"],
 	/**
 	 * TRANSITIONAL (work order 02 D6): the default commerce mode for a plain
 	 * `tsdown` build is the HTTP transport — exactly today's behaviour. A

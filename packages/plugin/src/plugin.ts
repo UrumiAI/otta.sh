@@ -41,6 +41,11 @@ import {
 	createAccountOrdersHandler,
 } from "./storefront/account-routes.js";
 // ── end Phase 5 account routes ─────────────────────────────────────────────
+// ── Work order 02 INC-C1b: the Stripe webhook settle route ────────────────
+import {
+	createStripeWebhookSettleHandler,
+	STRIPE_WEBHOOK_SETTLE_ROUTE,
+} from "./webhooks/stripe-settle-route.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -126,15 +131,25 @@ const plugin: SandboxedPlugin = {
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
 		// ── end Phase 4 checkout ────────────────────────────────────────────
+		// Work order 02 INC-C1b: the PUBLIC Stripe webhook SETTLE route. It
+		// supersedes the note that used to stand here, which said a webhook route
+		// was structurally impossible. Two of its three premises still hold and are
+		// now DESIGNED AROUND rather than blocking: the framework JSON-parses the
+		// body before any handler runs, so the raw bytes travel base64-encoded in
+		// the input; and it wraps the return at HTTP 200, so the status Stripe must
+		// see is returned as a FIELD the calling site replays. The third premise —
+		// that the service would receive webhooks directly — is what the fold-in
+		// removes: there is no second deployable left to post to, so the plugin
+		// verifies the HMAC itself. `public: true` is REQUIRED, not a relaxation: a
+		// webhook is always unauthenticated, and EmDash routes an anonymous request
+		// only through the PUBLIC dispatcher. Auth is cryptographic (the Stripe
+		// signature) plus a shared edge token — see the route's own module doc.
+		[STRIPE_WEBHOOK_SETTLE_ROUTE]: {
+			handler: createStripeWebhookSettleHandler() as never,
+			public: true,
+		},
 		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
-		// the service's entitlement check over ctx.http. There is deliberately NO
-		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute
-		// JSON-parses the request body before any route runs (the raw bytes a
-		// Stripe HMAC needs are destroyed) and wraps the return `{success, data}`
-		// at HTTP 200 (Stripe's retry logic keys on status), so a byte-exact proxy
-		// is structurally impossible on the real host contract. Stripe posts
-		// directly to the SERVICE's /webhooks/stripe — the plan's preferred
-		// direct-to-service design (§9 Risk 1).
+		// the service's entitlement check over ctx.http.
 		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,

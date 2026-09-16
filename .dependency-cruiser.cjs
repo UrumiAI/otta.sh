@@ -69,11 +69,29 @@ module.exports = {
 				"admissible because it carries no IO of its own: it is written against a " +
 				"structural StorageAccess port whose implementation arrives injected, and " +
 				"three store-emdash-* rules below hold it to the same perimeter as this " +
-				"one, type-only imports included.",
+				"one, type-only imports included.\n\n" +
+				"THIRD NARROWING (work order 02, INC-C1b): `payments-[^/]+` became " +
+				"`(?!payments-(stripe|x402)(/|$))payments-[^/]+`, in all three clauses, " +
+				"so @otta-sh/payments-stripe and @otta-sh/payments-x402 are admitted and " +
+				"every other payments-* package stays banned by default. The reason is " +
+				"the same shape as store-emdash's, and it is a statement about those two " +
+				"packages rather than about payment adapters generally: with the service " +
+				"folded in there is no second deployable to verify a Stripe webhook in, " +
+				"and an UNAUTHENTICATED webhook only ever reaches a plugin route " +
+				"registered `public: true` — so the HMAC verification has to happen " +
+				"inside the isolate. It can: payments-stripe's verifier is WebCrypto " +
+				"(`crypto.subtle.verify`, an ambient global in workerd), it imports " +
+				"nothing but @otta-sh/domain, and its own sandbox-clean guard " +
+				"(packages/payments-stripe/test/sandbox-clean-guard.test.ts) holds it " +
+				"there. A payments adapter that reached for `pg` or a node builtin would " +
+				"still be caught — by the driver and node-builtin clauses of this same " +
+				"rule, which the carve-out does not touch. " +
+				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: these " +
+				"two admitted, a third payments-* package still forbidden.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{
