@@ -1,4 +1,11 @@
 import { SERVICE_TOKEN_KEY } from "../manifest.js";
+import {
+	EMAIL_API_KEY_KEY,
+	readWriteOnlySecret,
+	STRIPE_SECRET_KEY_KEY,
+	STRIPE_WEBHOOK_SECRET_KEY,
+	X402_FACILITATOR_SECRET_KEY,
+} from "../payment-secrets.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
@@ -88,9 +95,116 @@ export const INTERNAL_TOKEN_KEY = "settings:internalToken";
 const INTERNAL_TOKEN_GEN_KEY = "settings:internalTokenGen";
 const SERVICE_TOKEN_GEN_KEY = "settings:serviceTokenGen";
 
-/** Current save generation for a token key, defaulting to 0 when never saved. */
+/** Current save generation for a token key, defaulting to 0 when never saved.
+ *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
+ *  the whole render down — the generation only forces a field to remount blank,
+ *  so getting it wrong costs a stale-looking input, while throwing would lock an
+ *  operator out of the one screen they would use to re-provision. */
 async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
-	return (await ctx.kv.get<number>(key)) ?? 0;
+	try {
+		return (await ctx.kv.get<number>(key)) ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * INC-C3 — the payment/email secrets, as ONE table driving everything: the save
+ * branches, the forms, the group label and the action-id set. One row per
+ * secret, so adding a fifth cannot half-land.
+ *
+ * Every `kvKey` is the in-process equivalent of a `@otta-sh/service` environment
+ * variable (see `payment-secrets.ts` for the env-var → kv-key table and the
+ * source lines). `genKey` is this secret's own save generation, independent per
+ * secret so saving one never blanks another's untouched field — the same
+ * reasoning as the two connection tokens above.
+ */
+interface SecretFieldSpec {
+	/** Dispatch id; also a member of {@link SETTINGS_ACTION_IDS}. */
+	actionId: string;
+	/** The submitted value's `action_id` (and this secret's name in prose). */
+	fieldId: string;
+	/** Write-only kv key holding the secret. */
+	kvKey: string;
+	/** Write-only kv key holding this secret's save generation. */
+	genKey: string;
+	/** Field label — names the credential, never any part of its value. */
+	label: string;
+	/** What the notice/toast calls it. */
+	noun: string;
+	/** Two words for the collapsed group label ("stripe key", "webhook"). */
+	short: string;
+}
+
+const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
+	{
+		actionId: "save-stripe-secret-key",
+		fieldId: "stripeSecretKey",
+		kvKey: STRIPE_SECRET_KEY_KEY,
+		genKey: "settings:stripeSecretKeyGen",
+		label: "Stripe secret key",
+		noun: "Stripe secret key",
+		short: "stripe key",
+	},
+	{
+		actionId: "save-stripe-webhook-secret",
+		fieldId: "stripeWebhookSecret",
+		kvKey: STRIPE_WEBHOOK_SECRET_KEY,
+		genKey: "settings:stripeWebhookSecretGen",
+		label: "Stripe webhook signing secret",
+		noun: "Stripe webhook secret",
+		short: "webhook",
+	},
+	{
+		actionId: "save-email-api-key",
+		fieldId: "emailApiKey",
+		kvKey: EMAIL_API_KEY_KEY,
+		genKey: "settings:emailApiKeyGen",
+		label: "Email provider API key",
+		noun: "Email API key",
+		short: "email",
+	},
+	{
+		actionId: "save-x402-facilitator-secret",
+		fieldId: "x402FacilitatorSecret",
+		kvKey: X402_FACILITATOR_SECRET_KEY,
+		genKey: "settings:x402FacilitatorSecretGen",
+		label: "x402 facilitator secret",
+		noun: "x402 facilitator secret",
+		short: "x402",
+	},
+];
+
+/** The payment/email secret action ids — a subset of {@link SETTINGS_ACTION_IDS},
+ *  exported so a dispatcher (or a test) can name this group without restating
+ *  the strings. */
+export const PAYMENT_SECRET_ACTION_IDS: ReadonlySet<string> = new Set(
+	PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
+);
+
+/** What the "Payments & email" group renders from: per secret, whether it is SET
+ *  (a fact ABOUT the credential — never any part of it) and its save generation.
+ *  The VALUES stop inside {@link readPaymentSecretState} and never travel. */
+interface SecretRenderState {
+	set: boolean;
+	gen: number;
+}
+
+/** Read the render state for every payment secret. FAIL-CLOSED per secret
+ *  (`readWriteOnlySecret` swallows a rejection to `undefined`), so a kv outage
+ *  renders "not set" — an honest understatement that still leaves the form
+ *  usable — rather than throwing out of the page load. */
+async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, SecretRenderState>> {
+	const entries = await Promise.all(
+		PAYMENT_SECRET_FIELDS.map(async (spec) => {
+			const [value, gen] = await Promise.all([
+				readWriteOnlySecret(ctx, spec.kvKey),
+				readSaveGen(ctx, spec.genKey),
+			]);
+			return [spec.kvKey, { set: value !== undefined, gen }] as const;
+		}),
+	);
+	return new Map(entries);
 }
 
 /** Everything this screen renders that comes out of `ctx.kv` — read ONCE per
@@ -101,6 +215,9 @@ interface SettingsPageState {
 	hasServiceToken: boolean;
 	tokenGen: number;
 	serviceTokenGen: number;
+	/** INC-C3: per payment secret, "is it set" + its save generation, keyed by kv
+	 *  key. NEVER the values — see {@link readPaymentSecretState}. */
+	paymentSecrets: Map<string, SecretRenderState>;
 }
 
 /**
@@ -121,10 +238,13 @@ interface SettingsPageState {
  * any part of the token; the whole-response no-echo pins cover this).
  */
 async function readPageState(ctx: PluginContext, tokens: AdminTokens): Promise<SettingsPageState> {
-	const [displayName, tokenGen, serviceTokenGen] = await Promise.all([
-		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY),
+	const [displayName, tokenGen, serviceTokenGen, paymentSecrets] = await Promise.all([
+		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+		// a kv blip on it must not deny the operator the secret forms below.
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
 		readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY),
 		readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY),
+		readPaymentSecretState(ctx),
 	]);
 	return {
 		displayName: displayName ?? "",
@@ -132,6 +252,7 @@ async function readPageState(ctx: PluginContext, tokens: AdminTokens): Promise<S
 		hasServiceToken: tokens.serviceToken !== undefined,
 		tokenGen,
 		serviceTokenGen,
+		paymentSecrets,
 	};
 }
 
@@ -155,6 +276,23 @@ function tokenNotice(which: "Admin" | "Service", entered: boolean): Notice {
 			};
 }
 
+/** The receipt for a payment-secret submit — the same honest split as
+ *  {@link tokenNotice}: a blank submit persists nothing and must not claim it
+ *  did. Names the credential, never any part of its value. */
+function secretNotice(spec: SecretFieldSpec, entered: boolean): Notice {
+	return entered
+		? {
+				variant: "default",
+				title: `${spec.noun} saved`,
+				description: `The ${spec.noun.toLowerCase()} was updated. It is stored write-only and never displayed.`,
+			}
+		: {
+				variant: "default",
+				title: `Nothing entered — ${spec.noun.toLowerCase()} unchanged`,
+				description: `The field was blank, so the stored ${spec.noun.toLowerCase()} was kept. Enter a value to replace it.`,
+			};
+}
+
 /** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
  *  never on a blank submit, which already leaves the field's stated content
  *  correct (still empty), so there is nothing to force a remount for. */
@@ -170,6 +308,9 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-operational",
 	"save-token",
 	"save-service-token",
+	// INC-C3: the four payment/email secrets, from the one table that also builds
+	// their forms — so a new secret is routable the moment it is declared.
+	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
 ]);
 
 /** The three settings fields this phase moves end-to-end (§2). */
@@ -335,6 +476,32 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				...page,
 				toast: {
 					message: entered ? "Service token saved" : "Service token unchanged",
+					type: entered ? "success" : "info",
+				},
+			} satisfies BlockResponse;
+		}
+
+		// -- secret save path: payment/email secrets, WRITE-ONLY to ctx.kv ----------
+		// INC-C3. Identical discipline to the two connection tokens above, driven
+		// off PAYMENT_SECRET_FIELDS so every secret behaves the same way by
+		// construction rather than by four copies agreeing: persist ONLY on a
+		// non-empty submit (a blank submit keeps what is stored), bump the save
+		// generation so the mount-only field remounts blank, and NEVER put the
+		// value in a block, a label, a notice or a toast. `raw` is not captured by
+		// anything that survives this block.
+		const secretSpec = PAYMENT_SECRET_FIELDS.find((spec) => spec.actionId === action);
+		if (secretSpec !== undefined) {
+			const raw = input.values?.[secretSpec.fieldId];
+			const entered = typeof raw === "string" && raw !== "";
+			if (entered) {
+				await ctx.kv.set(secretSpec.kvKey, raw);
+				await bumpSaveGen(ctx, secretSpec.genKey);
+			}
+			const page = await renderPage(ctx, client, tokens, secretNotice(secretSpec, entered));
+			return {
+				...page,
+				toast: {
+					message: `${secretSpec.noun} ${entered ? "saved" : "unchanged"}`,
 					type: entered ? "success" : "info",
 				},
 			} satisfies BlockResponse;
@@ -529,6 +696,7 @@ function buildSettingsBlocks(args: {
 	hasServiceToken: boolean;
 	tokenGen: number;
 	serviceTokenGen: number;
+	paymentSecrets: Map<string, SecretRenderState>;
 	notice?: Notice;
 }): Block[] {
 	const blocks: Block[] = [
@@ -548,6 +716,7 @@ function buildSettingsBlocks(args: {
 			tokenGen: args.tokenGen,
 			serviceTokenGen: args.serviceTokenGen,
 		}),
+		paymentsGroup(args.paymentSecrets),
 	);
 	return blocks;
 }
@@ -763,6 +932,76 @@ function checkoutGroup(
 		default_open: false,
 		blocks: body,
 	};
+}
+
+/**
+ * INC-C3 — the "Payments & email" group: the provisioning surface for the four
+ * credentials that used to be `wrangler secret put` entries on the commerce
+ * service (`packages/service/wrangler.jsonc`). With the service folded in there
+ * is no second deployable to hold them, so this screen is where they land.
+ *
+ * Every field is a PLAIN, ALWAYS-EMPTY `text_input` — the INC-09 discipline the
+ * two connection tokens already follow: no `secret_input`, no `initial_value`,
+ * no `has_value`, so a SET secret renders identically to an unset one and there
+ * is nothing on the screen to reveal. The placeholder alone carries "blank keeps
+ * current", which is unconditionally true.
+ */
+function paymentsGroup(state: Map<string, SecretRenderState>): AccordionBlock {
+	return {
+		type: "accordion",
+		block_id: "settings:payments",
+		label: paymentsGroupLabel(state),
+		default_open: false,
+		blocks: [
+			{
+				type: "context",
+				text: "Payment and email credentials, stored write-only — a blank submit keeps the current one. None is ever displayed.",
+			},
+			...PAYMENT_SECRET_FIELDS.map((spec) => secretForm(spec, state.get(spec.kvKey)?.gen ?? 0)),
+		],
+	};
+}
+
+/** Which payment credentials are provisioned, readable with the group closed —
+ *  the only question this group answers from state.
+ *
+ *  SECURITY: "set"/"not set" is a FACT ABOUT a credential, not any part of it.
+ *  No secret VALUE is in scope in this function or its caller, so there is
+ *  nothing here to echo. The label lists only what is MISSING (or says
+ *  "configured"), which is the actionable half and keeps the longest render
+ *  inside X-11's 60-character budget via {@link valueLabel}. */
+function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
+	const missing = PAYMENT_SECRET_FIELDS.filter((spec) => state.get(spec.kvKey)?.set !== true).map(
+		(spec) => spec.short,
+	);
+	return valueLabel(
+		"Payments & email",
+		missing.length === 0 ? ["configured"] : [`no ${missing.join(", ")}`],
+	);
+}
+
+/** One write-only secret field. Same shape as {@link serviceTokenForm},
+ *  including the `gen`-carried post-save clear: because the field never varies,
+ *  `carriedForm`'s own prefill digest is constant, so the save generation rides
+ *  in the carrier CONTEXT to change the form's `block_id` on a real save and
+ *  force the mount-only input to remount blank. */
+function secretForm(spec: SecretFieldSpec, gen: number): FormBlock {
+	return carriedForm({
+		namespace: `settings:${spec.actionId}`,
+		context: { gen: String(gen) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: spec.fieldId,
+					label: spec.label,
+					placeholder: `Enter new ${spec.noun.toLowerCase()} (blank keeps current)`,
+				},
+			],
+			submit: { label: `Save ${spec.noun.toLowerCase()}`, action_id: spec.actionId },
+		},
+	});
 }
 
 function connectionGroup(args: {

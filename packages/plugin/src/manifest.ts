@@ -12,7 +12,7 @@
  * file before bundling — `src/manifest.ts` itself is never mutated.
  */
 
-import { resolveCommerceMode } from "./commerce/commerce-mode.js";
+import { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
 import type { PluginContext } from "./types.js";
 
 export const OTTA_PLUGIN_ID = "otta";
@@ -108,16 +108,115 @@ export const COMMERCE_SERVICE_BASE_URL = resolveCommerceServiceBaseUrl(
 );
 
 /**
- * The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any host
- * not in this list (plan §5).
+ * Stripe's SERVER-SIDE API host — the one egress the in-process plugin always
+ * makes itself (`paymentIntents.create`, refunds), and the only host in the
+ * in-process allowlist that is a constant rather than deployment-supplied.
  *
- * MODE-RESOLVED, TRANSITIONALLY (work order 02 D6). In `"http"` mode — the
- * default, and what every existing build, every vitest run and the sandbox
- * harness resolve to — this is byte-identical to what it has always been: the
- * single host derived from `COMMERCE_SERVICE_BASE_URL`. In `"in-process"` mode
- * there is no commerce service to reach, so the list is EMPTY for now; INC-C3
- * fills it with the Stripe API, email API and x402 facilitator hosts once those
- * calls move in-process.
+ * NOT the Stripe.js CDN host. Stripe.js and `stripe.confirmPayment()` run in
+ * the BUYER'S BROWSER and never pass through the plugin, which is why
+ * `sandbox-clean-guard.test.ts` pins that host's absence — and pins it by
+ * forbidding the literal ANYWHERE in this package's source, which is why this
+ * comment does not spell it. `api.stripe.com` is a different thing: it is real
+ * plugin egress the moment the payment gateway is folded in, and granting it
+ * does not grant the other.
+ */
+export const STRIPE_API_HOST = "api.stripe.com";
+
+/**
+ * The deployment-supplied halves of the in-process allowlist.
+ *
+ * Both are URLs, not hostnames, because that is the shape the values already
+ * have: the service derives its email host from `EMAIL_API_URL`
+ * (`service/src/index.ts:74`). Neither has a sensible default — there is no
+ * canonical email provider, and the service has NO facilitator-URL env var at
+ * all today (`service/src/x402-wiring.ts` only ever builds the offline
+ * `createTestFacilitator`) — so an absent value grants no host rather than
+ * guessing one.
+ */
+export interface InProcessEgressUrls {
+	/** Where `HttpEmailSender` posts; the in-process equivalent of
+	 *  `EMAIL_API_URL`. */
+	emailApiUrl?: string | undefined;
+	/** The x402 facilitator's base URL, for the day a real
+	 *  `HTTPFacilitatorClient` replaces the offline test facilitator. */
+	facilitatorUrl?: string | undefined;
+}
+
+/** A URL's hostname, or `undefined` for anything unparseable — including an
+ *  empty define, a bare hostname with no scheme, and outright garbage. Never
+ *  throws: this runs at module load, where a throw takes the whole plugin down
+ *  (see `commerce-mode.ts`'s note on blast radius), and an ungrantable host must
+ *  degrade to "no egress for that provider" — a refused fetch — not to a boot
+ *  failure and not to a widened gate. */
+function hostnameOf(url: string | undefined): string | undefined {
+	if (url === undefined || url.length === 0) return undefined;
+	try {
+		const { hostname } = new URL(url);
+		return hostname.length > 0 ? hostname : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any host
+ * not in this list (plan §5) — resolved PER MODE, as a pure function so both
+ * arms are testable without a bundler.
+ *
+ * `"http"` (TRANSITIONAL, work order 02 D6 — the default, and what every
+ * existing build, every vitest run and the sandbox harness resolve to): exactly
+ * the one host derived from `COMMERCE_SERVICE_BASE_URL`, byte-identical to what
+ * it has always been. The email and facilitator URLs are IGNORED on this arm
+ * even when supplied: in http mode the SERVICE makes those calls, so granting
+ * the plugin egress it does not use would widen the gate for nothing.
+ *
+ * `"in-process"` (INC-C3, the end state): the commerce service is gone, and the
+ * calls it used to make are the plugin's own — Stripe's API, the email
+ * provider's API, the x402 facilitator. The service host disappears from the
+ * list entirely; that is the fold-in, visible in one line.
+ *
+ * The result is a SET: duplicates collapse, and order is insertion order so the
+ * list is stable across builds.
+ */
+export function resolveAllowedHosts(
+	mode: CommerceMode,
+	serviceBaseUrl: string,
+	egress: InProcessEgressUrls = {},
+): string[] {
+	if (mode !== "in-process") return [new URL(serviceBaseUrl).hostname];
+	const hosts = new Set<string>([STRIPE_API_HOST]);
+	for (const url of [egress.emailApiUrl, egress.facilitatorUrl]) {
+		const host = hostnameOf(url);
+		if (host !== undefined) hosts.add(host);
+	}
+	return [...hosts];
+}
+
+/**
+ * Compile-time override hooks for the two deployment-supplied egress URLs,
+ * exactly the shape `__OTTA_COMMERCE_SERVICE_URL__` already uses: a Vite
+ * `define` a deploying site bakes into the plugin bundle, behind a `typeof`
+ * guard so the undeclared global is safe in the plain tsdown dist, this
+ * package's vitest run and the sandbox harness.
+ *
+ * These are URLs, never secrets — the credentials that ride them live in
+ * write-only kv (`payment-secrets.ts`), which is what keeps
+ * `wrangler-config.test.ts`'s /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact
+ * and unroutable-around.
+ */
+declare const __OTTA_EMAIL_API_URL__: string | undefined;
+declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
+
+/** The in-process egress URLs this bundle was built for. Absent defines ⇒ no
+ *  host granted for that provider (fail-closed). */
+export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = {
+	emailApiUrl: typeof __OTTA_EMAIL_API_URL__ === "string" ? __OTTA_EMAIL_API_URL__ : undefined,
+	facilitatorUrl:
+		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
+};
+
+/**
+ * The resolved allowlist for THIS bundle.
  *
  * Still a module-load `string[]`, not a function, and deliberately so: the
  * descriptor in `plugin.ts`, `sandbox-entry.ts`'s `createHttpAccess`, the three
@@ -126,8 +225,11 @@ export const COMMERCE_SERVICE_BASE_URL = resolveCommerceServiceBaseUrl(
  * which INC-A6 must not touch. The mode is a build-time constant, so resolving
  * it at module load loses nothing.
  *
- * At INC-D3a this becomes a plain literal list and `COMMERCE_SERVICE_BASE_URL`
- * is deleted outright.
+ * At INC-D3a the `"http"` arm and `COMMERCE_SERVICE_BASE_URL` are deleted
+ * outright and only the in-process branch survives.
  */
-export const ALLOWED_HOSTS: string[] =
-	resolveCommerceMode() === "in-process" ? [] : [new URL(COMMERCE_SERVICE_BASE_URL).hostname];
+export const ALLOWED_HOSTS: string[] = resolveAllowedHosts(
+	resolveCommerceMode(),
+	COMMERCE_SERVICE_BASE_URL,
+	IN_PROCESS_EGRESS_URLS,
+);

@@ -25,6 +25,8 @@
 import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
+	PAYMENT_SECRET_KEYS,
+	STRIPE_API_HOST,
 	COUPONS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -48,6 +50,7 @@ import { MIGRATED_SCREENS } from "../e2e/registry.js";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
+import { readFile } from "node:fs/promises";
 
 // Pin the env BEFORE astro.config is (dynamically) imported so the config
 // module reads a deterministic service URL.
@@ -137,6 +140,157 @@ describe("ottaPluginDescriptor", () => {
 		// storage declaration. Capabilities therefore stay exactly the two
 		// in the manifest (pinned above).
 		expect(descriptor.storage).toBeUndefined();
+	});
+});
+
+/**
+ * INC-C3 — the descriptor's egress allowlist, PER MODE, as an EXACT SET.
+ *
+ * `allowedHosts` is the one ADR-0006 gate that still holds in trusted mode
+ * (`createHttpAccess` rejects by hostname), so both directions of drift matter
+ * and both are failures here: a MISSING host silently breaks a payment or an
+ * email at runtime with no build-time signal, and an EXTRA host widens the gate
+ * ADR-0006 exists to keep minimal. Every assertion below therefore compares the
+ * whole sorted array — never `toContain`, which would pass for either mistake.
+ *
+ * The email and facilitator hosts are DEPLOYMENT-SUPPLIED, not constants:
+ * `packages/service` derives the email host from `EMAIL_API_URL`
+ * (`service/src/index.ts:74`), and there is NO facilitator-URL env var in the
+ * service at all today (`x402-wiring.ts` only ever builds the offline
+ * `createTestFacilitator`). So the descriptor takes them as input and grants
+ * NOTHING when they are absent — see the fail-closed cases.
+ */
+/** Order-insensitive EXACT comparison: `toEqual` on both sides sorted catches a
+ *  missing host AND a leaked extra one, which `toContain` cannot. */
+const sorted = (hosts: readonly string[] | undefined): string[] => [...(hosts ?? [])].toSorted();
+
+describe("ottaPluginDescriptor allowedHosts, per mode, EXACTLY", () => {
+	const EMAIL = "https://api.email.example.com/v1/send";
+	const FACILITATOR = "https://facilitator.example.com";
+
+	test('"http" mode: EXACTLY the commerce service host (today\'s shipped descriptor)', () => {
+		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "http" }).allowedHosts).toEqual([
+			"svc.example.com",
+		]);
+	});
+
+	test('"http" mode ignores email/facilitator URLs — the SERVICE makes those calls', () => {
+		expect(
+			ottaPluginDescriptor(SERVICE_URL, {
+				mode: "http",
+				egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
+			}).allowedHosts,
+		).toEqual(["svc.example.com"]);
+	});
+
+	test('"in-process" mode: EXACTLY Stripe + email + facilitator, and NEVER the service', () => {
+		const hosts = ottaPluginDescriptor(SERVICE_URL, {
+			mode: "in-process",
+			egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
+		}).allowedHosts;
+		expect(sorted(hosts)).toEqual(
+			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+		);
+		expect(hosts).not.toContain("svc.example.com");
+	});
+
+	test('"in-process" mode with nothing configured: EXACTLY the Stripe API host', () => {
+		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "in-process" }).allowedHosts).toEqual([
+			STRIPE_API_HOST,
+		]);
+	});
+
+	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
+		expect(() =>
+			ottaPluginDescriptor(SERVICE_URL, {
+				mode: "in-process",
+				egress: { emailApiUrl: "not a url", facilitatorUrl: "" },
+			}),
+		).not.toThrow();
+		expect(
+			ottaPluginDescriptor(SERVICE_URL, {
+				mode: "in-process",
+				egress: { emailApiUrl: "not a url", facilitatorUrl: "" },
+			}).allowedHosts,
+		).toEqual([STRIPE_API_HOST]);
+	});
+
+	test("the mode defaults to the bundle's own — this (un-defined) run is http", () => {
+		// No `__OTTA_COMMERCE_MODE__` define exists under vitest, so the default
+		// arm must reproduce today's shipped descriptor byte for byte. This is what
+		// keeps `buildEmdashOptions`'s registration assertion honest.
+		expect(ottaPluginDescriptor(SERVICE_URL).allowedHosts).toEqual(["svc.example.com"]);
+		expect(ottaPluginDescriptor(SERVICE_URL)).toEqual(
+			ottaPluginDescriptor(SERVICE_URL, { mode: "http" }),
+		);
+	});
+});
+
+/**
+ * INC-C3 — `COMMERCE_SERVICE_BASE_URL` is UNUSED in in-process mode.
+ *
+ * Asserted BEHAVIOURALLY, not as prose. Two independent pins:
+ *  1. The in-process descriptor's allowedHosts contains no host derivable from
+ *     the service URL — whatever service URL is passed in. If the constant were
+ *     still feeding the allowlist, a distinctive URL would show up.
+ *  2. The in-process client factory's source contains no reference to the
+ *     constant on its in-process branch — the transport that would USE it is
+ *     never constructed.
+ */
+describe("COMMERCE_SERVICE_BASE_URL is unused in in-process mode", () => {
+	test("no service-derived host survives into the in-process allowlist, whatever the URL", () => {
+		for (const url of [
+			SERVICE_URL,
+			"https://a-very-distinctive-host.example.org",
+			COMMERCE_SERVICE_BASE_URL,
+		]) {
+			const hosts = ottaPluginDescriptor(url, { mode: "in-process" }).allowedHosts ?? [];
+			expect(hosts).not.toContain(new URL(url).hostname);
+			expect(hosts).toEqual([STRIPE_API_HOST]);
+		}
+	});
+
+	test("the in-process commerce client is constructed with NO base URL", async () => {
+		// `make-commerce-client.ts` is the single branch point. Its in-process arm
+		// must construct `InProcessCommerceClient` without threading a base URL —
+		// the HTTP arm is the only consumer of the constant. Read as source rather
+		// than executed because the branch is selected by a build-time define this
+		// vitest run cannot flip.
+		const source = await readFile(
+			new URL("../../../packages/plugin/src/commerce/make-commerce-client.ts", import.meta.url),
+			"utf8",
+		);
+		// Everything after the in-process return, up to the http arm, must be free
+		// of the constant.
+		const inProcessArm = source.slice(source.indexOf('=== "in-process"'));
+		const httpArmAt = inProcessArm.indexOf("HttpCommerceClient");
+		expect(httpArmAt).toBeGreaterThan(0);
+		expect(inProcessArm.slice(0, httpArmAt)).not.toContain("COMMERCE_SERVICE_BASE_URL");
+	});
+});
+
+/**
+ * INC-C3 — the payment/email secrets are kv keys, NOT wrangler vars.
+ *
+ * `wrangler-config.test.ts` forbids any `vars` key matching
+ * /SECRET|KEY|TOKEN|PASSWORD/i. The fold-in must not route around that by
+ * baking a secret into a build-time define either: every one of these is
+ * operator-provisioned into write-only plugin kv through the Settings form.
+ */
+describe("payment/email secrets never leave kv for the site's build surface", () => {
+	test("no payment secret name appears in astro.config.ts as a define", async () => {
+		const config = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+		for (const key of PAYMENT_SECRET_KEYS) {
+			const name = key.slice("settings:".length);
+			expect(config).not.toContain(name);
+		}
+	});
+
+	test("no payment secret name appears in wrangler.jsonc", async () => {
+		const wrangler = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+		for (const key of PAYMENT_SECRET_KEYS) {
+			expect(wrangler).not.toContain(key);
+		}
 	});
 });
 
