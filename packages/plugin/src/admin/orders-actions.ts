@@ -72,7 +72,7 @@ import {
 	fit,
 	formatAmount as formatTotal,
 } from "@otta-sh/admin-presentation";
-import { AdminOrdersClient, type RefundsSummaryWire } from "./admin-orders-client.js";
+import type { AdminOrdersSurface, RefundsSummaryWire } from "./admin-orders-client.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
 import type { SelectOption } from "../types.js";
 
@@ -165,7 +165,7 @@ export interface OrdersActionResult {
 export type OrdersActionPayload = Readonly<Record<string, string>>;
 
 type OrdersAction = (
-	client: AdminOrdersClient,
+	client: AdminOrdersSurface,
 	payload: OrdersActionPayload,
 ) => Promise<OrdersActionResult>;
 
@@ -792,7 +792,7 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = new Set(Object.keys(ORDERS
 export async function dispatchOrdersAction(
 	actionId: string,
 	payload: OrdersActionPayload,
-	client: AdminOrdersClient,
+	client: AdminOrdersSurface,
 ): Promise<OrdersActionResult | undefined> {
 	const action = ORDERS_ACTIONS_BY_ID[actionId];
 	if (action === undefined) return undefined;
