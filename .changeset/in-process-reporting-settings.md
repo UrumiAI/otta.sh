@@ -13,6 +13,8 @@ every one of those six methods against both of them.
 
 A settings save that fails now states WHY structurally, on
 `UpdateSettingsResult.reason` (`"validation"`, `"superseded"`, `"unavailable"`).
+This is a RATIFIED change to a published surface — proposed and approved
+2026-09-16 under work order 02, not an incidental widening.
 Callers should branch on `reason` first; the HTTP-only `status` stays as a
 legacy fallback and is now optional, since the in-process tier has no HTTP
 status and will not synthesize one. A lost compare-and-set is reported as
