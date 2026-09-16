@@ -108,18 +108,33 @@ export type RulesClientSurface = Pick<
 	| "updateCoupon"
 	| "deleteCoupon"
 >;
-/** The reporting + settings surface. Empty until INC-B10c. */
-export type ReportingClientSurface = Pick<ReportingSettingsClient, "getRevenue">;
+/**
+ * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
+ *
+ * EVERY METHOD IS LISTED, for the same reason `RulesClientSurface` lists all
+ * twenty-five: adding a method to `ReportingSettingsClient` without deciding what
+ * the in-process tier does about it has to be a COMPILE error here, not a gap
+ * discovered when a console screen is bound to a tier that cannot serve it.
+ */
+export type ReportingClientSurface = Pick<
+	ReportingSettingsClient,
+	| "getRevenue"
+	| "getOrdersByStatus"
+	| "getTopProducts"
+	| "getLowStock"
+	| "getSettings"
+	| "updateSettings"
+>;
 
 /**
  * What a tier's admin composition hands back.
  *
  * EVERY SURFACE EXCEPT `products` IS OPTIONAL, and that is a statement about the
- * world rather than a convenience: `reporting` arrives in-process with
- * INC-B10c-ii, so the in-process tier genuinely does not have it yet.
+ * world rather than a convenience: a tier is entitled to bind fewer surfaces than
+ * the contract knows about, and the optionality is how it says so out loud.
  *
- * `orders` (INC-B10b-ii) and `rules` (INC-B10c-i) ARE FOLDED IN NOW and are
- * still typed optional, which is
+ * `orders` (INC-B10b-ii), `rules` (INC-B10c-i) and `reporting` (INC-B10c-ii) ARE
+ * ALL FOLDED IN NOW and are still typed optional, which is
  * deliberate: each is read through `requireSurface` — the `rules` idiom — so a tier
  * that binds the slice without an orders surface fails LOUDLY at bind time,
  * naming itself and the surface, rather than being unable to express the gap at
@@ -2965,6 +2980,46 @@ type ProductsListResultShape = Awaited<ReturnType<ProductsClientSurface["listPro
 
 // ── Slice 3: admin rules + reporting (INC-B10c) ───────────────────────────
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The top-products page bound both transports enforce (`limit` is
+ *  `int().positive().max(1000)` on the wire and mirrored in-process). */
+const TOP_PRODUCTS_MAX_LIMIT = 1000;
+
+/** `MAX_HOLD_TTL_MINUTES` — one week, the domain's own ceiling. */
+const MAX_HOLD_TTL_MINUTES = 10_080;
+
+/** `int4`'s maximum: the threshold is compared against an `integer` on-hand
+ *  column, so a larger one could never match anything and is refused instead. */
+const MAX_LOW_STOCK_THRESHOLD = 2_147_483_647;
+
+/** Large enough that a dialect whose `SUM(quantity)` is a BIGINT cannot be
+ *  mistaken for one whose sum is a plain integer, and small enough that
+ *  `quantity × 1` still fits the 32-bit money column beside it. */
+const BIG_QTY = 2_000_000_000;
+
+/**
+ * A window that CONTAINS the instant a seeded order is stamped with, on either
+ * tier — one has a fake clock anchored at the suite's start, the other has the
+ * database's own `now()`, and neither can be made to agree on a literal. Four
+ * days wide, so it is well inside the 400-day cap and cannot straddle a boundary
+ * a case depends on.
+ */
+function reportWindow(): { from: string; to: string } {
+	const now = Date.now();
+	return {
+		from: new Date(now - 2 * DAY_MS).toISOString(),
+		to: new Date(now + 2 * DAY_MS).toISOString(),
+	};
+}
+
+/** One state's count, or ZERO for a state the report omitted — an absent bucket
+ *  and a zero bucket mean the same thing to a DELTA, and the report emits only
+ *  the former. */
+function countOf(rows: readonly { status: string; orderCount: number }[], status: string): number {
+	return rows.find((row) => row.status === status)?.orderCount ?? 0;
+}
+
 export function adminRulesReportingClientContract(tier: CommerceClientTier): void {
 	describe(`commerceClientContract — admin rules + reporting [${tier.name}]`, () => {
 		let client: RulesClientSurface;
@@ -2973,22 +3028,400 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// this whole surface that spans two aggregates, and there is no honest way
 		// to arrange it from inside the rules surface alone.
 		let products: ProductsClientSurface;
+		// The REPORTING + SETTINGS surface (INC-B10c-ii).
+		let reporting: ReportingClientSurface;
+		// The ORDERS surface, held for one reason only: `pending` is not in
+		// `REVENUE_COUNTING_STATES`, so an order that `arrange.order` seeds counts
+		// towards no revenue until something moves it to `paid`, and the only honest
+		// way to move it is the transition the console itself performs. Writing a
+		// `paid` order straight into the store behind the port's back would seed a
+		// state the machine never produced.
+		let orders: OrdersClientSurface;
 
 		const makeAdminClients = assertAdminClients(tier);
 		beforeAll(async () => {
 			await tier.setup();
 			const clients = await makeAdminClients();
 			client = requireSurface(tier, clients, "rules");
+			reporting = requireSurface(tier, clients, "reporting");
+			orders = requireSurface(tier, clients, "orders");
 			products = clients.products;
 		});
 		beforeEach(async () => {
 			await tier.reset();
 		});
 
-		// REPORTING HAS NO CASES YET — nothing in the eight source files
-		// exercised `ReportingSettingsClient`. INC-B10c writes them here, for
-		// `getRevenue`, `getOrdersByStatus`, `getTopProducts`, `getLowStock`,
-		// `getSettings` and `updateSettings`.
+		// ── reporting: getRevenue ─────────────────────────────────────────
+		//
+		// HOW THESE CASES ISOLATE THEMSELVES, and why it is not `reset()`. One tier
+		// resets its rows per case and the other's `reset()` is a documented no-op
+		// over a long-lived database, so a reporting case that asserted an ABSOLUTE
+		// total over the whole window would pass on one tier and drift on the other
+		// as neighbouring cases seeded into it. Each case therefore carves out a
+		// dimension the report already groups or keys by — its OWN CURRENCY for
+		// revenue, its OWN product ids for top-products, its OWN sku prefix for
+		// low-stock — or measures a DELTA across its own writes. Nothing here
+		// depends on starting from an empty database.
+		//
+		// AND WHY THE WINDOW IS DERIVED RATHER THAN PINNED: one tier has a clock
+		// hook and the other has none, so there is no instant both can be made to
+		// agree on. The window is therefore wide enough to contain "now" on either
+		// (`reportWindow`), and no case asserts a `bucketStart` — the bucket
+		// BOUNDARY is the store's business and pinning it here would only assert
+		// which side of UTC midnight the suite happened to run on.
+
+		test("revenue counts only the revenue-bearing states, groups by currency, and always STATES refunds", async () => {
+			const window = reportWindow();
+			// CAD is this case's isolation: every other case in both admin slices
+			// seeds USD, and the report groups by currency, so the CAD rows are this
+			// case's rows whatever else is in the database.
+			await tier.arrange.order({
+				orderId: "rep-rev-1",
+				buyerRef: "rev1@example.test",
+				unitPrice: { amount: 1500, currency: "CAD" },
+			});
+			await tier.arrange.order({
+				orderId: "rep-rev-2",
+				buyerRef: "rev2@example.test",
+				unitPrice: { amount: 2500, currency: "CAD" },
+				quantity: 2,
+			});
+			// LEFT PENDING ON PURPOSE. `pending` is not in the allow-list, so this
+			// order's 9900 must appear in no bucket — an allow-list that had drifted
+			// into a deny-list would show up here as 9900 of revenue nobody earned.
+			await tier.arrange.order({
+				orderId: "rep-rev-3",
+				buyerRef: "rev3@example.test",
+				unitPrice: { amount: 9900, currency: "CAD" },
+			});
+			expect(
+				await orders.transitionOrder("rep-rev-1", "paid", { idempotencyKey: "rep-rev-1-paid" }),
+			).toEqual({ ok: true, transitioned: true });
+			expect(
+				await orders.transitionOrder("rep-rev-2", "paid", { idempotencyKey: "rep-rev-2-paid" }),
+			).toEqual({ ok: true, transitioned: true });
+
+			const buckets = (await reporting.getRevenue(window, "day")).filter(
+				(bucket) => bucket.currency === "CAD",
+			);
+			expect(buckets.length).toBeGreaterThan(0);
+			expect(buckets.reduce((sum, bucket) => sum + bucket.revenueCents, 0)).toBe(1500 + 2500 * 2);
+
+			for (const bucket of buckets) {
+				// PRESENCE, NEVER TRUTHINESS. `refundedCents: 0` is the fact "nothing
+				// came back in this bucket"; the KEY's absence would be the different
+				// fact "this transport cannot report refunds at all". A renderer that
+				// wrote `?? 0` would collapse the two, so the contract asserts the key
+				// is there before it asserts what it says.
+				expect(Object.hasOwn(bucket, "refundedCents"), "refundedCents is emitted").toBe(true);
+				expect(bucket.refundedCents).toBe(0);
+			}
+			// Integer minor units on the wire, never a float — on both transports.
+			for (const bucket of buckets) {
+				expect(Number.isSafeInteger(bucket.revenueCents)).toBe(true);
+			}
+		});
+
+		test("an empty period is OMITTED from the revenue report, never zero-filled", async () => {
+			// A window that ends before this suite's data begins: 30 days wide, and
+			// entirely in the past, so nothing either slice seeded falls in it.
+			const now = Date.now();
+			const window = {
+				from: new Date(now - 400 * DAY_MS).toISOString(),
+				to: new Date(now - 370 * DAY_MS).toISOString(),
+			};
+			// NOT "thirty buckets of zero". Zero-filling is a RENDERER's job, and it
+			// needs the report's own silence to know which days it is filling.
+			expect(await reporting.getRevenue(window, "day")).toEqual([]);
+		});
+
+		test("a report window wider than the cap is REFUSED, on both transports", async () => {
+			const now = Date.now();
+			await expectRejectedInput(
+				reporting.getRevenue(
+					{
+						from: new Date(now - 401 * DAY_MS).toISOString(),
+						to: new Date(now + 1 * DAY_MS).toISOString(),
+					},
+					"day",
+				),
+				"from",
+			);
+			// And a window that is not a window at all.
+			await expectRejectedInput(
+				reporting.getRevenue({ from: "yesterday", to: "today" }, "day"),
+				"from",
+			);
+		});
+
+		// ── reporting: getOrdersByStatus ──────────────────────────────────
+
+		test("orders-by-status counts EVERY state, with no allow-list, and omits the empty ones", async () => {
+			const window = reportWindow();
+			// A DELTA, not an absolute: the other slice's orders share this window on a
+			// tier whose `reset()` is a no-op, and what this case is about is what its
+			// OWN three orders did to the counts.
+			const before = await reporting.getOrdersByStatus(window);
+
+			await tier.arrange.order({ orderId: "rep-obs-1", buyerRef: "obs1@example.test" });
+			await tier.arrange.order({ orderId: "rep-obs-2", buyerRef: "obs2@example.test" });
+			await tier.arrange.order({ orderId: "rep-obs-3", buyerRef: "obs3@example.test" });
+			expect(
+				await orders.transitionOrder("rep-obs-1", "paid", { idempotencyKey: "rep-obs-1-paid" }),
+			).toEqual({ ok: true, transitioned: true });
+			expect(
+				await orders.transitionOrder("rep-obs-2", "cancelled", {
+					idempotencyKey: "rep-obs-2-cancel",
+				}),
+			).toEqual({ ok: true, transitioned: true });
+
+			const after = await reporting.getOrdersByStatus(window);
+			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);
+			// `cancelled` is NOT revenue-bearing and is counted all the same: this
+			// report has no allow-list, because a merchant needs the states that lost
+			// money as much as the ones that made it.
+			expect(countOf(after, "cancelled") - countOf(before, "cancelled")).toBe(1);
+			expect(countOf(after, "pending") - countOf(before, "pending")).toBe(1);
+
+			// EMPTY BUCKETS ARE ABSENT rather than zero: every row carried a count.
+			for (const row of await reporting.getOrdersByStatus(window)) {
+				expect(row.orderCount).toBeGreaterThan(0);
+			}
+		});
+
+		// ── reporting: getTopProducts ─────────────────────────────────────
+
+		test("top products rank the FROZEN line snapshot, and a re-titled product is two rows", async () => {
+			const window = reportWindow();
+			// ASCII ONLY, and deliberately so: the two rows below are separated by a
+			// title comparison the two tiers perform in different collations, so a
+			// title outside plain ASCII would make this case about collation.
+			await tier.arrange.order({
+				orderId: "rep-top-a1",
+				buyerRef: "top1@example.test",
+				productId: "rep-top-prod",
+				sku: "SKU-REP-TOP",
+				title: "Widget",
+				unitPrice: { amount: 1000, currency: "USD" },
+				quantity: 3,
+			});
+			// THE SAME PRODUCT, SOLD UNDER A DIFFERENT TITLE. The group is
+			// `(productId, title)`, not the product alone, because the title is a fact
+			// about the SALE and the line snapshot froze it: merging these would
+			// rewrite history to whatever the product is called today.
+			await tier.arrange.order({
+				orderId: "rep-top-a2",
+				buyerRef: "top2@example.test",
+				productId: "rep-top-prod",
+				sku: "SKU-REP-TOP",
+				title: "Widget Mk II",
+				unitPrice: { amount: 2000, currency: "USD" },
+				quantity: 1,
+			});
+			for (const orderId of ["rep-top-a1", "rep-top-a2"]) {
+				expect(
+					await orders.transitionOrder(orderId, "paid", { idempotencyKey: `${orderId}-paid` }),
+				).toEqual({ ok: true, transitioned: true });
+			}
+
+			const rows = (
+				await reporting.getTopProducts(window, "revenue", TOP_PRODUCTS_MAX_LIMIT)
+			).filter((row) => row.productId === "rep-top-prod");
+			expect(rows.map((row) => row.titleSnapshot).toSorted()).toEqual(["Widget", "Widget Mk II"]);
+			expect(rows.find((row) => row.titleSnapshot === "Widget")).toMatchObject({
+				qtySold: 3,
+				revenueCents: 3000,
+			});
+			expect(rows.find((row) => row.titleSnapshot === "Widget Mk II")).toMatchObject({
+				qtySold: 1,
+				revenueCents: 2000,
+			});
+		});
+
+		test("a quantity near the 32-bit ceiling survives the sum as a SAFE integer", async () => {
+			const window = reportWindow();
+			// The dialect SUMs quantity; one dialect's SUM of an integer column is a
+			// BIGINT, which arrives as a string or a `bigint` unless the adapter casts
+			// it. A quantity this large is the only way to tell a correct cast from a
+			// `parseInt` that has never been given anything to fail on. Unit price is
+			// 1 so the money stays inside the same 32-bit column the quantity is near.
+			await tier.arrange.order({
+				orderId: "rep-top-big",
+				buyerRef: "topbig@example.test",
+				productId: "rep-top-bigprod",
+				sku: "SKU-REP-BIG",
+				title: "Bulk Unit",
+				unitPrice: { amount: 1, currency: "USD" },
+				quantity: BIG_QTY,
+			});
+			expect(
+				await orders.transitionOrder("rep-top-big", "paid", { idempotencyKey: "rep-top-big-paid" }),
+			).toEqual({ ok: true, transitioned: true });
+
+			const row = (await reporting.getTopProducts(window, "quantity", TOP_PRODUCTS_MAX_LIMIT)).find(
+				(candidate) => candidate.productId === "rep-top-bigprod",
+			);
+			expect(row).toBeDefined();
+			expect(typeof row?.qtySold).toBe("number");
+			expect(row?.qtySold).toBe(BIG_QTY);
+			expect(row?.revenueCents).toBe(BIG_QTY);
+		});
+
+		test("the top-products limit is bounded, and a limit that is not one is REFUSED", async () => {
+			const window = reportWindow();
+			await expectRejectedInput(reporting.getTopProducts(window, "revenue", 0), "limit");
+			await expectRejectedInput(reporting.getTopProducts(window, "revenue", -1), "limit");
+			await expectRejectedInput(reporting.getTopProducts(window, "revenue", 1.5), "limit");
+			await expectRejectedInput(
+				reporting.getTopProducts(window, "revenue", TOP_PRODUCTS_MAX_LIMIT + 1),
+				"limit",
+			);
+			// And the bound itself holds: a limit of 1 returns at most one row.
+			expect((await reporting.getTopProducts(window, "revenue", 1)).length).toBeLessThanOrEqual(1);
+		});
+
+		// ── reporting: getLowStock ────────────────────────────────────────
+
+		test("low stock is inventory-first, ordered by on-hand, and NEVER titles a row with its sku", async () => {
+			// Plain-ASCII skus, pinned: the tie-break between two rows at the same
+			// on-hand count is a sku comparison, and the two tiers collate in
+			// different libraries.
+			await tier.arrange.product({
+				productId: "rep-low-a",
+				sku: "SKU-REP-LOW-A",
+				title: "Low Stock Widget A",
+				onHand: 0,
+				idempotencyKey: "rep-low-a-1",
+			});
+			await tier.arrange.product({
+				productId: "rep-low-b",
+				sku: "SKU-REP-LOW-B",
+				title: "Low Stock Widget B",
+				onHand: 2,
+				idempotencyKey: "rep-low-b-1",
+			});
+			// ABOVE the threshold this case asks for, so it must not be listed.
+			await tier.arrange.product({
+				productId: "rep-low-c",
+				sku: "SKU-REP-LOW-C",
+				title: "Stocked Widget C",
+				onHand: 9,
+				idempotencyKey: "rep-low-c-1",
+			});
+
+			const rows = (await reporting.getLowStock(2)).filter((row) =>
+				row.sku.startsWith("SKU-REP-LOW-"),
+			);
+			// Ascending by on-hand — the operator reads the worst first.
+			expect(rows.map((row) => row.sku)).toEqual(["SKU-REP-LOW-A", "SKU-REP-LOW-B"]);
+			expect(rows.map((row) => row.onHand)).toEqual([0, 2]);
+			for (const row of rows) {
+				// `title` is the LIVE product's title or NULL, and null is the only
+				// fallback — a row is never titled with the sku it already carries in
+				// its own field, or "the product is called SKU-42" would be
+				// indistinguishable from "we do not know its name" and a renderer's
+				// `(untitled)` affordance would never fire. Four distinct causes yield
+				// null (no claim, a released claim, a claim held by a variant, a live
+				// product whose own title is null), which is why the assertion admits
+				// null rather than demanding the seeded title on both tiers.
+				expect(row.title === null || typeof row.title === "string").toBe(true);
+				expect(row.title).not.toBe(row.sku);
+			}
+			// The boundary is INCLUSIVE and the cut is real.
+			expect(rows.some((row) => row.sku === "SKU-REP-LOW-C")).toBe(false);
+		});
+
+		test("an omitted threshold DEFAULTS from the operational settings", async () => {
+			// This case sets the threshold it then relies on, rather than trusting the
+			// stored default: settings are a singleton, one tier does not reset it
+			// between cases, and a case that assumed `5` would be asserting the order
+			// the suite happened to run in.
+			expect(
+				await reporting.updateSettings(
+					{ lowStockThreshold: 3 },
+					{ idempotencyKey: "rep-low-default-threshold" },
+				),
+			).toMatchObject({ ok: true, settings: { lowStockThreshold: 3 } });
+
+			await tier.arrange.product({
+				productId: "rep-lowd-in",
+				sku: "SKU-REP-LOWD-IN",
+				title: "Under The Default",
+				onHand: 3,
+				idempotencyKey: "rep-lowd-in-1",
+			});
+			await tier.arrange.product({
+				productId: "rep-lowd-out",
+				sku: "SKU-REP-LOWD-OUT",
+				title: "Over The Default",
+				onHand: 4,
+				idempotencyKey: "rep-lowd-out-1",
+			});
+
+			const skus = (await reporting.getLowStock())
+				.map((row) => row.sku)
+				.filter((sku) => sku.startsWith("SKU-REP-LOWD-"));
+			expect(skus).toEqual(["SKU-REP-LOWD-IN"]);
+		});
+
+		test("a threshold that is not a non-negative integer is REFUSED", async () => {
+			await expectRejectedInput(reporting.getLowStock(-1), "threshold");
+			await expectRejectedInput(reporting.getLowStock(2.5), "threshold");
+		});
+
+		// ── settings: getSettings + updateSettings ────────────────────────
+
+		test("a settings patch round-trips, is PARTIAL, and replays under its key", async () => {
+			const before = await reporting.getSettings();
+			expect(Number.isSafeInteger(before.holdTtlMinutes)).toBe(true);
+			expect(Number.isSafeInteger(before.lowStockThreshold)).toBe(true);
+
+			const saved = await reporting.updateSettings(
+				{ holdTtlMinutes: 42 },
+				{ idempotencyKey: "rep-set-1" },
+			);
+			expect(saved).toMatchObject({ ok: true, settings: { holdTtlMinutes: 42 } });
+			// PARTIAL: the key the patch did not name is untouched, not defaulted.
+			expect(saved.ok && saved.settings.lowStockThreshold).toBe(before.lowStockThreshold);
+			expect(await reporting.getSettings()).toMatchObject({ holdTtlMinutes: 42 });
+
+			// THE KEY DECIDES, NOT THE PAYLOAD: a replay under the same key answers
+			// with what that key already decided, and the second payload is never
+			// applied. This is the one case that would let a double-submitted form
+			// silently move a live setting.
+			const replay = await reporting.updateSettings(
+				{ holdTtlMinutes: 99 },
+				{ idempotencyKey: "rep-set-1" },
+			);
+			expect(replay).toMatchObject({ ok: true, settings: { holdTtlMinutes: 42 } });
+			expect(await reporting.getSettings()).toMatchObject({ holdTtlMinutes: 42 });
+		});
+
+		test("an out-of-range settings value is a REFUSAL, never a clamp", async () => {
+			const before = await reporting.getSettings();
+			// ONLY `ok === false` IS ASSERTED, deliberately. One transport validates
+			// with a request schema and then again in the domain, the other has the
+			// domain path alone, so the two produce different MESSAGES for the same
+			// input — and a shared case that pinned the text would be asserting which
+			// validator ran rather than that the value was refused.
+			for (const patch of [
+				{ holdTtlMinutes: 0 },
+				{ holdTtlMinutes: -1 },
+				{ holdTtlMinutes: 1.5 },
+				{ holdTtlMinutes: MAX_HOLD_TTL_MINUTES + 1 },
+				{ lowStockThreshold: -1 },
+				{ lowStockThreshold: 2.5 },
+				{ lowStockThreshold: MAX_LOW_STOCK_THRESHOLD + 1 },
+			]) {
+				const result = await reporting.updateSettings(patch, {
+					idempotencyKey: `rep-set-bad-${JSON.stringify(patch)}`,
+				});
+				expect(result.ok, `${JSON.stringify(patch)} is refused`).toBe(false);
+			}
+			// AND NOTHING WAS CLAMPED on the way: a refused value leaves the stored
+			// settings exactly as they were, rather than saving the nearest legal one.
+			expect(await reporting.getSettings()).toEqual(before);
+		});
 
 		test("shipping: create zone→method→rate, edit them, and enforce referential deletes", async () => {
 			expect((await client.createZone({ id: "z1", name: "US" })).ok).toBe(true);
