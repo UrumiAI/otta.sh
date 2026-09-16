@@ -76,7 +76,7 @@ async function createDigitalOrder(
 /** Settle the order through the service's own verified webhook receiver —
  *  on `paid` a digital line grants the entitlement (settle §5/§6). */
 async function payOrder(live: LiveService, orderId: string, totalCents: number): Promise<void> {
-	const signed = signStripeWebhook(
+	const signed = await signStripeWebhook(
 		{
 			eventId: `evt_${orderId}`,
 			type: "payment_intent.succeeded",

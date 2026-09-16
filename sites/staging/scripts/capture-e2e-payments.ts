@@ -93,7 +93,7 @@ if (orders.length === 0) {
 }
 
 for (const order of orders) {
-	const { body, signatureHeader } = signStripeWebhook(
+	const { body, signatureHeader } = await signStripeWebhook(
 		{
 			eventId: `evt_e2e_${order.id.slice(0, 8)}`,
 			type: "payment_intent.succeeded",

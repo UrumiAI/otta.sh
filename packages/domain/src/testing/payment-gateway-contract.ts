@@ -23,7 +23,7 @@ export function paymentGatewayContract(
 		test("a verified confirmation flips the order to paid and commits the physical reservation", async () => {
 			const h = makeHarness();
 			const { orderId, reservationId } = await h.seedPhysicalOrder(1500);
-			const raw = h.confirm({
+			const raw = await h.confirm({
 				orderId,
 				amountCents: 1500,
 				currency: "USD",
@@ -40,7 +40,7 @@ export function paymentGatewayContract(
 		test("a replayed confirmation (same dedupeKey) settles once — the second is a no-op", async () => {
 			const h = makeHarness();
 			const { orderId, reservationId } = await h.seedPhysicalOrder(1500);
-			const raw = h.confirm({
+			const raw = await h.confirm({
 				orderId,
 				amountCents: 1500,
 				currency: "USD",
@@ -59,7 +59,7 @@ export function paymentGatewayContract(
 		test("a verified confirmation on a digital order grants an entitlement", async () => {
 			const h = makeHarness();
 			const { orderId, sku } = await h.seedDigitalOrder(900);
-			const raw = h.confirm({
+			const raw = await h.confirm({
 				orderId,
 				amountCents: 900,
 				currency: "USD",
@@ -76,7 +76,7 @@ export function paymentGatewayContract(
 		test("amount/currency mismatch is rejected and recorded as an anomaly; order stays pending", async () => {
 			const h = makeHarness();
 			const { orderId } = await h.seedPhysicalOrder(1500);
-			const raw = h.confirm({
+			const raw = await h.confirm({
 				orderId,
 				amountCents: 999, // wrong amount
 				currency: "USD",
@@ -93,7 +93,7 @@ export function paymentGatewayContract(
 		test("an invalid-signature confirmation is rejected (no settle)", async () => {
 			const h = makeHarness();
 			const { orderId } = await h.seedPhysicalOrder(1500);
-			const raw = h.confirmBadSignature({
+			const raw = await h.confirmBadSignature({
 				orderId,
 				amountCents: 1500,
 				currency: "USD",
