@@ -51,7 +51,12 @@ import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	type StripeWebhookSettleResult,
 } from "@otta-sh/plugin";
-import { env as virtualEnv } from "virtual:emdash/env";
+// The stub `vitest.config.ts` aliases `virtual:emdash/env` to. Imported by its
+// real path rather than through the alias: same file, so the same module
+// instance `webhook-env.ts` reads — but typed as the always-present object it
+// is here, instead of the ambient declaration's `Record | undefined` (which is
+// honest about a non-Cloudflare adapter, and useless to mutate).
+import { env as virtualEnv } from "./helpers/virtual-emdash-env.js";
 import { OTTA_WH_TOKEN_VAR } from "../src/lib/webhook-env.js";
 import { POST } from "../src/pages/webhooks/stripe.js";
 
