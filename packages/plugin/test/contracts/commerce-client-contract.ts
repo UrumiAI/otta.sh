@@ -2999,19 +2999,32 @@ const MAX_LOW_STOCK_THRESHOLD = 2_147_483_647;
 const BIG_QTY = 2_000_000_000;
 
 /**
- * A window that CONTAINS the instant a seeded order is stamped with, on either
- * tier — one has a fake clock anchored at the suite's start, the other has the
- * database's own `now()`, and neither can be made to agree on a literal. Four
- * days wide, so it is well inside the 400-day cap and cannot straddle a boundary
- * a case depends on.
+ * A four-day window centred on `instant`.
+ *
+ * THE INSTANT COMES FROM THE DATA, NEVER FROM `Date.now()`, and that is the whole
+ * design of these cases. Each tier stamps `created_at` from its OWN clock — one
+ * is anchored at the suite's start, the other at a fixed literal in the service
+ * harness — and only one tier has a clock hook at all, so there is no wall-clock
+ * window both can be held to. A case therefore SEEDS first, reads back the
+ * instant its own order was stamped with, and asks for the window around THAT.
+ * It is self-calibrating: a harness that re-anchors its clock moves these cases
+ * with it instead of silently reporting an empty window.
+ *
+ * Four days wide, so it is well inside the 400-day cap and no case depends on
+ * which side of a bucket boundary the anchor fell.
  */
-function reportWindow(): { from: string; to: string } {
-	const now = Date.now();
+function windowAround(instant: string): { from: string; to: string } {
+	const at = Date.parse(instant);
+	if (Number.isNaN(at)) throw new Error(`reporting window: "${instant}" is not an instant`);
 	return {
-		from: new Date(now - 2 * DAY_MS).toISOString(),
-		to: new Date(now + 2 * DAY_MS).toISOString(),
+		from: new Date(at - 2 * DAY_MS).toISOString(),
+		to: new Date(at + 2 * DAY_MS).toISOString(),
 	};
 }
+
+/** A window BEFORE either tier's data begins, for the cases whose subject is an
+ *  empty report. Both tiers' clocks are in the 2020s; nothing is seeded here. */
+const EMPTY_WINDOW = { from: "2000-01-01T00:00:00.000Z", to: "2000-01-31T00:00:00.000Z" };
 
 /** One state's count, or ZERO for a state the report omitted — an absent bucket
  *  and a zero bucket mean the same thing to a DELTA, and the report emits only
@@ -3051,6 +3064,17 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			await tier.reset();
 		});
 
+		/** The window this case's own orders actually fall in — see `windowAround`
+		 *  for why the anchor is read back from the data rather than computed from
+		 *  the wall clock. */
+		async function windowAroundOrder(orderId: string): Promise<{ from: string; to: string }> {
+			const detail = await orders.getOrder(orderId);
+			if (detail === null) {
+				throw new Error(`reporting window: order ${orderId} is not there to anchor it`);
+			}
+			return windowAround(detail.order.createdAt);
+		}
+
 		// ── reporting: getRevenue ─────────────────────────────────────────
 		//
 		// HOW THESE CASES ISOLATE THEMSELVES, and why it is not `reset()`. One tier
@@ -3063,15 +3087,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// low-stock — or measures a DELTA across its own writes. Nothing here
 		// depends on starting from an empty database.
 		//
-		// AND WHY THE WINDOW IS DERIVED RATHER THAN PINNED: one tier has a clock
-		// hook and the other has none, so there is no instant both can be made to
-		// agree on. The window is therefore wide enough to contain "now" on either
-		// (`reportWindow`), and no case asserts a `bucketStart` — the bucket
-		// BOUNDARY is the store's business and pinning it here would only assert
-		// which side of UTC midnight the suite happened to run on.
+		// AND WHY THE WINDOW IS READ BACK RATHER THAN PINNED: the two tiers stamp
+		// `createdAt` from different clocks and only one of them has a hook, so a
+		// case seeds first and asks for the window around the instant its OWN order
+		// came back with (`windowAroundOrder`). No case asserts a `bucketStart`
+		// either — the bucket BOUNDARY is the store's business, and pinning it here
+		// would only assert which side of UTC midnight the suite happened to run on.
 
 		test("revenue counts only the revenue-bearing states, groups by currency, and always STATES refunds", async () => {
-			const window = reportWindow();
 			// CAD is this case's isolation: every other case in both admin slices
 			// seeds USD, and the report groups by currency, so the CAD rows are this
 			// case's rows whatever else is in the database.
@@ -3101,6 +3124,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				await orders.transitionOrder("rep-rev-2", "paid", { idempotencyKey: "rep-rev-2-paid" }),
 			).toEqual({ ok: true, transitioned: true });
 
+			const window = await windowAroundOrder("rep-rev-1");
 			const buckets = (await reporting.getRevenue(window, "day")).filter(
 				(bucket) => bucket.currency === "CAD",
 			);
@@ -3123,16 +3147,11 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		});
 
 		test("an empty period is OMITTED from the revenue report, never zero-filled", async () => {
-			// A window that ends before this suite's data begins: 30 days wide, and
-			// entirely in the past, so nothing either slice seeded falls in it.
-			const now = Date.now();
-			const window = {
-				from: new Date(now - 400 * DAY_MS).toISOString(),
-				to: new Date(now - 370 * DAY_MS).toISOString(),
-			};
 			// NOT "thirty buckets of zero". Zero-filling is a RENDERER's job, and it
 			// needs the report's own silence to know which days it is filling.
-			expect(await reporting.getRevenue(window, "day")).toEqual([]);
+			expect(await reporting.getRevenue(EMPTY_WINDOW, "day")).toEqual([]);
+			// The same silence from the other period report, for the same reason.
+			expect(await reporting.getOrdersByStatus(EMPTY_WINDOW)).toEqual([]);
 		});
 
 		test("a report window wider than the cap is REFUSED, on both transports", async () => {
@@ -3157,15 +3176,16 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// ── reporting: getOrdersByStatus ──────────────────────────────────
 
 		test("orders-by-status counts EVERY state, with no allow-list, and omits the empty ones", async () => {
-			const window = reportWindow();
-			// A DELTA, not an absolute: the other slice's orders share this window on a
-			// tier whose `reset()` is a no-op, and what this case is about is what its
-			// OWN three orders did to the counts.
-			const before = await reporting.getOrdersByStatus(window);
-
 			await tier.arrange.order({ orderId: "rep-obs-1", buyerRef: "obs1@example.test" });
 			await tier.arrange.order({ orderId: "rep-obs-2", buyerRef: "obs2@example.test" });
 			await tier.arrange.order({ orderId: "rep-obs-3", buyerRef: "obs3@example.test" });
+			const window = await windowAroundOrder("rep-obs-1");
+			// A DELTA, not an absolute: the other slice's orders share this window on a
+			// tier whose `reset()` is a no-op, and what this case is about is what its
+			// OWN three orders did to the counts. Taken while all three are still
+			// PENDING, so the deltas below say the states MOVED rather than merely that
+			// a count went up.
+			const before = await reporting.getOrdersByStatus(window);
 			expect(
 				await orders.transitionOrder("rep-obs-1", "paid", { idempotencyKey: "rep-obs-1-paid" }),
 			).toEqual({ ok: true, transitioned: true });
@@ -3181,7 +3201,9 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			// report has no allow-list, because a merchant needs the states that lost
 			// money as much as the ones that made it.
 			expect(countOf(after, "cancelled") - countOf(before, "cancelled")).toBe(1);
-			expect(countOf(after, "pending") - countOf(before, "pending")).toBe(1);
+			// And the two that LEFT `pending` are gone from it: a state count is a
+			// snapshot of where the orders are NOW, not a tally of where they have been.
+			expect(countOf(after, "pending") - countOf(before, "pending")).toBe(-2);
 
 			// EMPTY BUCKETS ARE ABSENT rather than zero: every row carried a count.
 			for (const row of await reporting.getOrdersByStatus(window)) {
@@ -3192,7 +3214,6 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// ── reporting: getTopProducts ─────────────────────────────────────
 
 		test("top products rank the FROZEN line snapshot, and a re-titled product is two rows", async () => {
-			const window = reportWindow();
 			// ASCII ONLY, and deliberately so: the two rows below are separated by a
 			// title comparison the two tiers perform in different collations, so a
 			// title outside plain ASCII would make this case about collation.
@@ -3224,6 +3245,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				).toEqual({ ok: true, transitioned: true });
 			}
 
+			const window = await windowAroundOrder("rep-top-a1");
 			const rows = (
 				await reporting.getTopProducts(window, "revenue", TOP_PRODUCTS_MAX_LIMIT)
 			).filter((row) => row.productId === "rep-top-prod");
@@ -3239,7 +3261,6 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		});
 
 		test("a quantity near the 32-bit ceiling survives the sum as a SAFE integer", async () => {
-			const window = reportWindow();
 			// The dialect SUMs quantity; one dialect's SUM of an integer column is a
 			// BIGINT, which arrives as a string or a `bigint` unless the adapter casts
 			// it. A quantity this large is the only way to tell a correct cast from a
@@ -3258,6 +3279,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				await orders.transitionOrder("rep-top-big", "paid", { idempotencyKey: "rep-top-big-paid" }),
 			).toEqual({ ok: true, transitioned: true });
 
+			const window = await windowAroundOrder("rep-top-big");
 			const row = (await reporting.getTopProducts(window, "quantity", TOP_PRODUCTS_MAX_LIMIT)).find(
 				(candidate) => candidate.productId === "rep-top-bigprod",
 			);
@@ -3268,7 +3290,9 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		});
 
 		test("the top-products limit is bounded, and a limit that is not one is REFUSED", async () => {
-			const window = reportWindow();
+			// The window is beside the point here: what is under test is the LIMIT, and
+			// an empty one keeps the refusals from depending on any seeded row.
+			const window = EMPTY_WINDOW;
 			await expectRejectedInput(reporting.getTopProducts(window, "revenue", 0), "limit");
 			await expectRejectedInput(reporting.getTopProducts(window, "revenue", -1), "limit");
 			await expectRejectedInput(reporting.getTopProducts(window, "revenue", 1.5), "limit");
