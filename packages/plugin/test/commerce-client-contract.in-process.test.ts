@@ -45,8 +45,10 @@ import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
+import { InProcessAdminRulesClient } from "../src/admin/in-process-admin-rules-client.js";
 import {
 	adminOrdersProductsClientContract,
+	adminRulesReportingClientContract,
 	storefrontCommerceClientContract,
 	type AdminClientSurfaces,
 	type CommerceClientTier,
@@ -107,11 +109,11 @@ function inProcessTier(): CommerceClientTier {
 			return clientOrThrow();
 		},
 		/**
-		 * The admin surfaces this tier has: products (INC-B10b-i) and orders
-		 * (INC-B10b-ii). Rules and reporting are NOT stubbed — an empty
-		 * implementation would let their slices pass against nothing — so their keys
-		 * are simply absent and the slices that need them fail loudly until
-		 * INC-B10c wires them.
+		 * The admin surfaces this tier has: products (INC-B10b-i), orders
+		 * (INC-B10b-ii) and rules (INC-B10c-i). Reporting is NOT stubbed — an empty
+		 * implementation would let its slice pass against nothing, answering "no
+		 * revenue" where the honest answer is "not wired yet" — so its key is simply
+		 * absent and the slice that needs it fails loudly until INC-B10c-ii.
 		 *
 		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that is the design rather
 		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticate a caller TO
@@ -124,6 +126,7 @@ function inProcessTier(): CommerceClientTier {
 			return {
 				orders: new InProcessAdminOrdersClient(ctx, { clock }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
+				rules: new InProcessAdminRulesClient(ctx, { clock }),
 			};
 		},
 		// The lever the elapsed-deadline case needs. It moves the ONE clock every store
@@ -221,6 +224,7 @@ describe("commerceClientContract over the in-process admin clients", () => {
 		await admin.teardown();
 	});
 	adminOrdersProductsClientContract(admin);
+	adminRulesReportingClientContract(admin);
 });
 
 /**

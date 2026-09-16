@@ -76,27 +76,37 @@ export type ProductsClientSurface = Pick<
 	AdminProductsClient,
 	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
 >;
-/** The rules surface the contract exercises (shipping, tax, coupons). */
+/** The rules surface the contract exercises (shipping, tax, coupons) — the
+ *  class's WHOLE public surface, all twenty-five methods named one by one,
+ *  because INC-B10c-i folds all twenty-five in-process and a surface that listed
+ *  fewer would let one be forgotten silently. */
 export type RulesClientSurface = Pick<
 	AdminRulesClient,
+	| "listZones"
 	| "createZone"
 	| "updateZone"
 	| "deleteZone"
+	| "listMethods"
 	| "createMethod"
+	| "updateMethod"
 	| "deleteMethod"
+	| "getRate"
 	| "createRate"
 	| "updateRate"
 	| "deleteRate"
+	| "listTaxClasses"
 	| "createTaxClass"
-	| "createTaxRate"
+	| "updateTaxClass"
+	| "deleteTaxClass"
 	| "listTaxRates"
+	| "createTaxRate"
 	| "updateTaxRate"
 	| "deleteTaxRate"
+	| "listCoupons"
+	| "getCoupon"
 	| "createCoupon"
 	| "updateCoupon"
-	| "getCoupon"
 	| "deleteCoupon"
-	| "listCoupons"
 >;
 /** The reporting + settings surface. Empty until INC-B10c. */
 export type ReportingClientSurface = Pick<ReportingSettingsClient, "getRevenue">;
@@ -105,11 +115,12 @@ export type ReportingClientSurface = Pick<ReportingSettingsClient, "getRevenue">
  * What a tier's admin composition hands back.
  *
  * EVERY SURFACE EXCEPT `products` IS OPTIONAL, and that is a statement about the
- * world rather than a convenience: rules and reporting arrive in-process with
- * INC-B10c, so the in-process tier genuinely has neither yet.
+ * world rather than a convenience: `reporting` arrives in-process with
+ * INC-B10c-ii, so the in-process tier genuinely does not have it yet.
  *
- * `orders` IS FOLDED IN NOW (INC-B10b-ii) and is still typed optional, which is
- * deliberate: it is read through `requireSurface` — the `rules` idiom — so a tier
+ * `orders` (INC-B10b-ii) and `rules` (INC-B10c-i) ARE FOLDED IN NOW and are
+ * still typed optional, which is
+ * deliberate: each is read through `requireSurface` — the `rules` idiom — so a tier
  * that binds the slice without an orders surface fails LOUDLY at bind time,
  * naming itself and the surface, rather than being unable to express the gap at
  * all. `products` is the one non-optional member because the slice reads it in
@@ -2957,11 +2968,18 @@ type ProductsListResultShape = Awaited<ReturnType<ProductsClientSurface["listPro
 export function adminRulesReportingClientContract(tier: CommerceClientTier): void {
 	describe(`commerceClientContract — admin rules + reporting [${tier.name}]`, () => {
 		let client: RulesClientSurface;
+		// The PRODUCTS surface, held only so the tax-class delete case can point a
+		// product at a class — the `in_use_by_products` refusal is the one arm on
+		// this whole surface that spans two aggregates, and there is no honest way
+		// to arrange it from inside the rules surface alone.
+		let products: ProductsClientSurface;
 
 		const makeAdminClients = assertAdminClients(tier);
 		beforeAll(async () => {
 			await tier.setup();
-			client = requireSurface(tier, await makeAdminClients(), "rules");
+			const clients = await makeAdminClients();
+			client = requireSurface(tier, clients, "rules");
+			products = clients.products;
 		});
 		beforeEach(async () => {
 			await tier.reset();
@@ -3140,6 +3158,242 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(bare.coupons[0]?.expiresAt).toBeNull();
 			const noMatch = await client.listCoupons({ search: "list-alph" }); // substring must NOT match
 			expect(noMatch.coupons).toEqual([]);
+		});
+
+		// ── the registry reads, and the LWW edits that carry no money ──────
+
+		test("shipping: listZones enumerates the registry, listMethods is scoped to ONE zone, and updateMethod is LWW", async () => {
+			await client.createZone({ id: "reg-z-a", name: "Zone A" });
+			await client.createZone({ id: "reg-z-b", name: "Zone B" });
+			await client.createMethod("reg-z-a", { id: "reg-m-a1", name: "Ground", type: "flat_rate" });
+			await client.createMethod("reg-z-a", { id: "reg-m-a2", name: "Free", type: "free_shipping" });
+			await client.createMethod("reg-z-b", { id: "reg-m-b1", name: "Ground", type: "flat_rate" });
+
+			// A CONTAINS, not an equality: the zone registry is store-wide and a tier
+			// whose `reset()` is a documented no-op carries other slices' zones too.
+			// What is under test is that the rows arrive unfiltered and unprojected.
+			const zones = await client.listZones();
+			expect(zones).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ id: "reg-z-a", name: "Zone A" }),
+					expect.objectContaining({ id: "reg-z-b", name: "Zone B" }),
+				]),
+			);
+
+			// `listMethods` IS scoped, so this one CAN be exact — and the exactness is
+			// the point: zone B's method must not leak into zone A's list, because the
+			// console renders this list as "the methods of this zone".
+			const methodsA = await client.listMethods("reg-z-a");
+			expect(methodsA.map((m) => m.id).toSorted()).toEqual(["reg-m-a1", "reg-m-a2"]);
+			expect(methodsA.every((m) => m.zoneId === "reg-z-a")).toBe(true);
+			expect(methodsA.find((m) => m.id === "reg-m-a2")?.type).toBe("free_shipping");
+			expect((await client.listMethods("reg-z-b")).map((m) => m.id)).toEqual(["reg-m-b1"]);
+
+			// LWW: a method carries no money, so the edit takes no expected-value
+			// token and the last writer simply wins. Both editable fields replace.
+			const edited = await client.updateMethod("reg-m-a1", {
+				name: "Ground (3-5 days)",
+				type: "free_shipping",
+			});
+			expect(edited.ok && edited.value.name).toBe("Ground (3-5 days)");
+			expect(edited.ok && edited.value.type).toBe("free_shipping");
+			// Identity is NOT editable: the parent zone is where the method lives.
+			expect(edited.ok && edited.value.zoneId).toBe("reg-z-a");
+
+			expect(await client.updateMethod("reg-m-missing", { name: "X", type: "flat_rate" })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("shipping: getRate reads one method's rate in one currency, and absence is null rather than an error", async () => {
+			await client.createZone({ id: "gr-zone", name: "Get Rate" });
+			await client.createMethod("gr-zone", { id: "gr-method", name: "Flat", type: "flat_rate" });
+
+			// A method with no rate yet: the read is an ABSENCE, not a failure.
+			expect(await client.getRate("gr-method", "USD")).toBeNull();
+
+			await client.createRate("gr-method", {
+				currency: "USD",
+				amountCents: 1250,
+				minSubtotalCents: 5000,
+			});
+			expect(await client.getRate("gr-method", "USD")).toEqual({
+				methodId: "gr-method",
+				currency: "USD",
+				amountCents: 1250,
+				// The free-shipping threshold rides the row and is NOT flattened to
+				// zero — "no threshold" and "a threshold of nothing" are different.
+				minSubtotalCents: 5000,
+			});
+
+			// A rate is per CURRENCY: the same method in another currency is absent.
+			expect(await client.getRate("gr-method", "EUR")).toBeNull();
+			// And so is a rate on a method that does not exist at all.
+			expect(await client.getRate("gr-missing", "USD")).toBeNull();
+
+			await client.deleteRate("gr-method", "USD");
+			expect(await client.getRate("gr-method", "USD")).toBeNull();
+		});
+
+		test("tax: listTaxClasses enumerates the registry and updateTaxClass renames without orphaning its rates", async () => {
+			await client.createZone({ id: "tcx-zone", name: "TC Zone" });
+			await client.createTaxClass({ id: "tcx-standard", name: "Standard" });
+			await client.createTaxClass({ id: "tcx-reduced", name: "Reduced" });
+
+			// CONTAINS, for the store-wide reason the zone list gives above.
+			expect(await client.listTaxClasses()).toEqual(
+				expect.arrayContaining([
+					{ id: "tcx-standard", name: "Standard" },
+					{ id: "tcx-reduced", name: "Reduced" },
+				]),
+			);
+
+			await client.createTaxRate({
+				id: "tcx-rate",
+				taxClassId: "tcx-standard",
+				zoneId: "tcx-zone",
+				rateBps: 2000,
+			});
+
+			// LWW rename — a class carries no money, so no CAS token.
+			const renamed = await client.updateTaxClass("tcx-standard", { name: "Standard VAT" });
+			expect(renamed.ok && renamed.value).toEqual({ id: "tcx-standard", name: "Standard VAT" });
+			// THE ID IS THE REFERENT: a rename must not orphan the rates pointing at
+			// it, which is the whole reason the id is not editable here.
+			expect(
+				(await client.listTaxRates("tcx-zone")).find((r) => r.id === "tcx-rate")?.taxClassId,
+			).toBe("tcx-standard");
+			expect(await client.listTaxClasses()).toEqual(
+				expect.arrayContaining([{ id: "tcx-standard", name: "Standard VAT" }]),
+			);
+
+			expect(await client.updateTaxClass("tcx-missing", { name: "X" })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("tax: deleteTaxClass counts BOTH kinds of referent before it will delete", async () => {
+			expect(await client.deleteTaxClass("tcd-never-existed")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+
+			// (a) A class a RATE points at.
+			await client.createZone({ id: "tcd-zone", name: "TCD Zone" });
+			await client.createTaxClass({ id: "tcd-rated", name: "Rated" });
+			await client.createTaxRate({
+				id: "tcd-rate",
+				taxClassId: "tcd-rated",
+				zoneId: "tcd-zone",
+				rateBps: 1000,
+			});
+			// The REASON and the COUNT both matter: this delete is the one on the
+			// surface that reports HOW MANY referents block it, so the console can
+			// say what is in the way instead of the generic "delete the children
+			// first".
+			expect(await client.deleteTaxClass("tcd-rated")).toEqual({
+				ok: false,
+				reason: "in_use_by_rates",
+				count: 1,
+			});
+			expect(await client.deleteTaxRate("tcd-rate")).toEqual({ ok: true });
+			expect(await client.deleteTaxClass("tcd-rated")).toEqual({ ok: true });
+
+			// (b) A class a PRODUCT points at — the other aggregate entirely, which
+			// is why this delete has a result type of its own.
+			await client.createTaxClass({ id: "tcd-priced", name: "Priced" });
+			const productId = await tier.arrange.product({
+				productId: "tcd-product",
+				sku: "TCD-SKU-1",
+				price: { amount: 1000, currency: "USD" },
+				idempotencyKey: "tcd-seed-1",
+			});
+			const before = await products.getProduct(productId);
+			expect(before).not.toBeNull();
+			const assigned = await products.updateProduct(
+				productId,
+				{ expectedUpdatedAt: before!.updatedAt, taxClass: "tcd-priced" },
+				"tcd-assign-1",
+			);
+			expect(assigned.ok).toBe(true);
+
+			expect(await client.deleteTaxClass("tcd-priced")).toEqual({
+				ok: false,
+				reason: "in_use_by_products",
+				count: 1,
+			});
+
+			// Clear the reference and the same delete goes through — the guard is
+			// referential, never a tombstone.
+			const assignedRow = await products.getProduct(productId);
+			const cleared = await products.updateProduct(
+				productId,
+				{ expectedUpdatedAt: assignedRow!.updatedAt, taxClass: null },
+				"tcd-clear-1",
+			);
+			expect(cleared.ok).toBe(true);
+			expect(await client.deleteTaxClass("tcd-priced")).toEqual({ ok: true });
+		});
+
+		test("coupons: an edit may not blank the economic axis the coupon's immutable type requires", async () => {
+			// Issue #75: this rule lived ONLY in the console's form parser, so a
+			// direct caller could blank a live coupon's discount and leave a coupon
+			// that discounts nothing. It is a rule of the SURFACE, so both tiers owe
+			// it — which is why this case is shared rather than transport-local.
+			expect(
+				(
+					await client.createCoupon({
+						id: "econ-fixed",
+						code: "ECON-FIXED",
+						type: "fixed_amount",
+						amountCents: 500,
+						currency: "USD",
+					})
+				).ok,
+			).toBe(true);
+			expect(
+				(
+					await client.createCoupon({
+						id: "econ-pct",
+						code: "ECON-PCT",
+						type: "percentage",
+						rateBps: 1500,
+					})
+				).ok,
+			).toBe(true);
+
+			// The edit body is all-optional and an OMITTED field means null, which is
+			// exactly how the blanking happened: omitting `amountCents` on a
+			// fixed-amount coupon is a request to clear it.
+			const blankedAmount = await client.updateCoupon("econ-fixed", { maxUses: 5 });
+			expect(blankedAmount.ok).toBe(false);
+			// The REASON only — never the status. A refusal the caller renders as
+			// generic copy is the contract; which code carried it is transport.
+			expect(!blankedAmount.ok && blankedAmount.reason).toBe("error");
+
+			const blankedRate = await client.updateCoupon("econ-pct", { maxUses: 5 });
+			expect(blankedRate.ok).toBe(false);
+			expect(!blankedRate.ok && blankedRate.reason).toBe("error");
+
+			// The refusal happens BEFORE any write: the coupons are untouched.
+			expect((await client.getCoupon("ECON-FIXED"))?.amountCents).toBe(500);
+			expect((await client.getCoupon("ECON-FIXED"))?.maxUses).toBeNull();
+			expect((await client.getCoupon("ECON-PCT"))?.rateBps).toBe(1500);
+
+			// Restating the required axis is what an honest edit looks like, and it
+			// goes through.
+			const honest = await client.updateCoupon("econ-fixed", { amountCents: 600, maxUses: 5 });
+			expect(honest.ok && honest.value.amountCents).toBe(600);
+			expect(honest.ok && honest.value.maxUses).toBe(5);
+
+			// A coupon that is not there is `not_found`, not the economics refusal —
+			// the fetch-then-validate read must not turn a missing row into a 400.
+			expect(await client.updateCoupon("econ-missing", { amountCents: 100 })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
 		});
 	});
 }

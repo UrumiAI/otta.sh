@@ -20,14 +20,21 @@ commerce row: sku plus optional price in integer minor units, title, on-hand), `
 - **`AdminClientSurfaces` is optional per surface, and `requireSurface` is how a slice reads one.**
   Only `products` is non-optional, because it was folded in first (INC-B10b-i); `orders` has both
   tiers too now (INC-B10b-ii) and stays typed optional deliberately, so that it is read the way
-  every later surface will be; `rules` and `reporting` arrive with INC-B10c. The alternative was a
+  every later surface will be, and so does `rules` (INC-B10c-i); `reporting` arrives with
+  INC-B10c-ii. The alternative was a
   stub — an empty `listOrders`, a zeroed `getRevenue` — and a stub makes a slice *pass* against an
   implementation that does nothing, which is worse than a missing run because it is
   indistinguishable from evidence. So a slice reads its surface through
   `requireSurface(tier, surfaces, key)`, which throws naming the tier and the surface it lacks: the
   gap lands in a test report and closes by wiring, never by softening a case. It is wired for
-  `rules` and for `orders` today; `reporting` is optional but **unread**, so there is no live hole —
+  `orders` and for `rules` today; `reporting` is optional but **unread**, so there is no live hole —
   the increment that first reads it must take it through `requireSurface` rather than `?.`.
+- **No new `arrange` hook came with the rules slice, on purpose.** Its one cross-aggregate case —
+  `deleteTaxClass` refusing with `in_use_by_products` — points a product at a class through the
+  **`products` surface** the same composition already hands back (`getProduct` for the CAS token,
+  then `updateProduct`), rather than through a new seeder. An arrangement that only a client
+  surface can express belongs to that surface: a hook reaching behind it would prove the guard
+  against state no operator could have created.
 - `reset()` may be a no-op **only while every case uses disjoint ids and no case depends on
   another's leftovers**. One tier does the real thing (it rebuilds cheaply); the other documents
   the no-op, which is why **every case addresses disjoint ids, skus, cart ids, coupon codes, zone
