@@ -438,6 +438,66 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(wholeResponse).not.toContain("qa-local-service-token");
 	});
 
+	/**
+	 * INC-C3 — the same pin, extended to the four payment/email secrets the
+	 * fold-in moved off the commerce service's `wrangler secret put` entries
+	 * (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `EMAIL_API_KEY`,
+	 * `X402_FACILITATOR_SECRET`) and onto this screen's write-only kv.
+	 *
+	 * Under the REAL workerd sandbox, not just the unit handler: the whole point
+	 * of the pin is that nothing in the serialized response that crosses the
+	 * host boundary carries a credential, and the sandbox is where that boundary
+	 * actually exists.
+	 */
+	test("INC-C3: every payment/email secret is write-only — set, then never rendered back anywhere", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const SECRETS = [
+			["save-stripe-secret-key", "stripeSecretKey", "qa-sk-live-NEVER-RENDER"],
+			["save-stripe-webhook-secret", "stripeWebhookSecret", "qa-whsec-NEVER-RENDER"],
+			["save-email-api-key", "emailApiKey", "qa-email-key-NEVER-RENDER"],
+			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
+		] as const;
+
+		// Each SAVE's own response must already be clean — the receipt is the
+		// first place a naive implementation echoes what was just submitted.
+		for (const [actionId, fieldId, value] of SECRETS) {
+			const saved = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: actionId,
+				values: { [fieldId]: value },
+			});
+			expect(JSON.stringify(saved)).not.toContain(value);
+		}
+
+		// And the subsequent page load, with all four now SET, renders none of
+		// them: no initial_value, no has_value, no masked variant, nothing in a
+		// label, context line, notice or toast.
+		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
+		const blocks = blocksOf(loaded);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		for (const [actionId, fieldId, value] of SECRETS) {
+			const rendered = field(formFor(blocks, actionId), fieldId);
+			expect(rendered?.type).toBe("text_input");
+			expect(rendered).not.toHaveProperty("initial_value");
+			expect(rendered).not.toHaveProperty("has_value");
+			expect(JSON.stringify(loaded)).not.toContain(value);
+		}
+
+		// The group's label states WHICH credentials are missing — with all four
+		// set, it says so without naming any of them.
+		expect(groupLabels(blocks).get("settings:payments")).toBe("Payments & email — configured");
+	});
+
 	test("INC-09 post-save clear: a successful token save remounts its form BLANK with a DIFFERENT block_id; the other field and blank submits are unaffected", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", () => ({
@@ -585,21 +645,30 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
 		const labels = groupLabels(blocks);
+		// FOUR groups since INC-C3: the fold-in moved the payment/email credentials
+		// off the commerce service's `wrangler secret put` entries and onto this
+		// screen, so "Payments & email" is a real fourth provisioning group — not a
+		// drifted assertion. Its label states only WHICH credentials are missing;
+		// no secret value is ever in scope to state.
 		expect([...labels.keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
 			"settings:connection",
+			"settings:payments",
 		]);
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:connection")).toBe(
 			"Service connection — token not set · service token not set",
 		);
+		expect(labels.get("settings:payments")).toBe(
+			"Payments & email — no stripe key, webhook, email, x402",
+		);
 		// X-11: mechanically enforced by assertBlockContract too, pinned here as
-		// the rule these three strings were composed against.
+		// the rule these four strings were composed against.
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 
-		// All three closed — the render-time kind (§1.2), which is legal.
+		// All four closed — the render-time kind (§1.2), which is legal.
 		expect(openGroupIds(blocks)).toEqual([]);
 		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
 	});
@@ -703,6 +772,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"settings:store",
 			"settings:checkout",
 			"settings:connection",
+			// INC-C3's fourth group — see the "every group renders CLOSED" test.
+			"settings:payments",
 		]);
 	});
 
