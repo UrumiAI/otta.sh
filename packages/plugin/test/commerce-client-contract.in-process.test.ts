@@ -43,6 +43,7 @@ import { FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
+import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
 import {
 	adminOrdersProductsClientContract,
@@ -106,11 +107,11 @@ function inProcessTier(): CommerceClientTier {
 			return clientOrThrow();
 		},
 		/**
-		 * The admin surfaces this tier has: products, and only products
-		 * (INC-B10b-i). Orders, rules and reporting are NOT stubbed — an empty
+		 * The admin surfaces this tier has: products (INC-B10b-i) and orders
+		 * (INC-B10b-ii). Rules and reporting are NOT stubbed — an empty
 		 * implementation would let their slices pass against nothing — so their keys
 		 * are simply absent and the slices that need them fail loudly until
-		 * INC-B10b-ii / INC-B10c wire them.
+		 * INC-B10c wires them.
 		 *
 		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that is the design rather
 		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticate a caller TO
@@ -119,7 +120,11 @@ function inProcessTier(): CommerceClientTier {
 		 * cases are transport cases and stay in the HTTP tier's own file.
 		 */
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
-			return { products: new InProcessAdminProductsClient(harnessOrThrow().ctx, { clock }) };
+			const ctx = harnessOrThrow().ctx;
+			return {
+				orders: new InProcessAdminOrdersClient(ctx, { clock }),
+				products: new InProcessAdminProductsClient(ctx, { clock }),
+			};
 		},
 		// The lever the elapsed-deadline case needs. It moves the ONE clock every store
 		// in this composition shares — the client's own stores and the harness's second
@@ -392,5 +397,62 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		// And no mail left the process, because there is nowhere for it to go yet: the
 		// only outbound surface this transport has is `ctx.http`, and it was untouched.
 		expect(harness.egressAttempts()).toBe(before.egress);
+	});
+});
+
+/**
+ * THE ONE PLACE ORDER SEARCH IS NARROWER HERE, PINNED ON PURPOSE.
+ *
+ * ADR-0019 §6 sets the FLOOR every dialect must meet — an id PREFIX, a folded
+ * buyer-ref PREFIX, or an EXACT folded line sku — and says plainly that a dialect
+ * may answer MORE. Postgres does: it plans the buyer-ref half as an unanchored
+ * `like '%q%'`, so a fragment from the MIDDLE of an address finds the order there.
+ * The document store behind this tier indexes a folded prefix key and cannot, and
+ * that is a ratified divergence (2026-09-13) rather than a defect: a prefix is the
+ * floor both tiers meet, and the superset is sanctioned where the dialect offers
+ * it for free.
+ *
+ * IT CANNOT BE A SHARED CASE, for the same reason none of the others can: the two
+ * tiers produce OPPOSITE answers to the identical call, so a shared case would
+ * have to assert one of them loosely enough to accept the other. The shared slice
+ * therefore asserts the floor and NEVER a negative, and each tier pins its own
+ * half here — this file the miss, the HTTP file the hit. Should the document store
+ * ever gain substring search, this case fails and is deleted, which is exactly the
+ * moment someone should be told.
+ */
+describe("in-process admin orders: search is PREFIX-only, by dialect (ADR-0019 §6)", () => {
+	let harness: InProcessCommerceHarness;
+	let orders: InProcessAdminOrdersClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		orders = new InProcessAdminOrdersClient(harness.ctx);
+		await sharedTierSeeders({
+			orderStore: harness.stores.orderStore,
+			addressStore: harness.stores.addressStore,
+			sessionStore: harness.stores.sessionStore,
+			shippingRules: harness.stores.shippingRules,
+			couponStore: harness.stores.couponStore,
+			taxRules: harness.stores.taxRules,
+		}).order({ orderId: "div-o-1", buyerRef: "marguerite@example.test" });
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("a buyer-ref PREFIX hits, and a fragment from the middle of the same address does NOT", async () => {
+		// The floor, met: the operator types the start of the address they remember,
+		// in whatever case they remember it.
+		expect((await orders.listOrders({ search: "MARGUER" })).orders.map((o) => o.id)).toEqual([
+			"div-o-1",
+		]);
+
+		// The superset, absent: "guerite@" is a genuine fragment of the very same
+		// buyer ref, and the HTTP tier's Postgres dialect finds it. Here it does not,
+		// and the count agrees with the page rather than describing a set the rows do
+		// not.
+		const midString = await orders.listOrders({ search: "guerite@" });
+		expect(midString.orders).toEqual([]);
+		expect(midString.total).toBe(0);
 	});
 });

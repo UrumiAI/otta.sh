@@ -50,8 +50,25 @@ import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/c
 // one, and at INC-D3b the `Pick` targets swap to the in-process classes while
 // every case below stays put.
 
-/** The admin orders surface the contract exercises. Empty until INC-B10b. */
-export type OrdersClientSurface = Pick<AdminOrdersClient, "listOrders">;
+/** The admin orders surface the contract exercises — the class's WHOLE public
+ *  surface, named method by method, for the same reason products is: INC-B10b-ii
+ *  folds all twelve in-process, and a surface that listed fewer would let one be
+ *  forgotten silently. */
+export type OrdersClientSurface = Pick<
+	AdminOrdersClient,
+	| "listOrders"
+	| "getOrder"
+	| "transitionOrder"
+	| "resolveReconciliation"
+	| "recordFulfillment"
+	| "cancelOrder"
+	| "getCustomerContext"
+	| "getTimeline"
+	| "getRefunds"
+	| "refundOrder"
+	| "listNotes"
+	| "addNote"
+>;
 /** The admin products surface the contract exercises — the class's WHOLE public
  *  surface, named method by method, because INC-B10b-i folds all six in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
@@ -88,9 +105,15 @@ export type ReportingClientSurface = Pick<ReportingSettingsClient, "getRevenue">
  * What a tier's admin composition hands back.
  *
  * EVERY SURFACE EXCEPT `products` IS OPTIONAL, and that is a statement about the
- * world rather than a convenience: only products is folded in-process today
- * (INC-B10b-i). Orders arrives with INC-B10b-ii, rules and reporting with
- * INC-B10c, so the in-process tier genuinely has none of the three yet.
+ * world rather than a convenience: rules and reporting arrive in-process with
+ * INC-B10c, so the in-process tier genuinely has neither yet.
+ *
+ * `orders` IS FOLDED IN NOW (INC-B10b-ii) and is still typed optional, which is
+ * deliberate: it is read through `requireSurface` — the `rules` idiom — so a tier
+ * that binds the slice without an orders surface fails LOUDLY at bind time,
+ * naming itself and the surface, rather than being unable to express the gap at
+ * all. `products` is the one non-optional member because the slice reads it in
+ * its own `beforeAll` before any case runs.
  *
  * THE ALTERNATIVE WAS A STUB — an empty `listOrders`, an empty `listCoupons`, a
  * zeroed `getRevenue` — and a stub would make those slices PASS against an
@@ -1749,11 +1772,42 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * PRODUCTS IS COVERED (INC-B10b-i) — all six methods: `listProducts`,
  * `getProduct`, `updateProduct`, `restock`, `removeStock`, `getTaxClasses`.
  *
- * ORDERS IS NOT, YET. INC-B10b-ii folds `AdminOrdersClient` in and writes its
- * cases here: `listOrders`, `getOrder`, `transitionOrder`,
- * `resolveReconciliation`, `recordFulfillment`, `cancelOrder`,
- * `getCustomerContext`, `getTimeline`, `getRefunds`, `refundOrder`,
- * `listNotes`, `addNote`.
+ * ORDERS IS COVERED TOO (INC-B10b-ii) — all twelve: `listOrders`, `getOrder`,
+ * `transitionOrder`, `resolveReconciliation`, `recordFulfillment`,
+ * `cancelOrder`, `getCustomerContext`, `getTimeline`, `getRefunds`,
+ * `refundOrder`, `listNotes`, `addNote`. The orders surface is read through
+ * `requireSurface`, so a tier that binds this slice without one fails by name
+ * rather than by running its half of the cases against nothing.
+ *
+ * WHAT THE ORDERS CASES CANNOT ARRANGE, recorded for the same reason the
+ * products gaps are: `arrange.order` seeds a PENDING guest order with one
+ * digital line, no captured payment, no shipping-address snapshot and no
+ * reconciliation flag — which is the state every order is born in. So a CAPTURED
+ * payment (and with it a non-zero refund ceiling), a flagged reconciliation, and
+ * a `processing` order that can legally be fulfilled are all out of reach from
+ * here. Each is therefore asserted in the direction this surface CAN reach — the
+ * refusal — and the refusals are the load-bearing half anyway: `NOT_FULFILLABLE`,
+ * `NOT_IN_RECONCILIATION`, and a refund that moves no money.
+ *
+ * SEARCH IS ASSERTED AT ITS FLOOR, NEVER AT A TIER'S CEILING (ADR-0019 §6). The
+ * shared case pins the three matches every dialect owes — an order-id PREFIX, a
+ * folded buyer-ref PREFIX, an EXACT folded line sku — and asserts NO negative on
+ * a wider one. A SQL adapter's unanchored buyer-ref SUBSTRING is a sanctioned
+ * superset, not a divergence to fix and not a behaviour the document store owes;
+ * each tier pins its own side of it in its own file, where the difference is
+ * visible as a difference.
+ *
+ * THE ONE REFUSAL THE TIERS SPELL DIFFERENTLY is a refund against an order that
+ * captured nothing. Both refuse with a 409 and both leave the ledger empty —
+ * that much is shared — but the REASON differs because the composition does: a
+ * tier with gateways composed is refused by the ceiling
+ * (`REFUND_EXCEEDS_CAPTURED`), and a tier with none is refused for want of a
+ * gateway (`REFUND_GATEWAY_UNAVAILABLE`, until INC-C1/C3 moves the payment
+ * adapters in-process). Rather than soften the shared case into accepting
+ * either, the shared case asserts what both owe and a GATED PAIR — keyed off the
+ * existing `payments` hook, each naming its gate in its own name — pins the
+ * reason on each side. The pair collapses into one case the day gateways are
+ * composed on both tiers.
  *
  * WHAT THE SHARED ARRANGE SURFACE CANNOT REACH, recorded so it is not mistaken
  * for a decision: `arrange.product` goes through `upsertProductCommerce`, which
@@ -1783,8 +1837,12 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * lives, in `products-console-route.sandbox.test.ts`.
  */
 export function adminOrdersProductsClientContract(tier: CommerceClientTier): void {
-	describe(`commerceClientContract — admin products [${tier.name}]`, () => {
+	describe(`commerceClientContract — admin orders + products [${tier.name}]`, () => {
 		let client: ProductsClientSurface;
+		/** The orders half of the slice, taken through `requireSurface` so a tier
+		 *  that has no orders surface fails by name here rather than running the
+		 *  twelve methods' cases against a stub that would agree with anything. */
+		let orders: OrdersClientSurface;
 		/** THE STOREFRONT CLIENT, for the two states the admin surface can read but
 		 *  cannot produce: a soft-deleted row (`softDeleteProductCommerce`) and a sku
 		 *  under a live cart hold (`addCartLine`). Both are admin-facing outcomes
@@ -1794,7 +1852,9 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		const makeAdminClients = assertAdminClients(tier);
 		beforeAll(async () => {
 			await tier.setup();
-			client = (await makeAdminClients()).products;
+			const surfaces = await makeAdminClients();
+			client = surfaces.products;
+			orders = requireSurface(tier, surfaces, "orders");
 			storefront = await tier.makeClient();
 		});
 		beforeEach(async () => {
@@ -1816,6 +1876,593 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			if (read === null) throw new Error(`arrange: ${spec.productId} did not read back`);
 			return read.updatedAt;
 		}
+
+		// ══ ORDERS ════════════════════════════════════════════════════════
+		//
+		// Every order below is seeded through `tier.arrange.order`, which mints the
+		// one order state a shared seeder can honestly mint: a PENDING guest order
+		// with a single digital line, priced in USD, holding far past any tier's
+		// clock. Ids and buyer refs are disjoint per case, like everywhere else in
+		// this file, because one tier's `reset()` is a documented no-op.
+
+		// ── listOrders ────────────────────────────────────────────────────
+
+		test("a listed order carries EVERY summary field, and `total` counts the filtered set", async () => {
+			await tier.arrange.order({ orderId: "adm-o-shape-1", buyerRef: "shape@example.test" });
+			await tier.arrange.order({ orderId: "adm-o-shape-2", buyerRef: "shape@example.test" });
+
+			// An id PREFIX that only the first order answers to (ADR-0019 §6 floor).
+			const page = await orders.listOrders({ search: "adm-o-shape-1" });
+			// THE EXACT COUNT OF THE FILTERED SET, not of the page — the caption a
+			// console prints. An absent total is a different claim entirely and is
+			// never spelled `0`.
+			expect(page.total).toBe(1);
+			expect(page.nextCursor).toBeNull();
+			// `toEqual` against a written-out object: it fails on a MISSING key as
+			// loudly as on a wrong value, which is the only way a narrowed projection
+			// is caught here.
+			expect(page.orders).toEqual([
+				{
+					id: "adm-o-shape-1",
+					state: "pending",
+					currency: "USD",
+					buyerRef: "shape@example.test",
+					customerId: null,
+					paymentMethod: "stripe",
+					createdAt: expect.any(String) as unknown as string,
+					totalCents: 1500,
+					// The list carries the BADGE, never the free-text detail (which the
+					// order detail carries as a nullable string).
+					reconciliationFlag: false,
+				},
+			]);
+			// AN ORDINARY PAGE CARRIES NO `cursorRejected` KEY AT ALL. The flag means
+			// "you asked for a page you did not get"; present-and-false would be a
+			// claim about a question nobody asked.
+			expect("cursorRejected" in page).toBe(false);
+		});
+
+		test("paging walks the filtered set by cursor, repeats no row, and keeps the same total", async () => {
+			for (const n of [1, 2, 3]) {
+				await tier.arrange.order({ orderId: `adm-o-page-${n}`, buyerRef: "page@example.test" });
+			}
+			const filter = { search: "adm-o-page-" };
+
+			const first = await orders.listOrders(filter, { limit: 2 });
+			expect(first.total).toBe(3);
+			expect(first.orders).toHaveLength(2);
+			expect(first.nextCursor).not.toBeNull();
+
+			// THE FILTER TRAVELS BESIDE THE CURSOR and agrees with it, which is the
+			// ordinary paging request both transports make.
+			const second = await orders.listOrders(filter, {
+				cursor: first.nextCursor ?? "",
+				limit: 2,
+			});
+			expect(second.total).toBe(3);
+			expect(second.orders).toHaveLength(1);
+			expect(second.nextCursor).toBeNull();
+			expect("cursorRejected" in second).toBe(false);
+
+			const walked = [...first.orders, ...second.orders].map((o) => o.id);
+			expect(new Set(walked).size).toBe(3);
+			expect([...walked].toSorted()).toEqual(["adm-o-page-1", "adm-o-page-2", "adm-o-page-3"]);
+		});
+
+		test("a cursor presented beside a DIFFERENT filter is refused, and the answer is page one, flagged", async () => {
+			for (const n of [1, 2]) {
+				await tier.arrange.order({ orderId: `adm-o-rej-${n}`, buyerRef: "rej@example.test" });
+			}
+			const first = await orders.listOrders({ search: "adm-o-rej-" }, { limit: 1 });
+			expect(first.nextCursor).not.toBeNull();
+
+			// The same token, now beside a filter that names an axis it never carried.
+			// Honouring it would answer one predicate while the request claims another,
+			// with nothing in the reply admitting the substitution — so it fails closed
+			// and the prescribed recovery (page one, same parameters, once) runs.
+			const rejected = await orders.listOrders(
+				{ search: "adm-o-rej-", states: ["pending"] },
+				{ cursor: first.nextCursor ?? "", limit: 1 },
+			);
+			expect(rejected.cursorRejected).toBe(true);
+			expect(rejected.orders.map((o) => o.id)).toEqual(first.orders.map((o) => o.id));
+
+			// An undecodable token is the same refusal by a different route.
+			const garbage = await orders.listOrders({ search: "adm-o-rej-" }, { cursor: "not-a-token" });
+			expect(garbage.cursorRejected).toBe(true);
+			expect(garbage.orders).toHaveLength(2);
+		});
+
+		test("a filter value the port does not know is REFUSED rather than quietly ignored", async () => {
+			await expectRejectedInput(orders.listOrders({ states: ["not-a-state"] }), "states");
+			await expectRejectedInput(orders.listOrders({ from: "yesterday" }), "from");
+			await expectRejectedInput(orders.listOrders({}, { limit: 0 }), "limit");
+		});
+
+		test("search matches the ADR-0019 §6 FLOOR: an id prefix, a buyer-ref prefix, an exact line sku", async () => {
+			await tier.arrange.order({
+				orderId: "adm-o-find-42",
+				buyerRef: "Findme@example.test",
+				sku: "ZZ-FIND-SKU",
+			});
+
+			// All three folded on both sides — the operator types what they remember,
+			// in whatever case they remember it.
+			for (const term of ["adm-o-find-", "ADM-O-FIND-42", "findme@", "Findme@example.test"]) {
+				const hit = await orders.listOrders({ search: term });
+				expect(
+					hit.orders.map((o) => o.id),
+					`search ${term}`,
+				).toContain("adm-o-find-42");
+			}
+			// The sku half is an EXACT match on a purchase-time line, not a prefix.
+			const bySku = await orders.listOrders({ search: "zz-find-sku" });
+			expect(bySku.orders.map((o) => o.id)).toContain("adm-o-find-42");
+			// NO NEGATIVE IS ASSERTED on a wider match: a SQL dialect's unanchored
+			// buyer-ref substring is a sanctioned superset of this floor, and each tier
+			// pins its own side of that in its own file.
+		});
+
+		test("the states filter and the half-open window select, and the count follows them", async () => {
+			await tier.arrange.order({ orderId: "adm-o-filt-1", buyerRef: "filt@example.test" });
+			expect((await orders.listOrders({ search: "adm-o-filt-", states: ["pending"] })).total).toBe(
+				1,
+			);
+			// A state the order is not in selects nothing — and `total` agrees, rather
+			// than counting a set the page does not describe.
+			const none = await orders.listOrders({ search: "adm-o-filt-", states: ["refunded"] });
+			expect(none.orders).toEqual([]);
+			expect(none.total).toBe(0);
+			// The window is half-open `[from, to)`, and a window that closed before the
+			// order was created excludes it.
+			const past = await orders.listOrders({
+				search: "adm-o-filt-",
+				from: "2000-01-01T00:00:00.000Z",
+				to: "2001-01-01T00:00:00.000Z",
+			});
+			expect(past.orders).toEqual([]);
+			expect(past.total).toBe(0);
+		});
+
+		// ── getOrder ──────────────────────────────────────────────────────
+
+		test("the order detail leaf carries EVERY field, with the transitions taken from the state machine", async () => {
+			await tier.arrange.order({
+				orderId: "adm-o-detail",
+				buyerRef: "detail@example.test",
+				sku: "ADM-O-DETAIL",
+				title: "Detail",
+				unitPrice: { amount: 2500, currency: "USD" },
+				quantity: 2,
+			});
+
+			const read = await orders.getOrder("adm-o-detail");
+			expect(read).toEqual({
+				order: {
+					id: "adm-o-detail",
+					state: "pending",
+					currency: "USD",
+					paymentMethod: "stripe",
+					buyerRef: "detail@example.test",
+					customerId: null,
+					holdExpiresAt: "2099-01-01T00:00:00.000Z",
+					createdAt: expect.any(String) as unknown as string,
+					reconciliationFlag: null,
+					reconciliationResolution: null,
+					fulfillment: null,
+					cancellation: null,
+					// ADR-0009: the immutable checkout SNAPSHOT, null for this digital
+					// order — and never the customer's mutable profile book, which lives
+					// on the customer-context panel.
+					shippingAddress: null,
+					totals: {
+						currency: "USD",
+						subtotalCents: 5000,
+						discountCents: 0,
+						shippingCents: 0,
+						taxCents: 0,
+						totalCents: 5000,
+						appliedCouponCode: null,
+						shippingZoneId: null,
+					},
+					// The line is the PURCHASE-TIME snapshot: price and title frozen.
+					lines: [
+						{
+							sku: "ADM-O-DETAIL",
+							title: "Detail",
+							unitPriceCents: 2500,
+							currency: "USD",
+							quantity: 2,
+							fulfillmentKind: "digital",
+						},
+					],
+				},
+				// DERIVED, never re-listed: exactly the domain state machine's row for
+				// `pending`.
+				allowedTransitions: ["paid", "failed", "expired", "cancelled"],
+			});
+
+			// An id that never existed is a "not found" state, not an error banner.
+			expect(await orders.getOrder("adm-o-missing")).toBeNull();
+		});
+
+		// ── transitionOrder ───────────────────────────────────────────────
+
+		test("a legal transition moves the order, its replay is a no-op, and an illegal one conflicts", async () => {
+			await tier.arrange.order({ orderId: "adm-o-trans", buyerRef: "trans@example.test" });
+
+			expect(
+				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
+			).toEqual({ ok: true, transitioned: true });
+			// THE REPLAY, under the same key: already there, so nothing moved — and the
+			// surface says so rather than reporting a second transition.
+			expect(
+				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
+			).toEqual({ ok: true, transitioned: false });
+
+			// `paid → pending` is not a row in the machine.
+			expect(
+				await orders.transitionOrder("adm-o-trans", "pending", { idempotencyKey: "adm-o-trans-2" }),
+			).toEqual({ ok: false, status: 409 });
+			expect(
+				await orders.transitionOrder("adm-o-missing", "paid", { idempotencyKey: "adm-o-trans-3" }),
+			).toEqual({ ok: false, status: 404 });
+			// A state that is not a state at all is refused as a typed result, never a
+			// throw — this surface renders a banner, it does not unwind into the host.
+			expect(
+				await orders.transitionOrder("adm-o-trans", "nonsense", {
+					idempotencyKey: "adm-o-trans-4",
+				}),
+			).toEqual({ ok: false, status: 400 });
+
+			const read = await orders.getOrder("adm-o-trans");
+			expect(read?.order.state).toBe("paid");
+			expect(read?.allowedTransitions).toEqual([
+				"processing",
+				"completed",
+				"cancelled",
+				"refunded",
+			]);
+		});
+
+		// ── resolveReconciliation ─────────────────────────────────────────
+
+		test("resolving a reconciliation flag that was never raised conflicts rather than clearing blind", async () => {
+			await tier.arrange.order({ orderId: "adm-o-rec", buyerRef: "rec@example.test" });
+			const disposition = {
+				expectedFlag: "short capture",
+				outcome: "written_off",
+				reason: "reviewed against the provider",
+				resolvedBy: "ops@example.test",
+			};
+
+			// NOT_IN_RECONCILIATION — the compare-and-clear found nothing to clear. A
+			// 409 like an illegal transition, with the typed reason forwarded so the
+			// console can pick its GENERIC copy.
+			expect(
+				await orders.resolveReconciliation("adm-o-rec", disposition, {
+					idempotencyKey: "adm-o-rec-1",
+				}),
+			).toEqual({ ok: false, status: 409, reason: "NOT_IN_RECONCILIATION" });
+			expect(
+				await orders.resolveReconciliation("adm-o-missing", disposition, {
+					idempotencyKey: "adm-o-rec-2",
+				}),
+			).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+			// An outcome outside the taxonomy is refused at the boundary, as a result.
+			expect(
+				await orders.resolveReconciliation(
+					"adm-o-rec",
+					{ ...disposition, outcome: "shrugged" },
+					{ idempotencyKey: "adm-o-rec-3" },
+				),
+			).toMatchObject({ ok: false, status: 400 });
+			// Nothing was recorded on the order by any of it.
+			expect((await orders.getOrder("adm-o-rec"))?.order.reconciliationResolution).toBeNull();
+		});
+
+		// ── recordFulfillment ─────────────────────────────────────────────
+
+		test("fulfillment cannot be recorded against an order that is not processing", async () => {
+			await tier.arrange.order({ orderId: "adm-o-ful", buyerRef: "ful@example.test" });
+			const shipment = {
+				carrier: "UPS",
+				trackingNumber: "1Z-ADM-O-FUL",
+				trackingUrl: "https://tracking.example.test/1Z-ADM-O-FUL",
+				recordedBy: "ops@example.test",
+			};
+
+			// Recording fulfillment IS shipping the order (`processing → shipped`), so a
+			// pending one is NOT_FULFILLABLE — a 409, never a silently recorded envelope
+			// on an order that never shipped.
+			expect(
+				await orders.recordFulfillment("adm-o-ful", shipment, { idempotencyKey: "adm-o-ful-1" }),
+			).toEqual({ ok: false, status: 409, reason: "NOT_FULFILLABLE" });
+			expect(
+				await orders.recordFulfillment("adm-o-missing", shipment, {
+					idempotencyKey: "adm-o-ful-2",
+				}),
+			).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+			// A tracking "URL" that is not one is refused as a typed result.
+			expect(
+				await orders.recordFulfillment(
+					"adm-o-ful",
+					{ ...shipment, trackingUrl: "ask the driver" },
+					{ idempotencyKey: "adm-o-ful-3" },
+				),
+			).toMatchObject({ ok: false, status: 400 });
+			expect((await orders.getOrder("adm-o-ful"))?.order.fulfillment).toBeNull();
+		});
+
+		// ── cancelOrder ───────────────────────────────────────────────────
+
+		test("cancelling records the reason envelope AND drives the state flip, and cancelling again is a no-op", async () => {
+			await tier.arrange.order({ orderId: "adm-o-cancel", buyerRef: "cancel@example.test" });
+			const cancellation = {
+				reason: "customer_request",
+				detail: "changed their mind",
+				cancelledBy: "ops@example.test",
+			};
+
+			expect(
+				await orders.cancelOrder("adm-o-cancel", cancellation, {
+					idempotencyKey: "adm-o-cancel-1",
+				}),
+			).toEqual({ ok: true, cancelled: true });
+
+			const read = await orders.getOrder("adm-o-cancel");
+			expect(read?.order.state).toBe("cancelled");
+			expect(read?.order.cancellation).toEqual({
+				reason: "customer_request",
+				detail: "changed their mind",
+				cancelledBy: "ops@example.test",
+				cancelledAt: expect.any(String) as unknown as string,
+			});
+			// `cancelled` is terminal: the console renders no transition buttons.
+			expect(read?.allowedTransitions).toEqual([]);
+
+			// A SECOND cancel under a FRESH key is the benign no-op, not a failure: the
+			// order is already cancelled with a reason on file.
+			expect(
+				await orders.cancelOrder("adm-o-cancel", cancellation, {
+					idempotencyKey: "adm-o-cancel-2",
+				}),
+			).toEqual({ ok: true, cancelled: false });
+
+			expect(
+				await orders.cancelOrder("adm-o-missing", cancellation, {
+					idempotencyKey: "adm-o-cancel-3",
+				}),
+			).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+			// A reason outside the taxonomy is refused at the boundary.
+			expect(
+				await orders.cancelOrder(
+					"adm-o-cancel",
+					{ ...cancellation, reason: "because" },
+					{ idempotencyKey: "adm-o-cancel-4" },
+				),
+			).toMatchObject({ ok: false, status: 400 });
+		});
+
+		// ── getCustomerContext ────────────────────────────────────────────
+
+		test("the customer-context panel reads a GUEST order honestly: no account, no book, no sessions", async () => {
+			await tier.arrange.order({ orderId: "adm-o-ctx-1", buyerRef: "ctx@example.test" });
+			await tier.arrange.order({ orderId: "adm-o-ctx-2", buyerRef: "ctx@example.test" });
+
+			const context = await orders.getCustomerContext("adm-o-ctx-1");
+			expect(context?.identity).toEqual({
+				customerId: null,
+				buyerRef: "ctx@example.test",
+				email: null,
+				displayName: null,
+				emailVerifiedAt: null,
+				// No account exists for this email yet — a login would claim both orders.
+				linkage: "guest",
+			});
+			expect(context?.addresses).toEqual([]);
+			// TOKEN-FREE, always: no session was ever minted for this buyer, and this
+			// surface would not carry a token or a hash if one had been.
+			expect(context?.sessions).toEqual([]);
+			// The aggregates run on the UNION customer key, so they are the same from
+			// either of this person's orders — and `recentOrders` excludes the one being
+			// viewed.
+			expect(context?.orderCount).toBe(2);
+			expect(context?.recentOrders.map((o) => o.id)).toEqual(["adm-o-ctx-2"]);
+
+			expect(await orders.getCustomerContext("adm-o-missing")).toBeNull();
+		});
+
+		// ── getTimeline + notes ───────────────────────────────────────────
+
+		test("the timeline starts at `created`, says its state history is unaudited, and then merges both", async () => {
+			await tier.arrange.order({ orderId: "adm-o-tl", buyerRef: "tl@example.test" });
+
+			expect(await orders.getTimeline("adm-o-tl")).toEqual({
+				orderId: "adm-o-tl",
+				// A fresh order has transitioned zero times, so there is no audited
+				// state-change history to speak of — said out loud rather than implied by
+				// an empty list.
+				stateChangesAudited: false,
+				entries: [{ kind: "created", at: expect.any(String) as unknown as string }],
+			});
+
+			expect(
+				await orders.addNote(
+					"adm-o-tl",
+					{ author: "ops@example.test", body: "called the buyer" },
+					{ idempotencyKey: "adm-o-tl-note" },
+				),
+			).toMatchObject({ ok: true, appended: true });
+			expect(
+				await orders.transitionOrder("adm-o-tl", "paid", { idempotencyKey: "adm-o-tl-paid" }),
+			).toEqual({ ok: true, transitioned: true });
+
+			const after = await orders.getTimeline("adm-o-tl");
+			expect(after?.stateChangesAudited).toBe(true);
+			expect(after?.entries.map((e) => e.kind)).toEqual(
+				expect.arrayContaining(["created", "note", "state_change"]),
+			);
+			expect(after?.entries.find((e) => e.kind === "note")).toMatchObject({
+				author: "ops@example.test",
+				body: "called the buyer",
+			});
+			expect(after?.entries.find((e) => e.kind === "state_change")).toMatchObject({
+				fromState: "pending",
+				toState: "paid",
+			});
+
+			expect(await orders.getTimeline("adm-o-missing")).toBeNull();
+		});
+
+		test("notes are append-only, dedupe on their key, and must hang off a real order", async () => {
+			await tier.arrange.order({ orderId: "adm-o-note", buyerRef: "note@example.test" });
+			expect(await orders.listNotes("adm-o-note")).toEqual([]);
+
+			const first = await orders.addNote(
+				"adm-o-note",
+				{ author: "ops@example.test", body: "first" },
+				{ idempotencyKey: "adm-o-note-1" },
+			);
+			if (!first.ok) throw new Error("the first note was refused");
+			expect(first.appended).toBe(true);
+			expect(first.note).toEqual({
+				id: expect.any(String) as unknown as string,
+				orderId: "adm-o-note",
+				author: "ops@example.test",
+				body: "first",
+				createdAt: expect.any(String) as unknown as string,
+			});
+
+			// THE REPLAY hands back the stored note rather than appending a second one —
+			// a double-submit must not double the record.
+			const replay = await orders.addNote(
+				"adm-o-note",
+				{ author: "ops@example.test", body: "first" },
+				{ idempotencyKey: "adm-o-note-1" },
+			);
+			expect(replay).toMatchObject({ ok: true, appended: false });
+			expect(await orders.listNotes("adm-o-note")).toHaveLength(1);
+
+			expect(
+				await orders.addNote(
+					"adm-o-missing",
+					{ author: "ops@example.test", body: "orphan" },
+					{ idempotencyKey: "adm-o-note-2" },
+				),
+			).toEqual({ ok: false, status: 404 });
+			// A blank body is refused: an empty annotation is not an annotation.
+			expect(
+				await orders.addNote(
+					"adm-o-note",
+					{ author: "ops@example.test", body: "   " },
+					{ idempotencyKey: "adm-o-note-3" },
+				),
+			).toEqual({ ok: false, status: 400 });
+			expect(await orders.listNotes("adm-o-note")).toHaveLength(1);
+			// An order with no notes — including one that does not exist — is an empty
+			// list, never a failure.
+			expect(await orders.listNotes("adm-o-missing")).toEqual([]);
+		});
+
+		// ── getRefunds + refundOrder (ADR-0008) ───────────────────────────
+
+		test("the refunds summary is zeroed and HONEST on an order that captured nothing", async () => {
+			await tier.arrange.order({ orderId: "adm-o-ref", buyerRef: "ref@example.test" });
+
+			// The ceiling is `min(Σ captured, frozen total)` and nothing was captured,
+			// so it is zero even though the order's frozen total is not — the watermark
+			// the refund action reads must never be the total by default.
+			expect(await orders.getRefunds("adm-o-ref")).toEqual({
+				refunds: [],
+				currency: "USD",
+				capturedTotalCents: 0,
+				refundedTotalCents: 0,
+				ceilingCents: 0,
+				remainingCents: 0,
+				paymentMethod: "stripe",
+				// The gateway's HONEST capability: false ⇒ the panel offers "record a
+				// manual refund", never a provider button that silently no-ops. Both
+				// tiers answer false today, for different reasons (no gateway composed /
+				// a Stripe gateway with no secret), and neither softens it.
+				refundable: false,
+			});
+
+			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
+		});
+
+		test("a refund carries a REQUIRED idempotency key and cannot name an order that does not exist", async () => {
+			await tier.arrange.order({ orderId: "adm-o-refx", buyerRef: "refx@example.test" });
+			const refund = { amountCents: 500, currency: "USD", refundedBy: "ops@example.test" };
+
+			// A refund is ADDITIVE, so there is no safe content-derived fallback key:
+			// two deliberate refunds must not collapse into one.
+			expect(await orders.refundOrder("adm-o-refx", refund, { idempotencyKey: "" })).toEqual({
+				ok: false,
+				status: 400,
+				reason: "MISSING_IDEMPOTENCY_KEY",
+			});
+			expect(
+				await orders.refundOrder("adm-o-missing", refund, { idempotencyKey: "adm-o-refx-1" }),
+			).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+			// Money is an integer minor amount; zero is not a refund.
+			expect(
+				await orders.refundOrder(
+					"adm-o-refx",
+					{ ...refund, amountCents: 0 },
+					{ idempotencyKey: "adm-o-refx-2" },
+				),
+			).toMatchObject({ ok: false, status: 400 });
+			expect((await orders.getRefunds("adm-o-refx"))?.refunds).toEqual([]);
+		});
+
+		test("a refund against an order that captured nothing is refused, and the ledger stays empty", async () => {
+			await tier.arrange.order({ orderId: "adm-o-ref409", buyerRef: "ref409@example.test" });
+
+			const res = await orders.refundOrder(
+				"adm-o-ref409",
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: "adm-o-ref409-1" },
+			);
+			// A CONFLICT on both tiers — the request is well-formed and the order is
+			// real; what is missing is the money. The two tiers name a different reason
+			// for it, and the gated pair below pins each; what they OWE alike is the
+			// status and an untouched ledger.
+			expect(res).toMatchObject({ ok: false, status: 409 });
+			expect(await orders.getRefunds("adm-o-ref409")).toMatchObject({
+				refunds: [],
+				refundedTotalCents: 0,
+				remainingCents: 0,
+			});
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) that refusal names the CEILING: nothing was captured to refund against",
+			async () => {
+				await tier.arrange.order({ orderId: "adm-o-refc", buyerRef: "refc@example.test" });
+				expect(
+					await orders.refundOrder(
+						"adm-o-refc",
+						{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refc-1" },
+					),
+				).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_CAPTURED" });
+			},
+		);
+
+		test.skipIf(tier.payments !== undefined)(
+			"(no gateways yet — INC-C1/C3) that refusal names the missing GATEWAY, not the ceiling",
+			async () => {
+				await tier.arrange.order({ orderId: "adm-o-refg", buyerRef: "refg@example.test" });
+				expect(
+					await orders.refundOrder(
+						"adm-o-refg",
+						{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refg-1" },
+					),
+				).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+			},
+		);
 
 		// ── listProducts + getProduct ─────────────────────────────────────
 

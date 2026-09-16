@@ -14,7 +14,7 @@
  * these functions renders a block, and none of them reads one.
  */
 import {
-	AdminOrdersClient,
+	type AdminOrdersSurface,
 	type CustomerContextWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
@@ -129,7 +129,7 @@ function periodWindow(form: OrdersFilterForm, now: Date): { from?: string; to?: 
  * screen closed (E-1). Fetched in parallel.
  */
 export async function loadDetailSurfaces(
-	client: AdminOrdersClient,
+	client: AdminOrdersSurface,
 	id: string,
 ): Promise<{
 	notes: OrderNoteWire[];

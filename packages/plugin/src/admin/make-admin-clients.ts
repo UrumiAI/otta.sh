@@ -7,8 +7,8 @@
  * constructing them, which is what makes the tier a ONE-LINE change instead of a
  * diff spread across six route files with six chances to miss one.
  *
- * WHAT IS ROUTED THROUGH HERE TODAY: products, and nothing else. INC-B10b-ii
- * folds orders in, INC-B10c the rules and reporting surfaces; until then their
+ * WHAT IS ROUTED THROUGH HERE TODAY: products and orders. INC-B10c folds the
+ * rules and reporting surfaces in; until then their
  * routes construct their HTTP clients as they always did, and this factory does
  * not pretend otherwise by handing back a stub. An absent surface is ABSENT —
  * an empty implementation would answer "no zones", "no revenue" in in-process
@@ -33,19 +33,22 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { type CommerceMode, resolveCommerceMode } from "../commerce/commerce-mode.js";
 import type { PluginContext } from "../types.js";
+import { AdminOrdersClient, type AdminOrdersSurface } from "./admin-orders-client.js";
 import { AdminProductsClient, type AdminProductsSurface } from "./admin-products-client.js";
+import { InProcessAdminOrdersClient } from "./in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "./in-process-admin-products-client.js";
 import { type AdminTokens, readAdminTokens } from "./scaffold/tokens.js";
 
 /**
  * The admin surfaces a console route may ask for.
  *
- * Only `products` is non-optional, because only products has both tiers. The
+ * `products` and `orders` are non-optional, because both have both tiers. The
  * rest arrive as their increments land; a route that needs one it did not get
  * must say so out loud rather than degrade quietly.
  */
 export interface AdminClients {
 	products: AdminProductsSurface;
+	orders: AdminOrdersSurface;
 }
 
 /**
@@ -73,7 +76,12 @@ export async function makeAdminClientsFor(
 	mode: CommerceMode,
 	tokens?: AdminTokens,
 ): Promise<AdminClients> {
-	if (mode === "in-process") return { products: new InProcessAdminProductsClient(ctx) };
+	if (mode === "in-process") {
+		return {
+			products: new InProcessAdminProductsClient(ctx),
+			orders: new InProcessAdminOrdersClient(ctx),
+		};
+	}
 
 	const resolved = tokens ?? (await readAdminTokens(ctx));
 	return {
@@ -82,6 +90,12 @@ export async function makeAdminClientsFor(
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			// "undefined ⇒ attach no header", the rule that keeps the wire
 			// byte-identical to a deployment with the secret unset.
+			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
+			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
+		}),
+		orders: new AdminOrdersClient({
+			fetch: ctx.http.fetch,
+			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
 			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
 		}),
