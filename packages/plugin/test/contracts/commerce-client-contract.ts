@@ -1764,15 +1764,38 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * distinction is still asserted in the direction this surface can reach — a
  * seeded zero stays `0` and never becomes `null` — and the unreachable half is
  * held by the in-process client's own unit coverage.
+ *
+ * TWO STATES THE ADMIN SURFACE READS AND CANNOT WRITE are arranged through the
+ * tier's STOREFRONT client instead, because they have exactly one writer each: a
+ * soft-deleted row (`softDeleteProductCommerce`) and a sku under a live cart hold
+ * (`addCartLine`). Both are load-bearing — `deletedAt` is what the console draws
+ * the archived badge from and what the stock-movement tombstone guard turns on,
+ * and `sku_held_stock` is a rename refusal with its own copy and its own
+ * `liveHolds` operand — so neither may be left to a hand-written stub on one
+ * tier.
+ *
+ * THE ONE `getTaxClasses` READING NOT ASSERTED HERE is the empty registry, and
+ * deliberately: the registry is STORE-WIDE and one tier's `reset()` is a
+ * documented no-op, so "no classes exist" is a claim no case in a shared file can
+ * make without depending on every other case's ordering — the exact coupling this
+ * contract's disjoint-ids rule exists to forbid. The branch that reads an empty
+ * registry is the console's `readTaxClasses` backstop, and it is pinned where it
+ * lives, in `products-console-route.sandbox.test.ts`.
  */
 export function adminOrdersProductsClientContract(tier: CommerceClientTier): void {
 	describe(`commerceClientContract — admin products [${tier.name}]`, () => {
 		let client: ProductsClientSurface;
+		/** THE STOREFRONT CLIENT, for the two states the admin surface can read but
+		 *  cannot produce: a soft-deleted row (`softDeleteProductCommerce`) and a sku
+		 *  under a live cart hold (`addCartLine`). Both are admin-facing outcomes
+		 *  reached only through a shopper-facing write, and both tiers have it. */
+		let storefront: CommerceClient;
 
 		const makeAdminClients = assertAdminClients(tier);
 		beforeAll(async () => {
 			await tier.setup();
 			client = (await makeAdminClients()).products;
+			storefront = await tier.makeClient();
 		});
 		beforeEach(async () => {
 			await tier.reset();
@@ -1861,6 +1884,53 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		test("getProduct: an id that never existed is null, not an error", async () => {
 			expect(await client.getProduct("adm-p-missing")).toBeNull();
+		});
+
+		test("a soft-deleted product reads back as a tombstone, lists only under deleted, and takes no stock movement", async () => {
+			await seed({
+				productId: "adm-del-1",
+				sku: "ADM-DEL-1",
+				title: "adm-del-fixture",
+				onHand: 9,
+			});
+			// Soft-deleted through the STOREFRONT surface, the only writer of this
+			// state — the admin surface can read a tombstone and never mint one.
+			await storefront.softDeleteProductCommerce("adm-del-1", "adm-del-1-delete");
+
+			// A TOMBSTONE IS A READ, NOT A 404. `deletedAt` is the field the console
+			// renders the archived badge from, so a tier that folded it to `null` — or
+			// answered `null` for the whole row — would take the badge with it.
+			const detail = await client.getProduct("adm-del-1");
+			expect(detail).not.toBeNull();
+			expect(detail?.deletedAt).not.toBeNull();
+			expect(detail?.active).toBe(false);
+			expect(detail?.sku).toBe("ADM-DEL-1"); // commercial data preserved, not wiped
+
+			// THE TOMBSTONE AXIS IS EITHER/OR. The default page is the live catalog
+			// and excludes it; `deleted: true` is the archive view and is the only
+			// place it appears.
+			const live = await client.listProducts({ search: "adm-del-fixture" });
+			expect(live.products.map((p) => p.productId)).toEqual([]);
+			const archived = await client.listProducts({ search: "adm-del-fixture", deleted: true });
+			expect(archived.products.map((p) => p.productId)).toEqual(["adm-del-1"]);
+			expect(archived.products[0]?.deletedAt).not.toBeNull();
+
+			// AND A DELETED ROW TAKES NO MOVEMENT, either way. The sku still exists and
+			// its inventory row still holds nine units, so nothing but an explicit
+			// tombstone check stands between an operator and a restock against a
+			// product that is not for sale. `not_found` rather than a typed refusal of
+			// its own: to this surface an archived product is not there.
+			expect(await client.restock("adm-del-1", 1, "adm-del-1-restock")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			expect(await client.removeStock("adm-del-1", 1, "adm-del-1-remove")).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+			// The refusals moved nothing.
+			const after = await client.listProducts({ search: "adm-del-fixture", deleted: true });
+			expect(after.products[0]).toMatchObject({ onHand: 9 });
 		});
 
 		test("search matches a sku exactly and a title by substring, case-insensitively", async () => {
@@ -2072,6 +2142,47 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			// that the rename is refused whole and names the sku involved.
 			expect(result.ok === false && result.reason).toMatch(/^sku_(taken|stock_conflict)$/);
 			expect(await client.getProduct("adm-e-sku-a")).toMatchObject({ sku: "ADM-E-SKU-A" });
+		});
+
+		test("renaming a sku a live cart hold is against is refused, carrying the hold count", async () => {
+			const watermark = await seed({
+				productId: "adm-e-held",
+				sku: "ADM-E-HELD",
+				title: "Held",
+				price: { amount: 1500, currency: "USD" },
+				onHand: 10,
+			});
+			// THE HOLD IS A REAL RESERVATION, taken through the storefront's own add —
+			// the only writer of one. A seeded row would prove nothing about the state
+			// the refusal is actually guarding.
+			const cartId = await tier.arrange.cart();
+			const added = await storefront.addCartLine(
+				cartId,
+				"ADM-E-HELD",
+				"adm-e-held",
+				2,
+				"adm-e-held-add",
+			);
+			expect(added.ok).toBe(true);
+
+			const result = await client.updateProduct(
+				"adm-e-held",
+				{ expectedUpdatedAt: watermark, sku: "ADM-E-HELD-NEW" },
+				"adm-e-held-1",
+			);
+			// ITS OWN MEMBER, not `sku_taken`: the target sku is free and the operator
+			// is being asked to WAIT rather than to pick another name, which is a
+			// different sentence and a different next action.
+			expect(result).toMatchObject({ ok: false, reason: "sku_held_stock", sku: "ADM-E-HELD" });
+			// THE COUNT IS A POSITIVE INTEGER OR `null`, never `0`. It is the operand
+			// the copy is composed from — "held by 1 cart" — and a `0` beside a
+			// refusal caused by holds reads as "no holds", so a non-integer is
+			// normalised to "some, number unknown" instead. One live hold here.
+			expect(result.ok === false && result.reason === "sku_held_stock" && result.liveHolds).toBe(1);
+			// Refused whole: the sku did not move, and neither did the stock.
+			const after = await client.getProduct("adm-e-held");
+			expect(after).toMatchObject({ sku: "ADM-E-HELD" });
+			expect(after?.onHand).toBe(8);
 		});
 
 		test("a malformed edit field is refused as a typed result, never a throw", async () => {
