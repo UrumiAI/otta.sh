@@ -90,7 +90,10 @@ async function payOrder(live: LiveService, orderId: string, totalCents: number):
 	const res = await fetch(`${live.baseUrl}/webhooks/stripe`, {
 		method: "POST",
 		headers: { "content-type": "application/json", "stripe-signature": signed.signatureHeader },
-		body: signed.body,
+		// `store-emdash`'s project reference drags in `astro-jsx.d.ts`'s DOM lib reference,
+		// shadowing Node's `BodyInit`: DOM pins its member to `ArrayBufferView<ArrayBuffer>`,
+		// which `signed.body`'s runtime type `Uint8Array<ArrayBufferLike>` doesn't satisfy.
+		body: signed.body as BodyInit,
 	});
 	expect(res.status).toBe(200);
 }
