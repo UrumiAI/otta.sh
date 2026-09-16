@@ -18,7 +18,7 @@
  * contract it invokes is what survives — INC-B10a/b/c add a second tier that
  * runs the very same cases with no HTTP anywhere.
  */
-import { afterAll, describe } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { AdminOrdersClient } from "../src/admin/admin-orders-client.js";
 import { AdminProductsClient } from "../src/admin/admin-products-client.js";
 import { AdminRulesClient } from "../src/admin/admin-rules-client.js";
@@ -231,8 +231,46 @@ describe.skipIf(PG === undefined)("commerceClientContract over the admin HTTP cl
 	});
 	adminRulesReportingClientContract(admin);
 	// Bound to the GATED tier like its sibling slice: the admin surface needs both
-	// the admin gate and the write gate closed, or INC-B10b's first case would be
-	// written against a service that never enforces them. It contributes no cases
-	// yet — it only holds this tier to the slice's requirements.
+	// the admin gate and the write gate closed, or its cases would be written
+	// against a service that never enforces them.
 	adminOrdersProductsClientContract(admin);
+
+	/**
+	 * THE HALF OF THE ORDER-SEARCH DIVERGENCE THIS TIER OWNS (ADR-0019 §6).
+	 *
+	 * The shared slice asserts the FLOOR — an id prefix, a folded buyer-ref prefix,
+	 * an exact folded line sku — and asserts no negative, because this dialect
+	 * answers MORE than the floor and the in-process one does not. Postgres plans
+	 * the buyer-ref half as an unanchored `like '%q%'`, a SANCTIONED superset
+	 * (ratified 2026-09-13), so a fragment from the middle of an address finds the
+	 * order HERE and misses THERE. Neither is a defect and neither can be shared:
+	 * the two tiers give opposite answers to the identical call, so each pins its
+	 * own half in its own file — the miss lives in
+	 * `commerce-client-contract.in-process.test.ts`.
+	 *
+	 * It runs on the SAME tier instance the slice above uses (its `setup()` is
+	 * idempotent and its service is torn down by the `afterAll` overhead), so it
+	 * costs no second service.
+	 */
+	describe("http admin orders: search ALSO matches a buyer-ref substring (a sanctioned superset)", () => {
+		test("a fragment from the middle of the buyer ref finds the order", async () => {
+			await admin.setup();
+			if (admin.makeAdminClients === undefined) {
+				throw new Error("the admin tier composes no admin clients");
+			}
+			const surfaces = await admin.makeAdminClients();
+			const orders = surfaces.orders;
+			if (orders === undefined) throw new Error("the admin orders surface is not composed");
+			await admin.arrange.order({ orderId: "div-o-1", buyerRef: "marguerite@example.test" });
+
+			// The floor, met here too.
+			expect((await orders.listOrders({ search: "MARGUER" })).orders.map((o) => o.id)).toEqual([
+				"div-o-1",
+			]);
+			// And the superset this dialect gives for free.
+			const midString = await orders.listOrders({ search: "guerite@" });
+			expect(midString.orders.map((o) => o.id)).toEqual(["div-o-1"]);
+			expect(midString.total).toBe(1);
+		});
+	});
 });
