@@ -35,7 +35,7 @@ import { type CommerceMode, resolveCommerceMode } from "../commerce/commerce-mod
 import type { PluginContext } from "../types.js";
 import { AdminProductsClient, type AdminProductsSurface } from "./admin-products-client.js";
 import { InProcessAdminProductsClient } from "./in-process-admin-products-client.js";
-import { readAdminTokens } from "./scaffold/tokens.js";
+import { type AdminTokens, readAdminTokens } from "./scaffold/tokens.js";
 
 /**
  * The admin surfaces a console route may ask for.
@@ -52,9 +52,17 @@ export interface AdminClients {
  * Pure in the mode (unit-testable without a bundler in the loop, the same seam
  * `makeCommerceClientFor` uses).
  *
- * Async because the http branch awaits the admin + write-gate tokens from
+ * Async because the http branch needs the admin + write-gate tokens from
  * write-only kv. The in-process branch reads NO token and the signature stays
  * `Promise`-shaped so the call sites do not change again when the branch goes.
+ *
+ * A CALLER THAT ALREADY HOLDS THE TOKENS PASSES THEM, and the products console
+ * does: it still builds its own settings client inline until INC-B10c folds the
+ * reporting surface in, and that client carries the admin token. Without the
+ * parameter each of them read write-only kv separately — two `readAdminTokens`,
+ * four `ctx.kv.get`s, per render — for one request's worth of tokens. The
+ * parameter is optional so a route with nothing to share stays a one-argument
+ * call, and it goes when the http branch does.
  *
  * The in-process client constructs every commerce adapter over `ctx.storage`, so
  * a context with no document store fails HERE, at construction, naming what is
@@ -63,25 +71,27 @@ export interface AdminClients {
 export async function makeAdminClientsFor(
 	ctx: PluginContext,
 	mode: CommerceMode,
+	tokens?: AdminTokens,
 ): Promise<AdminClients> {
 	if (mode === "in-process") return { products: new InProcessAdminProductsClient(ctx) };
 
-	const tokens = await readAdminTokens(ctx);
+	const resolved = tokens ?? (await readAdminTokens(ctx));
 	return {
 		products: new AdminProductsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			// "undefined ⇒ attach no header", the rule that keeps the wire
 			// byte-identical to a deployment with the secret unset.
-			...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-			...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
+			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
+			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
 		}),
 	};
 }
 
 /** One set per invocation, matching the request-scoped lifecycle the console
  *  routes already had: a token can be re-provisioned between requests, and a
- *  client is cheap. */
-export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
-	return makeAdminClientsFor(ctx, resolveCommerceMode());
+ *  client is cheap. `tokens` is this request's already-read pair, when the
+ *  caller has one. */
+export function makeAdminClients(ctx: PluginContext, tokens?: AdminTokens): Promise<AdminClients> {
+	return makeAdminClientsFor(ctx, resolveCommerceMode(), tokens);
 }

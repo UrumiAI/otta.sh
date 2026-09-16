@@ -495,11 +495,43 @@ function requireStockMovementQty(qty: number): number {
 	return qty;
 }
 
+/**
+ * Every key `editProductCommerceBody` declares, written out so an unknown one is
+ * a refusal rather than a silent drop.
+ *
+ * `.strict()` IS BEHAVIOUR, not framing. The other transport's body schema is
+ * strict and answers an unrecognised key with a 400 that this surface turns into
+ * `{ ok: false, reason: "invalid" }`; dropping it here instead would report a
+ * save that did not happen as a success. `title` is the instance that matters —
+ * it is CMS-owned (ADR-0013) and the port has no field for it, so a caller that
+ * sends one must be told, not quietly obeyed in part. Only an UNTYPED caller can
+ * get here; `ProductEditWire` stops a typed one at the compiler.
+ */
+const PRODUCT_EDIT_KEYS = [
+	"expectedUpdatedAt",
+	"sku",
+	"price",
+	"taxClass",
+	"compareAtPrice",
+	"unitCost",
+	"weightGrams",
+	"lengthMm",
+	"widthMm",
+	"heightMm",
+	"productKind",
+	"inventoryPolicy",
+] as const satisfies readonly (keyof ProductEditWire)[];
+
 /** `editProductCommerceBody`'s bounds, then the branding the use-case takes.
  *  Money is an integer minor amount carrying an explicit ISO-4217 currency —
  *  never a bare number and never a float. */
 function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductCommerceFieldsInput {
 	const input: UpdateProductCommerceFieldsInput = { productId: toProductId(productId) };
+	for (const key of Object.keys(body)) {
+		if (!PRODUCT_EDIT_KEYS.includes(key as (typeof PRODUCT_EDIT_KEYS)[number])) {
+			throw new CommerceInputError(key, "is not a field this edit accepts");
+		}
+	}
 	if (body.sku !== undefined) {
 		// `min(1)` and no ceiling, as the edit body's schema has it — the sku's real
 		// bounds belong to the store's column, not to this boundary.
@@ -595,20 +627,52 @@ function decodeProductCursor(token: string): DecodedCursor | null {
 	}
 }
 
+/**
+ * Exactly what `z.string().datetime()` accepts — the validator the service's own
+ * cursor schema put in front of this field: an RFC-3339 instant in UTC, optional
+ * fractional seconds, a literal `Z` and no numeric offset.
+ *
+ * MIRRORED RATHER THAN APPROXIMATED, because the value is compared
+ * LEXICOGRAPHICALLY by the store's keyset predicate. `Date.parse` alone accepts
+ * `"Jan 5, 2026"` and `"2026-01-01"` — real instants, neither of them
+ * `toISOString()`-shaped — and a tampered token carrying one would be refused on
+ * the wire but sorted as raw text here, paging from somewhere the operator never
+ * asked for. A divergence in the fail-OPEN direction is the one kind this
+ * boundary must not have.
+ */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+
 /** `Date.toISOString()`-comparable: the position's `createdAt` must be a real
- *  instant, never a raw string that reaches the store's keyset comparison. */
+ *  instant IN THAT SPELLING, never a raw string that reaches the store's keyset
+ *  comparison. The regex pins the spelling; `Date.parse` rejects the shapes that
+ *  match it and name no real day (`2026-02-31`). */
 function productCursorPosOf(pos: unknown): ProductListCursor | null {
 	if (pos === null || typeof pos !== "object") return null;
 	const p = pos as { createdAt?: unknown; productId?: unknown };
-	if (typeof p.createdAt !== "string" || Number.isNaN(Date.parse(p.createdAt))) return null;
+	if (typeof p.createdAt !== "string" || !ISO_INSTANT.test(p.createdAt)) return null;
+	if (Number.isNaN(Date.parse(p.createdAt))) return null;
 	if (typeof p.productId !== "string" || p.productId.length === 0 || p.productId.length > 200) {
 		return null;
 	}
 	return { createdAt: p.createdAt, productId: toProductId(p.productId) };
 }
 
-/** RE-VALIDATE the decoded filter before trusting it — the token is
- *  operator-round-tripped input like any other. `null` ⇒ refuse. */
+/**
+ * RE-VALIDATE the decoded filter before trusting it — the token is
+ * operator-round-tripped input like any other. `null` ⇒ refuse.
+ *
+ * AN UNKNOWN AXIS IS A REFUSAL HERE, AND A STRIP ON THE WIRE — a divergence,
+ * recorded rather than smoothed over, because the two directions are not equally
+ * safe. The service's `productListFilterSchema` is non-strict, so a token
+ * carrying an axis it does not know silently loses it and the page comes back
+ * under a predicate that is not the one the token claimed. Refusing costs a
+ * `cursorRejected` page one — visible, flagged, recoverable, and the same answer
+ * any other undecodable token gets. Matching the wire would mean deliberately
+ * widening this side to answer a tampered token with a mis-captioned page, which
+ * is the failure the disagreement check below exists to prevent. So this side
+ * stays narrower ON PURPOSE. The only way to reach it at all is a hand-made or
+ * edited token; every token this client mints carries exactly these axes.
+ */
 function revalidateFilter(filter: unknown): ProductListFilter | null {
 	if (filter === null || typeof filter !== "object") return null;
 	const f = filter as Record<string, unknown>;

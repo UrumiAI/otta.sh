@@ -229,9 +229,18 @@ interface ProductsConsoleClient {
  * The SETTINGS client is still built inline, because INC-B10c owns the reporting
  * surface and has not folded it in yet. It carries the admin token ALONE: a
  * GET-only surface has no business holding the token that writes.
+ *
+ * ONE TOKEN READ PER REQUEST, sequenced deliberately. Both clients want the same
+ * write-only-kv pair, so this reads it once and hands it to the factory rather
+ * than letting each of them read it — the alternative was two `readAdminTokens`
+ * (four `ctx.kv.get`s) per render for one request's worth of tokens. The await
+ * is not parallelised away because there is only one IO round here now; when
+ * INC-B10c takes the settings client through the factory too, this line and the
+ * token argument both go.
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
-	const [clients, tokens] = await Promise.all([makeAdminClients(ctx), readAdminTokens(ctx)]);
+	const tokens = await readAdminTokens(ctx);
+	const clients = await makeAdminClients(ctx, tokens);
 	return {
 		products: clients.products,
 		settings: new ReportingSettingsClient({
