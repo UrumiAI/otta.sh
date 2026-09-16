@@ -1,4 +1,3 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -15,8 +14,9 @@ import type {
 	TableBlock,
 	TabPanel,
 } from "../types.js";
+import { makeAdminClients } from "./make-admin-clients.js";
 import {
-	AdminRulesClient,
+	type AdminRulesSurface,
 	type CouponEdit,
 	type CouponsListFilter,
 	type CouponSummaryWire,
@@ -60,7 +60,7 @@ import {
 /**
  * The admin Coupons console — built against `docs/admin/ADMIN-CONSOLE.md`
  * §12.2, pattern-matched on the reference screen (`orders-page.ts`, §11).
- * A 2-level scaffold screen (list → leaf detail/edit) over `AdminRulesClient`.
+ * A 2-level scaffold screen (list → leaf detail/edit) over `AdminRulesSurface`.
  *
  * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
  * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
@@ -202,13 +202,20 @@ const LABEL_BUDGET = 60;
 export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 	return createListDetailHandler<CouponsRenderState>({
 		actions: COUPON_ACTIONS,
+		// THE TIER IS THE FACTORY'S DECISION, not this screen's (work order 02,
+		// INC-B10c-i): `makeAdminClients` hands back either the `ctx.http` client
+		// this line used to construct or the in-process one over the plugin's own
+		// document store, and the page cannot tell which — everything below is
+		// typed against `AdminRulesSurface`, the structural surface both answer to.
+		//
+		// The tokens are read ONCE, here, and PASSED IN rather than re-read inside
+		// the factory. They are transport credentials (`X-Internal-Token` /
+		// `X-Service-Token`) that the in-process tier has nothing to check against
+		// and deliberately ignores (ADR-0014 D3).
 		async createClient(ctx) {
 			const tokens = await readAdminTokens(ctx);
-			return new AdminRulesClient({
-				fetch: ctx.http.fetch,
-				baseUrl: COMMERCE_SERVICE_BASE_URL,
-				...tokens,
-			});
+			const clients = await makeAdminClients(ctx, tokens);
+			return clients.rules;
 		},
 		// The "Open coupon" picker carries the ENCODED one-deep target path
 		// (`[code]`) in `values.target` — the code, not the id, because the only
@@ -380,7 +387,7 @@ function formatCentsForDisplay(minorUnits: number, currencyCode: string | null):
 // -- level 0: the coupons list -------------------------------------------------
 
 function couponsListLevel() {
-	return listLevel<AdminRulesClient, CouponsFilterForm, CouponSummaryWire, CouponsRenderState>({
+	return listLevel<AdminRulesSurface, CouponsFilterForm, CouponSummaryWire, CouponsRenderState>({
 		limit: PAGE_LIMIT,
 		filterFromValues(values) {
 			const search = readString(values.search)?.trim();
@@ -830,7 +837,7 @@ function couponsFailClosed() {
 // -- level 1: a coupon's detail/edit leaf --------------------------------------
 
 function couponDetailLevel() {
-	return leafLevel<AdminRulesClient, CouponSummaryWire>({
+	return leafLevel<AdminRulesSurface, CouponSummaryWire>({
 		// The detail load is the exact-code LIST search, not `GET /coupons/:code`
 		// — deliberately: the point-lookup serialization omits `startsAt`/
 		// `expiresAt`, and a full-replace edit form that cannot pre-fill the
@@ -1693,52 +1700,54 @@ function parseCountInput(raw: string): { ok: true; value: number | null } | { ok
 // -- custom action: create a coupon --------------------------------------------
 
 function createCouponAction() {
-	return customAction<AdminRulesClient, CouponsRenderState>(async ({ input, client, showList }) => {
-		const values = input.values ?? {};
-		// EVERY refusal below re-renders the create screen with this draft
-		// (DA-3a-i): the operator fixes the one field that was wrong instead of
-		// retyping seven. Raw text, exactly as submitted — see CouponsRenderState.
-		const draft = couponDraft(values);
-		const err = (description: string) =>
-			showList(
-				undefined,
-				{ variant: "error", title: "Coupon not created", description },
-				{ kind: "new-coupon", draft },
-			);
-		const id = (readString(values.id) ?? "").trim();
-		const code = (readString(values.code) ?? "").trim();
-		const type = readString(values.type) ?? "";
-		if (id.length === 0 || code.length === 0) {
-			return err("Enter both a coupon ID and a code.");
-		}
-		if (type !== "fixed_amount" && type !== "percentage") {
-			return err("Choose a valid coupon type.");
-		}
-		const econ = parseEconomics(type, values, "create", NO_CURRENT);
-		if (!econ.ok) return err(econ.message);
-		// The five shared axes have no field on this form (§12.2) — a freshly
-		// created coupon is valid immediately, forever, unlimited, unrestricted.
-		const result = await client.createCoupon({
-			id,
-			code,
-			type,
-			amountCents: econ.amountCents,
-			rateBps: econ.rateBps,
-			capCents: econ.capCents,
-			currency: econ.currency,
-			minSubtotalCents: null,
-			startsAt: null,
-			expiresAt: null,
-			maxUses: null,
-			maxUsesPerCustomer: null,
-		});
-		// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
-		// editing one field); success drops it, which is what returns the
-		// operator to the list.
-		return result.ok
-			? showList(undefined, createCouponNotice(result, code))
-			: showList(undefined, createCouponNotice(result, code), { kind: "new-coupon", draft });
-	});
+	return customAction<AdminRulesSurface, CouponsRenderState>(
+		async ({ input, client, showList }) => {
+			const values = input.values ?? {};
+			// EVERY refusal below re-renders the create screen with this draft
+			// (DA-3a-i): the operator fixes the one field that was wrong instead of
+			// retyping seven. Raw text, exactly as submitted — see CouponsRenderState.
+			const draft = couponDraft(values);
+			const err = (description: string) =>
+				showList(
+					undefined,
+					{ variant: "error", title: "Coupon not created", description },
+					{ kind: "new-coupon", draft },
+				);
+			const id = (readString(values.id) ?? "").trim();
+			const code = (readString(values.code) ?? "").trim();
+			const type = readString(values.type) ?? "";
+			if (id.length === 0 || code.length === 0) {
+				return err("Enter both a coupon ID and a code.");
+			}
+			if (type !== "fixed_amount" && type !== "percentage") {
+				return err("Choose a valid coupon type.");
+			}
+			const econ = parseEconomics(type, values, "create", NO_CURRENT);
+			if (!econ.ok) return err(econ.message);
+			// The five shared axes have no field on this form (§12.2) — a freshly
+			// created coupon is valid immediately, forever, unlimited, unrestricted.
+			const result = await client.createCoupon({
+				id,
+				code,
+				type,
+				amountCents: econ.amountCents,
+				rateBps: econ.rateBps,
+				capCents: econ.capCents,
+				currency: econ.currency,
+				minSubtotalCents: null,
+				startsAt: null,
+				expiresAt: null,
+				maxUses: null,
+				maxUsesPerCustomer: null,
+			});
+			// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
+			// editing one field); success drops it, which is what returns the
+			// operator to the list.
+			return result.ok
+				? showList(undefined, createCouponNotice(result, code))
+				: showList(undefined, createCouponNotice(result, code), { kind: "new-coupon", draft });
+		},
+	);
 }
 
 /** The submitted create values, verbatim and untrimmed — the operator's own
@@ -1773,7 +1782,7 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 // -- custom action: save a coupon (LWW full replace) ----------------------------
 
 function saveCouponAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showLeaf, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, carried, client, showLeaf, showList }) => {
 		const values = input.values ?? {};
 		const couponId = carried?.couponId;
 		const code = carried?.code;
@@ -1816,8 +1825,8 @@ function saveCouponAction() {
 function saveCouponOutcome(
 	result: RulesUpdateResult<unknown>,
 	code: string,
-	showLeaf: CustomActionApi<AdminRulesClient>["showLeaf"],
-	showList: CustomActionApi<AdminRulesClient>["showList"],
+	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
+	showList: CustomActionApi<AdminRulesSurface>["showList"],
 ) {
 	if (result.ok) {
 		return showLeaf([code], {
@@ -1845,7 +1854,7 @@ function saveCouponOutcome(
 // -- custom action: delete a coupon (forbid-if-redeemed) ------------------------
 
 function deleteCouponAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showLeaf, showList }) => {
+	return customAction<AdminRulesSurface>(async ({ input, client, showLeaf, showList }) => {
 		const payload = asRecord(input.value);
 		const couponId = readString(payload?.couponId);
 		const code = readString(payload?.code);
@@ -1858,8 +1867,8 @@ function deleteCouponAction() {
 function deleteCouponOutcome(
 	result: RulesDeleteResult,
 	code: string,
-	showLeaf: CustomActionApi<AdminRulesClient>["showLeaf"],
-	showList: CustomActionApi<AdminRulesClient>["showList"],
+	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
+	showList: CustomActionApi<AdminRulesSurface>["showList"],
 ) {
 	if (result.ok) {
 		return showList(undefined, {
@@ -1896,7 +1905,7 @@ function deleteCouponOutcome(
 /** INC-14's promoted button, and E-2's empty-state button — one verb, because
  *  they are one act. No draft: nothing has been typed yet. */
 function newCouponAction() {
-	return customAction<AdminRulesClient, CouponsRenderState>(async ({ showList }) => {
+	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ showList }) => {
 		return showList(undefined, undefined, { kind: "new-coupon" });
 	});
 }
@@ -1904,7 +1913,7 @@ function newCouponAction() {
 /** "← Back to coupons": the root list with NO render state. Whatever was typed
  *  is dropped — deliberately, and only ever by this explicit click. */
 function cancelNewCouponAction() {
-	return customAction<AdminRulesClient, CouponsRenderState>(async ({ showList }) => showList());
+	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ showList }) => showList());
 }
 
 // -- small shared helpers --------------------------------------------------------

@@ -110,6 +110,10 @@ export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input
 export {
 	AdminRulesClient,
 	type AdminRulesClientOptions,
+	// The TIER-AGNOSTIC surface the three rules console pages now hold (work
+	// order 02, INC-B10c-i). Exported from the entry point because a parameter
+	// type a consumer cannot name is not a usable signature.
+	type AdminRulesSurface,
 	type CouponEdit,
 	type CouponInput,
 	type CouponWire,

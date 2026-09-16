@@ -262,6 +262,53 @@ export interface AdminRulesClientOptions {
 	serviceToken?: string;
 }
 
+/**
+ * THE ADMIN RULES SURFACE, structurally — what a caller may do to shipping
+ * zones/methods/rates, tax classes/rates and coupons, with no claim about how it
+ * gets done.
+ *
+ * Two implementations answer to this now (work order 02, INC-B10c-i): the
+ * `ctx.http` client below, and `InProcessAdminRulesClient`, which composes the
+ * same behaviour over the plugin's own document store. `AdminRulesClient` itself
+ * cannot be that type — its `#`-private fields make it nominal, so no second
+ * class is ever assignable to it — hence a `Pick` over its methods, the same
+ * idiom the contract suite's surfaces already use.
+ *
+ * EVERY METHOD IS LISTED, all twenty-five. Written out rather than derived,
+ * because this is much the widest surface in the console and one that listed
+ * fewer would let a method be forgotten SILENTLY: adding a method to the client
+ * without deciding what the in-process tier does about it has to be a compile
+ * error here, not a capability that quietly exists on one transport only.
+ */
+export type AdminRulesSurface = Pick<
+	AdminRulesClient,
+	| "listZones"
+	| "createZone"
+	| "updateZone"
+	| "deleteZone"
+	| "listMethods"
+	| "createMethod"
+	| "updateMethod"
+	| "deleteMethod"
+	| "getRate"
+	| "createRate"
+	| "updateRate"
+	| "deleteRate"
+	| "listTaxClasses"
+	| "createTaxClass"
+	| "updateTaxClass"
+	| "deleteTaxClass"
+	| "listTaxRates"
+	| "createTaxRate"
+	| "updateTaxRate"
+	| "deleteTaxRate"
+	| "listCoupons"
+	| "getCoupon"
+	| "createCoupon"
+	| "updateCoupon"
+	| "deleteCoupon"
+>;
+
 export class AdminRulesClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;

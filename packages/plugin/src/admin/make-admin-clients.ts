@@ -7,12 +7,12 @@
  * constructing them, which is what makes the tier a ONE-LINE change instead of a
  * diff spread across six route files with six chances to miss one.
  *
- * WHAT IS ROUTED THROUGH HERE TODAY: products and orders. INC-B10c folds the
- * rules and reporting surfaces in; until then their
- * routes construct their HTTP clients as they always did, and this factory does
- * not pretend otherwise by handing back a stub. An absent surface is ABSENT —
- * an empty implementation would answer "no zones", "no revenue" in in-process
- * mode, which is a wrong answer rather than a missing one.
+ * WHAT IS ROUTED THROUGH HERE TODAY: products, orders and rules. INC-B10c-ii
+ * folds the remaining reporting surface in; until then the reports route
+ * constructs its HTTP client as it always did, and this factory does not pretend
+ * otherwise by handing back a stub. An absent surface is ABSENT — an empty
+ * implementation would answer "no revenue" in in-process mode, which is a wrong
+ * answer rather than a missing one.
  *
  * NO ADMIN AUTH IN THE IN-PROCESS BRANCH, deliberately (ADR-0014 D3). The
  * console routes are already gated by EmDash's own admin auth and CSRF; the
@@ -35,20 +35,23 @@ import { type CommerceMode, resolveCommerceMode } from "../commerce/commerce-mod
 import type { PluginContext } from "../types.js";
 import { AdminOrdersClient, type AdminOrdersSurface } from "./admin-orders-client.js";
 import { AdminProductsClient, type AdminProductsSurface } from "./admin-products-client.js";
+import { AdminRulesClient, type AdminRulesSurface } from "./admin-rules-client.js";
 import { InProcessAdminOrdersClient } from "./in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "./in-process-admin-products-client.js";
+import { InProcessAdminRulesClient } from "./in-process-admin-rules-client.js";
 import { type AdminTokens, readAdminTokens } from "./scaffold/tokens.js";
 
 /**
  * The admin surfaces a console route may ask for.
  *
- * `products` and `orders` are non-optional, because both have both tiers. The
- * rest arrive as their increments land; a route that needs one it did not get
- * must say so out loud rather than degrade quietly.
+ * `products`, `orders` and `rules` are non-optional, because each has both
+ * tiers. The rest arrive as their increments land; a route that needs one it did
+ * not get must say so out loud rather than degrade quietly.
  */
 export interface AdminClients {
 	products: AdminProductsSurface;
 	orders: AdminOrdersSurface;
+	rules: AdminRulesSurface;
 }
 
 /**
@@ -80,6 +83,7 @@ export async function makeAdminClientsFor(
 		return {
 			products: new InProcessAdminProductsClient(ctx),
 			orders: new InProcessAdminOrdersClient(ctx),
+			rules: new InProcessAdminRulesClient(ctx),
 		};
 	}
 
@@ -94,6 +98,12 @@ export async function makeAdminClientsFor(
 			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
 		}),
 		orders: new AdminOrdersClient({
+			fetch: ctx.http.fetch,
+			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
+			...(resolved.serviceToken !== undefined ? { serviceToken: resolved.serviceToken } : {}),
+		}),
+		rules: new AdminRulesClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			...(resolved.adminToken !== undefined ? { adminToken: resolved.adminToken } : {}),
