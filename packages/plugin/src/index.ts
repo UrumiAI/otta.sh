@@ -147,12 +147,36 @@ export {
 export {
 	ALLOWED_HOSTS,
 	COMMERCE_SERVICE_BASE_URL,
+	IN_PROCESS_EGRESS_URLS,
+	type InProcessEgressUrls,
+	resolveAllowedHosts,
 	SERVICE_TOKEN_KEY,
 	serviceTokenFromKv,
+	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
+export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
+// INC-C3 — the write-only payment/email secret keys and their fail-closed
+// readers. Exported so a deploying site can assert what the plugin stores, and
+// so INC-C1b's settle route can reach the Stripe webhook secret, without either
+// restating the key strings.
+export {
+	emailApiKeyFromKv,
+	EMAIL_API_KEY_KEY,
+	type PaymentSecretKey,
+	type PaymentSecrets,
+	PAYMENT_SECRET_KEYS,
+	readPaymentSecrets,
+	readWriteOnlySecret,
+	stripeSecretKeyFromKv,
+	STRIPE_SECRET_KEY_KEY,
+	stripeWebhookSecretFromKv,
+	STRIPE_WEBHOOK_SECRET_KEY,
+	x402FacilitatorSecretFromKv,
+	X402_FACILITATOR_SECRET_KEY,
+} from "./payment-secrets.js";
 export {
 	CommerceClientError,
 	type CartFailureReason,

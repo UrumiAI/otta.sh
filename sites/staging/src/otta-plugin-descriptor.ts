@@ -13,8 +13,12 @@
  */
 import type { PluginDescriptor } from "emdash";
 import {
+	type CommerceMode,
 	COUPONS_PAGE,
+	type InProcessEgressUrls,
 	REPORTS_PAGE,
+	resolveAllowedHosts,
+	resolveCommerceMode,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
 	TAX_PAGE,
@@ -23,7 +27,22 @@ import {
 	OTTA_PLUGIN_VERSION,
 } from "@otta-sh/plugin";
 
-export function ottaPluginDescriptor(serviceUrl: string): PluginDescriptor {
+/** INC-C3 — what the egress allowlist depends on besides the service URL. */
+export interface OttaPluginDescriptorOptions {
+	/** Which commerce transport this build registers. Defaults to the plugin
+	 *  bundle's own resolved mode, so the descriptor and the code it describes can
+	 *  never disagree about which allowlist applies. */
+	mode?: CommerceMode;
+	/** Deployment-supplied in-process egress URLs (email provider, x402
+	 *  facilitator). Ignored in `"http"` mode, where the SERVICE makes those
+	 *  calls; absent in `"in-process"` mode ⇒ no host granted for that provider. */
+	egress?: InProcessEgressUrls;
+}
+
+export function ottaPluginDescriptor(
+	serviceUrl: string,
+	options: OttaPluginDescriptorOptions = {},
+): PluginDescriptor {
 	return {
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
@@ -32,8 +51,26 @@ export function ottaPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// EXACTLY the manifest's two capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
-		// The egress allowlist: only the commerce service's host.
-		allowedHosts: [new URL(serviceUrl).hostname],
+		// The egress allowlist, PER MODE (INC-C3) — resolved by the plugin's own
+		// `resolveAllowedHosts` so this descriptor and the bundle's `ALLOWED_HOSTS`
+		// can never drift into two different answers.
+		//
+		//  - "http" (what this site still builds): exactly the commerce service's
+		//    host, unchanged. The service holds the Stripe/email/x402 credentials
+		//    and makes those calls itself, so granting them here would widen
+		//    ADR-0006's gate for egress the plugin never performs.
+		//  - "in-process": the service is gone and those calls are the plugin's
+		//    own, so the list becomes Stripe's API host plus whichever of the
+		//    email/facilitator hosts the deployment supplied — and the service host
+		//    disappears. The CREDENTIALS for those calls are never baked in here:
+		//    they live in write-only plugin kv (`settings:stripe*`,
+		//    `settings:emailApiKey`, `settings:x402FacilitatorSecret`), provisioned
+		//    through the admin Settings form.
+		allowedHosts: resolveAllowedHosts(
+			options.mode ?? resolveCommerceMode(),
+			serviceUrl,
+			options.egress,
+		),
 		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
 		// Commercial fields have exactly one home, `product_commerce`, edited
 		// only from the admin's Pricing & inventory page ("one home per field",
