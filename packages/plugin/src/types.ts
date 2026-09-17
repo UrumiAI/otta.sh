@@ -201,6 +201,66 @@ export interface StorageCollection<T = unknown> {
  *  collection name — the shape of `ctx.storage`. */
 export type StorageAccess = Record<string, StorageCollection>;
 
+// -- cron ---------------------------------------------------------------------
+
+/**
+ * Scheduled-task registration, scoped to this plugin — the shape of `ctx.cron`.
+ *
+ * This file's OWN structural mirror of the host's `CronAccess`, on the same rule
+ * the storage mirror above follows: this package is published API and must not
+ * make a consumer resolve the host's types.
+ *
+ * `schedule` is an UPSERT on `(plugin, name)`, which is what makes calling it on
+ * every activation — and on every tick — safe rather than duplicative.
+ *
+ * NO DRIFT PIN HERE, and that is a gap rather than an oversight — it is recorded
+ * because it cannot be closed from inside this package. The storage mirror is
+ * pinned against the host's real shape in `commerce/in-process-commerce-stores.ts`
+ * by two type-only assignments, and that works only because
+ * `@otta-sh/store-emdash` is a runtime dependency that re-exports the host's
+ * `StorageAccess`. There is no equivalent for cron: the host does NOT export
+ * `CronAccess` or `CronTaskInfo` from `emdash` or from `emdash/plugin` (they are
+ * declared in its type chunk but left out of every export list), and this package
+ * does not depend on `emdash` at all, so no host cron type is nameable here.
+ *
+ * ONE LINE CLOSES IT, in `@otta-sh/store-emdash` — the package that already owns
+ * this exact job for storage. Adding to
+ * `packages/store-emdash/src/storage-access.ts` (and its `src/index.ts` export
+ * list):
+ *
+ *     export type HostCronAccess = NonNullable<import("emdash").PluginContext["cron"]>;
+ *
+ * — deriving the shape from the exported `PluginContext` the same way that file
+ * already derives `WhereClause` from the exported `StorageCollection` — would make
+ * the mutual-assignability pair below writable in `cron/index.ts`. That is an
+ * edit outside this increment's scope and is reported rather than made.
+ */
+export interface CronAccess {
+	schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }): Promise<void>;
+	cancel(name: string): Promise<void>;
+	list(): Promise<CronTaskInfo[]>;
+}
+
+/** One registered task, as `CronAccess.list` reports it. */
+export interface CronTaskInfo {
+	name: string;
+	schedule: string;
+	nextRunAt: string;
+	lastRunAt: string | null;
+}
+
+/** The event the `cron` hook receives — one per DUE TASK, not one per tick, so
+ *  `name` is what a multi-task plugin dispatches on. */
+export interface CronEvent {
+	name: string;
+	data?: Record<string, unknown>;
+	scheduledAt: string;
+}
+
+/** The event a lifecycle hook (`plugin:activate`) receives. Empty by contract;
+ *  everything the handler needs is on `ctx`. */
+export type PluginLifecycleEvent = Record<string, never>;
+
 /**
  * The context passed to every hook/route handler. Otta's plugin declares
  * only `content:read` + `network:request` (manifest.ts) — so `http` is the
@@ -232,6 +292,16 @@ export interface PluginContext {
 	 * required field no existing caller could satisfy.
 	 */
 	storage?: StorageAccess;
+	/**
+	 * Scheduled-task registration — the OTHER capability-free surface (plan §D5,
+	 * the fifteen-minute cron row). There is no `cron` capability string in the host's
+	 * vocabulary any more than there is a `storage` one; the only gate is whether
+	 * the runtime wired a cron executor at all.
+	 *
+	 * OPTIONAL for exactly the reason `storage` is: a runtime with no cron executor
+	 * hands over no `cron`, and a caller that needs one says so by name.
+	 */
+	cron?: CronAccess;
 }
 
 // -- routes -------------------------------------------------------------------
@@ -265,6 +335,16 @@ export interface SandboxedPluginHooks {
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
 	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };
 	"content:afterUnpublish"?: { handler: HookHandler<ContentStateChangeEvent> };
+	/**
+	 * The scheduled sweep (INC-C4). Not capability-gated — the host validates a
+	 * declared hook name against its own list, on which `cron` carries no required
+	 * capability, so a `format: "standard"` plugin may declare it as it stands.
+	 */
+	cron?: { handler: HookHandler<CronEvent> };
+	/** Where the sweep task is REGISTERED (`ctx.cron.schedule`), mirroring the
+	 *  host's own bundled plugins. See `cron/index.ts` for why the tick re-affirms
+	 *  it too. */
+	"plugin:activate"?: { handler: HookHandler<PluginLifecycleEvent> };
 }
 
 /** The shape a sandboxed plugin's entry module default-exports (em-dash:
