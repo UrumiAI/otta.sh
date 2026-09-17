@@ -18,7 +18,11 @@
  * | `settings:stripeSecretKey`         | `STRIPE_SECRET_KEY`       | `service/src/stripe-wiring.ts:7`  |
  * | `settings:stripeWebhookSecret`     | `STRIPE_WEBHOOK_SECRET`   | `service/src/stripe-wiring.ts:6`  |
  * | `settings:emailApiKey`             | `EMAIL_API_KEY`           | `service/src/index.ts:79`         |
- * | `settings:x402FacilitatorSecret`   | `X402_FACILITATOR_SECRET` | `service/src/x402-wiring.ts:6`    |
+ * | `settings:x402FacilitatorApiKey`   | `X402_FACILITATOR_SECRET` | `payments/x402-wiring.ts` (†)     |
+ *
+ * (†) INC-C5 CHANGED WHAT THAT LAST ROW MEANS, SO IT ALSO CHANGED THE KEY — see
+ * its own doc below. It is no longer an offline HMAC secret; it is the bearer
+ * credential the in-process facilitator call puts on the wire.
  *
  * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companions —
  * `EMAIL_API_URL`, `EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`,
@@ -51,11 +55,44 @@ export const STRIPE_WEBHOOK_SECRET_KEY = "settings:stripeWebhookSecret";
  *  honest failure. */
 export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
 
-/** `X402_FACILITATOR_SECRET` — the shared HMAC secret the x402 facilitator
- *  verification uses (`service/src/x402-wiring.ts:6,31`). The service treats a
- *  leak of this as forge-a-settlement severity and fail-closes around it; the
- *  same value therefore gets the same write-only treatment here. */
-export const X402_FACILITATOR_SECRET_KEY = "settings:x402FacilitatorSecret";
+/**
+ * The x402 facilitator CREDENTIAL — the bearer token
+ * `createHttpFacilitator` attaches when it asks a real facilitator to verify a
+ * receipt (`payments/x402-wiring.ts`).
+ *
+ * ⚠ ITS MEANING CHANGED AT INC-C5, SO THE KEY MOVED. Under INC-C3
+ * `settings:x402FacilitatorSecret` was the in-process rename of the service's
+ * `X402_FACILITATOR_SECRET`: the SHARED HMAC secret `createTestFacilitator`
+ * signs and verifies with, a value that is never transmitted and whose leak is
+ * forge-a-settlement severity. In-process there is no offline facilitator —
+ * `createHttpFacilitator` asks a real one over `ctx.http` — so the configured
+ * value now GOES ON THE WIRE as `Authorization: Bearer …` to the facilitator
+ * host.
+ *
+ * WHY A NEW KEY AND NOT A RE-DOCUMENTED ONE (review round 2, A5). Re-documenting
+ * would have left an operator who provisioned under the INC-C3 meaning holding a
+ * forge-a-settlement HMAC secret that this increment would transmit to a third
+ * party — a silent downgrade that no release note can undo, because nothing
+ * forces the operator to act. A different key name IS the forcing function: the
+ * old value is never read again, the field reads as unset, and the settle route
+ * answers `NOT_CONFIGURED` until someone provisions a credential that was minted
+ * to be sent. The legacy key is deleted opportunistically on the next save of
+ * this field (`settings-form.ts`) so the orphaned secret does not linger in kv.
+ *
+ * The SERVICE's own offline facilitator keeps reading its own
+ * `X402_FACILITATOR_SECRET` environment variable, which was never this key.
+ */
+export const X402_FACILITATOR_API_KEY_KEY = "settings:x402FacilitatorApiKey";
+
+/**
+ * The INC-C3 key this replaced. Exported for exactly one purpose: the settings
+ * form deletes it when the facilitator credential is next saved. Nothing reads
+ * it as a credential, and nothing ever should — see
+ * {@link X402_FACILITATOR_API_KEY_KEY}. It is deliberately NOT in
+ * {@link PAYMENT_SECRET_KEYS}: that list drives the provisioning form and the
+ * no-echo pins, and this key is neither provisioned nor rendered.
+ */
+export const X402_LEGACY_FACILITATOR_SECRET_KEY = "settings:x402FacilitatorSecret";
 
 /**
  * The shared EDGE token the calling site attaches to a webhook it forwards
@@ -99,7 +136,7 @@ export const PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	EMAIL_API_KEY_KEY,
-	X402_FACILITATOR_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 ] as const;
 
@@ -179,7 +216,7 @@ export async function readPaymentSecrets(ctx: PluginContext): Promise<PaymentSec
 		readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY),
 		readWriteOnlySecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
 		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
-		readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY),
+		readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY),
 		readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY),
 	]);
 	return {
@@ -208,9 +245,10 @@ export async function emailApiKeyFromKv(ctx: PluginContext): Promise<string | un
 	return readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY);
 }
 
-/** The x402 facilitator's shared secret, by name. */
+/** The x402 facilitator's bearer credential, by name (INC-C5 — see
+ *  {@link X402_FACILITATOR_API_KEY_KEY} for what this key does and does not mean). */
 export async function x402FacilitatorSecretFromKv(ctx: PluginContext): Promise<string | undefined> {
-	return readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY);
+	return readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY);
 }
 
 /** The `X-Otta-Wh-Token` edge token, by name — the settle route's FIRST read and,

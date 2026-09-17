@@ -1,6 +1,12 @@
 import { cents, currency, orderId } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { createTestFacilitator, signX402Proof, X402PaymentGateway } from "../src/index.js";
+import {
+	createTestFacilitator,
+	signX402Proof,
+	X402FacilitatorUnavailableError,
+	X402PaymentGateway,
+	type X402Facilitator,
+} from "../src/index.js";
 
 // Review round (F4): seam hardening — a receipt settled on a network the
 // gateway's challenge never offered proves nothing about our requirements and
@@ -43,5 +49,43 @@ describe("X402PaymentGateway seam hardening", () => {
 			proof: await proofOn("eip155:8453"),
 		});
 		expect(res.ok).toBe(true);
+	});
+
+	// Revision 2: a facilitator OUTAGE must never read as a forged receipt. The
+	// port's `ConfirmationResult` has three reasons and all three are terminal, so
+	// "could not ask" cannot be expressed as one of them without lying — the
+	// gateway therefore throws a classified, RETRYABLE error instead, exactly as
+	// `payments-stripe` throws `PaymentIntentError({retryable})` rather than
+	// folding an ambiguous Stripe failure into a definite refusal.
+	test("an UNAVAILABLE facilitator throws a retryable error, never INVALID_SIGNATURE", async () => {
+		const unavailable: X402Facilitator = {
+			async verifyReceipt() {
+				return { valid: false, unavailable: true };
+			},
+		};
+		const g = new X402PaymentGateway({
+			facilitator: unavailable,
+			payTo: "0xTEST",
+			accepts: ["eip155:8453"],
+		});
+		const raw = { kind: "page_gate", proof: await proofOn("eip155:8453") } as const;
+		await expect(g.verifyConfirmation(raw)).rejects.toBeInstanceOf(X402FacilitatorUnavailableError);
+		await expect(g.verifyConfirmation(raw)).rejects.toMatchObject({ retryable: true });
+	});
+
+	test("a facilitator that ANSWERED no is still a terminal INVALID_SIGNATURE", async () => {
+		const answeredNo: X402Facilitator = {
+			async verifyReceipt() {
+				return { valid: false };
+			},
+		};
+		const g = new X402PaymentGateway({
+			facilitator: answeredNo,
+			payTo: "0xTEST",
+			accepts: ["eip155:8453"],
+		});
+		expect(
+			await g.verifyConfirmation({ kind: "page_gate", proof: await proofOn("eip155:8453") }),
+		).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
 });

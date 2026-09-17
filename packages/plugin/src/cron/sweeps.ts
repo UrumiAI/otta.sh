@@ -110,6 +110,8 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
+import { makeEmailSender } from "../email/ctx-http-email-sender.js";
+import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import type { PluginContext } from "../types.js";
 
 /** The nine legs, in the order a tick runs them. The four ported sweeps first,
@@ -153,10 +155,12 @@ export interface CommerceSweepSummary {
 
 export interface CommerceSweepOptions {
 	/**
-	 * The outbox's sender. ABSENT TODAY: the plugin has no `EmailSender` until
-	 * INC-C5 builds one over `ctx.http`, and C5 depends on this increment. Without
-	 * one the `order-emails` leg reports `skipped` rather than pretending to drain
-	 * an outbox — a silent no-op here would look exactly like an empty outbox.
+	 * The outbox's sender — an OVERRIDE since INC-C5, not the only source. Left
+	 * unset, the tick builds the in-process `CtxHttpEmailSender` from the context
+	 * and this bundle's email API URL; a suite sets it to pin the outbox against a
+	 * fake without any egress. Neither one existing (no injection, no configured
+	 * URL) makes the `order-emails` leg report `skipped` rather than pretend to
+	 * drain an outbox — a silent no-op here would look exactly like an empty one.
 	 */
 	readonly emailSender?: EmailSender;
 	/** Deterministic time, for a suite that pins deadlines. Default: real time. */
@@ -305,7 +309,16 @@ export async function runCommerceSweeps(
 	}));
 
 	await run("order-emails", async () => {
-		const emailSender = options.emailSender;
+		// INC-C5 closes the gap this leg's `skipped` arm was placeholding. When no
+		// sender is INJECTED (a suite pinning the outbox with a fake), one is built
+		// from the context: the in-process `CtxHttpEmailSender`, egressing through
+		// `ctx.http` to the email host `allowedHosts` already grants. It is STILL
+		// `undefined` on a deployment whose bundle carries no email API URL, and
+		// that still reports `skipped` rather than pretending to drain the outbox —
+		// an undrained outbox and a silently discarded one look identical from here.
+		const emailSender =
+			options.emailSender ??
+			(await makeEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }));
 		if (emailSender === undefined) return { count: 0, skipped: true };
 		return {
 			count: await dispatchOrderEmails({

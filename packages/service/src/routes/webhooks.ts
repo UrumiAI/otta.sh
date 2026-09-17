@@ -49,6 +49,7 @@ function webhookResponse(c: Context, res: SettleResult): Response {
 		case "ORDER_NOT_FOUND":
 			return c.json({ ok: false, reason: res.reason }, 404);
 		case "AMOUNT_MISMATCH":
+		case "RECEIPT_REBOUND":
 			// Recorded as an anomaly (§5); retrying will never fix it → 200 so Stripe stops.
 			return c.json({ ok: false, reason: res.reason }, 200);
 	}

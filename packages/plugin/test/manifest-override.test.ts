@@ -12,6 +12,7 @@ import {
 	COMMERCE_SERVICE_BASE_URL,
 	resolveAllowedHosts,
 	resolveCommerceServiceBaseUrl,
+	resolveInProcessEgress,
 	STRIPE_API_HOST,
 } from "../src/manifest.js";
 
@@ -123,5 +124,68 @@ describe("resolveAllowedHosts — the per-mode egress sets, EXACTLY", () => {
 				facilitatorUrl: "https://api.stripe.com/x402",
 			}),
 		).toEqual([STRIPE_API_HOST]);
+	});
+});
+
+describe("resolveInProcessEgress — the CONSUMERS see the same arm the gate does", () => {
+	const SERVICE = "https://svc.example.com";
+	const EMAIL = "https://api.email.example.com/v1/send";
+	const FACILITATOR = "https://facilitator.example.com";
+
+	test('"http" mode resolves to NO egress URLs, whatever was baked', () => {
+		// The bug this closes: `resolveAllowedHosts` ignores these URLs on the http
+		// arm, but the cron sweep read the RAW define and built a live sender from
+		// it. The first bundle built with an email URL while still on the http arm
+		// would have pointed a real sender at a host the gate refuses — every send
+		// failing, rows rescheduling and eventually parking `failed`, and the leg
+		// reporting `count: 0` instead of the honest `skipped`. One resolver, so
+		// the gate and every caller cannot disagree by construction.
+		expect(
+			resolveInProcessEgress("http", { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR }),
+		).toEqual({});
+	});
+
+	test('"in-process" mode passes the baked URLs through unchanged', () => {
+		expect(
+			resolveInProcessEgress("in-process", { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR }),
+		).toEqual({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR });
+	});
+
+	test("an UNPARSEABLE define grants no host, so it resolves to no egress either", () => {
+		// A3. `resolveAllowedHosts` drops anything `hostnameOf` cannot parse — a
+		// bare hostname, an empty define, garbage — so passing such a URL through
+		// verbatim would hand a consumer a URL the gate refuses: sender built, every
+		// send refused, rows rescheduling, `count: 0` where `skipped` is the truth.
+		expect(
+			resolveInProcessEgress("in-process", {
+				emailApiUrl: "api.email.example.com", // no scheme ⇒ not a URL
+				facilitatorUrl: "not a url at all",
+			}),
+		).toEqual({});
+		// And the valid sibling still survives on its own.
+		expect(
+			resolveInProcessEgress("in-process", { emailApiUrl: "", facilitatorUrl: FACILITATOR }),
+		).toEqual({ facilitatorUrl: FACILITATOR });
+	});
+
+	test("every host the resolved egress names is a host the gate grants", () => {
+		// The invariant stated as one assertion, over both arms AND over defines
+		// that do not parse: a consumer can never hold a URL whose host is absent
+		// from ALLOWED_HOSTS.
+		const bakes = [
+			{ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
+			{ emailApiUrl: "api.email.example.com", facilitatorUrl: "not a url at all" },
+			{ emailApiUrl: "", facilitatorUrl: FACILITATOR },
+		];
+		for (const mode of ["http", "in-process"] as const) {
+			for (const baked of bakes) {
+				const granted = resolveAllowedHosts(mode, SERVICE, baked);
+				const resolved = resolveInProcessEgress(mode, baked);
+				for (const url of [resolved.emailApiUrl, resolved.facilitatorUrl]) {
+					if (url === undefined) continue;
+					expect(granted).toContain(new URL(url).hostname);
+				}
+			}
+		}
 	});
 });

@@ -36,13 +36,20 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  * 1. `gateway.verifyConfirmation(raw)` — a reject (bad signature / unknown /
  *    malformed) is a typed failure (HTTP 400). All crypto is adapter-side.
  * 2. Record the delivery in `payment_events` (UNIQUE `dedupeKey` — the audit
- *    trail). **A duplicate does NOT short-circuit**: every delivery re-DRIVES the
+ *    trail). **A duplicate OF THE SAME ORDER does NOT short-circuit**: every
+ *    delivery re-DRIVES the
  *    idempotent, state-guarded steps below, so a crash between any two of them
  *    (dedupe→flip, flip→commit/grant) is healed by the next gateway retry — the
  *    Phase-3 claim/resume idiom. "Settles once" is enforced by the guarded
  *    `pending → paid` flip, the `provider_ref`-keyed payment record, the
  *    state-guarded `commit`, and the grant-once entitlement key — never by
  *    blind-trusting the dedupe row.
+ * 2b. A duplicate whose recorded row names a **different** order is the opposite
+ *    case and is TERMINAL (`RECEIPT_REBOUND` + anomaly, nothing moved): one
+ *    settlement consumes one payment. This is the tx-hash binding
+ *    `@otta-sh/payments-x402`'s header calls load-bearing — `proof.orderId` is
+ *    never on-chain-attestable, so the amount equality in step 3 is not on its
+ *    own enough to stop one receipt from settling a second, same-priced order.
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
  *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
@@ -71,9 +78,41 @@ export async function settleOrder(
 
 	const now = deps.clock.now().toISOString();
 
-	// 2. Record the delivery (UNIQUE dedupe_key = the audit row). Deliberately
-	// NOT a short-circuit — see the function doc: replays re-drive by state.
-	await deps.paymentEventStore.dedupe(conf.dedupeKey, conf.orderId, conf.gateway, now);
+	// 2. Record the delivery (UNIQUE dedupe_key = the audit row). A duplicate of
+	// THIS order is deliberately NOT a short-circuit — see the function doc:
+	// replays re-drive by state. A duplicate naming a DIFFERENT order is not a
+	// replay at all, and is terminally refused here (step 2b).
+	const claimed = await deps.paymentEventStore.dedupe(
+		conf.dedupeKey,
+		conf.orderId,
+		conf.gateway,
+		now,
+	);
+
+	// 2b. THE TX-HASH BINDING, enforced rather than assumed. For x402 the dedupe
+	// key IS the on-chain `transaction`, and `proof.orderId` is never
+	// on-chain-attestable — so without this, a receipt already bound to order A,
+	// resubmitted naming a same-priced order B, would sail past the amount check
+	// and settle B off one payment. (`recordPayment`'s globally-unique
+	// `provider_ref` then silently swallows the second ledger row, so the second
+	// settle would not even be visible in the ledger.) The lookup runs ONLY on the
+	// duplicate arm: a first delivery costs exactly what it always did.
+	if (!claimed) {
+		const boundTo = await deps.paymentEventStore.orderForDedupeKey(conf.dedupeKey);
+		if (boundTo !== null && boundTo !== conf.orderId) {
+			// The attempt is the alert-worthy fact, so it is recorded against the
+			// order it was AIMED at. The detail names the order that legitimately owns
+			// the receipt; neither is a credential.
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: conf.orderId,
+				gateway: conf.gateway,
+				kind: "RECEIPT_REBOUND",
+				detail: `confirmation dedupe key is already recorded against order ${boundTo}`,
+				now,
+			});
+			return { ok: false, reason: "RECEIPT_REBOUND" };
+		}
+	}
 
 	const order = await deps.orderStore.getById(conf.orderId);
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };

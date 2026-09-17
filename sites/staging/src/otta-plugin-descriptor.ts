@@ -64,7 +64,7 @@ export function ottaPluginDescriptor(
 		//    email/facilitator hosts the deployment supplied — and the service host
 		//    disappears. The CREDENTIALS for those calls are never baked in here:
 		//    they live in write-only plugin kv (`settings:stripe*`,
-		//    `settings:emailApiKey`, `settings:x402FacilitatorSecret`), provisioned
+		//    `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
 		//    through the admin Settings form.
 		allowedHosts: resolveAllowedHosts(
 			options.mode ?? resolveCommerceMode(),

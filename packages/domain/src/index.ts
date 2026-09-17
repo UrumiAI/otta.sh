@@ -186,6 +186,13 @@ export {
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
+// Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
+// because BOTH `EmailSender` adapters now need it and they live in different
+// packages: the service's `HttpEmailSender` (deleted with the service) and the
+// plugin's `CtxHttpEmailSender` over `ctx.http` (INC-C5). It is a PURE function
+// of a template + explicit data — no IO, no store reach-back — so it does not
+// widen the domain's purity contract by one byte.
+export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from "./email/render.js";
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,

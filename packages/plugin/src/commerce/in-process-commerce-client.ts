@@ -86,6 +86,8 @@ import {
 	type FulfillmentKind,
 	type Money,
 	type Order,
+	type PaymentGateway,
+	type PaymentMethod,
 	type PaymentIntentHandle,
 	type ProductCommerce as DomainProductCommerce,
 	type ProductCommerceView,
@@ -151,6 +153,19 @@ import {
  *  surface has always applied. */
 const DEFAULT_CURRENCY = "USD";
 
+/**
+ * The stores' own options plus the payment gateways.
+ *
+ * Gateways are PASSED IN rather than resolved here because resolving them is
+ * asynchronous — the x402 wiring reads `payTo` and its facilitator credential
+ * from kv — and this constructor is synchronous by design (a client is built per
+ * invocation and must stay cheap). `makeCommerceClientFor` is already async, so
+ * it is the natural place for that await; see `make-commerce-client.ts`.
+ */
+export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+}
+
 export class InProcessCommerceClient implements CommerceClient {
 	readonly #stores: InProcessCommerceStores;
 	readonly #cartDeps: CartDeps;
@@ -162,10 +177,11 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * already have: a client is cheap, and nothing may outlive the invocation the
 	 * host handed the context to.
 	 *
-	 * `options` exists for a suite that needs deterministic time or ids. A deploy
-	 * passes none.
+	 * `options` exists for a suite that needs deterministic time or ids, and for
+	 * the composition root to hand in the payment gateways it had to resolve
+	 * asynchronously (see `gateways` below).
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
+	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
@@ -182,12 +198,13 @@ export class InProcessCommerceClient implements CommerceClient {
 			couponStore: this.#stores.couponStore,
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
-			// EMPTY, AND THAT IS THE CURRENT STATE OF THE PAYMENT TOPOLOGY rather than
-			// an oversight: the gateways move in-process with the payment adapters, and
-			// until they do `createOrder` cannot mint an intent. The domain refuses a
-			// checkout whose method has no gateway, so the refusal is loud rather than
-			// a silently unpayable order.
-			gateways: {},
+			// Whatever the composition root could wire, and nothing more. INC-C5 fills
+			// the `x402` slot (its facilitator now runs over `ctx.http`); `stripe`
+			// arrives with the rest of the payment topology. A method with no gateway
+			// here is still REFUSED by the domain, loudly, rather than minted as a
+			// silently unpayable order — which is why an empty map stays a correct
+			// default rather than something to paper over.
+			gateways: options.gateways ?? {},
 		};
 	}
 

@@ -1,4 +1,4 @@
-import type { EmailTemplate } from "@otta-sh/domain";
+import type { EmailTemplate } from "../ports/email-sender.js";
 
 export interface RenderedEmail {
 	subject: string;
@@ -144,12 +144,30 @@ function str(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * Minor-unit integer → major-unit display. NEVER float math on the stored value.
+ *
+ * `unknown` ON PURPOSE, not a missed `Cents`: the argument comes out of the
+ * outbox row's loose `data` record, which crossed a JSON boundary — the brand
+ * cannot survive that trip, so the check has to happen here, and it is a FULL
+ * one. A non-integer (a float that "looks like" a price, a NaN from a bad parse)
+ * renders NOTHING rather than a plausible-looking wrong amount — the same
+ * fail-closed choice the missing-currency arm already made.
+ *
+ * THE SIGN IS SPLIT OFF FIRST (INC-C5 review, A8). `Math.floor` rounds toward
+ * -∞ and `%` keeps the dividend's sign, so the naive split rendered -550 as
+ * "-6.-50" — not a price, in an email a customer reads. Formatting the
+ * MAGNITUDE and re-attaching the sign is correct on both sides of zero.
+ */
 function formatMoney(cents: unknown, currency: string | undefined): string {
-	if (typeof cents !== "number" || currency === undefined) return "";
-	// Minor-unit integer → major-unit display; NEVER float math on the stored value.
-	const major = Math.floor(cents / 100);
-	const minor = String(cents % 100).padStart(2, "0");
-	return `${major}.${minor} ${currency}`;
+	if (typeof cents !== "number" || !Number.isSafeInteger(cents) || currency === undefined) {
+		return "";
+	}
+	const sign = cents < 0 ? "-" : "";
+	const magnitude = Math.abs(cents);
+	const major = Math.floor(magnitude / 100);
+	const minor = String(magnitude % 100).padStart(2, "0");
+	return `${sign}${major}.${minor} ${currency}`;
 }
 
 function escapeHtml(value: string): string {

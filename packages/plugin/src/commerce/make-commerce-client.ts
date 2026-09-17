@@ -33,7 +33,12 @@
  * no header" rule that keeps the wire byte-identical to the pre-gate one.
  */
 
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
+import {
+	COMMERCE_SERVICE_BASE_URL,
+	IN_PROCESS_EGRESS_URLS,
+	serviceTokenFromKv,
+} from "../manifest.js";
+import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import type { PluginContext } from "../types.js";
@@ -58,7 +63,20 @@ export async function makeCommerceClientFor(
 	ctx: PluginContext,
 	mode: CommerceMode,
 ): Promise<CommerceClient> {
-	if (mode === "in-process") return new InProcessCommerceClient(ctx);
+	if (mode === "in-process") {
+		// The payment gateways the service used to wire from env are wired HERE,
+		// because resolving them is asynchronous (kv) and the client's constructor is
+		// not. INC-C5 wires x402, whose facilitator call now goes over `ctx.http` to
+		// the host `allowedHosts` already grants; an unconfigured deployment gets
+		// `undefined` and therefore an EMPTY map, which the domain refuses loudly
+		// rather than minting an unpayable order.
+		const x402 = await x402GatewayFromCtx(ctx, {
+			facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl,
+		});
+		return new InProcessCommerceClient(ctx, {
+			gateways: x402 === undefined ? {} : { x402 },
+		});
+	}
 
 	const serviceToken = await serviceTokenFromKv(ctx);
 	return new HttpCommerceClient({

@@ -1,11 +1,14 @@
+import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
 import { SERVICE_TOKEN_KEY } from "../manifest.js";
+import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../payment-secrets.js";
 import type {
 	AccordionBlock,
@@ -168,10 +171,19 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 	{
 		actionId: "save-x402-facilitator-secret",
 		fieldId: "x402FacilitatorSecret",
-		kvKey: X402_FACILITATOR_SECRET_KEY,
-		genKey: "settings:x402FacilitatorSecretGen",
-		label: "x402 facilitator secret",
-		noun: "x402 facilitator secret",
+		kvKey: X402_FACILITATOR_API_KEY_KEY,
+		genKey: "settings:x402FacilitatorApiKeyGen",
+		// INC-C5 renamed the FIELD, the kv key AND the generation key, because the
+		// meaning changed: in-process the value is the bearer credential the
+		// facilitator call SENDS, not the offline HMAC secret INC-C3's label
+		// described. An operator who provisioned under the old label holds a
+		// forge-a-settlement secret this increment would hand to a third-party
+		// host, so the old value must not be inherited — the new key names make
+		// the field read as unset until it is deliberately re-provisioned (review
+		// round 2, A5). `short` is unchanged, so the group label stays exactly
+		// inside the X-11 budget.
+		label: "x402 facilitator API key",
+		noun: "x402 facilitator API key",
 		short: "x402",
 	},
 	{
@@ -195,6 +207,57 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// matters, would be the one that loses a name. Four characters keep it
 		// exactly inside the budget with nothing truncated.
 		short: "edge",
+	},
+];
+
+/**
+ * INC-C5 — the NON-SECRET companions of the four secrets above: the in-process
+ * equivalents of the service's `EMAIL_FROM`, `X402_PAYTO` and `X402_ACCEPTS`
+ * env vars.
+ *
+ * WHY THEY ARE A SEPARATE TABLE AND A SEPARATE FORM. They are a different TIER,
+ * and the difference is visible: these are READ BACK into the field, because an
+ * operator must be able to see which address they are being paid at and which
+ * from-address their customers see. A secret rendered back is a bug; a
+ * configuration value NOT rendered back is also a bug. One form for all three
+ * because they are saved together and none of them is independently useful —
+ * and because the alternative, three more submit buttons, would make the group
+ * unreadable.
+ *
+ * WHY THEY EXIST AT ALL (review A3/B5): INC-C3 shipped the four secrets without
+ * them, which left `settings:x402PayTo` with no writer anywhere in the product.
+ * `x402GatewayFromCtx` fail-closes without it, so x402 was inert in EVERY
+ * deployment regardless of how it was provisioned.
+ */
+export const SAVE_PAYMENT_SETTINGS_ACTION = "save-payment-settings";
+
+interface PlainSettingSpec {
+	/** The submitted value's `action_id`, and the field's id. */
+	fieldId: string;
+	/** Readable kv key. */
+	kvKey: string;
+	label: string;
+	placeholder: string;
+}
+
+const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
+	{
+		fieldId: "emailFrom",
+		kvKey: EMAIL_FROM_KEY,
+		label: "Order email from-address",
+		placeholder: "no-reply@otta.local",
+	},
+	{
+		fieldId: "x402PayTo",
+		kvKey: X402_PAYTO_KEY,
+		label: "x402 destination wallet",
+		placeholder: "0x… (the address buyers pay)",
+	},
+	{
+		fieldId: "x402Accepts",
+		kvKey: X402_ACCEPTS_KEY,
+		label: "x402 accepted networks (comma-separated CAIP-2)",
+		placeholder: "eip155:8453",
 	},
 ];
 
@@ -241,6 +304,22 @@ interface SettingsPageState {
 	/** INC-C3: per payment secret, "is it set" + its save generation, keyed by kv
 	 *  key. NEVER the values — see {@link readPaymentSecretState}. */
 	paymentSecrets: Map<string, SecretRenderState>;
+	/** INC-C5: the NON-secret payment/email settings, keyed by kv key. These ARE
+	 *  the values, and they are rendered back — that is the tier difference. */
+	plainSettings: Map<string, string>;
+}
+
+/** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
+ *  same reason as everything else on this screen: a kv blip must leave the forms
+ *  usable rather than deny the operator the only provisioning surface there is. */
+async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string>> {
+	const entries = await Promise.all(
+		PLAIN_PAYMENT_SETTINGS.map(async (spec) => {
+			const value = await ctx.kv.get<string>(spec.kvKey).catch(() => null);
+			return [spec.kvKey, typeof value === "string" ? value : ""] as const;
+		}),
+	);
+	return new Map(entries);
 }
 
 /**
@@ -261,15 +340,19 @@ interface SettingsPageState {
  * any part of the token; the whole-response no-echo pins cover this).
  */
 async function readPageState(ctx: PluginContext, tokens: AdminTokens): Promise<SettingsPageState> {
-	const [displayName, tokenGen, serviceTokenGen, paymentSecrets] = await Promise.all([
-		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-		// a kv blip on it must not deny the operator the secret forms below.
-		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY),
-		readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY),
-		readPaymentSecretState(ctx),
-	]);
+	const [displayName, tokenGen, serviceTokenGen, paymentSecrets, plainSettings] = await Promise.all(
+		[
+			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+			// a kv blip on it must not deny the operator the secret forms below.
+			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+			readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY),
+			readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY),
+			readPaymentSecretState(ctx),
+			readPlainSettings(ctx),
+		],
+	);
 	return {
+		plainSettings,
 		displayName: displayName ?? "",
 		hasToken: (tokens.adminToken ?? "").length > 0,
 		hasServiceToken: tokens.serviceToken !== undefined,
@@ -334,6 +417,8 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	// INC-C3: the four payment/email secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
+	// INC-C5: their non-secret companions, saved as one form.
+	SAVE_PAYMENT_SETTINGS_ACTION,
 ]);
 
 /** The three settings fields this phase moves end-to-end (§2). */
@@ -519,6 +604,20 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			if (entered) {
 				await ctx.kv.set(secretSpec.kvKey, raw);
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				// A5. The INC-C3 key this credential moved OFF of holds a value with a
+				// different threat model (an offline HMAC secret, never transmitted)
+				// that nothing reads any more. Deleting it here — the one moment an
+				// operator is demonstrably re-provisioning this credential — keeps an
+				// orphaned forge-a-settlement secret from sitting in kv forever.
+				// Fail-soft: a kv that cannot delete must not fail a save that already
+				// succeeded.
+				if (secretSpec.kvKey === X402_FACILITATOR_API_KEY_KEY) {
+					try {
+						await ctx.kv.delete(X402_LEGACY_FACILITATOR_SECRET_KEY);
+					} catch {
+						// deliberately ignored — see above
+					}
+				}
 			}
 			const page = await renderPage(ctx, client, tokens, secretNotice(secretSpec, entered));
 			return {
@@ -527,6 +626,54 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					message: `${secretSpec.noun} ${entered ? "saved" : "unchanged"}`,
 					type: entered ? "success" : "info",
 				},
+			} satisfies BlockResponse;
+		}
+
+		// -- kv save path: the NON-secret payment/email settings (INC-C5) -----------
+		// ALL-OR-NOTHING. `payTo` is validated here, at the write end, because kv
+		// validates nothing itself and this value is the buyer's payment
+		// destination: a typo that is merely STORED would leave the operator with a
+		// screen that says "saved" and a checkout that silently never offers x402
+		// (`wireX402Gateway` fail-closes on the same predicate). Refusing the whole
+		// submit — rather than persisting the two valid siblings — means the
+		// operator never has to guess which half landed.
+		if (action === SAVE_PAYMENT_SETTINGS_ACTION) {
+			// ABSENT IS NOT EMPTY (review round 2, B3). A submit that carries no entry
+			// at all for a field is not an instruction to CLEAR that field — the host
+			// omits values for reasons that have nothing to do with intent (a field
+			// the operator never focused, a partial dispatch, a future block that
+			// stops echoing untouched inputs). Coercing absence to `""` and writing it
+			// unconditionally would silently blank `settings:x402PayTo`, which
+			// fail-closes x402 across the whole deployment with a screen that says
+			// "saved". A PRESENT empty string is still honoured: that is an operator
+			// who cleared the box on purpose.
+			const submitted = new Map(
+				PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
+					const raw = input.values?.[spec.fieldId];
+					return typeof raw === "string" ? [[spec.kvKey, raw.trim()] as const] : [];
+				}),
+			);
+			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";
+			if (payTo.length > 0 && !isPlausiblePayTo(payTo)) {
+				// Names the FIELD and the SHAPE, never the rejected value — the value
+				// is an address, not a secret, but echoing rejected input back into a
+				// banner is how a screen grows an injection surface it never needed.
+				return renderPage(ctx, client, tokens, {
+					variant: "error",
+					title: "Payment settings not saved",
+					description:
+						"The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed). Nothing was saved.",
+				});
+			}
+			for (const [key, value] of submitted) await ctx.kv.set(key, value);
+			const page = await renderPage(ctx, client, tokens, {
+				variant: "default",
+				title: "Payment settings saved",
+				description: "Email from-address and x402 destination were updated.",
+			});
+			return {
+				...page,
+				toast: { message: "Payment settings saved", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -720,6 +867,7 @@ function buildSettingsBlocks(args: {
 	tokenGen: number;
 	serviceTokenGen: number;
 	paymentSecrets: Map<string, SecretRenderState>;
+	plainSettings: Map<string, string>;
 	notice?: Notice;
 }): Block[] {
 	const blocks: Block[] = [
@@ -739,7 +887,7 @@ function buildSettingsBlocks(args: {
 			tokenGen: args.tokenGen,
 			serviceTokenGen: args.serviceTokenGen,
 		}),
-		paymentsGroup(args.paymentSecrets),
+		paymentsGroup(args.paymentSecrets, args.plainSettings),
 	);
 	return blocks;
 }
@@ -969,7 +1117,10 @@ function checkoutGroup(
  * is nothing on the screen to reveal. The placeholder alone carries "blank keeps
  * current", which is unconditionally true.
  */
-function paymentsGroup(state: Map<string, SecretRenderState>): AccordionBlock {
+function paymentsGroup(
+	state: Map<string, SecretRenderState>,
+	plain: Map<string, string>,
+): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
@@ -981,8 +1132,37 @@ function paymentsGroup(state: Map<string, SecretRenderState>): AccordionBlock {
 				text: "Payment and email credentials, stored write-only — a blank submit keeps the current one. None is ever displayed.",
 			},
 			...PAYMENT_SECRET_FIELDS.map((spec) => secretForm(spec, state.get(spec.kvKey)?.gen ?? 0)),
+			// INC-C5: the non-secret companions, LAST so the group still reads
+			// credentials-first, and visibly a different kind of field — these
+			// prefill with what is stored.
+			{
+				type: "context",
+				text: "These are configuration, not credentials, so they are shown back to you. The x402 destination wallet is where buyers' payments go — x402 checkout stays unavailable until it is set.",
+			},
+			plainSettingsForm(plain),
 		],
 	};
+}
+
+/** The three non-secret payment/email settings, as ONE form. Prefilled from kv —
+ *  the visible difference from the write-only fields above it, and the whole
+ *  reason they are a separate form rather than five more entries in
+ *  {@link PAYMENT_SECRET_FIELDS}. */
+function plainSettingsForm(plain: Map<string, string>): FormBlock {
+	return carriedForm({
+		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
+		form: {
+			type: "form",
+			fields: PLAIN_PAYMENT_SETTINGS.map((spec) => ({
+				type: "text_input" as const,
+				action_id: spec.fieldId,
+				label: spec.label,
+				placeholder: spec.placeholder,
+				initial_value: plain.get(spec.kvKey) ?? "",
+			})),
+			submit: { label: "Save payment settings", action_id: SAVE_PAYMENT_SETTINGS_ACTION },
+		},
+	});
 }
 
 /** Which payment credentials are provisioned, readable with the group closed —

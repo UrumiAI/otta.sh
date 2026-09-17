@@ -46,6 +46,8 @@ import {
 	createStripeWebhookSettleHandler,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "./webhooks/stripe-settle-route.js";
+// ── Work order 02 INC-C5: the in-process x402 settle route ────────────────
+import { createX402SettleHandler, X402_SETTLE_ROUTE } from "./payments/x402-settle-route.js";
 // ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
 import { createActivateHandler, createCronHandler, withSweepBootstrap } from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
@@ -172,6 +174,20 @@ const plugin: SandboxedPlugin = {
 		// signature) plus a shared edge token — see the route's own module doc.
 		[STRIPE_WEBHOOK_SETTLE_ROUTE]: {
 			handler: createStripeWebhookSettleHandler() as never,
+			public: true,
+		},
+		// Work order 02 INC-C5: the PUBLIC x402 page-gate SETTLE route — the
+		// in-process replacement for the service's `POST /entitlements/grant`,
+		// which was the only caller of `settleOrder(gateway, {kind:"page_gate"})`
+		// anywhere in the repo. `public: true` for the same structural reason as
+		// the Stripe route above, and — since review round 2 — with the same TWO
+		// layers, not one: the SAME `X-Otta-Wh-Token` edge token first
+		// (pass-through when unset), then the configured facilitator
+		// unconditionally. It additionally refuses an order whose `paymentMethod`
+		// is not `"x402"`, and the domain refuses a receipt already bound to
+		// another order. See the route's own module doc for the full order.
+		[X402_SETTLE_ROUTE]: {
+			handler: createX402SettleHandler() as never,
 			public: true,
 		},
 		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via

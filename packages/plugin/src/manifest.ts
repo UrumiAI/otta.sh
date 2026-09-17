@@ -207,13 +207,64 @@ export function resolveAllowedHosts(
 declare const __OTTA_EMAIL_API_URL__: string | undefined;
 declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
 
-/** The in-process egress URLs this bundle was built for. Absent defines ⇒ no
- *  host granted for that provider (fail-closed). */
-export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = {
+/** The raw defines, before the mode gate. Not exported: every consumer must see
+ *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
+ *  construction. */
+const BAKED_EGRESS_URLS: InProcessEgressUrls = {
 	emailApiUrl: typeof __OTTA_EMAIL_API_URL__ === "string" ? __OTTA_EMAIL_API_URL__ : undefined,
 	facilitatorUrl:
 		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
 };
+
+/**
+ * The egress URLs a CONSUMER may use, resolved on the SAME arm the allowlist is.
+ *
+ * `resolveAllowedHosts` deliberately ignores these URLs in `"http"` mode — in
+ * that mode the service makes those calls — but a caller reading the raw define
+ * would not know that. A bundle built with `__OTTA_EMAIL_API_URL__` while still
+ * on the http arm would hand the cron sweep a live `EmailSender` pointed at a
+ * host the gate refuses: every send would fail, rows would reschedule and
+ * eventually park `failed`, and the leg would report `count: 0` instead of the
+ * honest `skipped`. (`make-commerce-client.ts` escaped this only incidentally,
+ * by sitting inside a `mode === "in-process"` branch.)
+ *
+ * Gating once, here, makes "a consumer never holds a URL whose host is not
+ * granted" true by construction rather than by every caller remembering.
+ *
+ * THE MODE GATE IS ONLY HALF OF IT (review round 2, A3). `resolveAllowedHosts`
+ * funnels every URL through {@link hostnameOf} and grants NOTHING for one that
+ * does not parse — a bare hostname, an empty define, outright garbage. A resolver
+ * that applied the mode gate and then passed the string through verbatim would
+ * hand a consumer exactly such a URL and reproduce the symptom this function
+ * exists to make impossible: a sender is built, every send is refused by the
+ * gate, rows reschedule, and the leg reports `count: 0` instead of the honest
+ * `skipped`. So each URL is resolved through the SAME `hostnameOf` the allowlist
+ * uses, and one that yields no host is dropped — unconfigured, which every
+ * consumer already handles.
+ */
+export function resolveInProcessEgress(
+	mode: CommerceMode,
+	egress: InProcessEgressUrls = {},
+): InProcessEgressUrls {
+	if (mode !== "in-process") return {};
+	/** The URL, or `undefined` when `resolveAllowedHosts` would grant no host for
+	 *  it — the two decisions made by one predicate, so they cannot disagree. */
+	const grantable = (url: string | undefined): string | undefined =>
+		hostnameOf(url) === undefined ? undefined : url;
+	const emailApiUrl = grantable(egress.emailApiUrl);
+	const facilitatorUrl = grantable(egress.facilitatorUrl);
+	return {
+		...(emailApiUrl !== undefined ? { emailApiUrl } : {}),
+		...(facilitatorUrl !== undefined ? { facilitatorUrl } : {}),
+	};
+}
+
+/** The in-process egress URLs this bundle may actually use. Absent define, or
+ *  the `"http"` arm ⇒ that provider is unconfigured (fail-closed). */
+export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = resolveInProcessEgress(
+	resolveCommerceMode(),
+	BAKED_EGRESS_URLS,
+);
 
 /**
  * The resolved allowlist for THIS bundle.
@@ -231,5 +282,5 @@ export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = {
 export const ALLOWED_HOSTS: string[] = resolveAllowedHosts(
 	resolveCommerceMode(),
 	COMMERCE_SERVICE_BASE_URL,
-	IN_PROCESS_EGRESS_URLS,
+	BAKED_EGRESS_URLS,
 );

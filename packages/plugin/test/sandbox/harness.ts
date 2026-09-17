@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
+import { resolveInProcessEgress } from "../../src/manifest.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,10 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
 	// boot at all with `No such module "@otta-sh/payments-stripe"`.
 	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
+	// INC-C5: x402 settlement is wired inside the isolate now (the gateway plus
+	// `createHttpFacilitator` over `ctx.http`), so the x402 adapter is a runtime
+	// import for exactly the same reason the Stripe one above is.
+	{ name: "payments-x402", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
@@ -83,6 +88,18 @@ export interface SandboxOptions {
 	allowedHosts: string[];
 	/** Baked into the bundled plugin as `COMMERCE_SERVICE_BASE_URL`. */
 	commerceServiceBaseUrl: string;
+	/**
+	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process
+	 * email-provider and x402-facilitator endpoints (INC-C5). Both default to
+	 * absent, which is the fail-closed "this provider is not configured" state:
+	 * the email sweep reports `skipped` and no x402 gateway is wired.
+	 *
+	 * A suite that sets one of these is responsible for putting the matching host
+	 * in `allowedHosts` too — production derives the allowlist from these values,
+	 * this harness takes the allowlist verbatim.
+	 */
+	emailApiUrl?: string;
+	facilitatorUrl?: string;
 	/** Worker entry module, relative to `src/` (default the production
 	 *  `sandbox-entry.ts`). Test fixtures under `src/**\/testing/` (e.g. the
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
@@ -211,6 +228,23 @@ function manifestSource(options: SandboxOptions): string {
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
 		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
+		// INC-C5: the email sender and the x402 wiring read their endpoints from
+		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
+		// production. Absent ⇒ that provider is unconfigured (fail-closed).
+		//
+		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
+		// Baking the raw options made the sandbox tier the ONE tier where the gate
+		// `resolveInProcessEgress` applies was never exercised: a suite could hand
+		// the isolate a URL no `allowedHosts` entry covers and every assertion would
+		// still pass. The mode is fixed at `"in-process"` because that is the arm
+		// these suites boot; the resolver's own http-arm and unparseable-define
+		// behavior is unit-pinned in `manifest-override.test.ts`.
+		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
+			resolveInProcessEgress("in-process", {
+				emailApiUrl: options.emailApiUrl,
+				facilitatorUrl: options.facilitatorUrl,
+			}),
+		)};`,
 		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
 		"export async function serviceTokenFromKv(ctx) {",
 		"\ttry {",

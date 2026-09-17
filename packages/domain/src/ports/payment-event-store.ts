@@ -16,18 +16,25 @@ export type PaymentAnomalyKind =
 	 *  the loud residual guard): money left the provider with no finalized ledger
 	 *  row. Recorded with the provider refundRef in the detail — NEVER silently
 	 *  dropped — and the order is flagged for manual reconciliation. */
-	| "REFUND_UNRECORDED";
+	| "REFUND_UNRECORDED"
+	/** A confirmation arrived whose dedupe key is already recorded against a
+	 *  DIFFERENT order — one on-chain payment (or one Stripe event) being aimed at
+	 *  a second order. Terminally refused by `settleOrder`; recorded here because
+	 *  the ATTEMPT is the alert-worthy fact. */
+	| "RECEIPT_REBOUND";
 
 /**
  * The `PaymentEventStore` port (Phase 4 §5). Two jobs:
  *  1. **Dedupe** — a UNIQUE `dedupe_key` (Stripe event id / x402 receipt id):
  *     `dedupe` returns `true` only for the FIRST delivery; a duplicate returns
  *     `false`. The row is the received-events audit trail. NOTE: settlement does
- *     NOT short-circuit on a duplicate — a redelivery RE-DRIVES the idempotent,
- *     state-guarded settle steps so a crash between any two of them is healed by
- *     the next gateway retry (the Phase-3 claim/resume idiom); "settles once" is
- *     enforced by the guarded state flips + keyed side-effects, with the dedupe
- *     row as the audit record.
+ *     NOT short-circuit on a duplicate **of the same order** — a redelivery
+ *     RE-DRIVES the idempotent, state-guarded settle steps so a crash between any
+ *     two of them is healed by the next gateway retry (the Phase-3 claim/resume
+ *     idiom); "settles once" is enforced by the guarded state flips + keyed
+ *     side-effects, with the dedupe row as the audit record. A duplicate whose row
+ *     names a DIFFERENT order is not a redelivery at all — see
+ *     {@link PaymentEventStore.orderForDedupeKey}.
  *  2. **Anomaly** — record a durable, alert-worthy row when settlement hits an
  *     invariant violation (amount/currency mismatch, a lost adopted hold). The
  *     record IS the alert seam; never swallowed (§5 loud-anomaly).
@@ -40,6 +47,20 @@ export interface PaymentEventStore {
 		gateway: PaymentMethod,
 		now: string,
 	): Promise<boolean>;
+	/**
+	 * The order the recorded `dedupeKey` row names, or `null` when no row holds
+	 * that key.
+	 *
+	 * WHY THE PORT NEEDS THIS. `dedupe`'s boolean says "a row already exists"; it
+	 * does not say WHOSE. That difference is the whole cross-order replay
+	 * question: for x402 the dedupe key IS the on-chain `transaction`, and
+	 * `proof.orderId` is never on-chain-attestable, so "one settlement consumes
+	 * one on-chain payment" is only true if a receipt already bound to order A is
+	 * refused when it is resubmitted naming order B. `settleOrder` asks this ONLY
+	 * on the duplicate path, so the first delivery of every event still costs one
+	 * statement.
+	 */
+	orderForDedupeKey(dedupeKey: string): Promise<OrderId | null>;
 	/** Record an anomaly row (§5). Idempotent enough for replay safety. */
 	recordAnomaly(input: RecordAnomalyInput): Promise<void>;
 }
