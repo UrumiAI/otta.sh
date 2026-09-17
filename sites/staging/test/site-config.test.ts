@@ -167,9 +167,17 @@ describe("ottaPluginDescriptor", () => {
  *
  * NOTHING HERE IS TRANSCRIBED. The expected value is `COMMERCE_STORAGE_COLLECTIONS`
  * itself — the union `@otta-sh/plugin` assembles from the twelve per-adapter
- * declarations. A test that restated the collection names would pass while the
- * adapters and the descriptor drifted apart, which is the only failure this can
- * usefully catch.
+ * declarations — rather than a hand-copied snapshot that would rot.
+ *
+ * AND BE HONEST ABOUT WHAT THAT COSTS (review round 3, B4). `commerceStorage()`
+ * returns that import BY REFERENCE, so every `toEqual` below is comparing an
+ * object with itself and CANNOT detect the adapters and the descriptor drifting
+ * apart — no assertion phrased this way ever could, because there is only one
+ * value. What these cases are is a REGRESSION GUARD in one direction: the day
+ * someone replaces the spread with a literal list, or drops a collection on the
+ * way through, or lets the in-process arm stop declaring storage at all, these
+ * stop passing. That is worth having; it is just not drift detection, and the
+ * previous wording claimed it was.
  */
 describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
 	const inProcess = ottaPluginDescriptor(SERVICE_URL, { mode: "in-process" });
@@ -443,6 +451,36 @@ describe("buildEmdashOptions", () => {
 			entrypoint: "@emdash-cms/cloudflare/storage/r2",
 			config: { binding: "MEDIA" },
 		});
+	});
+
+	/**
+	 * INC-D1 review round 3, B1 — the egress URLs reach the DESCRIPTOR, not only the
+	 * bundle's defines.
+	 *
+	 * `manifest.ts` resolves `__OTTA_EMAIL_API_URL__` / `__OTTA_X402_FACILITATOR_URL__`
+	 * from Vite defines to decide whether the bundle builds an `EmailSender` and a
+	 * facilitator client at all. `allowedHosts` decides whether those calls are
+	 * permitted. Before this parameter existed the second half was unreachable: the
+	 * descriptor structurally could not allowlist either host, so the first build to
+	 * set an egress define would ship a sender aimed at a host the gate refuses —
+	 * every send failing, rows rescheduling to `failed`, and the sweep leg reporting
+	 * `count: 0` instead of the honest `skipped`.
+	 */
+	test("threads the in-process egress URLs into the registered descriptor's allowlist", () => {
+		const hosts = buildEmdashOptions(SERVICE_URL, "in-process", {
+			emailApiUrl: "https://api.email.example.com/v1/send",
+			facilitatorUrl: "https://facilitator.example.com",
+		}).plugins[0]?.allowedHosts;
+		expect(sorted(hosts)).toEqual(
+			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+		);
+	});
+
+	test("with no egress configured the allowlist is EXACTLY Stripe — fail-closed, unchanged", () => {
+		// Staging today supplies neither URL, so this is the list it actually ships.
+		expect(buildEmdashOptions(SERVICE_URL, "in-process").plugins[0]?.allowedHosts).toEqual([
+			STRIPE_API_HOST,
+		]);
 	});
 
 	test("registers the Otta plugin FIRST, trusted, unchanged", () => {
@@ -859,8 +897,55 @@ describe("astro.config", () => {
 				define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null",
 			) as string;
 
-			// The descriptor em-dash will actually serialize, read off the integration
-			// options the config passes — not a freshly-built one.
+			// THE TIE IS PINNED IN THE SOURCE, NOT BY REBUILDING THE VALUE (review
+			// round 3, A3). `config.integrations` cannot answer this: `emdash()`
+			// captures its options in a closure and hands Astro back `{name, hooks}`,
+			// so the registered descriptor is not reachable from here. And calling
+			// `buildEmdashOptions(bakedServiceUrl, bakedMode)` here and comparing it to
+			// `ottaPluginDescriptor(bakedServiceUrl, {mode: bakedMode})` compares two
+			// values derived from ONE input — it is green no matter what the config
+			// registers, including for the precise mistake this whole `commerceMode`
+			// const exists to prevent: `emdash(buildEmdashOptions(serviceUrl))` with the
+			// mode argument dropped, which in Node resolves to the "http" default while
+			// the define still bakes "in-process".
+			//
+			// So read the source and require that ONE NAMED CONST feeds both consumers.
+			// Same technique this file already uses for the wrangler pairing invariant.
+			const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+			const modeDefine = /__OTTA_COMMERCE_MODE__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\)/.exec(
+				source,
+			);
+			expect(modeDefine?.[1], "__OTTA_COMMERCE_MODE__ must be baked from a named const").toBeTypeOf(
+				"string",
+			);
+			const registration = /emdash\(\s*buildEmdashOptions\(([^)]*)\)/.exec(source);
+			expect(registration?.[1], "the config must register via buildEmdashOptions(...)").toBeTypeOf(
+				"string",
+			);
+			const args = (registration?.[1] ?? "").split(",").map((a) => a.trim());
+			// Argument 2 is the mode, and it must be the SAME identifier the define
+			// bakes. An omitted argument fails here as `undefined`.
+			expect(
+				args[1],
+				"buildEmdashOptions must be passed the same mode const the define bakes",
+			).toBe(modeDefine?.[1]);
+			// Argument 3 is the egress const, and it must likewise be the same one the
+			// two egress defines are baked from (review round 3, B1) — otherwise the
+			// bundle can hold an email/facilitator URL whose host the descriptor never
+			// allowlists, and every send is refused by the gate.
+			const egressDefine =
+				/__OTTA_EMAIL_API_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.emailApiUrl/.exec(source);
+			expect(
+				egressDefine?.[1],
+				"__OTTA_EMAIL_API_URL__ must be baked from a named const",
+			).toBeTypeOf("string");
+			expect(
+				args[2],
+				"buildEmdashOptions must be passed the same egress const the defines bake",
+			).toBe(egressDefine?.[1]);
+
+			// With the source tie pinned, rebuilding the descriptor from the baked
+			// values is a meaningful check of the two halves' agreement.
 			const registered = buildEmdashOptions(bakedServiceUrl, bakedMode as "http" | "in-process")
 				.plugins[0];
 			expect(registered).toEqual(

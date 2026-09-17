@@ -59,6 +59,38 @@ const serviceUrl = resolveServiceUrl(
 const commerceMode = "in-process" as const;
 
 /**
+ * THE IN-PROCESS EGRESS URLS — resolved ONCE, exactly like `commerceMode` above,
+ * and for exactly the same reason (review round 3, B1).
+ *
+ * These are two URLs and two consumers. The plugin BUNDLE reads them as Vite
+ * defines (`manifest.ts`: `__OTTA_EMAIL_API_URL__`,
+ * `__OTTA_X402_FACILITATOR_URL__`) to decide whether to build an `EmailSender` and
+ * a facilitator client at all. The registered DESCRIPTOR needs the same two values
+ * to put their hosts on `allowedHosts` — and `allowedHosts` is the one ADR-0006
+ * gate that still bites in trusted mode. Feed only the defines and you get a
+ * bundle that sends email to a host the gate refuses: every send fails, rows
+ * reschedule and park `failed`, and the cron leg reports `count: 0` instead of the
+ * honest `skipped`. So one const, both consumers.
+ *
+ * URLS, NEVER SECRETS. The API credentials that ride them live in write-only
+ * plugin kv (the `settings:` keys `payment-secrets.ts` owns), provisioned through
+ * the admin Settings form — which is what keeps wrangler-config.test.ts's
+ * /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact and unroutable-around, and
+ * why site-config.test.ts can assert this file names none of them.
+ *
+ * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
+ * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
+ * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
+ * today sets neither, so its allowlist is the Stripe API host alone — order email
+ * is a capability this deployment does not yet have, and setting `EMAIL_API_URL`
+ * at build time is the whole of turning it on.
+ */
+const egress = {
+	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
+	facilitatorUrl: process.env.X402_FACILITATOR_URL ?? readDotEnv("X402_FACILITATOR_URL"),
+};
+
+/**
  * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
  * Absent ⇒ `undefined` ⇒ the define below bakes `""` ⇒ `/checkout` renders
  * review + totals but says "Card payment isn't set up on this store yet." and
@@ -145,7 +177,7 @@ export default defineConfig({
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
 	],
-	integrations: [react(), emdash(buildEmdashOptions(serviceUrl, commerceMode))],
+	integrations: [react(), emdash(buildEmdashOptions(serviceUrl, commerceMode, egress))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
@@ -175,6 +207,13 @@ export default defineConfig({
 			// This define, the mode branch it drives and the service itself are
 			// all DELETED at INC-D3b; nothing may be designed around the flag.
 			__OTTA_COMMERCE_MODE__: JSON.stringify(commerceMode),
+			// The two in-process egress URLs, from the SAME `egress` const that
+			// decides what the descriptor allowlists (see its note above). ALWAYS a
+			// string, like the Stripe key: baking `undefined` would leave the
+			// identifier undeclared, and `""` is what both the plugin's `typeof`
+			// guard and `hostnameOf` read as "this provider is unconfigured".
+			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
+			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the define

@@ -89,12 +89,13 @@ export {
 // the React console posts. A literal copy of "otta_console_act" in a script is a
 // string that fails by being SILENTLY UNROUTED — `admin-route.ts` dispatches on
 // exactly these values, and a stale copy produces a refusal, not an error.
-export {
-	CONSOLE_ACT_INTERACTION,
-	CONSOLE_INTERACTIONS,
-	CONSOLE_READ_INTERACTION,
-	type ConsoleFailure,
-} from "./admin/console-transport.js";
+//
+// EXACTLY THE THREE THE SEEDER USES. `CONSOLE_INTERACTIONS` (the set both
+// discriminators belong to) and `ConsoleFailure` (the route's internal refusal
+// shape) were exported alongside them and have no consumer outside this package;
+// a barrel entry with no caller is API surface bought with nothing, and this
+// barrel is `@otta-sh/plugin`'s public one.
+export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
 export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
 	AdminProductsClient,

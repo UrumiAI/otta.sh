@@ -89,9 +89,10 @@ export function ottaPluginDescriptor(
 		// `resolveAllowedHosts` so this descriptor and the bundle's `ALLOWED_HOSTS`
 		// can never drift into two different answers.
 		//
-		//  - "http" (no longer what this site builds — INC-D1 flipped staging to
-		//    in-process; the arm stays for the other deployments and for the
-		//    per-mode tests): exactly the commerce service's host, unchanged.
+		//  - "http" (NOTHING builds this arm any more. INC-D1 flipped staging to
+		//    in-process, and `sites/` contains staging alone — so the arm survives
+		//    for the per-mode tests below it and for nothing else, until INC-D3b
+		//    deletes it outright): exactly the commerce service's host, unchanged.
 		//    The service holds the Stripe/email/x402 credentials
 		//    and makes those calls itself, so granting them here would widen
 		//    ADR-0006's gate for egress the plugin never performs.
@@ -104,7 +105,8 @@ export function ottaPluginDescriptor(
 		//    through the admin Settings form.
 		allowedHosts: resolveAllowedHosts(mode, serviceUrl, options.egress),
 		// STORAGE IS DECLARED ONLY IN "in-process" MODE (INC-D1), and the `http`
-		// arm stays byte-identical to what staging shipped before this increment.
+		// arm stays byte-identical to what staging shipped before this increment
+		// (nothing builds that arm now — see the allowedHosts note above).
 		//
 		// The asymmetry is the whole point rather than an oversight: in `http` mode
 		// commerce state lives in the SERVICE's Postgres and the plugin owns no

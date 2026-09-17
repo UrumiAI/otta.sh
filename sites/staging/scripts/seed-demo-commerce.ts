@@ -24,20 +24,33 @@
  * policy check but STRUCTURALLY: `ProductEditWire` has no member for either,
  * because both are CMS-owned (ADR-0013, "one home per field"). So the flow is:
  *
- *   1. PUBLISH the product through the CMS content API. That fires the plugin's
- *      own `content:afterPublish` hook, which upserts the `product_commerce`
- *      row WITH its title and opens the publish gate. This is the only door
- *      `title` and `active` have, and using it means the row is created by
- *      exactly the code path a real merchant's first publish would take.
- *   2. READ the row back (`otta_console_read` / `products.detail`) — the re-run
- *      guard, and the source of the `expectedUpdatedAt` the write needs.
+ *   1. READ the row first (`otta_console_read` / `products.detail`). This is the
+ *      re-run guard, and it comes FIRST — see the next paragraph, which is the
+ *      whole reason the order is written down here.
+ *   2. PUBLISH the product through the CMS content API, but ONLY on the path
+ *      that is about to price it. That fires the plugin's own
+ *      `content:afterPublish` hook, which upserts the `product_commerce` row
+ *      WITH its title and opens the publish gate. This is the only door `title`
+ *      and `active` have, and using it means the row is created by exactly the
+ *      code path a real merchant's first publish would take. Then re-read, for
+ *      the row the hook just created and the `expectedUpdatedAt` the write needs.
  *   3. SKU + price (`otta_console_act` / `products:save-identity`), then stock
  *      (`products:restock`). Both are the same envelopes the React console
  *      posts; this script is just another client of the admin route.
  *
- * Step 1 is not optional sequencing: `updateProduct` answers
+ * Step 2 is not optional sequencing: `updateProduct` answers
  * `{ok:false, reason:"not_found"}` when no `product_commerce` row exists, so
  * pricing genuinely cannot precede the publish that creates the row.
+ *
+ * WHY THE READ MUST PRECEDE THE PUBLISH, AND IT IS NOT AN OPTIMISATION. A
+ * publish is not a read-only probe: it opens the publish gate. A merchant who
+ * priced a product and then deliberately UNPUBLISHED it would have it silently
+ * put back on sale by a publish-then-decide flow — the skip would be taken one
+ * call too late, after the damage. Reading first costs one extra round trip on a
+ * first run (the row does not exist yet, which the console answers as
+ * `ok:false` / `product:null`, mapped to `null` by `parseExistingCommerce`) and
+ * makes "this script never re-activates what it did not price" structurally
+ * true rather than merely claimed.
  *
  * THE TITLE IS NO LONGER THIS SCRIPT'S TO WRITE, AND THAT IS THE FIX. The old
  * revision hand-carried `title` on the upsert body because no hook fired for a
@@ -54,14 +67,15 @@
  * than by a constant chosen to be older than everything.
  *
  * RE-RUNNING IS SAFE, AND IDEMPOTENCY KEYS ARE NOT WHAT MAKES IT SO. Each
- * product is READ first and skipped if its row already has a SKU — see
- * `shouldPrice`. Without that read a second run would silently overwrite a
- * merchant's prices. The admin route derives its own keys from the submitted
- * payload, so a re-run with the SAME demo values does dedupe — but a re-run
- * after a merchant repriced does not, because the payload differs. `shouldPrice`
- * is the actual guard; the keys are a courtesy. Re-publishing (step 1) is
- * separately safe: em-dash re-promotes the live revision and the sync hook's
- * upsert is ordering-guarded by `contentUpdatedAt`.
+ * product is READ first and skipped — before ANY write, publish included — if
+ * its row already has a SKU; see `shouldPrice`. Without that read a second run
+ * would silently overwrite a merchant's prices. The admin route derives its own
+ * keys from the submitted payload, so a re-run with the SAME demo values does
+ * dedupe — but a re-run after a merchant repriced does not, because the payload
+ * differs. `shouldPrice` is the actual guard; the keys are a courtesy.
+ * Re-publishing (step 2) is separately safe on the path that reaches it: em-dash
+ * re-promotes the live revision and the sync hook's upsert is ordering-guarded
+ * by `contentUpdatedAt`.
  *
  * WHY THE IDS COME FROM THE CMS AND NOT FROM `seed/seed.json`. **A seed entry's
  * `id` is not the stored id.** em-dash's seed applier generates a ULID for every
@@ -100,6 +114,7 @@ import {
 	CONSOLE_READ_INTERACTION,
 	formatMinorUnitsInput,
 	OTTA_PLUGIN_ID,
+	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@otta-sh/plugin";
 
 export interface DemoPricing {
@@ -315,20 +330,13 @@ export function shouldPrice(existing: ExistingCommerce | null): boolean {
 	return existing === null || existing.sku === null;
 }
 
-/**
- * Whether the publish gate is still shut. Only used for REPORTING now.
- *
- * In the service era this decided whether to call `activate`. It no longer can:
- * `active` has no member on the console's write wire, and the only thing that
- * opens the gate is a CMS publish — which step 1 already performed for every
- * product, unconditionally and idempotently. So a row that is still inactive
- * after this script ran is a genuine anomaly (the publish landed but the sync
- * hook did not, or a merchant unpublished it since), and the honest response is
- * to SAY so rather than to re-publish behind the merchant's back.
- */
-export function shouldActivate(existing: ExistingCommerce | null): boolean {
-	return existing === null || !existing.active;
-}
+/* `shouldActivate` is GONE (review round 3, A1). In the service era it decided
+ * whether to call `activate`. It cannot decide anything now: `active` has no
+ * member on the console's write wire, and the only thing that opens the gate is
+ * a CMS publish — which this script performs ONLY on the path that is about to
+ * price, so "should we activate?" is not a question it ever asks. It survived
+ * the rewrite as an exported, tested no-op predicate; a dead guard that a test
+ * still pins reads like a live one, which is worse than none. */
 
 const DEFAULT_SITE_URL = "http://localhost:4321";
 
@@ -440,13 +448,15 @@ export async function fetchCmsProducts(
  *
  * `skipped-inactive` exists because the plain skip branch created a SILENT
  * FAILURE PATH. If a first run prices a product and it ends up inactive
- * anyway, the row has a SKU, so every later run takes the `!shouldPrice` early
- * return. The product sits priced-but-inactive: listed, unbuyable, and the old
- * summary line ("N left as-is; this script never overwrites a price you set")
- * read as success.
+ * anyway — or a merchant prices one and then unpublishes it — the row has a
+ * SKU, so every later run takes the `!shouldPrice` early return. The product
+ * sits priced-but-inactive: listed, unbuyable, and the old summary line ("N
+ * left as-is; this script never overwrites a price you set") read as success.
  *
- * The script cannot safely heal that (see `shouldActivate`), so it must SAY it,
- * and the summary must not be able to read as success while one exists.
+ * The script MUST NOT heal that: publishing it would put back on sale exactly
+ * what a merchant may have deliberately taken off it, which is why the publish
+ * now sits behind the read. So it SAYS it instead, and the summary must not be
+ * able to read as success while one exists.
  */
 export type SeedOutcome =
 	| { kind: "priced"; activated: boolean; stocked: number }
@@ -512,7 +522,14 @@ async function postConsole(
 export async function readCommerce(row: DemoRow, deps: SeedDeps): Promise<ExistingCommerce | null> {
 	const data = await postConsole(
 		deps,
-		{ type: CONSOLE_READ_INTERACTION, resource: "products.detail", productId: row.id },
+		{
+			type: CONSOLE_READ_INTERACTION,
+			// Built from the plugin's own prefix rather than spelled out: a
+			// hand-transcribed resource string fails by being SILENTLY UNROUTED, and
+			// exporting the prefix was the whole justification for widening the barrel.
+			resource: `${PRODUCTS_CONSOLE_RESOURCE_PREFIX}detail`,
+			productId: row.id,
+		},
 		`reading ${row.slug}`,
 	);
 	return parseExistingCommerce(data, row.id);
@@ -551,14 +568,20 @@ async function act(
 }
 
 /**
- * STEP 1 — publish the product through the CMS so the plugin's own
+ * STEP 2 — publish the product through the CMS so the plugin's own
  * `content:afterPublish` hook creates the `product_commerce` row with its title
  * and opens the publish gate.
  *
+ * ONLY CALLED ON THE PATH THAT IS ABOUT TO PRICE. This is a WRITE that opens the
+ * publish gate, not a probe: calling it for a product this script is going to
+ * skip would re-activate a row a merchant deliberately unpublished. The caller
+ * takes the skip before reaching here.
+ *
  * Re-publishing an already-published entry is SAFE and is the normal case on a
- * re-run: em-dash re-promotes the current live revision, preserves the original
- * `published_at`, and still fires the hook — whose upsert is ordering-guarded by
- * `contentUpdatedAt`, so it cannot move a row backwards.
+ * re-run over a bare, still-unpriced row: em-dash re-promotes the current live
+ * revision, preserves the original `published_at`, and still fires the hook —
+ * whose upsert is ordering-guarded by `contentUpdatedAt`, so it cannot move a
+ * row backwards.
  *
  * No request body: `publishedAt` would be a backdate (and would demand
  * `content:publish_any`), and this script has no business choosing one.
@@ -580,38 +603,47 @@ async function publishForCommerceRow(row: DemoRow, deps: SeedDeps): Promise<void
  * `fetch`, so the RE-RUN behaviour is pinned by a test rather than by prose.
  */
 export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<SeedOutcome> {
-	// 1. The row + its title + the publish gate, through their only owner.
-	//    Unconditional: it is idempotent, and it is also what heals a row whose
-	//    title never landed. It does NOT overwrite price or stock.
-	await publishForCommerceRow(row, deps);
-
-	// 2. READ. This is the re-run guard (`shouldPrice`) AND the source of the
-	//    `expectedUpdatedAt` the write must echo.
+	// 1. READ, BEFORE ANY WRITE. This is the re-run guard (`shouldPrice`), and it
+	//    has to come first because the publish below is not a probe — it opens the
+	//    publish gate, and doing that for a product this script will skip would put
+	//    a deliberately-unpublished one back on sale.
 	const existing = await readCommerce(row, deps);
 
 	if (!shouldPrice(existing)) {
 		// It has a SKU, so it has been priced — by Pricing & inventory or by an
-		// earlier run. Those values are the merchant's; leave them alone.
+		// earlier run. Those values are the merchant's; leave them alone, and do
+		// NOT publish it.
 		const sku = existing?.sku ?? "?";
 		if (existing !== null && !existing.active) {
-			// Priced but NOT active, even though step 1 just published it. That is a
-			// real anomaly, not a routine skip — report it loudly rather than
-			// counting it as "left as-is".
+			// Priced AND off sale. Most likely a merchant unpublished it on purpose,
+			// which is precisely what this script must not undo — so it is reported
+			// loudly rather than counted as "left as-is" or healed behind their back.
 			return { kind: "skipped-inactive", reason: `already priced (sku ${sku}) but NOT ACTIVE` };
 		}
 		return { kind: "skipped", reason: `already priced (sku ${sku})` };
 	}
-	if (existing === null) {
+
+	// 2. The row + its title + the publish gate, through their only owner. Reached
+	//    only for a product this script is about to price: one with no commerce row
+	//    at all, or a bare sku-less sync row with nothing to lose. It does NOT
+	//    overwrite price or stock, and it is also what heals a row whose title
+	//    never landed.
+	await publishForCommerceRow(row, deps);
+
+	// 3. RE-READ. The row the hook just created (or refreshed) is the only source
+	//    of the `expectedUpdatedAt` the write must echo — the publish moved it.
+	const published = await readCommerce(row, deps);
+	if (published === null) {
 		throw new Error(
 			`${row.slug} still has no commerce row after publishing it. The plugin's content sync hook did not run — check that the site is built with __OTTA_COMMERCE_MODE__ = "in-process" and that the otta plugin registered.`,
 		);
 	}
 
-	// 3. SKU + price. `expectedUpdatedAt` comes from the read above; the route
+	// 4. SKU + price. `expectedUpdatedAt` comes from the re-read above; the route
 	//    refuses the write without it.
-	await act(row, deps, "products:save-identity", priceBody(row, existing.updatedAt));
+	await act(row, deps, "products:save-identity", priceBody(row, published.updatedAt));
 
-	// 4. Stock. RE-READ FIRST, deliberately: giving the product a sku is what
+	// 5. Stock. RE-READ FIRST, deliberately: giving the product a sku is what
 	//    creates its inventory record, so the `onHand` watermark the restock must
 	//    carry only exists after step 3 — the count read before it was `null`
 	//    ("no inventory record"), which the route rejects as an unreadable
@@ -650,7 +682,7 @@ async function main(): Promise<void> {
 			stranded.push(row.slug);
 			// `warn`, not `info` — this one needs a human.
 			console.warn(
-				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. This script does not activate a product it did not price. Publish it in the CMS, or activate it from Pricing & inventory.`,
+				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. Nothing was written to it: this script never publishes a product it is not pricing, because that would put back on sale what you may have deliberately taken off it. Publish it in the CMS, or activate it from Pricing & inventory.`,
 			);
 			continue;
 		}

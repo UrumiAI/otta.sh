@@ -21,7 +21,6 @@ import {
 	restockBody,
 	seededProductSlugs,
 	seedOneProduct,
-	shouldActivate,
 	shouldPrice,
 	type CmsProductEntry,
 	type CmsProductPage,
@@ -74,9 +73,10 @@ interface Recorded {
  * route and the plugin admin route.
  *
  * `reads` is the queue of `products.detail` answers, consumed in order — the
- * script reads twice on a first run (once as the re-run guard, once for the
- * stock watermark that only exists after the sku does), and a single fixed
- * answer would hide the difference between them.
+ * script reads THREE times on a first run (the re-run guard BEFORE any write,
+ * then the row the publish created, then the stock watermark that only exists
+ * after the sku does), and a single fixed answer would hide the difference
+ * between them.
  */
 function stubSite(reads: Array<ExistingCommerce | null>) {
 	const calls: Recorded[] = [];
@@ -130,13 +130,15 @@ function detailRow(over: Partial<ExistingCommerce>): ExistingCommerce {
 	return { sku: null, active: true, updatedAt: "2026-09-17T00:00:00.000Z", onHand: null, ...over };
 }
 
-/** THE TWO READS OF A FIRST RUN, as the real site answers them.
+/** THE THREE READS OF A FIRST RUN, as the real site answers them.
  *
- *  `BARE` is what the FIRST read sees: step 1's publish has already fired the
- *  sync hook, so a row exists with its title and `active` — and no sku, so no
- *  inventory record either (`onHand: null` is "no record", not zero). `PRICED`
- *  is the SECOND read, after the sku exists: the stock record now does too, at
- *  a known zero, which is the watermark restock must carry. */
+ *  The FIRST read happens BEFORE any write at all (the re-run guard) and sees
+ *  `null` — em-dash's seed applier fires no content hooks, so a seeded product
+ *  has no `product_commerce` row yet. `BARE` is the SECOND read, after the
+ *  publish fired the sync hook: a row with its title and `active`, and no sku,
+ *  so no inventory record either (`onHand: null` is "no record", not zero).
+ *  `PRICED` is the THIRD, after the sku exists: the stock record now does too,
+ *  at a known zero, which is the watermark restock must carry. */
 const BARE = detailRow({ sku: null, active: true, onHand: null });
 const PRICED = detailRow({ sku: "OTTA-TEE", active: true, onHand: 0 });
 
@@ -242,40 +244,39 @@ describe("seed-demo-commerce", () => {
 		expect(shouldPrice(detailRow({ sku: "MERCHANT-SKU", active: false }))).toBe(false);
 	});
 
-	test("shouldActivate: only when the gate is not already open", () => {
-		expect(shouldActivate(null)).toBe(true);
-		expect(shouldActivate(detailRow({ sku: null, active: false }))).toBe(true);
-		expect(shouldActivate(detailRow({ sku: "OTTA-TEE", active: true }))).toBe(false);
-	});
-
-	test("FIRST RUN: publish, read, price, re-read, restock — in that order, on the SITE", async () => {
-		// The order is the contract, not an implementation detail. The publish must
-		// come first because `updateProduct` answers `not_found` with no commerce
-		// row; the re-read must come after pricing because giving the product a sku
-		// is what creates its inventory record, so the `onHand` watermark restock
-		// needs does not exist before it.
-		const { calls, deps } = stubSite([BARE, PRICED]);
+	test("FIRST RUN: read, publish, read, price, re-read, restock — in that order, on the SITE", async () => {
+		// The order is the contract, not an implementation detail. The READ comes
+		// first because the publish is a WRITE that opens the publish gate, and
+		// doing it before the skip decision would re-activate a product a merchant
+		// deliberately unpublished. The publish must precede pricing because
+		// `updateProduct` answers `not_found` with no commerce row. The re-read must
+		// come after pricing because giving the product a sku is what creates its
+		// inventory record, so the `onHand` watermark restock needs does not exist
+		// before it.
+		const { calls, deps } = stubSite([null, BARE, PRICED]);
 		const outcome = await seedOneProduct(TEE, deps);
 
 		expect(outcome).toEqual({ kind: "priced", activated: true, stocked: 25 });
 		expect(calls.map((c) => c.step)).toEqual([
+			"read",
 			"publish",
 			"read",
 			"products:save-identity",
 			"read",
 			"products:restock",
 		]);
-		expect(calls[0]?.url).toBe(PUBLISH);
-		expect(calls.slice(1).every((c) => c.url === ADMIN)).toBe(true);
+		expect(calls[1]?.url).toBe(PUBLISH);
+		expect(calls.filter((_, i) => i !== 1).every((c) => c.url === ADMIN)).toBe(true);
 		// NOTHING is addressed to a commerce service any more.
 		expect(calls.some((c) => !c.url.startsWith(SITE))).toBe(false);
 		expect(calls.every((c) => c.method === "POST")).toBe(true);
 	});
 
 	test("the publish carries NO BODY — a `publishedAt` would be a backdate this script has no business choosing", async () => {
-		const { calls, deps } = stubSite([BARE, PRICED]);
+		const { calls, deps } = stubSite([null, BARE, PRICED]);
 		await seedOneProduct(TEE, deps);
-		expect(calls[0]?.body).toBeUndefined();
+		expect(calls[1]?.step).toBe("publish");
+		expect(calls[1]?.body).toBeUndefined();
 	});
 
 	test("every write carries the CSRF header and the credential — a cookie run is 403 without it", async () => {
@@ -283,7 +284,7 @@ describe("seed-demo-commerce", () => {
 		// request that authenticated with a session cookie. Bearer auth is exempt,
 		// so sending it unconditionally is right for both and the script never has
 		// to know which credential `cmsAuthHeaders` returned.
-		const { calls, deps } = stubSite([BARE, PRICED]);
+		const { calls, deps } = stubSite([null, BARE, PRICED]);
 		await seedOneProduct(TEE, deps);
 		for (const call of calls) {
 			expect(call.headers["X-EmDash-Request"]).toBe("1");
@@ -296,18 +297,15 @@ describe("seed-demo-commerce", () => {
 		const outcome = await seedOneProduct(TEE, deps);
 
 		expect(outcome).toEqual({ kind: "skipped", reason: "already priced (sku OTTA-TEE)" });
-		// The publish is unconditional (it is idempotent and owns only title +
-		// active), but NO commerce write follows it.
-		expect(calls.map((c) => c.step)).toEqual(["publish", "read"]);
+		// NOTHING is written — not even the publish. One read, and out.
+		expect(calls.map((c) => c.step)).toEqual(["read"]);
 	});
 
 	test("RE-RUN over a PRICED-BUT-INACTIVE row reports it distinctly — the skip must never read as success", async () => {
-		// Still inactive after this script just published it is a genuine anomaly,
-		// not a routine skip: the publish landed but the sync hook did not, or a
-		// merchant unpublished it since. The script does NOT heal it — re-flipping
-		// `active` would publish a product a merchant deliberately unpublished — so
-		// the contract is that it SAYS so, distinctly enough that the summary
-		// cannot report success.
+		// Priced and off sale is most likely a merchant who unpublished it on
+		// purpose. The script does NOT heal it — re-flipping `active` would put
+		// back on sale exactly what they took off it — so the contract is that it
+		// SAYS so, distinctly enough that the summary cannot report success.
 		const { calls, deps } = stubSite([detailRow({ sku: "OTTA-TEE", active: false, onHand: 3 })]);
 		const outcome = await seedOneProduct(TEE, deps);
 
@@ -315,18 +313,37 @@ describe("seed-demo-commerce", () => {
 			kind: "skipped-inactive",
 			reason: "already priced (sku OTTA-TEE) but NOT ACTIVE",
 		});
-		expect(calls.map((c) => c.step)).toEqual(["publish", "read"]);
+		expect(calls.map((c) => c.step)).toEqual(["read"]);
+	});
+
+	test("THE UNPUBLISH IS NOT UNDONE: no publish is sent for ANY product this script skips", async () => {
+		// THE REGRESSION THIS PINS (review round 3, A1). A publish is not a probe:
+		// `content:afterPublish` upserts the commerce row and opens the publish
+		// gate, so publishing before the skip decision silently puts a merchant's
+		// deliberately-unpublished product back on sale — the one thing the
+		// operator-facing warning promises never happens. Asserted for BOTH skip
+		// shapes, since only one of them is the dangerous one and a future edit
+		// could reintroduce the publish on either path.
+		for (const row of [
+			detailRow({ sku: "OTTA-TEE", active: false, onHand: 3 }),
+			detailRow({ sku: "OTTA-TEE", active: true, onHand: 7 }),
+		]) {
+			const { calls, deps } = stubSite([row]);
+			await seedOneProduct(TEE, deps);
+			expect(calls.some((c) => c.step === "publish")).toBe(false);
+			expect(calls.some((c) => c.url === PUBLISH)).toBe(false);
+		}
 	});
 
 	test("a product that ALREADY has stock is not restocked — the count would double", async () => {
-		const { calls, deps } = stubSite([BARE, detailRow({ sku: "OTTA-TEE", onHand: 12 })]);
+		const { calls, deps } = stubSite([null, BARE, detailRow({ sku: "OTTA-TEE", onHand: 12 })]);
 		const outcome = await seedOneProduct(TEE, deps);
 		expect(outcome).toEqual({ kind: "priced", activated: true, stocked: 0 });
 		expect(calls.map((c) => c.step)).not.toContain("products:restock");
 	});
 
 	test("a REFUSED action throws instead of being counted as priced", async () => {
-		const { deps, fetchImpl: _f } = stubSite([BARE, PRICED]);
+		const { deps, fetchImpl: _f } = stubSite([null, BARE, PRICED]);
 		void _f;
 		const refusing = (async (input: string | URL | Request, init?: RequestInit) => {
 			const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
@@ -354,7 +371,7 @@ describe("seed-demo-commerce", () => {
 		// The console renders an error notice instead of a blank pane, so `ok:true`
 		// only means the action ran. Counting that as priced is exactly the
 		// "looks like it worked" outcome this script exists to prevent.
-		const { deps } = stubSite([BARE, PRICED]);
+		const { deps } = stubSite([null, BARE, PRICED]);
 		const noticing = (async (input: string | URL | Request, init?: RequestInit) => {
 			const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
 			if ((body as { action_id?: string } | undefined)?.action_id === "products:save-identity") {
@@ -381,12 +398,12 @@ describe("seed-demo-commerce", () => {
 		// The publish is what creates the row, via the plugin's content sync hook.
 		// If the row is still missing the hook did not run — which is what a build
 		// left on `__OTTA_COMMERCE_MODE__ = "http"` looks like from here.
-		const { deps } = stubSite([null, null]);
+		const { deps } = stubSite([null, null, null]);
 		await expect(seedOneProduct(TEE, deps)).rejects.toThrow(/still has no commerce row/);
 	});
 
 	test("a priced product with NO inventory record is an error — it would be listed and unbuyable", async () => {
-		const { deps } = stubSite([BARE, detailRow({ sku: "OTTA-TEE", onHand: null })]);
+		const { deps } = stubSite([null, BARE, detailRow({ sku: "OTTA-TEE", onHand: null })]);
 		await expect(seedOneProduct(TEE, deps)).rejects.toThrow(/no inventory record to stock/);
 	});
 
@@ -469,15 +486,18 @@ describe("seed-demo-commerce", () => {
 		await expect(seedOneProduct(TEE, { ...deps, fetchImpl: garbage })).rejects.toThrow(
 			/no readable/,
 		);
-		// Failed on the read: the publish happened, but no commerce write did.
-		expect(calls.map((c) => c.step)).toEqual(["publish"]);
+		// The garbage stub answers the READ itself and delegates everything else to
+		// the recording stub, so an EMPTY record is the proof: the run failed on the
+		// first read — which is now the first call of all — and nothing was written,
+		// publish included.
+		expect(calls).toEqual([]);
 	});
 
 	test("a non-2xx from the site is an error naming the step — never a skip", async () => {
 		const failing = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
 		await expect(
 			seedOneProduct(TEE, { siteUrl: SITE, authHeaders: AUTH, fetchImpl: failing }),
-		).rejects.toThrow(/publishing otta-tee.*HTTP 500/s);
+		).rejects.toThrow(/reading otta-tee.*HTTP 500/s);
 	});
 
 	// -- READING THE CMS -------------------------------------------------------
