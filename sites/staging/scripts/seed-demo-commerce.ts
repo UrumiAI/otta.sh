@@ -10,38 +10,65 @@
  * new reader lands on `/products`, sees three products, and cannot buy any of
  * them.
  *
- * WHY PRICING IS TWO WRITES AND NOT ONE. Pricing alone leaves the products
- * UNBUYABLE. `PUT /products/:id/commerce` deliberately never touches `active`
- * (a stale or replayed CMS sync must never resurrect a soft-deleted row), and
- * the storefront's purchasability rule is `commerce !== null && commerce.active`
- * (`joinProduct`). So each product needs its price AND a separate, guarded
- * `POST /products/:id/commerce/activate`.
+ * WHERE IT WRITES, AND WHY THAT CHANGED (INC-D1). It used to drive the
+ * standalone commerce service's REST API (`PUT /products/:id/commerce`, then
+ * `POST …/commerce/activate`). Staging now runs commerce IN-PROCESS: there is no
+ * service to call, commerce truth lives in em-dash plugin storage inside the
+ * site's own Worker, and every write goes through the SITE. So `SITE_URL` is now
+ * the only address this script needs — `COMMERCE_SERVICE_URL` and
+ * `SERVICE_API_TOKEN` are gone, and one credential (the em-dash one) now covers
+ * both halves of the job.
  *
- * RE-RUNNING IS SAFE, AND THE IDEMPOTENCY KEY IS NOT WHAT MAKES IT SO. Each
+ * THE WRITE PATH IS THREE SURFACES, NOT ONE, AND THE SPLIT IS DELIBERATE. The
+ * in-process admin route refuses to write `title` or `active` at all — not by
+ * policy check but STRUCTURALLY: `ProductEditWire` has no member for either,
+ * because both are CMS-owned (ADR-0013, "one home per field"). So the flow is:
+ *
+ *   1. PUBLISH the product through the CMS content API. That fires the plugin's
+ *      own `content:afterPublish` hook, which upserts the `product_commerce`
+ *      row WITH its title and opens the publish gate. This is the only door
+ *      `title` and `active` have, and using it means the row is created by
+ *      exactly the code path a real merchant's first publish would take.
+ *   2. READ the row back (`otta_console_read` / `products.detail`) — the re-run
+ *      guard, and the source of the `expectedUpdatedAt` the write needs.
+ *   3. SKU + price (`otta_console_act` / `products:save-identity`), then stock
+ *      (`products:restock`). Both are the same envelopes the React console
+ *      posts; this script is just another client of the admin route.
+ *
+ * Step 1 is not optional sequencing: `updateProduct` answers
+ * `{ok:false, reason:"not_found"}` when no `product_commerce` row exists, so
+ * pricing genuinely cannot precede the publish that creates the row.
+ *
+ * THE TITLE IS NO LONGER THIS SCRIPT'S TO WRITE, AND THAT IS THE FIX. The old
+ * revision hand-carried `title` on the upsert body because no hook fired for a
+ * seeded product and a null title makes `createOrderFromCart` reject the line
+ * with `PRODUCT_NOT_PRICED` — listed, priced, active and impossible to buy, with
+ * the failure invisible until the last step of checkout. Publishing through the
+ * CMS fires the hook, so the title arrives from its actual owner and this script
+ * never becomes a second writer of it.
+ *
+ * THE ACTIVATE WATERMARK IS GONE FOR THE SAME REASON. The previous flow sent a
+ * hand-built UNIX-epoch `contentUpdatedAt` so that every later real lifecycle
+ * event would carry a strictly newer watermark and win. The publish hook carries
+ * the content's OWN `updatedAt`, which is that guarantee by construction rather
+ * than by a constant chosen to be older than everything.
+ *
+ * RE-RUNNING IS SAFE, AND IDEMPOTENCY KEYS ARE NOT WHAT MAKES IT SO. Each
  * product is READ first and skipped if its row already has a SKU — see
  * `shouldPrice`. Without that read a second run would silently overwrite a
- * merchant's prices: `product_commerce` has one shared `idempotency_key`
- * column, the `activate` call overwrites it, and the upsert body carries no
- * `contentUpdatedAt`, so neither the replay guard nor the ordering guard stops
- * the write. That is the exact clobber class "one home per field" removed from
- * the CMS sync, and it must not come back through the quickstart.
- *
- * WHY THE UPSERT ALSO CARRIES THE TITLE. `product_commerce.title` is normally
- * written by the CMS content sync — but no hook fires for a seeded product, so
- * the row would be born `title = NULL`, and `createOrderFromCart` rejects a
- * null-title line with `PRODUCT_NOT_PRICED`. The demo products would otherwise
- * be listed, priced, active and IMPOSSIBLE TO BUY, with the failure invisible
- * until a shopper reaches the last step of checkout. `PUT …/commerce` is the
- * same channel the sync uses, so the title written here is the value the first
- * real CMS save would write.
+ * merchant's prices. The admin route derives its own keys from the submitted
+ * payload, so a re-run with the SAME demo values does dedupe — but a re-run
+ * after a merchant repriced does not, because the payload differs. `shouldPrice`
+ * is the actual guard; the keys are a courtesy. Re-publishing (step 1) is
+ * separately safe: em-dash re-promotes the live revision and the sync hook's
+ * upsert is ordering-guarded by `contentUpdatedAt`.
  *
  * WHY THE IDS COME FROM THE CMS AND NOT FROM `seed/seed.json`. **A seed entry's
  * `id` is not the stored id.** em-dash's seed applier generates a ULID for every
  * entry and keeps the declared id only as a seed-local reference
  * (`seedIdMap: seed id -> real entry id`, `packages/core/src/seed/apply.ts`), so
- * `product:otta-tee` never exists in the content database. Addressing the
- * commerce service with it "succeeds" — `PUT …/commerce` mints a row for any id
- * — and creates three ORPHAN rows no CMS product will ever join to, leaving the
+ * `product:otta-tee` never exists in the content database. Addressing commerce
+ * with it would mint rows no CMS product will ever join to, leaving the
  * storefront showing "Not currently available for purchase" with no error
  * anywhere. So the ids are resolved from the CMS at run time, matched by SLUG.
  * `seed/seed.json` remains the source of truth for WHICH products get priced,
@@ -49,25 +76,31 @@
  *
  * USAGE
  *
- *   # after the service is running and the site's seed has been applied
- *   SITE_URL=http://localhost:4321 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 \
- *     pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
+ *   # after the site's seed has been applied
+ *   SITE_URL=http://localhost:4321 pnpm dlx tsx@4 \
+ *     sites/staging/scripts/seed-demo-commerce.ts
  *
- * AUTH, two gates, both optional depending on how you started things:
- *  - reading the CMS needs an em-dash credential. Set `EMDASH_TOKEN` to an API
- *    token (sent as `Authorization: Bearer …`). With no token the script falls
- *    back to `/_emdash/api/auth/dev-bypass`, which signs in as the dev admin and
- *    does nothing else. That route IS registered in a production build — it just
- *    returns 403 there — so a deployed site needs `EMDASH_TOKEN`.
- *  - both commerce writes are non-GET, so they need `X-Service-Token` when the
- *    service was started with `SERVICE_API_TOKEN` set (the write gate — see
- *    DEPLOYMENT.md). Export the same value here and the script sends it. The
- *    read is a GET and is never gated.
+ * AUTH — ONE credential, for reads and writes alike, because everything now goes
+ * through the site. Set `EMDASH_TOKEN` to an em-dash API token (sent as
+ * `Authorization: Bearer …`); it needs `content:publish_own`/`publish_any` for
+ * step 1 and `plugins:manage` with ADMIN scope for steps 2-3. With no token the
+ * script falls back to `/_emdash/api/auth/dev-bypass`, which signs in as the dev
+ * admin and does nothing else. That route IS registered in a production build —
+ * it just returns 403 there — so a deployed site needs `EMDASH_TOKEN`.
+ *
+ * Session-cookie auth additionally needs em-dash's CSRF header on every non-GET
+ * (`X-EmDash-Request: 1`); bearer tokens are exempt from it. The script sends it
+ * unconditionally on writes, which is correct for both.
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+	CONSOLE_ACT_INTERACTION,
+	CONSOLE_READ_INTERACTION,
+	formatMinorUnitsInput,
+	OTTA_PLUGIN_ID,
+} from "@otta-sh/plugin";
 
 export interface DemoPricing {
 	sku: string;
@@ -169,76 +202,101 @@ export function demoRows(slugs: string[], page: CmsProductPage): DemoRow[] {
 	});
 }
 
-/** The upsert wire body for one demo product. Exported so a test can assert the
- *  shape — in particular that `title` is on it, because a title-less row fails
- *  ONLY at the last step of checkout, where nothing short of an actual purchase
- *  would notice. */
-export function priceBody(row: DemoRow): Record<string, unknown> {
-	return { title: row.title, sku: row.sku, price: row.price, initialOnHand: row.initialOnHand };
-}
-
 /**
- * A payload-derived idempotency key for the upsert. It is a courtesy, NOT the
- * re-run guard — see `shouldPrice`.
+ * The `products:save-identity` payload for one demo product.
  *
- * THE IDEMPOTENCY KEY CANNOT MAKE THIS SCRIPT RE-RUNNABLE, and assuming it
- * could was a real bug in an earlier revision. `product_commerce` carries ONE
- * shared `idempotency_key` column, and step 2 of this loop (`activate`)
- * OVERWRITES it with the activate key. So on any re-run the stored key is the
- * activate key, the upsert's replay guard (`idempotency_key != :key`) passes
- * whatever this function returns, and the write applies. The ordering guard
- * cannot help either: this body deliberately carries no `contentUpdatedAt`.
+ * EVERY VALUE IS A STRING, and that is not stylistic. `readConsolePayload`
+ * (`console-transport.ts`) keeps only string-valued keys and DROPS everything
+ * else — silently, without coercing. A numeric `price` here would not be a type
+ * error or a validation failure; the field would simply not be in the payload,
+ * `buildEditWire` would read it as "not in the form ⇒ preserve", and the product
+ * would be saved with its sku and NO PRICE. So money crosses as the decimal
+ * string the form would have submitted, produced by the plugin's own
+ * `formatMinorUnitsInput` — the exact inverse of the `parsePriceMinorUnits` on
+ * the other side, in integer arithmetic, so the round-trip cannot drift.
  *
- * Unguarded, that is the F4 clobber class this release exists to eliminate,
- * re-introduced by the quickstart script — a merchant reprices `otta-tee` to
- * $50, someone re-runs the script to add a fourth demo product, and the tee
- * silently reverts to $32 with its sku and title reset. `shouldPrice` is the
- * actual guard.
+ * `expectedUpdatedAt` is REQUIRED and must be non-blank: it is the concurrency
+ * precondition, and the route refuses the write without it rather than
+ * defaulting to "overwrite whatever is there".
+ *
+ * NO `title` AND NO `active` — neither has a member on `ProductEditWire`. They
+ * arrive via the CMS publish in step 1 (see the module header).
  */
-function priceIdempotencyKey(row: DemoRow): string {
-	const digest = createHash("sha256")
-		.update(JSON.stringify(priceBody(row)))
-		.digest("hex")
-		.slice(0, 16);
-	return `seed-demo-commerce:price:${row.id}:${digest}`;
+export function priceBody(row: DemoRow, expectedUpdatedAt: string): Record<string, string> {
+	return {
+		productId: row.id,
+		expectedUpdatedAt,
+		sku: row.sku,
+		price: formatMinorUnitsInput(row.price.amount),
+		currency: row.price.currency,
+	};
 }
 
-/** The commerce row as `GET /products/:id/commerce` reports it — `null` when the
+/** The `products:restock` payload. `onHand` is the WATERMARK — the count this
+ *  script just observed — not the target; the route refuses the write if the
+ *  live count has moved since. `qty` is how many to ADD. */
+export function restockBody(row: DemoRow, onHand: number): Record<string, string> {
+	return { productId: row.id, onHand: String(onHand), qty: String(row.initialOnHand) };
+}
+
+/** The commerce row as the console detail read reports it — `null` when the
  *  product has none. Only the fields this script reasons about. */
 export interface ExistingCommerce {
 	sku: string | null;
 	active: boolean;
+	/** The concurrency precondition every write must echo back. */
+	updatedAt: string;
+	/** `null` ⇒ the sku has NO inventory record (or there is no sku), which is
+	 *  NOT the same as a known zero — see `ProductDetailWire.onHand`. */
+	onHand: number | null;
 }
 
 /**
- * Narrow the GET payload, and FAIL LOUDLY on anything unrecognised.
+ * Narrow the console detail payload, and FAIL LOUDLY on anything unrecognised.
  *
- * The endpoint returns a bare `serialize(row)` or a bare `null` today — a
- * missing row is `200 null`, not a 404 (`routes/product-commerce.ts`). But the
- * admin reads next door already use an `{ ok, product }` envelope, and if this
- * one ever grew one, an unchecked `as ExistingCommerce | null` would leave
- * `sku` as `undefined` — which `shouldPrice` reads as "already priced". The
- * quickstart would then price NOTHING while cheerfully printing "3 left as-is
- * (already priced)".
+ * The console answers `{ ok: true, product: ProductDetailWire, … }` on success
+ * and `{ ok: false, title, description }` on a refusal — BOTH under HTTP 200,
+ * because a refusal is an answer, not a transport failure. So the status code
+ * cannot be the check; this function is.
  *
- * So an unknown shape must never resolve to "skip". Skipping is the harmful
- * direction here: it is the one outcome that looks like success.
+ * An unknown shape must never resolve to "skip". An unchecked cast would leave
+ * `sku` as `undefined`, which `shouldPrice` reads as "already priced", and the
+ * quickstart would price NOTHING while cheerfully printing "3 left as-is". That
+ * is the one outcome that looks like success.
  */
 export function parseExistingCommerce(
 	payload: unknown,
 	productId: string,
 ): ExistingCommerce | null {
-	if (payload === null || payload === undefined) return null;
-	if (typeof payload === "object") {
-		const row = payload as Record<string, unknown>;
-		const skuOk = typeof row["sku"] === "string" || row["sku"] === null;
-		if (skuOk && typeof row["active"] === "boolean") {
-			return { sku: (row["sku"] as string | null) ?? null, active: row["active"] };
-		}
+	const refuse = (why: string): never => {
+		throw new Error(
+			`the products console detail read for ${productId} ${why} (payload: ${JSON.stringify(payload)?.slice(0, 300)}). Refusing to guess — treating an unreadable answer as "already priced" would silently skip every product and report success.`,
+		);
+	};
+	if (payload === null || typeof payload !== "object") return refuse("was not an object");
+	const envelope = payload as Record<string, unknown>;
+	if (envelope["ok"] === false) {
+		// A refusal is a legitimate answer with one legitimate meaning here: there
+		// is no commerce row yet. It is NOT "already priced".
+		return null;
 	}
-	throw new Error(
-		`GET /products/${productId}/commerce returned a shape this script does not recognise (expected \`null\` or a row with \`sku\` and \`active\`, got ${JSON.stringify(payload)?.slice(0, 200)}). Refusing to guess — treating it as "already priced" would silently skip every product and report success.`,
-	);
+	if (envelope["ok"] !== true) return refuse("carried no `ok` discriminator");
+	const product = envelope["product"];
+	if (product === null || product === undefined) return null;
+	if (typeof product !== "object") return refuse("had a non-object `product`");
+	const row = product as Record<string, unknown>;
+	const skuOk = typeof row["sku"] === "string" || row["sku"] === null;
+	const onHandOk = typeof row["onHand"] === "number" || row["onHand"] === null;
+	if (!skuOk || typeof row["active"] !== "boolean" || typeof row["updatedAt"] !== "string") {
+		return refuse("had no readable `sku` / `active` / `updatedAt`");
+	}
+	if (!onHandOk) return refuse("had a non-numeric, non-null `onHand`");
+	return {
+		sku: (row["sku"] as string | null) ?? null,
+		active: row["active"],
+		updatedAt: row["updatedAt"],
+		onHand: (row["onHand"] as number | null) ?? null,
+	};
 }
 
 /**
@@ -258,46 +316,36 @@ export function shouldPrice(existing: ExistingCommerce | null): boolean {
 }
 
 /**
- * Whether the publish gate still needs opening. Skipping an already-active row
- * keeps the success line honest — `activate` is a no-op there.
+ * Whether the publish gate is still shut. Only used for REPORTING now.
  *
- * Note what this is NOT used for: it is never consulted on the skip path. A
- * product this script skips is one a merchant owns, and re-activating it on
- * every run would flip on a row the merchant priced but deliberately never
- * published (`active_updated_at` still NULL, so the epoch watermark applies).
- * That trades a visible problem for an invisible one. The skip path REPORTS the
- * inactive state instead — see `SeedOutcome`.
+ * In the service era this decided whether to call `activate`. It no longer can:
+ * `active` has no member on the console's write wire, and the only thing that
+ * opens the gate is a CMS publish — which step 1 already performed for every
+ * product, unconditionally and idempotently. So a row that is still inactive
+ * after this script ran is a genuine anomaly (the publish landed but the sync
+ * hook did not, or a merchant unpublished it since), and the honest response is
+ * to SAY so rather than to re-publish behind the merchant's back.
  */
 export function shouldActivate(existing: ExistingCommerce | null): boolean {
 	return existing === null || !existing.active;
 }
 
-/**
- * The publish-gate ORDERING WATERMARK this script sends with `activate`.
- *
- * Deliberately the UNIX epoch, not `new Date()`. The store's gate is
- * `active_updated_at IS NULL OR active_updated_at <= :t`, so on a freshly
- * created row (NULL) an epoch watermark applies fine — and it leaves the gate
- * at the oldest possible value, so EVERY subsequent real CMS lifecycle event
- * carries a strictly newer watermark and wins. Stamping "now" here would do the
- * opposite: a later unpublish, whose watermark is the content's own `updatedAt`
- * (set when the seed was applied, i.e. in the past), would be rejected as stale
- * and the demo product would stay purchasable after being unpublished.
- */
-export const ACTIVATE_WATERMARK = new Date(0).toISOString();
-
 const DEFAULT_SITE_URL = "http://localhost:4321";
-const DEFAULT_SERVICE_URL = "http://127.0.0.1:3000";
+
+/** The plugin admin route every console write and read goes through. Built from
+ *  the plugin's own id rather than spelled out, so a rename cannot leave a dead
+ *  URL here that 404s at run time. */
+const ADMIN_ROUTE = `/_emdash/api/plugins/${OTTA_PLUGIN_ID}/admin`;
 
 function trimUrl(value: string): string {
 	return value.replace(/\/+$/, "");
 }
 
-/** Authenticate against the CMS and return the headers to read content with. */
+/** Authenticate against the site and return the headers to read content with. */
 async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
-		console.info("[otta] reading the CMS with EMDASH_TOKEN");
+		console.info("[otta] using EMDASH_TOKEN");
 		return { Authorization: `Bearer ${token}` };
 	}
 	// DEV-ONLY fallback: `/_emdash/api/auth/dev-bypass`, which signs in as the dev
@@ -316,7 +364,7 @@ async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> 
 			`no EMDASH_TOKEN set and the dev auth bypass at ${siteUrl} returned no session cookie (HTTP ${res.status}${res.status === 403 ? " — that route is development-only" : ""}). On a deployed site, create an API token in the admin and set EMDASH_TOKEN.`,
 		);
 	}
-	console.info("[otta] reading the CMS via the dev auth bypass (no EMDASH_TOKEN set)");
+	console.info("[otta] using the dev auth bypass (no EMDASH_TOKEN set)");
 	return { Cookie: cookies.join("; ") };
 }
 
@@ -391,27 +439,139 @@ export async function fetchCmsProducts(
  * claim "active" for a call it skipped.
  *
  * `skipped-inactive` exists because the plain skip branch created a SILENT
- * FAILURE PATH. If a first run's PUT succeeds and its `activate` then fails
- * (service restart, transient 5xx), the row has a SKU, so every later run takes
- * the `!shouldPrice` early return and never reaches the activate. The product
- * sits priced-but-inactive: listed, unbuyable, and the old summary line
- * ("N left as-is; this script never overwrites a price you set") read as
- * success. Before the skip guard existed, a re-run healed it.
+ * FAILURE PATH. If a first run prices a product and it ends up inactive
+ * anyway, the row has a SKU, so every later run takes the `!shouldPrice` early
+ * return. The product sits priced-but-inactive: listed, unbuyable, and the old
+ * summary line ("N left as-is; this script never overwrites a price you set")
+ * read as success.
  *
- * That is "listed, priced, impossible to buy" a third time in this change — the
- * plan's missing title, the orphan rows, and now the fix for the clobber. The
- * script cannot safely heal it (see `shouldActivate`), so it must SAY it, and
- * the summary must not be able to read as success while one exists.
+ * The script cannot safely heal that (see `shouldActivate`), so it must SAY it,
+ * and the summary must not be able to read as success while one exists.
  */
 export type SeedOutcome =
-	| { kind: "priced"; activated: boolean }
+	| { kind: "priced"; activated: boolean; stocked: number }
 	| { kind: "skipped"; reason: string }
 	| { kind: "skipped-inactive"; reason: string };
 
 export interface SeedDeps {
-	serviceUrl: string;
-	serviceToken?: string | undefined;
+	/** The SITE — the only address this script needs now that commerce is
+	 *  in-process. Reads and writes both go here. */
+	siteUrl: string;
+	/** The em-dash credential from `cmsAuthHeaders` — a bearer token or a
+	 *  session cookie. */
+	authHeaders: Record<string, string>;
 	fetchImpl?: typeof fetch;
+}
+
+/** Headers for a state-changing em-dash request.
+ *
+ *  `X-EmDash-Request: 1` is em-dash's CSRF gate, enforced in middleware for
+ *  every non-GET `/_emdash/api/*` request that authenticated with a SESSION
+ *  COOKIE. Bearer-token requests skip the check (a token is not an ambient
+ *  credential), so sending it unconditionally is right for both and the script
+ *  never has to know which credential it ended up with. */
+function writeHeaders(authHeaders: Record<string, string>): Record<string, string> {
+	return { ...authHeaders, "Content-Type": "application/json", "X-EmDash-Request": "1" };
+}
+
+/**
+ * POST one console envelope to the plugin admin route and return its `data`.
+ *
+ * TWO LAYERS OF "ok" AND THEY MEAN DIFFERENT THINGS. The outer one is em-dash's
+ * (`{success, data}`) and a transport/authorization failure shows up as a
+ * non-2xx. The inner one is the console's: a REFUSAL rides HTTP 200 with
+ * `data.ok === false`. This helper unwraps only the outer envelope and hands the
+ * inner one to the caller, because "no row yet" and "stock moved under you" are
+ * answers the caller reasons about, not errors to throw on.
+ */
+async function postConsole(
+	deps: SeedDeps,
+	body: Record<string, unknown>,
+	what: string,
+): Promise<unknown> {
+	const doFetch = deps.fetchImpl ?? fetch;
+	const url = `${deps.siteUrl}${ADMIN_ROUTE}`;
+	const res = await doFetch(url, {
+		method: "POST",
+		headers: writeHeaders(deps.authHeaders),
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		throw new Error(`${what}: POST ${url} → HTTP ${res.status}: ${await res.text()}`);
+	}
+	const envelope = (await res.json()) as { success?: unknown; data?: unknown };
+	if (envelope.success !== true) {
+		throw new Error(
+			`${what}: POST ${url} returned 200 but not a success envelope: ${JSON.stringify(envelope)?.slice(0, 300)}`,
+		);
+	}
+	return envelope.data;
+}
+
+/** Read one product's commerce row through the console. */
+export async function readCommerce(row: DemoRow, deps: SeedDeps): Promise<ExistingCommerce | null> {
+	const data = await postConsole(
+		deps,
+		{ type: CONSOLE_READ_INTERACTION, resource: "products.detail", productId: row.id },
+		`reading ${row.slug}`,
+	);
+	return parseExistingCommerce(data, row.id);
+}
+
+/** Dispatch one console action and throw on a refusal, naming the refusal's own
+ *  words — the route explains itself far better than a status code would. */
+async function act(
+	row: DemoRow,
+	deps: SeedDeps,
+	actionId: string,
+	value: Record<string, string>,
+): Promise<void> {
+	const data = (await postConsole(
+		deps,
+		{ type: CONSOLE_ACT_INTERACTION, action_id: actionId, value },
+		`${actionId} on ${row.slug}`,
+	)) as {
+		ok?: unknown;
+		notice?: { variant?: string; title?: string; description?: string } | null;
+	};
+	if (data.ok !== true) {
+		const notice = data.notice ?? undefined;
+		throw new Error(
+			`${actionId} on ${row.slug} was refused: ${notice?.title ?? "(no title)"} — ${notice?.description ?? "(no description)"}`,
+		);
+	}
+	// `ok: true` only means the action ran. An error NOTICE is still a refusal —
+	// the console renders it instead of a blank pane — so it must not pass as a
+	// success here (that is the "looks like it worked" class this script fights).
+	if (data.notice?.variant === "error") {
+		throw new Error(
+			`${actionId} on ${row.slug} reported an error: ${data.notice.title ?? ""} — ${data.notice.description ?? ""}`,
+		);
+	}
+}
+
+/**
+ * STEP 1 — publish the product through the CMS so the plugin's own
+ * `content:afterPublish` hook creates the `product_commerce` row with its title
+ * and opens the publish gate.
+ *
+ * Re-publishing an already-published entry is SAFE and is the normal case on a
+ * re-run: em-dash re-promotes the current live revision, preserves the original
+ * `published_at`, and still fires the hook — whose upsert is ordering-guarded by
+ * `contentUpdatedAt`, so it cannot move a row backwards.
+ *
+ * No request body: `publishedAt` would be a backdate (and would demand
+ * `content:publish_any`), and this script has no business choosing one.
+ */
+async function publishForCommerceRow(row: DemoRow, deps: SeedDeps): Promise<void> {
+	const doFetch = deps.fetchImpl ?? fetch;
+	const url = `${deps.siteUrl}/_emdash/api/content/products/${encodeURIComponent(row.id)}/publish`;
+	const res = await doFetch(url, { method: "POST", headers: writeHeaders(deps.authHeaders) });
+	if (!res.ok) {
+		throw new Error(
+			`publishing ${row.slug}: POST ${url} → HTTP ${res.status}: ${await res.text()}. This is the step that creates the commerce row (and writes its title), so nothing downstream can work without it.`,
+		);
+	}
 }
 
 /**
@@ -420,103 +580,77 @@ export interface SeedDeps {
  * `fetch`, so the RE-RUN behaviour is pinned by a test rather than by prose.
  */
 export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<SeedOutcome> {
-	const { serviceUrl, serviceToken } = deps;
-	const doFetch = deps.fetchImpl ?? fetch;
-	const id = encodeURIComponent(row.id);
+	// 1. The row + its title + the publish gate, through their only owner.
+	//    Unconditional: it is idempotent, and it is also what heals a row whose
+	//    title never landed. It does NOT overwrite price or stock.
+	await publishForCommerceRow(row, deps);
 
-	const writeHeaders = (idempotencyKey: string): Record<string, string> => {
-		const headers: Record<string, string> = {
-			"Content-Type": "application/json",
-			"Idempotency-Key": idempotencyKey,
-		};
-		// The write gate (`SERVICE_API_TOKEN`) blocks every non-GET without it.
-		if (serviceToken !== undefined && serviceToken.length > 0) {
-			headers["X-Service-Token"] = serviceToken;
-		}
-		return headers;
-	};
-
-	// 0. READ FIRST. This is the re-run guard (`shouldPrice`) — without it a
-	//    second run overwrites a merchant's prices, because the idempotency key
-	//    cannot dedupe here (see `priceIdempotencyKey`).
-	const readRes = await doFetch(`${serviceUrl}/products/${id}/commerce`, { method: "GET" });
-	if (!readRes.ok) {
-		throw new Error(
-			`GET /products/${row.id}/commerce → HTTP ${readRes.status}: ${await readRes.text()}`,
-		);
-	}
-	const existing = parseExistingCommerce(await readRes.json(), row.id);
+	// 2. READ. This is the re-run guard (`shouldPrice`) AND the source of the
+	//    `expectedUpdatedAt` the write must echo.
+	const existing = await readCommerce(row, deps);
 
 	if (!shouldPrice(existing)) {
 		// It has a SKU, so it has been priced — by Pricing & inventory or by an
 		// earlier run. Those values are the merchant's; leave them alone.
 		const sku = existing?.sku ?? "?";
 		if (existing !== null && !existing.active) {
-			// Priced but NOT active. Most likely a previous run whose PUT landed and
-			// whose activate did not. This script will never heal it — activating
-			// here would also flip on a row a merchant priced and deliberately never
-			// published — so report it loudly instead of counting it as "left as-is".
-			return {
-				kind: "skipped-inactive",
-				reason: `already priced (sku ${sku}) but NOT ACTIVE`,
-			};
+			// Priced but NOT active, even though step 1 just published it. That is a
+			// real anomaly, not a routine skip — report it loudly rather than
+			// counting it as "left as-is".
+			return { kind: "skipped-inactive", reason: `already priced (sku ${sku}) but NOT ACTIVE` };
 		}
 		return { kind: "skipped", reason: `already priced (sku ${sku})` };
 	}
-
-	// 1. Title + price + initial stock. The title is NOT optional garnish here:
-	//    without it checkout rejects the line with PRODUCT_NOT_PRICED (see the
-	//    module header). `initialOnHand` is a create-if-absent seed.
-	const putRes = await doFetch(`${serviceUrl}/products/${id}/commerce`, {
-		method: "PUT",
-		headers: writeHeaders(priceIdempotencyKey(row)),
-		body: JSON.stringify(priceBody(row)),
-	});
-	if (!putRes.ok) {
+	if (existing === null) {
 		throw new Error(
-			`PUT /products/${row.id}/commerce → HTTP ${putRes.status}: ${await putRes.text()}`,
+			`${row.slug} still has no commerce row after publishing it. The plugin's content sync hook did not run — check that the site is built with __OTTA_COMMERCE_MODE__ = "in-process" and that the otta plugin registered.`,
 		);
 	}
 
-	// 2. Open the publish gate, when it is not already open. Its OWN idempotency
-	//    key — the row carries a single `idempotency_key` column, so sharing one
-	//    would make the second call look like a replay of the first.
-	if (!shouldActivate(existing)) return { kind: "priced", activated: false };
-	const actRes = await doFetch(`${serviceUrl}/products/${id}/commerce/activate`, {
-		method: "POST",
-		headers: writeHeaders(`seed-demo-commerce:activate:${row.id}`),
-		body: JSON.stringify({ contentUpdatedAt: ACTIVATE_WATERMARK }),
-	});
-	if (!actRes.ok) {
+	// 3. SKU + price. `expectedUpdatedAt` comes from the read above; the route
+	//    refuses the write without it.
+	await act(row, deps, "products:save-identity", priceBody(row, existing.updatedAt));
+
+	// 4. Stock. RE-READ FIRST, deliberately: giving the product a sku is what
+	//    creates its inventory record, so the `onHand` watermark the restock must
+	//    carry only exists after step 3 — the count read before it was `null`
+	//    ("no inventory record"), which the route rejects as an unreadable
+	//    payload rather than treating as zero.
+	const afterPricing = await readCommerce(row, deps);
+	if (afterPricing === null || afterPricing.onHand === null) {
 		throw new Error(
-			`POST /products/${row.id}/commerce/activate → HTTP ${actRes.status}: ${await actRes.text()}`,
+			`${row.slug} was priced (sku ${row.sku}) but has no inventory record to stock. It will be listed and unbuyable; add stock from Pricing & inventory.`,
 		);
 	}
-	return { kind: "priced", activated: true };
+	let stocked = 0;
+	if (row.initialOnHand > 0 && afterPricing.onHand === 0) {
+		await act(row, deps, "products:restock", restockBody(row, afterPricing.onHand));
+		stocked = row.initialOnHand;
+	}
+	return { kind: "priced", activated: afterPricing.active, stocked };
 }
 
 async function main(): Promise<void> {
 	const siteUrl = trimUrl(process.env["SITE_URL"] ?? DEFAULT_SITE_URL);
-	const serviceUrl = trimUrl(process.env["COMMERCE_SERVICE_URL"] ?? DEFAULT_SERVICE_URL);
-	const serviceToken = process.env["SERVICE_API_TOKEN"];
 	const seedPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../seed/seed.json");
 
 	const slugs = seededProductSlugs(seedPath);
-	const page = await fetchCmsProducts(siteUrl, await cmsAuthHeaders(siteUrl));
+	const authHeaders = await cmsAuthHeaders(siteUrl);
+	const page = await fetchCmsProducts(siteUrl, authHeaders);
 	const rows = demoRows(slugs, page);
-	console.info(`[otta] ${rows.length} demo product(s) against ${serviceUrl}`);
+	console.info(`[otta] ${rows.length} demo product(s) against ${siteUrl} (commerce in-process)`);
 
 	let priced = 0;
 	let skipped = 0;
 	const stranded: string[] = [];
 	for (const row of rows) {
-		const outcome = await seedOneProduct(row, { serviceUrl, serviceToken });
+		const outcome = await seedOneProduct(row, { siteUrl, authHeaders });
 		const where = `${row.title} (${row.slug} → ${row.id})`;
 		if (outcome.kind === "skipped-inactive") {
 			stranded.push(row.slug);
 			// `warn`, not `info` — this one needs a human.
 			console.warn(
-				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. This script does not activate a product it did not price (that would publish a product you may have deliberately left unpublished). Publish it in the CMS, or activate it from Pricing & inventory.`,
+				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. This script does not activate a product it did not price. Publish it in the CMS, or activate it from Pricing & inventory.`,
 			);
 			continue;
 		}
@@ -527,7 +661,7 @@ async function main(): Promise<void> {
 		}
 		priced++;
 		console.info(
-			`[otta]   ${where} — ${row.sku}, ${row.price.amount} ${row.price.currency} minor units, ${row.initialOnHand} on hand${outcome.activated ? ", activated" : " (already active)"}`,
+			`[otta]   ${where} — ${row.sku}, ${row.price.amount} ${row.price.currency} minor units, ${outcome.stocked} added to stock${outcome.activated ? ", active" : " (NOT ACTIVE)"}`,
 		);
 	}
 

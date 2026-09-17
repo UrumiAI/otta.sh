@@ -81,6 +81,21 @@ export {
 	type ProductsActionPayload,
 	type ProductsActionResult,
 } from "./admin/products-actions.js";
+// INC-D1 — the console's two interaction types and the products resource prefix,
+// exported so an OUT-OF-BROWSER caller can drive the admin route without
+// restating its wire strings. The staging quickstart seeder is the first: with
+// commerce in-process there is no service REST API to seed through any more, so
+// the seeder posts the same `otta_console_read` / `otta_console_act` envelopes
+// the React console posts. A literal copy of "otta_console_act" in a script is a
+// string that fails by being SILENTLY UNROUTED — `admin-route.ts` dispatches on
+// exactly these values, and a stale copy produces a refusal, not an error.
+export {
+	CONSOLE_ACT_INTERACTION,
+	CONSOLE_INTERACTIONS,
+	CONSOLE_READ_INTERACTION,
+	type ConsoleFailure,
+} from "./admin/console-transport.js";
+export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
 	AdminProductsClient,
 	// The TIER-AGNOSTIC surface, and the type `dispatchProductsAction`'s third
