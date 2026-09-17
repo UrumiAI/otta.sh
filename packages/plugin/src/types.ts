@@ -212,6 +212,28 @@ export type StorageAccess = Record<string, StorageCollection>;
  *
  * `schedule` is an UPSERT on `(plugin, name)`, which is what makes calling it on
  * every activation — and on every tick — safe rather than duplicative.
+ *
+ * NO DRIFT PIN HERE, and that is a gap rather than an oversight — it is recorded
+ * because it cannot be closed from inside this package. The storage mirror is
+ * pinned against the host's real shape in `commerce/in-process-commerce-stores.ts`
+ * by two type-only assignments, and that works only because
+ * `@otta-sh/store-emdash` is a runtime dependency that re-exports the host's
+ * `StorageAccess`. There is no equivalent for cron: the host does NOT export
+ * `CronAccess` or `CronTaskInfo` from `emdash` or from `emdash/plugin` (they are
+ * declared in its type chunk but left out of every export list), and this package
+ * does not depend on `emdash` at all, so no host cron type is nameable here.
+ *
+ * ONE LINE CLOSES IT, in `@otta-sh/store-emdash` — the package that already owns
+ * this exact job for storage. Adding to
+ * `packages/store-emdash/src/storage-access.ts` (and its `src/index.ts` export
+ * list):
+ *
+ *     export type HostCronAccess = NonNullable<import("emdash").PluginContext["cron"]>;
+ *
+ * — deriving the shape from the exported `PluginContext` the same way that file
+ * already derives `WhereClause` from the exported `StorageCollection` — would make
+ * the mutual-assignability pair below writable in `cron/index.ts`. That is an
+ * edit outside this increment's scope and is reported rather than made.
  */
 export interface CronAccess {
 	schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }): Promise<void>;

@@ -47,7 +47,7 @@ import {
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "./webhooks/stripe-settle-route.js";
 // ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
-import { createActivateHandler, createCronHandler } from "./cron/index.js";
+import { createActivateHandler, createCronHandler, withSweepBootstrap } from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -86,15 +86,24 @@ import type { SandboxedPlugin } from "./types.js";
  */
 const plugin: SandboxedPlugin = {
 	hooks: {
-		"content:afterSave": { handler: createAfterSaveHandler() },
-		"content:afterDelete": { handler: createAfterDeleteHandler() },
-		"content:afterPublish": { handler: createAfterPublishHandler() },
-		"content:afterUnpublish": { handler: createAfterUnpublishHandler() },
-		// Work order 02 INC-C4. `cron` carries NO capability requirement — the only
-		// gate is whether the runtime wired a cron executor — so a `format:
-		// "standard"` descriptor may declare it as it stands, and the declared
-		// capabilities stay exactly `content:read` + `network:request`.
-		// `plugin:activate` is where the task is registered; the tick re-affirms it.
+		// Work order 02 INC-C4: `withSweepBootstrap` is what actually gets the sweep
+		// task REGISTERED on this deployment. Otta is hand-registered in the site's
+		// `plugins` array, so the host never fires `plugin:activate` for it (that runs
+		// only from an admin enable toggle) — but these four content hooks and the
+		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
+		// ensures the task exists, once per isolate, and can neither slow nor fail the
+		// handler it wraps. See `cron/index.ts`.
+		"content:afterSave": { handler: withSweepBootstrap(createAfterSaveHandler()) },
+		"content:afterDelete": { handler: withSweepBootstrap(createAfterDeleteHandler()) },
+		"content:afterPublish": { handler: withSweepBootstrap(createAfterPublishHandler()) },
+		"content:afterUnpublish": { handler: withSweepBootstrap(createAfterUnpublishHandler()) },
+		// `cron` carries NO capability requirement — the only gate is whether the
+		// runtime wired a cron executor — so a `format: "standard"` descriptor may
+		// declare it as it stands, and the declared capabilities stay exactly
+		// `content:read` + `network:request`. `plugin:activate` is the host's own
+		// registration moment (an admin toggle, or a marketplace install); the tick
+		// re-affirms; the wrappers above cover the configured deployment that reaches
+		// neither.
 		"plugin:activate": { handler: createActivateHandler() },
 		cron: { handler: createCronHandler() },
 	},
@@ -103,8 +112,16 @@ const plugin: SandboxedPlugin = {
 		// handler validates its own input at runtime (mirrors em-dash's own
 		// plugins, e.g. `packages/plugins/forms/src/index.ts`, which cast
 		// route handlers `as never` for the same contravariance reason).
-		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
-		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
+		// The two routes every storefront page hits, and therefore the registration
+		// path a deployment with no content edits still reaches (INC-C4).
+		[STOREFRONT_PRODUCT_ROUTE]: {
+			handler: withSweepBootstrap(createPdpRouteHandler()) as never,
+			public: true,
+		},
+		[STOREFRONT_LIST_ROUTE]: {
+			handler: withSweepBootstrap(createPlpRouteHandler()) as never,
+			public: true,
+		},
 		// ── Phase 3 group E: cart (public — proxies over ctx.http only) ────
 		[STOREFRONT_CART_CREATE_ROUTE]: {
 			handler: createCartCreateRouteHandler() as never,

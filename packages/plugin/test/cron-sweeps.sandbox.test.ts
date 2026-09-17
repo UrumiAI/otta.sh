@@ -66,8 +66,20 @@ import {
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { runCommerceSweeps, SWEEP_LEGS, SWEEP_TASK_NAME } from "../src/cron/index.js";
-import type { CommerceSweepSummary, SweepLeg, SweepLegOutcome } from "../src/cron/index.js";
+import {
+	runCommerceSweeps,
+	SWEEP_LEGS,
+	SWEEP_SCHEDULE,
+	SWEEP_TASK_NAME,
+} from "../src/cron/index.js";
+import type {
+	CommerceSweepOptions,
+	CommerceSweepSummary,
+	SweepCursorStore,
+	SweepLeg,
+	SweepLegOutcome,
+} from "../src/cron/index.js";
+import { STOREFRONT_LIST_ROUTE } from "../src/storefront/plp-route.js";
 import type { PluginContext } from "../src/types.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
@@ -180,17 +192,52 @@ afterAll(async () => {
 });
 
 describe("the cron hook", () => {
+	// FIRST IN THE FILE, DELIBERATELY: it asserts what an untouched isolate holds,
+	// so anything that registered the task before it would make it vacuous.
+	test("a storefront route registers the task, for a deployment that never activates", async () => {
+		// THE REGISTRATION GAP, pinned. Otta is hand-registered in the site config's
+		// `plugins` array, so the host fires `plugin:activate` for it NEVER — that runs
+		// only from an admin enable toggle — while its routes and content hooks run
+		// from the first request. A plugin that registered its task only on activation
+		// would have a declared `cron` hook and no task row, forever, and every sweep
+		// in this suite would be dead code in production. So reaching an ordinary
+		// public route has to be enough on its own.
+		expect(await cronTasks()).toHaveLength(0);
+
+		const listed = await sandbox.invokeRoute(STOREFRONT_LIST_ROUTE, {});
+		// The PLP's own outcome is beside the point; what is asserted is the
+		// registration it performed on the way in.
+		void listed;
+
+		expect((await cronTasks()).map((entry) => entry.name)).toContain(SWEEP_TASK_NAME);
+	}, 120_000);
+
 	test("registers its task on plugin:activate, and again on every tick", async () => {
 		const activated = await sandbox.invokeHook("plugin:activate", {});
 		if ("error" in activated) throw new Error(activated.error);
-		// The host's `schedule` is an upsert on the task name, which is what makes
-		// re-affirming it free — and what makes a schedule change land on the next
-		// tick rather than on the next activation.
-		expect(activated.result).toEqual({
+		// THE ASSERTION THAT MATTERS is `tasks`, not `scheduled`. `scheduled: true`
+		// says only that the handler called `ctx.cron.schedule` and the call resolved
+		// — it would still be true if the host's registration were a no-op, which is
+		// exactly the failure mode this increment shipped with. `tasks` is the host's
+		// own `ctx.cron.list()`, read back after the upsert: it says a ROW EXISTS,
+		// under this name, at this cadence, which is the only thing that makes the
+		// executor ever fire the `cron` hook.
+		expect(activated.result).toMatchObject({
 			scheduled: true,
 			task: SWEEP_TASK_NAME,
-			schedule: "*/15 * * * *",
+			schedule: SWEEP_SCHEDULE,
 		});
+		const tasks = (activated.result as { tasks: Array<{ name: string; schedule: string }> }).tasks;
+		expect(tasks.map((entry) => ({ name: entry.name, schedule: entry.schedule }))).toContainEqual({
+			name: SWEEP_TASK_NAME,
+			schedule: SWEEP_SCHEDULE,
+		});
+
+		// And the upsert really is an upsert: a second activation leaves ONE row.
+		const again = await sandbox.invokeHook("plugin:activate", {});
+		if ("error" in again) throw new Error(again.error);
+		const reaffirmed = (again.result as { tasks: Array<{ name: string }> }).tasks;
+		expect(reaffirmed.filter((entry) => entry.name === SWEEP_TASK_NAME)).toHaveLength(1);
 	}, 120_000);
 
 	test("a task this plugin did not register is not this plugin's work", async () => {
@@ -444,19 +491,81 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		expect(second.anomalies).toBeUndefined();
 	}, 180_000);
 
-	test("reporting-heal rebuilds a closed day's rollup that was never written", async () => {
+	test("hold-intents RECORDS a genuinely lost reservation on the order, not just in the summary", async () => {
+		const suffix = "lost";
+		const holdExpiresAt = new Date(Date.now() + DAY_MS).toISOString();
+		const placed = await placeOrder(suffix, { at: new Date(Date.now() - 60_000), holdExpiresAt });
+		const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
+
+		// THE INJECTED PARTIAL STATE: an outstanding adoption intent naming a
+		// reservation inventory has never heard of — the shape left when a hold was
+		// swept away underneath an order that still claims it. The order stays
+		// `pending`, which is the state that OWNS an adoption intent, so this loss is
+		// real rather than a completer losing a race with a state change.
+		const missing = `res-${suffix}-vanished`;
+		const before = await orders.getVersioned(placed.id);
+		expect(before).not.toBeNull();
+		const pendingSince = new Date(Date.now() - HOUR_MS).toISOString();
+		await orders.compareAndSet(placed.id, before!.revision, {
+			...before!.value,
+			holdsPendingAt: pendingSince,
+			holdsAdopted: {
+				reservationIds: [missing],
+				holdExpiresAt,
+				recordedAt: pendingSince,
+				completedAt: null,
+			},
+		});
+
+		const swept = leg(await tick(), "hold-intents");
+		// It survived the hazard-2 re-read: the order is still `pending`, so the
+		// `INTENT_OWNER_STATE` filter keeps this loss rather than discarding it as a
+		// completer that read a stale document.
+		expect(swept.anomalies ?? []).toContain(`${placed.id}:adopt:${missing}`);
+
+		// AND IT IS DURABLE. The summary is the hook's return value and the host's
+		// cron executor throws that away, so an anomaly that lived only there would be
+		// a finding nobody could ever meet. ADR-0019 §7.13 says an anomaly must always
+		// be RECORDABLE — so it is written onto the order itself.
+		const flagged = await orders.get(placed.id);
+		expect(flagged?.reconciliationFlag).toContain(missing);
+		expect(flagged?.reconciliationFlag).toContain("pending");
+
+		// A second tick finds the intent stamped and reports nothing further about it:
+		// the anomaly is recorded once, not re-raised forever.
+		const again = leg(await tick(), "hold-intents");
+		expect(again.anomalies ?? []).not.toContain(`${placed.id}:adopt:${missing}`);
+	}, 180_000);
+
+	test("reporting-heal rebuilds a rollup several closed days back, not just yesterday", async () => {
 		const suffix = "report";
-		// THE INJECTED PARTIAL STATE: an order created YESTERDAY by a store with NO
-		// rollup writer wired — the exact shape a crash between the order write and
-		// its rollup leaves, and the reason the rollup is a different aggregate that
-		// must be swept rather than trusted.
-		const yesterday = new Date(Date.now() - DAY_MS);
-		const day = yesterday.toISOString().slice(0, 10);
+		// THREE DAYS BACK, for two reasons, and both were defects in the first cut.
+		//
+		// (1) IT EXERCISES THE BACKFILL. A heal pinned to `now - 24h` reconciles one
+		//     day and no other, so a day lost to a deploy outage or a paused cron is
+		//     never healed by any later tick — the one gap the leg exists to close is
+		//     the one it cannot close. Reaching a day that is NOT yesterday is the
+		//     only assertion that tells those two implementations apart.
+		//
+		// (2) IT DE-FLAKES THE CASE. This used to assert that YESTERDAY's rollup was
+		//     empty before the heal, while every other case in this file seeds orders
+		//     at `Date.now() - 1h`. Run in the hour after UTC midnight, those orders
+		//     land on yesterday, write their rollups live, and this case fails for a
+		//     reason that has nothing to do with the sweep. A day three back is one
+		//     no other case can reach, so the emptiness precondition is this case's
+		//     own fact rather than a bet on the clock and the run order.
+		//
+		// THE INJECTED PARTIAL STATE itself: an order created on that day by a store
+		// with NO rollup writer wired — the exact shape a crash between the order
+		// write and its rollup delta leaves, and the reason the rollup is a separate
+		// aggregate that must be swept rather than trusted.
+		const when = new Date(Date.now() - 3 * DAY_MS);
+		const day = when.toISOString().slice(0, 10);
 		// Its hold deadline is still in the FUTURE, deliberately: an order the expiry
 		// leg touches in this same tick would have its rollup written by that live
 		// event, and the heal would then be measuring the event rather than itself.
 		await placeOrder(suffix, {
-			at: yesterday,
+			at: when,
 			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
 		});
 		const daily = collectionOf<{ date: string; currency: string }>(
@@ -466,15 +575,24 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		const beforeHeal = await daily.query({ where: { date: day }, limit: 10 });
 		expect(beforeHeal.items).toHaveLength(0);
 
-		const first = leg(await tick(), "reporting-heal");
+		// DRIVEN WITH ITS OWN CURSOR, which is the other half of de-coupling this case
+		// from the run order: the isolate's cursor is boot-scoped, so by the time this
+		// test runs the shared tick has already walked the day watermark up to the
+		// closed day and a further tick would never look three days back. A cursor
+		// with no history is what a first run — or a run after an outage — actually
+		// sees, and it is the state the backfill is for.
+		const first = leg(await sweepInProcess({ cursors: freshCursors() }), "reporting-heal");
 		expect(first.count).toBeGreaterThanOrEqual(1);
 		const afterHeal = await daily.query({ where: { date: day }, limit: 10 });
 		expect(afterHeal.items.length).toBeGreaterThanOrEqual(1);
+		const healed = afterHeal.items;
 
-		const second = leg(await tick(), "reporting-heal");
-		// An already-exact day is not rewritten, which is what makes reconciling the
-		// closed day every tick affordable.
-		expect(second.count).toBe(0);
+		// The same span again, from a cursor that is equally naive: an already-exact
+		// day is recomputed and NOT rewritten, which is what makes re-reconciling the
+		// closed day on every tick affordable.
+		await sweepInProcess({ cursors: freshCursors() });
+		const settled = await daily.query({ where: { date: day }, limit: 10 });
+		expect(settled.items).toEqual(healed);
 	}, 180_000);
 
 	test("coupon-orphans releases a claimed-but-unapplied redemption and frees the customer's slot", async () => {
@@ -540,12 +658,110 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		);
 		expect(stillHeld.filter((entry) => entry.couponId === couponId)).toHaveLength(1);
 	}, 180_000);
+
+	test("coupon-orphans leaves a stale redemption alone while its order exists", async () => {
+		const suffix = "keep";
+		const couponId = `coupon-${suffix}`;
+		const customer = toCustomerId(`cust-${suffix}`);
+		const s = stores();
+		// A REAL ORDER, the whole point of the case. Orphaned means the order does not
+		// exist and NOTHING else: that is the domain's own rule in
+		// `reconcileCouponRedemptions`, and it is the scope the brief amendment
+		// ratified. The first cut also released redemptions whose order was `expired`
+		// or `cancelled` — the first redundant (`expireOrders` already calls
+		// `releaseByOrder`), the second a silent policy reversal, since `cancelOrder`
+		// deliberately releases no coupon. This case is what makes a return to either
+		// arm fail.
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		await s.couponStore.create({
+			id: couponId,
+			code: `SWEEP${suffix.toUpperCase()}`,
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+			maxUses: 10,
+			maxUsesPerCustomer: 1,
+		});
+		// Old enough to be well past the grace window — so the leg genuinely examines
+		// it and then decides to leave it, rather than never reaching it.
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(placed.id),
+			idempotencyKey: idempotencyKey(`redeem-${suffix}`),
+			customerId: customer,
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		expect(claimed.ok).toBe(true);
+
+		// A cursor with no history, so the window certainly covers this redemption
+		// whatever the shared isolate's cursor has already walked past.
+		await sweepInProcess({ cursors: freshCursors() });
+
+		// Still held: the use is still counted and the slot is still spent, which is
+		// correct — a real order consumed them.
+		const held = await s.couponStore.listRedemptionsCreatedBefore(new Date().toISOString());
+		expect(held.filter((entry) => entry.couponId === couponId)).toHaveLength(1);
+		const blocked = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`order-${suffix}-second`),
+			idempotencyKey: idempotencyKey(`redeem-${suffix}-2`),
+			customerId: customer,
+			createdAt: new Date().toISOString(),
+		});
+		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
+	}, 180_000);
 });
 
 /** `ctx.http` is never reached by a sweep — every leg is storage-only — so the
  *  in-process case's context says so instead of offering a usable fetch. */
 function notReached(): never {
 	throw new Error("a sweep must not make an HTTP request");
+}
+
+/** The sweep read-only-ly, from outside the isolate: what `ctx.cron.list()` in
+ *  there currently holds. The one thing that can observe a registration without
+ *  performing one — every handler that could report the registry also re-affirms
+ *  it, which would make the registration assertions vacuous. */
+async function cronTasks(): Promise<Array<{ name: string; schedule: string }>> {
+	const res = await sandbox.rawFetch("/cron/tasks");
+	const body = (await res.json()) as { result: Array<{ name: string; schedule: string }> };
+	return body.result;
+}
+
+/**
+ * The same legs, driven in this process against the SAME real store.
+ *
+ * Used where a case needs to control the sweep's own bookkeeping — a cursor with
+ * no history, an injected `EmailSender` — which the isolate's boot-scoped `ctx.kv`
+ * makes impossible from outside. The code under test is identical; only who holds
+ * the cursor differs.
+ */
+async function sweepInProcess(options: CommerceSweepOptions = {}): Promise<CommerceSweepSummary> {
+	const ctx = { http: { fetch: notReached }, kv: kvStub(), storage } as unknown as PluginContext;
+	return await runCommerceSweeps(ctx, SWEEP_TASK_NAME, options);
+}
+
+/** A cursor store with no history: what a first run, or a run after a cursor was
+ *  lost, actually sees. Keeping it per-case is what de-couples a case from
+ *  whatever the shared isolate's cursors have already walked past. */
+function freshCursors(): SweepCursorStore {
+	const store = new Map<string, string>();
+	return {
+		async read(name: string): Promise<string | null> {
+			return store.get(name) ?? null;
+		},
+		async write(name: string, value: string): Promise<void> {
+			store.set(name, value);
+		},
+	};
 }
 
 function kvStub() {

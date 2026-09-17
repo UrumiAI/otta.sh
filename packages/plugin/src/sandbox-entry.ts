@@ -214,6 +214,17 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 					return jsonResponse({ result }, 200);
 				}
 
+				// A READ-ONLY window onto the cron registry, and the only thing in this
+				// dispatcher that is not a host-shaped invocation. It exists because the
+				// registration path this plugin depends on — a route or content hook
+				// bootstrapping the sweep task — can only be asserted by observing the
+				// registry WITHOUT writing to it, and every handler that would report the
+				// registry also re-affirms it. It reads `ctx.cron.list()` and nothing
+				// else, so it cannot mask a missing registration.
+				if (request.method === "GET" && url.pathname === "/cron/tasks") {
+					return jsonResponse({ result: (await ctx.cron?.list()) ?? [] }, 200);
+				}
+
 				return jsonResponse({ error: "not found" }, 404);
 			} catch (err) {
 				return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
