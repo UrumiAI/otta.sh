@@ -96,13 +96,38 @@ export type StripeWebhookSettleReason =
 	| "ORDER_NOT_FOUND"
 	| "AMOUNT_MISMATCH";
 
-/** Case-insensitive header read. The sandbox hands headers over as a plain
- *  record whose casing is whatever the caller sent, and HTTP header names are
- *  case-insensitive, so matching `X-Otta-Wh-Token` literally would let a caller
- *  sending `x-otta-wh-token` fail the gate for no reason. */
+/**
+ * Case-insensitive header read, across BOTH shapes a host actually passes.
+ *
+ * HTTP header names are case-insensitive, so matching `X-Otta-Wh-Token`
+ * literally would fail the gate for a caller who sent `x-otta-wh-token`. But the
+ * harder half is the CONTAINER, because the two deployment modes disagree about
+ * it and the type here describes only one of them:
+ *
+ *  - SANDBOXED — the runner hands over a plain `Record<string, string>`, which is
+ *    what `SandboxedRequest` declares. Enumerating it is the only way to read it.
+ *  - TRUSTED (how `sites/staging` registers this plugin — no `sandboxed:` key)
+ *    — EmDash's `PluginRouteHandler.invoke` passes the GENUINE `Request`, wrapped
+ *    in its `guardConsumedRequestBody` proxy. Its `.headers` is a real `Headers`,
+ *    whose entries live behind an iterator rather than on the object, so
+ *    `Object.entries()` returns `[]` no matter which headers were sent.
+ *
+ * Enumerating alone therefore reads NOTHING in trusted mode: every provisioned
+ * deploy would see "token set, header absent" and 401 every genuine delivery.
+ * So the shape is sniffed at RUNTIME — `Headers` is identified by its `.get`,
+ * which already does the case-insensitive match — and the `SandboxedRequest`
+ * annotation is deliberately not trusted to describe what arrives.
+ */
 function header(request: SandboxedRequest, name: string): string | undefined {
+	const headers = request.headers as unknown as
+		| Record<string, string>
+		| { get(name: string): string | null };
+	if (typeof (headers as { get?: unknown }).get === "function") {
+		const value = (headers as { get(name: string): string | null }).get(name);
+		return value === null ? undefined : value;
+	}
 	const wanted = name.toLowerCase();
-	for (const [key, value] of Object.entries(request.headers)) {
+	for (const [key, value] of Object.entries(headers as Record<string, string>)) {
 		if (key.toLowerCase() === wanted) return value;
 	}
 	return undefined;

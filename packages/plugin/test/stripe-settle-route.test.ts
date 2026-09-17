@@ -132,16 +132,34 @@ function recordingSettle(): { settle: SettleFn; calls: SettleResult[] } {
 	return { settle, calls };
 }
 
+/**
+ * Invoke the handler the way a host does.
+ *
+ * `headers` takes BOTH shapes a host actually passes, because the two deployment
+ * modes disagree about it: a SANDBOXED plugin is handed a plain record (the
+ * `SandboxedRequest` these types describe), while a TRUSTED one — which is how
+ * `sites/staging` registers Otta — is handed EmDash's `guardConsumedRequestBody`
+ * proxy over the genuine `Request`, whose `.headers` is a real `Headers`. The
+ * type annotation describes only the first, so the second is asserted through
+ * rather than trusted.
+ */
 async function invoke(
 	input: unknown,
-	headers: Record<string, string> = {},
+	headers: Record<string, string> | Headers = {},
 	options: { settle?: SettleFn; ctx?: PluginContext } = {},
 ): Promise<StripeWebhookSettleResult> {
 	const handler = createStripeWebhookSettleHandler(
 		options.settle === undefined ? {} : { settle: options.settle },
 	);
 	const result = await handler(
-		{ input: input as never, request: { method: "POST", url: "/route", headers } },
+		{
+			input: input as never,
+			request: {
+				method: "POST",
+				url: "/route",
+				headers: headers as unknown as Record<string, string>,
+			},
+		},
 		options.ctx ?? harness.ctx,
 	);
 	return result as StripeWebhookSettleResult;
@@ -214,6 +232,46 @@ describe("(i) a valid token and a correct signature settle the order, once", () 
 			"x-otta-wh-token": EDGE_TOKEN,
 		});
 		expect(res).toEqual({ ok: true, status: 200 });
+	});
+
+	test("a REAL `Headers` instance carries the token too — TRUSTED mode hands one over", async () => {
+		// The shape, not the casing, is the point. `sites/staging` registers this
+		// plugin with no `sandboxed:` key, and EmDash's trusted `PluginRouteHandler`
+		// therefore passes the genuine `Request` (wrapped in
+		// `guardConsumedRequestBody`), whose `.headers` is a `Headers` INSTANCE and
+		// not the sandbox's plain record. `Object.entries(new Headers({…}))` is `[]`
+		// — its entries are behind an iterator, not own properties — so a lookup
+		// that only enumerates own entries sees NO headers at all and 401s every
+		// genuine delivery the moment an edge token is provisioned. That is the
+		// whole feature failing closed in exactly the deployment that ships it.
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-headers");
+
+		const res = await invoke(
+			await signedDelivery("ord-headers"),
+			new Headers({ [WEBHOOK_EDGE_TOKEN_HEADER]: EDGE_TOKEN }),
+		);
+
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(await orderState("ord-headers")).toBe("paid");
+	});
+
+	test("a WRONG token in a real `Headers` is still refused — the shape is not a bypass", async () => {
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-headers-wrong");
+		const { settle, calls } = recordingSettle();
+
+		const res = await invoke(
+			await signedDelivery("ord-headers-wrong"),
+			new Headers({ [WEBHOOK_EDGE_TOKEN_HEADER]: "otta_edge_WRONG" }),
+			{ settle },
+		);
+
+		expect(res).toEqual({ ok: false, status: 401, reason: "UNAUTHORIZED" });
+		expect(calls).toHaveLength(0);
+		expect(await orderState("ord-headers-wrong")).toBe("pending");
 	});
 });
 
