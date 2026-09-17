@@ -69,8 +69,10 @@ in the commerce service, which the seed does not touch, so give them some:
 ```bash
 # 4. Price, stock and activate the demo products (third terminal, or reuse the first).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
-#    then prices and activates each one in the commerce service.
-SITE_URL=http://localhost:4321 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 \
+#    then prices and stocks each one through the SITE's own admin API — the same
+#    route the Pricing & inventory page uses, so it needs no service URL and no
+#    service token of its own.
+SITE_URL=http://localhost:4321 \
   pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
 ```
 
