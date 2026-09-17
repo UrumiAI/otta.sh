@@ -23,12 +23,13 @@
  *
  * **A dedupe key that arrives against a different order still answers `false`.**
  * The SQL's UNIQUE was global and its conflict clause silent, so this is faithful
- * rather than lenient — and it is not where a cross-order guard belongs. The loud
- * one is the order store's `payment_refs/{providerRef}` claim, which refuses a
- * provider reference already recorded against another order, because that is the
- * write that moves the captured total and therefore the refund ceiling. Anything
- * here that needs to reach an order goes through that locator; this store holds no
- * order pointer of its own and deliberately duplicates none.
+ * rather than lenient. What `false` alone cannot say is WHOSE row it collided
+ * with, and that is the whole cross-order replay question for x402, where the
+ * dedupe key IS the on-chain transaction — so the port also asks
+ * {@link EmdashPaymentEventStore.orderForDedupeKey}, which reads the stored row's
+ * `orderId` back, and `settleOrder` refuses a receipt already bound elsewhere.
+ * The order store's `payment_refs/{providerRef}` claim is the other half, and
+ * still the one that guards the captured total and therefore the refund ceiling.
  *
  * **Anomalies are keyed by a digest of what they record, so a replay that produces
  * the identical anomaly records it once.** The port asks for "idempotent enough for
@@ -178,6 +179,13 @@ export class EmdashPaymentEventStore implements PaymentEventStore {
 			const held = await this.#events.get(dedupeKey);
 			return held === null ? CAS_RETRY : casDone(false);
 		});
+	}
+
+	/** The order the recorded `dedupeKey` document names, or `null` when no
+	 *  document holds that key. A plain `get`: the dedupe key IS the document id. */
+	async orderForDedupeKey(dedupeKey: string): Promise<OrderId | null> {
+		const held = await this.#events.get(dedupeKey);
+		return held === null ? null : (held.orderId as OrderId);
 	}
 
 	/** Record an anomaly. Idempotent for an identical replay; never swallowed. */

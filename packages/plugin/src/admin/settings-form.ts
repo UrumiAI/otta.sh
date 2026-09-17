@@ -7,7 +7,8 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../payment-secrets.js";
 import type {
 	AccordionBlock,
@@ -170,13 +171,16 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 	{
 		actionId: "save-x402-facilitator-secret",
 		fieldId: "x402FacilitatorSecret",
-		kvKey: X402_FACILITATOR_SECRET_KEY,
-		genKey: "settings:x402FacilitatorSecretGen",
-		// INC-C5 renamed what this FIELD SAYS, not the key it writes. In-process
-		// the value is the bearer credential the facilitator call sends, not the
-		// offline HMAC secret INC-C3's label described — an operator provisioning
-		// from the old label would be handing a forge-a-settlement secret to a
-		// third-party host. `short` is unchanged, so the group label stays exactly
+		kvKey: X402_FACILITATOR_API_KEY_KEY,
+		genKey: "settings:x402FacilitatorApiKeyGen",
+		// INC-C5 renamed the FIELD, the kv key AND the generation key, because the
+		// meaning changed: in-process the value is the bearer credential the
+		// facilitator call SENDS, not the offline HMAC secret INC-C3's label
+		// described. An operator who provisioned under the old label holds a
+		// forge-a-settlement secret this increment would hand to a third-party
+		// host, so the old value must not be inherited — the new key names make
+		// the field read as unset until it is deliberately re-provisioned (review
+		// round 2, A5). `short` is unchanged, so the group label stays exactly
 		// inside the X-11 budget.
 		label: "x402 facilitator API key",
 		noun: "x402 facilitator API key",
@@ -600,6 +604,20 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			if (entered) {
 				await ctx.kv.set(secretSpec.kvKey, raw);
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				// A5. The INC-C3 key this credential moved OFF of holds a value with a
+				// different threat model (an offline HMAC secret, never transmitted)
+				// that nothing reads any more. Deleting it here — the one moment an
+				// operator is demonstrably re-provisioning this credential — keeps an
+				// orphaned forge-a-settlement secret from sitting in kv forever.
+				// Fail-soft: a kv that cannot delete must not fail a save that already
+				// succeeded.
+				if (secretSpec.kvKey === X402_FACILITATOR_API_KEY_KEY) {
+					try {
+						await ctx.kv.delete(X402_LEGACY_FACILITATOR_SECRET_KEY);
+					} catch {
+						// deliberately ignored — see above
+					}
+				}
 			}
 			const page = await renderPage(ctx, client, tokens, secretNotice(secretSpec, entered));
 			return {
@@ -620,10 +638,19 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// submit — rather than persisting the two valid siblings — means the
 		// operator never has to guess which half landed.
 		if (action === SAVE_PAYMENT_SETTINGS_ACTION) {
+			// ABSENT IS NOT EMPTY (review round 2, B3). A submit that carries no entry
+			// at all for a field is not an instruction to CLEAR that field — the host
+			// omits values for reasons that have nothing to do with intent (a field
+			// the operator never focused, a partial dispatch, a future block that
+			// stops echoing untouched inputs). Coercing absence to `""` and writing it
+			// unconditionally would silently blank `settings:x402PayTo`, which
+			// fail-closes x402 across the whole deployment with a screen that says
+			// "saved". A PRESENT empty string is still honoured: that is an operator
+			// who cleared the box on purpose.
 			const submitted = new Map(
-				PLAIN_PAYMENT_SETTINGS.map((spec) => {
+				PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
 					const raw = input.values?.[spec.fieldId];
-					return [spec.kvKey, typeof raw === "string" ? raw.trim() : ""] as const;
+					return typeof raw === "string" ? [[spec.kvKey, raw.trim()] as const] : [];
 				}),
 			);
 			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";

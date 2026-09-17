@@ -555,6 +555,62 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
 	});
 
+	test("INC-C5: a PARTIAL submit leaves untouched settings alone — absent is not empty", async () => {
+		// Review round 2, B3. The save path used to coerce every plain setting the
+		// submit did not carry to `""` and write it unconditionally, so ONE submit
+		// that happened to omit `x402PayTo` — a partial dispatch, a field the
+		// operator never focused, a future block that stops echoing untouched
+		// inputs — silently blanked the destination wallet. `wireX402Gateway`
+		// fail-closes without it, so x402 would go inert across the deployment
+		// while the screen said "saved".
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const PAY_TO = "0x00000000000000000000000000000000000000a1";
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { emailFrom: "orders@shop.example", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+		});
+
+		// A submit carrying ONLY the from-address.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { emailFrom: "hello@shop.example" },
+		});
+
+		const after = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const form = formFor(after, "save-payment-settings");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.example");
+		// The two the submit never mentioned are UNCHANGED, not blanked.
+		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
+		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
+
+		// A PRESENT empty string is still an instruction, and still honoured: this
+		// is the operator clearing the box, which must remain possible.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { emailFrom: "hello@shop.example", x402PayTo: "", x402Accepts: "" },
+		});
+		const cleared = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(field(formFor(cleared, "save-payment-settings"), "x402PayTo")?.["initial_value"]).toBe(
+			"",
+		);
+	});
+
 	test("INC-C5: a payTo that is not a wallet address is REFUSED and nothing is saved", async () => {
 		// The `payTo` tier gate, at the WRITE end (`x402-wiring.ts` holds the read
 		// end). kv is last-writer-wins with no validation of its own, and this

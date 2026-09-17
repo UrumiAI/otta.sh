@@ -50,10 +50,23 @@ describeEachDialect("EmdashPaymentEventStore", (ctx) => {
 		expect(await h.events.count()).toBe(2);
 	});
 
+	test("orderForDedupeKey reports WHOSE row a dedupe key holds — that is the cross-order binding", async () => {
+		// `dedupe`'s boolean says a row exists; only this says which order it names,
+		// and for x402 (where the dedupe key IS the on-chain transaction) that is
+		// what stops one receipt from settling a second, same-priced order.
+		const h = harness();
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_none")).toBeNull();
+		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-9"), "x402", NOW);
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_owned")).toBe("ord-9");
+		// A second claim does not rebind it.
+		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-10"), "x402", NOW);
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_owned")).toBe("ord-9");
+	});
+
 	test("a dedupe key redelivered against a DIFFERENT order still answers false", async () => {
 		// Faithful to the SQL, whose UNIQUE was global and whose conflict clause was
-		// silent. The loud cross-order guard belongs to the order store's
-		// `payment_refs` claim, which is the write that moves the captured total.
+		// silent. `dedupe` stays faithful; the loud cross-order refusal is
+		// `settleOrder`'s, off `orderForDedupeKey` above.
 		const h = harness();
 		expect(await h.paymentEventStore.dedupe("evt_3", orderId("ord-1"), "stripe", NOW)).toBe(true);
 		expect(await h.paymentEventStore.dedupe("evt_3", orderId("ord-2"), "stripe", NOW)).toBe(false);

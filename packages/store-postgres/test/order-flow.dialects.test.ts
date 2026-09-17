@@ -433,6 +433,61 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 			expect(await h.reservationState(reservationId)).toBe("released");
 		});
 
+		test("ONE receipt settles ONE order: the same dedupe key aimed at a SECOND order is refused", async () => {
+			// Review round 2, A1/B1, against a REAL database — the SQL is the point
+			// here. `settleOrder` discarded `dedupe`'s answer, so a receipt already
+			// bound to order A, resubmitted naming order B, settled B; `recordPayment`
+			// then conflicted on the globally-unique `provider_ref` and silently wrote
+			// nothing, so the ledger did not even show the second settlement. The
+			// binding is now enforced through `orderForDedupeKey`, which is a real
+			// SELECT against `payment_events` and is exercised on both dialects here.
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1500,
+				title: "W",
+				onHand: 5,
+			});
+			const cartA = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+			// DISTINCT idempotency keys, or the second create REPLAYS the first and
+			// hands back order A — which would make this test pass for no reason.
+			const a = await createOrderFromCart(h.createDeps, cmd(cartA, "stripe", "k-order-a"));
+			if (!a.ok) throw new Error(a.reason);
+			const cartB = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+			const b = await createOrderFromCart(h.createDeps, cmd(cartB, "stripe", "k-order-b"));
+			if (!b.ok) throw new Error(b.reason);
+
+			const SHARED = "evt-one-payment-two-orders";
+			const first = await settleOrder(
+				h.settleDeps,
+				h.stripeGw,
+				h.stripeGw.webhook(evt(a.order, { dedupeKey: SHARED })),
+			);
+			expect(first.ok).toBe(true);
+
+			const rebound = await settleOrder(
+				h.settleDeps,
+				h.stripeGw,
+				h.stripeGw.webhook(evt(b.order, { dedupeKey: SHARED })),
+			);
+			expect(rebound).toEqual({ ok: false, reason: "RECEIPT_REBOUND" });
+			// Order B never moved, and the refusal is RECORDED rather than silent.
+			expect((await h.orderStore.getById(b.order.id))?.state).toBe("pending");
+			expect((await h.orderStore.getById(a.order.id))?.state).toBe("paid");
+			const anomalies = await h.db
+				.selectFrom("payment_events")
+				.selectAll()
+				.where("kind", "=", "RECEIPT_REBOUND")
+				.where("order_id", "=", b.order.id)
+				.execute();
+			expect(anomalies).toHaveLength(1);
+			// ONE payment in the ledger, for order A only.
+			const payments = await h.db.selectFrom("payments").selectAll().execute();
+			expect(payments).toHaveLength(1);
+			expect(payments[0]?.order_id).toBe(a.order.id);
+		});
+
 		test("a settle retry after a crash between dedupe and markPaid completes the settlement", async () => {
 			const h = await makeHarness();
 			await h.seedPhysical({

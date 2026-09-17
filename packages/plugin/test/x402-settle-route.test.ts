@@ -24,7 +24,11 @@ import {
 	sku as toSku,
 } from "@otta-sh/domain";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
-import { X402_FACILITATOR_SECRET_KEY } from "../src/payment-secrets.js";
+import {
+	WEBHOOK_EDGE_TOKEN_HEADER,
+	WEBHOOK_EDGE_TOKEN_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+} from "../src/payment-secrets.js";
 import { X402_PAYTO_KEY } from "../src/payments/x402-wiring.js";
 import {
 	createX402SettleHandler,
@@ -48,15 +52,20 @@ beforeEach(async () => {
 	else await harness.reset();
 	for (const { key } of await harness.ctx.kv.list()) await harness.ctx.kv.delete(key);
 	await harness.ctx.kv.set(X402_PAYTO_KEY, PAY_TO);
-	await harness.ctx.kv.set(X402_FACILITATOR_SECRET_KEY, "fac_key_NEVER_LEAK");
+	await harness.ctx.kv.set(X402_FACILITATOR_API_KEY_KEY, "fac_key_NEVER_LEAK");
 });
 
 afterAll(async () => {
 	await harness?.close();
 });
 
-/** A pending, digital, x402-paid order — the state a page-gate proof settles. */
-async function seedPendingOrder(id: string): Promise<void> {
+/** A pending, digital order — x402-paid by default, which is the state a
+ *  page-gate proof settles. `paymentMethod` is a parameter because the route's
+ *  CHECK 2 is precisely about the other value. */
+async function seedPendingOrder(
+	id: string,
+	paymentMethod: "x402" | "stripe" = "x402",
+): Promise<void> {
 	const usd = toCurrency("USD");
 	await harness.stores.orderStore.createFromCart({
 		orderId: toOrderId(id),
@@ -65,7 +74,7 @@ async function seedPendingOrder(id: string): Promise<void> {
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: "2099-01-01T00:00:00.000Z",
 		buyerRef: "buyer@example.com",
-		paymentMethod: "x402",
+		paymentMethod,
 		lines: [
 			{
 				productId: toProductId(`prod-${id}`),
@@ -83,6 +92,7 @@ async function seedPendingOrder(id: string): Promise<void> {
 }
 
 const ORDER_A = "11111111-1111-4111-8111-111111111111";
+const ORDER_B = "33333333-3333-4333-8333-333333333333";
 
 function proofFor(
 	orderId: string,
@@ -132,12 +142,13 @@ async function invoke(
 	input: unknown,
 	ctx: PluginContext,
 	facilitatorUrl: string | null = FACILITATOR_URL,
+	headers: Record<string, string> = {},
 ): Promise<X402SettleResult> {
 	const handler = createX402SettleHandler({
 		egress: facilitatorUrl === null ? {} : { facilitatorUrl },
 	});
 	const result = await handler(
-		{ input: input as never, request: { method: "POST", url: "/route", headers: {} } },
+		{ input: input as never, request: { method: "POST", url: "/route", headers } },
 		ctx,
 	);
 	return result as X402SettleResult;
@@ -213,17 +224,130 @@ describe("refusals, each for its own reason", () => {
 		expect(await orderState(ORDER_A)).toBe("pending");
 	});
 
-	test("an answer that does not echo the question is REFUSED, not accepted", async () => {
-		// B7: `{valid: true}` about some OTHER transaction is not an answer about
-		// this one.
+	test("an answer that does not echo the question is UNAVAILABLE, not a verdict", async () => {
+		// B7 refuses it; review round 2's A4 fixes HOW. `{valid: true}` about some
+		// OTHER transaction is not an answer about this one — but it is equally not
+		// a verdict that THIS receipt is bad. Classifying it terminal would let a
+		// buggy or confused facilitator permanently refuse a buyer whose USDC has
+		// already moved, which is the exact failure round 1 introduced `unavailable`
+		// to prevent. "Could not be asked" is the honest reading, so: 503, retryable.
 		await seedPendingOrder(ORDER_A);
 		const { ctx } = ctxWithFacilitator(() =>
 			jsonResponse({ valid: true, transaction: "0xsomeone-elses" }),
 		);
-		expect((await invoke(proofFor(ORDER_A), ctx)).status).toBe(400);
+		expect(await invoke(proofFor(ORDER_A), ctx)).toEqual({
+			ok: false,
+			status: 503,
+			reason: "FACILITATOR_UNAVAILABLE",
+		});
 		expect(await orderState(ORDER_A)).toBe("pending");
 	});
 
+	test("ONE receipt settles ONE order: the same transaction aimed at a SECOND order is refused", async () => {
+		// A1/B1, at the route. `settleOrder` used to DISCARD `dedupe(...)`'s answer,
+		// so a receipt already bound to order A, resubmitted with orderId = order B,
+		// settled B — and `recordPayment` then conflicted on the globally-unique
+		// provider_ref and silently recorded nothing, so the ledger did not even
+		// show it. One on-chain payment, two entitlements, no trace.
+		await seedPendingOrder(ORDER_A);
+		await seedPendingOrder(ORDER_B);
+		const { ctx } = ctxWithFacilitator((body) =>
+			jsonResponse({
+				valid: true,
+				transaction: (body as { transaction?: string }).transaction,
+				orderId: (body as { orderId?: string }).orderId,
+			}),
+		);
+
+		const shared = { transaction: "0xtx-shared-receipt" };
+		expect(await invoke(proofFor(ORDER_A, shared), ctx)).toEqual({ ok: true, status: 200 });
+		// Same tx hash, different order. The facilitator says valid — it is a real
+		// on-chain payment — and the refusal has to come from the binding, not it.
+		expect(await invoke(proofFor(ORDER_B, shared), ctx)).toEqual({
+			ok: false,
+			status: 400,
+			reason: "RECEIPT_REBOUND",
+		});
+		expect(await orderState(ORDER_A)).toBe("paid");
+		expect(await orderState(ORDER_B)).toBe("pending");
+	});
+
+	test("a NON-x402 order is refused before any egress — a public route is not a bypass", async () => {
+		// A1/B1's other half. This route is `public: true`, replacing a service
+		// endpoint that sat behind `requireInternalToken`. Without this check an
+		// anonymous POST naming a STRIPE order plus any receipt the facilitator
+		// happens to call valid would settle an order nobody paid for through x402.
+		await seedPendingOrder(ORDER_A, "stripe");
+		const { ctx, calls } = ctxWithFacilitator((body) =>
+			jsonResponse({ valid: true, transaction: (body as { transaction?: string }).transaction }),
+		);
+		expect(await invoke(proofFor(ORDER_A), ctx)).toEqual({
+			ok: false,
+			status: 400,
+			reason: "WRONG_PAYMENT_METHOD",
+		});
+		expect(await orderState(ORDER_A)).toBe("pending");
+		// And it cost no metered third-party call: the check is before the ask.
+		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("the edge-token gate — the same cheap outer layer the Stripe route has", () => {
+	test("UNSET is pass-through, exactly as `webhooks/stripe/settle` behaves", async () => {
+		// B2. Provisioning is optional and an un-provisioned deploy must degrade to
+		// "facilitator + binding only", never to "nothing works".
+		await seedPendingOrder(ORDER_A);
+		const { ctx } = ctxWithFacilitator((body) =>
+			jsonResponse({ valid: true, transaction: (body as { transaction?: string }).transaction }),
+		);
+		expect(await invoke(proofFor(ORDER_A), ctx)).toEqual({ ok: true, status: 200 });
+	});
+
+	test("SET and absent/wrong is 401 BEFORE the facilitator is asked", async () => {
+		// The point of a cheap outer gate on a public POST that spends metered
+		// egress: an unattributed request is refused without costing a call.
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "edge_tok");
+		await seedPendingOrder(ORDER_A);
+		for (const headers of [{}, { [WEBHOOK_EDGE_TOKEN_HEADER.toLowerCase()]: "wrong" }]) {
+			const { ctx, calls } = ctxWithFacilitator(() => jsonResponse({ valid: true }));
+			expect(await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, headers)).toEqual({
+				ok: false,
+				status: 401,
+				reason: "UNAUTHORIZED",
+			});
+			expect(calls).toHaveLength(0);
+		}
+		expect(await orderState(ORDER_A)).toBe("pending");
+	});
+
+	test("SET and matching passes through to the real checks", async () => {
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "edge_tok");
+		await seedPendingOrder(ORDER_A);
+		const { ctx } = ctxWithFacilitator((body) =>
+			jsonResponse({ valid: true, transaction: (body as { transaction?: string }).transaction }),
+		);
+		const res = await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {
+			[WEBHOOK_EDGE_TOKEN_HEADER.toLowerCase()]: "edge_tok",
+		});
+		expect(res).toEqual({ ok: true, status: 200 });
+	});
+
+	test("the token is NEVER the trust anchor: a good token cannot settle a bad proof", async () => {
+		// Stated as a test because the whole risk of adding a cheap gate is that a
+		// later reader mistakes it for the real one.
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "edge_tok");
+		await seedPendingOrder(ORDER_A);
+		const { ctx } = ctxWithFacilitator(() => jsonResponse({ valid: false }));
+		expect(
+			await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {
+				[WEBHOOK_EDGE_TOKEN_HEADER.toLowerCase()]: "edge_tok",
+			}),
+		).toMatchObject({ ok: false, reason: "INVALID_SIGNATURE" });
+		expect(await orderState(ORDER_A)).toBe("pending");
+	});
+});
+
+describe("refusals, continued: configuration and shape", () => {
 	test("an unknown order is 404, distinct from a rejected proof", async () => {
 		const { ctx } = ctxWithFacilitator((body) =>
 			jsonResponse({ valid: true, transaction: (body as { transaction?: string }).transaction }),

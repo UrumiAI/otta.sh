@@ -179,10 +179,18 @@ describe("createHttpFacilitator", () => {
 		expect(seen[0]).toBeInstanceOf(AbortSignal);
 	});
 
-	test("a facilitator answering about a DIFFERENT receipt does not verify this one", async () => {
+	test("a facilitator answering about a DIFFERENT receipt is UNAVAILABLE, not a verdict", async () => {
 		// The response is bound to the question: a facilitator that echoes a
 		// transaction or order id, and echoes the WRONG one, has attested something
-		// else. A terminal verdict, not an outage.
+		// else, so it never settles.
+		//
+		// BUT IT IS NOT A VERDICT ON THIS RECEIPT (review round 2, A4). Round 1 split
+		// "not valid" into two facts precisely because a buyer whose USDC has already
+		// moved must not be permanently refused by something that was never an
+		// answer about them. An unparseable body is classified `unavailable` on
+		// exactly that reasoning, and an answer about someone else's transaction is
+		// the same class of defect — the facilitator could not be asked. Terminal
+		// would make one buggy deployment an irreversible refusal.
 		for (const body of [
 			{ valid: true, transaction: "0xsomeoneelse" },
 			{ valid: true, orderId: "22222222-2222-4222-8222-222222222222" },
@@ -190,7 +198,7 @@ describe("createHttpFacilitator", () => {
 			const t = recorder(() => ok(body));
 			expect(
 				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
-			).toEqual({ valid: false });
+			).toEqual({ valid: false, unavailable: true });
 		}
 		// A facilitator that echoes the RIGHT ids still verifies.
 		const matching = recorder(() =>

@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
+import { resolveInProcessEgress } from "../../src/manifest.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -230,10 +231,20 @@ function manifestSource(options: SandboxOptions): string {
 		// INC-C5: the email sender and the x402 wiring read their endpoints from
 		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
 		// production. Absent ⇒ that provider is unconfigured (fail-closed).
-		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify({
-			emailApiUrl: options.emailApiUrl,
-			facilitatorUrl: options.facilitatorUrl,
-		})};`,
+		//
+		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
+		// Baking the raw options made the sandbox tier the ONE tier where the gate
+		// `resolveInProcessEgress` applies was never exercised: a suite could hand
+		// the isolate a URL no `allowedHosts` entry covers and every assertion would
+		// still pass. The mode is fixed at `"in-process"` because that is the arm
+		// these suites boot; the resolver's own http-arm and unparseable-define
+		// behavior is unit-pinned in `manifest-override.test.ts`.
+		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
+			resolveInProcessEgress("in-process", {
+				emailApiUrl: options.emailApiUrl,
+				facilitatorUrl: options.facilitatorUrl,
+			}),
+		)};`,
 		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
 		"export async function serviceTokenFromKv(ctx) {",
 		"\ttry {",

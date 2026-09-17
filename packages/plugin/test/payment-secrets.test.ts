@@ -12,8 +12,11 @@
  *  - `settings:emailApiKey`            ← `EMAIL_API_KEY`
  *                                        (`packages/service/src/index.ts:79`,
  *                                         `packages/service/src/worker.ts:72`)
- *  - `settings:x402FacilitatorSecret`  ← `X402_FACILITATOR_SECRET`
+ *  - `settings:x402FacilitatorApiKey`  ← `X402_FACILITATOR_SECRET`
  *                                        (`packages/service/src/x402-wiring.ts:6`)
+ *                                        RENAMED off `…FacilitatorSecret` at
+ *                                        INC-C5: the value is now SENT, not
+ *                                        used to verify (review round 2, A5).
  *
  * The service's NON-secret companions (`EMAIL_API_URL`, `EMAIL_FROM`,
  * `X402_PAYTO`, `X402_ACCEPTS`, `STOREFRONT_BASE_URL`) are deliberately NOT
@@ -38,7 +41,8 @@ import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
-	X402_FACILITATOR_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../src/payment-secrets.js";
 import { SERVICE_TOKEN_KEY } from "../src/manifest.js";
 import {
@@ -88,7 +92,19 @@ describe("the payment/email secret kv keys", () => {
 		expect(STRIPE_SECRET_KEY_KEY).toBe("settings:stripeSecretKey");
 		expect(STRIPE_WEBHOOK_SECRET_KEY).toBe("settings:stripeWebhookSecret");
 		expect(EMAIL_API_KEY_KEY).toBe("settings:emailApiKey");
-		expect(X402_FACILITATOR_SECRET_KEY).toBe("settings:x402FacilitatorSecret");
+		// NOT `settings:x402FacilitatorSecret` — review round 2, A5. That key named
+		// an offline HMAC secret under INC-C3; the value this key holds is put ON
+		// THE WIRE to a third-party facilitator. A different name is the forcing
+		// function that stops an old provisioning from being silently inherited
+		// into a new threat model, so the two names are pinned APART on purpose.
+		expect(X402_FACILITATOR_API_KEY_KEY).toBe("settings:x402FacilitatorApiKey");
+		expect(X402_LEGACY_FACILITATOR_SECRET_KEY).toBe("settings:x402FacilitatorSecret");
+		expect(X402_FACILITATOR_API_KEY_KEY).not.toBe(X402_LEGACY_FACILITATOR_SECRET_KEY);
+	});
+
+	test("the LEGACY x402 key is not provisionable — it exists only to be deleted", () => {
+		// In PAYMENT_SECRET_KEYS it would render a field for a value nothing reads.
+		expect(PAYMENT_SECRET_KEYS).not.toContain(X402_LEGACY_FACILITATOR_SECRET_KEY);
 	});
 
 	test("the INC-C1b edge token key and header are pinned by name", () => {
@@ -109,7 +125,7 @@ describe("the payment/email secret kv keys", () => {
 				EMAIL_API_KEY_KEY,
 				STRIPE_SECRET_KEY_KEY,
 				STRIPE_WEBHOOK_SECRET_KEY,
-				X402_FACILITATOR_SECRET_KEY,
+				X402_FACILITATOR_API_KEY_KEY,
 				WEBHOOK_EDGE_TOKEN_KEY,
 			].toSorted(),
 		);
@@ -186,7 +202,7 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 			[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
 			[EMAIL_API_KEY_KEY]: "email_key_abc",
-			[X402_FACILITATOR_SECRET_KEY]: "x402_abc",
+			[X402_FACILITATOR_API_KEY_KEY]: "x402_abc",
 			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
 		});
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
@@ -335,7 +351,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		[
 			"save-x402-facilitator-secret",
 			"x402FacilitatorSecret",
-			X402_FACILITATOR_SECRET_KEY,
+			X402_FACILITATOR_API_KEY_KEY,
 			"x402_NEVER_RENDER",
 		],
 	] as const;

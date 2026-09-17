@@ -230,15 +230,32 @@ const BAKED_EGRESS_URLS: InProcessEgressUrls = {
  *
  * Gating once, here, makes "a consumer never holds a URL whose host is not
  * granted" true by construction rather than by every caller remembering.
+ *
+ * THE MODE GATE IS ONLY HALF OF IT (review round 2, A3). `resolveAllowedHosts`
+ * funnels every URL through {@link hostnameOf} and grants NOTHING for one that
+ * does not parse — a bare hostname, an empty define, outright garbage. A resolver
+ * that applied the mode gate and then passed the string through verbatim would
+ * hand a consumer exactly such a URL and reproduce the symptom this function
+ * exists to make impossible: a sender is built, every send is refused by the
+ * gate, rows reschedule, and the leg reports `count: 0` instead of the honest
+ * `skipped`. So each URL is resolved through the SAME `hostnameOf` the allowlist
+ * uses, and one that yields no host is dropped — unconfigured, which every
+ * consumer already handles.
  */
 export function resolveInProcessEgress(
 	mode: CommerceMode,
 	egress: InProcessEgressUrls = {},
 ): InProcessEgressUrls {
 	if (mode !== "in-process") return {};
+	/** The URL, or `undefined` when `resolveAllowedHosts` would grant no host for
+	 *  it — the two decisions made by one predicate, so they cannot disagree. */
+	const grantable = (url: string | undefined): string | undefined =>
+		hostnameOf(url) === undefined ? undefined : url;
+	const emailApiUrl = grantable(egress.emailApiUrl);
+	const facilitatorUrl = grantable(egress.facilitatorUrl);
 	return {
-		...(egress.emailApiUrl !== undefined ? { emailApiUrl: egress.emailApiUrl } : {}),
-		...(egress.facilitatorUrl !== undefined ? { facilitatorUrl: egress.facilitatorUrl } : {}),
+		...(emailApiUrl !== undefined ? { emailApiUrl } : {}),
+		...(facilitatorUrl !== undefined ? { facilitatorUrl } : {}),
 	};
 }
 

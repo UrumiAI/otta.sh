@@ -17,12 +17,35 @@
  * server-to-server POST from the page layer. In the plugin there is no such
  * channel: EmDash binds its PRIVATE route dispatcher only on the authenticated
  * admin path, so a storefront request reaches `handlePublicPluginApiRoute` or it
- * reaches nothing. The trust anchor moves in here with the route, exactly as it
- * did for `webhooks/stripe/settle`: the proof is verified by the configured
- * FACILITATOR over `ctx.http`, unconditionally, with no branch that can skip it.
- * `public: true` means "no session", never "no auth" — a forged receipt for an
- * on-chain settlement that never happened is refused by the facilitator, which is
- * the only party that can actually know.
+ * reaches nothing. `public: true` means "no session", never "no auth".
+ *
+ * THE FOUR CHECKS, in order, and why the order is the security property. Review
+ * round 2 (re-reviewers A1/B1/B2) found the first cut of this route standing on
+ * the facilitator alone, which is one layer where its Stripe sibling has two and,
+ * worse, which left the receipt→order binding to an amount equality:
+ *
+ *  1. The `X-Otta-Wh-Token` EDGE token (shared with `webhooks/stripe/settle`,
+ *     `edge-token.ts`), compared in CONSTANT TIME, PASS-THROUGH WHEN UNSET. It
+ *     runs FIRST so an unattributed request costs one kv get and, critically, no
+ *     METERED facilitator call — this route's expensive work is a third-party API
+ *     request and a Worker subrequest, which is precisely what a cheap outer gate
+ *     exists to stop a stranger from spending.
+ *  2. The ORDER, loaded before any egress: it must exist (404) and its
+ *     `paymentMethod` must be `"x402"` (400). The service's `/grant` could skip
+ *     this because `requireInternalToken` meant only the page layer could reach
+ *     it; anonymous, it cannot. Without it an x402 receipt settles a STRIPE order
+ *     of equal total — and every order a storefront deployment holds is a Stripe
+ *     order today, so that was the route's entire reachable effect set.
+ *  3. The FACILITATOR, unconditionally, with no branch that can skip it. A forged
+ *     receipt for an on-chain settlement that never happened is refused by the
+ *     only party that can actually know.
+ *  4. The TX-HASH BINDING, inside `settleOrder`: a receipt whose `transaction` is
+ *     already recorded against a different order is a terminal `RECEIPT_REBOUND`
+ *     (§ step 2b there). One settlement consumes one on-chain payment — the claim
+ *     `@otta-sh/payments-x402`'s header makes, now enforced rather than assumed.
+ *
+ * Checks 1 and 2 REDUCE what the facilitator is asked about; they never substitute
+ * for check 3 or 4, and there is no configuration under which either is skipped.
  *
  * WHAT THE RECEIPT DELIBERATELY DOES NOT CARRY. The service returned the FULL
  * serialized order on success, which it could afford behind its token gate. This
@@ -56,8 +79,9 @@ import {
 } from "@otta-sh/domain";
 import { X402FacilitatorUnavailableError } from "@otta-sh/payments-x402";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
+import { edgeTokenAccepted } from "../edge-token.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
-import type { PluginContext, RouteHandler } from "../types.js";
+import type { RouteHandler } from "../types.js";
 import { x402GatewayFromCtx, type X402Egress } from "./x402-wiring.js";
 
 /** The PUBLIC route path an x402 page-gate proof posts to. Named in the repo's
@@ -80,13 +104,21 @@ export interface X402SettleInput {
 /** Every refusal this route can express. A FIXED vocabulary: no message is built
  *  from a credential, a kv error or a facilitator diagnostic. */
 export type X402SettleReason =
+	| "UNAUTHORIZED"
 	| "NOT_CONFIGURED"
 	| "FACILITATOR_UNAVAILABLE"
 	| "MALFORMED"
 	| "INVALID_SIGNATURE"
 	| "UNKNOWN_EVENT"
 	| "ORDER_NOT_FOUND"
-	| "AMOUNT_MISMATCH";
+	/** The named order exists but was not created to be paid with x402. Named
+	 *  rather than folded into `ORDER_NOT_FOUND` because the two are different
+	 *  facts for the page layer; neither discloses anything about the order. */
+	| "WRONG_PAYMENT_METHOD"
+	| "AMOUNT_MISMATCH"
+	/** The receipt's `transaction` is already recorded against a DIFFERENT order
+	 *  (`settleOrder` step 2b). One settlement, one on-chain payment. */
+	| "RECEIPT_REBOUND";
 
 /**
  * What the caller reconstructs an HTTP response from — the same in-body-status
@@ -96,7 +128,7 @@ export type X402SettleReason =
  */
 export type X402SettleResult =
 	| { ok: true; status: 200 }
-	| { ok: false; status: 400 | 404 | 503; reason: X402SettleReason };
+	| { ok: false; status: 400 | 401 | 404 | 503; reason: X402SettleReason };
 
 /** UUID v4, the shape every order id in this system has — the same bound the
  *  service's `idParam` enforced, restated because there is no zod in the
@@ -166,7 +198,11 @@ export function x402SettleResultToResponse(res: SettleResult): X402SettleResult 
 	if (res.ok) return { ok: true, status: 200 };
 	return res.reason === "ORDER_NOT_FOUND"
 		? { ok: false, status: 404, reason: "ORDER_NOT_FOUND" }
-		: { ok: false, status: 400, reason: res.reason };
+		: // `RECEIPT_REBOUND` lands here too, and 400 is right for it on this route
+			// for the same reason `AMOUNT_MISMATCH` is: nothing retries this call, the
+			// anomaly is already recorded, and the caller deserves to hear that the
+			// receipt it presented belongs to another order.
+			{ ok: false, status: 400, reason: res.reason };
 }
 
 /** Test-facing overrides. A deploy passes none of them. */
@@ -182,10 +218,18 @@ export function createX402SettleHandler(
 ): RouteHandler<X402SettleInput> {
 	const egress = options.egress ?? IN_PROCESS_EGRESS_URLS;
 	return async (routeCtx, ctx): Promise<X402SettleResult> => {
-		// VALIDATE BEFORE EGRESS: a garbage body must cost no network call and no
-		// kv read. It is also the arm a scanner finds first.
+		// VALIDATE BEFORE ANYTHING: a garbage body must cost no kv read and no
+		// network call. It is also the arm a scanner finds first.
 		const proof = parseProof(routeCtx.input);
 		if (proof === undefined) return { ok: false, status: 400, reason: "MALFORMED" };
+
+		// ── CHECK 1: the edge token, before any other kv read and before egress ──
+		// Pass-through when unset (see `edge-token.ts`). The facilitator call below
+		// is a METERED third-party request; this is what keeps an anonymous stranger
+		// from spending it.
+		if (!(await edgeTokenAccepted(ctx, routeCtx.request))) {
+			return { ok: false, status: 401, reason: "UNAUTHORIZED" };
+		}
 
 		// FAIL-CLOSED, and 503 rather than a rejection: "this deployment never
 		// configured x402" is not the same statement as "your proof is bad", and
@@ -194,9 +238,23 @@ export function createX402SettleHandler(
 		const gateway = await x402GatewayFromCtx(ctx, egress);
 		if (gateway === undefined) return { ok: false, status: 503, reason: "NOT_CONFIGURED" };
 
+		// ── CHECK 2: THIS ORDER IS AN x402 ORDER — before the facilitator call ────
+		// `settleOrder` is gateway-agnostic by design and never consults
+		// `paymentMethod`; behind `requireInternalToken` the service could rely on
+		// that. Anonymous it cannot: without this, a facilitator-valid receipt of
+		// the right amount settles a STRIPE order of the same total, and storefront
+		// checkout originates nothing else today. Route-local on purpose — it is a
+		// statement about THIS surface, not a new rule for every gateway.
+		const stores = createInProcessCommerceStores(ctx);
+		const order = await stores.orderStore.getById(proof.orderId);
+		if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
+		if (order.paymentMethod !== "x402") {
+			return { ok: false, status: 400, reason: "WRONG_PAYMENT_METHOD" };
+		}
+
 		try {
 			return x402SettleResultToResponse(
-				await settleOrder(settleDeps(ctx), gateway, {
+				await settleOrder(settleDeps(stores), gateway, {
 					kind: "page_gate",
 					proof,
 				}),
@@ -214,9 +272,10 @@ export function createX402SettleHandler(
 }
 
 /** Every `SettleDeps` field, from the same composition root the Stripe settle
- *  route uses — so both settlement surfaces see one set of stores and one clock. */
-function settleDeps(ctx: PluginContext): SettleDeps {
-	const stores = createInProcessCommerceStores(ctx);
+ *  route uses — so both settlement surfaces see one set of stores and one clock.
+ *  Takes the ALREADY-BUILT stores, so the pre-flight order read and the settle
+ *  see one set rather than two. */
+function settleDeps(stores: ReturnType<typeof createInProcessCommerceStores>): SettleDeps {
 	return {
 		orderStore: stores.orderStore,
 		entitlementStore: stores.entitlementStore,

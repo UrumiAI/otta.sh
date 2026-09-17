@@ -22,11 +22,12 @@
  *    instead would let the gate and the caller disagree — and the disagreement
  *    would present as an unexplained refused fetch;
  *  - the **facilitator credential** is WRITE-ONLY kv
- *    (`settings:x402FacilitatorSecret`, INC-C3), because it is a secret. NOTE
- *    that in-process this key holds the facilitator's BEARER API CREDENTIAL,
- *    which goes on the wire — not INC-C3's offline HMAC secret, which never did.
- *    `payment-secrets.ts` documents the change at the key itself, and the
- *    Settings field is labelled for the new meaning;
+ *    (`settings:x402FacilitatorApiKey`), because it is a secret. NOTE that this
+ *    is NOT INC-C3's `settings:x402FacilitatorSecret`: in-process the value is
+ *    the facilitator's BEARER API CREDENTIAL and goes ON THE WIRE, where the
+ *    INC-C3 key held an offline HMAC secret that never did. The key was renamed
+ *    rather than re-documented so an old provisioning cannot be inherited into
+ *    the new threat model (review round 2, A5);
  *  - **`payTo` and the accepted networks** are READABLE kv, because they are
  *    ordinary non-secret configuration an operator must be able to read back into
  *    a form — exactly the split `payment-secrets.ts` records for the service's
@@ -57,7 +58,7 @@
  * unconfigured as an unset one.
  */
 import { createHttpFacilitator, X402PaymentGateway } from "@otta-sh/payments-x402";
-import { X402_FACILITATOR_SECRET_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import { X402_FACILITATOR_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
 import type { PluginContext } from "../types.js";
 
 /** `X402_PAYTO` — the destination wallet the challenge names. Non-secret. */
@@ -121,7 +122,7 @@ export async function x402GatewayFromCtx(
 	const facilitatorUrl = egress.facilitatorUrl;
 	if (facilitatorUrl === undefined || facilitatorUrl.length === 0) return undefined;
 	const [facilitatorApiKey, payTo, accepts] = await Promise.all([
-		readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY),
+		readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY),
 		readPlainSetting(ctx, X402_PAYTO_KEY),
 		readPlainSetting(ctx, X402_ACCEPTS_KEY),
 	]);

@@ -151,21 +151,40 @@ describe("resolveInProcessEgress — the CONSUMERS see the same arm the gate doe
 		).toEqual({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR });
 	});
 
+	test("an UNPARSEABLE define grants no host, so it resolves to no egress either", () => {
+		// A3. `resolveAllowedHosts` drops anything `hostnameOf` cannot parse — a
+		// bare hostname, an empty define, garbage — so passing such a URL through
+		// verbatim would hand a consumer a URL the gate refuses: sender built, every
+		// send refused, rows rescheduling, `count: 0` where `skipped` is the truth.
+		expect(
+			resolveInProcessEgress("in-process", {
+				emailApiUrl: "api.email.example.com", // no scheme ⇒ not a URL
+				facilitatorUrl: "not a url at all",
+			}),
+		).toEqual({});
+		// And the valid sibling still survives on its own.
+		expect(
+			resolveInProcessEgress("in-process", { emailApiUrl: "", facilitatorUrl: FACILITATOR }),
+		).toEqual({ facilitatorUrl: FACILITATOR });
+	});
+
 	test("every host the resolved egress names is a host the gate grants", () => {
-		// The invariant stated as one assertion, over both arms: a consumer can
-		// never hold a URL whose host is absent from ALLOWED_HOSTS.
+		// The invariant stated as one assertion, over both arms AND over defines
+		// that do not parse: a consumer can never hold a URL whose host is absent
+		// from ALLOWED_HOSTS.
+		const bakes = [
+			{ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
+			{ emailApiUrl: "api.email.example.com", facilitatorUrl: "not a url at all" },
+			{ emailApiUrl: "", facilitatorUrl: FACILITATOR },
+		];
 		for (const mode of ["http", "in-process"] as const) {
-			const granted = resolveAllowedHosts(mode, SERVICE, {
-				emailApiUrl: EMAIL,
-				facilitatorUrl: FACILITATOR,
-			});
-			const resolved = resolveInProcessEgress(mode, {
-				emailApiUrl: EMAIL,
-				facilitatorUrl: FACILITATOR,
-			});
-			for (const url of [resolved.emailApiUrl, resolved.facilitatorUrl]) {
-				if (url === undefined) continue;
-				expect(granted).toContain(new URL(url).hostname);
+			for (const baked of bakes) {
+				const granted = resolveAllowedHosts(mode, SERVICE, baked);
+				const resolved = resolveInProcessEgress(mode, baked);
+				for (const url of [resolved.emailApiUrl, resolved.facilitatorUrl]) {
+					if (url === undefined) continue;
+					expect(granted).toContain(new URL(url).hostname);
+				}
 			}
 		}
 	});

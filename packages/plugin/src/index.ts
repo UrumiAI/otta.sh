@@ -196,7 +196,7 @@ export {
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
 	x402FacilitatorSecretFromKv,
-	X402_FACILITATOR_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
 } from "./payment-secrets.js";
 // INC-C5 — email dispatch and x402 settlement in-process. Both adapters are
 // exported so a deploying site can name the kv settings keys it provisions

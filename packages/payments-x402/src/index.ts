@@ -25,13 +25,23 @@ import {
  *    — "the tx exists" is NOT sufficient. `proof.orderId` is NEVER
  *    on-chain-attestable (it exists only in our DB), so the ONLY things binding
  *    a receipt to an order are (a) the domain's `amount == order_totals.total`
- *    equality check in `settleOrder` and (b) the tx-hash dedupe (one settlement
- *    consumes one on-chain payment, so a receipt cannot be replayed onto a
- *    second same-priced order). Both checks are therefore LOAD-BEARING: weaken
- *    either and a single payment could settle an arbitrary same-priced order.
- *  - The adapter MUST additionally verify the attested **recipient equals this
- *    gateway's `payTo`** once the real client exposes it — otherwise a payment
- *    to the attacker's own wallet would satisfy the amount check.
+ *    equality check in `settleOrder` and (b) the tx-hash dedupe — one settlement
+ *    consumes one on-chain payment. Both checks are LOAD-BEARING and BOTH ARE
+ *    IMPLEMENTED: (a) at `settleOrder` step 3, and (b) at step 2b, which reads
+ *    the recorded dedupe row's order back (`PaymentEventStore.orderForDedupeKey`)
+ *    and TERMINALLY refuses a `transaction` already bound to a different order.
+ *    (Until review round 2 the second was asserted here and discarded there,
+ *    which is exactly the "single payment settles an arbitrary same-priced
+ *    order" hole this paragraph warns about.)
+ *  - STILL OUTSTANDING, and the reason this block is a warning and not a
+ *    description: the adapter does NOT verify the attested **recipient equals
+ *    this gateway's `payTo`**, because no facilitator client here exposes it yet.
+ *    A genuine on-chain payment of the right amount to the ATTACKER'S OWN wallet
+ *    would therefore satisfy (a) and (b). What contains that today is deployment
+ *    shape, not code: the plugin's settle route additionally requires the named
+ *    order to have `paymentMethod: "x402"`, and storefront checkout originates no
+ *    x402 order at all. Wiring a real facilitator client MUST add the recipient
+ *    check before x402 origination is enabled.
  */
 /**
  * What a facilitator said about a receipt.
@@ -249,9 +259,11 @@ function echoesRequest(body: Record<string, unknown>, proof: X402Proof): boolean
  * "retries or refuses on its own terms" claimed without providing.
  *
  * BOUND TO THE QUESTION. A facilitator that echoes a `transaction` or `orderId`
- * must echo the one we asked about; an answer about a different receipt is a
- * terminal refusal, not an attestation of ours. (Echoing is optional — the real
- * clients differ — so an absent field is not a mismatch.)
+ * must echo the one we asked about; an answer about a different receipt is no
+ * answer at all, and is reported as `unavailable` rather than as a verdict —
+ * a facilitator attesting someone else's transaction is a fault at ITS end, and
+ * the buyer whose money moved must keep the retry. (Echoing is optional — the
+ * real clients differ — so an absent field is not a mismatch.)
  *
  * TIMED OUT. `AbortSignal.timeout` bounds the call
  * ({@link DEFAULT_FACILITATOR_TIMEOUT_MS}): a hung facilitator would otherwise
@@ -262,8 +274,9 @@ function echoesRequest(body: Record<string, unknown>, proof: X402Proof): boolean
  * attest the settlement's amount, asset and recipient — which is why the whole
  * receipt is forwarded rather than just the tx hash — and the recipient must be
  * checked against this gateway's `payTo` once a facilitator exposes it. Until
- * then the domain's `amount == order total` equality and the tx-hash dedupe are
- * still what bind a receipt to an order.
+ * then the domain's `amount == order total` equality and its `RECEIPT_REBOUND`
+ * tx-hash binding are what tie a receipt to an order, and neither of them can see
+ * where the money actually went.
  */
 export function createHttpFacilitator(options: HttpFacilitatorOptions): X402Facilitator {
 	const doFetch = options.fetch;
@@ -315,7 +328,14 @@ export function createHttpFacilitator(options: HttpFacilitatorOptions): X402Faci
 				// an error envelope that happens to carry a `valid` key, must not settle
 				// an order. And the answer must be about the receipt we asked about.
 				if (answer["valid"] !== true) return { valid: false };
-				if (!echoesRequest(answer, proof)) return { valid: false };
+				// AN ANSWER ABOUT SOMETHING ELSE IS NOT AN ANSWER. Classified
+				// `unavailable`, not terminal (review round 2, A4): a facilitator
+				// attesting a DIFFERENT transaction or order is a fact about the
+				// FACILITATOR — the same category as an unparseable body or a
+				// non-object 200, both of which already route here — not a verdict on
+				// the buyer's proof. Calling it `INVALID_SIGNATURE` would permanently
+				// refuse a settlement whose money moved, over a bug at the other end.
+				if (!echoesRequest(answer, proof)) return { valid: false, unavailable: true };
 				return { valid: true };
 			} catch {
 				// A transport rejection, an abort on the timeout above, or the

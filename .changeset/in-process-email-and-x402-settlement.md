@@ -17,7 +17,13 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   had to move because BOTH `EmailSender` adapters now need them and they live in
   packages that cannot import each other. Money still renders from integer minor
   units, and now renders a NEGATIVE amount correctly (`-550` was "-6.-50") and a
-  non-integer not at all.
+  non-integer not at all. `PaymentEventStore` also grows
+  `orderForDedupeKey(key)`: `dedupe`'s boolean says a row EXISTS, not whose it
+  is, and `settleOrder` discarded it entirely. It now asks — only on the
+  duplicate path, so first deliveries still cost one statement — and terminally
+  refuses a confirmation whose key is recorded against a DIFFERENT order with
+  the new `RECEIPT_REBOUND` failure plus an anomaly of the same name. A
+  redelivery to the SAME order still re-drives as before.
 - `@otta-sh/payments-x402`: adds `createHttpFacilitator`, a real facilitator call
   over an INJECTED `fetch` (so the sandboxed plugin can hand it `ctx.http.fetch`
   and the package keeps its no-ambient-fetch guarantee), bounded by
@@ -35,9 +41,13 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   timeout-bounded) and the x402 wiring (`wireX402Gateway` /
   `x402GatewayFromCtx`), both reaching their provider only via `ctx.http` +
   `allowedHosts`. Adds the PUBLIC `entitlements/x402/settle` route — the
-  in-process equivalent of the service's `POST /entitlements/grant`, verifying
-  the proof through the configured facilitator unconditionally and answering
-  200 / 400 / 404 / 503 with no order body (ADR-0010). Adds the Settings fields
+  in-process equivalent of the service's `POST /entitlements/grant`, behind the
+  SAME two layers the Stripe webhook route uses — the shared edge token
+  (`settings:edgeToken`, pass-through when unset) as a cheap outer gate, then
+  the real check: the order must be `paymentMethod: "x402"`, the proof must
+  verify through the configured facilitator, and the on-chain `transaction` must
+  not already be bound to a different order. Answers
+  200 / 400 / 401 / 404 / 503 with no order body (ADR-0010). Adds the Settings fields
   for the three non-secret keys (`settings:emailFrom`, `settings:x402PayTo`,
   `settings:x402Accepts`), with `payTo` shape-gated at BOTH ends
   (`isPlausiblePayTo` on read, an atomic refusal on write) because that kv tier
@@ -55,11 +65,25 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   always did for as long as the service runs — the in-process path simply cannot
   reach that facilitator.
 
+ACTION REQUIRED ON UPGRADE — RE-PROVISION THE x402 FACILITATOR CREDENTIAL. The
+kv key is now `settings:x402FacilitatorApiKey`; the old
+`settings:x402FacilitatorSecret` is no longer read and is deleted the next time
+the field is saved. This is deliberate and not a rename for tidiness: under the
+previous increment that key named a value used to VERIFY an inbound signature,
+and this increment puts the configured value ON THE WIRE as
+`Authorization: Bearer` to the facilitator. A secret provisioned under the old
+meaning must never be sent outbound, so it is orphaned rather than migrated.
+Until the new key is set, the settle route answers `NOT_CONFIGURED` (503) —
+fail-closed, never an unverified settlement.
+
 NOTE ON THE x402 HALF. It is configurable and settleable in-process now, but a
 buyer still cannot ORIGINATE an x402 checkout from the storefront: the
-plugin's checkout route hardcodes `PAYMENT_METHOD = "stripe"`. Until that
-becomes a selectable method, `entitlements/x402/settle` is reachable only for
-orders created with `paymentMethod: "x402"` by some other caller.
+plugin's checkout route hardcodes `PAYMENT_METHOD = "stripe"`. So today no
+first-party flow creates an x402 order at all — but the settle route does NOT
+rely on that for its safety: it refuses a non-x402 order explicitly
+(`WRONG_PAYMENT_METHOD`), and the domain refuses a receipt whose dedupe key is
+already bound to another order (`RECEIPT_REBOUND`, a recorded anomaly), so one
+on-chain payment can settle exactly one order.
 
 FOLLOW-UP: make the storefront checkout method selectable (the one remaining
 piece of the x402 path), and decide whether a facilitator that cannot attest the

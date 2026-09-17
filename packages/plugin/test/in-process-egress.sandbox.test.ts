@@ -149,10 +149,47 @@ async function configure(sandbox: SandboxHandle): Promise<void> {
 	if ("error" in saved) throw new Error(saved.error);
 }
 
-/** A syntactically valid page-gate proof. The order id is a real UUID that names
- *  NO order on purpose: `settleOrder` asks the facilitator FIRST and only then
- *  loads the order, so this reaches the network — which is what is under test —
- *  and then stops at a clean `ORDER_NOT_FOUND` with nothing to clean up. */
+/**
+ * A pending, digital, x402-paid order — the state the settle route's CHECK 2
+ * demands before it will spend a facilitator call.
+ *
+ * WHY THIS REPLACED A BARE UUID (review round 2, A1/B1). These cases used to
+ * settle a proof naming NO order, on the reasoning that `settleOrder` asked the
+ * facilitator first and `ORDER_NOT_FOUND` therefore proved the network had been
+ * reached. That ordering is exactly what the review closed: the route now loads
+ * the order and refuses a non-x402 one BEFORE any egress, so a nonexistent order
+ * proves the opposite — that nothing was asked. A real order is what makes the
+ * egress assertion mean anything again.
+ */
+async function placePendingX402Order(suffix: string): Promise<string> {
+	const s = stores();
+	const id = crypto.randomUUID();
+	await s.orderStore.createFromCart({
+		orderId: toOrderId(id),
+		cartId: null,
+		currency: currency("USD"),
+		idempotencyKey: idempotencyKey(`x402-create-${suffix}`),
+		holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		buyerRef: `buyer-x402-${suffix}@example.test`,
+		paymentMethod: "x402",
+		lines: [
+			{
+				productId: toProductId(`prod-x402-${suffix}`),
+				sku: toSku(`X402-${suffix}`),
+				title: "Digital Widget",
+				unitPrice: cents(1999),
+				currency: currency("USD"),
+				quantity: 1,
+				fulfillmentKind: "digital",
+				reservationId: null,
+			},
+		],
+		totals: { subtotal: cents(1999), total: cents(1999), currency: currency("USD") },
+	});
+	return id;
+}
+
+/** A syntactically valid page-gate proof for a seeded order. */
 function proofFor(orderId: string) {
 	return {
 		orderId,
@@ -261,17 +298,17 @@ describe("the email adapter, inside workerd", () => {
 
 describe("the x402 facilitator, inside workerd", () => {
 	test("a baked facilitator URL on a granted host actually reaches the facilitator", async () => {
-		const orderId = crypto.randomUUID();
+		const orderId = await placePendingX402Order("granted");
 		const before = postsTo(FACILITATOR_PATH);
 
 		const outcome = await granted.invokeRoute(X402_SETTLE_ROUTE, proofFor(orderId));
 		if ("error" in outcome) throw new Error(outcome.error);
 
-		// ORDER_NOT_FOUND is the SUCCESS condition here: it is reachable only PAST
-		// `verifyConfirmation`, so it says the facilitator was asked and its
-		// `valid: true` was accepted. A refused proof would have been 400
+		// A full settlement, end to end inside the isolate: the facilitator was
+		// asked over `ctx.http`, its echoing `valid: true` was accepted, and the
+		// domain moved the order. A refused proof would have been 400
 		// INVALID_SIGNATURE and an unreachable one 503.
-		expect(outcome.result).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+		expect(outcome.result).toEqual({ ok: true, status: 200 });
 
 		const calls = stub.requests.filter(
 			(req) => req.method === "POST" && req.url === FACILITATOR_PATH,
@@ -284,7 +321,7 @@ describe("the x402 facilitator, inside workerd", () => {
 	}, 300_000);
 
 	test("the same baked URL is REFUSED when its host is not in allowedHosts", async () => {
-		const orderId = crypto.randomUUID();
+		const orderId = await placePendingX402Order("refused");
 		const before = postsTo(FACILITATOR_PATH);
 
 		const outcome = await refused.invokeRoute(X402_SETTLE_ROUTE, proofFor(orderId));

@@ -45,4 +45,12 @@ export type SettleFailure =
 	| "UNKNOWN_EVENT"
 	| "MALFORMED"
 	| "ORDER_NOT_FOUND"
-	| "AMOUNT_MISMATCH";
+	| "AMOUNT_MISMATCH"
+	/**
+	 * The confirmation's dedupe key (for x402, the on-chain `transaction`) is
+	 * already recorded against a DIFFERENT order. One settlement consumes one
+	 * on-chain payment, so this is never a redelivery to re-drive — it is the same
+	 * receipt aimed at a second order, and it must be terminally refused before any
+	 * state moves. Recorded as the `RECEIPT_REBOUND` anomaly.
+	 */
+	| "RECEIPT_REBOUND";

@@ -52,6 +52,18 @@ export class KyselyPaymentEventStore implements PaymentEventStore {
 		return inserted !== undefined;
 	}
 
+	/** The order a recorded `dedupe_key` names. Only the event rows have a
+	 *  `dedupe_key` (anomalies write `null`), and it is UNIQUE, so this matches at
+	 *  most one row. Asked only on the duplicate arm of `settleOrder`. */
+	async orderForDedupeKey(dedupeKey: string): Promise<OrderId | null> {
+		const row = await this.#db
+			.selectFrom("payment_events")
+			.select("order_id")
+			.where("dedupe_key", "=", dedupeKey)
+			.executeTakeFirst();
+		return row === undefined ? null : (row.order_id as OrderId);
+	}
+
 	async recordAnomaly(input: RecordAnomalyInput): Promise<void> {
 		await this.#db
 			.insertInto("payment_events")

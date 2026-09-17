@@ -14,8 +14,8 @@
  *  - the facilitator URL is a BUILD-TIME define (`__OTTA_X402_FACILITATOR_URL__`),
  *    because `allowedHosts` is resolved at module load and the gate and the
  *    caller must not be able to disagree about which host that is;
- *  - the facilitator credential is WRITE-ONLY kv (`settings:x402FacilitatorSecret`,
- *    INC-C3), because it is a secret;
+ *  - the facilitator credential is WRITE-ONLY kv
+ *    (`settings:x402FacilitatorApiKey`), because it is a secret;
  *  - `payTo` and the accepted networks are READABLE kv, because they are ordinary
  *    non-secret configuration — exactly the split `payment-secrets.ts` already
  *    records for the service's non-secret companions.
@@ -34,7 +34,7 @@ import {
 	orderId as toOrderId,
 } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { X402_FACILITATOR_SECRET_KEY } from "../src/payment-secrets.js";
+import { X402_FACILITATOR_API_KEY_KEY } from "../src/payment-secrets.js";
 import {
 	DEFAULT_X402_ACCEPTS,
 	wireX402Gateway,
@@ -198,7 +198,7 @@ describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
 	test("settlement verification goes over ctx.http to the facilitator, not an offline HMAC", async () => {
 		const { ctx, calls } = makeCtx({
 			[X402_PAYTO_KEY]: PAY_TO,
-			[X402_FACILITATOR_SECRET_KEY]: "fk",
+			[X402_FACILITATOR_API_KEY_KEY]: "fk",
 		});
 		const gateway = await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL });
 		const result = await gateway?.verifyConfirmation({
