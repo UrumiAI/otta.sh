@@ -46,6 +46,11 @@ import type { PluginContext } from "../src/types.js";
 
 const FACILITATOR_URL = "https://facilitator.example.test/verify";
 
+/** A real-SHAPED destination wallet. Not a placeholder like `0xshop`: INC-C5's wiring
+ *  validates the address shape before it will arm a gateway (see
+ *  `isPlausiblePayTo`), because this value is where the buyer's money goes. */
+const PAY_TO = "0x00000000000000000000000000000000000000a1";
+
 function makeCtx(
 	seed: Record<string, unknown> = {},
 	failingKeys: ReadonlySet<string> = new Set(),
@@ -81,7 +86,7 @@ function makeCtx(
 describe("wireX402Gateway — the pure half", () => {
 	test("no facilitator URL ⇒ no gateway", () => {
 		expect(
-			wireX402Gateway({ fetch: () => Promise.reject(new Error("x")), payTo: "0xshop" }),
+			wireX402Gateway({ fetch: () => Promise.reject(new Error("x")), payTo: PAY_TO }),
 		).toBeUndefined();
 	});
 
@@ -94,11 +99,71 @@ describe("wireX402Gateway — the pure half", () => {
 		).toBeUndefined();
 	});
 
+	/**
+	 * INC-C5 review (A4): `payTo` lives in READABLE kv, which `types.ts` documents
+	 * as last-writer-wins with no CAS and reserves for values the domain does not
+	 * depend on. This one the domain very much depends on — it is the address the
+	 * buyer's money goes to — so the tier comes with a shape gate: a value that
+	 * cannot be a wallet address never reaches a challenge, and the deployment
+	 * reads as unconfigured (no gateway, loud refusal) instead of quietly minting
+	 * challenges payable to a typo. See the module doc for why kv and not a
+	 * build-time define.
+	 */
+	test.each([
+		["a placeholder word", "0xshop"],
+		["the empty string", ""],
+		["whitespace", "   "],
+		["too few hex digits", "0x00000000000000000000000000000000000000a"],
+		["too many hex digits", "0x00000000000000000000000000000000000000a11"],
+		["non-hex characters", "0x00000000000000000000000000000000000000zz"],
+		["no 0x prefix", "00000000000000000000000000000000000000a1"],
+		["a URL", "https://example.com/pay"],
+	])("a payTo that is not a wallet address ⇒ NO gateway (%s)", (_why, payTo) => {
+		expect(
+			wireX402Gateway({
+				fetch: () => Promise.reject(new Error("x")),
+				facilitatorUrl: FACILITATOR_URL,
+				payTo,
+			}),
+		).toBeUndefined();
+	});
+
+	test("a CAIP-10 account id is accepted, and the challenge carries it verbatim", async () => {
+		// The networks are CAIP-2, so an operator naming the account in the matching
+		// CAIP-10 form is giving MORE information, not less. It is passed through
+		// untouched — normalizing a payment destination would be a worse bug than
+		// refusing one.
+		const payTo = `eip155:8453:${PAY_TO}`;
+		const gateway = wireX402Gateway({
+			fetch: () => Promise.reject(new Error("x")),
+			facilitatorUrl: FACILITATOR_URL,
+			payTo,
+		});
+		const handle = await gateway?.createIntent({
+			orderId: toOrderId("11111111-1111-4111-8111-111111111111"),
+			amount: cents(100),
+			currency: toCurrency("USD"),
+			idempotencyKey: toIdempotencyKey("idem_caip10"),
+			lines: [],
+		});
+		expect((handle?.clientAction as { payTo?: string } | undefined)?.payTo).toBe(payTo);
+	});
+
+	test("a mixed-case (EIP-55 checksummed) address is accepted", () => {
+		expect(
+			wireX402Gateway({
+				fetch: () => Promise.reject(new Error("x")),
+				facilitatorUrl: FACILITATOR_URL,
+				payTo: "0xAbC0000000000000000000000000000000000001",
+			}),
+		).toBeDefined();
+	});
+
 	test("configured ⇒ an x402 gateway that is still honestly non-refundable", () => {
 		const gateway = wireX402Gateway({
 			fetch: () => Promise.reject(new Error("x")),
 			facilitatorUrl: FACILITATOR_URL,
-			payTo: "0xshop",
+			payTo: PAY_TO,
 		});
 		expect(gateway?.id).toBe("x402");
 		// ADR-0008: on-chain settlement is irreversible and this adapter holds no
@@ -110,7 +175,7 @@ describe("wireX402Gateway — the pure half", () => {
 		const gateway = wireX402Gateway({
 			fetch: () => Promise.reject(new Error("x")),
 			facilitatorUrl: FACILITATOR_URL,
-			payTo: "0xshop",
+			payTo: PAY_TO,
 			accepts: ["eip155:8453", "eip155:1"],
 		});
 		const handle = await gateway?.createIntent({
@@ -124,7 +189,7 @@ describe("wireX402Gateway — the pure half", () => {
 			kind: "x402_challenge",
 			accepts: ["eip155:8453", "eip155:1"],
 			price: 2599,
-			payTo: "0xshop",
+			payTo: PAY_TO,
 		});
 	});
 });
@@ -132,7 +197,7 @@ describe("wireX402Gateway — the pure half", () => {
 describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
 	test("settlement verification goes over ctx.http to the facilitator, not an offline HMAC", async () => {
 		const { ctx, calls } = makeCtx({
-			[X402_PAYTO_KEY]: "0xshop",
+			[X402_PAYTO_KEY]: PAY_TO,
 			[X402_FACILITATOR_SECRET_KEY]: "fk",
 		});
 		const gateway = await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL });
@@ -162,19 +227,19 @@ describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
 		const { ctx } = makeCtx();
 		expect(await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL })).toBeUndefined();
 		expect(
-			await x402GatewayFromCtx(makeCtx({ [X402_PAYTO_KEY]: "0xshop" }).ctx, {
+			await x402GatewayFromCtx(makeCtx({ [X402_PAYTO_KEY]: PAY_TO }).ctx, {
 				facilitatorUrl: undefined,
 			}),
 		).toBeUndefined();
 	});
 
 	test("a kv rejection degrades to no gateway, never a thrown route", async () => {
-		const { ctx } = makeCtx({ [X402_PAYTO_KEY]: "0xshop" }, new Set([X402_PAYTO_KEY]));
+		const { ctx } = makeCtx({ [X402_PAYTO_KEY]: PAY_TO }, new Set([X402_PAYTO_KEY]));
 		expect(await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL })).toBeUndefined();
 	});
 
 	test("accepts falls back to the documented default when kv holds none", async () => {
-		const { ctx } = makeCtx({ [X402_PAYTO_KEY]: "0xshop" });
+		const { ctx } = makeCtx({ [X402_PAYTO_KEY]: PAY_TO });
 		const gateway = await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL });
 		const handle = await gateway?.createIntent({
 			orderId: toOrderId("11111111-1111-4111-8111-111111111111"),
@@ -190,7 +255,7 @@ describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
 
 	test("a comma-separated accepts list is split and trimmed, matching X402_ACCEPTS", async () => {
 		const { ctx } = makeCtx({
-			[X402_PAYTO_KEY]: "0xshop",
+			[X402_PAYTO_KEY]: PAY_TO,
 			[X402_ACCEPTS_KEY]: "eip155:8453, eip155:1",
 		});
 		const gateway = await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL });

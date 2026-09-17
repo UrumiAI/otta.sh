@@ -56,7 +56,24 @@ export interface CtxHttpEmailSenderOptions {
 	apiUrl: string;
 	from: string;
 	apiKey?: string | undefined;
+	/** Per-request timeout, via `AbortSignal.timeout`. Defaults to
+	 *  {@link DEFAULT_EMAIL_TIMEOUT_MS}. */
+	requestTimeoutMs?: number | undefined;
 }
+
+/**
+ * A hung email provider must never hang a cron tick — the same rule, and the
+ * same default, as `payments-stripe`'s `DEFAULT_REQUEST_TIMEOUT_MS` ("a hung
+ * Stripe must never hang a Worker checkout").
+ *
+ * WHY IT IS LOAD-BEARING HERE SPECIFICALLY. `dispatchOrderEmails` wraps each
+ * outbox row in its own try/catch, which contains a THROWN send — it does
+ * nothing about an unbounded await. One unresponsive provider connection would
+ * therefore hold the `order-emails` leg open and starve every sweep leg queued
+ * behind it. The abort converts the hang into the throw the dispatcher already
+ * knows how to handle, and — as with a non-2xx — the row stays unsent.
+ */
+export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
 
 /** Posts the rendered email to a transactional-email HTTP API over `ctx.http`. */
 export class CtxHttpEmailSender implements EmailSender {
@@ -64,12 +81,14 @@ export class CtxHttpEmailSender implements EmailSender {
 	readonly #apiUrl: string;
 	readonly #from: string;
 	readonly #apiKey: string | undefined;
+	readonly #timeoutMs: number;
 
 	constructor(options: CtxHttpEmailSenderOptions) {
 		this.#fetch = options.fetch;
 		this.#apiUrl = options.apiUrl;
 		this.#from = options.from;
 		this.#apiKey = options.apiKey;
+		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 	}
 
 	async send(input: SendEmailInput): Promise<void> {
@@ -94,6 +113,9 @@ export class CtxHttpEmailSender implements EmailSender {
 				html: rendered.html,
 				template: input.template,
 			}),
+			// A hung provider must never hold the cron tick open — see
+			// {@link DEFAULT_EMAIL_TIMEOUT_MS}.
+			signal: AbortSignal.timeout(this.#timeoutMs),
 		});
 		if (!res.ok) {
 			throw new Error(`email transport failed with status ${res.status}`);

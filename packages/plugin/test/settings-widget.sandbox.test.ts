@@ -501,6 +501,96 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(groupLabels(blocks).get("settings:payments")).toBe("Payments & email — configured");
 	});
 
+	/**
+	 * INC-C5 review (A3/B5) — the NON-SECRET in-process settings.
+	 *
+	 * INC-C3 moved four credentials onto this screen but not their three
+	 * non-secret companions (`EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`), which
+	 * left `settings:x402PayTo` with NO writer anywhere in the product: nothing
+	 * could set it, `x402GatewayFromCtx` therefore returned `undefined` for every
+	 * deployment, and the whole x402 half was inert no matter how it was
+	 * provisioned. This case is the proof that it is now reachable.
+	 *
+	 * These are READ BACK, unlike the secrets directly below them in the same
+	 * group — that difference is the tier, and it is deliberate: an operator must
+	 * be able to see which wallet they are being paid at.
+	 */
+	test("INC-C5: the non-secret in-process settings can be SET and are READ BACK (secrets are not)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		// A fresh install: the form is there, and empty.
+		const fresh = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const freshForm = formFor(fresh, "save-payment-settings");
+		expect(freshForm, "expected a form submitting save-payment-settings").toBeDefined();
+		expect(field(freshForm, "x402PayTo")?.["initial_value"]).toBe("");
+
+		const PAY_TO = "0x00000000000000000000000000000000000000a1";
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: {
+				emailFrom: "orders@shop.example",
+				x402PayTo: PAY_TO,
+				x402Accepts: "eip155:8453, eip155:1",
+			},
+		});
+
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(loaded, { screen: "settings", level: "list" });
+		const form = formFor(loaded, "save-payment-settings");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.example");
+		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
+		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
+	});
+
+	test("INC-C5: a payTo that is not a wallet address is REFUSED and nothing is saved", async () => {
+		// The `payTo` tier gate, at the WRITE end (`x402-wiring.ts` holds the read
+		// end). kv is last-writer-wins with no validation of its own, and this
+		// value is where the buyer's money goes — so a typo must be refused at the
+		// only surface that can tell the operator about it, not stored and then
+		// silently ignored by a gateway that quietly never arms.
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const refused = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { emailFrom: "orders@shop.example", x402PayTo: "my-wallet", x402Accepts: "" },
+		});
+		const blocks = blocksOf(refused);
+		// The whole screen comes back (S-5a: never a terminal receipt with no form).
+		expectAllFourFormsPresent(blocks);
+		expect(JSON.stringify(refused)).toContain("not a wallet address");
+
+		// ATOMIC: the valid sibling field was not saved either, so the operator is
+		// never left guessing which half of their submit landed.
+		const after = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const form = formFor(after, "save-payment-settings");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("");
+		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
+	});
+
 	test("INC-09 post-save clear: a successful token save remounts its form BLANK with a DIFFERENT block_id; the other field and blank submits are unaffected", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", () => ({

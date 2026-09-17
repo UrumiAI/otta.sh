@@ -9,12 +9,14 @@
  * hand it `ctx.http.fetch` (allowedHosts-gated) while this package keeps its
  * sandbox-clean guarantee: no `node:` import, no ambient fetch.
  *
- * THE VERIFICATION IS FAIL-CLOSED IN EVERY DIRECTION. A transport error, a
- * non-2xx, an unparseable body, a body that does not say `valid: true` — all of
- * them are `{ valid: false }`, never a throw and never an optimistic default.
- * `verifyReceipt` sits directly in front of `settleOrder`; a thrown rejection
- * there would surface as a 500 on a settlement the buyer already paid for, and
- * an optimistic default would settle an unverified receipt.
+ * THE VERIFICATION IS FAIL-CLOSED IN EVERY DIRECTION — it NEVER returns
+ * `valid: true` unless a facilitator said so about THIS receipt, and it never
+ * throws. What revision 2 adds is that "not valid" is no longer one bucket:
+ * "the facilitator answered, and the answer was no" and "the facilitator could
+ * not be asked" are different facts about a buyer whose money already moved, and
+ * collapsing them turned a transient outage into a permanent refusal.
+ * `unavailable: true` marks the second, and the GATEWAY (not this adapter) is
+ * what turns it into a retryable throw.
  *
  * ⚠ The production-swap requirements in `X402Facilitator`'s doc comment still
  * stand and are NOT satisfied by "the endpoint answered 200": the facilitator
@@ -91,9 +93,10 @@ describe("createHttpFacilitator", () => {
 		);
 	});
 
-	test("anything short of an explicit `valid: true` is NOT valid", async () => {
-		const cases: unknown[] = [{ valid: false }, {}, { valid: "true" }, null, [], "yes"];
-		for (const body of cases) {
+	test("an envelope short of an explicit `valid: true` is a VERDICT: not valid", async () => {
+		// A well-formed answer that does not say `valid: true` IS an answer, so it
+		// stays terminal — truthiness is never enough.
+		for (const body of [{ valid: false }, {}, { valid: "true" }, { valid: 1 }]) {
 			const t = recorder(() => ok(body));
 			expect(
 				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
@@ -101,33 +104,102 @@ describe("createHttpFacilitator", () => {
 		}
 	});
 
-	test("a non-2xx facilitator response is not valid, and does not throw", async () => {
-		const t = recorder(() => Promise.resolve(new Response("nope", { status: 503 })));
-		expect(
-			await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
-		).toEqual({
-			valid: false,
-		});
+	test("a 200 whose body is not an envelope at all is UNAVAILABLE", async () => {
+		// `null`, an array or a bare string is not a facilitator answering "no" — it
+		// is a facilitator (or something in front of it) failing to answer.
+		for (const body of [null, [], "yes"]) {
+			const t = recorder(() => ok(body));
+			expect(
+				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
+			).toEqual({ valid: false, unavailable: true });
+		}
 	});
 
-	test("an unparseable body is not valid, and does not throw", async () => {
+	test("a 4xx the facilitator understood is a VERDICT: not valid, and not unavailable", async () => {
+		// 400/404/422 mean the facilitator read the receipt and rejected it. That is
+		// an answer, so it is terminal — the buyer's proof really is no good.
+		for (const status of [400, 404, 422]) {
+			const t = recorder(() => Promise.resolve(new Response("nope", { status })));
+			expect(
+				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
+			).toEqual({ valid: false });
+		}
+	});
+
+	test("an outage-shaped response is UNAVAILABLE, not a verdict", async () => {
+		// 5xx / 408 / 429 say nothing about the receipt; 401 / 403 say our own
+		// credential is wrong, which is likewise not a statement about the buyer.
+		// Reporting any of these as "invalid signature" would permanently refuse a
+		// settlement whose money already moved on-chain.
+		for (const status of [500, 502, 503, 408, 429, 401, 403]) {
+			const t = recorder(() => Promise.resolve(new Response("nope", { status })));
+			expect(
+				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
+			).toEqual({ valid: false, unavailable: true });
+		}
+	});
+
+	test("an unparseable body is UNAVAILABLE — a broken answer is not an answer", async () => {
 		const t = recorder(() => Promise.resolve(new Response("<html>", { status: 200 })));
 		expect(
 			await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
-		).toEqual({
-			valid: false,
-		});
+		).toEqual({ valid: false, unavailable: true });
 	});
 
-	test("a transport REJECTION is not valid, and does not escape", async () => {
+	test("a transport REJECTION is UNAVAILABLE, and does not escape", async () => {
 		// The allowedHosts gate rejects exactly like this when the facilitator host
-		// is missing from the descriptor — a misconfiguration must read as "not
-		// verified", never as a 500 on the settle path.
+		// is missing from the descriptor. Still never a throw from here — but it is
+		// "could not ask", not "the receipt is forged".
 		const t = recorder(() => Promise.reject(new Error("host not allowed")));
 		expect(
 			await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
-		).toEqual({
-			valid: false,
-		});
+		).toEqual({ valid: false, unavailable: true });
+	});
+
+	test("a HUNG facilitator is aborted and reported UNAVAILABLE, never awaited forever", async () => {
+		// A hung facilitator must not hang `settleOrder` inside the isolate. The
+		// adapter passes an AbortSignal; this fake honours it exactly as a real
+		// fetch does, so the assertion is that the await actually completes.
+		const seen: Array<AbortSignal | undefined> = [];
+		const hang = (_url: string, init?: RequestInit) => {
+			const signal = init?.signal ?? undefined;
+			seen.push(signal ?? undefined);
+			return new Promise<Response>((_resolve, reject) => {
+				signal?.addEventListener("abort", () => {
+					reject(new Error("aborted"));
+				});
+			});
+		};
+		const result = await createHttpFacilitator({
+			fetch: hang,
+			url: FACILITATOR_URL,
+			requestTimeoutMs: 20,
+		}).verifyReceipt(proof);
+		expect(result).toEqual({ valid: false, unavailable: true });
+		expect(seen[0]).toBeInstanceOf(AbortSignal);
+	});
+
+	test("a facilitator answering about a DIFFERENT receipt does not verify this one", async () => {
+		// The response is bound to the question: a facilitator that echoes a
+		// transaction or order id, and echoes the WRONG one, has attested something
+		// else. A terminal verdict, not an outage.
+		for (const body of [
+			{ valid: true, transaction: "0xsomeoneelse" },
+			{ valid: true, orderId: "22222222-2222-4222-8222-222222222222" },
+		]) {
+			const t = recorder(() => ok(body));
+			expect(
+				await createHttpFacilitator({ fetch: t.fetch, url: FACILITATOR_URL }).verifyReceipt(proof),
+			).toEqual({ valid: false });
+		}
+		// A facilitator that echoes the RIGHT ids still verifies.
+		const matching = recorder(() =>
+			ok({ valid: true, transaction: proof.transaction, orderId: proof.orderId }),
+		);
+		expect(
+			await createHttpFacilitator({ fetch: matching.fetch, url: FACILITATOR_URL }).verifyReceipt(
+				proof,
+			),
+		).toEqual({ valid: true });
 	});
 });

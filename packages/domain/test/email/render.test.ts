@@ -174,3 +174,30 @@ describe("customerSafeCancellationCopy", () => {
 		},
 	);
 });
+
+// INC-C5 review (A8) — the money line. `formatMoney` is private, so it is pinned
+// through the only surface that renders it: the order total. Minor units are
+// INTEGERS, and the split into major/minor must survive a value on the wrong
+// side of zero — a refund line carrying -550 rendered as "-6.-50", which is not
+// a price, in an email a customer reads.
+describe("renderEmail formats the total from integer minor units", () => {
+	const base = { orderId: "ord-money", currency: "USD", lines: [] };
+
+	test.each([
+		[1500, "15.00 USD"],
+		[5, "0.05 USD"],
+		[0, "0.00 USD"],
+		[-550, "-5.50 USD"],
+		[-5, "-0.05 USD"],
+	])("%d minor units renders as %s", (totalCents, expected) => {
+		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(expected);
+	});
+
+	test.each([10.5, Number.NaN, Number.POSITIVE_INFINITY])(
+		"%s is not an integer minor unit and renders NO amount rather than a wrong one",
+		(totalCents) => {
+			const rendered = renderEmail("order-confirmation", { ...base, totalCents });
+			expect(rendered.text).not.toContain("USD");
+		},
+	);
+});

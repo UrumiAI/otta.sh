@@ -203,4 +203,29 @@ describe("makeEmailSender — the composition root's fail-closed wiring", () => 
 		// posting `undefined`.
 		expect(JSON.parse(String(calls[0]?.init?.body))["from"]).toBe("no-reply@otta.local");
 	});
+
+	test("a HUNG email provider is aborted, so one bad row cannot starve the sweep", async () => {
+		// `dispatchOrderEmails` wraps each row in try/catch, which catches a THROWN
+		// send — not an unbounded await. Without a ceiling here a hung provider
+		// holds the cron tick open and every sweep leg after `order-emails` never
+		// runs. Aborting turns the hang into the throw the dispatcher already
+		// handles, which also leaves the row NOT marked sent.
+		const seen: Array<AbortSignal | undefined> = [];
+		const sender = new CtxHttpEmailSender({
+			fetch: (_url: string, init?: RequestInit) => {
+				const signal = init?.signal ?? undefined;
+				seen.push(signal ?? undefined);
+				return new Promise<Response>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => {
+						reject(new Error("aborted"));
+					});
+				});
+			},
+			apiUrl: API_URL,
+			from: "orders@shop.test",
+			requestTimeoutMs: 20,
+		});
+		await expect(sender.send(input)).rejects.toThrow();
+		expect(seen[0]).toBeInstanceOf(AbortSignal);
+	});
 });

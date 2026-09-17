@@ -230,6 +230,17 @@ export {
 	type StripeWebhookSettleReason,
 	type StripeWebhookSettleResult,
 } from "./webhooks/stripe-settle-route.js";
+// INC-C5: the in-process x402 page-gate settle surface. Exported for the same
+// reason as the Stripe one above — the calling site reconstructs the HTTP status
+// from the returned `status` field.
+export {
+	createX402SettleHandler,
+	X402_SETTLE_ROUTE,
+	x402SettleResultToResponse,
+	type X402SettleInput,
+	type X402SettleReason,
+	type X402SettleResult,
+} from "./payments/x402-settle-route.js";
 export {
 	CommerceClientError,
 	type CartFailureReason,

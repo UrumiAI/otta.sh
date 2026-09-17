@@ -18,7 +18,11 @@
  * | `settings:stripeSecretKey`         | `STRIPE_SECRET_KEY`       | `service/src/stripe-wiring.ts:7`  |
  * | `settings:stripeWebhookSecret`     | `STRIPE_WEBHOOK_SECRET`   | `service/src/stripe-wiring.ts:6`  |
  * | `settings:emailApiKey`             | `EMAIL_API_KEY`           | `service/src/index.ts:79`         |
- * | `settings:x402FacilitatorSecret`   | `X402_FACILITATOR_SECRET` | `service/src/x402-wiring.ts:6`    |
+ * | `settings:x402FacilitatorSecret`   | `X402_FACILITATOR_SECRET` | `payments/x402-wiring.ts` (†)     |
+ *
+ * (†) INC-C5 CHANGED WHAT THAT LAST ROW MEANS — see its own doc below. It is no
+ * longer an offline HMAC secret; it is the bearer credential the in-process
+ * facilitator call puts on the wire.
  *
  * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companions —
  * `EMAIL_API_URL`, `EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`,
@@ -51,10 +55,31 @@ export const STRIPE_WEBHOOK_SECRET_KEY = "settings:stripeWebhookSecret";
  *  honest failure. */
 export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
 
-/** `X402_FACILITATOR_SECRET` — the shared HMAC secret the x402 facilitator
- *  verification uses (`service/src/x402-wiring.ts:6,31`). The service treats a
- *  leak of this as forge-a-settlement severity and fail-closes around it; the
- *  same value therefore gets the same write-only treatment here. */
+/**
+ * The x402 facilitator CREDENTIAL — the bearer token
+ * `createHttpFacilitator` attaches when it asks a real facilitator to verify a
+ * receipt (`payments/x402-wiring.ts`).
+ *
+ * ⚠ ITS MEANING CHANGED AT INC-C5, AND THE KEY NAME DID NOT. Under INC-C3 this
+ * was the in-process rename of the service's `X402_FACILITATOR_SECRET`: the
+ * SHARED HMAC secret `createTestFacilitator` signs and verifies with, a value
+ * that is never transmitted and whose leak is forge-a-settlement severity.
+ * In-process there is no offline facilitator — `createHttpFacilitator` asks a
+ * real one over `ctx.http` — so this key now holds a value that GOES ON THE WIRE
+ * as `Authorization: Bearer …` to the facilitator host. Those are different
+ * threat models and the table below says so, because an operator who provisions
+ * a key for one meaning and gets the other is a security bug, not a naming nit.
+ *
+ * WHY THE KEY WAS RE-DOCUMENTED RATHER THAN RENAMED. A distinct sixth key would
+ * be the cleaner separation in the abstract, but nothing in the plugin ever used
+ * this key as an HMAC secret — `createTestFacilitator` is unreachable from every
+ * in-process path — so a rename would split one credential into two where only
+ * one is ever read, and it would push the "Payments & email" accordion label
+ * past the X-11 60-character budget it was deliberately composed against
+ * (`settings-widget.sandbox.test.ts` pins that label at exactly 60). The
+ * SERVICE's own offline facilitator keeps reading its own `X402_FACILITATOR_SECRET`
+ * environment variable, which was never this key.
+ */
 export const X402_FACILITATOR_SECRET_KEY = "settings:x402FacilitatorSecret";
 
 /**
@@ -208,7 +233,8 @@ export async function emailApiKeyFromKv(ctx: PluginContext): Promise<string | un
 	return readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY);
 }
 
-/** The x402 facilitator's shared secret, by name. */
+/** The x402 facilitator's bearer credential, by name (INC-C5 — see
+ *  {@link X402_FACILITATOR_SECRET_KEY} for what this key does and does not mean). */
 export async function x402FacilitatorSecretFromKv(ctx: PluginContext): Promise<string | undefined> {
 	return readWriteOnlySecret(ctx, X402_FACILITATOR_SECRET_KEY);
 }

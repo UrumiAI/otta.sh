@@ -324,9 +324,14 @@ describe("the four ported sweeps", () => {
 	}, 180_000);
 
 	test("order-emails reports SKIPPED while no sender is wired, and drains the outbox once one is", async () => {
-		// In the isolate there is no `EmailSender` yet — INC-C5 builds one over
-		// `ctx.http`, and it depends on this increment. A silent no-op would be
+		// Since INC-C5 there IS an `EmailSender` over `ctx.http` — but this sandbox
+		// bakes no `IN_PROCESS_EGRESS_URLS.emailApiUrl`, so `makeEmailSender`
+		// fail-closes to `undefined` and the leg reports the same `skipped` for a
+		// DIFFERENT reason than when this line was written: the deployment is
+		// unconfigured, not the code unbuilt. A silent no-op would be
 		// indistinguishable from an empty outbox, so the leg says so.
+		// `in-process-egress.sandbox.test.ts` covers the CONFIGURED arm, where the
+		// URL is baked into the scratch manifest and its host is in `allowedHosts`.
 		expect(leg(await tick(), "order-emails")).toMatchObject({ count: 0, skipped: true });
 
 		// And with one injected, over the SAME real store, the leg is a real drain.

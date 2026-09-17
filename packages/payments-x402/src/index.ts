@@ -33,8 +33,54 @@ import {
  *    gateway's `payTo`** once the real client exposes it — otherwise a payment
  *    to the attacker's own wallet would satisfy the amount check.
  */
+/**
+ * What a facilitator said about a receipt.
+ *
+ * `valid: false` alone means THE FACILITATOR ANSWERED AND THE ANSWER WAS NO.
+ * `unavailable: true` means IT COULD NOT BE ASKED — a transport failure, a
+ * timeout, a 5xx/429, a rejected credential, a body that did not parse. The
+ * distinction is not cosmetic: for a buyer whose money already moved on-chain,
+ * reporting a transient outage as "invalid signature" is a PERMANENT refusal of
+ * a settlement that was actually fine, and the caller has no way to tell the two
+ * apart after the fact. `payments-stripe` draws the same line with its
+ * `retryable | ambiguous | terminal` classification.
+ */
+export interface X402VerifyResult {
+	valid: boolean;
+	/** Set only on the "could not ask" arm. Never set alongside `valid: true`. */
+	unavailable?: boolean;
+}
+
 export interface X402Facilitator {
-	verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }>;
+	verifyReceipt(proof: X402Proof): Promise<X402VerifyResult>;
+}
+
+/**
+ * The facilitator could not be reached or could not answer — thrown by
+ * {@link X402PaymentGateway.verifyConfirmation}, never by the facilitator
+ * adapter itself.
+ *
+ * WHY A THROW AND NOT A REASON. The port's `ConfirmationResult` offers exactly
+ * three failure reasons (`INVALID_SIGNATURE`, `UNKNOWN_EVENT`, `MALFORMED`) and
+ * every one of them is a TERMINAL statement about the confirmation. There is no
+ * honest way to say "ask me again" in that union, and widening a domain port
+ * from an adapter is not this increment's business. So the gateway does what
+ * `payments-stripe` already does for an ambiguous Stripe failure: it throws a
+ * CLASSIFIED error (`PaymentIntentError({retryable})` there, this here), which
+ * a caller surfaces as a retryable 5xx rather than as a terminal 400.
+ *
+ * **No credential, and no part of the proof, may ever reach `message` or any
+ * enumerable field** — this is logged verbatim, exactly as `PaymentIntentError`
+ * documents for itself.
+ */
+export class X402FacilitatorUnavailableError extends Error {
+	readonly gateway = "x402" as const;
+	readonly retryable = true;
+
+	constructor() {
+		super("x402 facilitator could not verify the receipt (unavailable — retryable)");
+		this.name = "X402FacilitatorUnavailableError";
+	}
 }
 
 export interface X402PaymentGatewayOptions {
@@ -98,8 +144,13 @@ export class X402PaymentGateway implements PaymentGateway {
 			return { ok: false, reason: "INVALID_SIGNATURE" };
 		}
 		// Facilitator-verified server-side — never trust the plugin's word.
-		const { valid } = await this.#facilitator.verifyReceipt(proof);
-		if (!valid) return { ok: false, reason: "INVALID_SIGNATURE" };
+		const verdict = await this.#facilitator.verifyReceipt(proof);
+		// "COULD NOT ASK" IS NOT "THE ANSWER WAS NO". A facilitator outage must not
+		// permanently refuse a settlement whose money already moved; the caller gets
+		// a retryable throw instead of a terminal reason it cannot distinguish. See
+		// {@link X402FacilitatorUnavailableError} for why this is a throw.
+		if (verdict.unavailable === true) throw new X402FacilitatorUnavailableError();
+		if (!verdict.valid) return { ok: false, reason: "INVALID_SIGNATURE" };
 		return {
 			ok: true,
 			outcome: "succeeded",
@@ -139,18 +190,72 @@ export interface HttpFacilitatorOptions {
 	url: string;
 	/** Bearer credential for the facilitator API, when it requires one. */
 	apiKey?: string | undefined;
+	/** Per-request timeout, via `AbortSignal.timeout`. Defaults to
+	 *  {@link DEFAULT_FACILITATOR_TIMEOUT_MS}. */
+	requestTimeoutMs?: number | undefined;
+}
+
+/**
+ * A hung facilitator must never hang a Worker settlement — the same rule, and
+ * the same default, as `payments-stripe`'s `DEFAULT_REQUEST_TIMEOUT_MS` ("a hung
+ * Stripe must never hang a Worker checkout"). Without it `verifyReceipt` awaits
+ * forever inside `settleOrder`, holding the isolate.
+ */
+export const DEFAULT_FACILITATOR_TIMEOUT_MS = 30_000;
+
+/** Statuses that say nothing about the RECEIPT: the facilitator is down, rate
+ *  limiting us, or refusing OUR credential. None of those is a verdict on the
+ *  buyer's proof, so none may become a terminal `INVALID_SIGNATURE`. Every other
+ *  non-2xx (400/404/422 …) means the facilitator read the receipt and rejected
+ *  it — that IS a verdict, and stays terminal. Mirrors the `>= 500 || 429`
+ *  retryable split `payments-stripe` uses on a READ, plus the two auth codes,
+ *  which for a verification call are a misconfiguration on our side. */
+function isUnavailableStatus(status: number): boolean {
+	return status >= 500 || status === 408 || status === 429 || status === 401 || status === 403;
+}
+
+/** Whether a facilitator that ECHOED an identifier echoed the one we asked
+ *  about. A facilitator is not required to echo — the real clients differ — but
+ *  one that answers about a DIFFERENT transaction or order has attested
+ *  something else, and that answer must not settle this one. An absent field is
+ *  not a mismatch; a present, non-matching field is. */
+function echoesRequest(body: Record<string, unknown>, proof: X402Proof): boolean {
+	for (const [key, asked] of [
+		["transaction", proof.transaction],
+		["orderId", proof.orderId],
+	] as const) {
+		const answered = body[key];
+		if (answered !== undefined && answered !== asked) return false;
+	}
+	return true;
 }
 
 /**
  * An {@link X402Facilitator} that asks a real facilitator over HTTP (INC-C5) —
  * the production counterpart to {@link createTestFacilitator}'s offline HMAC.
  *
- * FAIL-CLOSED IN EVERY DIRECTION, and never throwing. This sits directly in front
- * of `settleOrder`: a rejection here would surface as a 500 on a settlement the
- * buyer has already paid for, and an optimistic default would settle an
- * unverified receipt. So a transport error, a non-2xx, an unparseable body, or
- * any body that does not say `valid: true` all resolve to `{ valid: false }`, and
- * the caller retries or refuses on its own terms.
+ * FAIL-CLOSED IN EVERY DIRECTION, and never throwing: nothing short of an
+ * explicit `valid: true` from the facilitator, about THIS receipt, is valid.
+ *
+ * BUT "NOT VALID" IS TWO DIFFERENT FACTS, and the first cut of this adapter
+ * folded them together. "The facilitator answered and the answer was no" is a
+ * verdict on the buyer's proof; "the facilitator could not be asked" (transport
+ * failure, timeout, 5xx/429, rejected credential, unparseable body) is a fact
+ * about US. Reported identically, a five-second facilitator blip became a
+ * permanent `INVALID_SIGNATURE` refusal for a buyer whose USDC had already
+ * moved. So the second arm carries `unavailable: true`, and
+ * {@link X402PaymentGateway.verifyConfirmation} turns that into a RETRYABLE
+ * throw — the caller now has something to decide on, which the old
+ * "retries or refuses on its own terms" claimed without providing.
+ *
+ * BOUND TO THE QUESTION. A facilitator that echoes a `transaction` or `orderId`
+ * must echo the one we asked about; an answer about a different receipt is a
+ * terminal refusal, not an attestation of ours. (Echoing is optional — the real
+ * clients differ — so an absent field is not a mismatch.)
+ *
+ * TIMED OUT. `AbortSignal.timeout` bounds the call
+ * ({@link DEFAULT_FACILITATOR_TIMEOUT_MS}): a hung facilitator would otherwise
+ * hang `settleOrder` inside the isolate with no ceiling at all.
  *
  * ⚠ The PRODUCTION SWAP-IN REQUIREMENTS on {@link X402Facilitator} are NOT
  * discharged by a 200 from this endpoint. The facilitator must cryptographically
@@ -162,8 +267,9 @@ export interface HttpFacilitatorOptions {
  */
 export function createHttpFacilitator(options: HttpFacilitatorOptions): X402Facilitator {
 	const doFetch = options.fetch;
+	const timeoutMs = options.requestTimeoutMs ?? DEFAULT_FACILITATOR_TIMEOUT_MS;
 	return {
-		async verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }> {
+		async verifyReceipt(proof: X402Proof): Promise<X402VerifyResult> {
 			const headers: Record<string, string> = { "content-type": "application/json" };
 			if (options.apiKey !== undefined && options.apiKey.length > 0) {
 				headers["authorization"] = `Bearer ${options.apiKey}`;
@@ -184,22 +290,39 @@ export function createHttpFacilitator(options: HttpFacilitatorOptions): X402Faci
 						currency: proof.currency,
 						signature: proof.signature,
 					}),
+					// A hung facilitator must never hang a Worker settlement.
+					signal: AbortSignal.timeout(timeoutMs),
 				});
-				if (!res.ok) return { valid: false };
-				const body: unknown = await res.json();
+				if (!res.ok) {
+					return isUnavailableStatus(res.status)
+						? { valid: false, unavailable: true }
+						: { valid: false };
+				}
+				let body: unknown;
+				try {
+					body = await res.json();
+				} catch {
+					// A 200 carrying something that is not JSON is a BROKEN answer, not a
+					// verdict — an HTML error page from a proxy in front of the facilitator
+					// reads exactly like this.
+					return { valid: false, unavailable: true };
+				}
+				if (typeof body !== "object" || body === null || Array.isArray(body)) {
+					return { valid: false, unavailable: true };
+				}
+				const answer = body as Record<string, unknown>;
 				// EXPLICIT `true`, not truthiness: a facilitator answering `"true"`, or
 				// an error envelope that happens to carry a `valid` key, must not settle
-				// an order.
-				const valid =
-					typeof body === "object" &&
-					body !== null &&
-					!Array.isArray(body) &&
-					(body as { valid?: unknown }).valid === true;
-				return { valid };
+				// an order. And the answer must be about the receipt we asked about.
+				if (answer["valid"] !== true) return { valid: false };
+				if (!echoesRequest(answer, proof)) return { valid: false };
+				return { valid: true };
 			} catch {
-				// Includes the allowedHosts refusal a misconfigured descriptor produces:
-				// "not verified", never a 500 on the settle path.
-				return { valid: false };
+				// A transport rejection, an abort on the timeout above, or the
+				// allowedHosts refusal a misconfigured descriptor produces. All of them
+				// are "could not ask" — still never a throw from here, but no longer
+				// indistinguishable from a forged receipt.
+				return { valid: false, unavailable: true };
 			}
 		},
 	};

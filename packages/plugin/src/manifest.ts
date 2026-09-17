@@ -207,13 +207,47 @@ export function resolveAllowedHosts(
 declare const __OTTA_EMAIL_API_URL__: string | undefined;
 declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
 
-/** The in-process egress URLs this bundle was built for. Absent defines ⇒ no
- *  host granted for that provider (fail-closed). */
-export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = {
+/** The raw defines, before the mode gate. Not exported: every consumer must see
+ *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
+ *  construction. */
+const BAKED_EGRESS_URLS: InProcessEgressUrls = {
 	emailApiUrl: typeof __OTTA_EMAIL_API_URL__ === "string" ? __OTTA_EMAIL_API_URL__ : undefined,
 	facilitatorUrl:
 		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
 };
+
+/**
+ * The egress URLs a CONSUMER may use, resolved on the SAME arm the allowlist is.
+ *
+ * `resolveAllowedHosts` deliberately ignores these URLs in `"http"` mode — in
+ * that mode the service makes those calls — but a caller reading the raw define
+ * would not know that. A bundle built with `__OTTA_EMAIL_API_URL__` while still
+ * on the http arm would hand the cron sweep a live `EmailSender` pointed at a
+ * host the gate refuses: every send would fail, rows would reschedule and
+ * eventually park `failed`, and the leg would report `count: 0` instead of the
+ * honest `skipped`. (`make-commerce-client.ts` escaped this only incidentally,
+ * by sitting inside a `mode === "in-process"` branch.)
+ *
+ * Gating once, here, makes "a consumer never holds a URL whose host is not
+ * granted" true by construction rather than by every caller remembering.
+ */
+export function resolveInProcessEgress(
+	mode: CommerceMode,
+	egress: InProcessEgressUrls = {},
+): InProcessEgressUrls {
+	if (mode !== "in-process") return {};
+	return {
+		...(egress.emailApiUrl !== undefined ? { emailApiUrl: egress.emailApiUrl } : {}),
+		...(egress.facilitatorUrl !== undefined ? { facilitatorUrl: egress.facilitatorUrl } : {}),
+	};
+}
+
+/** The in-process egress URLs this bundle may actually use. Absent define, or
+ *  the `"http"` arm ⇒ that provider is unconfigured (fail-closed). */
+export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = resolveInProcessEgress(
+	resolveCommerceMode(),
+	BAKED_EGRESS_URLS,
+);
 
 /**
  * The resolved allowlist for THIS bundle.
@@ -231,5 +265,5 @@ export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls = {
 export const ALLOWED_HOSTS: string[] = resolveAllowedHosts(
 	resolveCommerceMode(),
 	COMMERCE_SERVICE_BASE_URL,
-	IN_PROCESS_EGRESS_URLS,
+	BAKED_EGRESS_URLS,
 );

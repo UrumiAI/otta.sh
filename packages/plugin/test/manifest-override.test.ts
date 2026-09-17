@@ -12,6 +12,7 @@ import {
 	COMMERCE_SERVICE_BASE_URL,
 	resolveAllowedHosts,
 	resolveCommerceServiceBaseUrl,
+	resolveInProcessEgress,
 	STRIPE_API_HOST,
 } from "../src/manifest.js";
 
@@ -123,5 +124,49 @@ describe("resolveAllowedHosts — the per-mode egress sets, EXACTLY", () => {
 				facilitatorUrl: "https://api.stripe.com/x402",
 			}),
 		).toEqual([STRIPE_API_HOST]);
+	});
+});
+
+describe("resolveInProcessEgress — the CONSUMERS see the same arm the gate does", () => {
+	const SERVICE = "https://svc.example.com";
+	const EMAIL = "https://api.email.example.com/v1/send";
+	const FACILITATOR = "https://facilitator.example.com";
+
+	test('"http" mode resolves to NO egress URLs, whatever was baked', () => {
+		// The bug this closes: `resolveAllowedHosts` ignores these URLs on the http
+		// arm, but the cron sweep read the RAW define and built a live sender from
+		// it. The first bundle built with an email URL while still on the http arm
+		// would have pointed a real sender at a host the gate refuses — every send
+		// failing, rows rescheduling and eventually parking `failed`, and the leg
+		// reporting `count: 0` instead of the honest `skipped`. One resolver, so
+		// the gate and every caller cannot disagree by construction.
+		expect(
+			resolveInProcessEgress("http", { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR }),
+		).toEqual({});
+	});
+
+	test('"in-process" mode passes the baked URLs through unchanged', () => {
+		expect(
+			resolveInProcessEgress("in-process", { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR }),
+		).toEqual({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR });
+	});
+
+	test("every host the resolved egress names is a host the gate grants", () => {
+		// The invariant stated as one assertion, over both arms: a consumer can
+		// never hold a URL whose host is absent from ALLOWED_HOSTS.
+		for (const mode of ["http", "in-process"] as const) {
+			const granted = resolveAllowedHosts(mode, SERVICE, {
+				emailApiUrl: EMAIL,
+				facilitatorUrl: FACILITATOR,
+			});
+			const resolved = resolveInProcessEgress(mode, {
+				emailApiUrl: EMAIL,
+				facilitatorUrl: FACILITATOR,
+			});
+			for (const url of [resolved.emailApiUrl, resolved.facilitatorUrl]) {
+				if (url === undefined) continue;
+				expect(granted).toContain(new URL(url).hostname);
+			}
+		}
 	});
 });
