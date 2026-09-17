@@ -132,16 +132,34 @@ function recordingSettle(): { settle: SettleFn; calls: SettleResult[] } {
 	return { settle, calls };
 }
 
+/**
+ * Invoke the handler the way a host does.
+ *
+ * `headers` takes both container shapes the lookup tolerates. The plain record
+ * is the REAL one: EmDash wraps this `format: "standard"` plugin in
+ * `adaptSandboxEntry`, which flattens `ctx.request.headers` into a lowercase
+ * `Record<string, string>` before the handler runs — in the in-process
+ * registration as well as the sandboxed one. A real `Headers` is accepted here
+ * only because `header()` defensively supports it; the type annotation describes
+ * the record, so the other shape is asserted through rather than typed.
+ */
 async function invoke(
 	input: unknown,
-	headers: Record<string, string> = {},
+	headers: Record<string, string> | Headers = {},
 	options: { settle?: SettleFn; ctx?: PluginContext } = {},
 ): Promise<StripeWebhookSettleResult> {
 	const handler = createStripeWebhookSettleHandler(
 		options.settle === undefined ? {} : { settle: options.settle },
 	);
 	const result = await handler(
-		{ input: input as never, request: { method: "POST", url: "/route", headers } },
+		{
+			input: input as never,
+			request: {
+				method: "POST",
+				url: "/route",
+				headers: headers as unknown as Record<string, string>,
+			},
+		},
 		options.ctx ?? harness.ctx,
 	);
 	return result as StripeWebhookSettleResult;
@@ -214,6 +232,51 @@ describe("(i) a valid token and a correct signature settle the order, once", () 
 			"x-otta-wh-token": EDGE_TOKEN,
 		});
 		expect(res).toEqual({ ok: true, status: 200 });
+	});
+
+	test("a REAL `Headers` instance carries the token too — the defensive branch works", async () => {
+		// Coverage for a container shape `header()` supports DEFENSIVELY, not one
+		// this deployment currently hands over. Today EmDash wraps every
+		// `format: "standard"` plugin whose definition has no top-level `id` — which
+		// Otta's does not — in `adaptSandboxEntry`, and that adapter flattens
+		// `request.headers` into a plain lowercase record before the handler runs,
+		// in-process registration included. So the record cases above are the live
+		// path; this one pins the fallback.
+		//
+		// It is worth pinning because the failure would be silent:
+		// `Object.entries(new Headers({…}))` is `[]` — a `Headers`' entries live
+		// behind an iterator, not on the object — so a lookup that only enumerates
+		// own properties would read NO header and 401 every delivery the moment an
+		// edge token is provisioned. If a future dispatch path ever passes a real
+		// `Request` through, this test is what catches it before a deploy does.
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-headers");
+
+		const res = await invoke(
+			await signedDelivery("ord-headers"),
+			new Headers({ [WEBHOOK_EDGE_TOKEN_HEADER]: EDGE_TOKEN }),
+		);
+
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(await orderState("ord-headers")).toBe("paid");
+	});
+
+	test("a WRONG token in a real `Headers` is still refused — the shape is not a bypass", async () => {
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-headers-wrong");
+		const { settle, calls } = recordingSettle();
+
+		const res = await invoke(
+			await signedDelivery("ord-headers-wrong"),
+			new Headers({ [WEBHOOK_EDGE_TOKEN_HEADER]: "otta_edge_WRONG" }),
+			{ settle },
+		);
+
+		expect(res).toEqual({ ok: false, status: 401, reason: "UNAUTHORIZED" });
+		expect(calls).toHaveLength(0);
+		expect(await orderState("ord-headers-wrong")).toBe("pending");
 	});
 });
 

@@ -96,13 +96,48 @@ export type StripeWebhookSettleReason =
 	| "ORDER_NOT_FOUND"
 	| "AMOUNT_MISMATCH";
 
-/** Case-insensitive header read. The sandbox hands headers over as a plain
- *  record whose casing is whatever the caller sent, and HTTP header names are
- *  case-insensitive, so matching `X-Otta-Wh-Token` literally would let a caller
- *  sending `x-otta-wh-token` fail the gate for no reason. */
+/**
+ * Case-insensitive header read, tolerant of BOTH container shapes.
+ *
+ * HTTP header names are case-insensitive, so matching `X-Otta-Wh-Token`
+ * literally would fail the gate for a caller who sent `x-otta-wh-token`. That
+ * half is load-bearing today. The CONTAINER sniffing below is DEFENSIVE: it
+ * guards a dispatch path that does not currently exist, and no delivery has ever
+ * been rejected for want of it. Before deleting that branch, check both triggers
+ * that would make it live: the default export gaining a top-level `id` (a
+ * `definePlugin`-style registration, which sends `adaptSandboxEntry` down its
+ * pass-through branch), or this descriptor's `format` changing to `"native"` —
+ * which the sibling `otta-console` descriptor in this same site already uses.
+ *
+ * What actually arrives, in either registration mode, is the plain lowercase
+ * `Record<string, string>` that `SandboxedRequest` already declares. Otta
+ * registers as `format: "standard"` and its default export (`plugin.ts`) has NO
+ * top-level `id`, so EmDash's integration wraps the handler in
+ * `adaptSandboxEntry` — and with no `id` on the definition that adapter takes
+ * its non-pass-through branch and flattens `ctx.request.headers` into a record
+ * before this handler is ever called. It does so for the in-process
+ * registration (`plugins: []`, how `sites/staging` registers this plugin) just
+ * as for the sandboxed one, so `PluginRouteHandler.invoke`'s genuine `Request`
+ * never reaches here. The enumeration branch is the branch that runs.
+ *
+ * Why sniff anyway: a real `Headers` keeps its entries behind an iterator rather
+ * than on the object, so `Object.entries()` on one returns `[]` and this gate
+ * would silently read no header at all — degrading to "token set, header absent"
+ * and a 401 on every genuine delivery. That failure mode is expensive enough,
+ * and one `typeof …get === "function"` check cheap enough, that the annotation
+ * is deliberately not trusted to be the last word on what arrives. `Headers` is
+ * identified by its `.get`, which already does the case-insensitive match.
+ */
 function header(request: SandboxedRequest, name: string): string | undefined {
+	const headers = request.headers as unknown as
+		| Record<string, string>
+		| { get(name: string): string | null };
+	if (typeof (headers as { get?: unknown }).get === "function") {
+		const value = (headers as { get(name: string): string | null }).get(name);
+		return value === null ? undefined : value;
+	}
 	const wanted = name.toLowerCase();
-	for (const [key, value] of Object.entries(request.headers)) {
+	for (const [key, value] of Object.entries(headers as Record<string, string>)) {
 		if (key.toLowerCase() === wanted) return value;
 	}
 	return undefined;
