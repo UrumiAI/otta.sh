@@ -1,5 +1,4 @@
-import type { EmailSender, SendEmailInput } from "@otta-sh/domain";
-import { renderEmail } from "./render.js";
+import { renderEmail, type EmailSender, type SendEmailInput } from "@otta-sh/domain";
 
 /**
  * Concrete `EmailSender` adapters (Phase 5 §6/§7). The service sends email

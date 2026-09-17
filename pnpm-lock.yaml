@@ -212,6 +212,9 @@ importers:
       '@otta-sh/payments-stripe':
         specifier: workspace:*
         version: link:../payments-stripe
+      '@otta-sh/payments-x402':
+        specifier: workspace:*
+        version: link:../payments-x402
       '@otta-sh/store-emdash':
         specifier: workspace:*
         version: link:../store-emdash

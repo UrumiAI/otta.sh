@@ -126,6 +126,85 @@ export class X402PaymentGateway implements PaymentGateway {
 	}
 }
 
+// -- HTTP facilitator (production; the ONE network call this package makes) --
+
+/** The transport an {@link createHttpFacilitator} is handed. Property-style, and
+ *  injected rather than ambient, for two reasons that are really one: the plugin
+ *  passes `ctx.http.fetch` so the call is gated by `allowedHosts`, and neither
+ *  this package nor that plugin may reach a bare global `fetch` (the sandbox-clean
+ *  rule, pinned by both packages' guard suites). */
+export interface HttpFacilitatorOptions {
+	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	/** The facilitator's verification endpoint. */
+	url: string;
+	/** Bearer credential for the facilitator API, when it requires one. */
+	apiKey?: string | undefined;
+}
+
+/**
+ * An {@link X402Facilitator} that asks a real facilitator over HTTP (INC-C5) —
+ * the production counterpart to {@link createTestFacilitator}'s offline HMAC.
+ *
+ * FAIL-CLOSED IN EVERY DIRECTION, and never throwing. This sits directly in front
+ * of `settleOrder`: a rejection here would surface as a 500 on a settlement the
+ * buyer has already paid for, and an optimistic default would settle an
+ * unverified receipt. So a transport error, a non-2xx, an unparseable body, or
+ * any body that does not say `valid: true` all resolve to `{ valid: false }`, and
+ * the caller retries or refuses on its own terms.
+ *
+ * ⚠ The PRODUCTION SWAP-IN REQUIREMENTS on {@link X402Facilitator} are NOT
+ * discharged by a 200 from this endpoint. The facilitator must cryptographically
+ * attest the settlement's amount, asset and recipient — which is why the whole
+ * receipt is forwarded rather than just the tx hash — and the recipient must be
+ * checked against this gateway's `payTo` once a facilitator exposes it. Until
+ * then the domain's `amount == order total` equality and the tx-hash dedupe are
+ * still what bind a receipt to an order.
+ */
+export function createHttpFacilitator(options: HttpFacilitatorOptions): X402Facilitator {
+	const doFetch = options.fetch;
+	return {
+		async verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }> {
+			const headers: Record<string, string> = { "content-type": "application/json" };
+			if (options.apiKey !== undefined && options.apiKey.length > 0) {
+				headers["authorization"] = `Bearer ${options.apiKey}`;
+			}
+			try {
+				const res = await doFetch(options.url, {
+					method: "POST",
+					headers,
+					// `amount` is already integer minor units (branded `Cents`) and is
+					// serialized as that integer — the facilitator is asked to attest THAT
+					// number, which is the one the domain then equality-checks.
+					body: JSON.stringify({
+						orderId: proof.orderId,
+						transaction: proof.transaction,
+						network: proof.network,
+						payer: proof.payer,
+						amount: proof.amount,
+						currency: proof.currency,
+						signature: proof.signature,
+					}),
+				});
+				if (!res.ok) return { valid: false };
+				const body: unknown = await res.json();
+				// EXPLICIT `true`, not truthiness: a facilitator answering `"true"`, or
+				// an error envelope that happens to carry a `valid` key, must not settle
+				// an order.
+				const valid =
+					typeof body === "object" &&
+					body !== null &&
+					!Array.isArray(body) &&
+					(body as { valid?: unknown }).valid === true;
+				return { valid };
+			} catch {
+				// Includes the allowedHosts refusal a misconfigured descriptor produces:
+				// "not verified", never a 500 on the settle path.
+				return { valid: false };
+			}
+		},
+	};
+}
+
 // -- offline HMAC facilitator (test/dev; NO network) -------------------------
 
 /** Canonical bytes the offline facilitator signs/verifies a receipt over. */
@@ -210,7 +289,12 @@ function toHex(bytes: ArrayBuffer): string {
  *  where `Buffer.from(s, "hex")` truncated silently; the observable result is the
  *  same, because a truncated buffer then failed `timingSafeEqual`'s length check.
  *  Upper-case is accepted, as `Buffer.from` accepted it. */
-function fromHex(hex: string): Uint8Array | undefined {
+// The `<ArrayBuffer>` argument is load-bearing, not decoration: bare `Uint8Array`
+// widens to `Uint8Array<ArrayBufferLike>`, which `crypto.subtle.verify`'s
+// `BufferSource` rejects in any program whose lib narrows `ArrayBufferView` to
+// `ArrayBuffer` — as the plugin's does, now that it depends on this package and
+// therefore typechecks this source.
+function fromHex(hex: string): Uint8Array<ArrayBuffer> | undefined {
 	if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/u.test(hex)) return undefined;
 	const out = new Uint8Array(hex.length / 2);
 	for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);

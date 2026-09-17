@@ -44,6 +44,7 @@
 		"@otta-sh/admin-presentation": "workspace:*",
 		"@otta-sh/domain": "workspace:*",
 		"@otta-sh/payments-stripe": "workspace:*",
+		"@otta-sh/payments-x402": "workspace:*",
 		"@otta-sh/store-emdash": "workspace:*"
 	},
 	"devDependencies": {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { customerSafeCancellationCopy, renderEmail } from "../src/email/render.js";
+import { customerSafeCancellationCopy, renderEmail } from "../../src/email/render.js";
 
 // Email rendering (Phase 5 §6 + admin-UX Increment 1). The shipped template must
 // carry the recorded tracking (carrier / number / URL) instead of the old empty

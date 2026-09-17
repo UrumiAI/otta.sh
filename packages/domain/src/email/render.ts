@@ -1,4 +1,4 @@
-import type { EmailTemplate } from "@otta-sh/domain";
+import type { EmailTemplate } from "../ports/email-sender.js";
 
 export interface RenderedEmail {
 	subject: string;
