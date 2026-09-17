@@ -282,6 +282,12 @@ describe("POST /webhooks/stripe — the token survives the hop INTO the plugin's
 
 		await POST(makeContext(handler));
 
+		// Assert the PREMISE before the verdict, so a future failure here reads
+		// unambiguously: if this line fails, the harness (the `virtual:emdash/env`
+		// stub) lost the token and the gate is being asked the wrong question; if
+		// only the gate assertion below fails, the plugin's gate really regressed.
+		expect(sentToken(calls[0]!)).toBe("otta_edge_value");
+
 		// 503 NOT_CONFIGURED is gate 2 (no `settings:stripeWebhookSecret` in this
 		// fake kv), which is only reachable once gate 1 has accepted the token.
 		expect(await gate(calls[0]!, "otta_edge_value")).toMatchObject({
