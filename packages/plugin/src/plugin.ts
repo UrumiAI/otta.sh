@@ -46,6 +46,8 @@ import {
 	createStripeWebhookSettleHandler,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "./webhooks/stripe-settle-route.js";
+// ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
+import { createActivateHandler, createCronHandler } from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -88,6 +90,13 @@ const plugin: SandboxedPlugin = {
 		"content:afterDelete": { handler: createAfterDeleteHandler() },
 		"content:afterPublish": { handler: createAfterPublishHandler() },
 		"content:afterUnpublish": { handler: createAfterUnpublishHandler() },
+		// Work order 02 INC-C4. `cron` carries NO capability requirement — the only
+		// gate is whether the runtime wired a cron executor — so a `format:
+		// "standard"` descriptor may declare it as it stands, and the declared
+		// capabilities stay exactly `content:read` + `network:request`.
+		// `plugin:activate` is where the task is registered; the tick re-affirms it.
+		"plugin:activate": { handler: createActivateHandler() },
+		cron: { handler: createCronHandler() },
 	},
 	routes: {
 		// Cast to the route record's erased `unknown`-input shape — each

@@ -158,6 +158,23 @@ export {
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
 export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
+// INC-C4 — the scheduled commerce sweep. The task name and schedule are exported
+// so a deploying site can assert what the plugin registers without restating the
+// strings, and `runCommerceSweeps` so a trigger can drive one tick on demand.
+export {
+	createActivateHandler,
+	createCronHandler,
+	ensureSweepTaskScheduled,
+	runCommerceSweeps,
+	SWEEP_LEGS,
+	SWEEP_SCHEDULE,
+	SWEEP_TASK_NAME,
+	type CommerceSweepOptions,
+	type CommerceSweepSummary,
+	type SweepLeg,
+	type SweepLegOutcome,
+	type SweepScheduleOutcome,
+} from "./cron/index.js";
 // INC-C3 — the write-only payment/email secret keys and their fail-closed
 // readers. Exported so a deploying site can assert what the plugin stores, and
 // so INC-C1b's settle route can reach the Stripe webhook secret, without either
