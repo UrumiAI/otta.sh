@@ -158,6 +158,23 @@ export {
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
 export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
+// INC-D1 — the storage layout commerce truth lives in, exported so the DEPLOYING
+// SITE's plugin descriptor can declare it without restating a single collection
+// name or index list. `commerce-storage.ts` was written for exactly this moment
+// ("the descriptor WILL import it when the deployment flips to this transport");
+// until now its only consumers were this package's own test tiers, which reach the
+// module directly, so it never needed to be on the barrel.
+//
+// A DECLARED INDEX IS A READ CONTRACT, not a performance knob: the host refuses a
+// `where`/`orderBy` on an undeclared field at RUNTIME. A site that declared a
+// subset of this map would not run slower — it would throw. That is why the map is
+// exported whole and must be spread, never transcribed.
+export {
+	COMMERCE_STORAGE_COLLECTIONS,
+	COMMERCE_STORAGE_COLLECTION_NAMES,
+	type CommerceCollectionDeclaration,
+	type CommerceStorageLayout,
+} from "./commerce/commerce-storage.js";
 // INC-C4 — the scheduled commerce sweep. The task name and schedule are exported
 // so a deploying site can assert what the plugin registers without restating the
 // strings, and `runCommerceSweeps` so a trigger can drive one tick on demand.

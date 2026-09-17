@@ -35,6 +35,30 @@ const serviceUrl = resolveServiceUrl(
 );
 
 /**
+ * WHICH COMMERCE TRANSPORT THIS BUILD IS — resolved ONCE, here, and then used
+ * for BOTH the `__OTTA_COMMERCE_MODE__` define (what the bundled plugin code
+ * branches on) and `buildEmdashOptions` (what the registered descriptor
+ * declares). Those are two different consumers of one decision, and the define
+ * alone cannot serve both: Vite substitutes defines into the WORKER BUNDLE, not
+ * into this config file, which Node evaluates before any bundling happens. A
+ * `resolveCommerceMode()` call down in the descriptor would therefore read an
+ * un-substituted global and fall back to "http" while the bundle ran
+ * "in-process" — the failure mode being no `storage` declaration at all, i.e.
+ * every `collectionOf` throwing on the first commerce request.
+ *
+ * INC-D1: staging is the FIRST deployment flipped to "in-process". The plugin
+ * now owns cart/order/inventory state in em-dash plugin storage and settles
+ * email/x402 itself (INC-C5); the standalone commerce service is no longer in
+ * the request path. COMMERCE_SERVICE_URL is still resolved above because the
+ * "http" arm and its tests still exist — it is simply not reached from here any
+ * more, and the descriptor drops the service host from `allowedHosts`.
+ *
+ * TRANSITIONAL, like the define it feeds (work order 02): both this const and
+ * the whole "http" arm are deleted at INC-D3b, once no deployment builds it.
+ */
+const commerceMode = "in-process" as const;
+
+/**
  * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
  * Absent ⇒ `undefined` ⇒ the define below bakes `""` ⇒ `/checkout` renders
  * review + totals but says "Card payment isn't set up on this store yet." and
@@ -121,7 +145,7 @@ export default defineConfig({
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
 	],
-	integrations: [react(), emdash(buildEmdashOptions(serviceUrl))],
+	integrations: [react(), emdash(buildEmdashOptions(serviceUrl, commerceMode))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
@@ -139,12 +163,18 @@ export default defineConfig({
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
 			// TRANSITIONAL (work order 02 D6): which commerce transport the
-			// plugin bundle is built for. `"http"` is today's behaviour — the
-			// plugin talks to @otta-sh/service over ctx.http. `"in-process"`
-			// will hold commerce truth on ctx.storage and needs no service.
+			// plugin bundle is built for. `"in-process"` as of INC-D1 — commerce
+			// truth lives on ctx.storage in this Worker and no @otta-sh/service
+			// call is made; `"http"` was the prior behaviour and is still what
+			// other deployments build. NOT a literal here: it comes from the
+			// single `commerceMode` const above, which ALSO decides what
+			// `buildEmdashOptions` registers, so the bundle's branch and the
+			// descriptor's storage/allowedHosts can never be two different
+			// answers (see that const's note on why the define cannot do this
+			// job by itself).
 			// This define, the mode branch it drives and the service itself are
 			// all DELETED at INC-D3b; nothing may be designed around the flag.
-			__OTTA_COMMERCE_MODE__: JSON.stringify("http"),
+			__OTTA_COMMERCE_MODE__: JSON.stringify(commerceMode),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the define

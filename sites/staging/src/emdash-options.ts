@@ -19,6 +19,7 @@
  *    `plugins: []`, still no sandbox runner.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
+import { type CommerceMode, resolveCommerceMode } from "@otta-sh/plugin";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
 import { ottaConsoleDescriptor } from "./otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "./otta-plugin-descriptor.js";
@@ -47,7 +48,29 @@ export interface StagingEmdashOptions {
 	plugins: PluginDescriptor[];
 }
 
-export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
+/**
+ * @param mode WHICH TRANSPORT THIS BUILD REGISTERS — and why it is a parameter
+ *   rather than a `resolveCommerceMode()` call inside the descriptor.
+ *
+ *   `resolveCommerceMode()` reads `__OTTA_COMMERCE_MODE__`, a VITE DEFINE. Vite
+ *   substitutes defines when it bundles the WORKER; it does not touch
+ *   `astro.config.ts`, which Node evaluates at config time, before any bundling —
+ *   so this builder runs with the define un-substituted and the plugin's fallback
+ *   ("http") is what `resolveCommerceMode()` would answer here, no matter what the
+ *   define says. Left implicit, staging would bake `in-process` into the plugin
+ *   bundle while REGISTERING an http descriptor: no `storage` block, so every
+ *   `collectionOf` throws, and the service host still allowlisted for a service the
+ *   bundle no longer calls. Passing the mode the config itself resolved keeps the
+ *   baked transport and the registered descriptor the same decision; the
+ *   cannot-disagree test in site-config.test.ts reads both back out and pins it.
+ *
+ *   The default exists for callers inside the bundle, where the define IS
+ *   substituted and `resolveCommerceMode()` is the right answer.
+ */
+export function buildEmdashOptions(
+	serviceUrl: string,
+	mode: CommerceMode = resolveCommerceMode(),
+): StagingEmdashOptions {
 	return {
 		// No `session` — see the pairing invariant in the module doc above.
 		database: d1({ binding: "DB" }),
@@ -61,6 +84,6 @@ export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
 		// which is why they must not be one descriptor (ADR-0014 Decision 7).
 		// ORDER IS LOAD-BEARING for the site-config test, which reads
 		// `plugins[0]` as the Block Kit descriptor.
-		plugins: [ottaPluginDescriptor(serviceUrl), ottaConsoleDescriptor()],
+		plugins: [ottaPluginDescriptor(serviceUrl, { mode }), ottaConsoleDescriptor()],
 	};
 }

@@ -13,6 +13,7 @@
  */
 import type { PluginDescriptor } from "emdash";
 import {
+	COMMERCE_STORAGE_COLLECTIONS,
 	type CommerceMode,
 	COUPONS_PAGE,
 	type InProcessEgressUrls,
@@ -26,6 +27,38 @@ import {
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
 } from "@otta-sh/plugin";
+
+/** The descriptor's own storage shape, so the widening below is expressed once. */
+type DescriptorStorage = NonNullable<PluginDescriptor["storage"]>;
+
+/**
+ * The commerce storage layout, as the descriptor field wants it.
+ *
+ * THE CAST IS A TYPE WIDENING, NOT A LIE, and it is worth the paragraph. em-dash
+ * types `StorageCollectionDeclaration.indexes` as `string[]`
+ * (`astro/integration/runtime.ts`), but every layer BENEATH that field takes
+ * `Array<string | string[]>` and treats a nested array as a COMPOSITE index: the
+ * manifest wire shape in `@emdash-cms/plugin-types` declares it that way, and
+ * `normalizeIndexes` (`plugins/storage-indexes.ts`) is written as
+ * `indexes.map((i) => Array.isArray(i) ? i : [i])`. The descriptor field is simply
+ * the narrowest type on the path, and Otta's `orders` and `order_sku_index`
+ * collections declare composites the adapters genuinely read by.
+ *
+ * So the alternative to widening is not "safer types" — it is either dropping the
+ * composite entries (the list queries then fail at RUNTIME, against a full
+ * sequential scan, with no build-time signal) or flattening them into single-field
+ * indexes, which is a different index that does not serve the same query. The cast
+ * keeps the value that works and is pinned from the other side by
+ * site-config.test.ts, which asserts the composites survive as arrays.
+ *
+ * COLLECTIONS WITH NO INDEXES stay `{}` and are NOT padded with `indexes: []`
+ * here: `adaptSandboxEntry` normalizes exactly that (`indexes: config.indexes ??
+ * []`) before the config reaches the host, and padding here would make this module
+ * restate a shape it does not own — the thing `commerce-storage.ts` exists to stop.
+ */
+function commerceStorage(): DescriptorStorage {
+	return COMMERCE_STORAGE_COLLECTIONS as unknown as DescriptorStorage;
+}
 
 /** INC-C3 — what the egress allowlist depends on besides the service URL. */
 export interface OttaPluginDescriptorOptions {
@@ -43,6 +76,7 @@ export function ottaPluginDescriptor(
 	serviceUrl: string,
 	options: OttaPluginDescriptorOptions = {},
 ): PluginDescriptor {
+	const mode = options.mode ?? resolveCommerceMode();
 	return {
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
@@ -55,8 +89,10 @@ export function ottaPluginDescriptor(
 		// `resolveAllowedHosts` so this descriptor and the bundle's `ALLOWED_HOSTS`
 		// can never drift into two different answers.
 		//
-		//  - "http" (what this site still builds): exactly the commerce service's
-		//    host, unchanged. The service holds the Stripe/email/x402 credentials
+		//  - "http" (no longer what this site builds — INC-D1 flipped staging to
+		//    in-process; the arm stays for the other deployments and for the
+		//    per-mode tests): exactly the commerce service's host, unchanged.
+		//    The service holds the Stripe/email/x402 credentials
 		//    and makes those calls itself, so granting them here would widen
 		//    ADR-0006's gate for egress the plugin never performs.
 		//  - "in-process": the service is gone and those calls are the plugin's
@@ -66,11 +102,24 @@ export function ottaPluginDescriptor(
 		//    they live in write-only plugin kv (`settings:stripe*`,
 		//    `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
 		//    through the admin Settings form.
-		allowedHosts: resolveAllowedHosts(
-			options.mode ?? resolveCommerceMode(),
-			serviceUrl,
-			options.egress,
-		),
+		allowedHosts: resolveAllowedHosts(mode, serviceUrl, options.egress),
+		// STORAGE IS DECLARED ONLY IN "in-process" MODE (INC-D1), and the `http`
+		// arm stays byte-identical to what staging shipped before this increment.
+		//
+		// The asymmetry is the whole point rather than an oversight: in `http` mode
+		// commerce state lives in the SERVICE's Postgres and the plugin owns no
+		// collections at all, so declaring them there would provision 36 empty
+		// plugin-storage collections that nothing reads — schema for a database this
+		// build does not use. In `in-process` mode this declaration IS the schema:
+		// `ctx.storage.collectionOf(name)` throws "storage collection '<name>' is not
+		// declared" for anything missing from it, so an omission here is not a
+		// degraded query, it is a dead commerce path at runtime.
+		//
+		// The list is not restated here — `COMMERCE_STORAGE_COLLECTIONS` is exported
+		// by @otta-sh/plugin precisely so the deploying site declares the layout the
+		// adapters actually read, and site-config.test.ts asserts equality with it
+		// (names AND per-collection index lists) rather than a hand-copied snapshot.
+		...(mode === "in-process" ? { storage: commerceStorage() } : {}),
 		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
 		// Commercial fields have exactly one home, `product_commerce`, edited
 		// only from the admin's Pricing & inventory page ("one home per field",
