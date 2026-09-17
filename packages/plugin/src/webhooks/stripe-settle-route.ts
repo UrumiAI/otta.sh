@@ -97,26 +97,32 @@ export type StripeWebhookSettleReason =
 	| "AMOUNT_MISMATCH";
 
 /**
- * Case-insensitive header read, across BOTH shapes a host actually passes.
+ * Case-insensitive header read, tolerant of BOTH container shapes.
  *
  * HTTP header names are case-insensitive, so matching `X-Otta-Wh-Token`
- * literally would fail the gate for a caller who sent `x-otta-wh-token`. But the
- * harder half is the CONTAINER, because the two deployment modes disagree about
- * it and the type here describes only one of them:
+ * literally would fail the gate for a caller who sent `x-otta-wh-token`. That
+ * half is load-bearing today. The CONTAINER sniffing below is DEFENSIVE: it
+ * guards a dispatch path that does not currently exist, and no delivery has ever
+ * been rejected for want of it.
  *
- *  - SANDBOXED — the runner hands over a plain `Record<string, string>`, which is
- *    what `SandboxedRequest` declares. Enumerating it is the only way to read it.
- *  - TRUSTED (how `sites/staging` registers this plugin — no `sandboxed:` key)
- *    — EmDash's `PluginRouteHandler.invoke` passes the GENUINE `Request`, wrapped
- *    in its `guardConsumedRequestBody` proxy. Its `.headers` is a real `Headers`,
- *    whose entries live behind an iterator rather than on the object, so
- *    `Object.entries()` returns `[]` no matter which headers were sent.
+ * What actually arrives, in either registration mode, is the plain lowercase
+ * `Record<string, string>` that `SandboxedRequest` already declares. Otta
+ * registers as `format: "standard"` and its default export (`plugin.ts`) has NO
+ * top-level `id`, so EmDash's integration wraps the handler in
+ * `adaptSandboxEntry` — and with no `id` on the definition that adapter takes
+ * its non-pass-through branch and flattens `ctx.request.headers` into a record
+ * before this handler is ever called. It does so for the in-process
+ * registration (`plugins: []`, how `sites/staging` registers this plugin) just
+ * as for the sandboxed one, so `PluginRouteHandler.invoke`'s genuine `Request`
+ * never reaches here. The enumeration branch is the branch that runs.
  *
- * Enumerating alone therefore reads NOTHING in trusted mode: every provisioned
- * deploy would see "token set, header absent" and 401 every genuine delivery.
- * So the shape is sniffed at RUNTIME — `Headers` is identified by its `.get`,
- * which already does the case-insensitive match — and the `SandboxedRequest`
- * annotation is deliberately not trusted to describe what arrives.
+ * Why sniff anyway: a real `Headers` keeps its entries behind an iterator rather
+ * than on the object, so `Object.entries()` on one returns `[]` and this gate
+ * would silently read no header at all — degrading to "token set, header absent"
+ * and a 401 on every genuine delivery. That failure mode is expensive enough,
+ * and one `typeof …get === "function"` check cheap enough, that the annotation
+ * is deliberately not trusted to be the last word on what arrives. `Headers` is
+ * identified by its `.get`, which already does the case-insensitive match.
  */
 function header(request: SandboxedRequest, name: string): string | undefined {
 	const headers = request.headers as unknown as

@@ -77,17 +77,19 @@ interface DispatchCall {
 	route: string;
 	input: Record<string, unknown>;
 	/**
-	 * The dispatched request's headers AS THEY ARE — a real `Headers` instance,
-	 * never flattened to a record.
+	 * The dispatched request's headers as the PLUGIN receives them: a plain
+	 * lowercase record, flattened exactly the way the real dispatch flattens them.
 	 *
-	 * That distinction is the whole point of recording them. This site registers
-	 * the plugin in TRUSTED mode, and EmDash's trusted `PluginRouteHandler` hands
-	 * the handler the genuine `Request` (behind its `guardConsumedRequestBody`
-	 * proxy) — so the plugin sees a `Headers`, not the sandbox's plain record. A
-	 * fake that converts here would encode the OTHER mode's shape and could not
-	 * fail on a plugin-side lookup that only works on plain objects.
+	 * That is not a convenience — it is the production shape. Otta is a
+	 * `format: "standard"` plugin whose default export carries no top-level `id`,
+	 * so EmDash's integration wraps it in `adaptSandboxEntry`, and that adapter
+	 * walks `ctx.request.headers` into a `Record<string, string>` before Otta's
+	 * handler runs. It does so for this site's in-process `plugins: []`
+	 * registration just as for a sandboxed one, so the genuine `Request` never
+	 * reaches the plugin. Recording a `Headers` here would encode a container the
+	 * plugin is never handed.
 	 */
-	headers: Headers;
+	headers: Record<string, string>;
 }
 
 /** A fake of `locals.emdash.handlePublicPluginApiRoute` that records every
@@ -99,10 +101,16 @@ function makeDispatcher(result: StripeWebhookSettleResult | { success: false }):
 } {
 	const calls: DispatchCall[] = [];
 	const handler = async (_pluginId: string, _method: string, path: string, request: Request) => {
+		// The flattening `adaptSandboxEntry` performs, reproduced verbatim: lowercase
+		// keys (`Headers` normalizes them), own properties, no `get()`.
+		const headers: Record<string, string> = {};
+		request.headers.forEach((value, key) => {
+			headers[key] = value;
+		});
 		calls.push({
 			route: path.replace(/^\//, ""),
 			input: (await request.json()) as Record<string, unknown>,
-			headers: request.headers,
+			headers,
 		});
 		if ("success" in result) return result;
 		return { success: true, data: result };
@@ -135,10 +143,10 @@ function setToken(value: string | undefined): void {
 	else virtualEnv[OTTA_WH_TOKEN_VAR] = value;
 }
 
-/** The token header, read the way the plugin reads it off a real `Headers` —
- *  `get()` is already case-insensitive. */
+/** The token header as the plugin's case-insensitive `header()` lookup sees it —
+ *  the recorded keys are already lowercased by `Headers` before flattening. */
 function sentToken(call: DispatchCall): string | undefined {
-	return call.headers.get(WEBHOOK_EDGE_TOKEN_HEADER) ?? undefined;
+	return call.headers[WEBHOOK_EDGE_TOKEN_HEADER.toLowerCase()];
 }
 
 const OK: StripeWebhookSettleResult = { ok: true, status: 200 };
@@ -244,11 +252,12 @@ describe("POST /webhooks/stripe — the edge token", () => {
  *
  * The one place this suite crosses the boundary instead of faking it. Every
  * other case asserts what this endpoint SENDS; these two assert that the
- * plugin's own gate can still READ it out of the container this site actually
- * hands over. That container is a real `Headers` (trusted mode — see
- * `DispatchCall.headers`), and a plugin-side lookup that only enumerates own
- * properties finds nothing in one: the delivery would 401 with a correct token
- * attached. Faking the gate here would reproduce that bug rather than catch it.
+ * plugin's own gate can still READ it out of the container the dispatch really
+ * hands over — the flattened record of `DispatchCall.headers`, not a `Headers`.
+ * The endpoint could attach a perfectly good token under a name or a casing the
+ * gate never looks for, and every send-side assertion above would still pass;
+ * only running the real handler catches that. The recorded call is fed in
+ * unmodified, so the two halves cannot drift into agreeing with each other.
  */
 function gate(call: DispatchCall, configured: string): Promise<StripeWebhookSettleResult> {
 	const ctx = {
@@ -260,11 +269,7 @@ function gate(call: DispatchCall, configured: string): Promise<StripeWebhookSett
 	return createStripeWebhookSettleHandler()(
 		{
 			input: call.input as never,
-			request: {
-				method: "POST",
-				url: `/${call.route}`,
-				headers: call.headers as unknown as Record<string, string>,
-			},
+			request: { method: "POST", url: `/${call.route}`, headers: call.headers },
 		},
 		ctx as never,
 	) as Promise<StripeWebhookSettleResult>;
