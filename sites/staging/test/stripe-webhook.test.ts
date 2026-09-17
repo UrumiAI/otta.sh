@@ -47,8 +47,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import type { APIContext } from "astro";
 import {
+	createStripeWebhookSettleHandler,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 	WEBHOOK_EDGE_TOKEN_HEADER,
+	WEBHOOK_EDGE_TOKEN_KEY,
 	type StripeWebhookSettleResult,
 } from "@otta-sh/plugin";
 // The stub `vitest.config.ts` aliases `virtual:emdash/env` to. Imported by its
@@ -74,9 +76,18 @@ const SIGNATURE = "t=1700000000,v1=deadbeefdeadbeefdeadbeefdeadbeef";
 interface DispatchCall {
 	route: string;
 	input: Record<string, unknown>;
-	/** Lower-cased, as `Headers` itself normalizes them and as EmDash's
-	 *  `sanitizeHeadersForSandbox` hands them to the plugin. */
-	headers: Record<string, string>;
+	/**
+	 * The dispatched request's headers AS THEY ARE — a real `Headers` instance,
+	 * never flattened to a record.
+	 *
+	 * That distinction is the whole point of recording them. This site registers
+	 * the plugin in TRUSTED mode, and EmDash's trusted `PluginRouteHandler` hands
+	 * the handler the genuine `Request` (behind its `guardConsumedRequestBody`
+	 * proxy) — so the plugin sees a `Headers`, not the sandbox's plain record. A
+	 * fake that converts here would encode the OTHER mode's shape and could not
+	 * fail on a plugin-side lookup that only works on plain objects.
+	 */
+	headers: Headers;
 }
 
 /** A fake of `locals.emdash.handlePublicPluginApiRoute` that records every
@@ -88,14 +99,10 @@ function makeDispatcher(result: StripeWebhookSettleResult | { success: false }):
 } {
 	const calls: DispatchCall[] = [];
 	const handler = async (_pluginId: string, _method: string, path: string, request: Request) => {
-		const headers: Record<string, string> = {};
-		request.headers.forEach((value, key) => {
-			headers[key] = value;
-		});
 		calls.push({
 			route: path.replace(/^\//, ""),
 			input: (await request.json()) as Record<string, unknown>,
-			headers,
+			headers: request.headers,
 		});
 		if ("success" in result) return result;
 		return { success: true, data: result };
@@ -128,9 +135,10 @@ function setToken(value: string | undefined): void {
 	else virtualEnv[OTTA_WH_TOKEN_VAR] = value;
 }
 
-/** The token header as the plugin's case-insensitive `header()` lookup sees it. */
+/** The token header, read the way the plugin reads it off a real `Headers` —
+ *  `get()` is already case-insensitive. */
 function sentToken(call: DispatchCall): string | undefined {
-	return call.headers[WEBHOOK_EDGE_TOKEN_HEADER.toLowerCase()];
+	return call.headers.get(WEBHOOK_EDGE_TOKEN_HEADER) ?? undefined;
 }
 
 const OK: StripeWebhookSettleResult = { ok: true, status: 200 };
@@ -227,6 +235,65 @@ describe("POST /webhooks/stripe — the edge token", () => {
 		await POST(makeContext(handler));
 
 		expect(sentToken(calls[0]!)).toBeUndefined();
+	});
+});
+
+/**
+ * Run a recorded dispatch through the plugin's REAL token gate, against a kv
+ * that answers exactly one key.
+ *
+ * The one place this suite crosses the boundary instead of faking it. Every
+ * other case asserts what this endpoint SENDS; these two assert that the
+ * plugin's own gate can still READ it out of the container this site actually
+ * hands over. That container is a real `Headers` (trusted mode — see
+ * `DispatchCall.headers`), and a plugin-side lookup that only enumerates own
+ * properties finds nothing in one: the delivery would 401 with a correct token
+ * attached. Faking the gate here would reproduce that bug rather than catch it.
+ */
+function gate(call: DispatchCall, configured: string): Promise<StripeWebhookSettleResult> {
+	const ctx = {
+		kv: {
+			get: async (key: string): Promise<unknown> =>
+				key === WEBHOOK_EDGE_TOKEN_KEY ? configured : null,
+		},
+	};
+	return createStripeWebhookSettleHandler()(
+		{
+			input: call.input as never,
+			request: {
+				method: "POST",
+				url: `/${call.route}`,
+				headers: call.headers as unknown as Record<string, string>,
+			},
+		},
+		ctx as never,
+	) as Promise<StripeWebhookSettleResult>;
+}
+
+describe("POST /webhooks/stripe — the token survives the hop INTO the plugin's real gate", () => {
+	test("a matching token gets PAST the gate — the next refusal is the unset webhook secret", async () => {
+		setToken("otta_edge_value");
+		const { handler, calls } = makeDispatcher(OK);
+
+		await POST(makeContext(handler));
+
+		// 503 NOT_CONFIGURED is gate 2 (no `settings:stripeWebhookSecret` in this
+		// fake kv), which is only reachable once gate 1 has accepted the token.
+		expect(await gate(calls[0]!, "otta_edge_value")).toMatchObject({
+			status: 503,
+			reason: "NOT_CONFIGURED",
+		});
+	});
+
+	test("an unprovisioned site against a provisioned plugin still 401s — the gate is real", async () => {
+		const { handler, calls } = makeDispatcher(OK);
+
+		await POST(makeContext(handler));
+
+		expect(await gate(calls[0]!, "otta_edge_value")).toMatchObject({
+			status: 401,
+			reason: "UNAUTHORIZED",
+		});
 	});
 });
 

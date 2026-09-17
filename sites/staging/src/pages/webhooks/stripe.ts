@@ -31,11 +31,16 @@
  *
  * ── Why there is no origin guard ──────────────────────────────────────────
  * Every other POST endpoint in this site starts with `rejectCrossOrigin()`.
- * This one must not: Stripe is a third party and sends no `Origin`, so the
- * guard would reject 100% of real deliveries. The CSRF question a guard answers
- * — "did a user's browser get tricked into sending this?" — does not apply to a
- * request whose authority is a cryptographic signature the browser cannot
- * forge. Auth here is the HMAC, plus the edge token in front of it.
+ * This one omits it as a NO-OP, not as a hazard — the distinction matters, so
+ * that nobody "restores" the guard believing it was dropped for safety.
+ * `isForbiddenCrossOrigin` forbids only a PRESENT-and-mismatched `Origin` and
+ * deliberately allows an absent one (server-to-server carries no ambient
+ * cookie); Stripe sends no `Origin`, so the guard would pass every genuine
+ * delivery and reject nothing. It buys nothing here because the CSRF question a
+ * guard answers — "did a user's browser get tricked into sending this?" — does
+ * not apply to a request whose authority is a cryptographic signature the
+ * browser cannot forge. Auth here is the HMAC, plus the edge token in front of
+ * it.
  *
  * ── Why the status matters more than the body ─────────────────────────────
  * Stripe retries on 5xx and on a timeout, and stops on 2xx. The plugin returns
