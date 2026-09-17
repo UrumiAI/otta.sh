@@ -103,7 +103,11 @@ export type StripeWebhookSettleReason =
  * literally would fail the gate for a caller who sent `x-otta-wh-token`. That
  * half is load-bearing today. The CONTAINER sniffing below is DEFENSIVE: it
  * guards a dispatch path that does not currently exist, and no delivery has ever
- * been rejected for want of it.
+ * been rejected for want of it. Before deleting that branch, check both triggers
+ * that would make it live: the default export gaining a top-level `id` (a
+ * `definePlugin`-style registration, which sends `adaptSandboxEntry` down its
+ * pass-through branch), or this descriptor's `format` changing to `"native"` —
+ * which the sibling `otta-console` descriptor in this same site already uses.
  *
  * What actually arrives, in either registration mode, is the plain lowercase
  * `Record<string, string>` that `SandboxedRequest` already declares. Otta
