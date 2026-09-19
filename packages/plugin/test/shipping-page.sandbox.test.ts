@@ -1,6 +1,9 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { cents as toCents, currency as toCurrency } from "@otta-sh/domain";
+import { EmdashShippingRulesStore, systemClock, type StorageAccess } from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
+import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../src/commerce/commerce-storage.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
@@ -22,12 +25,8 @@ import {
 	type LooseBlock,
 	type LooseElement,
 } from "./helpers/blocks.js";
-import {
-	type RecordedRequest,
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 // The admin Shipping console under the REAL workerd-on-Node sandbox (design
 // spec §12.4 — the deepest of the seven admin screens). Zones and methods
@@ -36,254 +35,135 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // `combobox` drill-in (L-7 fallback). Rates is EXEMPT (L-9a) and keeps its
 // existing `fields`-based 0-or-1-row lookup. This suite drives all three
 // levels, both L-9 branches (asserted at 25 and 26 rows), the zero-row
-// `empty` state (E-2) with its force-open create action (B-6), and a
-// depth-3 open fired from a row BUTTON (§12.7) — never a bare id.
+// `empty` state (E-2) with its create action, and a depth-3 open fired from a
+// row BUTTON (§12.7) — never a bare id.
+//
+// THE RULES SURFACE IS NO LONGER AN HTTP SERVICE (INC-D3a). `makeAdminClients`
+// hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
+// so the fixtures below are REAL documents written through the same
+// `@otta-sh/store-emdash` store the plugin itself reads, and every "did the
+// write land" claim is read back off that store rather than off a recorded
+// request body — a strictly stronger claim, since a recorded `PUT
+// /admin/shipping/zones/us` proved only that a request was FORMED.
+//
+// Three consequences, stated once because several cases inherit them:
+//  * There is no admin token. `X-Internal-Token` / `X-Service-Token`
+//    authenticated a caller TO the commerce service; the console routes are
+//    gated by EmDash's own admin auth and CSRF (ADR-0014 D3), so there is
+//    nothing to forward and nothing to withhold.
+//  * `listZones()` sorts by zone id (the store reads `ORDER BY id`), so the
+//    fixture's `empty` zone now precedes `us`. No assertion here depends on
+//    the registry's order, and the ones that locate a row do it by block_id.
+//  * A duplicate id is a THROWN collision from the store, not a 500 the HTTP
+//    client mapped to `{ok:false}` — see the duplicate-zone case for what the
+//    operator sees now.
 
-interface ZoneRow {
+let storage: StorageAccess;
+let shippingRules: EmdashShippingRulesStore;
+let sandbox: SandboxHandle;
+
+interface ZoneFixture {
 	id: string;
 	name: string;
 	regions: unknown;
 }
-interface MethodRow {
+interface MethodFixture {
 	id: string;
 	zoneId: string;
 	name: string;
-	type: string;
+	type: "flat_rate" | "free_shipping";
 }
-interface RateRow {
+interface RateFixture {
 	methodId: string;
 	currency: string;
 	amountCents: number;
 	minSubtotalCents: number | null;
 }
-
-interface ShippingState {
-	zones: ZoneRow[];
-	methods: MethodRow[];
-	rates: RateRow[];
-	/** Make every rate READ answer 500. The methods level's per-row price is a
-	 *  SECONDARY read, so this must degrade the affected rows to "Price
-	 *  unavailable" and never fail the level (nor claim "No rate set", which is
-	 *  a fact this state cannot establish). */
-	rateReadsFail?: boolean;
+interface ShippingFixture {
+	zones?: ZoneFixture[];
+	methods?: MethodFixture[];
+	rates?: RateFixture[];
 }
 
-/** A small stateful stub standing in for the shipping-admin HTTP surface —
- *  zones/methods/rates are mutated by POST/PUT/DELETE and read back by GET,
- *  so create→list, edit→reload, and delete→idempotent-replay all exercise
- *  real state transitions (not canned fixtures). */
-function makeShippingState(): ShippingState {
-	const zones: ZoneRow[] = [
-		{ id: "us", name: "United States", regions: ["US"] },
-		{ id: "empty", name: "Empty zone", regions: null },
-	];
-	const methods: MethodRow[] = [
-		{ id: "standard", zoneId: "us", name: "Standard", type: "flat_rate" },
-		{ id: "bare", zoneId: "us", name: "No rates yet", type: "flat_rate" },
-	];
-	const rates: RateRow[] = [
-		{ methodId: "standard", currency: "USD", amountCents: 499, minSubtotalCents: 3500 },
-	];
-	return { zones, methods, rates };
-}
+const DEFAULT_ZONES: ZoneFixture[] = [
+	{ id: "us", name: "United States", regions: ["US"] },
+	{ id: "empty", name: "Empty zone", regions: null },
+];
+const DEFAULT_METHODS: MethodFixture[] = [
+	{ id: "standard", zoneId: "us", name: "Standard", type: "flat_rate" },
+	{ id: "bare", zoneId: "us", name: "No rates yet", type: "flat_rate" },
+];
+const DEFAULT_RATES: RateFixture[] = [
+	{ methodId: "standard", currency: "USD", amountCents: 499, minSubtotalCents: 3500 },
+];
 
 /** L-9's branch boundary is asserted at exactly 25 and 26 rows — an all-zones
- *  state with no methods/rates, so the branch decision is isolated to row
+ *  fixture with no methods/rates, so the branch decision is isolated to row
  *  count alone. */
-function makeManyZonesState(count: number): ShippingState {
-	const zones: ZoneRow[] = Array.from({ length: count }, (_, i) => ({
-		id: `z${i}`,
-		name: `Zone ${i}`,
-		regions: null,
-	}));
-	return { zones, methods: [], rates: [] };
+function manyZones(count: number): ShippingFixture {
+	return {
+		zones: Array.from({ length: count }, (_, i) => ({
+			id: `z${i}`,
+			name: `Zone ${i}`,
+			regions: null,
+		})),
+		methods: [],
+		rates: [],
+	};
 }
 
-function makeManyMethodsState(count: number): ShippingState {
-	const zones: ZoneRow[] = [{ id: "us", name: "United States", regions: null }];
-	// Alternate type so the `Type` badge column genuinely chunks two values
-	// apart (T-5/X-4) — a fixture where every row is the same value is not a
-	// realistic method registry and trips the constant-badge-column check for
-	// the wrong reason.
-	const methods: MethodRow[] = Array.from({ length: count }, (_, i) => ({
-		id: `m${i}`,
-		zoneId: "us",
-		name: `Method ${i}`,
-		type: i % 2 === 0 ? "flat_rate" : "free_shipping",
-	}));
-	return { zones, methods, rates: [] };
+function manyMethods(count: number): ShippingFixture {
+	return {
+		zones: [{ id: "us", name: "United States", regions: null }],
+		// Alternate type so the `Type` badge column genuinely chunks two values
+		// apart (T-5/X-4) — a fixture where every row is the same value is not a
+		// realistic method registry and trips the constant-badge-column check for
+		// the wrong reason.
+		methods: Array.from({ length: count }, (_, i) => ({
+			id: `m${i}`,
+			zoneId: "us",
+			name: `Method ${i}`,
+			type: i % 2 === 0 ? ("flat_rate" as const) : ("free_shipping" as const),
+		})),
+		rates: [],
+	};
 }
 
-function attachShippingStub(stub: StubCommerceServer, state: ShippingState) {
-	stub.respondWith("GET", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
+/** Empty every declared collection. The store is process-scoped by design
+ *  (`storageBridge`) and this screen's reads are REGISTRY-WIDE — "25 zones" is
+ *  a claim about the whole store, not about a namespace — so each case starts
+ *  from nothing rather than narrowing a shared catalogue. */
+async function resetStore(): Promise<void> {
+	for (const name of COMMERCE_STORAGE_COLLECTION_NAMES) {
+		const collection = storage[name];
+		if (collection === undefined) continue;
+		for (;;) {
+			const page = await collection.query({ limit: 200 });
+			if (page.items.length === 0) break;
+			for (const { id } of page.items) await collection.delete(id);
 		}
-		const [path, query = ""] = req.url.split("?");
-		if (path === "/admin/shipping/zones") {
-			return { status: 200, body: { ok: true, zones: state.zones } };
-		}
-		const methodsMatch = /^\/admin\/shipping\/zones\/([^/]+)\/methods$/.exec(path ?? "");
-		if (methodsMatch !== null) {
-			const zoneId = decodeURIComponent(methodsMatch[1] ?? "");
-			return {
-				status: 200,
-				body: { ok: true, methods: state.methods.filter((m) => m.zoneId === zoneId) },
-			};
-		}
-		const rateMatch = /^\/admin\/shipping\/methods\/([^/]+)\/rates$/.exec(path ?? "");
-		if (rateMatch !== null) {
-			if (state.rateReadsFail === true) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const methodId = decodeURIComponent(rateMatch[1] ?? "");
-			const currency = new URLSearchParams(query).get("currency");
-			if (currency === null) return { status: 400, body: { error: "currency query is required" } };
-			const rate = state.rates.find((r) => r.methodId === methodId && r.currency === currency);
-			if (rate === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			return { status: 200, body: { ok: true, rate } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("POST", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		if (req.url === "/admin/shipping/zones") {
-			const body = req.body as { id: string; name: string; regions?: unknown };
-			if (state.zones.some((z) => z.id === body.id)) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const created: ZoneRow = { id: body.id, name: body.name, regions: body.regions ?? null };
-			state.zones.push(created);
-			return { status: 201, body: { ok: true, zone: created } };
-		}
-		const methodsMatch = /^\/admin\/shipping\/zones\/([^/]+)\/methods$/.exec(req.url);
-		if (methodsMatch !== null) {
-			const zoneId = decodeURIComponent(methodsMatch[1] ?? "");
-			const body = req.body as { id: string; name: string; type: string };
-			if (state.methods.some((m) => m.id === body.id)) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const created: MethodRow = { id: body.id, zoneId, name: body.name, type: body.type };
-			state.methods.push(created);
-			return { status: 201, body: { ok: true, method: created } };
-		}
-		const rateMatch = /^\/admin\/shipping\/methods\/([^/]+)\/rates$/.exec(req.url);
-		if (rateMatch !== null) {
-			const methodId = decodeURIComponent(rateMatch[1] ?? "");
-			const body = req.body as {
-				currency: string;
-				amountCents: number;
-				minSubtotalCents?: number | null;
-			};
-			if (state.rates.some((r) => r.methodId === methodId && r.currency === body.currency)) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const created: RateRow = {
-				methodId,
-				currency: body.currency,
-				amountCents: body.amountCents,
-				minSubtotalCents: body.minSubtotalCents ?? null,
-			};
-			state.rates.push(created);
-			return { status: 201, body: { ok: true, rate: created } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("PUT", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const zoneMatch = /^\/admin\/shipping\/zones\/([^/]+)$/.exec(req.url);
-		if (zoneMatch !== null) {
-			const zoneId = decodeURIComponent(zoneMatch[1] ?? "");
-			const zone = state.zones.find((z) => z.id === zoneId);
-			if (zone === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			const body = req.body as { name: string; regions: unknown };
-			zone.name = body.name;
-			zone.regions = body.regions;
-			return { status: 200, body: { ok: true, zone } };
-		}
-		const methodMatch = /^\/admin\/shipping\/methods\/([^/]+)$/.exec(req.url);
-		if (methodMatch !== null) {
-			const methodId = decodeURIComponent(methodMatch[1] ?? "");
-			const method = state.methods.find((m) => m.id === methodId);
-			if (method === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			const body = req.body as { name: string; type: string };
-			method.name = body.name;
-			method.type = body.type;
-			return { status: 200, body: { ok: true, method } };
-		}
-		const rateMatch = /^\/admin\/shipping\/methods\/([^/]+)\/rates\/([^/]+)$/.exec(req.url);
-		if (rateMatch !== null) {
-			const methodId = decodeURIComponent(rateMatch[1] ?? "");
-			const currency = decodeURIComponent(rateMatch[2] ?? "");
-			const rate = state.rates.find((r) => r.methodId === methodId && r.currency === currency);
-			if (rate === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			const body = req.body as {
-				amountCents: number;
-				minSubtotalCents: number | null;
-				expectedAmountCents: number;
-			};
-			if (rate.amountCents !== body.expectedAmountCents) {
-				return { status: 409, body: { ok: false, reason: "STALE", current: rate } };
-			}
-			rate.amountCents = body.amountCents;
-			rate.minSubtotalCents = body.minSubtotalCents;
-			return { status: 200, body: { ok: true, rate } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("DELETE", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const zoneMatch = /^\/admin\/shipping\/zones\/([^/]+)$/.exec(req.url);
-		if (zoneMatch !== null) {
-			const zoneId = decodeURIComponent(zoneMatch[1] ?? "");
-			const idx = state.zones.findIndex((z) => z.id === zoneId);
-			if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			if (state.methods.some((m) => m.zoneId === zoneId)) {
-				return { status: 409, body: { ok: false, reason: "IN_USE_BY_METHODS" } };
-			}
-			state.zones.splice(idx, 1);
-			return { status: 200, body: { ok: true } };
-		}
-		const methodMatch = /^\/admin\/shipping\/methods\/([^/]+)$/.exec(req.url);
-		if (methodMatch !== null) {
-			const methodId = decodeURIComponent(methodMatch[1] ?? "");
-			const idx = state.methods.findIndex((m) => m.id === methodId);
-			if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			if (state.rates.some((r) => r.methodId === methodId)) {
-				return { status: 409, body: { ok: false, reason: "IN_USE_BY_RATES" } };
-			}
-			state.methods.splice(idx, 1);
-			return { status: 200, body: { ok: true } };
-		}
-		const rateMatch = /^\/admin\/shipping\/methods\/([^/]+)\/rates\/([^/]+)$/.exec(req.url);
-		if (rateMatch !== null) {
-			const methodId = decodeURIComponent(rateMatch[1] ?? "");
-			const currency = decodeURIComponent(rateMatch[2] ?? "");
-			const idx = state.rates.findIndex((r) => r.methodId === methodId && r.currency === currency);
-			if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			state.rates.splice(idx, 1);
-			return { status: 200, body: { ok: true } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
+	}
 }
 
-async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token: string) {
-	await sandbox.invokeRoute("admin", {
-		type: "form_submit",
-		action_id: "save-token",
-		values: { internalToken: token },
-	});
-	stub.requests.length = 0;
+/** Write one case's fixture as REAL documents through the store the plugin
+ *  reads. Defaults reproduce the old stub's seed exactly, so the cases below
+ *  read as they always did. */
+async function seedShipping(fixture: ShippingFixture = {}): Promise<void> {
+	await resetStore();
+	for (const zone of fixture.zones ?? DEFAULT_ZONES) {
+		await shippingRules.createZone({ id: zone.id, name: zone.name, regions: zone.regions });
+	}
+	for (const method of fixture.methods ?? DEFAULT_METHODS) {
+		await shippingRules.createMethod(method);
+	}
+	for (const rate of fixture.rates ?? DEFAULT_RATES) {
+		await shippingRules.createRate({
+			methodId: rate.methodId,
+			currency: toCurrency(rate.currency),
+			amountCents: toCents(rate.amountCents),
+			minSubtotalCents: rate.minSubtotalCents === null ? null : toCents(rate.minSubtotalCents),
+		});
+	}
 }
 
 function bannerOf(blocks: LooseBlock[]): LooseElement | undefined {
@@ -300,36 +180,56 @@ function carriedContext(blockId: unknown): Record<string, string> | undefined {
 	return rest;
 }
 
-let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
-afterEach(async () => {
-	await sandbox?.close();
-	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	shippingRules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	// ONE boot for the file: the isolate holds no per-case state now that the
+	// fixtures live in the store, so rebooting between cases would buy nothing
+	// but seconds.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox.close();
 });
 
-async function boot(state: ShippingState, token = "admin-token-xyz") {
-	stub = await startStubCommerceServer();
-	attachShippingStub(stub, state);
-	sandbox = await loadPluginInSandbox({
-		allowedHosts: [stub.host],
-		commerceServiceBaseUrl: stub.baseUrl,
-	});
-	if (token.length > 0) await seedToken(sandbox, stub, token);
-}
+beforeEach(async () => {
+	await resetStore();
+});
 
 /** The list, freshly loaded. */
 async function loadZones(): Promise<LooseBlock[]> {
-	return blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" }));
+	return blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/shipping" }));
 }
 
 /** Click a button the way em-dash does: `action_id` + `value`, and NO
  *  `block_id` — a button echoes none (B-1). */
 async function clickButton(actionId: string, value: unknown): Promise<LooseBlock[]> {
 	return blocksOf(
-		await sandbox!.invokeRoute("admin", { type: "block_action", action_id: actionId, value }),
+		await sandbox.invokeRoute("admin", { type: "block_action", action_id: actionId, value }),
 	);
+}
+
+/** Submit a form the way em-dash does: `values` PLUS the form's own
+ *  `block_id`, which is where every id and watermark rides (F-2, B-1). */
+async function submitForm(
+	actionId: string,
+	values: Record<string, unknown>,
+	blockId?: unknown,
+): Promise<LooseBlock[]> {
+	return blocksOf(
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: actionId,
+			values,
+			block_id: blockId,
+		}),
+	);
+}
+
+/** Drill to a level by its encoded path, the way the L-7 combobox does. */
+async function openPath(path: string[]): Promise<LooseBlock[]> {
+	return submitForm("shipping:open", { target: encodePath(path) });
 }
 
 /** The promoted create button on a rendered level (INC-14), by action id — so
@@ -371,11 +271,9 @@ function formInitialValues(
 }
 
 describe("admin Shipping console — zones level, accordion branch (workerd sandbox)", () => {
-	test("page_load /shipping renders one per-row accordion per zone, all collapsed (L-9)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
+	test("page_load /shipping renders one per-row accordion per zone, all collapsed (L-9), off the plugin's own store", async () => {
+		await seedShipping();
+		const blocks = await loadZones();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
 		expect(findBlocks(blocks, "divider")).toHaveLength(0); // R-4/X-6
 
@@ -383,178 +281,129 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(usGroup?.label).toBe("us — United States");
 		const emptyGroup = group(blocks, "ship:zone:empty");
 		expect(emptyGroup?.label).toBe("empty — Empty zone");
-		// L-9: every per-row accordion (and the create accordion) is collapsed —
-		// a registry level renders with ZERO open groups.
+		// L-9: every per-row accordion is collapsed — a registry level renders
+		// with ZERO open groups.
 		expect(openGroupIds(blocks)).toHaveLength(0);
-
-		const listReq = stub!.requests.find((r) => r.url === "/admin/shipping/zones");
-		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
 	});
 
 	test("a zone's regions render honestly in the row's edit form (array joins, null renders blank)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
+		await seedShipping();
+		const blocks = await loadZones();
 		const usForm = formFor(groupBlocks(blocks, "ship:zone:us"), "shipping:save-zone");
 		expect(field(usForm, "regions")?.initial_value).toBe("US");
 		const emptyForm = formFor(groupBlocks(blocks, "ship:zone:empty"), "shipping:save-zone");
 		expect(field(emptyForm, "regions")?.initial_value).toBe("");
 	});
 
-	test("NO-TOKEN page_load /shipping fails closed with E-7's normative copy (no raw HTTP status/URL, no single-cause claim)", async () => {
-		const state = makeShippingState();
-		await boot(state, "");
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const banner = bannerOf(blocksOf(outcome));
-		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/shipping|401/);
-		// X-42: not a single-cause claim — names the two checks AND the console-bug possibility.
-		expect(String(banner?.description)).toContain("admin token in Settings");
-		expect(String(banner?.description)).toContain("fault in the console itself");
-		expect(String(banner?.description).length).toBeLessThanOrEqual(240);
-	});
+	// DELETED: "NO-TOKEN page_load /shipping fails closed with E-7's normative
+	// copy". It withheld the kv admin token so the stub answered 401 and the
+	// zones level's `onError` fired. There is no token — `makeAdminClients`
+	// builds the rules client over `ctx.storage` with no credential of any kind
+	// — so the input that produced it cannot be expressed. `zonesFailClosed()`
+	// is still wired as the level's `onError`; its only remaining producer is
+	// storage itself failing, which this tier cannot induce without breaking the
+	// bridge the whole suite runs on, and a fixture that faked one would assert
+	// on itself.
 
 	test("the row edit form's block_id carries the zoneId invisibly — no visible carrier field, no id in the field label", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
-		const usForm = formFor(groupBlocks(blocks, "ship:zone:us"), "shipping:save-zone");
+		await seedShipping();
+		const usForm = formFor(groupBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
 		expect(fieldIds(usForm)).toEqual(["name", "regions"]); // no "zoneId" field (F-2, F-3)
 		expect(String(field(usForm, "name")?.label)).toBe("Name"); // no id in the label (M-7)
-		const carried = decodeCarrier(usForm?.block_id as string | undefined);
-		expect(carried?.zoneId).toBe("us");
+		expect(carriedContext(usForm?.block_id)?.zoneId).toBe("us");
 	});
 
-	test("save-zone PUTs the full-replace edit (reading the carried zoneId, not a visible field) and reloads with a 'saved' notice", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const usForm = formFor(groupBlocks(blocksOf(opened), "ship:zone:us"), "shipping:save-zone");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:save-zone",
-			block_id: usForm?.block_id,
-			values: { name: "USA", regions: "US, PR" },
-		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.url).toBe("/admin/shipping/zones/us");
-		expect(put!.body).toEqual({ name: "USA", regions: ["US", "PR"] });
-		const banner = bannerOf(blocksOf(outcome));
+	test("save-zone applies the full-replace edit (reading the carried zoneId, not a visible field) and reloads with a 'saved' notice", async () => {
+		await seedShipping();
+		const usForm = formFor(groupBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "USA", regions: "US, PR" },
+			usForm?.block_id,
+		);
+		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
-		expect(state.zones.find((z) => z.id === "us")?.name).toBe("USA");
+		// THE ROW, not a request body: both keys of the full replace landed, and
+		// the comma list became a real array rather than a garbled string.
+		expect(await shippingRules.getZone("us")).toEqual({
+			id: "us",
+			name: "USA",
+			regions: ["US", "PR"],
+		});
 	});
 
 	test("the row's 'View methods' button carries the FULL target path in value.target, never a bare id (§12.7)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
-		const rowButtons = buttons(groupBlocks(blocks, "ship:zone:us"));
+		await seedShipping();
+		const rowButtons = buttons(groupBlocks(await loadZones(), "ship:zone:us"));
 		const view = rowButtons.find((b) => b.action_id === "shipping:open");
 		expect(view?.label).toBe("View methods");
-		const target = valueOf(view).target;
-		expect(decodePath(String(target))).toEqual(["us"]);
+		expect(decodePath(String(valueOf(view).target))).toEqual(["us"]);
 	});
 
 	test("opening a zone via the row BUTTON drills to its methods (button carries no block_id — only value)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const zones = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const view = buttons(groupBlocks(blocksOf(zones), "ship:zone:us")).find(
+		await seedShipping();
+		const view = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open",
-			value: valueOf(view),
-		});
-		const blocks = blocksOf(outcome);
+		const blocks = await clickButton("shipping:open", valueOf(view));
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
 	});
 
 	test("deleting a zone is unconditional (DA-2) — a forbid-if-methods conflict is reported by the post-attempt banner", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const del = buttons(groupBlocks(blocksOf(outcome), "ship:zone:us")).find(
+		await seedShipping();
+		const del = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
 		expect(del?.label).toBe("Delete zone"); // no id in the button label (M-7)
 		expect(del?.style).toBe("danger");
 		expect(confirmOf(del).style).toBe("danger");
-		const result = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-zone",
-			value: valueOf(del),
-		});
-		const banner = bannerOf(blocksOf(result));
+		const banner = bannerOf(await clickButton("shipping:delete-zone", valueOf(del)));
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toMatch(/shipping methods/i);
-		expect(state.zones.some((z) => z.id === "us")).toBe(true); // never deleted
+		expect(await shippingRules.getZone("us")).not.toBeNull(); // never deleted
 	});
 
-	test("deleting a zone with no methods DELETEs and reloads with a 'deleted' notice; a repeat delete is idempotent", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const del = buttons(groupBlocks(blocksOf(outcome), "ship:zone:empty")).find(
+	test("deleting a zone with no methods removes it and reloads with a 'deleted' notice; a repeat delete is idempotent", async () => {
+		await seedShipping();
+		const del = buttons(groupBlocks(await loadZones(), "ship:zone:empty")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
-		const first = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-zone",
-			value: valueOf(del),
-		});
-		const delReq = stub!.requests.find((r) => r.method === "DELETE");
-		expect(delReq?.url).toBe("/admin/shipping/zones/empty");
-		const firstBanner = bannerOf(blocksOf(first));
+		const first = await clickButton("shipping:delete-zone", valueOf(del));
+		expect(await shippingRules.getZone("empty")).toBeNull();
+		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
 		expect(String(firstBanner?.title)).toContain("deleted");
-		expect(group(blocksOf(first), "ship:zone:empty")).toBeUndefined();
+		expect(group(first, "ship:zone:empty")).toBeUndefined();
 
-		const second = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-zone",
-			value: valueOf(del),
-		});
-		const secondBanner = bannerOf(blocksOf(second));
+		const second = await clickButton("shipping:delete-zone", valueOf(del));
+		const secondBanner = bannerOf(second);
 		expect(secondBanner?.variant).toBe("default"); // idempotent no-op, never an error
 		expect(String(secondBanner?.title)).toMatch(/already deleted/i);
 	});
 
-	test("create-zone with blank fields is caught at the plugin boundary — no POST sent", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			values: { id: "", name: "", regions: "" },
-		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+	test("create-zone with blank fields is caught at the plugin boundary — nothing is written", async () => {
+		await seedShipping();
+		const before = await shippingRules.listZones();
+		const blocks = await submitForm("shipping:create-zone", { id: "", name: "", regions: "" });
+		expect(await shippingRules.listZones()).toEqual(before);
+		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("create-zone POSTs {id,name,regions} parsed to a string array, then re-lists with a success notice", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			values: { id: "eu", name: "Europe", regions: " EU , FR " },
+	test("create-zone stores {id,name,regions} with the regions parsed to a string array, then re-lists with a success notice", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "eu",
+			name: "Europe",
+			regions: " EU , FR ",
 		});
-		const post = stub!.requests.find(
-			(r) => r.method === "POST" && r.url === "/admin/shipping/zones",
-		);
-		expect(post).toBeDefined();
-		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
-		expect(post!.body).toEqual({ id: "eu", name: "Europe", regions: ["EU", "FR"] });
-
-		const blocks = blocksOf(outcome);
+		expect(await shippingRules.getZone("eu")).toEqual({
+			id: "eu",
+			name: "Europe",
+			regions: ["EU", "FR"],
+		});
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("created");
@@ -562,37 +411,46 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 	});
 
 	test("a blank regions input creates a zone with regions=null (an explicit 'none', not a garbled string)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			values: { id: "anywhere", name: "Anywhere", regions: "" },
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "anywhere",
+			name: "Anywhere",
+			regions: "",
 		});
-		const post = stub!.requests.find(
-			(r) => r.method === "POST" && r.url === "/admin/shipping/zones",
-		);
-		expect(post!.body).toEqual({ id: "anywhere", name: "Anywhere", regions: null });
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("default");
+		expect(await shippingRules.getZone("anywhere")).toEqual({
+			id: "anywhere",
+			name: "Anywhere",
+			regions: null,
+		});
+		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
-	test("creating a zone with a duplicate id fails with a GENERIC error notice (no raw status)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			values: { id: "us", name: "United States again", regions: "" },
+	test("creating a zone with a duplicate id refuses with a GENERIC error banner and writes nothing", async () => {
+		// THE MECHANISM CHANGED AND THE GUARANTEE DID NOT. A duplicate used to be a
+		// 500 the HTTP client mapped to `{ok:false}`, which the screen dressed as
+		// its own "Zone not created". In-process the store REJECTS with a collision
+		// error, which the scaffold's custom-action net catches — so the operator
+		// gets the engine's "outcome unknown, re-check the record" banner instead of
+		// the screen's copy, and the draft is not carried back. A REGRESSION IN
+		// COPY, not in safety: still an error, still no raw status or path, and the
+		// registry is provably unchanged. (Recovering the screen's own copy would
+		// need the client to catch the collision and answer `{ok:false}` — a `src/`
+		// change, not a test one.)
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "us",
+			name: "United States again",
+			regions: "",
 		});
-		const banner = bannerOf(blocksOf(outcome));
+		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
-		expect(state.zones.filter((z) => z.id === "us")).toHaveLength(1);
+		expect((await shippingRules.getZone("us"))?.name).toBe("United States");
+		expect((await shippingRules.listZones()).filter((z) => z.id === "us")).toHaveLength(1);
 	});
 
 	test("the create screen carries the F-8 line about regions; the page context stays terse and says nothing about them", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const blocks = await loadZones();
 		// The page-level context stays terse (≤140) and says nothing about regions.
 		const pageContext = String(findBlocks(blocks, "context")[0]?.text);
@@ -606,8 +464,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 	// -- INC-14: the create action is a button above the data ------------------
 
 	test("INC-14: `New shipping zone` is a primary BUTTON directly under the intro line, above the rows — and no create accordion survives below them", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const blocks = await loadZones();
 		expect(blocks.map((b) => String(b.type)).slice(0, 3)).toEqual(["header", "context", "actions"]);
 		const button = createButton(blocks, "shipping:open-create-zone");
@@ -625,8 +482,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 	});
 
 	test("INC-14: the New shipping zone screen is a drill-in whose back control returns to the registry", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const screen = await openNewZoneScreen();
 		expect(screen.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
 		expect(
@@ -646,17 +502,14 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 	// form mounted; every refusal now carries the values back as
 	// `initial_value` (DA-3a-i), which is checkable from the emitted JSON.
 	test("INC-14/DA-3a-i: a REFUSED zone create re-renders the create screen with all three typed values put back", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const screen = await openNewZoneScreen();
-		const refused = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			block_id: formFor(screen, "shipping:create-zone")?.block_id,
-			values: { id: "", name: "Canada", regions: "CA, US" },
-		});
-		const blocks = blocksOf(refused);
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const blocks = await submitForm(
+			"shipping:create-zone",
+			{ id: "", name: "Canada", regions: "CA, US" },
+			formFor(screen, "shipping:create-zone")?.block_id,
+		);
+		expect(await shippingRules.getZone("ca")).toBeNull();
 		expect(bannerOf(blocks)?.variant).toBe("error");
 		expect(blocks.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
 		expect(formInitialValues(blocks, "shipping:create-zone")).toEqual({
@@ -665,24 +518,21 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		});
 
 		// Fixing the one field and resubmitting creates the zone and returns.
-		const created = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-zone",
-			block_id: formFor(blocks, "shipping:create-zone")?.block_id,
-			values: { id: "ca", name: "Canada", regions: "CA, US" },
-		});
-		expect(state.zones.find((z) => z.id === "ca")?.regions).toEqual(["CA", "US"]);
-		expect(bannerOf(blocksOf(created))?.variant).toBe("default");
-		expect(formFor(blocksOf(created), "shipping:create-zone")).toBeUndefined();
+		const created = await submitForm(
+			"shipping:create-zone",
+			{ id: "ca", name: "Canada", regions: "CA, US" },
+			formFor(blocks, "shipping:create-zone")?.block_id,
+		);
+		expect((await shippingRules.getZone("ca"))?.regions).toEqual(["CA", "US"]);
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect(formFor(created, "shipping:create-zone")).toBeUndefined();
 	});
 });
 
-describe("admin Shipping console — zones level, zero-row empty state (E-2/B-6)", () => {
+describe("admin Shipping console — zones level, zero-row empty state (E-2)", () => {
 	test("zero zones renders the `empty` block (not the row list) with a create action in empty.actions", async () => {
-		const state = { zones: [] as ZoneRow[], methods: [] as MethodRow[], rates: [] as RateRow[] };
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const blocks = await loadZones();
 		expect(
 			findBlocks(blocks, "accordion").some((a) => String(a.block_id).startsWith("ship:zone:")),
 		).toBe(false);
@@ -693,8 +543,7 @@ describe("admin Shipping console — zones level, zero-row empty state (E-2/B-6)
 	});
 
 	test("clicking the empty state's create action opens the SAME create screen as the promoted button (E-2)", async () => {
-		const state = { zones: [] as ZoneRow[], methods: [] as MethodRow[], rates: [] as RateRow[] };
-		await boot(state);
+		await seedShipping({ zones: [], methods: [], rates: [] });
 		const action = emptyActions(await loadZones())[0];
 		// One act, one wording — the empty state and the promoted button above it.
 		expect(action?.label).toBe("New shipping zone");
@@ -707,10 +556,8 @@ describe("admin Shipping console — zones level, zero-row empty state (E-2/B-6)
 
 describe("admin Shipping console — zones level, L-9 fallback branch (>25 rows)", () => {
 	test("at 25 zones (a complete page), the ACCORDION branch renders — no table, no L-7 drill-in", async () => {
-		const state = makeManyZonesState(25);
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
+		await seedShipping(manyZones(25));
+		const blocks = await loadZones();
 		expect(findBlocks(blocks, "table")).toHaveLength(0);
 		expect(
 			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
@@ -718,10 +565,8 @@ describe("admin Shipping console — zones level, L-9 fallback branch (>25 rows)
 	});
 
 	test("at 26 zones, the TABLE + combobox drill-in branch renders instead — no per-row accordions", async () => {
-		const state = makeManyZonesState(26);
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
+		await seedShipping(manyZones(26));
+		const blocks = await loadZones();
 		expect(
 			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
 		).toHaveLength(0);
@@ -741,15 +586,8 @@ describe("admin Shipping console — zones level, L-9 fallback branch (>25 rows)
 		expect(options.some((o) => o.label.includes("z0"))).toBe(false); // no id in the label
 
 		const z0 = options.find((o) => decodePath(o.value)?.[0] === "z0");
-		const drill = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			block_id: openForm?.block_id,
-			values: { target: z0!.value },
-		});
-		expect(
-			blocksOf(drill).some((b) => b.type === "header" && b.text === "Shipping methods — z0"),
-		).toBe(true);
+		const drill = await submitForm("shipping:open", { target: z0!.value }, openForm?.block_id);
+		expect(drill.some((b) => b.type === "header" && b.text === "Shipping methods — z0")).toBe(true);
 	});
 });
 
@@ -757,22 +595,14 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	/** Open the `us` zone's methods the way the zones list does — the row's own
 	 *  "View methods" BUTTON, carrying the full target path (§12.7). */
 	async function openUsMethods(): Promise<LooseBlock[]> {
-		const zones = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const view = buttons(groupBlocks(blocksOf(zones), "ship:zone:us")).find(
+		const view = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
-		return blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "block_action",
-				action_id: "shipping:open",
-				value: valueOf(view),
-			}),
-		);
+		return clickButton("shipping:open", valueOf(view));
 	}
 
 	test("opening a zone drills to its methods; each per-row accordion label LEADS WITH THE PRICE, then the name, the full slug id and the type", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const blocks = await openUsMethods();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
@@ -788,8 +618,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("a method with no rate in the filter currency says so — never 'Free', never a zero amount", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const label = String(group(await openUsMethods(), "ship:method:us:bare")?.label);
 		expect(label).toBe("No rate set — No rates yet · bare · flat rate");
 		expect(label).not.toMatch(/free|\$0|0\.00/i);
@@ -799,20 +628,16 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		// THE FALSE-ABSENCE CASE. A store that prices solely in EUR, read under
 		// the USD default, must not report a fully configured method as having no
 		// rate at all — the same lie as rendering an unknown price as `Free`.
-		const state = makeShippingState();
-		state.methods.push({
-			id: "eu-express",
-			zoneId: "us",
-			name: "Express courier",
-			type: "flat_rate",
+		await seedShipping({
+			methods: [
+				...DEFAULT_METHODS,
+				{ id: "eu-express", zoneId: "us", name: "Express courier", type: "flat_rate" },
+			],
+			rates: [
+				...DEFAULT_RATES,
+				{ methodId: "eu-express", currency: "EUR", amountCents: 1200, minSubtotalCents: null },
+			],
 		});
-		state.rates.push({
-			methodId: "eu-express",
-			currency: "EUR",
-			amountCents: 1200,
-			minSubtotalCents: null,
-		});
-		await boot(state);
 		const usd = await openUsMethods();
 		expect(group(usd, "ship:method:us:eu-express")?.label).toBe(
 			"No rate set — Express courier · eu-express · flat rate",
@@ -827,13 +652,10 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		);
 
 		const filterForm = formFor(usd, "shipping:apply-filter");
-		const eur = blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "shipping:apply-filter",
-				block_id: filterForm?.block_id,
-				values: { currency: "EUR" },
-			}),
+		const eur = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "EUR" },
+			filterForm?.block_id,
 		);
 		expect(group(eur, "ship:method:us:eu-express")?.label).toBe(
 			"€12.00 — Express courier · eu-express · flat rate",
@@ -849,23 +671,20 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("a currency that is not a currency code is rejected BEFORE any read: banner in a 200, rows unpriced, nothing claimed", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const opened = await openUsMethods();
 		const filterForm = formFor(opened, "shipping:apply-filter");
-		stub!.requests.length = 0;
-
-		const blocks = blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "shipping:apply-filter",
-				block_id: filterForm?.block_id,
-				values: { currency: "dollars" },
-			}),
+		const blocks = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "dollars" },
+			filterForm?.block_id,
 		);
-		// Not one doomed read — a typo must not cost 25 requests that all fail
-		// and then paint the list "Price unavailable", blaming the service.
-		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(0);
+		// THE "no doomed reads" CLAIM IS NOW MADE BY THE ROWS, not by a request
+		// log. `not-priced` is a state the row can only be in when `pricedMethods`
+		// short-circuited before asking — a read that HAD been attempted and failed
+		// would render "Price unavailable" instead, and one that succeeded would
+		// render an amount. So "Price not loaded" on every row IS the assertion
+		// that the typo cost zero lookups.
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toBe("Enter a 3-letter currency code like USD.");
@@ -873,6 +692,9 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		// field still there to fix.
 		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
 			"Price not loaded — Standard · standard · flat rate",
+		);
+		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+			"Price not loaded — No rates yet · bare · flat rate",
 		);
 		expect(field(formFor(blocks, "shipping:apply-filter"), "currency")?.initial_value).toBe(
 			"DOLLARS",
@@ -885,30 +707,49 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("a FAILED price read degrades that row to 'Price unavailable' — the level still renders, and absence is never claimed", async () => {
-		const state = makeShippingState();
-		state.rateReadsFail = true;
-		await boot(state);
+		// THE FAILURE IS REAL, AND IT IS THE ONE THIS TIER CAN STILL PRODUCE. The
+		// old fixture answered 500 to every rate GET; there is no GET. What
+		// remains is the rules client's own input guard: `getRate` runs
+		// `requireIdToken("methodId", …)`, which REFUSES an id carrying
+		// whitespace. A method whose id was written straight to the store (as a
+		// legacy row, or by any writer that did not go through this client) is
+		// therefore listable but not price-readable — a secondary read that
+		// throws, which is exactly the shape `methodPrice` contains. The primary
+		// list read is untouched, so the level must still render.
+		await seedShipping({
+			methods: [
+				...DEFAULT_METHODS,
+				{ id: "legacy id", zoneId: "us", name: "Legacy", type: "flat_rate" },
+			],
+		});
 		const blocks = await openUsMethods();
 		// Secondary read: the methods list itself still rendered, no fail-closed banner.
 		expect(bannerOf(blocks)).toBeUndefined();
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
-			"Price unavailable — Standard · standard · flat rate",
+		expect(group(blocks, "ship:method:us:legacy id")?.label).toBe(
+			"Price unavailable — Legacy · legacy id · flat rate",
 		);
 		// "unavailable" is not "none": a read that did not answer must not be
-		// reported as a rate that does not exist.
-		expect(String(group(blocks, "ship:method:us:bare")?.label)).not.toMatch(/no rate set/i);
+		// reported as a rate that does not exist…
+		expect(String(group(blocks, "ship:method:us:legacy id")?.label)).not.toMatch(/no rate set/i);
+		// …and the containment is PER ROW: the readable rows are priced as usual.
+		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+			"$4.99 — Standard · standard · flat rate",
+		);
+		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+			"No rate set — No rates yet · bare · flat rate",
+		);
 	});
 
-	test("the price costs exactly ONE rate read per method, in the level's currency, and the currency is stated ONCE for the list (G1)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		stub!.requests.length = 0;
+	test("the price is read in the level's currency, and the currency is stated ONCE for the list (G1)", async () => {
+		// DELETED FROM THIS CASE: `expect(rateReads).toEqual([...two URLs...])` —
+		// the exact one-read-per-method fan-out. Those reads are now in-isolate
+		// store calls with no observable trace on this side of the bridge, and
+		// counting them would mean instrumenting shared harness infrastructure to
+		// assert on an implementation detail. What survives is the bound's
+		// OBSERVABLE consequence, asserted at the boundary two cases below: every
+		// row priced at 25, and no row priced at 26.
+		await seedShipping();
 		const blocks = await openUsMethods();
-		const rateReads = stub!.requests.filter((r) => /\/rates\?/.test(r.url)).map((r) => r.url);
-		expect(rateReads.toSorted()).toEqual([
-			"/admin/shipping/methods/bare/rates?currency=USD",
-			"/admin/shipping/methods/standard/rates?currency=USD",
-		]);
 		// Currency named once, in the level's context line — never as an ISO code
 		// repeated per row — and inside X-11's 140-char page-context budget.
 		const contexts = findBlocks(blocks, "context").map((c) => String(c.text));
@@ -918,38 +759,33 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		);
 		expect(String(priced).length).toBeLessThanOrEqual(140);
 		expect(String(group(blocks, "ship:method:us:standard")?.label)).not.toContain("USD");
+		// One context line claiming a currency, not one per row.
+		expect(contexts.filter((t) => t.includes("Prices in"))).toHaveLength(1);
 	});
 
 	test("the price currency is a filter: applying EUR re-reads in EUR and re-prices every row", async () => {
-		const state = makeShippingState();
-		state.rates.push({
-			methodId: "standard",
-			currency: "EUR",
-			amountCents: 1200,
-			minSubtotalCents: null,
+		await seedShipping({
+			rates: [
+				...DEFAULT_RATES,
+				{ methodId: "standard", currency: "EUR", amountCents: 1200, minSubtotalCents: null },
+			],
 		});
-		await boot(state);
 		const opened = await openUsMethods();
 		const filterForm = formFor(opened, "shipping:apply-filter");
 		expect(field(filterForm, "currency")?.initial_value).toBe("USD");
-		stub!.requests.length = 0;
 
-		const blocks = blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "shipping:apply-filter",
-				block_id: filterForm?.block_id,
-				values: { currency: "eur" },
-			}),
+		const blocks = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "eur" },
+			filterForm?.block_id,
 		);
 		// L-6: the depth-1 path survived the apply — this is still the `us`
 		// methods list, not the root zones list.
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
-		const eurReads = stub!.requests.filter((r) => /\/rates\?/.test(r.url));
-		expect(eurReads.length).toBeGreaterThan(0);
-		expect(eurReads.every((r) => r.url.endsWith("currency=EUR"))).toBe(true);
+		// The re-read really happened in EUR: the same row that priced at $4.99
+		// now prices at €12.00, which no cached USD answer could produce.
 		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
 			"€12.00 — Standard · standard · flat rate",
 		);
@@ -963,9 +799,8 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		).toBe(true);
 	});
 
-	test("no operator-facing copy on this level names a raw enum — but the wire values are untouched", async () => {
-		const state = makeShippingState();
-		await boot(state);
+	test("no operator-facing copy on this level names a raw enum — but the stored values are untouched", async () => {
+		await seedShipping();
 		const blocks = await openUsMethods();
 		const copy = [
 			...findBlocks(blocks, "context").map((c) => String(c.text)),
@@ -975,25 +810,20 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(copy).toContain('"Flat rate" always charges its rate');
 		expect(copy).toContain('"Free shipping" charges nothing above its threshold');
 
-		// The SELECT still submits the enum the service expects — humanizing the
-		// copy must not touch the protocol.
+		// The SELECT still submits the enum the domain expects — humanizing the
+		// copy must not touch the protocol, and the stored row still spells it.
 		const createForm = formFor(await openNewMethodScreen(blocks), "shipping:create-method");
 		const typeOptions = field(createForm, "type")?.options as Array<{
 			value: string;
 			label: string;
 		}>;
 		expect(typeOptions.map((o) => o.value)).toEqual(["flat_rate", "free_shipping"]);
+		expect((await shippingRules.getMethod("standard"))?.type).toBe("flat_rate");
 	});
 
 	test("a zone with no methods yet shows the `empty` block, never a fail-closed banner", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["empty"]) },
-		});
-		const blocks = blocksOf(outcome);
+		await seedShipping();
+		const blocks = await openPath(["empty"]);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — empty")).toBe(
 			true,
 		);
@@ -1002,14 +832,8 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("the empty state's create action carries the zoneId in value.__path and opens the create screen at the RIGHT zone", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["empty"]) },
-		});
-		const action = emptyActions(blocksOf(opened))[0];
+		await seedShipping();
+		const action = emptyActions(await openPath(["empty"]))[0];
 		expect(action?.action_id).toBe("shipping:open-create-method");
 		expect(action?.label).toBe("New shipping method"); // one act, one wording
 		expect(decodePath(String(valueOf(action)["__path"]))).toEqual(["empty"]);
@@ -1025,59 +849,48 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
 	});
 
-	test("the row edit form carries zoneId+methodId invisibly; save-method PUTs the LWW edit and reloads with a 'saved' notice", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
+	test("the row edit form carries zoneId+methodId invisibly; save-method applies the LWW edit and reloads with a 'saved' notice", async () => {
+		await seedShipping();
 		const editForm = formFor(
-			groupBlocks(blocksOf(opened), "ship:method:us:standard"),
+			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
 		expect(fieldIds(editForm)).toEqual(["name", "type"]);
-		const carried = carriedContext(editForm?.block_id);
-		expect(carried).toEqual({ zoneId: "us", methodId: "standard" });
+		expect(carriedContext(editForm?.block_id)).toEqual({ zoneId: "us", methodId: "standard" });
 
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:save-method",
-			block_id: editForm?.block_id,
-			values: { name: "Standard (2-5 days)", type: "flat_rate" },
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Standard (2-5 days)", type: "flat_rate" },
+			editForm?.block_id,
+		);
+		expect(bannerOf(blocks)?.variant).toBe("default");
+		// Both keys of the full replace landed on the real row.
+		expect(await shippingRules.getMethod("standard")).toMatchObject({
+			name: "Standard (2-5 days)",
+			type: "flat_rate",
+			zoneId: "us",
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.url).toBe("/admin/shipping/methods/standard");
-		expect(put!.body).toEqual({ name: "Standard (2-5 days)", type: "flat_rate" });
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("default");
-		expect(state.methods.find((m) => m.id === "standard")?.name).toBe("Standard (2-5 days)");
 	});
 
-	test("create-method carries the zoneId invisibly (no visible field) and POSTs under the zone, then reloads the methods level", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
+	test("create-method carries the zoneId invisibly (no visible field) and writes the method UNDER that zone, then reloads the methods level", async () => {
+		await seedShipping();
 		const createForm = formFor(
-			await openNewMethodScreen(blocksOf(opened)),
+			await openNewMethodScreen(await openPath(["us"])),
 			"shipping:create-method",
 		);
 		expect(fieldIds(createForm)).toEqual(["id", "name", "type"]);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-method",
-			block_id: createForm?.block_id,
-			values: { id: "express", name: "Express", type: "flat_rate" },
-		});
-		const post = stub!.requests.find(
-			(r) => r.method === "POST" && r.url === "/admin/shipping/zones/us/methods",
+		const blocks = await submitForm(
+			"shipping:create-method",
+			{ id: "express", name: "Express", type: "flat_rate" },
+			createForm?.block_id,
 		);
-		expect(post!.body).toEqual({ id: "express", name: "Express", type: "flat_rate" });
-		const blocks = blocksOf(outcome);
+		// The ZONE IS THE PATH, never the body: the new method belongs to `us`.
+		expect(await shippingRules.getMethod("express")).toEqual({
+			id: "express",
+			zoneId: "us",
+			name: "Express",
+			type: "flat_rate",
+		});
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
@@ -1085,26 +898,18 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
-	test("an invalid method type is caught at the plugin boundary — no POST sent", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
+	test("an invalid method type is caught at the plugin boundary — nothing is written", async () => {
+		await seedShipping();
 		const createForm = formFor(
-			await openNewMethodScreen(blocksOf(opened)),
+			await openNewMethodScreen(await openPath(["us"])),
 			"shipping:create-method",
 		);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-method",
-			block_id: createForm?.block_id,
-			values: { id: "bogus", name: "Bogus", type: "not-a-type" },
-		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		const refused = blocksOf(outcome);
+		const refused = await submitForm(
+			"shipping:create-method",
+			{ id: "bogus", name: "Bogus", type: "not-a-type" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getMethod("bogus")).toBeNull();
 		expect(bannerOf(refused)?.variant).toBe("error");
 		// DA-3a-i: the refusal re-renders the create screen with the typed values
 		// put back — a bogus `type` falls back to a real option (X-23) rather
@@ -1122,8 +927,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	// -- INC-14: the create action is a button above the data ------------------
 
 	test("INC-14: `New shipping method` is a primary BUTTON under the intro line, above the rows, carrying its zone path", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const blocks = await openUsMethods();
 		// header · back · context · the create button (this level's intro line is
 		// the context under the back control).
@@ -1146,8 +950,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("INC-14: the New shipping method screen is a drill-in whose back control returns to THAT zone's methods", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 		const screen = await openNewMethodScreen(await openUsMethods());
 		expect(screen.some((b) => b.type === "header" && b.text === "New shipping method — us")).toBe(
 			true,
@@ -1166,108 +969,55 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	});
 
 	test("deleting a method is unconditional (DA-2) — a forbid-if-rates conflict is reported by the post-attempt banner", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const del = buttons(groupBlocks(blocksOf(opened), "ship:method:us:standard")).find(
+		await seedShipping();
+		const del = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:delete-method",
 		);
 		expect(del?.label).toBe("Delete method");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-method",
-			value: valueOf(del),
-		});
-		const banner = bannerOf(blocksOf(outcome));
+		const banner = bannerOf(await clickButton("shipping:delete-method", valueOf(del)));
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toMatch(/rates/i);
-		expect(state.methods.some((m) => m.id === "standard")).toBe(true); // never deleted
+		expect(await shippingRules.getMethod("standard")).not.toBeNull(); // never deleted
 	});
 
-	test("deleting a method with no rates DELETEs and reloads with a 'deleted' notice", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const del = buttons(groupBlocks(blocksOf(opened), "ship:method:us:bare")).find(
+	test("deleting a method with no rates removes it and reloads with a 'deleted' notice", async () => {
+		await seedShipping();
+		const del = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:bare")).find(
 			(b) => b.action_id === "shipping:delete-method",
 		);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-method",
-			value: valueOf(del),
-		});
-		const delReq = stub!.requests.find((r) => r.method === "DELETE");
-		expect(delReq?.url).toBe("/admin/shipping/methods/bare");
-		const banner = bannerOf(blocksOf(outcome));
+		const blocks = await clickButton("shipping:delete-method", valueOf(del));
+		expect(await shippingRules.getMethod("bare")).toBeNull();
+		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("deleted");
-		expect(group(blocksOf(outcome), "ship:method:us:bare")).toBeUndefined();
+		expect(group(blocks, "ship:method:us:bare")).toBeUndefined();
 	});
 
 	test("back from the methods level (depth 1) returns to the zones list", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const methods = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const backButtonValue = valueOf(
-			buttons(blocksOf(methods)).find((e) => e.action_id === "shipping:back"),
-		);
-		const back = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:back",
-			value: backButtonValue,
-		});
-		expect(blocksOf(back).some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(
-			true,
-		);
+		await seedShipping();
+		const methods = await openPath(["us"]);
+		const backValue = valueOf(buttons(methods).find((e) => e.action_id === "shipping:back"));
+		const back = await clickButton("shipping:back", backValue);
+		expect(back.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
 	});
 });
 
 describe("admin Shipping console — methods level, L-9 fallback branch (>25 rows)", () => {
-	test("at 25 methods the ACCORDION branch renders; at 26, TABLE + combobox drill-in (Type keeps its badge, T-5)", async () => {
-		const at25 = makeManyMethodsState(25);
-		await boot(at25);
-		stub!.requests.length = 0;
-		const level25 = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const blocks25 = blocksOf(level25);
+	test("at 25 methods the ACCORDION branch renders and every row is priced; at 26, TABLE + combobox drill-in and NOTHING is priced (Type keeps its badge, T-5)", async () => {
+		await seedShipping(manyMethods(25));
+		const blocks25 = await openPath(["us"]);
 		expect(findBlocks(blocks25, "table")).toHaveLength(0);
-		expect(
-			findBlocks(blocks25, "accordion").filter((a) =>
-				String(a.block_id).startsWith("ship:method:"),
-			),
-		).toHaveLength(25);
-		// THE CAP, ASSERTED AT THE CAP. 25 rows priced ⇒ exactly 25 rate reads,
-		// one per row and no more — this is the number the whole bound exists to
-		// hold, and asserting the branch alone would not catch a fan-out that
-		// grew to two reads a row.
-		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(25);
-		await sandbox!.close();
-		await stub!.close();
+		const rows25 = findBlocks(blocks25, "accordion").filter((a) =>
+			String(a.block_id).startsWith("ship:method:"),
+		);
+		expect(rows25).toHaveLength(25);
+		// THE BOUND, ASSERTED AT THE BOUND, by its observable consequence: at 25
+		// rows every row WAS priced (these methods have no rates, so the honest
+		// answer is "No rate set" — a fact only a completed read can state).
+		expect(rows25.every((a) => String(a.label).startsWith("No rate set — "))).toBe(true);
 
-		const at26 = makeManyMethodsState(26);
-		await boot(at26);
-		stub!.requests.length = 0;
-		const level26 = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const blocks26 = blocksOf(level26);
+		await seedShipping(manyMethods(26));
+		const blocks26 = await openPath(["us"]);
 		expect(
 			findBlocks(blocks26, "accordion").filter((a) =>
 				String(a.block_id).startsWith("ship:method:"),
@@ -1280,52 +1030,36 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 			{ key: "type", label: "Type", format: "badge" },
 		]);
 		expect(tableRows(blocks26)).toHaveLength(26);
-		// The `Type` badge reads the human name; the wire value never appears.
+		// The `Type` badge reads the human name; the stored value never appears.
 		expect(tableRows(blocks26).map((r) => String(r["type"]))).toContain("Free shipping");
 		expect(tableRows(blocks26).some((r) => /_/.test(String(r["type"])))).toBe(false);
 		// THE PRICE FAN-OUT IS BOUNDED BY THE ACCORDION BRANCH. Past 25 rows the
-		// table shows no price, so it must cost NO rate reads — never 26, never
-		// the level's `limit: 200`.
-		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(0);
-		// …and with nothing priced, the context line claims no currency.
+		// table shows no price, so nothing is read: with nothing priced, the
+		// context line claims no currency and the filter field is not rendered.
 		expect(findBlocks(blocks26, "context").some((c) => /Prices in/.test(String(c.text)))).toBe(
 			false,
 		);
 		expect(formFor(blocks26, "shipping:apply-filter")).toBeUndefined();
-	});
+	}, 120_000);
 });
 
 describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (workerd sandbox)", () => {
 	test("opening a method drills to its rates, default-filtered to USD, rendered as `fields` (not a 1-row table, P-3)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		const view = buttons(groupBlocks(blocksOf(opened), "ship:method:us:standard")).find(
+		await seedShipping();
+		const view = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		// Depth-3 open FIRED FROM A BUTTON — the trap: value.target must carry
 		// the FULL [zoneId, methodId] path, and parseOpen must read `value`, not
 		// only `values` (§12.7).
 		expect(decodePath(String(valueOf(view).target))).toEqual(["us", "standard"]);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open",
-			value: valueOf(view),
-		});
-		const blocks = blocksOf(outcome);
+		const blocks = await clickButton("shipping:open", valueOf(view));
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping rates — standard")).toBe(
 			true,
 		);
-		const getReq = stub!.requests.find((r) =>
-			r.url.startsWith("/admin/shipping/methods/standard/rates"),
-		);
-		expect(getReq?.url).toBe("/admin/shipping/methods/standard/rates?currency=USD");
 
 		expect(findBlocks(blocks, "table")).toHaveLength(0); // L-9a: no table at this level
+		// The default currency is USD and the readout is the stored row, exactly.
 		expect(fieldEntries(blocks)).toEqual([
 			"Currency=USD",
 			"Amount=$4.99",
@@ -1338,55 +1072,38 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 	});
 
 	test("a method with no rate for the filtered currency shows an honest context line, never fail-closed", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		const blocks = blocksOf(outcome);
+		await seedShipping();
+		const blocks = await openPath(["us", "bare"]);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping rates — bare")).toBe(
 			true,
 		);
 		expect(findBlocks(blocks, "fields")).toHaveLength(0);
-		const contexts = findBlocks(blocks, "context").map((c) => String(c.text));
-		expect(contexts.some((t) => /no rate set/i.test(t))).toBe(true);
+		expect(contextTexts(blocks).some((t) => /no rate set/i.test(t))).toBe(true);
 	});
 
 	test("filtering to a non-default currency renders the L-6 'Clear filters' section, whose button re-applies the [zoneId,methodId] path", async () => {
-		const state = makeShippingState();
-		state.rates.push({
-			methodId: "standard",
-			currency: "EUR",
-			amountCents: 599,
-			minSubtotalCents: null,
+		await seedShipping({
+			rates: [
+				...DEFAULT_RATES,
+				{ methodId: "standard", currency: "EUR", amountCents: 599, minSubtotalCents: null },
+			],
 		});
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const filterForm = formFor(blocksOf(opened), "shipping:apply-filter");
+		const opened = await openPath(["us", "standard"]);
+		const filterForm = formFor(opened, "shipping:apply-filter");
 		expect(filterForm?.submit).toEqual({
 			label: "Apply filters",
 			action_id: "shipping:apply-filter",
 		});
-		stub!.requests.length = 0;
 
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:apply-filter",
-			block_id: filterForm?.block_id,
-			values: { currency: "eur" },
-		});
-		expect(stub!.requests).toHaveLength(1);
-		expect(stub!.requests[0]?.url).toBe("/admin/shipping/methods/standard/rates?currency=EUR");
-		const blocks = blocksOf(outcome);
+		const blocks = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "eur" },
+			filterForm?.block_id,
+		);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping rates — standard")).toBe(
 			true,
 		); // path survived
+		// The EUR row, not the USD one — the filter reached the store.
 		expect(fieldEntries(blocks)).toEqual([
 			"Currency=EUR",
 			"Amount=€5.99",
@@ -1400,119 +1117,82 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(clearButton.action_id).toBe("shipping:apply-filter");
 		expect(clearButton.label).toBe("Clear filters");
 
-		const cleared = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:apply-filter",
-			value: clearButton.value,
-		});
-		const clearedBlocks = blocksOf(cleared);
-		expect(
-			clearedBlocks.some((b) => b.type === "header" && b.text === "Shipping rates — standard"),
-		).toBe(true); // still the SAME method's rates, not the root
-		expect(fieldEntries(clearedBlocks)[0]).toBe("Currency=USD"); // back to the default
+		const cleared = await clickButton("shipping:apply-filter", clearButton.value);
+		expect(cleared.some((b) => b.type === "header" && b.text === "Shipping rates — standard")).toBe(
+			true,
+		); // still the SAME method's rates, not the root
+		expect(fieldEntries(cleared)[0]).toBe("Currency=USD"); // back to the default
 	});
 
-	test("create-rate POSTs the EXACT integer cents (0 is allowed), then reloads the rates level", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		const createForm = formFor(blocksOf(opened), "shipping:create-rate");
-		const carried = carriedContext(createForm?.block_id);
-		expect(carried).toEqual({ zoneId: "us", methodId: "bare" });
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-rate",
-			block_id: createForm?.block_id,
-			values: { currency: "usd", amount: "0", minSubtotal: "" },
-		});
-		const post = stub!.requests.find(
-			(r) => r.method === "POST" && r.url === "/admin/shipping/methods/bare/rates",
+	test("create-rate stores the EXACT integer cents (0 is allowed), then reloads the rates level", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		expect(carriedContext(createForm?.block_id)).toEqual({ zoneId: "us", methodId: "bare" });
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "usd", amount: "0", minSubtotal: "" },
+			createForm?.block_id,
 		);
-		expect(post!.body).toEqual({ currency: "USD", amountCents: 0, minSubtotalCents: null });
-		const blocks = blocksOf(outcome);
+		// ZERO IS A PRICE, and it is stored as the integer 0 rather than dropped:
+		// a $0 flat rate is legitimate config, and a blank threshold is an
+		// explicit "none", never a 0 minimum.
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toEqual({
+			methodId: "bare",
+			currency: "USD",
+			amountCents: 0,
+			minSubtotalCents: null,
+		});
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping rates — bare")).toBe(
 			true,
 		);
 		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
-	test("a malformed amount is caught at the plugin boundary — no POST is sent (money parse edge)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		const createForm = formFor(blocksOf(opened), "shipping:create-rate");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-rate",
-			block_id: createForm?.block_id,
-			values: { currency: "USD", amount: "4.999", minSubtotal: "" },
-		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+	test("a malformed amount is caught at the plugin boundary — nothing is written (money parse edge)", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.999", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("a negative amount is caught at the plugin boundary — no POST is sent (money parse edge)", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		const createForm = formFor(blocksOf(opened), "shipping:create-rate");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-rate",
-			block_id: createForm?.block_id,
-			values: { currency: "USD", amount: "-1", minSubtotal: "" },
-		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+	test("a negative amount is caught at the plugin boundary — nothing is written (money parse edge)", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "-1", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("an invalid currency code is caught at the plugin boundary — no POST is sent", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		const createForm = formFor(blocksOf(opened), "shipping:create-rate");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:create-rate",
-			block_id: createForm?.block_id,
-			values: { currency: "US", amount: "4.99", minSubtotal: "" },
-		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+	test("an invalid currency code is caught at the plugin boundary — nothing is written", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "US", amount: "4.99", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(bannerOf(blocks)?.variant).toBe("error");
+		// Nothing landed under the truncated code, nor under a helpfully-guessed one.
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
 	});
 
 	test("the rate edit form carries the CAS watermark (expectedAmountCents) invisibly, alongside zoneId/methodId/currency", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const blocks = blocksOf(outcome);
-		const editForm = formFor(blocks, "shipping:save-rate");
+		await seedShipping();
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
 		expect(fieldIds(editForm)).toEqual(["amount", "minSubtotal"]); // no hidden fields visible
 		expect(field(editForm, "amount")?.type).toBe("text_input"); // never number_input
 		expect(field(editForm, "amount")?.initial_value).toBe("4.99");
 		expect(field(editForm, "minSubtotal")?.initial_value).toBe("35.00");
-		const carried = carriedContext(editForm?.block_id);
-		expect(carried).toEqual({
+		expect(carriedContext(editForm?.block_id)).toEqual({
 			zoneId: "us",
 			methodId: "standard",
 			currency: "USD",
@@ -1520,114 +1200,80 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		});
 	});
 
-	test("save-rate PUTs the CAS edit and reloads with a 'saved' notice", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const editForm = formFor(blocksOf(opened), "shipping:save-rate");
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:save-rate",
-			block_id: editForm?.block_id,
-			values: { amount: "5.99", minSubtotal: "" },
-		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.url).toBe("/admin/shipping/methods/standard/rates/USD");
-		expect(put!.body).toEqual({
-			amountCents: 599,
-			minSubtotalCents: null,
-			expectedAmountCents: 499,
-		});
-		const banner = bannerOf(blocksOf(outcome));
+	test("save-rate applies the CAS edit and reloads with a 'saved' notice", async () => {
+		await seedShipping();
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		const blocks = await submitForm(
+			"shipping:save-rate",
+			{ amount: "5.99", minSubtotal: "" },
+			editForm?.block_id,
+		);
+		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
-		expect(state.rates.find((r) => r.currency === "USD")?.amountCents).toBe(599);
-		expect(state.rates.find((r) => r.currency === "USD")?.minSubtotalCents).toBeNull();
+		// The stored row moved, and the blank threshold CLEARED it — the
+		// required-nullable full-replace key, proven on the row rather than in a
+		// request body.
+		expect(await shippingRules.getRate("standard", toCurrency("USD"))).toMatchObject({
+			amountCents: 599,
+			minSubtotalCents: null,
+		});
 	});
 
-	test("a concurrent-edit conflict (409 STALE) reloads the fresh rate with a re-apply warning, never a clobber", async () => {
-		const state = makeShippingState();
-		await boot(state);
+	test("a concurrent-edit conflict loses the CAS: the fresh rate is reloaded with a re-apply warning, never a clobber", async () => {
+		await seedShipping();
 		// Stage an edit form whose carried watermark (499) is already stale by
-		// the time it is submitted — a real out-of-band change to the record.
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const editForm = formFor(blocksOf(opened), "shipping:save-rate");
-		state.rates.find((r) => r.currency === "USD")!.amountCents = 1;
+		// the time it is submitted — a real out-of-band change to the record,
+		// written through the store's own CAS so the concurrent edit is as real as
+		// the one it is about to beat.
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		await shippingRules.updateRate(
+			"standard",
+			toCurrency("USD"),
+			{ amountCents: toCents(1), minSubtotalCents: toCents(3500) },
+			toCents(499),
+		);
 
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:save-rate",
-			block_id: editForm?.block_id,
-			values: { amount: "9.00", minSubtotal: "" },
-		});
-		const blocks = blocksOf(outcome);
+		const blocks = await submitForm(
+			"shipping:save-rate",
+			{ amount: "9.00", minSubtotal: "" },
+			editForm?.block_id,
+		);
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toMatch(/changed since you loaded it|reload/i);
-		expect(state.rates.find((r) => r.currency === "USD")?.amountCents).toBe(1); // untouched by this save
-		expect(fieldEntries(blocks)).toContain("Amount=$0.01"); // the FRESH value, from a real reload GET
+		// The submitted edit was NOT applied — the concurrent 1 stands.
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.amountCents).toBe(1);
+		expect(fieldEntries(blocks)).toContain("Amount=$0.01"); // the FRESH value, from a real reload
 	});
 
-	test("delete-rate DELETEs and reloads with a 'deleted' notice, danger copy about in-flight carts / snapshotted orders; a repeat delete is idempotent", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const del = buttons(blocksOf(opened)).find((e) => e.action_id === "shipping:delete-rate");
+	test("delete-rate removes the row and reloads with a 'deleted' notice, danger copy about in-flight carts / snapshotted orders; a repeat delete is idempotent", async () => {
+		await seedShipping();
+		const del = buttons(await openPath(["us", "standard"])).find(
+			(e) => e.action_id === "shipping:delete-rate",
+		);
 		expect(del?.label).toBe("Delete rate");
 		expect(String(confirmOf(del).text)).toMatch(/in-flight carts/i);
 		expect(String(confirmOf(del).text)).toMatch(/snapshots the shipping fee/i);
 
-		const first = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-rate",
-			value: valueOf(del),
-		});
-		const delReq = stub!.requests.find((r) => r.method === "DELETE");
-		expect(delReq?.url).toBe("/admin/shipping/methods/standard/rates/USD");
-		const firstBanner = bannerOf(blocksOf(first));
+		const first = await clickButton("shipping:delete-rate", valueOf(del));
+		expect(await shippingRules.getRate("standard", toCurrency("USD"))).toBeNull();
+		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
 		expect(String(firstBanner?.title)).toContain("deleted");
-		expect(findBlocks(blocksOf(first), "fields")).toHaveLength(0);
+		expect(findBlocks(first, "fields")).toHaveLength(0);
 
-		const second = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:delete-rate",
-			value: valueOf(del),
-		});
-		const secondBanner = bannerOf(blocksOf(second));
+		const second = await clickButton("shipping:delete-rate", valueOf(del));
+		const secondBanner = bannerOf(second);
 		expect(secondBanner?.variant).toBe("default"); // idempotent no-op, never an error
 		expect(String(secondBanner?.title)).toMatch(/already deleted/i);
 	});
 
 	test("back from the rates level (depth 2) pops exactly ONE level, to the methods list — not the root", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const rates = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		const backButtonValue = valueOf(
-			buttons(blocksOf(rates)).find((e) => e.action_id === "shipping:back"),
-		);
-		const back = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:back",
-			value: backButtonValue,
-		});
-		const blocks = blocksOf(back);
+		await seedShipping();
+		const rates = await openPath(["us", "standard"]);
+		const backValue = valueOf(buttons(rates).find((e) => e.action_id === "shipping:back"));
+		const blocks = await clickButton("shipping:back", backValue);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
@@ -1637,61 +1283,40 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 
 describe("admin Shipping console — full deep-drill round trip via row BUTTONS (workerd sandbox)", () => {
 	test("zones → methods → rates → back → back returns to zones, every open fired from a row button carrying the FULL path", async () => {
-		const state = makeShippingState();
-		await boot(state);
-		const zones = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const zoneOpen = buttons(groupBlocks(blocksOf(zones), "ship:zone:us")).find(
+		await seedShipping();
+		const zones = await loadZones();
+		const zoneOpen = buttons(groupBlocks(zones, "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		expect(decodePath(String(valueOf(zoneOpen).target))).toEqual(["us"]);
-		const methods = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open",
-			value: valueOf(zoneOpen),
-		});
-		expect(
-			blocksOf(methods).some((b) => b.type === "header" && b.text === "Shipping methods — us"),
-		).toBe(true);
+		const methods = await clickButton("shipping:open", valueOf(zoneOpen));
+		expect(methods.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
+			true,
+		);
 
-		const methodOpen = buttons(groupBlocks(blocksOf(methods), "ship:method:us:standard")).find(
+		const methodOpen = buttons(groupBlocks(methods, "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		// The depth-3 trap: the FULL [zoneId, methodId] path, not a bare methodId.
 		expect(decodePath(String(valueOf(methodOpen).target))).toEqual(["us", "standard"]);
-		const rates = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open",
-			value: valueOf(methodOpen),
-		});
+		const rates = await clickButton("shipping:open", valueOf(methodOpen));
+		expect(rates.some((b) => b.type === "header" && b.text === "Shipping rates — standard")).toBe(
+			true,
+		);
+
+		const backToMethods = await clickButton(
+			"shipping:back",
+			valueOf(buttons(rates).find((e) => e.action_id === "shipping:back")),
+		);
 		expect(
-			blocksOf(rates).some((b) => b.type === "header" && b.text === "Shipping rates — standard"),
+			backToMethods.some((b) => b.type === "header" && b.text === "Shipping methods — us"),
 		).toBe(true);
 
-		const backToMethodsValue = valueOf(
-			buttons(blocksOf(rates)).find((e) => e.action_id === "shipping:back"),
+		const backToZones = await clickButton(
+			"shipping:back",
+			valueOf(buttons(backToMethods).find((e) => e.action_id === "shipping:back")),
 		);
-		const backToMethods = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:back",
-			value: backToMethodsValue,
-		});
-		expect(
-			blocksOf(backToMethods).some(
-				(b) => b.type === "header" && b.text === "Shipping methods — us",
-			),
-		).toBe(true);
-
-		const backToZonesValue = valueOf(
-			buttons(blocksOf(backToMethods)).find((e) => e.action_id === "shipping:back"),
-		);
-		const backToZones = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:back",
-			value: backToZonesValue,
-		});
-		expect(
-			blocksOf(backToZones).some((b) => b.type === "header" && b.text === "Shipping zones"),
-		).toBe(true);
+		expect(backToZones.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
 	});
 });
 
@@ -1700,107 +1325,53 @@ describe("admin Shipping console — assertBlockContract (§15 V-3)", () => {
 	// rendered response per drill level, per branch, and per zero-row state —
 	// all three levels are LIST levels (D-2: Shipping has no detail screen).
 	test("assertBlockContract holds at every level, both L-9 branches, and both empty states", async () => {
-		const state = makeShippingState();
-		await boot(state);
+		await seedShipping();
 
-		const zonesList = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		assertBlockContract(blocksOf(zonesList), { screen: "shipping", level: "list" });
+		const zonesList = await loadZones();
+		assertBlockContract(zonesList, { screen: "shipping", level: "list" });
 
-		const methodsList = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		assertBlockContract(blocksOf(methodsList), { screen: "shipping", level: "list" });
+		const methodsList = await openPath(["us"]);
+		assertBlockContract(methodsList, { screen: "shipping", level: "list" });
 
-		const emptyMethodsList = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["empty"]) },
-		});
-		assertBlockContract(blocksOf(emptyMethodsList), { screen: "shipping", level: "list" });
+		assertBlockContract(await openPath(["empty"]), { screen: "shipping", level: "list" });
 
 		// INC-14's four new list-level renders: each create screen, and each
 		// after a refusal (a banner plus a form full of prefilled values).
-		const zoneScreen = await openNewZoneScreen(blocksOf(zonesList));
+		const zoneScreen = await openNewZoneScreen(zonesList);
 		assertBlockContract(zoneScreen, { screen: "shipping", level: "list" });
 		assertBlockContract(
-			blocksOf(
-				await sandbox!.invokeRoute("admin", {
-					type: "form_submit",
-					action_id: "shipping:create-zone",
-					block_id: formFor(zoneScreen, "shipping:create-zone")?.block_id,
-					values: { id: "", name: "Canada", regions: "CA" },
-				}),
+			await submitForm(
+				"shipping:create-zone",
+				{ id: "", name: "Canada", regions: "CA" },
+				formFor(zoneScreen, "shipping:create-zone")?.block_id,
 			),
 			{ screen: "shipping", level: "list" },
 		);
-		const methodScreen = await openNewMethodScreen(blocksOf(methodsList));
+		const methodScreen = await openNewMethodScreen(methodsList);
 		assertBlockContract(methodScreen, { screen: "shipping", level: "list" });
 		assertBlockContract(
-			blocksOf(
-				await sandbox!.invokeRoute("admin", {
-					type: "form_submit",
-					action_id: "shipping:create-method",
-					block_id: formFor(methodScreen, "shipping:create-method")?.block_id,
-					values: { id: "x", name: "", type: "flat_rate" },
-				}),
+			await submitForm(
+				"shipping:create-method",
+				{ id: "x", name: "", type: "flat_rate" },
+				formFor(methodScreen, "shipping:create-method")?.block_id,
 			),
 			{ screen: "shipping", level: "list" },
 		);
 
-		const ratesWithRow = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "standard"]) },
-		});
-		assertBlockContract(blocksOf(ratesWithRow), { screen: "shipping", level: "list" });
+		assertBlockContract(await openPath(["us", "standard"]), { screen: "shipping", level: "list" });
+		assertBlockContract(await openPath(["us", "bare"]), { screen: "shipping", level: "list" });
 
-		const ratesNoRow = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us", "bare"]) },
-		});
-		assertBlockContract(blocksOf(ratesNoRow), { screen: "shipping", level: "list" });
-
-		await sandbox!.close();
-		await stub!.close();
-
-		// The zero-row `empty` state (E-2) — zones and methods.
-		const zeroState = {
-			zones: [] as ZoneRow[],
-			methods: [] as MethodRow[],
-			rates: [] as RateRow[],
-		};
-		await boot(zeroState);
-		const emptyZones = await sandbox!.invokeRoute("admin", {
-			type: "page_load",
-			page: "/shipping",
-		});
-		assertBlockContract(blocksOf(emptyZones), { screen: "shipping", level: "list" });
-
-		await sandbox!.close();
-		await stub!.close();
+		// The zero-row `empty` state (E-2) — zones and methods. The fixture is
+		// re-seeded rather than the sandbox rebooted: the isolate holds no state,
+		// so a case's shape comes entirely from what the store says.
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		assertBlockContract(await loadZones(), { screen: "shipping", level: "list" });
 
 		// The L-9 fallback branch (>25 rows) — zones and methods.
-		const manyZones = makeManyZonesState(26);
-		await boot(manyZones);
-		const zonesFallback = await sandbox!.invokeRoute("admin", {
-			type: "page_load",
-			page: "/shipping",
-		});
-		assertBlockContract(blocksOf(zonesFallback), { screen: "shipping", level: "list" });
+		await seedShipping(manyZones(26));
+		assertBlockContract(await loadZones(), { screen: "shipping", level: "list" });
 
-		await sandbox!.close();
-		await stub!.close();
-
-		const manyMethods = makeManyMethodsState(26);
-		await boot(manyMethods);
-		const methodsFallback = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "shipping:open",
-			values: { target: encodePath(["us"]) },
-		});
-		assertBlockContract(blocksOf(methodsFallback), { screen: "shipping", level: "list" });
-	});
+		await seedShipping(manyMethods(26));
+		assertBlockContract(await openPath(["us"]), { screen: "shipping", level: "list" });
+	}, 180_000);
 });

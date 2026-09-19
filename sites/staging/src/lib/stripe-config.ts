@@ -18,8 +18,8 @@
  *
  * So: absence degrades QUIETLY (that is a real, supported state — a store that
  * has not connected Stripe), while a value that is PRESENT but does not look
- * like a publishable key THROWS AT BUILD, mirroring `resolveServiceUrl`'s
- * "throw early rather than bake garbage into the bundle". Between them, the
+ * like a publishable key THROWS AT BUILD — throw early rather than bake garbage
+ * into the bundle. Between them, the
  * only way to reach the degraded path is to genuinely have no key.
  */
 

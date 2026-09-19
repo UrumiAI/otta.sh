@@ -10,324 +10,311 @@
  * from a bare copy of `src/`, with no Node, no workspace resolution and no
  * `fetch` but the injected one.
  *
- * IT COVERS THE TWO THINGS THIS SCREEN'S CONSOLE BRANCH DOES THAT ORDERS' DOES
- * NOT:
+ * THERE IS NO SERVICE BEHIND THIS SCREEN ANY MORE (INC-D3a). `makeAdminClients`
+ * builds `InProcessAdminProductsClient` and `InProcessReportingSettingsClient`
+ * over `ctx.storage`, so the page, its count, its cursor and its threshold all
+ * come off the plugin's own document store. Every assertion that used to read a
+ * recorded request's QUERY STRING is therefore gone, and what replaces it is
+ * strictly stronger: the fixtures are real rows, and a predicate is proven by
+ * WHICH ROWS COME BACK rather than by the characters that were sent asking for
+ * them. A query string can carry `lowStockThreshold=5` and still be applied to
+ * the wrong column; a page that returns the `5` row and not the `6` row cannot.
  *
- *  1. **Minting the carrier.** Four of five writes are Block Kit FORM submits,
- *     whose context rides in a `block_id` carrier a browser cannot produce. The
- *     tests below drive a save and a restock end to end and assert the SERVICE
- *     saw the right request — which is only possible if the carrier round-tripped
- *     through `decodeCarrier` into the handler that reads it.
- *  2. **Resolving the threshold into a server-side predicate, and captioning
- *     it correctly.** "Low stock only" carries the store's threshold on the
- *     outgoing request now, and the service's exact count is of the SAME set
- *     the page is drawn from — so the total is forwarded whenever the
- *     predicate ran, and withheld only on the one case where it could not
- *     (`stock.filterUnavailable`).
+ * WHAT IT STILL COVERS, unchanged in substance:
+ *
+ *  1. **Raw values, never rendered ones.** A Block Kit row carries "$19.99"
+ *     (money already spent, G1) and "42 · Low" (a band already decided). The
+ *     React tier is fed minor units and a raw count, and formats both itself.
+ *  2. **Resolving the threshold into a server-side predicate, and captioning it
+ *     correctly.** "Low stock only" travels as a real filter axis, the count is
+ *     taken under the SAME predicate, and the page's `total` therefore describes
+ *     the rows above it.
+ *  3. **The cursor as a predicate.** A continuation states its filters beside the
+ *     token; a token that disagrees is refused and answered with page one,
+ *     flagged.
+ *
+ * THE DEGRADED-SECONDARY ARMS ARE GONE WITH THE TRANSPORT THAT COULD PRODUCE
+ * THEM, and each deletion is recorded where it used to stand. A settings read
+ * that FAILS (`stock.threshold === null`, and with it every `filterUnavailable`
+ * case), a tax-registry read that FAILS, and a page whose on-hand column came
+ * back with no key at all (`stock.unreadable === true`) were all injected by
+ * making a stub HTTP surface answer 404 or omit a field. In-process the settings
+ * store answers from its own defaults rather than failing, `toProductSummaryWire`
+ * always emits `onHand` as `number | null`, and `getTaxClasses` is a store scan.
+ * A test that hand-built those states would be asserting against its own fixture,
+ * not against this route — so the reachable half of each pair is kept and the
+ * unreachable half is deleted with its reason.
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
  * Playwright (`sites/staging/e2e/products-console.spec.ts`), which is additive
  * to this tier and replaces none of it.
+ *
+ * ONE STORE PER PROCESS (`storageBridge`), so every case addresses disjoint ids
+ * and every list assertion narrows by a `search` term unique to its own case —
+ * the catalogue is shared, the fixtures are not.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+	cents,
+	currency as toCurrency,
+	idempotencyKey,
+	money,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
+import {
+	EmdashInventoryStore,
+	EmdashProductCommerceStore,
+	EmdashSettingsStore,
+	EmdashTaxRulesStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { onHandCell } from "@otta-sh/admin-presentation";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
-import {
-	type RecordedRequest,
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const READ = "otta_console_read";
 const ACT = "otta_console_act";
 
-const PRODUCT_ID = "prod-1";
-const ADMIN_TOKEN = "admin-token-xyz";
+/** The id/sku namespace this file owns in the shared per-process store. */
+const NS = "pcr";
+/** `PAGE_LIMIT` in `products-read.ts`, restated so the cursor block can seed one
+ *  row past it. */
+const PAGE_LIMIT = 25;
+/** The store's low-stock threshold for this whole file, written once into the
+ *  real settings document. It is a SETTINGS value, not a product field, which is
+ *  the entire reason this screen reads two surfaces. */
+const THRESHOLD = 5;
 
-function summary(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-	return {
-		productId: PRODUCT_ID,
-		sku: "APR-LIN-NAT",
-		title: "Washed Linen Apron",
-		priceCents: 1999,
-		currency: "USD",
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: 42,
-		createdAt: "2026-07-12T00:00:00.000Z",
-		...overrides,
-	};
+let sandbox: SandboxHandle;
+let storage: StorageAccess;
+let products: EmdashProductCommerceStore;
+let inventory: EmdashInventoryStore;
+let taxRules: EmdashTaxRulesStore;
+let seq = 0;
+
+interface Seeded {
+	readonly productId: string;
+	readonly sku: string;
+	readonly title: string;
+	readonly updatedAt: string;
 }
 
-function detail(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-	return {
-		productId: PRODUCT_ID,
-		sku: "APR-LIN-NAT",
-		title: "Washed Linen Apron",
-		priceCents: 1999,
-		currency: "USD",
-		taxClass: "standard",
-		compareAtCents: null,
-		compareAtCurrency: null,
-		unitCostCents: 850,
-		unitCostCurrency: "USD",
-		inventoryPolicy: "deny",
-		weightGrams: 320,
-		lengthMm: null,
-		widthMm: null,
-		heightMm: null,
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: 42,
-		createdAt: "2026-07-12T00:00:00.000Z",
-		updatedAt: "2026-07-20T09:00:00.000Z",
-		...overrides,
-	};
+interface SeedOptions {
+	/** Substring the list `search` axis will narrow on — every case uses its own. */
+	readonly term: string;
+	/** `null` seeds NO inventory document, which is "unknown stock", not zero. */
+	readonly onHand?: number | null;
+	readonly kind?: "physical" | "digital";
+	readonly active?: boolean;
+	readonly archived?: boolean;
+	readonly priceCents?: number;
 }
 
-/** The stub keys ONE responder per HTTP method, so routing is a function of the
- *  url — the same shape the other console suite uses. Each test declares the
- *  routes it cares about and everything else 404s, which is itself part of the
- *  assertion: a surface this branch is not supposed to call shows up as a
- *  degradation rather than passing silently. */
-type Routes = Record<string, () => { status: number; body: unknown }>;
-
-function responder(routes: Routes) {
-	return (request: { url: string }) => {
-		const path = request.url.split("?")[0] ?? "";
-		const route = routes[path];
-		return route ? route() : { status: 404, body: { error: "no route" } };
-	};
+/** One real product-commerce row (plus, unless suppressed, its inventory
+ *  document) written straight to the store the isolate reads through. */
+async function seedProduct(options: SeedOptions): Promise<Seeded> {
+	const n = ++seq;
+	const productId = `${NS}-prod-${String(n)}`;
+	const sku = `${NS}-SKU-${String(n)}`;
+	const title = `${options.term} widget ${String(n)}`;
+	const product = await products.upsert(
+		{
+			productId: toProductId(productId),
+			sku: toSku(sku),
+			title,
+			price: money(cents(options.priceCents ?? 1999), toCurrency("USD")),
+			taxClass: "standard",
+			weightGrams: 320,
+			productKind: options.kind ?? "physical",
+		},
+		idempotencyKey(`${NS}-seed-${String(n)}`),
+	);
+	const onHand = options.onHand === undefined ? 42 : options.onHand;
+	if (onHand !== null) await inventory.seedOnHand(toSku(sku), onHand);
+	// The publish gate is CMS-owned and a freshly upserted row has never been
+	// published, so `active` starts false — a case that wants a live row has to
+	// flip the gate through the store's own lifecycle method.
+	if (options.active === true) {
+		await products.activate(
+			toProductId(productId),
+			idempotencyKey(`${NS}-activate-${String(n)}`),
+			new Date().toISOString(),
+		);
+	}
+	if (options.archived === true) {
+		await products.softDelete(toProductId(productId), idempotencyKey(`${NS}-del-${String(n)}`));
+	}
+	const row = await products.getByProductId(toProductId(productId));
+	return { productId, sku, title, updatedAt: (row ?? product).updatedAt.toISOString() };
 }
 
-const LIST_ROUTE = "/admin/products";
-const DETAIL_ROUTE = `/admin/products/${PRODUCT_ID}`;
-const SETTINGS_ROUTE = "/settings";
-const TAX_CLASSES_ROUTE = "/admin/tax/classes";
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	products = new EmdashProductCommerceStore({ storage, clock: systemClock });
+	inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
+	const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+	await settings.update({ lowStockThreshold: THRESHOLD }, idempotencyKey(`${NS}-settings`));
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
 
-function settingsBody(lowStockThreshold: number): { status: number; body: unknown } {
-	return { status: 200, body: { settings: { lowStockThreshold } } };
+afterAll(async () => {
+	await sandbox.close();
+});
+
+async function invoke(input: unknown): Promise<Record<string, unknown>> {
+	const outcome = await sandbox.invokeRoute("admin", input);
+	expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
+	return (outcome as { result: Record<string, unknown> }).result;
 }
 
-/** One request header, case-insensitively. */
-function header(request: RecordedRequest | undefined, name: string): string | undefined {
-	const value = request?.headers[name.toLowerCase()];
-	return typeof value === "string" ? value : undefined;
+/** The rows of a list payload, as the console receives them. */
+function rows(result: Record<string, unknown>): Array<Record<string, unknown>> {
+	expect(result["ok"], JSON.stringify(result)).toBe(true);
+	return result["products"] as Array<Record<string, unknown>>;
+}
+
+function ids(result: Record<string, unknown>): unknown[] {
+	return rows(result).map((p) => p["productId"]);
+}
+
+function stockOf(result: Record<string, unknown>): Record<string, unknown> {
+	return result["stock"] as Record<string, unknown>;
 }
 
 describe("the console's Pricing & inventory branch on the otta admin route", () => {
-	let service: StubCommerceServer;
-	let sandbox: SandboxHandle;
-
-	beforeEach(async () => {
-		service = await startStubCommerceServer();
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [service.host],
-			commerceServiceBaseUrl: service.baseUrl,
-		});
-	});
-
-	afterEach(async () => {
-		await sandbox.close();
-		await service.close();
-	});
-
-	async function invoke(input: unknown): Promise<Record<string, unknown>> {
-		const outcome = await sandbox.invokeRoute("admin", input);
-		expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
-		return (outcome as { result: Record<string, unknown> }).result;
-	}
-
-	/** Put the admin token in write-only `ctx.kv`, the way the Settings screen
-	 *  does. Seeded per test rather than in `beforeEach`, so the NO-token case
-	 *  below is the ABSENCE of this call rather than a special setup. */
-	async function seedAdminToken(): Promise<void> {
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: ADMIN_TOKEN },
-		});
-		service.requests.length = 0;
-	}
-
-	/** The request for one EXACT path. `/admin/products` and
-	 *  `/admin/products/<id>` share a prefix, so `startsWith` cannot tell a list
-	 *  read from a detail read. */
-	function requestTo(path: string): RecordedRequest | undefined {
-		return service.requests.find((r) => (r.url.split("?")[0] ?? "") === path);
-	}
-
 	test("products.list returns RAW minor units and a RAW on-hand count", async () => {
 		// THE WHOLE REASON THIS BRANCH EXISTS. A Block Kit row carries "$19.99"
 		// (money already spent, G1) and "42" or "3 · Low" (a band already decided).
 		// A React tier fed those strings could format neither and re-band nothing.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary()], nextCursor: null, total: 137 },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
+		const seeded = await seedProduct({ term: "rawvalues", onHand: 42, priceCents: 1999 });
 
-		const result = await invoke({ type: READ, resource: "products.list" });
-		expect(result["ok"]).toBe(true);
-		const products = result["products"] as Array<Record<string, unknown>>;
-		expect(products).toHaveLength(1);
-		expect(products[0]?.["priceCents"]).toBe(1999);
-		expect(products[0]?.["currency"]).toBe("USD");
-		expect(products[0]?.["onHand"]).toBe(42);
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "rawvalues" },
+		});
+		const page = rows(result);
+		expect(page).toHaveLength(1);
+		expect(page[0]?.["productId"]).toBe(seeded.productId);
+		expect(page[0]?.["priceCents"]).toBe(1999);
+		expect(page[0]?.["currency"]).toBe("USD");
+		expect(page[0]?.["onHand"]).toBe(42);
 		expect(JSON.stringify(result)).not.toContain("$19.99");
 		expect(JSON.stringify(result)).not.toContain("42 · ");
 	});
 
 	test("the low-stock THRESHOLD travels with the page, because a row cannot carry it", async () => {
 		// What counts as `Low` is a SETTINGS value, not a product field — this is
-		// the one screen that reads two service surfaces, and the React tier needs
-		// the second one to render the same cell the Block Kit table renders.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({ status: 200, body: { products: [summary()], nextCursor: null } }),
-				[SETTINGS_ROUTE]: () => settingsBody(50),
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.list" });
-		const stock = result["stock"] as Record<string, unknown>;
-		expect(stock["threshold"]).toBe(50);
-		// ...and the shared cell function turns the two into the same string both
-		// screens render. 42 ≤ 50, so this one is Low.
-		expect(onHandCell(42, 50)).toBe("42 · Low");
-	});
-
-	test("a settings read that FAILS costs the Low band and nothing else (E-1)", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({ status: 200, body: { products: [summary()], nextCursor: null } }),
-				// no /settings route ⇒ 404
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.list" });
-		expect(result["ok"]).toBe(true);
-		expect((result["products"] as unknown[]).length).toBe(1);
-		expect((result["stock"] as Record<string, unknown>)["threshold"]).toBeNull();
-	});
-
-	test("`null` on-hand is NOT zero, and a missing key is NOT null", async () => {
-		// Three cases that must never be folded together: a known count, a sku with
-		// no inventory record, and a response that carried no stock figure at all.
-		const { onHand: _drop, ...noStockKey } = summary({ productId: "prod-3" });
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: {
-						products: [
-							summary({ productId: "prod-1", onHand: 0 }),
-							summary({ productId: "prod-2", onHand: null }),
-							noStockKey,
-						],
-						nextCursor: null,
-					},
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.list" });
-		const products = result["products"] as Array<Record<string, unknown>>;
-		expect(products[0]?.["onHand"]).toBe(0);
-		expect(products[1]?.["onHand"]).toBeNull();
-		// Not invented as 0, and not invented as null either — the key is simply
-		// forwarded as it arrived, and `onHandCell` renders all three as text.
-		expect(products[2]?.["onHand"]).toBeUndefined();
-		expect(onHandCell(0, 5)).toBe("0 · Out of stock");
-		expect(onHandCell(null, 5)).toBe("—");
-		expect(onHandCell(undefined, 5)).toBe("—");
-	});
-
-	test("the exact `total` is FORWARDED when it describes the rows", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary()], nextCursor: "cur-2", total: 137 },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.list" });
-		expect(result["total"]).toBe(137);
-	});
-
-	test("the `total` IS SHOWN once filtering is server-side — the caption rule inverts", async () => {
-		// THE CAPTION RULE INVERTS. The service applies the predicate now (the
-		// stub stands in for it, already returning only the matching row) and
-		// counts the SAME set the page is drawn from, so its exact `total`
-		// describes the rows on screen and is forwarded — the opposite of the
-		// client-side-narrowing days this replaces, which withheld it because
-		// the service's count then described a different, unnarrowed set.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: {
-						products: [summary({ productId: "low", onHand: 2 })],
-						nextCursor: "cur-2",
-						total: 137,
-					},
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
+		// the one screen that reads two surfaces, and the React tier needs the
+		// second one to render the same cell the Block Kit table renders. The
+		// settings surface is the plugin's own store now, so this reads back the
+		// number written into the real settings document in `beforeAll`.
+		await seedProduct({ term: "bandcarry", onHand: 4 });
 		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			filter: { lowStock: true },
+			filter: { search: "bandcarry" },
 		});
-		expect(result["total"]).toBe(137);
-		expect(
-			(result["products"] as Array<Record<string, unknown>>).map((p) => p["productId"]),
-		).toEqual(["low"]);
-		expect(result["nextCursor"]).toBe("cur-2");
-		// ...and the predicate really did travel on the outgoing request — the
-		// service could not have filtered without it.
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("lowStockThreshold=5");
+		expect(stockOf(result)["threshold"]).toBe(THRESHOLD);
+		// ...and the shared cell function turns the two into the same string both
+		// screens render. 4 ≤ 5, so this one is Low.
+		expect(onHandCell(4, THRESHOLD)).toBe("4 · Low");
 	});
 
-	test("the resolved threshold travels to the service AS THE NUMBER ITSELF — the boundary is the store's job now", async () => {
-		// THE BOUNDARY (`onHand <= threshold`) MOVED. It used to be enforced
-		// twice — once by this module's own client-side narrowing, once by the
-		// `On hand` cell — because the page narrowing was this module's own
-		// decision. Now the SERVER decides which rows match (pinned by the
-		// domain's own contract suite, out of this module's scope) and this
-		// module's only remaining job is to carry the resolved number through
-		// UNCHANGED — never rounded, never re-derived, never off by one.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ productId: "at", onHand: 5 })], nextCursor: null },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		await invoke({
+	// DELETED: "a settings read that FAILS costs the Low band and nothing else
+	// (E-1)". It was driven by withholding the stub's `/settings` route so the read
+	// 404ed. `InProcessReportingSettingsClient.getSettings` reads the settings
+	// document and an ABSENT document is the domain defaults rather than an error,
+	// so there is no reachable input on this tier that makes `threshold` null. Its
+	// consequence — `readLowStockThreshold` swallowing a failure into `null` — is a
+	// two-line try/catch in `products-read.ts` with no remaining producer here; a
+	// test that faked one would be asserting on its own fixture. E-1 itself is not
+	// unproven: the detail's tax-registry fallback below still exercises a real
+	// secondary degradation.
+
+	test("`null` on-hand is NOT zero — a sku with no inventory document is UNKNOWN stock", async () => {
+		// Two cases that must never be folded together: a known count of zero ("out
+		// of stock" is a FACT) and a sku carrying no inventory document at all.
+		//
+		// THE THIRD CASE IS NO LONGER REPRESENTABLE, and that is a fact about this
+		// tier rather than a gap. `undefined` meant "the response carried no stock
+		// figure at all" — a service older than the on-hand projection. In-process
+		// `toProductSummaryWire` always emits the key as `number | null`, so the
+		// only way to produce it would be to hand-write a wire object. `readOnHand`
+		// still reads it as `unknown` and still keeps all three apart, which is why
+		// `onHandCell` is asserted on all three below: the RENDER contract is
+		// unchanged even though this transport can only ever produce two of them.
+		const zero = await seedProduct({ term: "stockcases", onHand: 0 });
+		const unknown = await seedProduct({ term: "stockcases", onHand: null });
+
+		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			filter: { lowStock: true },
+			filter: { search: "stockcases" },
 		});
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("lowStockThreshold=5");
+		const byId = new Map(rows(result).map((p) => [p["productId"], p]));
+		expect(byId.get(zero.productId)?.["onHand"]).toBe(0);
+		expect(byId.get(unknown.productId)?.["onHand"]).toBeNull();
+		expect(onHandCell(0, THRESHOLD)).toBe("0 · Out of stock");
+		expect(onHandCell(null, THRESHOLD)).toBe("—");
+		expect(onHandCell(undefined, THRESHOLD)).toBe("—");
+	});
+
+	test("the exact `total` is FORWARDED, and it COUNTS the filtered set rather than the page", async () => {
+		// The count is taken under the SAME predicate as the page, by construction
+		// (`#page` runs `listProducts` and `countProducts` on one filter object), so
+		// it describes the rows the caption sits above.
+		for (let i = 0; i < 3; i++) await seedProduct({ term: "totalset" });
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "totalset" },
+		});
+		expect(rows(result)).toHaveLength(3);
+		expect(result["total"]).toBe(3);
+	});
+
+	test("the `total` IS SHOWN once filtering is server-side — the caption rule inverts", async () => {
+		// THE CAPTION RULE INVERTS. The store applies the predicate now and counts
+		// the SAME set the page is drawn from, so its exact `total` describes the
+		// rows on screen and is forwarded — the opposite of the client-side-narrowing
+		// days this replaces, which withheld it because the count then described a
+		// different, unnarrowed set.
+		const low = await seedProduct({ term: "lowtotal", onHand: 2 });
+		await seedProduct({ term: "lowtotal", onHand: 90 });
+
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "lowtotal", lowStock: true },
+		});
+		// THE PREDICATE REALLY RAN — proven by the rows, which is the claim the old
+		// `expect(url).toContain("lowStockThreshold=5")` was a proxy for.
+		expect(ids(result)).toEqual([low.productId]);
+		expect(result["total"]).toBe(1);
+		expect(stockOf(result)["filterUnavailable"]).toBe(false);
+	});
+
+	test("the resolved threshold reaches the predicate AS THE NUMBER ITSELF — inclusive, never off by one", async () => {
+		// THE BOUNDARY (`onHand <= threshold`) MOVED. It used to be enforced twice —
+		// once by this module's own client-side narrowing, once by the `On hand`
+		// cell. The STORE decides which rows match now, and this module's only
+		// remaining job is to carry the resolved number through UNCHANGED — never
+		// rounded, never re-derived, never off by one. A row sitting exactly ON the
+		// threshold is the assertion that proves the number arrived intact.
+		const at = await seedProduct({ term: "boundary", onHand: THRESHOLD });
+		await seedProduct({ term: "boundary", onHand: THRESHOLD + 1 });
+
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "boundary", lowStock: true },
+		});
+		expect(ids(result)).toEqual([at.productId]);
 
 		// ...and the `On hand` cell's OWN boundary is unaffected by where the row
 		// came from — still `<=`, still exact at the threshold.
@@ -339,365 +326,168 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(onHandCell(1, 0)).toBe("1");
 	});
 
-	test("a low-stock request that CANNOT be honoured leaves the page unfiltered AND withholds the total", async () => {
-		// No threshold ⇒ nothing to filter by, so the outgoing request never
-		// carries `lowStockThreshold` at all — the page is genuinely UNFILTERED
-		// and the screen must say so. THE CAPTION RULE INVERTS BACK here: the
-		// service's own count is real (of the unfiltered set), but stating it
-		// would caption an unfiltered page as though "Low stock only" had been
-		// honoured, so it is withheld — the opposite of an ordinary
-		// service-filtered page, and the one case that still hides it.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary(), summary({ productId: "b" })], nextCursor: null, total: 2 },
-				}),
-				// no /settings route ⇒ 404 ⇒ the threshold cannot be read
-			}),
-		);
+	test("a sku with NO inventory document is never `Low` — unknown stock is not zero stock", async () => {
+		// The other half of the predicate's contract, and the direction that would
+		// be invisible in a query-string assertion: absent is not zero, so a product
+		// nobody has ever stocked must not be swept into a low-stock page as though
+		// it were about to run out.
+		const low = await seedProduct({ term: "unknownlow", onHand: 1 });
+		await seedProduct({ term: "unknownlow", onHand: null });
+
 		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			filter: { lowStock: true },
+			filter: { search: "unknownlow", lowStock: true },
 		});
-		expect((result["products"] as unknown[]).length).toBe(2);
-		expect((result["stock"] as Record<string, unknown>)["filterUnavailable"]).toBe(true);
-		expect(result).not.toHaveProperty("total");
-		// ...and the outgoing request never carried a predicate it had no number
-		// for.
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).not.toContain("lowStockThreshold");
+		expect(ids(result)).toEqual([low.productId]);
 	});
 
-	test("a CONTINUATION whose settings read fails is still a FILTERED page — the cursor is the predicate's evidence", async () => {
-		// THE FLAG IS NOT RE-DERIVED ON A CONTINUATION, and this is the direction
-		// that goes wrong when it is. The predicate rode inside the opaque cursor
-		// the service minted for page one; `AdminProductsClient.listProducts`
-		// ignores the filter argument entirely once a cursor is present, so this
-		// request's settings read never reached the query and says nothing about
-		// whether the page is filtered. Deriving `filterUnavailable` from it would
-		// raise "the Low stock only filter was not applied" OVER A FILTERED LIST
-		// and withhold a total that really is of the filtered set — two false
-		// statements bought by consulting the wrong evidence.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ onHand: 2 })], nextCursor: null, total: 7 },
-				}),
-				// no /settings route ⇒ 404 ⇒ the threshold cannot be read HERE
-			}),
-		);
+	// DELETED: "a low-stock request that CANNOT be honoured leaves the page
+	// unfiltered AND withholds the total", and with it "a CONTINUATION whose
+	// settings read fails is still a FILTERED page". Both existed to pin
+	// `stock.filterUnavailable`, whose SOLE cause is `threshold === null` — the
+	// settings read failing. That input is unreachable in-process (see the deletion
+	// note above), so `filterUnavailable` is structurally false here and is
+	// asserted as such on the low-stock pages that remain. `resolveStockContext`'s
+	// own decision table, including the continuation rule, is a pure function of
+	// its arguments; what this tier can still prove is that a real low-stock page
+	// reports the flag false while carrying its real total, which it does.
+
+	test("stock that is unreadable on EVERY row is not something this transport can produce — a PARTIAL page stays a catalog fact", async () => {
+		// ALL-OR-NOTHING was the rule: the service filled the column from one left
+		// join, so a PARTIAL page is a catalog fact (some skus have no inventory
+		// row) and must not raise the banner, while a page with no figure ANYWHERE
+		// is a degraded read and must.
+		//
+		// ONLY THE FIRST HALF SURVIVES. `stock.unreadable` is true when every row's
+		// `onHand` reads `undefined`, and the in-process projection emits the key on
+		// every row as `number | null`. So the degraded case has no producer and the
+		// case that DOES occur in a real catalogue — some rows stocked, some never
+		// seeded — is the one pinned here: it must leave the banner silent.
+		await seedProduct({ term: "partialstock", onHand: null });
+		await seedProduct({ term: "partialstock", onHand: 7 });
+
 		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			cursor: "svc-cursor-1",
-			filter: { lowStock: true },
+			filter: { search: "partialstock" },
 		});
-		expect((result["stock"] as Record<string, unknown>)["filterUnavailable"]).toBe(false);
-		expect(result["total"]).toBe(7);
-		// The Low BAND is still lost, and that is the honest independent fact:
-		// `threshold` is null and the banner reports that cause on its own.
-		expect((result["stock"] as Record<string, unknown>)["threshold"]).toBeNull();
-	});
-
-	test("stock that came back unreadable on EVERY row raises the degradation, not a partial page", async () => {
-		// ALL-OR-NOTHING: the service fills the column from one left join, so a
-		// PARTIAL page is a catalog fact (some skus have no inventory row) and must
-		// not raise the banner.
-		const { onHand: _a, ...noStock1 } = summary({ productId: "a" });
-		const { onHand: _b, ...noStock2 } = summary({ productId: "b" });
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [noStock1, noStock2], nextCursor: null },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const unreadable = await invoke({ type: READ, resource: "products.list" });
-		expect((unreadable["stock"] as Record<string, unknown>)["unreadable"]).toBe(true);
-
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: {
-						products: [noStock1, summary({ productId: "c", onHand: null })],
-						nextCursor: null,
-					},
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const partial = await invoke({ type: READ, resource: "products.list" });
-		expect((partial["stock"] as Record<string, unknown>)["unreadable"]).toBe(false);
-	});
-
-	test("a page can be GENUINELY low-stock-filtered while its own on-hand column is unreadable — two independent causes, not one", async () => {
-		// THE BUG A SHARED `canFilter` BOOLEAN PRODUCED. The threshold resolves
-		// (5), so the outgoing request DOES carry the predicate and the service
-		// DID filter — that has nothing to do with whether THIS page's own
-		// `onHand` wire projection came back readable, a fact discovered only
-		// after the fetch. `filterUnavailable` must stay false (the filter ran)
-		// while `unreadable` is independently true, and the `total` — real,
-		// under the same predicate — must still be forwarded.
-		const { onHand: _a, ...noStock1 } = summary({ productId: "a" });
-		const { onHand: _b, ...noStock2 } = summary({ productId: "b" });
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [noStock1, noStock2], nextCursor: null, total: 41 },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const result = await invoke({
-			type: READ,
-			resource: "products.list",
-			filter: { lowStock: true },
-		});
-		const stock = result["stock"] as Record<string, unknown>;
-		expect(stock["unreadable"]).toBe(true);
-		expect(stock["filterUnavailable"]).toBe(false);
-		expect(result["total"]).toBe(41);
-		// ...and the predicate really did travel, proving the filter ran.
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("lowStockThreshold=5");
+		expect(rows(result)).toHaveLength(2);
+		expect(stockOf(result)["unreadable"]).toBe(false);
 	});
 
 	test("the combined Status select's `archived` asserts deleted=true ALONE, never both axes", async () => {
-		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
-		await invoke({
+		// A soft-deleted row is always inactive, so the two are mutually exclusive
+		// by construction — and `deleted: true` is asserted alone regardless, so a
+		// hand-crafted request cannot smuggle both axes into one query. The proof is
+		// the rows: the archive view shows the tombstone and nothing else, even
+		// though the request also named a kind and a search term.
+		const archived = await seedProduct({
+			term: "archiveview",
+			archived: true,
+			kind: "digital",
+		});
+		await seedProduct({ term: "archiveview", kind: "digital" });
+
+		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			filter: { status: "archived", productKind: "digital", search: "APR" },
+			filter: { status: "archived", productKind: "digital", search: "archiveview" },
 		});
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		// A soft-deleted row is always inactive, so the two are mutually exclusive
-		// by construction — and `deleted=true` is asserted alone regardless, so a
-		// hand-crafted request cannot smuggle both axes into one query.
-		expect(seen).toContain("deleted=true");
-		expect(seen).not.toContain("active=");
-		expect(seen).toContain("productKind=digital");
-		expect(seen).toContain("search=APR");
+		expect(ids(result)).toEqual([archived.productId]);
+		expect(rows(result)[0]?.["deletedAt"]).not.toBeNull();
 	});
 
-	test("the OTHER two Status options reach the service as `active=true` / `active=false`", async () => {
-		// RESTORED WITH INC-R3. The retired suite pinned this half of the mapping
-		// and the surviving coverage pinned only `archived`, so a mapping that sent
-		// the wrong boolean — or none — would have left every assertion here green
-		// while the operator got the wrong set of rows. It is a claim about the
-		// QUERY, not about a rendering, which is why it outlives the screen.
-		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
-		for (const [status, expected] of [
-			["true", "active=true"],
-			["false", "active=false"],
-		] as const) {
-			service.requests.length = 0;
-			await invoke({ type: READ, resource: "products.list", filter: { status } });
-			const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-			expect(seen, status).toContain(expected);
-			expect(seen, status).not.toContain("deleted=");
-		}
+	test("the OTHER two Status options select active / inactive rows", async () => {
+		// RESTORED WITH INC-R3, and it outlives the wire it was written against: the
+		// surviving coverage pinned only `archived`, so a mapping that sent the wrong
+		// boolean — or none — would leave every assertion here green while the
+		// operator got the wrong set of rows.
+		const live = await seedProduct({ term: "statusaxis", active: true });
+		const dark = await seedProduct({ term: "statusaxis" });
+
+		const activeOnly = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { status: "true", search: "statusaxis" },
+		});
+		expect(ids(activeOnly)).toEqual([live.productId]);
+
+		const inactiveOnly = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { status: "false", search: "statusaxis" },
+		});
+		expect(ids(inactiveOnly)).toEqual([dark.productId]);
+
 		// ...and the all-values sentinel constrains NOTHING. `any` is a real word,
 		// not `""`, precisely so it can be told apart from a screen sending nothing.
-		service.requests.length = 0;
-		await invoke({ type: READ, resource: "products.list", filter: { status: "any" } });
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).not.toContain("active=");
-		expect(seen).not.toContain("deleted=");
+		const unconstrained = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { status: "any", search: "statusaxis" },
+		});
+		expect(new Set(ids(unconstrained))).toEqual(new Set([live.productId, dark.productId]));
 	});
 
-	test("`active`, `productKind` and `search` travel TOGETHER in ONE query", async () => {
+	test("`active`, `productKind` and `search` narrow TOGETHER, never one at a time", async () => {
 		// RESTORED WITH INC-R3. The three axes are each pinned separately above, and
-		// the `archived` case pins its own trio — but nothing pinned the combination
-		// the retired suite drove: status + kind + search on the ACTIVE axis, in a
-		// single GET. A translation that dropped one axis whenever another was set,
-		// or that let a later branch overwrite an earlier one, passes every
-		// single-axis assertion here and shows the operator the wrong set of rows.
-		// It is a claim about the QUERY, which is why it outlives the screen.
-		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
-		await invoke({
-			type: READ,
-			resource: "products.list",
-			filter: { status: "true", productKind: "physical", search: "widget" },
-		});
-		const seen = requestTo(LIST_ROUTE)?.url ?? "";
-		expect(seen).toContain("active=true");
-		expect(seen).toContain("productKind=physical");
-		expect(seen).toContain("search=widget");
-		// ...and the axis the ACTIVE half must never carry.
-		expect(seen).not.toContain("deleted=");
-	});
+		// the `archived` case pins its own trio — but nothing pinned the combination:
+		// status + kind + search on the ACTIVE axis, in one request. A translation
+		// that dropped one axis whenever another was set, or that let a later branch
+		// overwrite an earlier one, passes every single-axis assertion here and shows
+		// the operator the wrong set of rows. Three decoys, one hit.
+		const wanted = await seedProduct({ term: "threeaxes", active: true, kind: "physical" });
+		await seedProduct({ term: "threeaxes", active: true, kind: "digital" });
+		await seedProduct({ term: "threeaxes", kind: "physical" });
+		await seedProduct({ term: "otheraxes", active: true, kind: "physical" });
 
-	test("`Low stock only` SENDS the resolved threshold to the service — the predicate is server-side now", async () => {
-		// INVERTED FROM THE CLIENT-NARROWING DAYS this replaces. The service's
-		// products list HAS a stock predicate now (port doc); this module's job
-		// is to resolve the threshold and carry it on the SAME query every other
-		// filter already travels on, alongside `search` rather than instead of
-		// it.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ onHand: 2 })], nextCursor: null },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		await invoke({
-			type: READ,
-			resource: "products.list",
-			filter: { search: "widget", lowStock: true },
-		});
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("search=widget");
-		expect(seen).toContain("lowStockThreshold=5");
-	});
-
-	test("a request that does NOT ask for low stock never carries the threshold, even when one resolves", async () => {
-		// The threshold is read for the `Low` band's display purposes on every
-		// call — the checkbox is what gates whether it ALSO becomes a query
-		// predicate. Without this, an operator who never asked to filter would
-		// see the catalog silently narrowed underneath them.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ onHand: 2 })], nextCursor: null },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		await invoke({ type: READ, resource: "products.list", filter: { search: "widget" } });
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("search=widget");
-		expect(seen).not.toContain("lowStockThreshold");
-	});
-
-	test("a cursor travels WITH the filters it was minted under, never alone", async () => {
-		// THE INVERSION OF WHAT THIS ONCE PINNED, and the reason is the service's.
-		// Sending only the cursor did not stop a paged request disagreeing with the
-		// page before it — it hid the disagreement: the route took the predicate
-		// solely from the token and never read the query's filter params, so an
-		// unfiltered token beside `?active=true` answered 200 with the unfiltered
-		// catalog. The route now compares the two as predicates and fails closed on
-		// a difference, which is only useful if the request states both.
-		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
-		await invoke({
-			type: READ,
-			resource: "products.list",
-			cursor: "svc-cursor-1",
-			filter: { status: "true", search: "widget" },
-		});
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("cursor=svc-cursor-1");
-		expect(seen).toContain("active=true");
-		expect(seen).toContain("search=widget");
-		// AND THE TERM IS NOT FOLDED on its way to the wire. The comparison is
-		// case-sensitive by design, so a client that normalised here and not on page
-		// one would manufacture a mismatch out of nothing.
-		expect(seen).not.toContain("search=WIDGET");
-		// The page size still travels, so a "Load more" asks for the same-sized page
-		// the caption above it describes — and so the route's effective-limit
-		// comparison sees the same number the token carries.
-		expect(seen).toContain("limit=25");
-	});
-
-	test("a refused cursor comes back as page one, flagged, not as an error", async () => {
-		// THE SERVICE'S OWN REMEDY, performed at the client: `cursor filter
-		// mismatch` means "drop the token and re-issue page one with these
-		// parameters", so the console gets rows plus the fact that it did not get
-		// the page it asked for. Two service requests, one console answer.
-		let call = 0;
-		service.respondWith("GET", (req) => {
-			if (!req.url.startsWith(LIST_ROUTE)) return settingsBody(5);
-			call += 1;
-			if (call === 1) return { status: 400, body: { error: "cursor filter mismatch" } };
-			return { status: 200, body: { products: [summary({ onHand: 2 })], nextCursor: "next-1" } };
-		});
 		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			cursor: "stale-cursor",
-			filter: { status: "true" },
+			filter: { status: "true", productKind: "physical", search: "threeaxes" },
 		});
-		expect(result["ok"]).toBe(true);
-		expect(result["cursorRejected"]).toBe(true);
-		expect((result["products"] as unknown[]).length).toBe(1);
-		const asked = service.requests.filter((r) => r.url.startsWith(LIST_ROUTE)).map((r) => r.url);
-		expect(asked).toHaveLength(2);
-		expect(asked[0]).toContain("cursor=stale-cursor");
-		// THE RETRY DROPS THE TOKEN AND KEEPS THE PARAMETERS — page one of what was
-		// actually asked for, which is why it cannot loop.
-		expect(asked[1]).not.toContain("cursor=");
-		expect(asked[1]).toContain("active=true");
+		expect(ids(result)).toEqual([wanted.productId]);
 	});
 
-	test("a refusal that is NOT about the cursor stays a failure", async () => {
-		// The distinction the console cannot make for itself: an outage, an expired
-		// admin token, an unparseable filter. None of them is answerable by asking
-		// again without the cursor, and none of them may be reported as a page the
-		// operator did not get — the address they are on still names a real page.
-		service.respondWith("GET", (req) =>
-			req.url.startsWith(LIST_ROUTE)
-				? { status: 503, body: { error: "service unavailable" } }
-				: settingsBody(5),
-		);
+	test("`Low stock only` narrows ALONGSIDE `search`, not instead of it", async () => {
+		// INVERTED FROM THE CLIENT-NARROWING DAYS this replaces. The products list
+		// HAS a stock predicate now (port doc); this module's job is to resolve the
+		// threshold and carry it on the SAME query every other filter travels on.
+		// The decoys prove both axes survived the trip: one matches the term but not
+		// the stock, one matches the stock but not the term.
+		const hit = await seedProduct({ term: "bothaxes", onHand: 2 });
+		await seedProduct({ term: "bothaxes", onHand: 80 });
+		await seedProduct({ term: "decoyaxis", onHand: 2 });
+
 		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			cursor: "svc-cursor-1",
-			filter: { status: "true" },
+			filter: { search: "bothaxes", lowStock: true },
 		});
-		expect(result["ok"]).toBe(false);
-		expect(result["cursorRejected"]).toBeUndefined();
-		expect(service.requests.filter((r) => r.url.startsWith(LIST_ROUTE))).toHaveLength(1);
+		expect(ids(result)).toEqual([hit.productId]);
 	});
 
-	test("a `Load more` continuation DOES re-send `lowStockThreshold`", async () => {
-		// THE OTHER HALF OF THE INVERSION, and the one with teeth. The threshold is
-		// an axis of the predicate the token carries, and the route treats a request
-		// that names fewer axes than the token as a DISAGREEMENT rather than a
-		// narrowing. So a paged low-stock request that omitted it would be refused,
-		// every time, and the merchant would be dropped back to page one on every
-		// `Load more`. That is why the settings read is now sequenced ahead of the
-		// page read on a continuation too, at the cost of the round trip page one
-		// always paid.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ onHand: 2 })], nextCursor: null },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		await invoke({
+	test("a request that does NOT ask for low stock is never narrowed by the threshold", async () => {
+		// The threshold is read for the `Low` band's display purposes on every call
+		// — the checkbox is what gates whether it ALSO becomes a query predicate.
+		// Without this, an operator who never asked to filter would see the catalog
+		// silently narrowed underneath them.
+		await seedProduct({ term: "nofilter", onHand: 2 });
+		await seedProduct({ term: "nofilter", onHand: 80 });
+
+		const result = await invoke({
 			type: READ,
 			resource: "products.list",
-			cursor: "svc-cursor-1",
-			filter: { lowStock: true },
+			filter: { search: "nofilter" },
 		});
-		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		expect(seen).toContain("cursor=svc-cursor-1");
-		expect(seen).toContain("lowStockThreshold=5");
+		expect(rows(result)).toHaveLength(2);
+		// The band is still reported, because the CELL needs it even when the LIST
+		// was not narrowed by it.
+		expect(stockOf(result)["threshold"]).toBe(THRESHOLD);
 	});
 
 	test("the filter vocabulary is shipped as data, so the React tier holds no second copy", async () => {
-		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
 		const result = await invoke({ type: READ, resource: "products.list" });
 		const vocabulary = result["vocabulary"] as Record<string, unknown>;
 		expect((vocabulary["statuses"] as Array<{ label: string }>).map((s) => s.label)).toEqual([
@@ -713,141 +503,106 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		]);
 		// A real word, never `""` — a sentinel has to read acceptably as a value.
 		expect(vocabulary["any"]).toBe("any");
-		expect(vocabulary["pageLimit"]).toBe(25);
+		expect(vocabulary["pageLimit"]).toBe(PAGE_LIMIT);
 	});
 
-	test("products.detail carries the record, the tax registry and the threshold", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
-				[TAX_CLASSES_ROUTE]: () => ({
-					status: 200,
-					body: { classes: [{ id: "standard", name: "Standard" }] },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(50),
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
-		expect(result["ok"]).toBe(true);
-		expect((result["product"] as Record<string, unknown>)["sku"]).toBe("APR-LIN-NAT");
-		// The wire carries the WATERMARK the save has to send back.
-		expect((result["product"] as Record<string, unknown>)["updatedAt"]).toBe(
-			"2026-07-20T09:00:00.000Z",
-		);
-		expect(result["taxClasses"]).toEqual([{ id: "standard", name: "Standard" }]);
-		expect(result["threshold"]).toBe(50);
-	});
-
-	test("a tax-registry read that fails degrades to the static defaults, never to a failed screen", async () => {
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		const result = await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
-		expect(result["ok"]).toBe(true);
-		expect((result["taxClasses"] as Array<{ id: string }>).map((c) => c.id)).toContain("standard");
-	});
-
-	test("an EMPTY tax registry degrades to the static defaults too, not to an empty select", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
-				// A registry that answered, and answered with nothing — a store whose
-				// merchant has never created a class. Distinct from the failed read
-				// above, and the same fallback: an empty select is a form the operator
-				// cannot complete, so the defaults stand in either way.
-				[TAX_CLASSES_ROUTE]: () => ({ status: 200, body: { classes: [] } }),
-				[SETTINGS_ROUTE]: () => settingsBody(50),
-			}),
-		);
-		const result = await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
+	test("an EMPTY tax registry degrades to the static defaults, not to an empty select", async () => {
+		// A registry that answered, and answered with nothing — a store whose
+		// merchant has never declared a class. An empty select is a form the
+		// operator cannot complete, so the defaults stand in.
+		//
+		// IT RUNS BEFORE THE DETAIL CASE BELOW ON PURPOSE: the registry is one
+		// shared store per process, and the case after this one declares a class
+		// into it. Emptiness is a state this file can only observe once.
+		//
+		// (The sibling case, "a tax-registry read that FAILS degrades to the
+		// defaults too", is DELETED: it was the stub's `/admin/tax/classes` route
+		// 404ing, and `getTaxClasses` is now `taxRules.listClasses()` over the
+		// document store. The fallback in `readTaxClasses` still catches, but
+		// nothing on this tier can make the scan throw without breaking storage
+		// itself, and the EMPTY arm exercises the same fallback with a reachable
+		// input.)
+		const seeded = await seedProduct({ term: "emptyregistry" });
+		const result = await invoke({
+			type: READ,
+			resource: "products.detail",
+			productId: seeded.productId,
+		});
 		expect(result["ok"]).toBe(true);
 		const classes = result["taxClasses"] as Array<{ id: string }>;
 		expect(classes.length).toBeGreaterThan(0);
 		expect(classes.map((c) => c.id)).toContain("standard");
 	});
 
+	test("products.detail carries the record, the tax registry and the threshold", async () => {
+		await taxRules.createClass({ id: "standard", name: "Standard" });
+		const seeded = await seedProduct({ term: "detailrow", onHand: 42 });
+
+		const result = await invoke({
+			type: READ,
+			resource: "products.detail",
+			productId: seeded.productId,
+		});
+		expect(result["ok"]).toBe(true);
+		const product = result["product"] as Record<string, unknown>;
+		expect(product["sku"]).toBe(seeded.sku);
+		expect(product["priceCents"]).toBe(1999);
+		expect(product["onHand"]).toBe(42);
+		// The wire carries the WATERMARK the save has to send back.
+		expect(product["updatedAt"]).toBe(seeded.updatedAt);
+		// The LIVE registry now, rather than the static backstop.
+		expect(result["taxClasses"]).toEqual([{ id: "standard", name: "Standard" }]);
+		expect(result["threshold"]).toBe(THRESHOLD);
+	});
+
 	test("an unknown product is a refusal with copy, at HTTP 200 (G5)", async () => {
-		service.respondWith("GET", () => ({ status: 404, body: {} }));
-		const result = await invoke({ type: READ, resource: "products.detail", productId: "nope" });
+		const result = await invoke({
+			type: READ,
+			resource: "products.detail",
+			productId: `${NS}-never-existed`,
+		});
 		expect(result["ok"]).toBe(false);
 		expect(result["title"]).toBe("Product not found");
 		expect(String(result["description"]).length).toBeGreaterThan(0);
 	});
 
-	test("an unreachable service fails CLOSED with the screen's own copy, and leaks nothing", async () => {
-		service.respondWith("GET", () => ({ status: 500, body: {} }));
-		const result = await invoke({ type: READ, resource: "products.list" });
+	test("a read this route cannot complete fails CLOSED with the screen's own copy, and leaks nothing", async () => {
+		// THE TRIGGER CHANGED, THE CONTRACT DID NOT. It used to be an unreachable
+		// service answering 500; there is no service, so the reachable way into the
+		// handler's catch-all is an input the client refuses at its own boundary — a
+		// `search` past the 200-character bound `toDomainFilter` enforces, which
+		// throws a `CommerceInputError` rather than resolving to a typed result.
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "x".repeat(201) },
+		});
 		expect(result["ok"]).toBe(false);
 		expect(result["title"]).toBe("Pricing & inventory is unavailable");
 		// E-7: it must not assert a cause it does not know. The last clause is what
 		// stops a console bug being reported as an outage.
 		expect(String(result["description"])).toContain("a fault in the console itself");
-		// THIS PATH SWALLOWS EVERYTHING — an unreachable service, a 401 on the admin
-		// token, a malformed response, and a bug in the console's own code. So the
-		// copy must carry no status code, no upstream path and no auth detail: an
-		// operator screenshotting a banner must not be publishing the shape of the
-		// admin API, and naming one cause is false whenever another was the real one.
+		// THIS PATH SWALLOWS EVERYTHING — a refused input, a malformed document, a
+		// storage failure and a bug in the console's own code. So the copy must
+		// carry no status code, no upstream path and no auth detail: an operator
+		// screenshotting a banner must not be publishing the shape of an internal
+		// surface, and naming one cause is false whenever another was the real one.
 		const text = `${String(result["title"])} ${String(result["description"])}`;
 		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
 		// A banner is read at a glance or not at all (BANNER_BUDGET).
 		expect(String(result["description"]).length).toBeLessThanOrEqual(240);
 	});
 
-	test("the list AND detail GETs carry the internal admin token (ADR-0010)", async () => {
-		// RESTORED WITH INC-R3. Every surviving header assertion is on the PATCH or
-		// the stock POSTs, so a read path that stopped attaching the token would
-		// leave all of them green while every guarded READ answered 401 — and the
-		// route swallows a 401 into the same fail-closed banner as an outage, so the
-		// screen would look "unavailable" with nothing pointing at the cause. It is
-		// a claim about what the SERVICE is asked for, not about a rendering.
-		await seedAdminToken();
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({ status: 200, body: { products: [summary()], nextCursor: null } }),
-				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
-				[TAX_CLASSES_ROUTE]: () => ({ status: 200, body: { classes: [] } }),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		await invoke({ type: READ, resource: "products.list" });
-		await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
-		expect(header(requestTo(LIST_ROUTE), "X-Internal-Token")).toBe(ADMIN_TOKEN);
-		expect(header(requestTo(DETAIL_ROUTE), "X-Internal-Token")).toBe(ADMIN_TOKEN);
-		// The write-gate token is a NON-GET credential (ADR-0007) and has no business
-		// on a read, so its absence here is part of the assertion.
-		expect(header(requestTo(LIST_ROUTE), "X-Service-Token")).toBeUndefined();
-	});
-
-	test("with NO admin token the reads fail CLOSED on the service's 401, and the banner leaks nothing", async () => {
-		// RESTORED WITH INC-R3. The anti-leak contract was being exercised only
-		// through a 500 above; the ABSENT-token → 401 trigger had no successor, and
-		// it is the one an operator actually hits — an unconfigured or rotated admin
-		// token is the ordinary failure on this screen, an unreachable service is
-		// not. No `seedAdminToken()` call: the token really is missing.
-		service.respondWith("GET", (request) => {
-			if (request.headers["x-internal-token"] === undefined) {
-				return { status: 401, body: { ok: false, error: "unauthorized" } };
-			}
-			return { status: 200, body: { products: [], nextCursor: null } };
-		});
-		const result = await invoke({ type: READ, resource: "products.list" });
-		// The 401 really fired — otherwise this asserts nothing.
-		expect(requestTo(LIST_ROUTE)).toBeDefined();
-		expect(header(requestTo(LIST_ROUTE), "X-Internal-Token")).toBeUndefined();
-		expect(result["ok"]).toBe(false);
-		expect(result["title"]).toBe("Pricing & inventory is unavailable");
-		expect(String(result["description"])).toContain("a fault in the console itself");
-		// E-7: a banner gets screenshotted. No status code and no upstream path —
-		// and no claim that auth WAS the cause, because this path swallows four and
-		// naming one is false whenever another was the real one. (Naming the admin
-		// token as a thing to CHECK is the remediation hint, not a diagnosis.)
-		const text = `${String(result["title"])} ${String(result["description"])}`;
-		expect(text).not.toMatch(/HTTP \d|\/admin\/|401|unauthorized/i);
-	});
+	// DELETED: "the list AND detail GETs carry the internal admin token (ADR-0010)"
+	// and "with NO admin token the reads fail CLOSED on the service's 401". Both
+	// asserted on `X-Internal-Token` / `X-Service-Token`, which INC-D3a deleted
+	// outright: they authenticated a caller TO THE SERVICE, and there is no service
+	// to authenticate to. `makeAdminClients` constructs both clients over
+	// `ctx.storage` with no credential of any kind, so there is no header to carry
+	// and no 401 to fail closed on — the console routes are gated by EmDash's own
+	// admin auth and CSRF (ADR-0014 D3). The anti-leak half of the second test is
+	// not lost: the fail-closed case above makes the same E-7 assertions against a
+	// trigger that still exists.
 
 	test("an unrecognised products resource is a refusal, not a blank body", async () => {
 		const result = await invoke({ type: READ, resource: "products.nope" });
@@ -855,58 +610,146 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(result["title"]).toBe("That request could not be read");
 	});
 
+	// ── cursors ───────────────────────────────────────────────────────────────
+
+	describe("cursors", () => {
+		// ONE PAGE PLUS ONE ROW, under a term nothing else in this file uses, so the
+		// page boundary is a property of these fixtures rather than of whatever else
+		// the shared store happens to hold.
+		const TERM = "pagedset";
+		let all: string[];
+
+		beforeAll(async () => {
+			const seeded: string[] = [];
+			for (let i = 0; i < PAGE_LIMIT + 1; i++) {
+				seeded.push((await seedProduct({ term: TERM })).productId);
+			}
+			all = seeded;
+		}, 120_000);
+
+		test("a page one hands back a cursor, and the continuation carries the filters it was minted under", async () => {
+			// THE INVERSION OF WHAT THIS ONCE PINNED, and the reason is the service's,
+			// inherited by the client that replaced it. Sending only the cursor did not
+			// stop a paged request disagreeing with the page before it — it hid the
+			// disagreement. The token's filter and the caller's are compared as
+			// PREDICATES now and a difference fails closed, which is only useful if the
+			// request states both. So the console re-states the filter on every page,
+			// and the proof is that the continuation is honoured: it returns the
+			// remaining row rather than a flagged page one.
+			const first = await invoke({
+				type: READ,
+				resource: "products.list",
+				filter: { search: TERM },
+			});
+			expect(rows(first)).toHaveLength(PAGE_LIMIT);
+			expect(first["total"]).toBe(PAGE_LIMIT + 1);
+			const cursor = first["nextCursor"];
+			expect(typeof cursor).toBe("string");
+
+			const second = await invoke({
+				type: READ,
+				resource: "products.list",
+				cursor,
+				filter: { search: TERM },
+			});
+			expect(second["cursorRejected"]).toBeUndefined();
+			expect(rows(second)).toHaveLength(1);
+			// Every seeded row appears exactly once across the two pages — the page
+			// size travelled with the token, so "Load more" asked for the same-sized
+			// page the caption above it describes.
+			const seen = [...ids(first), ...ids(second)];
+			expect(new Set(seen).size).toBe(PAGE_LIMIT + 1);
+			expect(new Set(seen)).toEqual(new Set(all));
+		});
+
+		test("a cursor beside a DIFFERENT filter comes back as page one, flagged, not as an error", async () => {
+			// THE PRESCRIBED REMEDY, performed at the client: a token whose predicate
+			// disagrees with the parameters beside it means "drop the token and
+			// re-issue page one with these parameters", so the console gets rows plus
+			// the fact that it did not get the page it asked for. It cannot loop,
+			// because the retry keeps the parameters and drops the token.
+			const first = await invoke({
+				type: READ,
+				resource: "products.list",
+				filter: { search: TERM },
+			});
+			const cursor = first["nextCursor"];
+
+			const refused = await invoke({
+				type: READ,
+				resource: "products.list",
+				cursor,
+				// A different predicate entirely — the token was minted without it.
+				filter: { search: TERM, status: "true" },
+			});
+			expect(refused["ok"]).toBe(true);
+			expect(refused["cursorRejected"]).toBe(true);
+			// Page one of what was ACTUALLY asked for: the active-only set, which
+			// none of these fixtures is in.
+			expect(rows(refused)).toHaveLength(0);
+		});
+
+		test("a token that does not decode is refused the same way, never honoured as a position", async () => {
+			const result = await invoke({
+				type: READ,
+				resource: "products.list",
+				cursor: "this-is-not-a-cursor",
+				filter: { search: TERM },
+			});
+			expect(result["ok"]).toBe(true);
+			expect(result["cursorRejected"]).toBe(true);
+			expect(rows(result)).toHaveLength(PAGE_LIMIT);
+		});
+
+		test("a refusal that is NOT about the cursor stays a failure", async () => {
+			// The distinction the console cannot make for itself. A refused INPUT is
+			// not answerable by asking again without the cursor, and must never be
+			// reported as a page the operator did not get — the address they are on
+			// still names a real page.
+			const result = await invoke({
+				type: READ,
+				resource: "products.list",
+				cursor: "irrelevant",
+				filter: { search: "y".repeat(201) },
+			});
+			expect(result["ok"]).toBe(false);
+			expect(result["cursorRejected"]).toBeUndefined();
+		});
+	});
+
 	// ── writes ────────────────────────────────────────────────────────────────
 
-	test("a SAVE is DISPATCHED to the extracted action, and reaches the service", async () => {
+	test("a SAVE is DISPATCHED to the extracted action, and the row really changes", async () => {
 		// The act branch, end to end. What each action DECIDES is covered by
 		// `products-actions.sandbox.test.ts`; this asserts the wiring — that a flat
-		// console payload lands on the right handler and produces a real request.
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		service.respondWith("PATCH", () => ({ status: 200, body: { ok: true } }));
-
+		// console payload lands on the right handler and that a write happened. The
+		// old proof was a recorded PATCH; the proof now is the row itself.
+		const seeded = await seedProduct({ term: "savewire" });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:save-identity",
 			value: {
-				productId: PRODUCT_ID,
-				expectedUpdatedAt: "2026-07-20T09:00:00.000Z",
-				sku: "APR-LIN-NAT-2",
+				productId: seeded.productId,
+				expectedUpdatedAt: seeded.updatedAt,
+				sku: `${seeded.sku}-2`,
 			},
 		});
 		expect(result["ok"]).toBe(true);
 
-		const patch = service.requests.find((r) => r.method === "PATCH");
-		expect(patch, "the save never reached the service").toBeDefined();
-		expect(patch?.url).toContain(`/admin/products/${PRODUCT_ID}`);
-		const body = (patch?.body ?? {}) as Record<string, unknown>;
-		expect(body["sku"]).toBe("APR-LIN-NAT-2");
+		const row = await products.getByProductId(toProductId(seeded.productId));
+		expect(row?.sku).toBe(`${seeded.sku}-2`);
 		// THE WATERMARK TRAVELLED AS A PLAIN ARGUMENT. Without it the action would
-		// have refused before writing.
-		expect(body["expectedUpdatedAt"]).toBe("2026-07-20T09:00:00.000Z");
-		// G2 / ADR-0013: `title` and `active` are CMS-owned. The wire cannot carry
-		// either, so a console that sent them changes nothing.
-		expect(body).not.toHaveProperty("title");
-		expect(body).not.toHaveProperty("active");
+		// have refused before writing, which the next case pins from the other side.
+		expect(row?.updatedAt.toISOString()).not.toBe(seeded.updatedAt);
 	});
 
 	test("a save with a STALE watermark comes back as the action's own refusal copy", async () => {
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		service.respondWith("PATCH", () => ({
-			status: 409,
-			body: { reason: "STALE_EDIT", currentUpdatedAt: "2026-07-30T00:00:00.000Z" },
-		}));
-
+		const seeded = await seedProduct({ term: "stalesave" });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:save-price",
 			value: {
-				productId: PRODUCT_ID,
+				productId: seeded.productId,
 				expectedUpdatedAt: "2020-01-01T00:00:00.000Z",
 				price: "24.99",
 				currency: "USD",
@@ -918,93 +761,75 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		const notice = result["notice"] as Record<string, unknown>;
 		expect(notice["variant"]).toBe("error");
 		expect(notice["title"]).toBe("This product changed since you opened it");
+		// ...and nothing moved: the refusal is a refusal, not a warning after a
+		// write.
+		const row = await products.getByProductId(toProductId(seeded.productId));
+		expect(row?.price?.amount).toBe(1999);
 	});
 
-	test("a console save NEVER smuggles a title or an active flag into the wire (G2)", async () => {
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		service.respondWith("PATCH", () => ({ status: 200, body: { ok: true } }));
+	test("a console save NEVER smuggles a title or an active flag into the write (G2)", async () => {
+		// G2 / ADR-0013: `title` and `active` are CMS-owned. `ProductEditWire` has no
+		// member for either and the in-process client's key check refuses an unknown
+		// one outright, so a hostile or buggy console that sends them changes
+		// nothing — which is now read off the row rather than off a request body.
+		const seeded = await seedProduct({ term: "cmsowned" });
+		const before = await products.getByProductId(toProductId(seeded.productId));
 		await invoke({
 			type: ACT,
 			action_id: "products:save-identity",
 			value: {
-				productId: PRODUCT_ID,
-				expectedUpdatedAt: "2026-07-20T09:00:00.000Z",
-				sku: "S-1",
-				// A hostile or buggy console sending the two CMS-owned fields.
+				productId: seeded.productId,
+				expectedUpdatedAt: seeded.updatedAt,
+				sku: `${seeded.sku}-S`,
 				title: "Renamed by the admin",
-				active: "false",
+				active: "true",
 			},
 		});
-		const body = (service.requests.find((r) => r.method === "PATCH")?.body ?? {}) as Record<
-			string,
-			unknown
-		>;
-		expect(body).not.toHaveProperty("title");
-		expect(body).not.toHaveProperty("active");
-		expect(JSON.stringify(body)).not.toContain("Renamed by the admin");
+		const row = await products.getByProductId(toProductId(seeded.productId));
+		expect(row?.sku).toBe(`${seeded.sku}-S`);
+		expect(row?.title).toBe(seeded.title);
+		expect(row?.active).toBe(before?.active);
 	});
 
-	test("a RESTOCK reaches the service with the derived idempotency key, not a nonce", async () => {
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		service.respondWith("POST", () => ({ status: 200, body: { ok: true, onHand: 54 } }));
-
+	test("a RESTOCK dispatched from the console really adds the units", async () => {
+		// F-2a lives in the action (`${productId}:restock:${onHand}:${qty}`), and
+		// in-process the key is an ARGUMENT rather than a header — it is proven by
+		// what it buys, in `products-actions.sandbox.test.ts`. What this tier still
+		// owns is that the console's flat payload reaches the movement at all.
+		const seeded = await seedProduct({ term: "restockwire", onHand: 42 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:restock",
-			value: { productId: PRODUCT_ID, onHand: "42", qty: "12" },
+			value: { productId: seeded.productId, onHand: "42", qty: "12" },
 		});
 		expect(result["ok"]).toBe(true);
-		const post = service.requests.find((r) => r.method === "POST");
-		expect(post?.url).toContain(`/admin/products/${PRODUCT_ID}/restock`);
-		// F-2a: `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus
-		// the watermark the operator saw. No nonce anywhere on this screen.
-		expect(post?.headers["idempotency-key"]).toBe(`${PRODUCT_ID}:restock:42:12`);
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(54);
 	});
 
 	test("a REMOVAL is re-checked against live stock before anything moves (DA-3a)", async () => {
 		// The operator saw 42; the live product is at 40. Nothing may be removed.
-		service.respondWith(
-			"GET",
-			responder({
-				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail({ onHand: 40 }) } }),
-			}),
-		);
-		service.respondWith("POST", () => ({ status: 200, body: { ok: true, onHand: 37 } }));
-
+		const seeded = await seedProduct({ term: "da3a", onHand: 40 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock",
-			value: { productId: PRODUCT_ID, qty: "3", onHand: "42" },
+			value: { productId: seeded.productId, qty: "3", onHand: "42" },
 		});
 		expect(result["ok"]).toBe(true);
 		const notice = result["notice"] as Record<string, unknown>;
 		expect(notice["variant"]).toBe("error");
 		expect(notice["title"]).toBe("Stock changed — nothing was removed");
-		expect(service.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(40);
 	});
 
-	test("a REMOVAL whose watermark still holds is applied under the derived key", async () => {
-		service.respondWith(
-			"GET",
-			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
-		);
-		service.respondWith("POST", () => ({ status: 200, body: { ok: true, onHand: 39 } }));
-
+	test("a REMOVAL whose watermark still holds is applied", async () => {
+		const seeded = await seedProduct({ term: "removal", onHand: 42 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock",
-			value: { productId: PRODUCT_ID, qty: "3", onHand: "42" },
+			value: { productId: seeded.productId, qty: "3", onHand: "42" },
 		});
 		expect(result["ok"]).toBe(true);
-		const post = service.requests.find((r) => r.method === "POST");
-		expect(post?.url).toContain(`/admin/products/${PRODUCT_ID}/remove-stock`);
-		expect(post?.headers["idempotency-key"]).toBe(`${PRODUCT_ID}:removal:42:3`);
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(39);
 	});
 
 	test("an UNKNOWN action id is a refusal, not a quiet success", async () => {
@@ -1014,7 +839,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:no-such-action",
-			value: { productId: PRODUCT_ID },
+			value: { productId: `${NS}-whatever` },
 		});
 		expect(result["ok"]).toBe(false);
 		expect(result["title"]).toBe("Nothing was changed");
@@ -1029,21 +854,23 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock-review",
-			value: { productId: PRODUCT_ID, onHand: "42", qty: "3" },
+			value: { productId: `${NS}-whatever`, onHand: "42", qty: "3" },
 		});
 		expect(result["ok"]).toBe(false);
 		expect(result["title"]).toBe("Nothing was changed");
 	});
 
 	test("a REGISTERED id whose write could not complete is also a refusal", async () => {
-		// Every request fails, so nothing was saved. "Nothing came back" is not
-		// "nothing to say".
-		service.respondWith("GET", () => ({ status: 500, body: {} }));
-		service.respondWith("PATCH", () => ({ status: 500, body: {} }));
+		// Nothing was saved, because there is nothing to save against. "Nothing came
+		// back" is not "nothing to say".
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:save-identity",
-			value: { productId: PRODUCT_ID, expectedUpdatedAt: "2026-07-20T09:00:00.000Z", sku: "X" },
+			value: {
+				productId: `${NS}-never-existed`,
+				expectedUpdatedAt: "2026-07-20T09:00:00.000Z",
+				sku: `${NS}-X`,
+			},
 		});
 		const quietSuccess = result["ok"] === true && result["notice"] === null;
 		expect(quietSuccess, "a failed write reported as a quiet success").toBe(false);
@@ -1053,12 +880,6 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		// The dispatcher picks a console screen by `resource` prefix and by action
 		// namespace. A products branch that swallowed an orders read would be
 		// invisible until an operator opened the other screen.
-		service.respondWith(
-			"GET",
-			responder({
-				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
-			}),
-		);
 		const result = await invoke({ type: READ, resource: "orders.list" });
 		expect(result["ok"]).toBe(true);
 		expect(result).toHaveProperty("orders");

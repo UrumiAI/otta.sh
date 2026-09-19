@@ -11,9 +11,9 @@
  *
  * `manifest.ts` is never mutated in `src/` — this harness copies the whole
  * `src/` tree into a scratch dir and overwrites ONLY the copy's
- * `manifest.ts` with the test's `allowedHosts`/`commerceServiceBaseUrl`
- * before bundling (plan §6 step 1 / §8 Risk 5), so `pnpm build`'s real
- * package output is never test-specific.
+ * `manifest.ts` with the test's `allowedHosts` (and the in-process
+ * `emailApiUrl`/`facilitatorUrl` egress) before bundling (plan §6 step 1 /
+ * §8 Risk 5), so `pnpm build`'s real package output is never test-specific.
  *
  * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
  * asks for storage (`storage: true`). The isolate cannot build a document store (it
@@ -86,8 +86,6 @@ const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
 export interface SandboxOptions {
 	/** Hosts `ctx.http.fetch` is allowed to reach (plan §5). */
 	allowedHosts: string[];
-	/** Baked into the bundled plugin as `COMMERCE_SERVICE_BASE_URL`. */
-	commerceServiceBaseUrl: string;
 	/**
 	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process
 	 * email-provider and x402-facilitator endpoints (INC-C5). Both default to
@@ -220,13 +218,14 @@ async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void
 
 function manifestSource(options: SandboxOptions): string {
 	// Mirrors the real `src/manifest.ts` exported surface (the rest of src imports
-	// from here). Includes the ADR-0007 write-gate token key + fail-closed kv
-	// reader so the sandbox bundle resolves them exactly as production does.
+	// from here). INC-D3a retired the http/in-process mode branch AND the
+	// commerce-service deployment along with it — there is no more
+	// `COMMERCE_SERVICE_BASE_URL` and no more write-gate service/internal token to
+	// mirror, so this is now just the egress surface production actually has.
 	return [
 		'export const OTTA_PLUGIN_ID = "otta";',
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
-		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
 		// INC-C5: the email sender and the x402 wiring read their endpoints from
 		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
@@ -236,24 +235,15 @@ function manifestSource(options: SandboxOptions): string {
 		// Baking the raw options made the sandbox tier the ONE tier where the gate
 		// `resolveInProcessEgress` applies was never exercised: a suite could hand
 		// the isolate a URL no `allowedHosts` entry covers and every assertion would
-		// still pass. The mode is fixed at `"in-process"` because that is the arm
-		// these suites boot; the resolver's own http-arm and unparseable-define
-		// behavior is unit-pinned in `manifest-override.test.ts`.
+		// still pass. INC-D3a dropped the resolver's mode argument along with the
+		// http arm it used to select — the unparseable-define behavior stays
+		// unit-pinned in `manifest-override.test.ts`.
 		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
-			resolveInProcessEgress("in-process", {
+			resolveInProcessEgress({
 				emailApiUrl: options.emailApiUrl,
 				facilitatorUrl: options.facilitatorUrl,
 			}),
 		)};`,
-		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
-		"export async function serviceTokenFromKv(ctx) {",
-		"\ttry {",
-		"\t\tconst token = await ctx.kv.get(SERVICE_TOKEN_KEY);",
-		"\t\treturn token !== null && token !== undefined && token.length > 0 ? token : undefined;",
-		"\t} catch {",
-		"\t\treturn undefined;",
-		"\t}",
-		"}",
 		"",
 	].join("\n");
 }

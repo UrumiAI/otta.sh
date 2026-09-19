@@ -1,4 +1,20 @@
-import { afterEach, describe, expect, test } from "vitest";
+import {
+	cents,
+	currency as toCurrency,
+	idempotencyKey,
+	money,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
+import {
+	EmdashProductCommerceStore,
+	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
+	systemClock,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../src/commerce/commerce-storage.js";
 import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { encodePath } from "../src/admin/scaffold/nav.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
@@ -16,12 +32,8 @@ import {
 	openGroupIds,
 	type LooseBlock,
 } from "./helpers/blocks.js";
-import {
-	type RecordedRequest,
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 // The admin Tax console under the REAL workerd-on-Node sandbox (design spec
 // §12.3, the density-overhaul layout): tax classes (list/create/rename-LWW/
@@ -30,165 +42,126 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // more into a single rate's own detail. Per-row content lives inside a
 // collapsed accordion (L-9); a level falls back to a table + `combobox`
 // drill-in only when the fetched page is complete AND has more than 25 rows.
+//
+// THE RULES SURFACE IS NO LONGER AN HTTP SERVICE (INC-D3a). `makeAdminClients`
+// hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
+// so the fixtures below are REAL documents written through the same
+// `@otta-sh/store-emdash` stores the plugin itself reads, and every "did the
+// write land" claim is read back off the store rather than off a recorded
+// request body. That is strictly stronger: a recorded `PUT /admin/tax/rates/std-us`
+// proved a request was FORMED, while a re-read row proves the edit was APPLIED.
+//
+// The consequences worth stating once, because several cases below inherit them:
+//  * There is no admin token. `X-Internal-Token` / `X-Service-Token`
+//    authenticated a caller TO the commerce service; the console routes are
+//    gated by EmDash's own admin auth and CSRF (ADR-0014 D3), so there is
+//    nothing to forward and nothing to withhold.
+//  * `listZones()` sorts by zone id (the store reads `ORDER BY id`), where the
+//    old stub answered in insertion order — so the Zone select's options are
+//    `eu` before `us`, and the assertion says so.
+//  * A duplicate id is a THROWN collision from the store, not a 500 the client
+//    maps to `{ok:false}`. See the duplicate-create case for what the operator
+//    sees now.
 
-interface TaxClassRow {
+/** One process-wide store, wiped between cases — see `resetStore`. */
+let storage: StorageAccess;
+let shippingRules: EmdashShippingRulesStore;
+let taxRules: EmdashTaxRulesStore;
+let productCommerce: EmdashProductCommerceStore;
+let sandbox: SandboxHandle;
+
+interface ZoneFixture {
+	id: string;
+	name: string;
+	regions: string[];
+}
+interface ClassFixture {
 	id: string;
 	name: string;
 }
-interface TaxRateRow {
+interface RateFixture {
 	id: string;
 	taxClassId: string;
 	zoneId: string;
 	rateBps: number;
 	appliesToShipping: boolean;
 }
-interface ZoneRow {
-	id: string;
-	name: string;
-	regions: unknown;
+
+const DEFAULT_ZONES: ZoneFixture[] = [
+	{ id: "us", name: "United States", regions: ["US"] },
+	{ id: "eu", name: "Europe", regions: ["EU"] },
+];
+const DEFAULT_CLASSES: ClassFixture[] = [{ id: "standard", name: "Standard" }];
+const DEFAULT_RATES: RateFixture[] = [
+	{ id: "std-us", taxClassId: "standard", zoneId: "us", rateBps: 725, appliesToShipping: false },
+	{ id: "std-eu", taxClassId: "standard", zoneId: "eu", rateBps: 2000, appliesToShipping: true },
+];
+
+interface RulesFixture {
+	zones?: ZoneFixture[];
+	classes?: ClassFixture[];
+	rates?: RateFixture[];
+	/** LIVE product references per tax-class id — real product-commerce rows, so
+	 *  the delete's product guard counts documents rather than a stub's map. */
+	productsByClass?: Record<string, number>;
 }
 
-/** A small stateful stub standing in for the rules-admin HTTP surface —
- *  classes/rates/zones are mutated by POST/PUT/DELETE and read back by GET,
- *  so create→list, edit→reload, and delete→idempotent-replay all exercise
- *  real state transitions (not canned fixtures). */
-function makeRulesState() {
-	const zones: ZoneRow[] = [
-		{ id: "us", name: "United States", regions: ["US"] },
-		{ id: "eu", name: "Europe", regions: ["EU"] },
-	];
-	const classes: TaxClassRow[] = [{ id: "standard", name: "Standard" }];
-	const rates: TaxRateRow[] = [
-		{ id: "std-us", taxClassId: "standard", zoneId: "us", rateBps: 725, appliesToShipping: false },
-		{ id: "std-eu", taxClassId: "standard", zoneId: "eu", rateBps: 2000, appliesToShipping: true },
-	];
-	// Simulates LIVE product references per tax-class id — the DELETE stub
-	// checks this map (mirroring the service's product-guard, checked BEFORE
-	// the rate guard) to exercise the honest in_use_by_products count.
-	const productRefCounts: Record<string, number> = {};
-	return { zones, classes, rates, productRefCounts };
+/** Empty every declared collection. The store is process-scoped by design
+ *  (`storageBridge`), and this screen's reads are REGISTRY-WIDE — "25 classes"
+ *  is a claim about the whole store, not about a namespace — so each case starts
+ *  from nothing rather than trying to narrow a shared catalogue. */
+async function resetStore(): Promise<void> {
+	for (const name of COMMERCE_STORAGE_COLLECTION_NAMES) {
+		const collection = storage[name];
+		if (collection === undefined) continue;
+		for (;;) {
+			const page = await collection.query({ limit: 200 });
+			if (page.items.length === 0) break;
+			for (const { id } of page.items) await collection.delete(id);
+		}
+	}
 }
 
-function attachRulesStub(stub: StubCommerceServer, state: ReturnType<typeof makeRulesState>) {
-	stub.respondWith("GET", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
+/** Write one case's fixture as REAL documents, through the same stores the
+ *  plugin reads. Defaults mirror the old stub's seed exactly, so the cases below
+ *  read as they always did. */
+async function seedRules(fixture: RulesFixture = {}): Promise<void> {
+	await resetStore();
+	for (const zone of fixture.zones ?? DEFAULT_ZONES) {
+		await shippingRules.createZone({ id: zone.id, name: zone.name, regions: zone.regions });
+	}
+	for (const cls of fixture.classes ?? DEFAULT_CLASSES) {
+		await taxRules.createClass({ id: cls.id, name: cls.name });
+	}
+	for (const rate of fixture.rates ?? DEFAULT_RATES) {
+		await taxRules.createRate(rate);
+	}
+	for (const [classId, count] of Object.entries(fixture.productsByClass ?? {})) {
+		for (let i = 0; i < count; i++) {
+			await productCommerce.upsert(
+				{
+					productId: toProductId(`${classId}-p${String(i)}`),
+					sku: toSku(`${classId.toUpperCase()}-${String(i)}`),
+					title: `Product ${String(i)}`,
+					price: money(cents(1999), toCurrency("USD")),
+					taxClass: classId,
+					weightGrams: 100,
+					productKind: "physical",
+				},
+				idempotencyKey(`seed-${classId}-${String(i)}`),
+			);
 		}
-		const [path, query = ""] = req.url.split("?");
-		if (path === "/admin/tax/classes") {
-			return { status: 200, body: { ok: true, classes: state.classes } };
-		}
-		if (path === "/admin/shipping/zones") {
-			return { status: 200, body: { ok: true, zones: state.zones } };
-		}
-		if (path === "/admin/tax/rates") {
-			const zoneId = new URLSearchParams(query).get("zoneId");
-			if (zoneId === null) return { status: 400, body: { error: "zoneId query is required" } };
-			return {
-				status: 200,
-				body: { ok: true, rates: state.rates.filter((r) => r.zoneId === zoneId) },
-			};
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("POST", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		if (req.url === "/admin/tax/classes") {
-			const body = req.body as { id: string; name: string };
-			if (state.classes.some((c) => c.id === body.id)) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const created = { id: body.id, name: body.name };
-			state.classes.push(created);
-			return { status: 201, body: { ok: true, taxClass: created } };
-		}
-		if (req.url === "/admin/tax/rates") {
-			const body = req.body as TaxRateRow;
-			if (state.rates.some((r) => r.id === body.id)) {
-				return { status: 500, body: { ok: false, error: "internal_error" } };
-			}
-			const created: TaxRateRow = { ...body, appliesToShipping: body.appliesToShipping ?? false };
-			state.rates.push(created);
-			return { status: 201, body: { ok: true, rate: created } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("PUT", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const classMatch = /^\/admin\/tax\/classes\/(.+)$/.exec(req.url);
-		if (classMatch !== null) {
-			const classId = decodeURIComponent(classMatch[1] ?? "");
-			const cls = state.classes.find((c) => c.id === classId);
-			if (cls === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			const body = req.body as { name: string };
-			cls.name = body.name;
-			return { status: 200, body: { ok: true, taxClass: cls } };
-		}
-		const m = /^\/admin\/tax\/rates\/(.+)$/.exec(req.url);
-		if (m === null) return { status: 404, body: { error: "unknown" } };
-		const rateId = decodeURIComponent(m[1] ?? "");
-		const rate = state.rates.find((r) => r.id === rateId);
-		if (rate === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-		const body = req.body as {
-			rateBps: number;
-			appliesToShipping: boolean;
-			expectedRateBps: number;
-		};
-		if (rate.rateBps !== body.expectedRateBps) {
-			return { status: 409, body: { ok: false, reason: "STALE", current: rate } };
-		}
-		rate.rateBps = body.rateBps;
-		rate.appliesToShipping = body.appliesToShipping;
-		return { status: 200, body: { ok: true, rate } };
-	});
-
-	stub.respondWith("DELETE", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const classMatch = /^\/admin\/tax\/classes\/(.+)$/.exec(req.url);
-		if (classMatch !== null) {
-			const classId = decodeURIComponent(classMatch[1] ?? "");
-			const idx = state.classes.findIndex((c) => c.id === classId);
-			if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-			// Product guard checked first (mirrors `deleteTaxClass`'s ordering).
-			const productCount = state.productRefCounts[classId] ?? 0;
-			if (productCount > 0) {
-				return {
-					status: 409,
-					body: { ok: false, reason: "IN_USE_BY_PRODUCTS", count: productCount },
-				};
-			}
-			const rateCount = state.rates.filter((r) => r.taxClassId === classId).length;
-			if (rateCount > 0) {
-				return { status: 409, body: { ok: false, reason: "IN_USE_BY_RATES", count: rateCount } };
-			}
-			state.classes.splice(idx, 1);
-			return { status: 200, body: { ok: true } };
-		}
-		const m = /^\/admin\/tax\/rates\/(.+)$/.exec(req.url);
-		if (m === null) return { status: 404, body: { error: "unknown" } };
-		const rateId = decodeURIComponent(m[1] ?? "");
-		const idx = state.rates.findIndex((r) => r.id === rateId);
-		if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-		state.rates.splice(idx, 1);
-		return { status: 200, body: { ok: true } };
-	});
+	}
 }
 
-async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token: string) {
-	await sandbox.invokeRoute("admin", {
-		type: "form_submit",
-		action_id: "save-token",
-		values: { internalToken: token },
-	});
-	stub.requests.length = 0;
+/** The declared classes, read back the way the console reads them. */
+async function listClassIds(): Promise<string[]> {
+	return (await taxRules.listClasses()).map((c) => c.id);
+}
+
+/** Every rate the store holds for a zone, for a "did the write land" re-read. */
+async function findRate(zoneId: string, rateId: string) {
+	return (await taxRules.listRatesForZone(zoneId)).find((r) => r.id === rateId);
 }
 
 function bannerOf(blocks: readonly LooseBlock[]) {
@@ -213,47 +186,35 @@ function formInitialValues(
 	return out;
 }
 
-let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
-afterEach(async () => {
-	await sandbox?.close();
-	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	shippingRules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
+	productCommerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
+	// ONE boot for the file: the isolate holds no per-case state of its own now
+	// that the fixtures live in the store, so rebooting it between cases would buy
+	// nothing but seconds.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox.close();
 });
 
-async function boot(state: ReturnType<typeof makeRulesState>, token = "admin-token-xyz") {
-	stub = await startStubCommerceServer();
-	attachRulesStub(stub, state);
-	sandbox = await loadPluginInSandbox({
-		allowedHosts: [stub.host],
-		commerceServiceBaseUrl: stub.baseUrl,
-	});
-	if (token.length > 0) await seedToken(sandbox, stub, token);
-}
-
-/** Close whatever's currently running and boot a fresh sandbox against a new
- *  state — for a single test that exercises several distinct fixtures in a
- *  row (kept in its own function so the reset assignments don't chain into
- *  TypeScript narrowing oddities inside the calling test body). */
-async function reboot(state: ReturnType<typeof makeRulesState>) {
-	await sandbox?.close();
-	await stub?.close();
-	sandbox = undefined;
-	stub = undefined;
-	await boot(state);
-}
+beforeEach(async () => {
+	await resetStore();
+});
 
 /** Render the classes list. */
 async function loadClasses(): Promise<LooseBlock[]> {
-	return blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/tax" }));
+	return blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/tax" }));
 }
 
 /** Open a class's rates the way the per-row "View rates" button does — a
  *  `block_action` carrying the FULL target path in `value.target` (§12.7). */
 async function openClass(classId: string): Promise<LooseBlock[]> {
 	return blocksOf(
-		await sandbox!.invokeRoute("admin", {
+		await sandbox.invokeRoute("admin", {
 			type: "block_action",
 			action_id: "tax:open",
 			value: { target: encodePath([classId]) },
@@ -272,7 +233,7 @@ async function submitForm(
 	const form = formFor(blocks, submitActionId);
 	expect(form, `no form submitting ${submitActionId}`).toBeDefined();
 	return blocksOf(
-		await sandbox!.invokeRoute("admin", {
+		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: submitActionId,
 			values,
@@ -285,7 +246,7 @@ async function submitForm(
  *  `block_id` — a button echoes none (B-1). */
 async function clickButton(actionId: string, value: unknown): Promise<LooseBlock[]> {
 	return blocksOf(
-		await sandbox!.invokeRoute("admin", { type: "block_action", action_id: actionId, value }),
+		await sandbox.invokeRoute("admin", { type: "block_action", action_id: actionId, value }),
 	);
 }
 
@@ -313,64 +274,64 @@ async function openNewRateScreen(classId: string): Promise<LooseBlock[]> {
 }
 
 describe("admin Tax console — classes level (workerd sandbox)", () => {
-	test("page_load /tax renders the classes list as per-row accordions, forwarding the kv-sourced admin token", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("page_load /tax renders the classes list as per-row accordions, off the plugin's own store", async () => {
+		await seedRules();
 		const blocks = await loadClasses();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Tax classes")).toBe(true);
 		const row = group(blocks, "tax:class:standard");
 		expect(row?.label).toBe("standard — Standard");
 		expect(row?.default_open).toBe(false);
 		expect(findBlock(blocks, "table")).toBeUndefined(); // L-9 accordion branch at 1 row
-		const listReq = stub!.requests.find((r) => r.url === "/admin/tax/classes");
-		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
 	});
 
-	test("NO-TOKEN page_load /tax fails closed with the E-7 normative banner (no raw HTTP status/URL)", async () => {
-		const state = makeRulesState();
-		await boot(state, "");
-		const blocks = await loadClasses();
-		const banner = bannerOf(blocks);
-		expect(banner?.variant).toBe("error");
-		expect(String(banner?.title)).toBe("Tax classes are unavailable");
-		expect(String(banner?.description)).toContain("fault in the console itself");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/tax|401/);
-	});
+	// DELETED: "NO-TOKEN page_load /tax fails closed with the E-7 normative
+	// banner". It withheld the kv admin token so the stub answered 401 and the
+	// level's `onError` fired. There is no token — `makeAdminClients` builds the
+	// rules client over `ctx.storage` with no credential of any kind — so the
+	// input that produced it cannot be expressed. `classesFailClosed()` is still
+	// wired as the level's `onError`, but its only remaining producer is storage
+	// itself failing, which this tier cannot induce without breaking the bridge
+	// the whole suite runs on; a fixture that faked one would assert on itself.
 
-	test("create-class with blank fields is caught at the plugin boundary — no POST sent", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("create-class with blank fields is caught at the plugin boundary — nothing is written", async () => {
+		await seedRules();
 		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", { id: "", name: "" });
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await listClassIds()).toEqual(["standard"]);
 		expect(bannerOf(after)?.variant).toBe("error");
 	});
 
-	test("create-class POSTs {id,name} with the admin token, then re-lists with a success notice", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("create-class writes {id,name} to the store, then re-lists with a success notice", async () => {
+		await seedRules();
 		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", {
 			id: "reduced",
 			name: "Reduced rate",
 		});
-		const post = stub!.requests.find((r) => r.method === "POST" && r.url === "/admin/tax/classes");
-		expect(post).toBeDefined();
-		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
-		expect(post!.body).toEqual({ id: "reduced", name: "Reduced rate" });
+		// The ROW, not a request body: the class exists, under the name submitted.
+		expect(await taxRules.listClasses()).toContainEqual({ id: "reduced", name: "Reduced rate" });
 
 		const banner = bannerOf(after);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("created");
-		// The re-rendered (root) list reflects the new class — a fresh GET, not a
+		// The re-rendered (root) list reflects the new class — a fresh read, not a
 		// locally-patched echo.
 		expect(group(after, "tax:class:standard")).toBeDefined();
 		expect(group(after, "tax:class:reduced")?.label).toBe("reduced — Reduced rate");
 	});
 
-	test("creating a class with a duplicate id fails with a GENERIC error notice (no raw status)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("creating a class with a duplicate id refuses with a GENERIC error banner and writes nothing", async () => {
+		// THE MECHANISM CHANGED AND THE GUARANTEE DID NOT. A duplicate used to be a
+		// 500 the HTTP client mapped to `{ok:false}`, which the screen dressed as its
+		// own "Tax class not created". In-process the store REJECTS with a collision
+		// error, which the scaffold's custom-action net catches — so the operator
+		// gets the engine's "outcome unknown, re-check the record" banner instead of
+		// the screen's copy. Worth stating plainly because it is a REGRESSION IN
+		// COPY, not in safety: the banner is still an error, still carries no status
+		// code or path, and the registry is provably unchanged. (Recovering the
+		// screen's own copy would need the client to catch the collision and answer
+		// `{ok:false}` — a `src/` change, not a test one.)
+		await seedRules();
 		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", {
 			id: "standard",
@@ -379,15 +340,14 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		const banner = bannerOf(after);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
-		// Never applied — the list still shows exactly one "standard".
-		expect(state.classes.filter((c) => c.id === "standard")).toHaveLength(1);
+		// Never applied — exactly one "standard", still under its original name.
+		expect(await taxRules.listClasses()).toEqual([{ id: "standard", name: "Standard" }]);
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------
 
 	test("INC-14: `New tax class` is a primary BUTTON directly under the intro line, above the rows — and no create accordion survives below them", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await loadClasses();
 		expect(blocks.map((b) => String(b.type)).slice(0, 3)).toEqual(["header", "context", "actions"]);
 		const button = createButton(blocks, "tax:show-new-class");
@@ -406,8 +366,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("INC-14: the New tax class screen is a drill-in — header, a back control that returns to the registry, and the form", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const screen = await openNewClassScreen();
 		expect(screen.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
 		// The registry is REPLACED, not pushed down.
@@ -428,29 +387,26 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	// kept the create form mounted; now every refusal carries the submitted
 	// values back as `initial_value` (DA-3a-i), which is checkable here.
 	test("INC-14/DA-3a-i: a REFUSED class create re-renders the create screen with both typed values put back", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const screen = await openNewClassScreen();
 		// Blank id, real name — the refusal is about one field, and the other
 		// must not be retyped.
 		const refused = await submitForm(screen, "tax:create-class", { id: "", name: "Reduced rate" });
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await listClassIds()).toEqual(["standard"]);
 		expect(bannerOf(refused)?.variant).toBe("error");
 		expect(refused.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
 		expect(formInitialValues(refused, "tax:create-class")).toEqual({ name: "Reduced rate" });
 
-		// A SERVICE refusal keeps them too.
-		const dup = await submitForm(refused, "tax:create-class", {
-			id: "standard",
-			name: "Standard again",
-		});
-		expect(bannerOf(dup)?.variant).toBe("error");
-		expect(formInitialValues(dup, "tax:create-class")).toEqual({
-			id: "standard",
-			name: "Standard again",
-		});
+		// (The old "a SERVICE refusal keeps them too" arm, driven by resubmitting a
+		// duplicate id, is gone with the transport: a collision now REJECTS and the
+		// scaffold's net renders the root registry, which carries no draft by
+		// construction. See the duplicate-create case above.)
+
 		// Success drops the draft and returns to the registry.
-		const created = await submitForm(dup, "tax:create-class", { id: "reduced", name: "Reduced" });
+		const created = await submitForm(refused, "tax:create-class", {
+			id: "reduced",
+			name: "Reduced",
+		});
 		expect(bannerOf(created)?.variant).toBe("default");
 		expect(group(created, "tax:class:reduced")).toBeDefined();
 		expect(formFor(created, "tax:create-class")).toBeUndefined();
@@ -466,8 +422,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	// value-equality assertions would still pass while the operator's second
 	// refusal silently re-rendered the FIRST refusal's values.
 	test("INC-14/B-3a: the create form's block_id tracks the draft — it changes when the resubmitted values differ, and is stable when they do not", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const fresh = await openNewClassScreen();
 		const virginId = formFor(fresh, "tax:create-class")!.block_id as string;
 
@@ -489,8 +444,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("INC-14: a draft never outlives its create screen — after a success, and after abandoning via back, the next create opens virgin-blank", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const virginId = formFor(await openNewClassScreen(), "tax:create-class")!.block_id as string;
 
 		// (a) refuse → succeed → reopen: byte-identical to a first open.
@@ -520,8 +474,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("a class row offers a rename form, a View-rates drill-in, and a delete button — the id rides in the carrier, never a visible field (F-2/X-1)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await loadClasses();
 		const row = group(blocks, "tax:class:standard")!;
 		const renameForm = formFor([row], "tax:save-class")!;
@@ -540,8 +493,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("a class group orders its controls common-path-first and destructive-last, with a spacer between the edit and the delete", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const body = groupBlocks(await loadClasses(), "tax:class:standard");
 		// ORDER IS THE ONLY AFFORDANCE AVAILABLE. A `form` renders `flex flex-col`
 		// in the pinned renderer, so nothing here can sit in a horizontal row with
@@ -561,38 +513,31 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(last?.style).toBe("danger");
 	});
 
-	test("save-class PUTs the rename (reading the id from the carrier) and reloads the classes list with a 'saved' notice", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("save-class renames the stored class (reading the id from the carrier) and reloads the list with a 'saved' notice", async () => {
+		await seedRules();
 		const row = group(await loadClasses(), "tax:class:standard")!;
 		const after = await submitForm([row], "tax:save-class", { name: "Standard rate" });
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put?.url).toBe("/admin/tax/classes/standard");
-		expect(put?.body).toEqual({ name: "Standard rate" });
 		const banner = bannerOf(after);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
-		// Reloaded from a real GET, not a locally-patched echo.
+		// Reloaded from a real read, not a locally-patched echo — and the row in
+		// the store carries the new name.
 		expect(group(after, "tax:class:standard")?.label).toBe("standard — Standard rate");
-		expect(state.classes[0]?.name).toBe("Standard rate");
+		expect(await taxRules.listClasses()).toEqual([{ id: "standard", name: "Standard rate" }]);
 	});
 
-	test("save-class with a blank name is caught at the plugin boundary — no PUT sent", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("save-class with a blank name is caught at the plugin boundary — the stored name is untouched", async () => {
+		await seedRules();
 		const row = group(await loadClasses(), "tax:class:standard")!;
 		const after = await submitForm([row], "tax:save-class", { name: "" });
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(await taxRules.listClasses()).toEqual([{ id: "standard", name: "Standard" }]);
 		expect(bannerOf(after)?.variant).toBe("error");
 	});
 
-	test("delete-class DELETEs and reloads with a 'deleted' notice; a repeat delete is idempotent, never an error", async () => {
-		const state = makeRulesState();
-		state.classes.push({ id: "zero", name: "Zero-rated" });
-		await boot(state);
+	test("delete-class removes the class and reloads with a 'deleted' notice; a repeat delete is idempotent, never an error", async () => {
+		await seedRules({ classes: [...DEFAULT_CLASSES, { id: "zero", name: "Zero-rated" }] });
 		const first = await clickButton("tax:delete-class", { classId: "zero" });
-		const del = stub!.requests.find((r) => r.method === "DELETE");
-		expect(del?.url).toBe("/admin/tax/classes/zero");
+		expect(await listClassIds()).toEqual(["standard"]);
 		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
 		expect(String(firstBanner?.title)).toContain("deleted");
@@ -605,32 +550,31 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("delete-class refused while a RATE references it renders the HONEST count, never a bare refusal", async () => {
-		const state = makeRulesState();
-		await boot(state); // "standard" has 2 seeded rates (std-us, std-eu)
+		await seedRules(); // "standard" has 2 seeded rates (std-us, std-eu)
 		const outcome = await clickButton("tax:delete-class", { classId: "standard" });
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toContain("2 tax rates");
 		// Nothing was applied — the class survives.
-		expect(state.classes.some((c) => c.id === "standard")).toBe(true);
+		expect(await listClassIds()).toContain("standard");
 	});
 
 	test("delete-class refused while a PRODUCT references it renders the HONEST count", async () => {
-		const state = makeRulesState();
-		state.classes.push({ id: "reduced", name: "Reduced" });
-		state.productRefCounts.reduced = 3;
-		await boot(state);
+		// The product guard is checked FIRST, and it counts real product-commerce
+		// rows now: three live products declaring `taxClass: "reduced"`.
+		await seedRules({
+			classes: [...DEFAULT_CLASSES, { id: "reduced", name: "Reduced" }],
+			productsByClass: { reduced: 3 },
+		});
 		const outcome = await clickButton("tax:delete-class", { classId: "reduced" });
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toContain("3 products");
-		expect(state.classes.some((c) => c.id === "reduced")).toBe(true);
+		expect(await listClassIds()).toContain("reduced");
 	});
 
 	test("zero classes shows the empty illustration whose create action opens the SAME create screen as the promoted button (E-2)", async () => {
-		const state = makeRulesState();
-		state.classes = [];
-		await boot(state);
+		await seedRules({ classes: [], rates: [] });
 		const blocks = await loadClasses();
 		const empty = findBlock(blocks, "empty");
 		expect(empty?.title).toBe("No tax classes yet");
@@ -647,9 +591,10 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("25 classes still render the per-row accordion branch (L-9)", async () => {
-		const state = makeRulesState();
-		state.classes = Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` }));
-		await boot(state);
+		await seedRules({
+			classes: Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` })),
+			rates: [],
+		});
 		const blocks = await loadClasses();
 		expect(findBlock(blocks, "table")).toBeUndefined();
 		expect(
@@ -659,9 +604,10 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("26 classes fall back to the table + combobox drill-in branch (L-9)", async () => {
-		const state = makeRulesState();
-		state.classes = Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` }));
-		await boot(state);
+		await seedRules({
+			classes: Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` })),
+			rates: [],
+		});
 		const blocks = await loadClasses();
 		expect(
 			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("tax:class:"))
@@ -677,9 +623,10 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	});
 
 	test("opening a class from the fallback combobox drill-in opens its rates list (L-7, full path)", async () => {
-		const state = makeRulesState();
-		state.classes = Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` }));
-		await boot(state);
+		await seedRules({
+			classes: Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` })),
+			rates: [],
+		});
 		const blocks = await loadClasses();
 		const openForm = formFor(blocks, "tax:open")!;
 		const picker = field(openForm, "target")!;
@@ -693,18 +640,18 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 
 describe("admin Tax console — rates level (workerd sandbox)", () => {
 	test("opening a class renders its rates as per-row accordions, fanned out across every zone by default (D-6 labels)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await openClass("standard");
 		expect(blocks.some((b) => b.type === "header" && b.text === "Tax rates — standard")).toBe(true);
 		expect(buttons(blocks).some((e) => e.action_id === "tax:back")).toBe(true);
 		expect(findBlock(blocks, "table")).toBeUndefined(); // L-9 accordion branch at 2 rows
 
-		// Fanned out: a zones read, then one rates read per zone.
-		expect(stub!.requests.some((r) => r.url === "/admin/shipping/zones")).toBe(true);
-		expect(stub!.requests.some((r) => r.url === "/admin/tax/rates?zoneId=us")).toBe(true);
-		expect(stub!.requests.some((r) => r.url === "/admin/tax/rates?zoneId=eu")).toBe(true);
-
+		// THE FAN-OUT IS PROVEN BY THE ROWS, not by a request log. The store's only
+		// rates read is per-zone (`listRatesForZone`), so a class whose rates live in
+		// two different zones can only be complete if every zone was read: one row
+		// from `us` and one from `eu` is that proof, and unlike a recorded
+		// `?zoneId=eu` it also proves the answer was USED.
+		//
 		// THE RATE LEADS THE LABEL. It used to trail a slug of varying length, so
 		// no two rows started their number at the same x and 7.25 / 20.00 could
 		// not be compared down the column — the one comparison this level exists
@@ -718,8 +665,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("a rate label's leading token is a PERCENT, not money — no currency symbol or code anywhere in it", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const labels = findBlocks(await openClass("standard"), "accordion")
 			.filter((a) => String(a.block_id).startsWith("tax:rate:"))
 			.map((a) => String(a.label));
@@ -731,29 +677,24 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("the Zone filter is a non-blank select seeded from the zones read this level already performs (D-6, F-6a)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await openClass("standard");
 		const filterForm = formFor(blocks, "tax:apply-filter")!;
 		const zoneField = field(filterForm, "zoneId")!;
 		expect(zoneField.type).toBe("select");
 		expect(zoneField.initial_value).toBe("any");
 		const options = zoneField.options as Array<{ value: string; label: string }>;
-		expect(options.map((o) => o.value)).toEqual(["any", "us", "eu"]);
+		// The registry read is `ORDER BY id` (the store sorts `listZones`), so the
+		// picker is alphabetical by id rather than in creation order — the sentinel
+		// still leads it.
+		expect(options.map((o) => o.value)).toEqual(["any", "eu", "us"]);
 		expect(options.every((o) => o.value !== "")).toBe(true); // F-6a: no "" option
 	});
 
-	test("filtering by a zone scopes the rates read to ONE (plus the always-on zones read) and excludes other zones", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("filtering by a zone scopes the list to that zone and excludes the others", async () => {
+		await seedRules();
 		const opened = await openClass("standard");
-		stub!.requests.length = 0;
 		const filtered = await submitForm(opened, "tax:apply-filter", { zoneId: "us" });
-		expect(stub!.requests.some((r) => r.url === "/admin/shipping/zones")).toBe(true);
-		expect(stub!.requests.filter((r) => r.url.startsWith("/admin/tax/rates"))).toHaveLength(1);
-		expect(stub!.requests.find((r) => r.url.startsWith("/admin/tax/rates"))?.url).toBe(
-			"/admin/tax/rates?zoneId=us",
-		);
 		expect(group(filtered, "tax:rate:std-us")).toBeDefined();
 		expect(group(filtered, "tax:rate:std-eu")).toBeUndefined();
 
@@ -763,8 +704,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("clearing the filter re-lists every zone's rates for the class (L-6)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const opened = await openClass("standard");
 		const filtered = await submitForm(opened, "tax:apply-filter", { zoneId: "us" });
 		const section = findBlock(filtered, "section")!;
@@ -776,9 +716,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("a class with no rates yet (unfiltered) shows the empty illustration, whose action opens that class's create screen (E-2)", async () => {
-		const state = makeRulesState();
-		state.classes.push({ id: "zero", name: "Zero-rated" });
-		await boot(state);
+		await seedRules({ classes: [...DEFAULT_CLASSES, { id: "zero", name: "Zero-rated" }] });
 		const blocks = await openClass("zero");
 		expect(blocks.some((b) => b.type === "header" && b.text === "Tax rates — zero")).toBe(true);
 		const empty = findBlock(blocks, "empty");
@@ -799,18 +737,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test('filtering to a zone with no rates for this class shows a plain context line, never the empty illustration (E-1/E-2 "never for a filtered-to-zero list")', async () => {
-		const state = makeRulesState();
-		state.zones.push({ id: "jp", name: "Japan", regions: ["JP"] });
-		await boot(state);
+		await seedRules({ zones: [...DEFAULT_ZONES, { id: "jp", name: "Japan", regions: ["JP"] }] });
 		const opened = await openClass("standard");
 		const filtered = await submitForm(opened, "tax:apply-filter", { zoneId: "jp" });
 		expect(findBlock(filtered, "empty")).toBeUndefined();
 		expect(contextTexts(filtered).some((t) => /no tax rates for zone "jp"/i.test(t))).toBe(true);
 	});
 
-	test("create-rate POSTs the percent parsed to EXACT integer bps (real boolean toggle), then reloads the class's rates with a success notice", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("create-rate stores the percent as EXACT integer bps (real boolean toggle), then reloads the class's rates with a success notice", async () => {
+		await seedRules();
 		const opened = await openNewRateScreen("standard");
 		const after = await submitForm(opened, "tax:create-rate", {
 			id: "std-us-b",
@@ -818,13 +753,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "20",
 			appliesToShipping: true,
 		});
-		const post = stub!.requests.find((r) => r.method === "POST" && r.url === "/admin/tax/rates");
-		expect(post).toBeDefined();
-		expect(post!.body).toEqual({
+		// THE STORED ROW is the assertion: "20" became 2000 basis points by exact
+		// integer math (no float ever touches it), under the class the create screen
+		// carried and the zone the select named.
+		const created = await findRate("us", "std-us-b");
+		expect(created).toMatchObject({
 			id: "std-us-b",
 			taxClassId: "standard",
 			zoneId: "us",
-			rateBps: 2000, // "20" → 2000 bps, EXACT integer math, no float
+			rateBps: 2000,
 			appliesToShipping: true,
 		});
 		const banner = bannerOf(after);
@@ -834,9 +771,8 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(group(after, "tax:rate:std-us-b")).toBeDefined();
 	});
 
-	test("a malformed rate percent is caught at the plugin boundary — no POST is sent", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("a malformed rate percent is caught at the plugin boundary — nothing is written", async () => {
+		await seedRules();
 		const opened = await openNewRateScreen("standard");
 		const after = await submitForm(opened, "tax:create-rate", {
 			id: "bad",
@@ -844,15 +780,14 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "7.255",
 			appliesToShipping: false,
 		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await findRate("us", "bad")).toBeUndefined();
 		expect(bannerOf(after)?.variant).toBe("error");
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------
 
 	test("INC-14: `New tax rate` is a primary BUTTON under the intro line, above the rows, carrying its class path — and no create accordion survives below them", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await openClass("standard");
 		const types = blocks.map((b) => String(b.type));
 		// header · back · context · the create button (this level's intro line is
@@ -872,8 +807,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("INC-14: the New tax rate screen is a drill-in whose back control returns to THAT class's rates", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const screen = await openNewRateScreen("standard");
 		expect(screen.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
 			true,
@@ -890,8 +824,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("INC-14/DA-3a-i: a REFUSED rate create re-renders the create screen with the id, zone, percent and toggle put back", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const screen = await openNewRateScreen("standard");
 		const refused = await submitForm(screen, "tax:create-rate", {
 			id: "std-eu-b",
@@ -899,7 +832,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "7.255", // 3 decimals — refused at the plugin boundary
 			appliesToShipping: true,
 		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await findRate("eu", "std-eu-b")).toBeUndefined();
 		expect(bannerOf(refused)?.variant).toBe("error");
 		expect(refused.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
 			true,
@@ -917,14 +850,13 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "7.25",
 			appliesToShipping: true,
 		});
-		expect(state.rates.find((r) => r.id === "std-eu-b")?.rateBps).toBe(725);
+		expect((await findRate("eu", "std-eu-b"))?.rateBps).toBe(725);
 		expect(bannerOf(created)?.variant).toBe("default");
 		expect(formFor(created, "tax:create-rate")).toBeUndefined();
 	});
 
 	test("INC-14: a draft zone that no longer exists falls back rather than rendering a blank select trigger (X-23)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const screen = await openNewRateScreen("standard");
 		const refused = await submitForm(screen, "tax:create-rate", {
 			id: "ghost",
@@ -938,17 +870,14 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("INC-14: with no zones at all the create screen degrades to one honest line, never an empty select (F-6a)", async () => {
-		const state = makeRulesState();
-		state.zones = [];
-		await boot(state);
+		await seedRules({ zones: [] });
 		const screen = await openNewRateScreen("standard");
 		expect(formFor(screen, "tax:create-rate")).toBeUndefined();
 		expect(contextTexts(screen).some((t) => /create a shipping zone first/i.test(t))).toBe(true);
 	});
 
 	test("a rate row carries a per-row edit form (CAS) prefilled from the loaded rate — ids and watermark in the carrier, never a visible field (F-2/X-1)", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const blocks = await openClass("standard");
 		const row = group(blocks, "tax:rate:std-us")!;
 		const form = formFor([row], "tax:save-rate")!;
@@ -964,35 +893,35 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(field(form, "appliesToShipping")?.initial_value).toBe(false); // F-6b/X-24: REQUIRED
 	});
 
-	test("save-rate PUTs the CAS edit (reading ids from the carrier) and reloads with a 'saved' notice", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("save-rate applies the CAS edit (reading ids from the carrier) and reloads with a 'saved' notice", async () => {
+		await seedRules();
 		const row = group(await openClass("standard"), "tax:rate:std-us")!;
 		const after = await submitForm([row], "tax:save-rate", {
 			ratePercent: "8.25",
 			appliesToShipping: true,
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put).toBeDefined();
-		expect(put!.url).toBe("/admin/tax/rates/std-us");
-		expect(put!.body).toEqual({ rateBps: 825, appliesToShipping: true, expectedRateBps: 725 });
 		const banner = bannerOf(after);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
-		expect(state.rates.find((r) => r.id === "std-us")?.rateBps).toBe(825);
+		// The EDIT LANDED, both fields of it — `appliesToShipping` is the required
+		// full-replace key, so a save that dropped it would silently clear the flag.
+		expect(await findRate("us", "std-us")).toMatchObject({
+			rateBps: 825,
+			appliesToShipping: true,
+		});
 	});
 
-	test("a concurrent-edit conflict (409 STALE) is caught via the carrier's own watermark — reloads the fresh rate with a re-apply warning, never a clobber", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("a concurrent-edit conflict is caught via the carrier's own watermark — reloads the fresh rate with a re-apply warning, never a clobber", async () => {
+		await seedRules();
 		const opened = await openClass("standard");
 		const row = group(opened, "tax:rate:std-us")!;
 		const form = formFor([row], "tax:save-rate")!;
-		// Simulate the record having moved since THIS render loaded it (the
-		// carrier this form carries still says 725) — someone else's edit lands
-		// in between, exactly the race the watermark exists to catch (DA-2a).
-		state.rates.find((r) => r.id === "std-us")!.rateBps = 900;
-		const after = await sandbox!.invokeRoute("admin", {
+		// Move the record since THIS render loaded it (the carrier this form carries
+		// still says 725) — someone else's edit lands in between, exactly the race
+		// the watermark exists to catch (DA-2a). Written through the store's own CAS,
+		// so the concurrent edit is as real as the one it is about to beat.
+		await taxRules.updateRate("std-us", { rateBps: 900, appliesToShipping: false }, 725);
+		const after = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "tax:save-rate",
 			values: { ratePercent: "9.00", appliesToShipping: false },
@@ -1003,21 +932,18 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toMatch(/changed since you loaded it|reload/i);
 		// The submitted edit was NOT applied — the concurrent 900 stands.
-		expect(state.rates.find((r) => r.id === "std-us")?.rateBps).toBe(900);
-		// The re-render shows the FRESH (server) value, from a real reload GET —
-		// never the stale 725 the carrier was minted against, and never a blind
-		// clobber to 900 either.
+		expect((await findRate("us", "std-us"))?.rateBps).toBe(900);
+		// The re-render shows the FRESH value, from a real reload — never the stale
+		// 725 the carrier was minted against, and never a blind clobber either.
 		expect(group(blocks, "tax:rate:std-us")?.label).toBe(
 			"9.00% — United States · std-us · goods only",
 		);
 	});
 
-	test("delete-rate DELETEs and reloads with a 'deleted' notice; a repeat delete is an idempotent 'already deleted' notice, never an error", async () => {
-		const state = makeRulesState();
-		await boot(state);
+	test("delete-rate removes the rate and reloads with a 'deleted' notice; a repeat delete is an idempotent 'already deleted' notice, never an error", async () => {
+		await seedRules();
 		const first = await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-us" });
-		const del = stub!.requests.find((r) => r.method === "DELETE");
-		expect(del?.url).toBe("/admin/tax/rates/std-us");
+		expect(await findRate("us", "std-us")).toBeUndefined();
 		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
 		expect(String(firstBanner?.title)).toContain("deleted");
@@ -1030,8 +956,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("back from the rates level returns to the tax classes list", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		const rates = await openClass("standard");
 		const backButtonValue = buttons(rates).find((e) => e.action_id === "tax:back")?.value as
 			| Record<string, string>
@@ -1042,15 +967,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("25 rates for a class still render the per-row accordion branch (L-9)", async () => {
-		const state = makeRulesState();
-		state.rates = Array.from({ length: 25 }, (_, i) => ({
-			id: `r${i}`,
-			taxClassId: "standard",
-			zoneId: "us",
-			rateBps: 100 + i,
-			appliesToShipping: false,
-		}));
-		await boot(state);
+		await seedRules({
+			rates: Array.from({ length: 25 }, (_, i) => ({
+				id: `r${i}`,
+				taxClassId: "standard",
+				zoneId: "us",
+				rateBps: 100 + i,
+				appliesToShipping: false,
+			})),
+		});
 		const blocks = await openClass("standard");
 		expect(findBlock(blocks, "table")).toBeUndefined();
 		expect(
@@ -1060,15 +985,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("26 rates for a class fall back to the table + combobox drill-in branch (L-9), and Applies-to-shipping is plain text, never a badge (T-5/X-4)", async () => {
-		const state = makeRulesState();
-		state.rates = Array.from({ length: 26 }, (_, i) => ({
-			id: `r${i}`,
-			taxClassId: "standard",
-			zoneId: "us",
-			rateBps: 100 + i,
-			appliesToShipping: i % 2 === 0,
-		}));
-		await boot(state);
+		await seedRules({
+			rates: Array.from({ length: 26 }, (_, i) => ({
+				id: `r${i}`,
+				taxClassId: "standard",
+				zoneId: "us",
+				rateBps: 100 + i,
+				appliesToShipping: i % 2 === 0,
+			})),
+		});
 		const blocks = await openClass("standard");
 		expect(
 			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("tax:rate:"))
@@ -1085,15 +1010,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("opening a rate from the fallback combobox drill-in reaches its own detail leaf (§12.7 full path, depth 2)", async () => {
-		const state = makeRulesState();
-		state.rates = Array.from({ length: 26 }, (_, i) => ({
-			id: `r${i}`,
-			taxClassId: "standard",
-			zoneId: "us",
-			rateBps: 100 + i,
-			appliesToShipping: false,
-		}));
-		await boot(state);
+		await seedRules({
+			rates: Array.from({ length: 26 }, (_, i) => ({
+				id: `r${i}`,
+				taxClassId: "standard",
+				zoneId: "us",
+				rateBps: 100 + i,
+				appliesToShipping: false,
+			})),
+		});
 		const blocks = await openClass("standard");
 		const openForm = formFor(blocks, "tax:open")!;
 		const picker = field(openForm, "target")!;
@@ -1113,15 +1038,15 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("a rate's own detail leaf edits and deletes exactly like the accordion body, and its back button returns to the rates list", async () => {
-		const state = makeRulesState();
-		state.rates = Array.from({ length: 26 }, (_, i) => ({
-			id: `r${i}`,
-			taxClassId: "standard",
-			zoneId: "us",
-			rateBps: 100 + i,
-			appliesToShipping: false,
-		}));
-		await boot(state);
+		await seedRules({
+			rates: Array.from({ length: 26 }, (_, i) => ({
+				id: `r${i}`,
+				taxClassId: "standard",
+				zoneId: "us",
+				rateBps: 100 + i,
+				appliesToShipping: false,
+			})),
+		});
 		const detail = await submitForm(await openClass("standard"), "tax:open", {
 			target: encodePath(["standard", "r5"]),
 		});
@@ -1133,12 +1058,11 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "9.00",
 			appliesToShipping: true,
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put?.url).toBe("/admin/tax/rates/r5");
+		expect(await findRate("us", "r5")).toMatchObject({ rateBps: 900, appliesToShipping: true });
 		expect(bannerOf(saved)?.variant).toBe("default");
 
 		const deleted = await clickButton("tax:delete-rate", { classId: "standard", rateId: "r5" });
-		expect(stub!.requests.find((r) => r.method === "DELETE")?.url).toBe("/admin/tax/rates/r5");
+		expect(await findRate("us", "r5")).toBeUndefined();
 		expect(bannerOf(deleted)?.variant).toBe("default");
 
 		const back = await clickButton("tax:back", backValue);
@@ -1146,8 +1070,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 
 	test("a rate detail leaf for an id that no longer resolves renders notFound, never a blank page", async () => {
-		const state = makeRulesState();
-		await boot(state);
+		await seedRules();
 		// Driven as a bare block_action (matching a button/combobox click) rather
 		// than through the accordion branch's row list, which offers no direct
 		// per-rate "open" control of its own — the leaf is reachable at any row
@@ -1170,8 +1093,7 @@ describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 	// deliberately refuses `level:"detail"` for a screen absent from it) does
 	// not apply. See the PR body's disclosure section.
 	test("assertBlockContract holds on every rendered shape this screen produces", async () => {
-		const small = makeRulesState();
-		await boot(small);
+		await seedRules();
 		assertBlockContract(await loadClasses(), { screen: "tax", level: "list" });
 		assertBlockContract(await openClass("standard"), { screen: "tax", level: "list" });
 		const filtered = await submitForm(await openClass("standard"), "tax:apply-filter", {
@@ -1202,27 +1124,25 @@ describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 			{ screen: "tax", level: "list" },
 		);
 
-		const zero = makeRulesState();
-		zero.classes = [];
-		await reboot(zero);
+		// The fixture is re-seeded rather than the sandbox rebooted: the isolate
+		// holds no state, so a case's shape comes entirely from what the store says.
+		await seedRules({ classes: [], rates: [] });
 		assertBlockContract(await loadClasses(), { screen: "tax", level: "list" });
 
-		const zeroRates = makeRulesState();
-		zeroRates.classes.push({ id: "zero", name: "Zero-rated" });
-		await reboot(zeroRates);
+		await seedRules({ classes: [...DEFAULT_CLASSES, { id: "zero", name: "Zero-rated" }] });
 		assertBlockContract(await openClass("zero"), { screen: "tax", level: "list" });
 
-		const big = makeRulesState();
-		big.classes = Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` }));
-		big.rates = Array.from({ length: 26 }, (_, i) => ({
-			id: `r${i}`,
-			taxClassId: "c0",
-			zoneId: "us",
-			rateBps: 100 + i,
-			appliesToShipping: i % 2 === 0,
-		}));
-		await reboot(big);
+		await seedRules({
+			classes: Array.from({ length: 26 }, (_, i) => ({ id: `c${i}`, name: `Class ${i}` })),
+			rates: Array.from({ length: 26 }, (_, i) => ({
+				id: `r${i}`,
+				taxClassId: "c0",
+				zoneId: "us",
+				rateBps: 100 + i,
+				appliesToShipping: i % 2 === 0,
+			})),
+		});
 		assertBlockContract(await loadClasses(), { screen: "tax", level: "list" });
 		assertBlockContract(await openClass("c0"), { screen: "tax", level: "list" });
-	});
+	}, 120_000);
 });

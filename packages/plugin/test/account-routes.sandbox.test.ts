@@ -22,7 +22,6 @@ async function setup(): Promise<{ live: LiveService; sandbox: SandboxHandle }> {
 	cleanups.push(() => live.stop());
 	const sandbox = await loadPluginInSandbox({
 		allowedHosts: [live.host],
-		commerceServiceBaseUrl: live.baseUrl,
 	});
 	cleanups.push(() => sandbox.close());
 	return { live, sandbox };

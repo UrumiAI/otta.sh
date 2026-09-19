@@ -15,22 +15,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": [
-							"__OTTA_COMMERCE_SERVICE_URL__",
-							"__OTTA_EMAIL_API_URL__",
-							"__OTTA_X402_FACILITATOR_URL__"
-						]
-					}
-				]
-			}
-		},
-		{
-			"files": ["packages/plugin/src/commerce/commerce-mode.ts"],
-			"rules": {
-				"no-underscore-dangle": [
-					"error",
-					{
-						"allow": ["__OTTA_COMMERCE_MODE__"]
+						"allow": ["__OTTA_EMAIL_API_URL__", "__OTTA_X402_FACILITATOR_URL__"]
 					}
 				]
 			}

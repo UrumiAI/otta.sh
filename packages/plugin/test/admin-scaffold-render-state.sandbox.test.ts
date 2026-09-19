@@ -35,7 +35,6 @@ let sandbox: SandboxHandle;
 beforeAll(async () => {
 	sandbox = await loadPluginInSandbox({
 		allowedHosts: ["127.0.0.1"],
-		commerceServiceBaseUrl: "http://127.0.0.1:1",
 		entry: "admin/scaffold/testing/geo-entry.ts",
 	});
 }, 60_000);

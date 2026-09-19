@@ -1,48 +1,78 @@
-import { SETTINGS_SCHEMA, OTTA_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
+import { OTTA_PLUGIN_CAPABILITIES, SETTINGS_SCHEMA } from "@otta-sh/plugin";
+import {
+	collectionOf,
+	SETTINGS_COLLECTION,
+	SETTINGS_DOC_ID,
+	SETTINGS_MUTATIONS_COLLECTION,
+	type SettingsMutationDoc,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
+import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
-	contextTexts,
 	field,
 	findBlocks,
 	formFor,
 	openGroupIds,
 	type LooseBlock,
 } from "./helpers/blocks.js";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 // §4.1 report/settings skeleton, §12.6: the admin Settings Block Kit form
-// under the REAL workerd-on-Node sandbox. ONE page, THREE named accordion
-// groups ("Store", "Checkout & holds", "Service connection"), FOUR save
-// paths: kv (display name, no ctx.http on ITS OWN write — but S-5/S-5a means
-// every save re-renders the WHOLE screen from a fresh read) and service
-// (operational + both tokens, over ctx.http). SECURITY: no secret is ever
-// rendered back into a block.
+// under the REAL workerd-on-Node sandbox.
 //
-// INC-15: each group's LABEL now carries that group's current values, and all
-// three render closed. "Token set" is a boolean FACT about a credential, not
-// any part of it — the no-echo pins below cover the whole response, labels
-// included.
-
+// INC-D3a (the commerce service is folded into the plugin, ADR-0014 D3):
+// this file used to boot a stub HTTP commerce service and prove a "Service
+// connection" group (two tokens, forwarded as headers on every GET/PUT
+// /settings). Both the service and the group are GONE OUTRIGHT — there is no
+// second deployable left to authenticate to (see `settings-form.ts`'s own
+// module doc comment). What remains is THREE groups ("Store", "Checkout &
+// holds", "Payments & email") and EIGHT save paths: `save-display` (kv),
+// `save-operational` (the real in-process `EmdashSettingsStore`, over
+// `makeAdminClients`), the FIVE real payment/email secrets (write-only kv),
+// and `save-payment-settings` (three read-back plain settings, kv). SECURITY:
+// no secret is ever rendered back into a block — still true, still pinned
+// below.
+//
+// INC-15: each group's LABEL carries that group's current values, and all
+// three render closed.
+//
+// A PROCESS-SHARED STORAGE CAVEAT, load-bearing for every test below that
+// asserts an EXACT operational-settings value: `storage: true` binds
+// `ctx.storage` to `storageBridge()`'s one memoized SQLite store per test
+// PROCESS (see its own doc comment — "ONE STORE PER PROCESS, reused across
+// boots"). `ctx.kv` resets with every fresh `loadPluginInSandbox()` boot, so
+// display-name and secret state never leaks between tests in this file — but
+// the operational-settings doc is a true singleton (`SETTINGS_DOC_ID =
+// "store"`), so it DOES persist across tests unless a test resets it first.
+// `resetOperationalSettings` below does that reset directly against the same
+// bridge, the same way `collectionOf` is already used read-only elsewhere in
+// this suite (`helpers/block-contract.ts`) to reach internal store constants.
 let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
 afterEach(async () => {
 	await sandbox?.close();
 	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
 });
 
-/** Every form's submit action_id this screen renders, in the FULL-screen
- *  render (S-5) — the four forms the two live bugs used to drop. */
-const ALL_SUBMIT_IDS = ["save-display", "save-operational", "save-token", "save-service-token"];
+/** Every form's submit action_id the Settings screen renders on a FULL-screen
+ *  render (S-5) — eight now, not the four this file used to pin before the
+ *  fold-in deleted `save-token`/`save-service-token` and added five real
+ *  payment/email secrets plus `save-payment-settings`. */
+const ALL_SUBMIT_IDS = [
+	"save-display",
+	"save-operational",
+	"save-stripe-secret-key",
+	"save-stripe-webhook-secret",
+	"save-email-api-key",
+	"save-x402-facilitator-secret",
+	"save-webhook-edge-token",
+	"save-payment-settings",
+];
 
-function expectAllFourFormsPresent(blocks: readonly LooseBlock[]): void {
+function expectAllRealFormsPresent(blocks: readonly LooseBlock[]): void {
 	for (const actionId of ALL_SUBMIT_IDS) {
 		expect(formFor(blocks, actionId), `expected a form submitting "${actionId}"`).toBeDefined();
 	}
@@ -54,17 +84,25 @@ function groupLabels(blocks: readonly LooseBlock[]): Map<string, string> {
 	return new Map(findBlocks(blocks, "accordion").map((a) => [String(a.block_id), String(a.label)]));
 }
 
+function toastOf(outcome: unknown): { message?: string; type?: string } | undefined {
+	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return undefined;
+	const result = (outcome as { result: unknown }).result;
+	if (!(typeof result === "object" && result !== null && "toast" in result)) return undefined;
+	return (result as { toast?: { message?: string; type?: string } }).toast;
+}
+
+/** Force the operational-settings singleton back to "never written" (the
+ *  domain defaults, 15/5 — `DEFAULT_OPERATIONAL_SETTINGS`) before a test that
+ *  depends on an exact value. See the process-shared-storage caveat above. */
+async function resetOperationalSettings(): Promise<StorageAccess> {
+	const { storage } = await storageBridge();
+	await collectionOf(storage, SETTINGS_COLLECTION).delete(SETTINGS_DOC_ID);
+	return storage;
+}
+
 describe("Settings admin form (workerd sandbox)", () => {
-	test("saving the display name re-renders the FULL screen — all four forms survive (Bug A)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("saving the display name re-renders the FULL screen — every real form survives (Bug A)", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const saved = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
@@ -74,22 +112,20 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const blocks = blocksOf(saved);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
-		// BUG FIX: this branch used to return `[header, section]` — two blocks —
-		// so the other three forms vanished and the operator had to navigate
-		// away to recover (the host's page_load effect never re-fires on its
-		// own). All four forms must be present on the SAME response the save
-		// returned, not merely on a subsequent page load.
-		expectAllFourFormsPresent(blocks);
+		// BUG FIX (still the point): this branch used to return `[header,
+		// section]` — two blocks — so the other forms vanished and the operator
+		// had to navigate away to recover. Every form must be present on the SAME
+		// response the save returned, not merely on a subsequent page load.
+		expectAllRealFormsPresent(blocks);
 		const nameField = field(formFor(blocks, "save-display"), "storeDisplayName");
 		expect(nameField?.initial_value).toBe("Acme Goods");
 
-		// S-5a: this save path used to be documented as provably ctx.http-free,
-		// and a test asserted `stub.requests` was empty. That invariant is
-		// retired DELIBERATELY (there is no operational-settings value already
-		// in scope to re-render the other groups from without a live read) — so
-		// this now asserts the OPPOSITE: a fresh GET /settings backs the
-		// re-render.
-		expect(stub.requests.some((r) => r.method === "GET" && r.url === "/settings")).toBe(true);
+		// INC-D3a retires the old "S-5a: this save is provably ctx.http-free, and
+		// the operational re-render came from a fresh GET /settings" pin — there
+		// is no request left to observe. What proves the re-render is real is
+		// this instead: the operational values that same response renders match
+		// what `client.getSettings()` (a real in-process read) actually holds.
+		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")?.initial_value).toBe("15");
 
 		// INC-15 amends S-3 for this screen: NO group is default_open. The labels
 		// carry the values, so there is nothing to rank — and X-18's mechanical
@@ -105,15 +141,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("an out-of-range display name re-renders the FULL screen with an error notice, not a dead end (Bug A, invalid branch)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
@@ -125,37 +153,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		// BUG FIX: this branch used to return `[header, banner]` — no field at
 		// all to correct the name. The field must still be right there.
-		expectAllFourFormsPresent(blocks);
+		expectAllRealFormsPresent(blocks);
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(`${String(banner?.title)} ${String(banner?.description)}`).toMatch(/1–200 characters/);
 	});
 
-	test("holdTtlMinutes and lowStockThreshold save via PUT /settings over ctx.http with the admin token + Idempotency-Key", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 45, lowStockThreshold: 20 } },
-		}));
-		// GET /settings is needed by the save-token re-render (fails closed
-		// otherwise, but still seeds the token) — provide it so the seed is clean.
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		// Seed the admin token into write-only kv via the Settings secret field,
-		// then clear the recorded requests so the PUT assertions are isolated.
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "admin-token-xyz" },
-		});
-		stub.requests.length = 0;
+	test("holdTtlMinutes and lowStockThreshold save through the real in-process settings store, with a success toast", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		// F-6: holdTtlMinutes/lowStockThreshold are `text_input` (not
 		// `number_input`), so the REAL wire shape is a digit-only string.
@@ -163,202 +169,178 @@ describe("Settings admin form (workerd sandbox)", () => {
 			type: "form_submit",
 			action_id: "save-operational",
 			values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
-			idempotencyKey: "k-op-1",
+			idempotencyKey: "k-op-save-1",
 		});
 
-		expect(stub.requests).toHaveLength(1);
-		const req = stub.requests[0];
-		expect(req?.method).toBe("PUT");
-		expect(req?.url).toBe("/settings");
-		expect(req?.body).toEqual({ holdTtlMinutes: 45, lowStockThreshold: 20 });
-		// The token was forwarded from write-only kv (not the interaction body).
-		expect(req?.headers["x-internal-token"]).toBe("admin-token-xyz");
-		expect(req?.headers["idempotency-key"]).toBe("k-op-1");
-		// The form re-renders with the saved values + a success toast, and every
-		// other form on the screen is still present (S-5).
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
-		expectAllFourFormsPresent(blocks);
-		expect((outcome as { result: { toast: { type: string } } }).result.toast.type).toBe("success");
+		expectAllRealFormsPresent(blocks);
+		expect(toastOf(outcome)).toEqual({ message: "Settings saved", type: "success" });
+		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")?.initial_value).toBe("45");
+		expect(groupLabels(blocks).get("settings:checkout")).toBe(
+			"Checkout & holds — 45 min hold · low stock at 20",
+		);
+
+		// It really persisted through the store, not just this response: a fresh
+		// page load agrees.
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(field(formFor(loaded, "save-operational"), "lowStockThreshold")?.initial_value).toBe(
+			"20",
+		);
 	});
 
-	test("F-6: holdTtlMinutes/lowStockThreshold are text_input, digit-parsed — a non-digit submission is OMITTED from the PUT, not sent as NaN/zero", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 20 } },
-		}));
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("F-6: holdTtlMinutes/lowStockThreshold are text_input, digit-parsed — a non-digit submission is OMITTED from the patch, not saved as NaN/zero", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
-		// Confirm the element type migrated (F-6): not number_input.
+		// Confirm the element type: not number_input.
 		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
 		const opForm = formFor(blocksOf(loaded), "save-operational");
 		expect(field(opForm, "holdTtlMinutes")?.type).toBe("text_input");
 		expect(field(opForm, "lowStockThreshold")?.type).toBe("text_input");
 
 		// "abc" fails /^\d+$/ — omitted from the patch rather than coerced to
-		// NaN or 0; "20" is valid and passes through.
+		// NaN or 0, so the field it would have touched keeps its EXISTING
+		// (default) value; "20" is valid and passes through.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
 			values: { holdTtlMinutes: "abc", lowStockThreshold: "20" },
-			idempotencyKey: "k-digits",
+			idempotencyKey: "k-digits-only",
 		});
-		const req = stub.requests.find((r) => r.method === "PUT");
-		expect(req?.body).toEqual({ lowStockThreshold: 20 });
+		const after = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const opFormAfter = formFor(after, "save-operational");
+		expect(field(opFormAfter, "holdTtlMinutes")?.initial_value).toBe("15");
+		expect(field(opFormAfter, "lowStockThreshold")?.initial_value).toBe("20");
 	});
 
-	test("a service-side validation error (400) surfaces inline and never zeroes an un-edited field", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({
-			status: 400,
-			body: {
-				ok: false,
-				error: "validation_error",
-				message: "holdTtlMinutes must be a positive integer",
-			},
-		}));
-		// The error re-render reads current stored settings (J6) so the un-edited
-		// field keeps its stored value instead of collapsing to 0.
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("a real domain validation error surfaces inline and never zeroes an un-edited field", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
+		// MAX_HOLD_TTL_MINUTES is 10_080 (one week) — 99999 is a genuine
+		// InvalidSettingsError from `@otta-sh/domain`'s `updateSettings`, not a
+		// stubbed 400. Only holdTtlMinutes is edited.
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
-			values: { holdTtlMinutes: "0" }, // only holdTtlMinutes edited (invalid)
-			idempotencyKey: "k-bad",
+			values: { holdTtlMinutes: "99999" },
+			idempotencyKey: "k-validation-bad",
 		});
 		// Not a thrown {error} — a rendered inline error banner carrying the
-		// service's actual message.
+		// domain's own message.
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
-		expect(String(banner?.description)).toContain("holdTtlMinutes must be a positive integer");
+		expect(String(banner?.description)).toContain("holdTtlMinutes must be <= 10080, got 99999");
 
-		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes (0) but
-		// the un-edited lowStockThreshold keeps its STORED value (5), not 0.
-		// Both are `text_input` (F-6), so the rendered `initial_value` is a
-		// digit-only STRING, not a number.
+		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes
+		// (99999) but the un-edited lowStockThreshold keeps its STORED value (the
+		// default, 5), not 0. Both are `text_input` (F-6), so `initial_value` is
+		// a digit-only STRING, not a number.
 		const opForm = formFor(blocks, "save-operational");
-		expect(field(opForm, "holdTtlMinutes")?.initial_value).toBe("0");
+		expect(field(opForm, "holdTtlMinutes")?.initial_value).toBe("99999");
 		expect(field(opForm, "lowStockThreshold")?.initial_value).toBe("5");
 		// Every other form on the screen survived too (S-5).
-		expectAllFourFormsPresent(blocks);
+		expectAllRealFormsPresent(blocks);
 	});
 
-	test("a non-validation save failure (e.g. 401) surfaces a GENERIC banner with no raw HTTP status/URL", async () => {
-		stub = await startStubCommerceServer();
-		// Auth failure (no admin token seeded) — NOT a designed 400 validation.
-		stub.respondWith("PUT", () => ({
-			status: 401,
-			body: { ok: false, error: "unauthorized" },
-		}));
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	// INC-D3a deletes two old cases outright rather than adapting them:
+	//
+	//  - "a non-validation save failure (e.g. 401) surfaces a GENERIC banner"
+	//    tested the in-process client's `reason: "unavailable"` fallback — the
+	//    ONE failure class that has no black-box trigger left. Every real
+	//    failure this suite can actually provoke against a real store is either
+	//    a domain `InvalidSettingsError` (the case above) or a lost
+	//    compare-and-set (`"superseded"`, below); "unavailable" exists in
+	//    `in-process-reporting-settings-client.ts` for a genuine storage-layer
+	//    fault (a corrupted collection, an IO exception) this integration
+	//    suite has no honest way to induce against a real SQLite-backed store
+	//    without mocking the storage layer, which defeats the point of a
+	//    sandbox suite proving REAL persistence.
+	//
+	//  - "the page-load GET /settings carries the admin token" tested a header
+	//    forwarded from write-only kv onto an HTTP request that no longer
+	//    exists — there is no analogous concept to preserve.
 
+	test("a lost compare-and-set (another writer decided this idempotency key first) surfaces as SUPERSEDED, not a generic failure, and leaks no transport/storage vocabulary", async () => {
+		// `EmdashSettingsStore.update` (`packages/store-emdash/src/emdash-settings-store.ts`)
+		// holds a claim on the idempotency key (create-if-absent) and, if the
+		// claim already existed with a DIFFERENT decided revision than the real
+		// current one, throws `SettingsMutationSupersededError` — deterministically,
+		// with no timing/concurrency needed. Fabricating that claim directly
+		// against the same store `storage: true` will bind to reproduces exactly
+		// the condition a genuine race would leave behind.
+		const storage = await resetOperationalSettings();
+		const key = "k-superseded-fabricated-1";
+		const mutations = collectionOf<SettingsMutationDoc>(storage, SETTINGS_MUTATIONS_COLLECTION);
+		const seeded = await mutations.compareAndSet(key, null, {
+			patch: { holdTtlMinutes: 30 },
+			decidedRevision: "some-other-writer-already-decided-this",
+			createdAt: new Date().toISOString(),
+			result: null,
+			appliedRevision: null,
+			appliedAt: null,
+			supersededAt: null,
+		});
+		if (!seeded.applied) {
+			throw new Error("fixture setup itself lost a compare-and-set — flaky test infra");
+		}
+
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
 			values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
-			idempotencyKey: "k-401",
+			idempotencyKey: key,
 		});
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
-		// Part 5: the auth/5xx/non-JSON fallback must not echo a raw status or URL.
+		expect(String(banner?.title)).toBe("Settings changed by someone else");
+		expect(String(banner?.description)).toMatch(/Nothing was saved\.$/);
+		// `updateSettings()` deliberately carries no `status` for this reason —
+		// "a fabricated 409 would be indistinguishable from a real one" — and the
+		// banner must not leak the compare-and-set vocabulary that produced it.
 		const text = `${String(banner?.title)} ${String(banner?.description)}`;
-		expect(text).not.toMatch(/HTTP \d|\/settings|401/);
+		expect(text).not.toMatch(/HTTP \d|compareAndSet|claim|revision|409/i);
+		expect(toastOf(outcome)).toEqual({
+			message: "Settings changed by someone else",
+			type: "error",
+		});
+
+		// J6: the FORM keeps the attempted values so the operator can retry…
+		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")?.initial_value).toBe("45");
+		// …but the LABEL states what is actually stored — nothing, since the
+		// superseded write never touched the real settings doc.
+		expect(groupLabels(blocks).get("settings:checkout")).toBe(
+			"Checkout & holds — 15 min hold · low stock at 5",
+		);
 	});
 
-	test("the page-load GET /settings carries the admin token (the read is guarded too, ADR-0010)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", (req) =>
-			req.headers["x-internal-token"] === "admin-token-xyz"
-				? {
-						status: 200,
-						body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-					}
-				: { status: 401, body: { ok: false, error: "unauthorized" } },
-		);
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("NO-STORAGE page_load /settings (ctx.storage undeclared) crashes to the transport boundary — unlike Reports' internally-caught banner", async () => {
+		// `settings-form.ts` calls `makeAdminClients(ctx)` — which THROWS
+		// `MISSING_STORAGE_MESSAGE` synchronously when `ctx.storage` is absent —
+		// OUTSIDE any try/catch of its own, and `admin-route.ts`'s settings
+		// branches (both `page_load` and the action_id dispatch) wrap NEITHER
+		// call in a try/catch either. `reports-page.ts` constructs its OWN
+		// clients inside a try/catch precisely so the identical throw renders a
+		// graceful fail-closed banner instead (see
+		// `admin-route-dispatch.sandbox.test.ts`'s matching Reports case). This
+		// throw therefore propagates all the way to `sandbox-entry.ts`'s one
+		// outer dispatch catch and surfaces as a transport-level `{error}`, not
+		// a rendered screen — a real, current asymmetry between the two
+		// screens, not something this test's job is to paper over.
+		sandbox = await loadPluginInSandbox({ allowedHosts: [] });
 
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "admin-token-xyz" },
-		});
-		stub.requests.length = 0;
-
-		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
-
-		const get = stub.requests.find((r) => r.method === "GET");
-		expect(get?.url).toBe("/settings");
-		// Sourced from write-only kv, exactly like the PUT above — before ADR-0010
-		// the client was constructed with the SERVICE token only, so this header
-		// was absent and the guarded read would 401.
-		expect(get?.headers["x-internal-token"]).toBe("admin-token-xyz");
-		// It got through: the operational fields rendered, not a degraded context.
-		const blocks = blocksOf(loaded);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-		expect(formFor(blocks, "save-operational")).toBeDefined();
-	});
-
-	test("with NO admin token the guarded GET /settings degrades to a context line (E-1 secondary read), never a top-level banner — and both token forms still render", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({ status: 401, body: { ok: false, error: "unauthorized" } }));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		const blocks = blocksOf(
-			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
-		);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-
-		// Director ruling / E-1: `GET /settings` is a SECONDARY read (it feeds
-		// only "Checkout & holds"); its failure degrades to a `context` line
-		// inside that one group, never a screen-wide fail-closed banner — the
-		// §12.6 listing implied the latter, which is the N-1 defect this fixes.
-		expect(findBlocks(blocks, "banner")).toHaveLength(0);
-		expect(
-			contextTexts(blocks).some((t) => /Operational settings could not be loaded/.test(t)),
-		).toBe(true);
-
-		// No bootstrap lockout: both token forms — and the display-name form —
-		// are still on the page, so an admin with no token provisioned can still
-		// provision one.
-		expect(formFor(blocks, "save-display")).toBeDefined();
-		expect(formFor(blocks, "save-token")).toBeDefined();
-		expect(formFor(blocks, "save-service-token")).toBeDefined();
-		// The operational form itself is absent (there is nothing to prefill it
-		// with) — the context line replaces it, not sits beside a zeroed form.
-		expect(formFor(blocks, "save-operational")).toBeUndefined();
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
+		expect(outcome).toEqual({ error: MISSING_STORAGE_MESSAGE });
 	});
 
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
@@ -368,7 +350,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 			expect(cap.startsWith("db")).toBe(false);
 		}
 		// The kv-backed field is display-only; the two operational fields are
-		// service-DB. NONE is a secret (no secret tier, no secret-shaped field).
+		// service-tier. NONE is a secret (no secret tier, no secret-shaped
+		// field) — the five real secrets are provisioning UI, not schema.
 		expect(SETTINGS_SCHEMA.storeDisplayName.tier).toBe("kv");
 		expect(SETTINGS_SCHEMA.holdTtlMinutes.tier).toBe("service");
 		expect(SETTINGS_SCHEMA.lowStockThreshold.tier).toBe("service");
@@ -379,94 +362,29 @@ describe("Settings admin form (workerd sandbox)", () => {
 		}
 	});
 
-	// INC-09 (EVIDENCE §4.3 / DESIGNER §7 shot `18b`): the Admin token field's
-	// `secret_input` reveal/copy chip computed to `opacity: 0` and, on hover,
-	// overlapped its own label; revealed, a SET token became visually identical
-	// to the unset field below it. Both tokens now render as a PLAIN, always-
-	// empty `text_input` — the same shape whether a token is already stored or
-	// not — and a blank submit still keeps whatever is currently stored.
-	test("INC-09: Admin token and Service token render as plain text_input — no secret_input, no has_value, no masked variant", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		// Seed BOTH tokens first — a set token must render IDENTICALLY to an
-		// unset one under the plain variant (unlike the dropped masked variant,
-		// whose placeholder / `has_value` used to depend on this).
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "qa-local-admin-token" },
-		});
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-service-token",
-			values: { serviceToken: "qa-local-service-token" },
-		});
-
-		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
-		const blocks = blocksOf(loaded);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-
-		const adminField = field(formFor(blocks, "save-token"), "internalToken");
-		const serviceField = field(formFor(blocks, "save-service-token"), "serviceToken");
-
-		// No masked variant on either field.
-		expect(adminField?.type).toBe("text_input");
-		expect(serviceField?.type).toBe("text_input");
-		expect(adminField).not.toHaveProperty("has_value");
-		expect(serviceField).not.toHaveProperty("has_value");
-		// Never rendered back — plain empty input even though both tokens are SET.
-		expect(adminField).not.toHaveProperty("initial_value");
-		expect(serviceField).not.toHaveProperty("initial_value");
-		// The two fields are now visually and behaviourally symmetric.
-		expect(adminField?.placeholder).toBe("Enter new admin token (blank keeps current)");
-		expect(serviceField?.placeholder).toBe("Enter new service token (blank keeps current)");
-
-		// SECURITY PIN: the WHOLE rendered response — not just the two field
-		// objects above — must never contain either raw token value. Per-field
-		// property assertions can't catch a future echo through a banner or
-		// context line; a whole-response string search can.
-		const wholeResponse = JSON.stringify(blocks);
-		expect(wholeResponse).not.toContain("qa-local-admin-token");
-		expect(wholeResponse).not.toContain("qa-local-service-token");
-	});
+	// INC-D3a deletes the old "INC-09: Admin token and Service token render as
+	// plain text_input" case outright — both fields are gone. The identical
+	// claim (plain, always-empty `text_input`, no `secret_input`, no
+	// `has_value`) is proven below against the five REAL secrets that remain,
+	// which is the concept this case was actually protecting.
 
 	/**
-	 * INC-C3 — the same pin, extended to the four payment/email secrets the
-	 * fold-in moved off the commerce service's `wrangler secret put` entries
-	 * (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `EMAIL_API_KEY`,
-	 * `X402_FACILITATOR_SECRET`) and onto this screen's write-only kv.
-	 *
-	 * Under the REAL workerd sandbox, not just the unit handler: the whole point
-	 * of the pin is that nothing in the serialized response that crosses the
-	 * host boundary carries a credential, and the sandbox is where that boundary
-	 * actually exists.
+	 * INC-C3 — the payment/email secrets the folded-in commerce layer needs,
+	 * held in WRITE-ONLY plugin kv, plus the Settings provisioning surface for
+	 * them. Under the REAL workerd sandbox, not just the unit handler
+	 * (`payment-secrets.test.ts` covers the handler-level field-by-field
+	 * detail): the whole point of this pin is that nothing in the SERIALIZED
+	 * response that crosses the host boundary carries a credential, and the
+	 * sandbox is where that boundary actually exists.
 	 */
 	test("INC-C3: every payment/email secret is write-only — set, then never rendered back anywhere", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const SECRETS = [
 			["save-stripe-secret-key", "stripeSecretKey", "qa-sk-live-NEVER-RENDER"],
 			["save-stripe-webhook-secret", "stripeWebhookSecret", "qa-whsec-NEVER-RENDER"],
 			["save-email-api-key", "emailApiKey", "qa-email-key-NEVER-RENDER"],
 			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
-			// INC-C1b's webhook edge token — a secret like the four above, held to
-			// the identical no-echo discipline by every assertion in this case.
 			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
 
@@ -481,7 +399,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			expect(JSON.stringify(saved)).not.toContain(value);
 		}
 
-		// And the subsequent page load, with all four now SET, renders none of
+		// And the subsequent page load, with all five now SET, renders none of
 		// them: no initial_value, no has_value, no masked variant, nothing in a
 		// label, context line, notice or toast.
 		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
@@ -502,29 +420,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	/**
-	 * INC-C5 review (A3/B5) — the NON-SECRET in-process settings.
-	 *
-	 * INC-C3 moved four credentials onto this screen but not their three
-	 * non-secret companions (`EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`), which
-	 * left `settings:x402PayTo` with NO writer anywhere in the product: nothing
-	 * could set it, `x402GatewayFromCtx` therefore returned `undefined` for every
-	 * deployment, and the whole x402 half was inert no matter how it was
-	 * provisioned. This case is the proof that it is now reachable.
-	 *
-	 * These are READ BACK, unlike the secrets directly below them in the same
-	 * group — that difference is the tier, and it is deliberate: an operator must
-	 * be able to see which wallet they are being paid at.
+	 * INC-C5 — the NON-SECRET in-process settings (`emailFrom`, `x402PayTo`,
+	 * `x402Accepts`). These are READ BACK, unlike the secrets in the same
+	 * group — that difference is the tier, and it is deliberate: an operator
+	 * must be able to see which wallet they are being paid at.
 	 */
 	test("INC-C5: the non-secret in-process settings can be SET and are READ BACK (secrets are not)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		// A fresh install: the form is there, and empty.
 		const fresh = blocksOf(
@@ -556,22 +458,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("INC-C5: a PARTIAL submit leaves untouched settings alone — absent is not empty", async () => {
-		// Review round 2, B3. The save path used to coerce every plain setting the
-		// submit did not carry to `""` and write it unconditionally, so ONE submit
-		// that happened to omit `x402PayTo` — a partial dispatch, a field the
-		// operator never focused, a future block that stops echoing untouched
-		// inputs — silently blanked the destination wallet. `wireX402Gateway`
-		// fail-closes without it, so x402 would go inert across the deployment
-		// while the screen said "saved".
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		// The save path only writes fields PRESENT as strings in the submit —
+		// an absent field is skipped entirely, never coerced to `""` and
+		// written unconditionally, because ONE submit that happens to omit
+		// `x402PayTo` (a partial dispatch, a field the operator never focused)
+		// must not silently blank the destination wallet.
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const PAY_TO = "0x00000000000000000000000000000000000000a1";
 		await sandbox.invokeRoute("admin", {
@@ -596,8 +488,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
 
-		// A PRESENT empty string is still an instruction, and still honoured: this
-		// is the operator clearing the box, which must remain possible.
+		// A PRESENT empty string is still an instruction, and still honoured:
+		// this is the operator clearing the box, which must remain possible.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
@@ -612,20 +504,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("INC-C5: a payTo that is not a wallet address is REFUSED and nothing is saved", async () => {
-		// The `payTo` tier gate, at the WRITE end (`x402-wiring.ts` holds the read
-		// end). kv is last-writer-wins with no validation of its own, and this
-		// value is where the buyer's money goes — so a typo must be refused at the
-		// only surface that can tell the operator about it, not stored and then
-		// silently ignored by a gateway that quietly never arms.
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const refused = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
@@ -634,11 +513,11 @@ describe("Settings admin form (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(refused);
 		// The whole screen comes back (S-5a: never a terminal receipt with no form).
-		expectAllFourFormsPresent(blocks);
+		expectAllRealFormsPresent(blocks);
 		expect(JSON.stringify(refused)).toContain("not a wallet address");
 
-		// ATOMIC: the valid sibling field was not saved either, so the operator is
-		// never left guessing which half of their submit landed.
+		// ATOMIC: the valid sibling field was not saved either, so the operator
+		// is never left guessing which half of their submit landed.
 		const after = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
@@ -647,60 +526,43 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
 	});
 
-	test("INC-09 post-save clear: a successful token save remounts its form BLANK with a DIFFERENT block_id; the other field and blank submits are unaffected", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("INC-09: a successful secret save remounts its own form BLANK with a DIFFERENT block_id, and does not remount an unrelated secret's form", async () => {
+		// The old two-token version of this case is deleted along with the
+		// tokens; the underlying mechanism (`secretForm` carries a `gen` in its
+		// namespace context specifically to force a remount, since the field's
+		// own prefill digest is constant — always blank) is unchanged and still
+		// applies to all five real secrets. Two of them stand in for the pair.
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const before = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		assertBlockContract(before, { screen: "settings", level: "list" });
-		const adminBlockIdBefore = formFor(before, "save-token")?.block_id;
-		const serviceBlockIdBefore = formFor(before, "save-service-token")?.block_id;
+		const stripeKeyBlockIdBefore = formFor(before, "save-stripe-secret-key")?.block_id;
+		const webhookBlockIdBefore = formFor(before, "save-stripe-webhook-secret")?.block_id;
 
-		// With `has_value`/`initial_value` gone from both fields, the form's own
-		// prefill digest is now CONSTANT — without the `gen`-carried fix below,
-		// the carrier `block_id` (the renderer's React key) would never change on
-		// a save, and a mount-only `text_input` would keep showing whatever the
-		// operator had just typed, even after a "saved" re-render.
-		const adminSaved = blocksOf(
+		const stripeKeySaved = blocksOf(
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
-				action_id: "save-token",
-				values: { internalToken: "qa-local-admin-token" },
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: "qa-local-stripe-key" },
 			}),
 		);
-		const adminFieldAfter = field(formFor(adminSaved, "save-token"), "internalToken");
-		const adminBlockIdAfterSave = formFor(adminSaved, "save-token")?.block_id;
+		const stripeKeyFieldAfter = field(
+			formFor(stripeKeySaved, "save-stripe-secret-key"),
+			"stripeSecretKey",
+		);
+		const stripeKeyBlockIdAfterSave = formFor(stripeKeySaved, "save-stripe-secret-key")?.block_id;
 		// The re-rendered field carries no value — still a plain, empty
 		// text_input, nothing left lingering from what was typed.
-		expect(adminFieldAfter).not.toHaveProperty("initial_value");
+		expect(stripeKeyFieldAfter).not.toHaveProperty("initial_value");
 		// The KEY changed: a real host remounts the input on this response,
 		// discarding whatever DOM value the operator had just typed.
-		expect(adminBlockIdAfterSave).not.toBe(adminBlockIdBefore);
-		// Saving the ADMIN token must not remount the untouched SERVICE field.
-		expect(formFor(adminSaved, "save-service-token")?.block_id).toBe(serviceBlockIdBefore);
-
-		// Same pin, the other direction — and saving the service token must not
-		// re-remount the admin field a second time.
-		const serviceSaved = blocksOf(
-			await sandbox.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "save-service-token",
-				values: { serviceToken: "qa-local-service-token" },
-			}),
+		expect(stripeKeyBlockIdAfterSave).not.toBe(stripeKeyBlockIdBefore);
+		// Saving the STRIPE KEY must not remount the untouched WEBHOOK field.
+		expect(formFor(stripeKeySaved, "save-stripe-webhook-secret")?.block_id).toBe(
+			webhookBlockIdBefore,
 		);
-		const serviceFieldAfter = field(formFor(serviceSaved, "save-service-token"), "serviceToken");
-		expect(serviceFieldAfter).not.toHaveProperty("initial_value");
-		expect(formFor(serviceSaved, "save-service-token")?.block_id).not.toBe(serviceBlockIdBefore);
-		expect(formFor(serviceSaved, "save-token")?.block_id).toBe(adminBlockIdAfterSave);
 
 		// blank-submit-keeps-current still holds UNCHANGED: a blank submit never
 		// bumps the generation, so the block_id does not move further (there is
@@ -708,151 +570,102 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const blankSubmitted = blocksOf(
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
-				action_id: "save-token",
-				values: { internalToken: "" },
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: "" },
 			}),
 		);
-		expect(formFor(blankSubmitted, "save-token")?.block_id).toBe(adminBlockIdAfterSave);
+		expect(formFor(blankSubmitted, "save-stripe-secret-key")?.block_id).toBe(
+			stripeKeyBlockIdAfterSave,
+		);
 	});
 
-	test("INC-09: a blank submit on either token form keeps the currently stored token (unchanged behaviour)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		stub.respondWith("PUT", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 20, lowStockThreshold: 6 } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+	test("INC-09: a blank secret submit gets an honest 'nothing entered' receipt, and a save-then-blank sequence keeps the stored secret (blank never clobbers it)", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
-		// Seed both tokens.
-		await sandbox.invokeRoute("admin", {
+		const blank = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "qa-local-admin-token" },
+			action_id: "save-stripe-secret-key",
+			values: { stripeSecretKey: "" },
 		});
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-service-token",
-			values: { serviceToken: "qa-local-service-token" },
-		});
+		const blocks = blocksOf(blank);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing entered — stripe secret key unchanged");
+		expect(String(banner?.title)).not.toMatch(/saved/i);
+		expect(toastOf(blank)).toEqual({ message: "Stripe secret key unchanged", type: "info" });
+		// Nothing was ever set, so the group label still lists it as missing.
+		expect(groupLabels(blocks).get("settings:payments")).toContain("stripe key");
 
-		// Blank submits on BOTH — exactly what a real host sends for a plain,
-		// always-empty field the operator left untouched.
+		// Save it for real, then submit blank — the earlier save must survive.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "" },
+			action_id: "save-stripe-secret-key",
+			values: { stripeSecretKey: "qa-local-stripe-key" },
 		});
-		await sandbox.invokeRoute("admin", {
+		const afterBlank = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
-			action_id: "save-service-token",
-			values: { serviceToken: "" },
+			action_id: "save-stripe-secret-key",
+			values: { stripeSecretKey: "" },
 		});
-		stub.requests.length = 0;
-
-		// The privileged PUT forwards BOTH tokens as headers — if either blank
-		// submit had clobbered its token, one of these would be missing/blank.
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-operational",
-			values: { holdTtlMinutes: "20", lowStockThreshold: "6" },
-			idempotencyKey: "k-inc09-blank-keeps-current",
-		});
-		const put = stub.requests.find((r) => r.method === "PUT");
-		expect(put?.headers["x-internal-token"]).toBe("qa-local-admin-token");
-		expect(put?.headers["x-service-token"]).toBe("qa-local-service-token");
+		const afterBlankBlocks = blocksOf(afterBlank);
+		expect(String(findBlocks(afterBlankBlocks, "banner")[0]?.title)).toBe(
+			"Nothing entered — stripe secret key unchanged",
+		);
+		// The label now says "configured" for stripe key's slot (no longer
+		// listed as missing) — the earlier save held.
+		expect(groupLabels(afterBlankBlocks).get("settings:payments")).not.toContain("stripe key");
+		expect(JSON.stringify(afterBlankBlocks)).not.toContain("qa-local-stripe-key");
 	});
 
 	// -- INC-15: the labels carry the values, so every group can start closed ----
 
-	async function bootWithSettings(
-		holdTtlMinutes: number,
-		lowStockThreshold: number,
-	): Promise<void> {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes, lowStockThreshold } },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-	}
-
 	test("INC-15: every group renders CLOSED and its label states its own values — nothing has to be opened to read this screen", async () => {
-		await bootWithSettings(15, 5);
-		const blocks = blocksOf(
-			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
-		);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-
-		const labels = groupLabels(blocks);
-		// FOUR groups since INC-C3: the fold-in moved the payment/email credentials
-		// off the commerce service's `wrangler secret put` entries and onto this
-		// screen, so "Payments & email" is a real fourth provisioning group — not a
-		// drifted assertion. Its label states only WHICH credentials are missing;
-		// no secret value is ever in scope to state.
-		expect([...labels.keys()]).toEqual([
-			"settings:store",
-			"settings:checkout",
-			"settings:connection",
-			"settings:payments",
-		]);
-		expect(labels.get("settings:store")).toBe("Store — no display name");
-		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
-		expect(labels.get("settings:connection")).toBe(
-			"Service connection — token not set · service token not set",
-		);
-		expect(labels.get("settings:payments")).toBe(
-			// Exactly 60 characters — the X-11 budget, with nothing elided. A sixth
-			// secret (or a longer short name for the fifth) would push the list over
-			// and start truncating the fresh-install label; this pin is what would
-			// say so.
-			"Payments & email — no stripe key, webhook, email, x402, edge",
-		);
-		// X-11: mechanically enforced by assertBlockContract too, pinned here as
-		// the rule these four strings were composed against.
-		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
-
-		// All four closed — the render-time kind (§1.2), which is legal.
-		expect(openGroupIds(blocks)).toEqual([]);
-		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
-	});
-
-	test("INC-15: a label states an unset or unreadable value as a FACT — never a blank tail, never a zero", async () => {
-		// The secondary GET fails: there are no operational values to state, and
-		// the label says so rather than implying `0 min hold · low stock at 0`.
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({ status: 503, body: { error: "unavailable" } }));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const blocks = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
 		const labels = groupLabels(blocks);
-		expect(labels.get("settings:checkout")).toBe("Checkout & holds — not loaded");
-		for (const label of labels.values()) {
-			expect(label).not.toMatch(/—\s*$/);
-			expect(label).not.toMatch(/\b0 min hold\b|low stock at 0\b/);
-		}
+		// THREE groups, not the old four: INC-D3a deletes "Service connection"
+		// outright.
+		expect([...labels.keys()]).toEqual([
+			"settings:store",
+			"settings:checkout",
+			"settings:payments",
+		]);
+		expect(labels.get("settings:store")).toBe("Store — no display name");
+		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
+		expect(labels.get("settings:payments")).toBe(
+			// Exactly 60 characters — the X-11 budget, with nothing elided.
+			"Payments & email — no stripe key, webhook, email, x402, edge",
+		);
+		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
+
+		// All three closed — the render-time kind (§1.2), which is legal.
+		expect(openGroupIds(blocks)).toEqual([]);
+		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
 	});
 
-	test("INC-15: the labels track saves — a saved display name and a first-ever token save are stated on the SAME response that saved them", async () => {
-		await bootWithSettings(15, 5);
+	// INC-D3a deletes the old "a label states an unset or unreadable value as a
+	// FACT" case (a stubbed GET 503 forcing `checkoutGroupLabel`'s "not loaded"
+	// branch): `client.getSettings()` reads a real in-process store now
+	// (`EmdashSettingsStore.get()` defaults an absent document rather than
+	// erroring), and this suite's shared storage bridge has no way to fail
+	// just the settings collection while leaving kv and every other collection
+	// reachable, short of mutating process-shared state other tests in this
+	// file depend on. The "not loaded" branch (`renderPage`'s own catch, still
+	// live in `settings-form.ts`) is exercised the same way the NO-STORAGE case
+	// above exercises the whole-page failure — a synthetic PARTIAL failure
+	// would need to mock the storage layer, which this integration suite does
+	// not do.
+
+	test("INC-15: the labels track saves — a saved display name and a first-ever secret save are stated on the SAME response that saved them", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const named = blocksOf(
-			await sandbox!.invokeRoute("admin", {
+			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-display",
 				values: { storeDisplayName: "Acme Goods" },
@@ -860,61 +673,45 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		expect(groupLabels(named).get("settings:store")).toBe("Store — Acme Goods");
 
-		// The trap this pins: the handler reads both tokens ONCE, at the top, so a
-		// first-ever save would report the token it had just persisted as "not
-		// set" unless the save updates what the re-render is computed from.
-		const savedAdmin = blocksOf(
-			await sandbox!.invokeRoute("admin", {
+		// The trap this pins: the handler must not have read secret state ONCE,
+		// at the top, in a way that would report a first-ever save as still
+		// missing unless the save updates what the re-render is computed from.
+		const savedKey = blocksOf(
+			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
-				action_id: "save-token",
-				values: { internalToken: "qa-local-admin-token" },
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: "qa-local-stripe-key" },
 			}),
 		);
-		expect(groupLabels(savedAdmin).get("settings:connection")).toBe(
-			"Service connection — token set · service token not set",
-		);
-
-		const savedService = blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "save-service-token",
-				values: { serviceToken: "qa-local-service-token" },
-			}),
-		);
-		expect(groupLabels(savedService).get("settings:connection")).toBe(
-			"Service connection — token set · service token set",
-		);
+		expect(groupLabels(savedKey).get("settings:payments")).not.toContain("stripe key");
+		expect(groupLabels(savedKey).get("settings:payments")).toContain("webhook");
 
 		// …and a later page load agrees, so the label is reporting kv, not the
 		// interaction it was submitted with.
 		const reloaded = blocksOf(
-			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		expect(groupLabels(reloaded).get("settings:connection")).toBe(
-			"Service connection — token set · service token set",
+		expect(groupLabels(reloaded).get("settings:payments")).toEqual(
+			groupLabels(savedKey).get("settings:payments"),
 		);
 
-		// SECURITY PIN (the whole point of stating a BOOLEAN): "token set" is a
-		// fact ABOUT the credential. No part of either token value appears in any
-		// of these responses — labels included, and the SAVE responses included.
-		// The save responses matter most: they are the first ones to carry the
-		// changed label, they are the only ones whose handler had the plaintext in
-		// scope at render time, and the plain (unmasked) field is what put that
-		// plaintext one submit away from the response body.
-		for (const response of [savedAdmin, savedService, reloaded, named]) {
-			const wholeResponse = JSON.stringify(response);
-			expect(wholeResponse).not.toContain("qa-local-admin-token");
-			expect(wholeResponse).not.toContain("qa-local-service-token");
+		// SECURITY PIN: no part of the secret value appears in any of these
+		// responses — labels included, and the SAVE response included (the
+		// save handler is the only one with the plaintext in scope at render
+		// time, and the plain unmasked field is what put that plaintext one
+		// submit away from the response body).
+		for (const response of [savedKey, reloaded, named]) {
+			expect(JSON.stringify(response)).not.toContain("qa-local-stripe-key");
 		}
 	});
 
-	test("INC-15: the groups are still ALL closed on a response whose token form remounted — a churned form block_id does not open its group", async () => {
-		await bootWithSettings(15, 5);
+	test("INC-15: the groups are still ALL closed on a response whose secret form remounted — a churned form block_id does not open its group", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const saved = blocksOf(
-			await sandbox!.invokeRoute("admin", {
+			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
-				action_id: "save-token",
-				values: { internalToken: "qa-local-admin-token" },
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: "qa-local-stripe-key" },
 			}),
 		);
 		assertBlockContract(saved, { screen: "settings", level: "list" });
@@ -924,87 +721,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect([...groupLabels(saved).keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
-			"settings:connection",
-			// INC-C3's fourth group — see the "every group renders CLOSED" test.
 			"settings:payments",
 		]);
 	});
 
-	test("INC-15: a BLANK token submit gets an honest receipt — it never says 'saved' beside a label that says 'not set' (A-F3)", async () => {
-		await bootWithSettings(15, 5);
-		const blank = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "" },
-		});
-		const blocks = blocksOf(blank);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-
-		// Nothing was persisted, so the label still says the token is not set…
-		expect(groupLabels(blocks).get("settings:connection")).toBe(
-			"Service connection — token not set · service token not set",
-		);
-		// …and the receipt agrees with it instead of contradicting it.
-		const banner = findBlocks(blocks, "banner")[0];
-		expect(String(banner?.title)).toBe("Nothing entered — admin token unchanged");
-		expect(String(banner?.title)).not.toMatch(/saved/i);
-		expect(
-			(blank as { result: { toast?: { message?: string; type?: string } } }).result.toast,
-		).toEqual({ message: "Admin token unchanged", type: "info" });
-
-		// The blank path still keeps the STORED token (that is why it exists): save
-		// one, submit blank, and the label — and the receipt — say so.
-		await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "qa-local-admin-token" },
-		});
-		const afterBlank = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: "" },
-		});
-		const afterBlankBlocks = blocksOf(afterBlank);
-		expect(groupLabels(afterBlankBlocks).get("settings:connection")).toBe(
-			"Service connection — token set · service token not set",
-		);
-		expect(String(findBlocks(afterBlankBlocks, "banner")[0]?.title)).toBe(
-			"Nothing entered — admin token unchanged",
-		);
-		expect(JSON.stringify(afterBlankBlocks)).not.toContain("qa-local-admin-token");
-	});
-
-	test("INC-15: a blank SERVICE token submit gets the same honest receipt", async () => {
-		await bootWithSettings(15, 5);
-		const blank = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-service-token",
-			values: { serviceToken: "" },
-		});
-		const blocks = blocksOf(blank);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-		expect(String(findBlocks(blocks, "banner")[0]?.title)).toBe(
-			"Nothing entered — service token unchanged",
-		);
-		expect(
-			(blank as { result: { toast?: { message?: string; type?: string } } }).result.toast,
-		).toEqual({ message: "Service token unchanged", type: "info" });
-	});
-
 	test("INC-15: a REJECTED save leaves the LABEL on the stored values while the FORM keeps the attempted ones (J6)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({
-			status: 200,
-			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
-		}));
-		stub.respondWith("PUT", () => ({
-			status: 400,
-			body: { ok: false, error: "holdTtlMinutes must be between 1 and 1440" },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const rejected = blocksOf(
 			await sandbox.invokeRoute("admin", {
@@ -1016,9 +739,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		assertBlockContract(rejected, { screen: "settings", level: "list" });
 
-		// The LABEL is the one thing on this screen that reads as persisted state:
-		// 99999 was refused, so a collapsed group claiming "99999 min hold" would
-		// be reporting a value the service does not hold.
+		// The LABEL is the one thing on this screen that reads as persisted
+		// state: 99999 was refused, so a collapsed group claiming "99999 min
+		// hold" would be reporting a value the store does not hold.
 		expect(groupLabels(rejected).get("settings:checkout")).toBe(
 			"Checkout & holds — 15 min hold · low stock at 5",
 		);
@@ -1030,7 +753,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("INC-15: the one operator-supplied value on this screen cannot blow the label budget — a 200-char display name truncates, inside 60 (X-11)", async () => {
-		await bootWithSettings(15, 5);
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		// `save-display` trims, so the fixture must not end in whitespace — the
 		// label assertion below is about truncation, not about trimming.
 		const longName = "Sea Salt & Cedar Supply Company of the Pacific Northwest"
@@ -1038,7 +761,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			.slice(0, 200)
 			.trimEnd();
 		const blocks = blocksOf(
-			await sandbox!.invokeRoute("admin", {
+			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-display",
 				values: { storeDisplayName: longName },
@@ -1057,12 +780,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("INC-15: a label change NEVER changes a group's block_id — the labels move, the accordions do not remount (§1.2)", async () => {
-		await bootWithSettings(15, 5);
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const before = blocksOf(
-			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		const after = blocksOf(
-			await sandbox!.invokeRoute("admin", {
+			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-display",
 				values: { storeDisplayName: "Acme Goods" },

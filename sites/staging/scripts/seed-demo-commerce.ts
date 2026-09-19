@@ -647,7 +647,7 @@ export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<Seed
 	const published = await readCommerce(row, deps);
 	if (published === null) {
 		throw new Error(
-			`${row.slug} still has no commerce row after publishing it. The plugin's content sync hook did not run — check that the site is built with __OTTA_COMMERCE_MODE__ = "in-process" and that the otta plugin registered.`,
+			`${row.slug} still has no commerce row after publishing it. The plugin's content sync hook did not run — check that the otta plugin registered.`,
 		);
 	}
 

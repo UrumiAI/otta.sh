@@ -28,7 +28,6 @@ async function setup(): Promise<{ live: LiveService; sandbox: SandboxHandle }> {
 	cleanups.push(() => live.stop());
 	const sandbox = await loadPluginInSandbox({
 		allowedHosts: [live.host],
-		commerceServiceBaseUrl: live.baseUrl,
 	});
 	cleanups.push(() => sandbox.close());
 	return { live, sandbox };
@@ -250,7 +249,6 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 		// allowlist is the plugin's entire outbound surface (DEVELOPMENT.md §5).
 		const sandbox = await loadPluginInSandbox({
 			allowedHosts: ["definitely-not-the-service.example"],
-			commerceServiceBaseUrl: live.baseUrl,
 		});
 		cleanups.push(() => sandbox.close());
 

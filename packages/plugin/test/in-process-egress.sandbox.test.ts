@@ -233,7 +233,6 @@ beforeAll(async () => {
 			// The stub's host IS granted — production derives exactly this from the
 			// same two URLs.
 			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
 			storage: true,
 			...egress,
 		}),
@@ -241,7 +240,6 @@ beforeAll(async () => {
 			// SAME baked URLs, host NOT granted. Everything else is identical, so a
 			// difference in outcome can only be the gate.
 			allowedHosts: ["commerce.otta.internal"],
-			commerceServiceBaseUrl: "https://commerce.otta.internal",
 			storage: true,
 			...egress,
 		}),

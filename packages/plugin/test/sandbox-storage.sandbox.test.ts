@@ -28,7 +28,6 @@ describe("ctx.storage under workerd", () => {
 	beforeAll(async () => {
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: ["commerce.otta.internal"],
-			commerceServiceBaseUrl: "https://commerce.otta.internal",
 			entry: "commerce/testing/storage-probe-entry.ts",
 			storage: true,
 		});

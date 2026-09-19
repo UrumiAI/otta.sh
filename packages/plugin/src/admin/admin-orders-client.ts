@@ -359,10 +359,10 @@ export interface AdminOrdersClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
 	/** Admin token forwarded as `X-Internal-Token` on every guarded call. Sourced
-	 *  by the page handler from write-only `ctx.kv` (`settings:internalToken`). */
+	 *  by the page handler from write-only `ctx.kv`. */
 	adminToken?: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
-	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  (ADR-0007), sourced from write-only `ctx.kv`.
 	 *  `POST /admin/orders/:id/transition` is a NON-GET, so the gate blocks it
 	 *  without this when the service secret is set — hence it is attached to the
 	 *  transition (the list/detail GET reads are gate-exempt, so they carry only

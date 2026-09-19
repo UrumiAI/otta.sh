@@ -4,8 +4,9 @@
  * modules precisely so this file can pin them:
  *  - the Otta plugin descriptor is standard-format, entrypoint
  *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
- *    allowedHosts is exactly the service URL's hostname (the egress gate
- *    that holds even in trusted mode — ADR-0006);
+ *    allowedHosts is exactly the in-process egress list — Stripe's API host
+ *    plus whichever of the email/facilitator hosts the deployment supplied
+ *    (the egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
  *  - database/storage are d1(DB, session OFF — paired with wrangler's
@@ -15,16 +16,15 @@
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
  *    CSRF pin is origin-guard.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
- *    plugin is externalized, the `__OTTA_COMMERCE_SERVICE_URL__` define
- *    silently never applies and every ctx.http call fails against
- *    allowedHosts at runtime. It also contains "@otta-sh/admin-react", whose
- *    workspace exports are TS/TSX source;
+ *    plugin is externalized the `__OTTA_EMAIL_API_URL__` /
+ *    `__OTTA_X402_FACILITATOR_URL__` defines silently never apply and every
+ *    ctx.http call fails against allowedHosts at runtime. It also contains
+ *    "@otta-sh/admin-react", whose workspace exports are TS/TSX source;
  *  - and, since INC-19, ADR-0014's SECOND descriptor `otta-console` — its own
  *    block below.
  */
 import { readFileSync } from "node:fs";
 import {
-	COMMERCE_SERVICE_BASE_URL,
 	COMMERCE_STORAGE_COLLECTIONS,
 	COMMERCE_STORAGE_COLLECTION_NAMES,
 	PAYMENT_SECRET_KEYS,
@@ -42,35 +42,18 @@ import {
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
 import { describe, expect, test } from "vitest";
-// `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness resolves and
-// loopback-guards COMMERCE_SERVICE_URL / PG_CONNECTION_STRING at MODULE LOAD
-// and imports `@playwright/test`. Importing it from here meant a set
-// COMMERCE_SERVICE_URL — the site's ordinary BUILD-time variable, per
-// sites/staging/README.md — threw before a single assertion and redded the
-// whole unit suite. The registry is plain data with no imports at all.
+// `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
+// its addresses at MODULE LOAD and imports `@playwright/test`, which threw
+// before a single assertion and redded the whole unit suite. The registry is
+// plain data with no imports at all.
 import { MIGRATED_SCREENS } from "../e2e/registry.js";
-import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
+import { buildEmdashOptions } from "../src/emdash-options.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 import { readFile } from "node:fs/promises";
 
-// Pin the env BEFORE astro.config is (dynamically) imported so the config
-// module reads a deterministic service URL.
-const SERVICE_URL = "https://svc.example.com";
-process.env["COMMERCE_SERVICE_URL"] = SERVICE_URL;
-
-describe("service-URL placeholder parity", () => {
-	test("the site placeholder equals the plugin manifest's un-defined fallback", () => {
-		// In this vitest run no __OTTA_COMMERCE_SERVICE_URL__ define exists,
-		// so the plugin constant IS its placeholder — the two literals must
-		// never diverge (a build without COMMERCE_SERVICE_URL must produce a
-		// consistent allowlist + client base URL).
-		expect(COMMERCE_SERVICE_URL_PLACEHOLDER).toBe(COMMERCE_SERVICE_BASE_URL);
-	});
-});
-
 describe("ottaPluginDescriptor", () => {
-	const descriptor = ottaPluginDescriptor(SERVICE_URL);
+	const descriptor = ottaPluginDescriptor();
 
 	test("is a standard-format descriptor for the @otta-sh/plugin default export", () => {
 		expect(descriptor.id).toBe(OTTA_PLUGIN_ID);
@@ -82,8 +65,11 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
 	});
 
-	test("allowedHosts is exactly the service URL's hostname", () => {
-		expect(descriptor.allowedHosts).toEqual(["svc.example.com"]);
+	test("allowedHosts is exactly the in-process egress list (Stripe alone, unconfigured)", () => {
+		// INC-D3a: there is no commerce service and no service host. With no
+		// email/facilitator URL supplied the list is the Stripe API host alone —
+		// see the exact-set block below for the configured cases.
+		expect(descriptor.allowedHosts).toEqual([STRIPE_API_HOST]);
 	});
 
 	test("registers NO field widget — the CMS is not a commerce editor (PR 1b)", () => {
@@ -136,23 +122,20 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor).not.toHaveProperty("componentsEntry");
 	});
 
-	test('declares no storage collections on the "http" arm (the service holds commerce truth)', () => {
-		// Phase 7's settings form uses ctx.kv, which em-dash provides UNGATED
-		// (context.ts: "Always available") — no capability, no storage
-		// declaration. On the http arm commerce truth lives in the SERVICE's
-		// Postgres, so the plugin occupies no host storage at all and this key is
-		// absent. INC-D1 adds it on the in-process arm ONLY; see the block below.
-		expect(descriptor.storage).toBeUndefined();
-		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "http" }).storage).toBeUndefined();
+	test("declares the commerce storage layout — the plugin holds commerce truth", () => {
+		// INC-D3a: there is one shape, unconditionally. Commerce truth lives on
+		// `ctx.storage`, and `ctx.storage` hands a plugin only the collections its
+		// DESCRIPTOR declared — so this key is never absent. The exact layout is
+		// pinned in the block below.
+		expect(descriptor.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
 	});
 });
 
 /**
- * INC-D1 — the in-process descriptor's `storage` declaration, EXACTLY.
+ * INC-D1 — the descriptor's `storage` declaration, EXACTLY.
  *
- * This is the half of the fold-in the allowlist block below cannot see. Flipping
- * `__OTTA_COMMERCE_MODE__` to `"in-process"` moves commerce truth from the
- * service's Postgres onto `ctx.storage`, and `ctx.storage` hands a plugin ONLY the
+ * This is the half of the fold-in the allowlist block below cannot see. Commerce
+ * truth lives on `ctx.storage`, and `ctx.storage` hands a plugin ONLY the
  * collections its DESCRIPTOR declared — `collectionOf` throws "storage collection
  * '<name>' is not declared" for anything else. So the descriptor is not
  * documentation here; it is the schema.
@@ -179,10 +162,10 @@ describe("ottaPluginDescriptor", () => {
  * stop passing. That is worth having; it is just not drift detection, and the
  * previous wording claimed it was.
  */
-describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
-	const inProcess = ottaPluginDescriptor(SERVICE_URL, { mode: "in-process" });
+describe("ottaPluginDescriptor storage, EXACTLY (INC-D1)", () => {
+	const inProcess = ottaPluginDescriptor();
 
-	test("the in-process descriptor declares the commerce storage layout, whole", () => {
+	test("the descriptor declares the commerce storage layout, whole", () => {
 		expect(inProcess.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
 	});
 
@@ -239,7 +222,7 @@ describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
 		expect(inProcess.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
 	});
 
-	test("the in-process descriptor stays standard format with NO React entry", () => {
+	test("the descriptor stays standard format with NO React entry", () => {
 		// A `format: "standard"` descriptor that declares `adminEntry` THROWS at
 		// build time ("Standard plugins use Block Kit for admin UI, not React
 		// components"). Folding the service in changes the transport, not the admin
@@ -250,7 +233,7 @@ describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
 		expect(inProcess.fieldWidgets).toBeUndefined();
 	});
 
-	test("the in-process descriptor keeps the same five Block Kit admin pages", () => {
+	test("the descriptor keeps the same five Block Kit admin pages", () => {
 		expect(inProcess.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
@@ -262,7 +245,7 @@ describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
 });
 
 /**
- * INC-C3 — the descriptor's egress allowlist, PER MODE, as an EXACT SET.
+ * INC-C3 — the descriptor's egress allowlist, as an EXACT SET.
  *
  * `allowedHosts` is the one ADR-0006 gate that still holds in trusted mode
  * (`createHttpAccess` rejects by hostname), so both directions of drift matter
@@ -271,119 +254,51 @@ describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
  * ADR-0006 exists to keep minimal. Every assertion below therefore compares the
  * whole sorted array — never `toContain`, which would pass for either mistake.
  *
- * The email and facilitator hosts are DEPLOYMENT-SUPPLIED, not constants:
- * `packages/service` derives the email host from `EMAIL_API_URL`
- * (`service/src/index.ts:74`), and there is NO facilitator-URL env var in the
- * service at all today (`x402-wiring.ts` only ever builds the offline
- * `createTestFacilitator`). So the descriptor takes them as input and grants
- * NOTHING when they are absent — see the fail-closed cases.
+ * The email and facilitator hosts are DEPLOYMENT-SUPPLIED, not constants: there
+ * is no canonical email provider and no default facilitator, so the descriptor
+ * takes them as input and grants NOTHING when they are absent — see the
+ * fail-closed cases. Stripe's API host is the one constant.
  */
 /** Order-insensitive EXACT comparison: `toEqual` on both sides sorted catches a
  *  missing host AND a leaked extra one, which `toContain` cannot. */
 const sorted = (hosts: readonly string[] | undefined): string[] => [...(hosts ?? [])].toSorted();
 
-describe("ottaPluginDescriptor allowedHosts, per mode, EXACTLY", () => {
+describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 	const EMAIL = "https://api.email.example.com/v1/send";
 	const FACILITATOR = "https://facilitator.example.com";
 
-	test('"http" mode: EXACTLY the commerce service host (today\'s shipped descriptor)', () => {
-		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "http" }).allowedHosts).toEqual([
-			"svc.example.com",
-		]);
-	});
-
-	test('"http" mode ignores email/facilitator URLs — the SERVICE makes those calls', () => {
-		expect(
-			ottaPluginDescriptor(SERVICE_URL, {
-				mode: "http",
-				egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
-			}).allowedHosts,
-		).toEqual(["svc.example.com"]);
-	});
-
-	test('"in-process" mode: EXACTLY Stripe + email + facilitator, and NEVER the service', () => {
-		const hosts = ottaPluginDescriptor(SERVICE_URL, {
-			mode: "in-process",
+	test("EXACTLY Stripe + email + facilitator when both are supplied", () => {
+		const hosts = ottaPluginDescriptor({
 			egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
 		}).allowedHosts;
 		expect(sorted(hosts)).toEqual(
 			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
 		);
-		expect(hosts).not.toContain("svc.example.com");
 	});
 
-	test('"in-process" mode with nothing configured: EXACTLY the Stripe API host', () => {
-		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "in-process" }).allowedHosts).toEqual([
-			STRIPE_API_HOST,
-		]);
+	test("with nothing configured: EXACTLY the Stripe API host", () => {
+		expect(ottaPluginDescriptor().allowedHosts).toEqual([STRIPE_API_HOST]);
 	});
 
 	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
-		expect(() =>
-			ottaPluginDescriptor(SERVICE_URL, {
-				mode: "in-process",
-				egress: { emailApiUrl: "not a url", facilitatorUrl: "" },
-			}),
-		).not.toThrow();
-		expect(
-			ottaPluginDescriptor(SERVICE_URL, {
-				mode: "in-process",
-				egress: { emailApiUrl: "not a url", facilitatorUrl: "" },
-			}).allowedHosts,
-		).toEqual([STRIPE_API_HOST]);
+		const options = { egress: { emailApiUrl: "not a url", facilitatorUrl: "" } };
+		expect(() => ottaPluginDescriptor(options)).not.toThrow();
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual([STRIPE_API_HOST]);
 	});
 
-	test("the mode defaults to the bundle's own — this (un-defined) run is http", () => {
-		// No `__OTTA_COMMERCE_MODE__` define exists under vitest, so the default
-		// arm must reproduce today's shipped descriptor byte for byte. This is what
-		// keeps `buildEmdashOptions`'s registration assertion honest.
-		expect(ottaPluginDescriptor(SERVICE_URL).allowedHosts).toEqual(["svc.example.com"]);
-		expect(ottaPluginDescriptor(SERVICE_URL)).toEqual(
-			ottaPluginDescriptor(SERVICE_URL, { mode: "http" }),
-		);
-	});
-});
-
-/**
- * INC-C3 — `COMMERCE_SERVICE_BASE_URL` is UNUSED in in-process mode.
- *
- * Asserted BEHAVIOURALLY, not as prose. Two independent pins:
- *  1. The in-process descriptor's allowedHosts contains no host derivable from
- *     the service URL — whatever service URL is passed in. If the constant were
- *     still feeding the allowlist, a distinctive URL would show up.
- *  2. The in-process client factory's source contains no reference to the
- *     constant on its in-process branch — the transport that would USE it is
- *     never constructed.
- */
-describe("COMMERCE_SERVICE_BASE_URL is unused in in-process mode", () => {
-	test("no service-derived host survives into the in-process allowlist, whatever the URL", () => {
-		for (const url of [
-			SERVICE_URL,
-			"https://a-very-distinctive-host.example.org",
-			COMMERCE_SERVICE_BASE_URL,
+	test("INC-D3a: no commerce-service host can reach the allowlist at all", () => {
+		// The descriptor no longer takes a service URL — there is no parameter a
+		// service host could arrive through, and no mode on which one would be
+		// granted. This is the pin that the retirement actually happened rather
+		// than the http arm merely going unused.
+		for (const hosts of [
+			ottaPluginDescriptor().allowedHosts,
+			ottaPluginDescriptor({ egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR } })
+				.allowedHosts,
 		]) {
-			const hosts = ottaPluginDescriptor(url, { mode: "in-process" }).allowedHosts ?? [];
-			expect(hosts).not.toContain(new URL(url).hostname);
-			expect(hosts).toEqual([STRIPE_API_HOST]);
+			expect(hosts).not.toContain("commerce.otta.internal");
+			expect(hosts).not.toContain("svc.example.com");
 		}
-	});
-
-	test("the in-process commerce client is constructed with NO base URL", async () => {
-		// `make-commerce-client.ts` is the single branch point. Its in-process arm
-		// must construct `InProcessCommerceClient` without threading a base URL —
-		// the HTTP arm is the only consumer of the constant. Read as source rather
-		// than executed because the branch is selected by a build-time define this
-		// vitest run cannot flip.
-		const source = await readFile(
-			new URL("../../../packages/plugin/src/commerce/make-commerce-client.ts", import.meta.url),
-			"utf8",
-		);
-		// Everything after the in-process return, up to the http arm, must be free
-		// of the constant.
-		const inProcessArm = source.slice(source.indexOf('=== "in-process"'));
-		const httpArmAt = inProcessArm.indexOf("HttpCommerceClient");
-		expect(httpArmAt).toBeGreaterThan(0);
-		expect(inProcessArm.slice(0, httpArmAt)).not.toContain("COMMERCE_SERVICE_BASE_URL");
 	});
 });
 
@@ -413,7 +328,7 @@ describe("payment/email secrets never leave kv for the site's build surface", ()
 });
 
 describe("buildEmdashOptions", () => {
-	const options = buildEmdashOptions(SERVICE_URL);
+	const options = buildEmdashOptions();
 
 	test("has NO sandboxed / sandboxRunner / marketplace keys (Workers-Paid trap)", () => {
 		expect(options).not.toHaveProperty("sandboxed");
@@ -467,7 +382,7 @@ describe("buildEmdashOptions", () => {
 	 * `count: 0` instead of the honest `skipped`.
 	 */
 	test("threads the in-process egress URLs into the registered descriptor's allowlist", () => {
-		const hosts = buildEmdashOptions(SERVICE_URL, "in-process", {
+		const hosts = buildEmdashOptions({
 			emailApiUrl: "https://api.email.example.com/v1/send",
 			facilitatorUrl: "https://facilitator.example.com",
 		}).plugins[0]?.allowedHosts;
@@ -478,9 +393,7 @@ describe("buildEmdashOptions", () => {
 
 	test("with no egress configured the allowlist is EXACTLY Stripe — fail-closed, unchanged", () => {
 		// Staging today supplies neither URL, so this is the list it actually ships.
-		expect(buildEmdashOptions(SERVICE_URL, "in-process").plugins[0]?.allowedHosts).toEqual([
-			STRIPE_API_HOST,
-		]);
+		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual([STRIPE_API_HOST]);
 	});
 
 	test("registers the Otta plugin FIRST, trusted, unchanged", () => {
@@ -490,7 +403,7 @@ describe("buildEmdashOptions", () => {
 		// second descriptor and this was the one and only existing assertion
 		// that broke — the test doing its job. Length now has a home that says
 		// which second entry is allowed, instead of forbidding all of them.
-		expect(options.plugins?.[0]).toEqual(ottaPluginDescriptor(SERVICE_URL));
+		expect(options.plugins?.[0]).toEqual(ottaPluginDescriptor());
 	});
 });
 
@@ -567,7 +480,7 @@ function assertOttaConsoleContract(descriptor: unknown): void {
 }
 
 describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
-	const options = buildEmdashOptions(SERVICE_URL);
+	const options = buildEmdashOptions();
 	const consoleEntries = options.plugins.filter((p) => p.id === OTTA_CONSOLE_PLUGIN_ID);
 
 	test("plugins[] is EXACTLY [otta, otta-console] — never a third id", () => {
@@ -802,7 +715,7 @@ describe("astro.config", () => {
 	const CONFIG_IMPORT_TIMEOUT_MS = 30_000;
 
 	test(
-		"output:'server', checkOrigin not disabled, plugin never externalized, define applied",
+		"output:'server', checkOrigin not disabled, plugin never externalized",
 		async () => {
 			const config = (await import("../astro.config.js")).default;
 
@@ -822,8 +735,12 @@ describe("astro.config", () => {
 			// runtime. No define rides on it.
 			expect(noExternalList).toContain("@otta-sh/admin-react");
 
+			// INC-D3a: `__OTTA_COMMERCE_SERVICE_URL__` is GONE. There is no commerce
+			// service, so there is no URL to bake — and a build that reintroduced
+			// one would be reintroducing the transport this increment retired.
 			const define = config.vite?.define as Record<string, string>;
-			expect(JSON.parse(define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
+			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_SERVICE_URL__");
+			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_MODE__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
@@ -846,93 +763,64 @@ describe("astro.config", () => {
 	);
 
 	test(
-		'the commerce mode rides a THIRD build-time define, and staging is now "in-process"',
+		"the two in-process egress URLs ride build-time defines, ALWAYS as strings",
 		async () => {
-			// TRANSITIONAL (work order 02 D6). `__OTTA_COMMERCE_MODE__` selects the
-			// plugin's commerce transport at BUILD time: "http" talks to
-			// @otta-sh/service over ctx.http, "in-process" holds commerce truth on
-			// ctx.storage and needs no service. The define, the factory branch it
-			// drives, the service and this assertion are all DELETED at INC-D3b — the
-			// flag exists only so the client contract can be run against both
-			// implementations before the HTTP one is removed, and must not be treated
-			// as permanent.
-			//
-			// INC-D1 flips STAGING, and staging only. It must be PRESENT, not merely
-			// correct: an absent define leaves the identifier undeclared in the worker
-			// bundle, and while the plugin's `typeof` guard makes that safe, baking the
-			// mode explicitly is what makes a site's transport readable from its config.
+			// INC-D3a retired the commerce-mode define along with the transport it
+			// selected; these two are what is left of the build-time surface the
+			// plugin bundle reads. Both must be PRESENT: an absent define leaves the
+			// identifier undeclared in the worker bundle, and `""` is what both the
+			// `typeof` guard and `hostnameOf` read as "this provider is unconfigured".
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
-			expect(Object.keys(define)).toContain("__OTTA_COMMERCE_MODE__");
-			expect(JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null")).toBe("in-process");
+			for (const name of ["__OTTA_EMAIL_API_URL__", "__OTTA_X402_FACILITATOR_URL__"]) {
+				expect(Object.keys(define)).toContain(name);
+				expect(typeof JSON.parse(define[name] ?? "null")).toBe("string");
+			}
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
 	/**
-	 * INC-D1, THE LOAD-BEARING ONE — the baked define and the REGISTERED descriptor
-	 * must describe the same transport.
+	 * THE LOAD-BEARING ONE — the baked egress defines and the REGISTERED
+	 * descriptor's allowlist must come from ONE decision.
 	 *
-	 * They are resolved in two different places and it is entirely possible for them
-	 * to disagree. `astro.config.ts` runs in NODE at config time, where
-	 * `__OTTA_COMMERCE_MODE__` does not exist — Vite applies a `define` to the
-	 * BUNDLE, never to the config module that declares it. So a descriptor built by
-	 * calling the plugin's own `resolveCommerceMode()` from this file would resolve
-	 * to the "http" DEFAULT no matter what the define says.
+	 * INC-D3a removed the transport half of this (there is one transport now, and
+	 * no mode to disagree about), but the egress half is unchanged and is the
+	 * reason this test still exists. The two values are consumed in two different
+	 * places: the plugin BUNDLE reads `__OTTA_EMAIL_API_URL__` /
+	 * `__OTTA_X402_FACILITATOR_URL__` as Vite defines to decide whether to build an
+	 * `EmailSender` and a facilitator client at all, while the DESCRIPTOR's
+	 * `allowedHosts` — the one ADR-0006 gate that still bites in trusted mode — is
+	 * built in Node at config time, where those defines do not exist.
 	 *
-	 * The failure that produces is silent and total: the bundle holds commerce truth
-	 * on `ctx.storage`, while the descriptor declares no storage collections and an
-	 * allowlist containing the (now nonexistent) service host. Every commerce read
-	 * throws "storage collection 'carts' is not declared", and nothing about the
-	 * build says so. Hence the site resolves the mode ONCE and passes it in
-	 * explicitly, and hence this test.
+	 * Feed only the defines and the bundle holds a sender aimed at a host the gate
+	 * refuses: every send fails, rows reschedule and park `failed`, and the sweep
+	 * leg reports `count: 0` instead of the honest `skipped`. Hence one named
+	 * const, both consumers, and hence this test.
 	 */
 	test(
-		"the baked mode and the REGISTERED descriptor cannot disagree about the transport",
+		"the baked egress URLs and the REGISTERED descriptor cannot disagree",
 		async () => {
-			const config = (await import("../astro.config.js")).default;
-			const define = config.vite?.define as Record<string, string>;
-			const bakedMode = JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null") as string;
-			const bakedServiceUrl = JSON.parse(
-				define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null",
-			) as string;
-
 			// THE TIE IS PINNED IN THE SOURCE, NOT BY REBUILDING THE VALUE (review
 			// round 3, A3). `config.integrations` cannot answer this: `emdash()`
 			// captures its options in a closure and hands Astro back `{name, hooks}`,
-			// so the registered descriptor is not reachable from here. And calling
-			// `buildEmdashOptions(bakedServiceUrl, bakedMode)` here and comparing it to
-			// `ottaPluginDescriptor(bakedServiceUrl, {mode: bakedMode})` compares two
-			// values derived from ONE input — it is green no matter what the config
-			// registers, including for the precise mistake this whole `commerceMode`
-			// const exists to prevent: `emdash(buildEmdashOptions(serviceUrl))` with the
-			// mode argument dropped, which in Node resolves to the "http" default while
-			// the define still bakes "in-process".
+			// so the registered descriptor is not reachable from here, and rebuilding
+			// it from the baked values compares two values derived from ONE input —
+			// green no matter what the config actually registers, including for the
+			// precise mistake this const exists to prevent: `emdash(buildEmdashOptions())`
+			// with the egress argument dropped.
 			//
 			// So read the source and require that ONE NAMED CONST feeds both consumers.
 			// Same technique this file already uses for the wrangler pairing invariant.
 			const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
-			const modeDefine = /__OTTA_COMMERCE_MODE__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\)/.exec(
-				source,
-			);
-			expect(modeDefine?.[1], "__OTTA_COMMERCE_MODE__ must be baked from a named const").toBeTypeOf(
-				"string",
-			);
 			const registration = /emdash\(\s*buildEmdashOptions\(([^)]*)\)/.exec(source);
 			expect(registration?.[1], "the config must register via buildEmdashOptions(...)").toBeTypeOf(
 				"string",
 			);
 			const args = (registration?.[1] ?? "").split(",").map((a) => a.trim());
-			// Argument 2 is the mode, and it must be the SAME identifier the define
-			// bakes. An omitted argument fails here as `undefined`.
-			expect(
-				args[1],
-				"buildEmdashOptions must be passed the same mode const the define bakes",
-			).toBe(modeDefine?.[1]);
-			// Argument 3 is the egress const, and it must likewise be the same one the
-			// two egress defines are baked from (review round 3, B1) — otherwise the
-			// bundle can hold an email/facilitator URL whose host the descriptor never
-			// allowlists, and every send is refused by the gate.
+			// Argument 1 is the egress const, and it must be the same one the two
+			// egress defines are baked from (review round 3, B1). An omitted argument
+			// fails here as `undefined`.
 			const egressDefine =
 				/__OTTA_EMAIL_API_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.emailApiUrl/.exec(source);
 			expect(
@@ -940,7 +828,7 @@ describe("astro.config", () => {
 				"__OTTA_EMAIL_API_URL__ must be baked from a named const",
 			).toBeTypeOf("string");
 			expect(
-				args[2],
+				args[0],
 				"buildEmdashOptions must be passed the same egress const the defines bake",
 			).toBe(egressDefine?.[1]);
 			// BOTH egress defines, not just the email one: a future edit that split the
@@ -957,25 +845,14 @@ describe("astro.config", () => {
 			expect(
 				facilitatorDefine?.[1],
 				"both egress defines must come from the SAME const buildEmdashOptions is passed",
-			).toBe(args[2]);
+			).toBe(args[0]);
 
-			// With the source tie pinned, rebuilding the descriptor from the baked
-			// values is a meaningful check of the two halves' agreement.
-			const registered = buildEmdashOptions(bakedServiceUrl, bakedMode as "http" | "in-process")
-				.plugins[0];
-			expect(registered).toEqual(
-				ottaPluginDescriptor(bakedServiceUrl, { mode: bakedMode as "http" | "in-process" }),
-			);
-
-			// And the two halves agree in the direction that matters: in-process ⇒
-			// storage declared and the service host GONE from the allowlist.
-			if (bakedMode === "in-process") {
-				expect(registered?.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
-				expect(registered?.allowedHosts).not.toContain(new URL(bakedServiceUrl).hostname);
-				expect(registered?.allowedHosts).toContain(STRIPE_API_HOST);
-			} else {
-				expect(registered?.storage).toBeUndefined();
-			}
+			// And the registered descriptor is the single in-process shape: storage
+			// declared, Stripe allowlisted, no service host anywhere.
+			const registered = buildEmdashOptions().plugins[0];
+			expect(registered).toEqual(ottaPluginDescriptor());
+			expect(registered?.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
+			expect(registered?.allowedHosts).toContain(STRIPE_API_HOST);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);

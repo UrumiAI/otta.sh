@@ -85,7 +85,7 @@ import {
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
-import { asRecord, readAdminTokens, readString } from "./scaffold/index.js";
+import { asRecord, readString } from "./scaffold/index.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
 import type { PluginContext, RouteHandler } from "../types.js";
 
@@ -289,13 +289,12 @@ function readFilter(raw: unknown): OrdersFilterForm {
  * constructs exactly the client this function used to build here, write-gate
  * token included.
  *
- * ONE TOKEN READ PER REQUEST: the pair is read here and handed to the factory, so
- * the http branch does not read write-only kv a second time. Both the read and
- * the argument go when the http branch does.
+ * NO TOKENS: the `X-Internal-Token` / `X-Service-Token` pair authenticated a
+ * caller to the commerce service, and there is no service to authenticate to
+ * (INC-D3a).
  */
 async function createClient(ctx: PluginContext): Promise<AdminOrdersSurface> {
-	const tokens = await readAdminTokens(ctx);
-	const clients = await makeAdminClients(ctx, tokens);
+	const clients = await makeAdminClients(ctx);
 	return clients.orders;
 }
 

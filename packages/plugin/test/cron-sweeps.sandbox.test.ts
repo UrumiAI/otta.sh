@@ -182,7 +182,6 @@ beforeAll(async () => {
 	({ storage } = await storageBridge());
 	sandbox = await loadPluginInSandbox({
 		allowedHosts: ["commerce.otta.internal"],
-		commerceServiceBaseUrl: "https://commerce.otta.internal",
 		storage: true,
 	});
 }, 180_000);

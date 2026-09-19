@@ -14,12 +14,10 @@
 import type { PluginDescriptor } from "emdash";
 import {
 	COMMERCE_STORAGE_COLLECTIONS,
-	type CommerceMode,
 	COUPONS_PAGE,
 	type InProcessEgressUrls,
 	REPORTS_PAGE,
 	resolveAllowedHosts,
-	resolveCommerceMode,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
 	TAX_PAGE,
@@ -60,23 +58,14 @@ function commerceStorage(): DescriptorStorage {
 	return COMMERCE_STORAGE_COLLECTIONS as unknown as DescriptorStorage;
 }
 
-/** INC-C3 — what the egress allowlist depends on besides the service URL. */
+/** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
-	/** Which commerce transport this build registers. Defaults to the plugin
-	 *  bundle's own resolved mode, so the descriptor and the code it describes can
-	 *  never disagree about which allowlist applies. */
-	mode?: CommerceMode;
 	/** Deployment-supplied in-process egress URLs (email provider, x402
-	 *  facilitator). Ignored in `"http"` mode, where the SERVICE makes those
-	 *  calls; absent in `"in-process"` mode ⇒ no host granted for that provider. */
+	 *  facilitator). Absent ⇒ no host granted for that provider. */
 	egress?: InProcessEgressUrls;
 }
 
-export function ottaPluginDescriptor(
-	serviceUrl: string,
-	options: OttaPluginDescriptorOptions = {},
-): PluginDescriptor {
-	const mode = options.mode ?? resolveCommerceMode();
+export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}): PluginDescriptor {
 	return {
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
@@ -85,43 +74,28 @@ export function ottaPluginDescriptor(
 		// EXACTLY the manifest's two capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
-		// The egress allowlist, PER MODE (INC-C3) — resolved by the plugin's own
-		// `resolveAllowedHosts` so this descriptor and the bundle's `ALLOWED_HOSTS`
-		// can never drift into two different answers.
+		// The egress allowlist — resolved by the plugin's own `resolveAllowedHosts`
+		// so this descriptor and the bundle's `ALLOWED_HOSTS` can never drift into
+		// two different answers.
 		//
-		//  - "http" (NOTHING builds this arm any more. INC-D1 flipped staging to
-		//    in-process, and `sites/` contains staging alone — so the arm survives
-		//    for the per-mode tests below it and for nothing else, until INC-D3b
-		//    deletes it outright): exactly the commerce service's host, unchanged.
-		//    The service holds the Stripe/email/x402 credentials
-		//    and makes those calls itself, so granting them here would widen
-		//    ADR-0006's gate for egress the plugin never performs.
-		//  - "in-process": the service is gone and those calls are the plugin's
-		//    own, so the list becomes Stripe's API host plus whichever of the
-		//    email/facilitator hosts the deployment supplied — and the service host
-		//    disappears. The CREDENTIALS for those calls are never baked in here:
-		//    they live in write-only plugin kv (`settings:stripe*`,
-		//    `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
-		//    through the admin Settings form.
-		allowedHosts: resolveAllowedHosts(mode, serviceUrl, options.egress),
-		// STORAGE IS DECLARED ONLY IN "in-process" MODE (INC-D1), and the `http`
-		// arm stays byte-identical to what staging shipped before this increment
-		// (nothing builds that arm now — see the allowedHosts note above).
-		//
-		// The asymmetry is the whole point rather than an oversight: in `http` mode
-		// commerce state lives in the SERVICE's Postgres and the plugin owns no
-		// collections at all, so declaring them there would provision 36 empty
-		// plugin-storage collections that nothing reads — schema for a database this
-		// build does not use. In `in-process` mode this declaration IS the schema:
-		// `ctx.storage.collectionOf(name)` throws "storage collection '<name>' is not
-		// declared" for anything missing from it, so an omission here is not a
-		// degraded query, it is a dead commerce path at runtime.
+		// The commerce service is gone (INC-D3a), so the calls it used to make are
+		// the plugin's own: the list is Stripe's API host plus whichever of the
+		// email/facilitator hosts the deployment supplied, and no service host
+		// appears at all. The CREDENTIALS for those calls are never baked in here:
+		// they live in write-only plugin kv (`settings:stripe*`,
+		// `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
+		// through the admin Settings form.
+		allowedHosts: resolveAllowedHosts(options.egress),
+		// THIS DECLARATION IS THE SCHEMA. `ctx.storage.collectionOf(name)` throws
+		// "storage collection '<name>' is not declared" for anything missing from
+		// it, so an omission here is not a degraded query, it is a dead commerce
+		// path at runtime.
 		//
 		// The list is not restated here — `COMMERCE_STORAGE_COLLECTIONS` is exported
 		// by @otta-sh/plugin precisely so the deploying site declares the layout the
 		// adapters actually read, and site-config.test.ts asserts equality with it
 		// (names AND per-collection index lists) rather than a hand-copied snapshot.
-		...(mode === "in-process" ? { storage: commerceStorage() } : {}),
+		storage: commerceStorage(),
 		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
 		// Commercial fields have exactly one home, `product_commerce`, edited
 		// only from the admin's Pricing & inventory page ("one home per field",

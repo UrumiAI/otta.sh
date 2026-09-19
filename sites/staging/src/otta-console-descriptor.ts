@@ -40,10 +40,10 @@ import {
 import type { PluginDescriptor } from "emdash";
 
 /**
- * Takes no service URL — and that asymmetry with `ottaPluginDescriptor` is the
- * point. `otta` needs one to compute its `allowedHosts` egress entry; the
- * console has no egress to allow, because it never fetches from a Worker at
- * all.
+ * Declares NO `allowedHosts` — and that asymmetry with `ottaPluginDescriptor` is
+ * the point. `otta` makes its own egress calls (Stripe, and whatever the
+ * deployment configures); the console has no egress to allow, because it never
+ * fetches from a Worker at all.
  */
 export function ottaConsoleDescriptor(): PluginDescriptor {
 	return {

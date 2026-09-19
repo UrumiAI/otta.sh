@@ -12,13 +12,15 @@ self-contained — section references like "§4" point inside this file.
 Otta is **two deployables and two databases**:
 
 1. **The commerce service** (`@otta-sh/service`) — a Hono REST API that owns all money and
-   stock truth. It ships two entries from one codebase: a Node bin (`dist/index.mjs`
-   post-publish; run via tsx from a checkout today — see §2.2) and a Cloudflare Worker
-   (`src/worker.ts`). It needs a **Postgres** database and migrates itself forward on boot.
+   stock truth. As a Node bin (`dist/index.mjs` post-publish; run via tsx from a checkout
+   today — see §2.2) it needs a **Postgres** database and migrates itself forward on boot.
+   On Workers (Shape B) it is not a separate deployable: commerce runs **in-process inside
+   the site Worker** — see item 2.
 2. **The storefront site** (`sites/staging`) — an EmDash CMS site with the Otta plugin
-   registered trusted in-process. It needs a **content database of its own** (D1 on Workers),
-   entirely separate from the commerce Postgres. `sites/staging` is the reference site: copy
-   it for your own store rather than treating it as staging-only.
+   registered trusted in-process, talking to commerce in-process. It needs a **content
+   database of its own** (D1 on Workers), entirely separate from the commerce Postgres.
+   `sites/staging` is the reference site: copy it for your own store rather than treating it
+   as staging-only.
 
 > **Status honesty.** The commerce **service** is feature-complete (Phases 0–7, per the root
 > README): catalog, inventory, cart, checkout, orders, customers with magic-link auth,
@@ -32,7 +34,7 @@ Otta is **two deployables and two databases**:
 
 | | Shape A | Shape B |
 |---|---|---|
-| Service runtime | Node process (§2.2) | Cloudflare Worker |
+| Service runtime | Node process (§2.2) | in-process, inside the site Worker |
 | Commerce DB | any Postgres you can reach | external Postgres via Hyperdrive |
 | Site runtime | EmDash on Node (link-out, §2.5) | `sites/staging` on Workers **free** plan |
 | Sweeps | self-intervals + one external driver (§2.4) | `*/15` cron runs all four (§6) |
@@ -40,30 +42,22 @@ Otta is **two deployables and two databases**:
 
 ## 1. Universal contracts
 
-Five rules hold in every shape. Everything else in this guide is a consequence of them.
+Three rules hold in every shape. Everything else in this guide is a consequence of them.
 
-- **Deploy order: service first, then site.** The site build needs the service's final URL
-  (next bullet), so the service must exist — and answer `/health` — before you build the
-  site.
-- **`COMMERCE_SERVICE_URL` is a build-time contract.** The site reads it at **build** time
-  in `astro.config.ts` and bakes it into two places: the plugin bundle (a Vite compile-time
-  define) and the plugin descriptor's `allowedHosts` — the egress gate for `ctx.http`, which
-  is the **only** path the plugin may use to reach the service. There is no runtime
-  override: **changing the service URL means rebuild + redeploy of the site.** A build
-  without the variable produces a deployable-but-inert commerce egress (the placeholder host
-  is unreachable by design).
 - **Deploy-then-claim.** A freshly deployed site is unclaimed: **the first visitor to
   complete the setup wizard becomes the admin.** Claim it immediately after the first
   request, in the same session. The wizard's passkey step requires a WebAuthn **secure
-  context** — HTTPS, or `localhost` (see §2.5 and §3.3). If the unclaimed window worries
+  context** — HTTPS, or `localhost` (see §2.5 and §3.2). If the unclaimed window worries
   you, front `/_emdash/*` with Cloudflare Access until setup is claimed, then remove it.
 - **Seed reality.** The site's first request runs the CMS migrations and applies the seed's
   **schema, settings, and menus only**. Sample content (the 3 demo products) is applied
   **only** when the setup wizard is completed with "include sample content" checked. An
   empty `/products` page right after first boot is **healthy, not a failed boot**.
-- **Secrets model.** Every payment and token secret lives **service-side** (§4). The site
-  carries exactly one secret: `EMDASH_ENCRYPTION_KEY`. Nothing secret-shaped ever goes in a
-  tracked `wrangler.jsonc` (pinned by the site's config tests).
+- **Secrets model.** Every payment and token secret lives **commerce-side** (§4) — the
+  standalone Node process on Shape A, or the site Worker itself on Shape B, where commerce
+  runs in-process. The site carries exactly one secret of its own: `EMDASH_ENCRYPTION_KEY`.
+  Nothing secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config
+  tests).
 
 ## 2. Shape A — Node + Postgres
 
@@ -149,7 +143,7 @@ Three options, in increasing effort:
 
 - **Point the Workers site at your Node service.** `sites/staging` happily targets any
   service URL: build it with `COMMERCE_SERVICE_URL=https://your-service.example.com` and
-  deploy per §3.2. The service URL must be reachable **from Cloudflare's network** — which
+  deploy per §3.1. The service URL must be reachable **from Cloudflare's network** — which
   conflicts with §2.0's keep-it-private posture unless you expose it deliberately
   (provision the `SERVICE_API_TOKEN` write gate per §4 first).
 - **Run an EmDash site on Node.** Follow EmDash's upstream Node deployment guide
@@ -165,8 +159,8 @@ Three options, in increasing effort:
 
 ## 3. Shape B — Cloudflare Workers (free tier)
 
-Both deployables as Workers. This shape is deploy-verified and is what `sites/staging` is
-built for.
+The site as a Worker, with commerce running in-process inside it. This shape is
+deploy-verified and is what `sites/staging` is built for.
 
 ### 3.0 Cost preconditions
 
@@ -184,73 +178,7 @@ paid plan:
   Neon's free tier) can autosuspend between ticks. The site's every-minute cron touches only
   D1, within free limits.
 
-### 3.1 The service Worker
-
-1. **Provision an external Postgres** (Neon, Supabase, or similar) and note its **direct
-   (unpooled) connection string** — for Neon, uncheck the connection-pooling checkbox when
-   copying it; for Supabase, take the "Direct connection" string, not the pooled ones. This
-   is the opposite instinct from most serverless setups, and it is what Cloudflare's own
-   provider guides for [Neon](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/postgres-database-providers/neon/)
-   and [Supabase](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/postgres-database-providers/supabase/)
-   instruct: **Hyperdrive owns the origin connection pool itself**, and a transaction-mode
-   pooler in front of it breaks the prepared statements that the service's `pg` driver and
-   Kysely migrator rely on.
-
-2. **Create the Hyperdrive config with query caching disabled** (from `packages/service`):
-
-   ```bash
-   wrangler hyperdrive create otta-commerce-db \
-     --connection-string="postgres://USER:PASSWORD@YOUR-DB-HOST:5432/YOUR-DB-NAME" \
-     --caching-disabled
-   ```
-
-   [Query caching](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/)
-   serves repeated reads from cache; the commerce API's read-after-write flows (place a
-   hold, immediately re-read availability) must never see stale rows, so caching stays off.
-   Note the config `id` (32 hex chars) the command prints.
-
-3. **Fill in the local config.** The tracked `packages/service/wrangler.jsonc` is a
-   **template** with placeholder values. Copy it to `wrangler.local.jsonc` (gitignored) and
-   set your own Worker `name` (over the `my-otta-commerce` placeholder) and your Hyperdrive
-   `id` (over the all-zero placeholder). The origin credentials live in the Hyperdrive
-   config platform-side — there is no `PG_CONNECTION_STRING` secret on Workers.
-
-4. **Deploy with the local config, always** (from `packages/service`):
-
-   ```bash
-   wrangler deploy --config wrangler.local.jsonc
-   ```
-
-   > **The `--config` asymmetry — for `wrangler deploy`, the two deployables are exact
-   > opposites:**
-   >
-   > | Deployable | Correct deploy command | What the wrong form does |
-   > |---|---|---|
-   > | service (`packages/service`) | `wrangler deploy --config wrangler.local.jsonc` | plain `wrangler deploy` — including the package's `pnpm deploy` script — reads the tracked **template** and deploys a Worker named `my-otta-commerce` with the all-zero Hyperdrive id |
-   > | site (`sites/staging`) | plain `wrangler deploy` (after the §3.2 build) | `wrangler deploy --config wrangler.local.jsonc` bypasses the `.wrangler/deploy` redirect to the adapter-generated config and tries to rebundle the raw worker source |
-   >
-   > The asymmetry covers **deploy only**. `wrangler secret put` always takes
-   > `--config wrangler.local.jsonc`, on **both** deployables: it never reads the site's
-   > build redirect, and without `--config` it defaults to the tracked template and
-   > targets the placeholder-named Worker, not yours (§4).
-
-5. **Smoke it:**
-
-   ```bash
-   curl https://<your-service>.<your-subdomain>.workers.dev/health
-   # {"ok":true}
-   ```
-
-> **Secrets at this point:** set only `EMDASH_ENCRYPTION_KEY` (on the site, §3.2). Every
-> other secret is optional at first boot — including `SERVICE_API_TOKEN`, whose write gate
-> you provision in lockstep across the service secret and the plugin's kv once the site is
-> up and claimed (§4).
->
-> **Posture:** while `SERVICE_API_TOKEN` is unset the service's write surface is open (§4).
-> Treat a publicly reachable service whose gate is still open as non-production — test-mode
-> payment credentials only, never live-mode Stripe keys on an open write surface.
-
-### 3.2 The site Worker
+### 3.1 The site Worker
 
 1. **Create the content resources** (from `sites/staging`):
 
@@ -263,10 +191,9 @@ paid plan:
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
    D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
-   `global_fetch_strictly_public` compatibility flag alone — §3.5 explains it.
+   `global_fetch_strictly_public` compatibility flag alone — §3.4 explains it.
 
-3. **Set the site's one secret** (see the §3.1 callout — this is the only secret first boot
-   needs):
+3. **Set the site's one secret** (the only secret first boot needs):
 
    ```bash
    npx emdash secrets generate
@@ -279,14 +206,13 @@ paid plan:
    named `my-otta-store` — a phantom; your real Worker would then first-boot without its
    only required secret.
 
-4. **Build with the real service URL.** The Cloudflare adapter reads `wrangler.local.jsonc`
-   at **build** time (`astro.config.ts` passes it as `configPath`), and the service URL is
-   baked at build time (§1) — so the build, not the deploy, is where configuration becomes
-   real:
+4. **Build the site.** The Cloudflare adapter reads `wrangler.local.jsonc` at **build**
+   time (`astro.config.ts` passes it as `configPath`), so the build, not the deploy, is
+   where your Worker name, D1, and R2 config becomes real. Commerce runs in-process, so
+   there is no service URL to bake in:
 
    ```bash
-   COMMERCE_SERVICE_URL=https://<your-service>.<your-subdomain>.workers.dev \
-     pnpm --filter @otta-sh/site-staging build
+   pnpm --filter @otta-sh/site-staging build
    ```
 
 5. **Deploy plain — never `--config` here** (from `sites/staging`):
@@ -297,10 +223,10 @@ paid plan:
 
    This follows the `.wrangler/deploy` redirect to the adapter-generated dist config, which
    already carries your `wrangler.local.jsonc` values from step 4's build. **Deploy does not
-   rebuild** — step 4 owns the build, so the baked service URL is never silently the
-   placeholder. (See the asymmetry table in §3.1.)
+   rebuild** — step 4 owns the build, so your Worker name, D1, and R2 bindings are never
+   silently the tracked template's placeholders.
 
-### 3.3 First boot and claim
+### 3.2 First boot and claim
 
 1. **Hit the site once** — `https://<your-worker>.<your-subdomain>.workers.dev/`. The first
    request runs the CMS migrations and applies the seed's schema/settings/menus (one-time
@@ -331,19 +257,19 @@ paid plan:
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 
-### 3.4 Failed-first-boot recovery
+### 3.3 Failed-first-boot recovery
 
 **Only for an actual failed boot** — errors in `wrangler tail` (migration failures, partial
-schema seed). An empty `/products` catalog is NOT a failed boot (§3.3 step 1); never reset a
+schema seed). An empty `/products` catalog is NOT a failed boot (§3.2 step 1); never reset a
 healthy database. The seed applies only to an **empty** D1 database, so a midway failure
 cannot be retried in place:
 
 1. `wrangler d1 delete YOUR-D1-DATABASE-NAME` and `wrangler d1 create YOUR-D1-DATABASE-NAME`.
 2. Update `database_id` in your `wrangler.local.jsonc` with the new id.
-3. **Rebuild** (the wrangler config is read at build time — §3.2 step 4), redeploy, then
-   claim the admin again (§3.2 step 5 → §3.3).
+3. **Rebuild** (the wrangler config is read at build time — §3.1 step 4), redeploy, then
+   claim the admin again (§3.1 step 5 → §3.2).
 
-### 3.5 workers.dev networking — the #1 footgun
+### 3.4 workers.dev networking — the #1 footgun
 
 > **Why the site ships `global_fetch_strictly_public`.** Cloudflare blocks
 > Worker→`*.workers.dev` subrequests and **stubs them with a 404** that never leaves
@@ -366,22 +292,21 @@ cannot be retried in place:
 
 ## 4. Secrets & tokens checklist
 
-All of these live on the **service** (Node env vars / `wrangler secret put`) except the
-first (site) and the plugin-kv half of `SERVICE_API_TOKEN` (box below). On Workers, **every
-`wrangler secret put` below — on either deployable — needs
-`--config wrangler.local.jsonc`**: without it, wrangler defaults to the tracked template
-and uploads the secret to the placeholder-named Worker, not yours (see the §3.1 asymmetry
-note). In order of appearance in a deployment's life:
+All of these live on **commerce** (Node env vars on Shape A, `wrangler secret put` on the
+site Worker on Shape B, where commerce runs in-process) except the first (site only). On
+Workers, **every `wrangler secret put` below** needs `--config wrangler.local.jsonc`:
+without it, wrangler defaults to the tracked template and uploads the secret to the
+placeholder-named Worker, not yours. In order of appearance in a deployment's life:
 
 | Secret | Deployable | Required? | When to set |
 |---|---|---|---|
 | `EMDASH_ENCRYPTION_KEY` | site | yes | before the site's first boot |
-| `INTERNAL_API_TOKEN` | service | Shape A: yes (§2.4); Shape B: for the admin reports/settings UI | any time |
-| `SERVICE_API_TOKEN` | service + plugin kv | to close the write gate | in lockstep, **plugin kv first** (box below) |
-| `STRIPE_WEBHOOK_SECRET` | service | for Stripe payments | before enabling Stripe |
-| `STRIPE_SECRET_KEY` | service | to take **real** payments (and to refund) | with the webhook secret |
-| `X402_PAYTO` + `X402_FACILITATOR_SECRET` | service | for x402 (non-production only today) | see fail-closed box |
-| `EMAIL_API_KEY` (with `EMAIL_API_URL` / `EMAIL_FROM` vars) | service | optional | when wiring real email |
+| `INTERNAL_API_TOKEN` | commerce | Shape A: yes (§2.4); Shape B: for the admin reports/settings UI | any time |
+| `SERVICE_API_TOKEN` | commerce | to close the write gate | any time |
+| `STRIPE_WEBHOOK_SECRET` | commerce | for Stripe payments | before enabling Stripe |
+| `STRIPE_SECRET_KEY` | commerce | to take **real** payments (and to refund) | with the webhook secret |
+| `X402_PAYTO` + `X402_FACILITATOR_SECRET` | commerce | for x402 (non-production only today) | see fail-closed box |
+| `EMAIL_API_KEY` (with `EMAIL_API_URL` / `EMAIL_FROM` vars) | commerce | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
   never echoed into logs; **back it up in a password manager** (it protects the CMS's
@@ -389,37 +314,21 @@ note). In order of appearance in a deployment's life:
 
 > **`SERVICE_API_TOKEN` — the write gate ([ADR-0007](./adr/0007-dedicated-service-token-header.md)).**
 >
-> When set, every non-GET/HEAD request to the service must carry the token in the dedicated
-> **`X-Service-Token`** header — *not* `Authorization: Bearer`, which is the customer session
-> credential. The storefront plugin threads it automatically: all three plugin clients read
-> it at runtime from **write-only plugin kv** (`settings:serviceToken`), provisioned by an
-> admin through the masked **"Service token (X-Service-Token)"** field on the plugin's
-> Settings page — the secret never enters the plugin bundle.
->
-> **Provisioning order — do not invert:** set `settings:serviceToken` in this env's plugin
-> kv (the Settings form) **before** setting this env's `SERVICE_API_TOKEN` service secret.
-> The reverse order 401s every storefront call in the window — and the gate covers POST
-> *reads* too (the `getCommerceBatch` behind every PDP/PLP, and the login pre-auth POSTs),
-> so an unprovisioned token breaks catalog rendering and login, not just cart writes. Both
-> are runtime actions — no redeploy — so the window is closable in seconds.
->
-> **Rotation — lockstep, kv first:** set the new `settings:serviceToken` in plugin kv (the
-> service still accepts the old token), *then* rotate the service secret. Rotating the
-> service secret without updating kv silently 401s every plugin call — and the content-sync
-> hooks are fire-and-forget with **no reconcile cron yet**, so a failed sync is logged and
-> then lost until the product is saved again. The service token is the plugin's most
-> sensitive value: a kv compromise yields the whole write surface.
+> When set, every non-GET/HEAD request to commerce's HTTP API must carry the token in the
+> dedicated **`X-Service-Token`** header — *not* `Authorization: Bearer`, which is the
+> customer session credential. This only matters for callers that reach commerce over HTTP
+> directly: the storefront plugin no longer does — it talks to commerce in-process, with no
+> HTTP hop and nothing to provision on its side.
 >
 > **While unset the write surface is open:** every mutating route is unauthenticated — cart
 > creation and line writes, `POST /checkout/orders`, `/inventory/*` mutations, entitlement
 > grants — so on a publicly reachable URL anyone who finds it can create orders and burn
 > inventory holds. The Worker entry logs a warning once per isolate when the gate is open;
-> **the Node entry is silent** — issue #42 tracks warning parity. Provision the token (both
-> sides, above) before exposing the service publicly (§2.0, §3.1).
+> **the Node entry is silent** — issue #42 tracks warning parity. Provision the token before
+> exposing commerce's HTTP API publicly (§2.0).
 >
 > **Interplay with `INTERNAL_API_TOKEN`:** routes behind both gates (e.g. `PUT /settings`,
-> the `/admin/*` writes) require **both** headers when both secrets are set — the plugin's
-> admin console forwards `X-Service-Token` alongside its `X-Internal-Token`.
+> the `/admin/*` writes) require **both** headers when both secrets are set.
 
 - **`INTERNAL_API_TOKEN`** — the shared secret for the operational surface. Unset, those
   endpoints answer **503** (disabled — never silently open): `POST /internal/expire-holds`,
@@ -429,9 +338,9 @@ note). In order of appearance in a deployment's life:
   zones/methods/rates, tax classes/rates, coupon lookup by code), and **both** verbs on
   `/settings`. `SERVICE_API_TOKEN`'s write gate exempts GET/HEAD, so this token is the only
   thing that closes those reads. Callers send it as
-  `X-Internal-Token`: your §2.4 cron on Shape A, and the plugin's **admin console** — its
-  reports/settings screens take the token as admin input and forward it on each request.
-  The Worker cron path needs no token (it calls the domain directly, §6).
+  `X-Internal-Token`: your §2.4 cron on Shape A. The plugin's admin console does not — it
+  reads and writes commerce in-process, with no HTTP hop and nothing to provision on its
+  side. The Worker cron path needs no token either (it calls the domain directly, §6).
 - **Stripe** — `STRIPE_WEBHOOK_SECRET` wires the Stripe gateway; until set,
   `POST /webhooks/stripe` answers 503. The webhook URL is **public by design**: it is the
   single exemption from the `X-Service-Token` write gate, authenticated instead by
@@ -490,7 +399,7 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `HOLD_SWEEP_INTERVAL_MS` | Node only | `60000` | self-interval hold-sweep cadence |
 | `EMAIL_DISPATCH_INTERVAL_MS` | Node only | `30000` | self-interval outbox-drain + challenge-prune cadence |
 | `INTERNAL_API_TOKEN` | both | unset ⇒ operational surface 503s | §4 |
-| `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision on both sides (kv first) to close the gate |
+| `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision it to close the gate |
 | `STRIPE_WEBHOOK_SECRET` | both | unset ⇒ webhook 503, gateway unwired | §4 |
 | `STRIPE_SECRET_KEY` | both | unset ⇒ **offline, unpayable** intents + no refunds (boot warns) | §4 — set it to create real PaymentIntents |
 | `X402_PAYTO` | both | unset ⇒ x402 not configured | x402 pay-to address |
@@ -501,7 +410,6 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `EMAIL_API_KEY` | both | unset | email API key |
 | `EMAIL_FROM` | both | `no-reply@otta.local` | From address |
 | `STOREFRONT_BASE_URL` | both | unset ⇒ magic-link emails carry raw credentials, no URL | absolute base URL for login links |
-| `COMMERCE_SERVICE_URL` | site, **build time** | placeholder ⇒ inert egress | baked into bundle + `allowedHosts` (§1) |
 | `EMDASH_ENCRYPTION_KEY` | site, secret | — | §4 |
 
 ## 6. Operations & scaling
@@ -529,14 +437,11 @@ reads/writes past it is a database decision, not an app-tier one.
 
 | Symptom | Cause → fix |
 |---|---|
-| Storefront shows content-only catalog with a notice; service never logs the request | Worker→workers.dev subrequests stubbed 404 — the site must ship `global_fetch_strictly_public` (§3.5), or put a custom domain on the service (#32) |
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.5); turn `session` off |
-| Storefront calls all 401 (cart writes, and PDP/PLP + login) | `SERVICE_API_TOKEN` set on the service but `settings:serviceToken` not provisioned in plugin kv — set it via the Settings form (§4) |
+| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.4); turn `session` off |
 | `/internal/*`, `/admin/*`, `/reports/*`, `/settings` answer 503 — **reads too**, e.g. `GET /admin/tax/classes`, `GET /settings`, and the plugin's Shipping/Tax/Coupons/Settings screens showing "unavailable" | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4). Since ADR-0010 the admin **read** surface is gated too, so a deployment that never set this now 503s where it previously answered 200 |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
-| Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` (§3.1) |
+| Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` |
 | `POST /webhooks/stripe` answers 503 | `STRIPE_WEBHOOK_SECRET` unset (§4) |
 | Node bin exits: `PG_CONNECTION_STRING is required` | Set the DSN (§2.2) |
-| Worker 500s: `Missing Hyperdrive connection string` | `hyperdrive` binding absent or misconfigured — check the binding name and id in the config you deployed with (§3.1) |
+| Worker 500s: `Missing Hyperdrive connection string` | `hyperdrive` binding absent or misconfigured — check the binding name and id in the config you deployed with |
 | Service refuses to start: `x402 is configured … refusing to start` | Fail-closed x402 gate — remove the x402 vars or (non-production only) opt in (§4) |
-| Site deploy went out but still calls the placeholder service host | Deploy doesn't rebuild — rerun the §3.2 build with `COMMERCE_SERVICE_URL`, then redeploy |

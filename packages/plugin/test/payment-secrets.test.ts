@@ -1,7 +1,6 @@
 /**
  * INC-C3 — the payment/email secrets the folded-in commerce layer needs, held
- * in WRITE-ONLY plugin kv exactly as `settings:serviceToken` (ADR-0007) already
- * is, plus the Settings provisioning surface for them.
+ * in WRITE-ONLY plugin kv, plus the Settings provisioning surface for them.
  *
  * WHERE THE NAMES COME FROM. Every key below is the in-process equivalent of an
  * environment variable `@otta-sh/service` reads TODAY — nothing is invented:
@@ -24,12 +23,13 @@
  * wrong home for a value that has to be readable back into a form.
  *
  * FAIL-CLOSED IS THE POINT (not decoration). Every reader swallows a kv
- * REJECTION to `undefined` — same posture as `serviceTokenFromKv` — so a kv
- * outage degrades to "not configured" (no gateway wired, no email sent, no
- * signature accepted) rather than throwing out of a hook, and never to an empty
- * string that a downstream `!== undefined` check would read as "configured".
+ * REJECTION to `undefined`, so a kv outage degrades to "not configured" (no
+ * gateway wired, no email sent, no signature accepted) rather than throwing
+ * out of a hook, and never to an empty string that a downstream
+ * `!== undefined` check would read as "configured".
  */
 import { describe, expect, test } from "vitest";
+import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
 import {
 	constantTimeEquals,
 	EMAIL_API_KEY_KEY,
@@ -44,17 +44,36 @@ import {
 	X402_FACILITATOR_API_KEY_KEY,
 	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../src/payment-secrets.js";
-import { SERVICE_TOKEN_KEY } from "../src/manifest.js";
 import {
 	createSettingsFormHandler,
-	INTERNAL_TOKEN_KEY,
 	PAYMENT_SECRET_ACTION_IDS,
 	SETTINGS_ACTION_IDS,
 	SETTINGS_SCHEMA,
 } from "../src/admin/settings-form.js";
+import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import type { PluginContext } from "../src/types.js";
 
 const req = { method: "POST", url: "/route", headers: {} };
+
+/**
+ * A document store that EXISTS (so `makeAdminClients` constructs without
+ * throwing `MISSING_STORAGE_MESSAGE`, INC-D3a) and is never meant to be
+ * CALLED — this suite is about kv secret persistence, not commerce storage
+ * behaviour. Any real read (e.g. the settings form's own secondary
+ * `getSettings()` read, E-1) throws, which the client's own fail-closed catch
+ * degrades rather than propagates — mirrors `make-commerce-client.test.ts`'s
+ * `makeUnusedStorage`.
+ */
+function refuseStorageCall(): never {
+	throw new Error("this suite asserts secret kv persistence, never commerce storage behaviour");
+}
+
+function makeUnusedStorage(): StorageAccess {
+	const collection = new Proxy({} as StorageCollection, { get: () => refuseStorageCall });
+	return Object.fromEntries(
+		Object.keys(COMMERCE_STORAGE_COLLECTIONS).map((name) => [name, collection]),
+	);
+}
 
 /** A fake ctx with a seeded kv. `failingKeys` makes `kv.get` REJECT for exactly
  *  those keys — the only honest way to prove the fail-closed path, since a
@@ -65,6 +84,7 @@ function makeCtx(
 ): { ctx: PluginContext; kv: Map<string, unknown> } {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const ctx: PluginContext = {
+		storage: makeUnusedStorage(),
 		http: {
 			fetch: () => Promise.reject(new Error("no egress in this suite")),
 		},
@@ -135,13 +155,6 @@ describe("the payment/email secret kv keys", () => {
 		// The settle route INC-C1b builds verifies the Stripe webhook HMAC with
 		// THIS key. Pinned by name so a rename is a conscious, cross-increment act.
 		expect(PAYMENT_SECRET_KEYS).toContain("settings:stripeWebhookSecret");
-	});
-
-	test("no payment secret collides with an existing settings key", () => {
-		for (const key of PAYMENT_SECRET_KEYS) {
-			expect(key).not.toBe(SERVICE_TOKEN_KEY);
-			expect(key).not.toBe(INTERNAL_TOKEN_KEY);
-		}
 	});
 });
 

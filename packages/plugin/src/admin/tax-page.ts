@@ -39,7 +39,6 @@ import {
 	listLevel,
 	noticeBanner,
 	PATH_FIELD,
-	readAdminTokens,
 	readBoolean,
 	readCarrier,
 	readString,
@@ -194,13 +193,11 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 		// document store, and the page cannot tell which — everything below is
 		// typed against `AdminRulesSurface`, the structural surface both answer to.
 		//
-		// The tokens are read ONCE, here, and PASSED IN rather than re-read inside
-		// the factory. They are transport credentials (`X-Internal-Token` /
-		// `X-Service-Token`) that the in-process tier has nothing to check against
-		// and deliberately ignores (ADR-0014 D3).
+		// NO TOKENS: `X-Internal-Token` / `X-Service-Token` were transport
+		// credentials for the commerce service, and there is no service to
+		// authenticate to (ADR-0014 D3, INC-D3a).
 		async createClient(ctx) {
-			const tokens = await readAdminTokens(ctx);
-			const clients = await makeAdminClients(ctx, tokens);
+			const clients = await makeAdminClients(ctx);
 			return clients.rules;
 		},
 		// Every drill-in on this screen is a BUTTON or an L-7 `combobox` carrying

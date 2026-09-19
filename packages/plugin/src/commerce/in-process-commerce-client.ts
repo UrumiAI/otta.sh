@@ -159,8 +159,8 @@ const DEFAULT_CURRENCY = "USD";
  * Gateways are PASSED IN rather than resolved here because resolving them is
  * asynchronous — the x402 wiring reads `payTo` and its facilitator credential
  * from kv — and this constructor is synchronous by design (a client is built per
- * invocation and must stay cheap). `makeCommerceClientFor` is already async, so
- * it is the natural place for that await; see `make-commerce-client.ts`.
+ * invocation and must stay cheap). `makeCommerceClient` is already async, so it
+ * is the natural place for that await; see `make-commerce-client.ts`.
  */
 export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;

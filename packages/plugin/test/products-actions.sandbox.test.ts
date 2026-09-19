@@ -17,38 +17,89 @@
  * tombstone and no-SKU context lines, accordion-label budgets and their truncation.
  * None of that outlives the renderer. Everything asserting BEHAVIOUR moved here.
  *
+ * THERE IS NO SERVICE BEHIND THESE WRITES ANY MORE (INC-D3a). The console's
+ * clients come from `makeAdminClients(ctx)`, which composes the commerce adapters
+ * straight over `ctx.storage` — so a save here edits a REAL product-commerce
+ * document and a stock movement moves a REAL inventory count, both in the same
+ * document store this file seeds through those same adapters. Every assertion that
+ * used to read a recorded HTTP request is therefore gone: there is no PATCH body
+ * to inspect, no POST url to match, and no token pair to forward —
+ * `X-Internal-Token`/`X-Service-Token` authenticated a caller TO THE SERVICE and
+ * ADR-0014 D3 deleted both with the deployment. What each write DID is read back
+ * off the product row instead, which is the stronger statement: the old tests
+ * proved a request was addressed correctly, these prove the row changed — and, for
+ * every refusal, that it did not.
+ *
  * THE FOUR INVARIANTS THIS SCREEN'S GATE IS MADE OF, each proven below:
  *
- *  1. **Money is integer minor units, and absent is not zero.** A price reaches
- *     the wire as `{amount, currency}` in minor units or not at all; a malformed
- *     one is refused BEFORE any request; a blank compare-at is an explicit `null`
- *     CLEAR and never a zero; a blank price is OMITTED and never a zero.
+ *  1. **Money is integer minor units, and absent is not zero.** A price is STORED
+ *     as `{amount, currency}` in minor units or not at all; a malformed one is
+ *     refused BEFORE anything is written; a blank compare-at is an explicit `null`
+ *     CLEAR and never a zero; a blank price leaves the stored price alone and
+ *     never becomes zero.
  *  2. **The stale-watermark refusal (DA-3a), carried verbatim.** A stock removal
- *     re-reads live stock and refuses on a mismatch with NOTHING posted — and an
+ *     re-reads live stock and refuses on a mismatch with NOTHING written — and an
  *     ABSENT watermark refuses fail-closed, with no re-read at all. A save carries
- *     `expectedUpdatedAt` and refuses without one rather than clobbering.
+ *     `expectedUpdatedAt` and refuses without one rather than clobbering; with a
+ *     stale one it is refused by the store's own compare-and-set.
  *  3. **Idempotency without a nonce, and the replay case.** Every key is derived
- *     from content plus the watermark the operator saw, so a double-submit of one
- *     rendered form dedupes while two deliberate movements taken against two
- *     different observed counts both apply.
- *  4. **The verified sparse PATCH.** Each of the three split saves sends its own
- *     fields and nothing else, and `title`/`active` can never reach the wire at
- *     all (G2 / ADR-0013) however hostile the payload is.
+ *     from content plus the watermark the operator saw. THE KEY IS NO LONGER A
+ *     STRING ANY TEST CAN SEE — it is an argument handed to a use-case in this
+ *     process rather than a header on a wire — so it is proven by what it BUYS:
+ *     a double-submit of one rendered form applies once and still reads `Saved`
+ *     (a second, distinct write against that now-stale watermark is refused as
+ *     stale instead), and two deliberate movements taken against two different
+ *     observed counts both apply.
+ *  4. **The verified sparse edit.** Each of the three split saves writes its own
+ *     fields and leaves every other stored value untouched, and `title`/`active`
+ *     can never be written at all (G2 / ADR-0013) however hostile the payload is —
+ *     neither `ProductEditWire` nor `UpdateProductCommerceFieldsInput` has a
+ *     member for either.
  *
  * WHAT IS NOT TESTED HERE, AND WHY THAT IS NOT A SILENT GAP.
+ *
  * `products:remove-stock-review` — DA-3 state 1 → state 2 — is not ported. It
  * staged a quantity server-side so a SECOND RENDER could draw a confirm button;
  * React shows the dialog over the values the operator just typed, which is why the
  * console's gate has excluded that id since INC-21 and why nothing reachable has
  * ever called it. One check lived only on that step and therefore never ran for
  * any surface that shipped: the DA-3c bound of `qty` against the on-hand just
- * re-read. An over-removal is refused by the SERVICE's guarded decrement instead,
+ * re-read. An over-removal is refused by the DOMAIN's guarded decrement instead,
  * which is asserted below. See ADR-0015, and `products-actions.ts`'s header.
  *
+ * THE DEGRADED-OPERAND CASES ARE GONE WITH THE WIRE THAT COULD PRODUCE THEM. The
+ * retired suite pinned five sentences composed from a rename refusal whose
+ * operands the SERVICE had failed to send (`SKU_HELD_STOCK` with no `sku`, with a
+ * non-numeric `liveHolds`, `SKU_STOCK_CONFLICT` with no `toSku`, …), each reached
+ * by stubbing a malformed 409 body. In-process there is no body: the operands come
+ * off typed domain errors — `SkuStockConflictError` carries both skus by
+ * construction, `SkuHeldStockError` a positive integer count — and
+ * `InProcessAdminProductsClient` normalises that count before this module sees it.
+ * The fallback branches remain in `products-actions.ts` as defence, deliberately;
+ * a test that hand-built the refusal to reach them would be asserting its own
+ * fixture rather than this tier. The two REACHABLE rename refusals are pinned
+ * whole, below.
+ *
  * A green happy path is not evidence for any of this, so every refusal test also
- * asserts that NOTHING was written.
+ * reads the product back and asserts NOTHING was written.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+	cents,
+	currency as toCurrency,
+	idempotencyKey,
+	money,
+	productId as toProductId,
+	sku as toSku,
+	type ProductCommerce,
+} from "@otta-sh/domain";
+import {
+	EmdashInventoryStore,
+	EmdashProductCommerceStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	BACKORDERS_CONTEXT,
 	LOW_STOCK_FILTER_DESCRIPTION,
@@ -60,19 +111,15 @@ import {
 } from "@otta-sh/admin-presentation";
 import { PRODUCTS_ACTION_IDS } from "../src/admin/products-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
-import {
-	type RecordedRequest,
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const ACT = "otta_console_act";
-const PRODUCT_ID = "prod-1";
-const ADMIN_TOKEN = "admin-token-xyz";
-const SERVICE_TOKEN = "svc-token-abc";
-/** The product's `updatedAt` — the optimistic-concurrency watermark every save
- *  carries back. */
-const UPDATED_AT = "2026-07-12T01:00:00.000Z";
+
+/** A namespace no other suite writes under. The document store is process-scoped
+ *  and reused across boots, so every id and every SKU this file mints carries the
+ *  prefix and a counter — cases must not collide, least of all on `sku`, which is
+ *  the natural key the rename rules are built around. */
+const NS = "pa";
 
 interface Notice {
 	variant: string;
@@ -88,139 +135,100 @@ interface ActOutcome {
 	field?: string;
 }
 
-/** Mutable read-time state the GET responder serves — lets a test move stock
- *  between the render and the write without hand-crafting anything. `null` is the
- *  service saying this sku has NO inventory record, which is a different fact
- *  from `0` and must never be folded into one. */
-interface LiveState {
-	onHand: number | null;
+let sandbox: SandboxHandle;
+let storage: StorageAccess;
+let products: EmdashProductCommerceStore;
+let inventory: EmdashInventoryStore;
+let seq = 0;
+
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	products = new EmdashProductCommerceStore({ storage, clock: systemClock });
+	inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	// `allowedHosts: []` is the whole point of the increment: this screen's writes
+	// make no egress at all now, so the isolate is granted none.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox?.close();
+});
+
+interface Seeded {
+	readonly productId: string;
+	readonly sku: string;
+	/** The row's `updatedAt` at seed time — the optimistic-concurrency watermark
+	 *  every save carries back. */
+	readonly updatedAt: string;
 }
 
-function detail(state: LiveState): Record<string, unknown> {
-	return {
-		productId: PRODUCT_ID,
-		sku: "SKU-1",
-		title: "Blue Widget",
-		priceCents: 1999,
-		currency: "USD",
-		taxClass: "standard",
-		compareAtCents: 3000,
-		compareAtCurrency: "USD",
-		unitCostCents: 850,
-		unitCostCurrency: "USD",
-		inventoryPolicy: "deny",
-		weightGrams: 300,
-		lengthMm: 10,
-		widthMm: 20,
-		heightMm: 30,
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: state.onHand,
-		createdAt: "2026-07-12T00:00:00.000Z",
-		updatedAt: UPDATED_AT,
-	};
+/**
+ * One live product row, and optionally its inventory document.
+ *
+ * `onHand: null` seeds NO inventory document, which is a different fact from `0`
+ * and is what the two "no inventory record" cases below are about. The row goes in
+ * through the store's own upsert rather than being hand-built, so the sku claim the
+ * rename rules read is created the way a real write creates it.
+ */
+async function seedProduct(options: { onHand?: number | null } = {}): Promise<Seeded> {
+	const n = ++seq;
+	const productId = `${NS}-prod-${n}`;
+	const sku = `${NS}-SKU-${n}`;
+	const product = await products.upsert(
+		{
+			productId: toProductId(productId),
+			sku: toSku(sku),
+			title: "Blue Widget",
+			price: money(cents(1999), toCurrency("USD")),
+			taxClass: "standard",
+			weightGrams: 300,
+			lengthMm: 10,
+			widthMm: 20,
+			heightMm: 30,
+			productKind: "physical",
+		},
+		idempotencyKey(`${NS}-seed-${String(n)}`),
+	);
+	const onHand = options.onHand === undefined ? 42 : options.onHand;
+	if (onHand !== null) await inventory.seedOnHand(sku, onHand);
+	return { productId, sku, updatedAt: product.updatedAt.toISOString() };
 }
 
-/** One request header, case-insensitively. */
-function header(request: RecordedRequest | undefined, name: string): string | undefined {
-	const value = request?.headers[name.toLowerCase()];
-	return typeof value === "string" ? value : undefined;
+/** The persisted row, read back through the same adapter the write went through —
+ *  the only evidence this suite accepts that anything happened. */
+async function readProduct(productId: string): Promise<ProductCommerce> {
+	const row = await products.getByProductId(toProductId(productId));
+	if (row === null) throw new Error(`no product row for ${productId}`);
+	return row;
 }
+
+/** One console write, exactly as `performAction` sends it: a flat payload, no
+ *  carrier. */
+async function act(actionId: string, value: Record<string, string>): Promise<ActOutcome> {
+	const outcome = await sandbox.invokeRoute("admin", { type: ACT, action_id: actionId, value });
+	expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
+	return (outcome as { result: ActOutcome }).result;
+}
+
+/** The whole carrier the console sends with any of the three saves. */
+const carrierFor = (seeded: Seeded): Record<string, string> => ({
+	productId: seeded.productId,
+	expectedUpdatedAt: seeded.updatedAt,
+});
 
 describe("the Pricing & inventory write path (workerd sandbox)", () => {
-	let service: StubCommerceServer;
-	let sandbox: SandboxHandle;
-	let live: LiveState;
-
-	beforeEach(async () => {
-		live = { onHand: 42 };
-		service = await startStubCommerceServer();
-		// GET routing is a function of the path, so a surface a write is not
-		// supposed to read 404s — which is itself part of every assertion.
-		service.respondWith("GET", (request) => {
-			const path = request.url.split("?")[0] ?? "";
-			if (path === `/admin/products/${PRODUCT_ID}`) {
-				return { status: 200, body: { ok: true, product: detail(live) } };
-			}
-			return { status: 404, body: { error: "no route" } };
-		});
-		service.respondWith("PATCH", () => ({
-			status: 200,
-			body: { ok: true, updatedAt: UPDATED_AT },
-		}));
-		service.respondWith("POST", (request) => {
-			const qty = (request.body as { qty?: number } | undefined)?.qty ?? 0;
-			if (request.url === `/admin/products/${PRODUCT_ID}/restock`) {
-				return { status: 200, body: { ok: true, onHand: (live.onHand ?? 0) + qty } };
-			}
-			if (request.url === `/admin/products/${PRODUCT_ID}/remove-stock`) {
-				// The service's OWN guarded decrement, on a magic quantity: the race
-				// the plugin's re-read cannot always catch.
-				if (qty === 777) {
-					return { status: 409, body: { ok: false, reason: "INSUFFICIENT_STOCK", onHand: 42 } };
-				}
-				return { status: 200, body: { ok: true, onHand: (live.onHand ?? 0) - qty } };
-			}
-			return { status: 404, body: { error: "no route" } };
-		});
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [service.host],
-			commerceServiceBaseUrl: service.baseUrl,
-		});
-		// BOTH tokens: the edit PATCH and the stock POSTs are non-GETs the write
-		// gate blocks without the service token, and seeding them here is what lets
-		// each test assert the headers rather than assume them.
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: ADMIN_TOKEN },
-		});
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-service-token",
-			values: { serviceToken: SERVICE_TOKEN },
-		});
-		service.requests.length = 0;
-	});
-
-	afterEach(async () => {
-		await sandbox.close();
-		await service.close();
-	});
-
-	/** One console write, exactly as `performAction` sends it: a flat payload,
-	 *  no carrier. */
-	async function act(actionId: string, value: Record<string, string>): Promise<ActOutcome> {
-		const outcome = await sandbox.invokeRoute("admin", { type: ACT, action_id: actionId, value });
-		expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
-		return (outcome as { result: ActOutcome }).result;
-	}
-
-	const writes = (): RecordedRequest[] =>
-		service.requests.filter((r) => r.method === "PATCH" || r.method === "POST");
-	const patch = (): RecordedRequest | undefined =>
-		service.requests.find((r) => r.method === "PATCH");
-	const patchBody = (): Record<string, unknown> => (patch()?.body ?? {}) as Record<string, unknown>;
-	const postTo = (suffix: string): RecordedRequest | undefined =>
-		service.requests.find(
-			(r) => r.method === "POST" && r.url === `/admin/products/${PRODUCT_ID}${suffix}`,
-		);
-
-	/** The whole carrier the console sends with any of the three saves. */
-	const carrier = { productId: PRODUCT_ID, expectedUpdatedAt: UPDATED_AT };
-
 	// -- the dispatch gate ------------------------------------------------------
 
 	test("an UNKNOWN action id is a refusal with copy, never a quiet success", async () => {
 		// Reachable from a stale tab after a deploy that renamed an action, and from
 		// a console bug — never from a control this release rendered. Reporting it as
 		// an outcome would render a stock movement that never happened as done.
-		const result = await act("products:no-such-action", { productId: PRODUCT_ID });
+		const seeded = await seedProduct();
+		const result = await act("products:no-such-action", { productId: seeded.productId });
 		expect(result.ok).toBe(false);
 		expect(result.title).toBe("Nothing was changed");
 		expect(String(result.description)).toContain("Nothing was applied");
-		expect(writes()).toHaveLength(0);
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 
 	test("EVERY id in PRODUCTS_ACTION_IDS dispatches, and the retired `-review` step is not among them", async () => {
@@ -247,95 +255,128 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			expect(result.ok, actionId).toBe(true);
 			expect(result.notice?.variant, actionId).toBe("error");
 		}
-		expect(writes()).toHaveLength(0);
 	});
 
 	// -- the three split saves --------------------------------------------------
 
-	test("saving Identity PATCHes ONLY sku + expectedUpdatedAt — every other field is OMITTED, never nulled", async () => {
-		// The verified sparse PATCH is what makes the three-way split legal on this
+	test("saving Identity writes ONLY the sku — every other stored field is PRESERVED, never cleared", async () => {
+		// The verified sparse edit is what makes the three-way split legal on this
 		// screen and nowhere else: a field absent from the payload is absent from the
-		// wire, so saving one group cannot silently clear another's values.
-		const result = await act("products:save-identity", { ...carrier, sku: "SKU-1-RENAMED" });
-		expect(patch()).toBeDefined();
-		expect(patch()?.url).toContain(`/admin/products/${PRODUCT_ID}`);
-		expect(Object.keys(patchBody()).toSorted()).toEqual(["expectedUpdatedAt", "sku"]);
-		expect(patchBody()["sku"]).toBe("SKU-1-RENAMED");
-		expect(patchBody()["expectedUpdatedAt"]).toBe(UPDATED_AT);
-		expect(header(patch(), "X-Internal-Token")).toBe(ADMIN_TOKEN);
-		expect(header(patch(), "X-Service-Token")).toBe(SERVICE_TOKEN);
+		// update input, and the store's rule is that `undefined` PRESERVES — so
+		// saving one group cannot silently clear another's values.
+		const seeded = await seedProduct();
+		const renamed = `${seeded.sku}-RENAMED`;
+		const result = await act("products:save-identity", { ...carrierFor(seeded), sku: renamed });
 		expect(result.notice?.title).toBe("Saved");
+
+		const row = await readProduct(seeded.productId);
+		expect(row.sku).toBe(renamed);
+		expect(row.price).toEqual({ amount: 1999, currency: "USD" });
+		expect(row.taxClass).toBe("standard");
+		expect(row.weightGrams).toBe(300);
+		expect(row.heightMm).toBe(30);
+		expect(row.title).toBe("Blue Widget");
+		expect(row.updatedAt.toISOString()).not.toBe(seeded.updatedAt);
+		// THE RENAME CARRIED THE STOCK, which is the half of this write that is not
+		// a string swap: `inventory` is keyed by the sku, so the units follow it or
+		// the edit is refused.
+		expect(await inventory.findOnHand(renamed)).toBe(42);
 	});
 
-	test("saving Price sends INTEGER MINOR UNITS, clears a blank compare-at to null, and touches nothing else", async () => {
+	test("saving Price stores INTEGER MINOR UNITS, clears a blank compare-at to null, and touches nothing else", async () => {
 		// M-3/B-2: money crosses this boundary as an exact integer minor-unit
 		// amount, never a float — `parseFloat("24.50") * 100` is 2450.0000000000005
 		// and this parser must yield exactly 2450.
+		const seeded = await seedProduct();
+		// A compare-at has to EXIST before "blank clears it" is a claim about
+		// anything, so the first save sets one and the second clears it.
+		const first = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "19.99",
+			currency: "USD",
+			compareAt: "30.00",
+			unitCost: "8.50",
+		});
+		expect(first.notice?.title).toBe("Saved");
+		const staged = await readProduct(seeded.productId);
+		expect(staged.compareAtPrice).toEqual({ amount: 3000, currency: "USD" });
+
 		await act("products:save-price", {
-			...carrier,
+			productId: seeded.productId,
+			expectedUpdatedAt: staged.updatedAt.toISOString(),
 			price: "24.50",
 			currency: "USD",
 			compareAt: "",
 			unitCost: "9.00",
 		});
-		expect(patchBody()["price"]).toEqual({ amount: 2450, currency: "USD" });
-		expect(patchBody()["unitCost"]).toEqual({ amount: 900, currency: "USD" });
+		const row = await readProduct(seeded.productId);
+		expect(row.price).toEqual({ amount: 2450, currency: "USD" });
+		expect(row.unitCost).toEqual({ amount: 900, currency: "USD" });
 		// ABSENT IS NOT ZERO, and here the distinction is a merchant-visible fact: a
 		// blank compare-at CLEARS the field, and `{amount: 0}` would be a compare-at
 		// price of nothing at all.
-		expect(patchBody()["compareAtPrice"]).toBeNull();
-		expect("sku" in patchBody()).toBe(false);
-		expect("taxClass" in patchBody()).toBe(false);
-		expect("weightGrams" in patchBody()).toBe(false);
+		expect(row.compareAtPrice).toBeNull();
+		// The other two forms' fields are untouched by a price save.
+		expect(row.sku).toBe(seeded.sku);
+		expect(row.taxClass).toBe("standard");
+		expect(row.weightGrams).toBe(300);
 	});
 
-	test("a BLANK price is omitted rather than sent as zero — the domain's price > 0 rule, upstream of the domain", async () => {
+	test("a BLANK price leaves the stored price alone rather than zeroing it — the domain's price > 0 rule, upstream of the domain", async () => {
 		// A free product is "unpriced", not priced at 0. A blank field means
 		// "leave it alone", and turning that into an amount would be the same
 		// absent-rendered-as-zero mistake in the write direction.
+		const seeded = await seedProduct();
 		await act("products:save-price", {
-			...carrier,
+			...carrierFor(seeded),
 			price: "",
 			currency: "USD",
 			compareAt: "12.00",
 			unitCost: "",
 		});
-		expect("price" in patchBody()).toBe(false);
-		expect(patchBody()["compareAtPrice"]).toEqual({ amount: 1200, currency: "USD" });
-		expect(patchBody()["unitCost"]).toBeNull();
+		const row = await readProduct(seeded.productId);
+		expect(row.price).toEqual({ amount: 1999, currency: "USD" });
+		expect(row.compareAtPrice).toEqual({ amount: 1200, currency: "USD" });
+		expect(row.unitCost).toBeNull();
 	});
 
-	test("a malformed price is refused AT THE PLUGIN BOUNDARY — nothing is sent", async () => {
+	test("a malformed price is refused AT THE PLUGIN BOUNDARY — nothing is written", async () => {
+		const seeded = await seedProduct();
 		for (const price of ["19.999", "-5.00", "0", "1,999", "abc", "1.", ".5"]) {
-			service.requests.length = 0;
 			const result = await act("products:save-price", {
-				...carrier,
+				...carrierFor(seeded),
 				price,
 				currency: "USD",
 				compareAt: "",
 				unitCost: "",
 			});
-			expect(writes(), price).toHaveLength(0);
 			expect(result.notice?.variant, price).toBe("error");
 			expect(result.notice?.title, price).toBe("Check the highlighted value");
+			// The watermark is still the seed's, so nothing reached the store — a
+			// refusal that had written would have moved it.
+			const row = await readProduct(seeded.productId);
+			expect(row.updatedAt.toISOString(), price).toBe(seeded.updatedAt);
+			expect(row.price, price).toEqual({ amount: 1999, currency: "USD" });
 		}
 	});
 
 	test("a price with no valid currency is refused — a money amount never travels without one", async () => {
+		const seeded = await seedProduct();
 		const result = await act("products:save-price", {
-			...carrier,
+			...carrierFor(seeded),
 			price: "24.50",
 			currency: "US",
 			compareAt: "",
 			unitCost: "",
 		});
-		expect(writes()).toHaveLength(0);
 		expect(String(result.notice?.description)).toContain("3-letter ISO-4217");
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 
-	test("saving Shipping PATCHes kind/taxClass/dimensions; the `none` sentinel CLEARS the tax class to null", async () => {
+	test("saving Shipping writes kind/taxClass/dimensions; the `none` sentinel CLEARS the tax class to null", async () => {
+		const seeded = await seedProduct();
 		await act("products:save-shipping", {
-			...carrier,
+			...carrierFor(seeded),
 			productKind: "physical",
 			taxClass: "none",
 			weightGrams: "400",
@@ -343,55 +384,71 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			widthMm: "21",
 			heightMm: "31",
 		});
-		expect(patchBody()["taxClass"]).toBeNull();
-		expect(patchBody()["productKind"]).toBe("physical");
-		expect(patchBody()["weightGrams"]).toBe(400);
-		expect(patchBody()["heightMm"]).toBe(31);
-		expect("sku" in patchBody()).toBe(false);
-		expect("price" in patchBody()).toBe(false);
+		const row = await readProduct(seeded.productId);
+		expect(row.taxClass).toBeNull();
+		expect(row.productKind).toBe("physical");
+		expect(row.weightGrams).toBe(400);
+		expect(row.heightMm).toBe(31);
+		expect(row.sku).toBe(seeded.sku);
+		expect(row.price).toEqual({ amount: 1999, currency: "USD" });
 	});
 
-	test("a non-integer measurement is refused at the boundary — nothing is sent", async () => {
+	test("a non-integer measurement is refused at the boundary — nothing is written", async () => {
+		const seeded = await seedProduct();
 		const result = await act("products:save-shipping", {
-			...carrier,
+			...carrierFor(seeded),
 			productKind: "physical",
 			weightGrams: "1.5",
 		});
-		expect(writes()).toHaveLength(0);
 		expect(String(result.notice?.description)).toContain("weightGrams");
+		const row = await readProduct(seeded.productId);
+		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
+		expect(row.weightGrams).toBe(300);
 	});
 
-	test("G2 / ADR-0013: `title` and `active` can NEVER reach the wire, however hostile the payload", async () => {
+	test("G2 / ADR-0013: `title` and `active` can NEVER be written, however hostile the payload", async () => {
 		// Both fields are CMS-owned — the title is a single-writer cache the sync
-		// upserts on every publish, `active` is the CMS's publish gate — and
-		// `ProductEditWire` has no member for either, so nothing the console sends
-		// can put one on the wire. The Block Kit screen enforced this by not
-		// rendering a field; a flat JSON payload has no such protection, which is
-		// why it is asserted rather than assumed.
-		await act("products:save-identity", {
-			...carrier,
-			sku: "S-1",
+		// upserts on every publish, `active` is the CMS's publish gate — and neither
+		// `ProductEditWire` nor `UpdateProductCommerceFieldsInput` has a member for
+		// either, so nothing the console sends can reach the column. The Block Kit
+		// screen enforced this by not rendering a field; a flat JSON payload has no
+		// such protection, which is why it is asserted rather than assumed — and
+		// asserted on the ROW now rather than on a request body, because the row is
+		// where an operator would find the damage.
+		const seeded = await seedProduct();
+		// The publish gate as the row actually stands — a seeded row has never been
+		// published, so it is `false`, and the claim is that this save cannot MOVE
+		// it in either direction rather than that it happens to be true.
+		const before = await readProduct(seeded.productId);
+		const result = await act("products:save-identity", {
+			...carrierFor(seeded),
+			sku: `${seeded.sku}-OK`,
 			title: "Renamed by the admin",
-			active: "false",
+			active: "true",
 		});
-		expect(patchBody()).not.toHaveProperty("title");
-		expect(patchBody()).not.toHaveProperty("active");
-		expect(JSON.stringify(patchBody())).not.toContain("Renamed by the admin");
+		// The hostile keys are DROPPED at the wire builder, not refused: the save
+		// itself is a legitimate one.
+		expect(result.notice?.title).toBe("Saved");
+		const row = await readProduct(seeded.productId);
+		expect(row.title).toBe("Blue Widget");
+		expect(row.active).toBe(before.active);
 	});
 
-	test("a save with NO `expectedUpdatedAt` refuses rather than PATCHing unchecked", async () => {
-		// The watermark is what the service's optimistic concurrency compares. A
-		// save that omits it is a clobber of whatever landed since the form was
-		// drawn, so its absence is an unreadable payload — not permission.
+	test("a save with NO `expectedUpdatedAt` refuses rather than writing unchecked", async () => {
+		// The watermark is what the store's optimistic concurrency compares. A save
+		// that omits it is a clobber of whatever landed since the form was drawn, so
+		// its absence is an unreadable payload — not permission.
+		const seeded = await seedProduct();
 		const payloads: Array<Record<string, string>> = [
-			{ productId: PRODUCT_ID, sku: "S-1" },
-			{ expectedUpdatedAt: UPDATED_AT, sku: "S-1" },
+			{ productId: seeded.productId, sku: `${seeded.sku}-X` },
+			{ expectedUpdatedAt: seeded.updatedAt, sku: `${seeded.sku}-X` },
 		];
 		for (const payload of payloads) {
-			service.requests.length = 0;
 			const result = await act("products:save-identity", payload);
-			expect(writes(), JSON.stringify(payload)).toHaveLength(0);
 			expect(result.notice?.title, JSON.stringify(payload)).toBe("Not changed");
+			const row = await readProduct(seeded.productId);
+			expect(row.sku, JSON.stringify(payload)).toBe(seeded.sku);
+			expect(row.updatedAt.toISOString(), JSON.stringify(payload)).toBe(seeded.updatedAt);
 		}
 	});
 
@@ -399,50 +456,75 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		// THE TWO WATERMARKS ARE GUARDED SYMMETRICALLY (INC-R3 review). A blank
 		// stock watermark has always been refused at this boundary, because
 		// `parseOnHandWatermark` rejects `""`. The edit watermark used to be
-		// forwarded instead and refused downstream, where `""` matches no
-		// `updatedAt` and comes back STALE_EDIT — fail-closed, but by a different
-		// route. Two watermarks on one screen guarded on two different tiers is a
-		// trap for whoever changes either tier next, so an empty or whitespace-only
-		// watermark is now an unreadable payload, exactly like an absent one, and
-		// NOTHING is sent.
+		// forwarded instead and refused a tier down, where `""` matched no
+		// `updatedAt` and came back stale — fail-closed, but by a different route.
+		// Two watermarks on one screen guarded on two different tiers is a trap for
+		// whoever changes either tier next, so an empty or whitespace-only watermark
+		// is an unreadable payload here, exactly like an absent one, and NOTHING is
+		// written. (`requireWatermark` in `commerce-input.ts` refuses a blank one on
+		// the client side too, so the two tiers agree rather than overlap by luck.)
+		const seeded = await seedProduct();
 		for (const blank of ["", "   "]) {
-			service.requests.length = 0;
 			const result = await act("products:save-identity", {
-				...carrier,
+				...carrierFor(seeded),
 				expectedUpdatedAt: blank,
-				sku: "S-1",
+				sku: `${seeded.sku}-X`,
 			});
-			expect(writes(), JSON.stringify(blank)).toHaveLength(0);
 			expect(result.notice?.title, JSON.stringify(blank)).toBe("Not changed");
+			expect((await readProduct(seeded.productId)).sku, JSON.stringify(blank)).toBe(seeded.sku);
 		}
 		// The stock watermark's half of the symmetry is asserted by "DA-3a is not
 		// opt-out" below, which runs the same two blanks through a removal.
 	});
 
-	test("a save carries a CONTENT-DERIVED Idempotency-Key, and the same submission replays to the same key", async () => {
-		// F-2a: a content hash of the submitted wire plus `expectedUpdatedAt`. Not a
-		// nonce — a render-time nonce would make a double-submit two distinct saves.
-		await act("products:save-identity", { ...carrier, sku: "SKU-A" });
-		const first = header(patch(), "Idempotency-Key");
-		expect(first).toMatch(new RegExp(`^${PRODUCT_ID}:edit:`));
+	test("THE REPLAY CASE: one rendered form submitted twice applies ONCE and still reads Saved", async () => {
+		// F-2a: the key is a content hash of the submitted wire plus
+		// `expectedUpdatedAt`. Not a nonce — a render-time nonce would make a
+		// double-submit two distinct saves.
+		//
+		// THE KEY IS NOT OBSERVABLE ANY MORE. It used to be read off an
+		// `Idempotency-Key` header; in-process it is an argument to
+		// `updateProductCommerceFields`. So it is proven by what it buys: the store
+		// gives replay precedence over its own compare-and-set, so a resubmission
+		// under the SAME key answers `ok` with the row the first one wrote — whereas
+		// a second, DIFFERENT edit carrying that same now-stale watermark is refused
+		// as stale, which is the third act below and is what makes this a test of
+		// the key rather than of the watermark.
+		const seeded = await seedProduct();
+		const renamed = `${seeded.sku}-A`;
+		await act("products:save-identity", { ...carrierFor(seeded), sku: renamed });
+		const afterFirst = await readProduct(seeded.productId);
+		expect(afterFirst.sku).toBe(renamed);
 
-		service.requests.length = 0;
-		await act("products:save-identity", { ...carrier, sku: "SKU-A" });
-		expect(header(patch(), "Idempotency-Key")).toBe(first);
+		const replay = await act("products:save-identity", { ...carrierFor(seeded), sku: renamed });
+		expect(replay.notice?.title).toBe("Saved");
+		const afterReplay = await readProduct(seeded.productId);
+		// ONE write, not two: the replay did not re-stamp `updatedAt`.
+		expect(afterReplay.updatedAt.toISOString()).toBe(afterFirst.updatedAt.toISOString());
 
-		// ...and a DIFFERENT edit is a different key, so it is not deduped away.
-		service.requests.length = 0;
-		await act("products:save-identity", { ...carrier, sku: "SKU-B" });
-		expect(header(patch(), "Idempotency-Key")).not.toBe(first);
+		const other = await act("products:save-identity", {
+			...carrierFor(seeded),
+			sku: `${seeded.sku}-B`,
+		});
+		expect(other.notice?.title).toBe("This product changed since you opened it");
+		expect((await readProduct(seeded.productId)).sku).toBe(renamed);
 	});
 
-	test("a concurrent-edit conflict (409 STALE_EDIT) reports a re-apply warning, never a clobber", async () => {
-		service.respondWith("PATCH", () => ({
-			status: 409,
-			body: { reason: "STALE_EDIT", currentUpdatedAt: "2026-07-30T00:00:00.000Z" },
-		}));
+	test("a concurrent-edit conflict reports a re-apply warning, never a clobber", async () => {
+		// A REAL stale watermark now: the row moved after the form was drawn, and
+		// the store's compare-and-set is what notices. The retired version of this
+		// test injected a `409 STALE_EDIT` body, which could only ever prove the
+		// plugin re-worded a status code.
+		const seeded = await seedProduct();
+		await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "21.00",
+			currency: "USD",
+			compareAt: "",
+			unitCost: "",
+		});
 		const result = await act("products:save-price", {
-			...carrier,
+			...carrierFor(seeded),
 			price: "24.99",
 			currency: "USD",
 			compareAt: "",
@@ -451,25 +533,63 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("This product changed since you opened it");
 		expect(String(result.notice?.description)).toContain("NOT applied");
+		// The first save stands; the second was NOT applied over it.
+		expect((await readProduct(seeded.productId)).price).toEqual({ amount: 2100, currency: "USD" });
 	});
 
-	test("the service's other refusals each get their own words, not one opaque failure", async () => {
-		const cases: Array<[Record<string, unknown>, number, string]> = [
-			[{ reason: "SKU_TAKEN", sku: "SKU-DUP" }, 409, "SKU already in use"],
-			[{ reason: "CURRENCY_MISMATCH", currency: "EUR" }, 409, "Currency cannot be changed here"],
-			[{ field: "price" }, 400, "Invalid value"],
-			[{}, 404, "Product not found"],
-		];
-		for (const [body, status, title] of cases) {
-			service.respondWith("PATCH", () => ({ status, body }));
-			const result = await act("products:save-identity", { ...carrier, sku: "S-1" });
-			expect(result.notice?.variant, title).toBe("error");
-			expect(result.notice?.title, title).toBe(title);
-		}
+	test("the other refusals each get their own words, not one opaque failure", async () => {
+		// Each is provoked with real state rather than an injected status code,
+		// which is the only way left to reach them: the service that used to answer
+		// 409/400/404 is gone, and every one of these is now a typed result or a
+		// typed error out of the domain.
+		const seeded = await seedProduct();
+
+		// SKU already in use — another LIVE product holds the claim on that sku.
+		const occupied = await seedProduct();
+		const taken = await act("products:save-identity", {
+			...carrierFor(seeded),
+			sku: occupied.sku,
+		});
+		expect(taken.notice?.variant).toBe("error");
+		expect(taken.notice?.title).toBe("SKU already in use");
+		expect(String(taken.notice?.description)).toContain(occupied.sku);
+
+		// Currency cannot be changed here — the row is priced in USD.
+		const currencyMismatch = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "24.50",
+			currency: "EUR",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(currencyMismatch.notice?.title).toBe("Currency cannot be changed here");
+
+		// Invalid value — the input boundary refusing a product id that is not an id
+		// token (it carries whitespace), which is the case the wire's schema 400
+		// used to cover.
+		const invalid = await act("products:save-identity", {
+			productId: "bad id",
+			expectedUpdatedAt: seeded.updatedAt,
+			sku: `${NS}-SKU-nowhere`,
+		});
+		expect(invalid.notice?.title).toBe("Invalid value");
+
+		// Product not found — an id no row carries.
+		const missing = await act("products:save-identity", {
+			productId: `${NS}-prod-nowhere`,
+			expectedUpdatedAt: seeded.updatedAt,
+			sku: `${NS}-SKU-nowhere`,
+		});
+		expect(missing.notice?.title).toBe("Product not found");
+
+		// None of the four wrote anything.
+		const row = await readProduct(seeded.productId);
+		expect(row.sku).toBe(seeded.sku);
+		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 
 	// -- the two RENAME refusals, and where they belong -------------------------
-	// The service answers a machine code plus operands; the sentence an operator
+	// The domain raises a typed error carrying operands; the sentence an operator
 	// reads is composed HERE and nowhere else, so these assertions are on the copy
 	// itself rather than on a code the console would have to re-word. Each names
 	// what the operator has to know to act — which skus, or how many holds — and
@@ -477,11 +597,14 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 	// caused it instead of at the top of the screen.
 
 	test("a rename onto an occupied sku names BOTH skus, says nothing moved, and belongs to the SKU field", async () => {
-		service.respondWith("PATCH", () => ({
-			status: 409,
-			body: { ok: false, reason: "SKU_STOCK_CONFLICT", fromSku: "SKU-1", toSku: "SKU-RETIRED" },
-		}));
-		const result = await act("products:save-identity", { ...carrier, sku: "SKU-RETIRED" });
+		// The target sku has an inventory document and no live owner — units that
+		// belong to nobody living, which is exactly the case "occupied is occupied"
+		// refuses rather than merging.
+		const seeded = await seedProduct();
+		const retired = `${NS}-SKU-retired-${String(seq)}`;
+		await inventory.seedOnHand(retired, 7);
+
+		const result = await act("products:save-identity", { ...carrierFor(seeded), sku: retired });
 
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("That SKU already has stock of its own");
@@ -490,11 +613,14 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		// clause that reads as broken English around the value it interpolates,
 		// which is exactly the defect this file exists to catch.
 		expect(sentence).toBe(
-			'Nothing was changed. Stock is never merged between SKUs, and "SKU-RETIRED" already has ' +
-				'its own inventory record — so "SKU-1" was not renamed onto it. Rename to a SKU that has ' +
-				'never held stock, or move the units under "SKU-RETIRED" elsewhere first.',
+			`Nothing was changed. Stock is never merged between SKUs, and "${retired}" already has ` +
+				`its own inventory record — so "${seeded.sku}" was not renamed onto it. Rename to a SKU ` +
+				`that has never held stock, or move the units under "${retired}" elsewhere first.`,
 		);
 		expect(result.field).toBe("sku");
+		// Nothing moved: the row keeps its sku and the target keeps its units.
+		expect((await readProduct(seeded.productId)).sku).toBe(seeded.sku);
+		expect(await inventory.findOnHand(retired)).toBe(7);
 	});
 
 	test("a rename blocked by live holds names the sku AND the count, and the whole sentence agrees with it", async () => {
@@ -502,15 +628,32 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		// over — at the verb ("1 live reservation still hold units") and again at the
 		// pronoun the advice refers back with ("once those have been paid", of one
 		// reservation). Both forms are pinned WHOLE, end to end, for that reason.
-		for (const [liveHolds, clause, settled] of [
-			[3, '3 live reservations still hold units of "SKU-1"', "those have"],
-			[1, '1 live reservation still holds units of "SKU-1"', "it has"],
+		//
+		// The holds are REAL reservations against the source sku, taken through the
+		// inventory adapter: the state `SkuStockTransfer` refuses on, rather than a
+		// count an HTTP fixture asserted.
+		for (const [liveHolds, settled] of [
+			[3, "those have"],
+			[1, "it has"],
 		] as const) {
-			service.respondWith("PATCH", () => ({
-				status: 409,
-				body: { ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds },
-			}));
-			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
+			const seeded = await seedProduct();
+			for (let i = 0; i < liveHolds; i++) {
+				const held = await inventory.reserve(
+					seeded.sku,
+					1,
+					idempotencyKey(`${NS}-hold-${String(seq)}-${String(i)}`),
+				);
+				expect(held.ok, `reservation ${String(i)} of ${String(liveHolds)}`).toBe(true);
+			}
+			const clause =
+				liveHolds === 1
+					? `1 live reservation still holds units of "${seeded.sku}"`
+					: `${String(liveHolds)} live reservations still hold units of "${seeded.sku}"`;
+
+			const result = await act("products:save-identity", {
+				...carrierFor(seeded),
+				sku: `${seeded.sku}-MOVED`,
+			});
 
 			expect(result.notice?.variant, clause).toBe("error");
 			expect(result.notice?.title, clause).toBe("This SKU has reservations in flight");
@@ -520,95 +663,64 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 					`${settled} been paid, cancelled or expired, usually a few minutes.`,
 			);
 			expect(result.field, clause).toBe("sku");
-		}
-	});
-
-	test("an operand the service did not send degrades to a phrase that still reads as a sentence", async () => {
-		// Every one of these is unreachable while the service sends what it says it
-		// sends — which is precisely why they are pinned: a degraded branch nobody
-		// reads is where "Nothing was changed. that SKU already has…" ships.
-		//
-		// A HOLD COUNT IS NEVER GUESSED AT. `0` beside a refusal CAUSED by holds
-		// reads as "no holds", which is the one thing the sentence must not say, so
-		// the copy drops the figure and keeps the fact (absent is absent, CLAUDE.md).
-		const cases: Array<[Record<string, unknown>, string]> = [
-			[
-				{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1" },
-				'Nothing was changed: live reservations still hold units of "SKU-1", and',
-			],
-			[
-				{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds: "many" },
-				'Nothing was changed: live reservations still hold units of "SKU-1", and',
-			],
-			[
-				{ ok: false, reason: "SKU_HELD_STOCK", liveHolds: 2 },
-				"Nothing was changed: 2 live reservations still hold units of this SKU, and",
-			],
-			[
-				{ ok: false, reason: "SKU_STOCK_CONFLICT", fromSku: "SKU-1" },
-				"Nothing was changed. Stock is never merged between SKUs, and the SKU you asked for " +
-					'already has its own inventory record — so "SKU-1" was not renamed onto it.',
-			],
-			[
-				{ ok: false, reason: "SKU_STOCK_CONFLICT", toSku: "SKU-RETIRED" },
-				'Nothing was changed. Stock is never merged between SKUs, and "SKU-RETIRED" already ' +
-					"has its own inventory record — so this product's SKU was not renamed onto it.",
-			],
-		];
-		for (const [body, opening] of cases) {
-			service.respondWith("PATCH", () => ({ status: 409, body }));
-			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
-			const sentence = String(result.notice?.description);
-			expect(sentence, JSON.stringify(body)).toContain(opening);
-			expect(sentence, JSON.stringify(body)).not.toContain("0 live");
-			// No empty quotes anywhere: a sku called nothing is not a fallback.
-			expect(sentence, JSON.stringify(body)).not.toContain('""');
-			expect(result.field, JSON.stringify(body)).toBe("sku");
+			expect((await readProduct(seeded.productId)).sku, clause).toBe(seeded.sku);
 		}
 	});
 
 	test("every OTHER outcome names no field at all — the top of the screen is still the default", async () => {
 		// The plain edit path is untouched by the two refusals above: a save, a
-		// stale watermark and the live-sku collision all still report where they
-		// always did, and a screen reading `field` gets nothing to route on.
-		const cases: Array<[number, Record<string, unknown>]> = [
-			[200, { ok: true, updatedAt: UPDATED_AT }],
-			[409, { reason: "STALE_EDIT", currentUpdatedAt: "2026-07-30T00:00:00.000Z" }],
-			[409, { reason: "SKU_TAKEN", sku: "SKU-DUP" }],
-			// The 400's own `field` is the SERVICE naming an out-of-range input, and it
-			// is not this outcome's field: one names a value the domain rejected, the
-			// other is where a sentence renders. Letting them cross would put the
-			// price validator's copy beside the SKU input.
-			[400, { field: "price" }],
-			[404, {}],
-		];
-		for (const [status, body] of cases) {
-			service.respondWith("PATCH", () => ({ status, body }));
-			const result = await act("products:save-identity", { ...carrier, sku: "S-1" });
-			expect(result.field, JSON.stringify(body)).toBeUndefined();
-			expect(result.notice, JSON.stringify(body)).not.toBeNull();
-		}
+		// stale watermark, the live-sku collision and an unknown product all still
+		// report where they always did, and a screen reading `field` gets nothing to
+		// route on.
+		const seeded = await seedProduct();
+		const occupied = await seedProduct();
+
+		const saved = await act("products:save-identity", {
+			...carrierFor(seeded),
+			sku: `${seeded.sku}-OK`,
+		});
+		expect(saved.notice?.title).toBe("Saved");
+		expect(saved.field).toBeUndefined();
+
+		// The same watermark again — now stale, because the save above moved it.
+		const stale = await act("products:save-identity", {
+			...carrierFor(seeded),
+			sku: `${seeded.sku}-AGAIN`,
+		});
+		expect(stale.notice?.title).toBe("This product changed since you opened it");
+		expect(stale.field).toBeUndefined();
+
+		const fresh = (await readProduct(seeded.productId)).updatedAt.toISOString();
+		const collision = await act("products:save-identity", {
+			productId: seeded.productId,
+			expectedUpdatedAt: fresh,
+			sku: occupied.sku,
+		});
+		expect(collision.notice?.title).toBe("SKU already in use");
+		expect(collision.field).toBeUndefined();
+
+		const missing = await act("products:save-identity", {
+			productId: `${NS}-prod-nowhere-2`,
+			expectedUpdatedAt: fresh,
+			sku: `${NS}-SKU-nowhere-2`,
+		});
+		expect(missing.notice?.title).toBe("Product not found");
+		expect(missing.field).toBeUndefined();
 	});
 
 	// -- restock (DA-4: one-shot, no staging) -----------------------------------
 
-	test("a restock POSTs {qty} with BOTH tokens and a content-derived key (no nonce)", async () => {
+	test("a restock ADDS the units to the real count and says what the count is now", async () => {
+		const seeded = await seedProduct({ onHand: 42 });
 		const result = await act("products:restock", {
-			productId: PRODUCT_ID,
+			productId: seeded.productId,
 			onHand: "42",
 			qty: "8",
 		});
-		const post = postTo("/restock");
-		expect(post).toBeDefined();
-		expect(post?.body).toEqual({ qty: 8 });
-		// F-2a: `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus
-		// the watermark the operator saw.
-		expect(header(post, "Idempotency-Key")).toBe(`${PRODUCT_ID}:restock:42:8`);
-		expect(header(post, "X-Internal-Token")).toBe(ADMIN_TOKEN);
-		expect(header(post, "X-Service-Token")).toBe(SERVICE_TOKEN);
 		expect(result.notice?.variant).toBe("default");
 		expect(result.notice?.title).toBe("Stock added");
 		expect(String(result.notice?.description)).toContain("Added 8 units");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
 	});
 
 	test("a restock does NOT re-read stock first — it is additive, and the watermark is only a key component", async () => {
@@ -616,157 +728,161 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		// stock cannot oversell anything, so it is one-shot. Its watermark buys
 		// idempotency, not a staleness check, and pretending otherwise would put a
 		// round trip on the cheap path.
-		await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty: "8" });
-		expect(service.requests.filter((r) => r.method === "GET")).toHaveLength(0);
+		//
+		// The retired suite proved this by counting GETs to the stub. There is no
+		// request to count now, so it is proven by the BEHAVIOUR the absent re-read
+		// produces: the payload's watermark disagrees with live stock, and the
+		// restock applies anyway — which a DA-3a re-read would have refused.
+		const seeded = await seedProduct({ onHand: 30 });
+		const result = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "42", // a stale count; a removal refuses on exactly this
+			qty: "8",
+		});
+		expect(result.notice?.title).toBe("Stock added");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(38);
 	});
 
-	test("a non-positive or non-integer restock quantity is refused at the boundary — nothing is POSTed", async () => {
+	test("a non-positive or non-integer restock quantity is refused at the boundary — nothing is added", async () => {
+		const seeded = await seedProduct({ onHand: 42 });
 		for (const qty of ["-4", "0", "1.5", "abc", ""]) {
-			service.requests.length = 0;
-			const result = await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty });
-			expect(writes(), qty).toHaveLength(0);
+			const result = await act("products:restock", {
+				productId: seeded.productId,
+				onHand: "42",
+				qty,
+			});
 			expect(result.notice?.variant, qty).toBe("error");
+			expect(await inventory.findOnHand(seeded.sku), qty).toBe(42);
 		}
 	});
 
-	test("THE REPLAY CASE: one rendered form submitted twice derives ONE key; a fresh watermark derives another", async () => {
+	test("THE REPLAY CASE, on stock: one rendered form submitted twice moves ONCE; a fresh watermark moves again", async () => {
 		// The whole reason the key is content-derived rather than a nonce. A
 		// double-click of the same control must dedupe, and two DELIBERATE restocks
 		// of the same size must both apply — which they do because the second is
 		// taken against the on-hand the first produced.
-		let onHand = 42;
-		const applied = new Map<string, number>();
-		service.respondWith("POST", (request) => {
-			const key = header(request, "Idempotency-Key") ?? "";
-			const already = applied.get(key);
-			if (already !== undefined) return { status: 200, body: { ok: true, onHand: already } };
-			onHand += (request.body as { qty?: number } | undefined)?.qty ?? 0;
-			applied.set(key, onHand);
-			return { status: 200, body: { ok: true, onHand } };
-		});
+		const seeded = await seedProduct({ onHand: 42 });
+		const payload = { productId: seeded.productId, onHand: "42", qty: "8" };
 
-		await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty: "8" });
-		const replay = await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty: "8" });
-		const posts = service.requests.filter((r) => r.method === "POST");
-		expect(posts).toHaveLength(2);
-		expect(header(posts[0], "Idempotency-Key")).toBe(header(posts[1], "Idempotency-Key"));
-		// TWO requests, ONE movement: 42 + 8, and the replay is answered with the
+		await act("products:restock", payload);
+		const replay = await act("products:restock", payload);
+		// TWO submissions, ONE movement: 42 + 8, and the replay is answered with the
 		// same figure rather than 58.
-		expect(onHand).toBe(50);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
 		expect(String(replay.notice?.description)).toContain("50");
 
 		// A re-render reads the NEW on-hand, so the next submission carries a
 		// different watermark ⇒ a different key ⇒ a second, deliberate restock.
-		await act("products:restock", { productId: PRODUCT_ID, onHand: "50", qty: "8" });
-		const all = service.requests.filter((r) => r.method === "POST");
-		expect(header(all[2], "Idempotency-Key")).not.toBe(header(all[0], "Idempotency-Key"));
-		expect(onHand).toBe(58);
+		await act("products:restock", { productId: seeded.productId, onHand: "50", qty: "8" });
+		expect(await inventory.findOnHand(seeded.sku)).toBe(58);
 	});
 
 	// -- remove stock (the screen's ONE destructive act) ------------------------
 
-	test("a removal re-reads live stock, then POSTs under the derived key", async () => {
+	test("a removal re-reads live stock, then removes exactly the units asked for", async () => {
+		const seeded = await seedProduct({ onHand: 42 });
 		const result = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
+			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
 		});
-		expect(service.requests.some((r) => r.method === "GET")).toBe(true);
-		const post = postTo("/remove-stock");
-		expect(post?.body).toEqual({ qty: 5 });
-		expect(header(post, "Idempotency-Key")).toBe(`${PRODUCT_ID}:removal:42:5`);
 		expect(result.notice?.variant).toBe("default");
 		expect(result.notice?.title).toBe("Stock removed");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(37);
 	});
 
-	test("DA-3a: stock that moved since the operator saw it refuses the removal, names the new figure, and POSTs NOTHING", async () => {
+	test("DA-3a: stock that moved since the operator saw it refuses the removal, names the new figure, and removes NOTHING", async () => {
 		// THE GATE. The operator opened a confirm against 42; someone else removed
 		// 12 in the meantime, so the dialog they read is already false. Nothing may
 		// move, and the refusal has to say what the count is NOW — an operator who
 		// is not told the new figure retries the same wrong amount.
-		live.onHand = 30;
+		const seeded = await seedProduct({ onHand: 30 });
 		const result = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
+			productId: seeded.productId,
 			qty: "10", // valid against the stale 42 AND against the live 30
 			onHand: "42",
 		});
-		expect(writes()).toHaveLength(0);
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
 		expect(String(result.notice?.description)).toContain("30 units are on hand now");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(30);
 	});
 
 	test("DA-3a: a re-read carrying NO inventory record gets its own sentence, never a count of zero", async () => {
 		// `null` is "this sku has no inventory record", which is not "0 units". A
 		// refusal reading "0 units are on hand now" would state a count nobody took.
-		live.onHand = null;
+		const seeded = await seedProduct({ onHand: null });
+		expect(await inventory.findOnHand(seeded.sku)).toBeNull();
 		const result = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
+			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
 		});
-		expect(writes()).toHaveLength(0);
 		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
 		expect(String(result.notice?.description)).toContain("no longer has an inventory record");
 		expect(String(result.notice?.description)).not.toContain("0 units");
+		expect(await inventory.findOnHand(seeded.sku)).toBeNull();
 	});
 
-	test("DA-3a is not opt-out: a removal payload with the watermark STRIPPED refuses, with no re-read at all", async () => {
+	test("DA-3a is not opt-out: a removal payload with the watermark STRIPPED refuses, and removes nothing", async () => {
 		// An absent watermark has exactly two sources — a payload edited in
 		// devtools, or a tab rendered before the watermark existed, which is
 		// precisely the stale view DA-3a is for — and refusing is right for both.
 		// The refusal happens BEFORE the re-read, because no re-read can supply a
 		// watermark the operator never sent; tolerating it would remove the
 		// staleness check entirely while looking like caution.
+		const seeded = await seedProduct({ onHand: 42 });
 		for (const onHand of [undefined, "", "  ", "-1", "4.5", "abc"]) {
-			service.requests.length = 0;
 			const result = await act("products:remove-stock", {
-				productId: PRODUCT_ID,
+				productId: seeded.productId,
 				qty: "5",
 				...(onHand === undefined ? {} : { onHand }),
 			});
-			expect(service.requests, JSON.stringify(onHand)).toHaveLength(0);
 			expect(result.notice?.title, JSON.stringify(onHand)).toBe("Not changed");
+			expect(await inventory.findOnHand(seeded.sku), JSON.stringify(onHand)).toBe(42);
 		}
 	});
 
 	test("a removal whose product could not be re-read applies NOTHING and says so", async () => {
-		service.respondWith("GET", () => ({ status: 500, body: {} }));
 		const result = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
+			productId: `${NS}-prod-nowhere-3`,
 			qty: "5",
 			onHand: "42",
 		});
-		expect(writes()).toHaveLength(0);
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Nothing was removed");
 	});
 
-	test("the SERVICE's guarded decrement still surfaces a clean refusal — never a negative", async () => {
-		// The race the plugin's re-read cannot always catch: stock moves between the
-		// re-read and the write. The service applies a guarded decrement and refuses
-		// with the current count, and this is now the ONLY bound check on the path
-		// (the client-side one lived on the unreached `-review` step — ADR-0015).
-		live.onHand = 777;
+	test("the DOMAIN's guarded decrement still surfaces a clean refusal — never a negative", async () => {
+		// The bound the re-read cannot enforce: the operator's observed count is
+		// CURRENT (so DA-3a passes) and the quantity is simply larger than it. The
+		// domain applies a guarded decrement and refuses with the live count, and
+		// this is now the ONLY bound check on the path — the client-side one lived
+		// on the unreached `-review` step (ADR-0015).
+		const seeded = await seedProduct({ onHand: 42 });
 		const result = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
-			qty: "777",
-			onHand: "777",
+			productId: seeded.productId,
+			qty: "50",
+			onHand: "42",
 		});
-		expect(postTo("/remove-stock")).toBeDefined();
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Not enough stock to remove");
-		expect(String(result.notice?.description)).toContain("42");
+		expect(String(result.notice?.description)).toContain("Only 42 units on hand");
+		expect(String(result.notice?.description)).toContain("you cannot remove 50");
+		// Never a negative, and never a partial removal.
+		expect(await inventory.findOnHand(seeded.sku)).toBe(42);
 	});
 
 	test("a movement against a sku with no stock record names the state and the way out", async () => {
-		service.respondWith("POST", () => ({
-			status: 409,
-			body: { ok: false, reason: "NO_INVENTORY_ROW" },
-		}));
-		const result = await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty: "1" });
+		const seeded = await seedProduct({ onHand: null });
+		const result = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "42",
+			qty: "1",
+		});
 		expect(result.notice?.title).toBe("No stock record yet");
 		expect(String(result.notice?.description)).toContain("Re-save the SKU");
+		expect(await inventory.findOnHand(seeded.sku)).toBeNull();
 	});
 
 	// -- copy ------------------------------------------------------------------
@@ -791,13 +907,17 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		];
 		for (const text of copy) expect(text, text).not.toMatch(banned);
 
-		live.onHand = 30;
+		const seeded = await seedProduct({ onHand: 30 });
 		const refusal = await act("products:remove-stock", {
-			productId: PRODUCT_ID,
+			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
 		});
-		const ok = await act("products:restock", { productId: PRODUCT_ID, onHand: "42", qty: "1" });
+		const ok = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "30",
+			qty: "1",
+		});
 		for (const outcome of [refusal, ok]) {
 			expect(JSON.stringify(outcome)).not.toMatch(banned);
 		}

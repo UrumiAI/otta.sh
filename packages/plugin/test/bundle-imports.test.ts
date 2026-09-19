@@ -202,19 +202,4 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 			expect(unexpected, `${file} carries unexpected bare specifiers`).toEqual([]);
 		}
 	});
-
-	test('the tsdown `define` reaches the bundle: the mode is baked as "http"', () => {
-		// TRANSITIONAL (work order 02 D6) — deleted with the flag at INC-D3b.
-		// Without this, `noExternal` could be right while the define silently
-		// never applied, leaving `__OTTA_COMMERCE_MODE__` a free identifier in the
-		// worker bundle. The `typeof` guard would keep that SAFE, so nothing would
-		// fail — the mode would simply stop being something a build declares, and
-		// the first site that wanted in-process would find the flag inert.
-		const baked = emitted.filter((e) => e.source.includes('resolveCommerceModeFrom("http")'));
-		expect(baked.length).toBeGreaterThan(0);
-		for (const { file, source } of emitted) {
-			// The un-substituted form must be gone, not merely accompanied.
-			expect(source, file).not.toMatch(/resolveCommerceModeFrom\(\s*typeof\s/);
-		}
-	});
 });

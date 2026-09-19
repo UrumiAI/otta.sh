@@ -118,14 +118,14 @@ export interface ReportingSettingsClientOptions {
 	 *  client makes — the `/reports/*` reads (review J5) AND `GET /settings`,
 	 *  which is admin surface too (ADR-0010). Received here as a constructor
 	 *  option; the handlers source it from write-only `ctx.kv`
-	 *  (`settings:internalToken`) via `readAdminTokens`. The client itself never
+	 *  from write-only plugin kv. The client itself never
 	 *  persists it. The privileged `PUT /settings` write uses THIS token too:
 	 *  `updateSettings` attaches `opts.adminToken ?? this.#adminToken`, so a
 	 *  per-call token overrides it and the constructor's is the fallback — which is
 	 *  the only path production takes, because the sole caller passes none. */
 	adminToken?: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
-	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  (ADR-0007), sourced from write-only `ctx.kv`.
 	 *  `PUT /settings` is a NON-GET, so the gate blocks it without this when the
 	 *  service secret is set — hence it is attached to the PUT. The `/reports/*`
 	 *  and `GET /settings` reads are exempt from THAT gate (it skips GET/HEAD), so

@@ -87,7 +87,6 @@ describe("webhooks/stripe/settle under workerd", () => {
 		}));
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
 			storage: true,
 		});
 
@@ -170,7 +169,6 @@ describe("webhooks/stripe/settle under workerd", () => {
 		}));
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
 			storage: true,
 		});
 		await sandbox.invokeRoute("admin", {

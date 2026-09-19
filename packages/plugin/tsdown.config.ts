@@ -47,14 +47,4 @@ export default defineConfig({
 		"@otta-sh/payments-x402",
 		"@otta-sh/store-emdash",
 	],
-	/**
-	 * TRANSITIONAL (work order 02 D6): the default commerce mode for a plain
-	 * `tsdown` build is the HTTP transport — exactly today's behaviour. A
-	 * deploying site overrides it with its own bundler `define`
-	 * (`sites/staging/astro.config.ts`). DELETED at INC-D3b, when in-process is
-	 * the only mode.
-	 */
-	define: {
-		__OTTA_COMMERCE_MODE__: JSON.stringify("http"),
-	},
 });
