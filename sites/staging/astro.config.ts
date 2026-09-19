@@ -197,8 +197,11 @@ export default defineConfig({
 			// TRANSITIONAL (work order 02 D6): which commerce transport the
 			// plugin bundle is built for. `"in-process"` as of INC-D1 — commerce
 			// truth lives on ctx.storage in this Worker and no @otta-sh/service
-			// call is made; `"http"` was the prior behaviour and is still what
-			// other deployments build. NOT a literal here: it comes from the
+			// call is made; `"http"` was the prior behaviour and NOTHING builds
+			// it any more (INC-D1 flipped staging to in-process, and `sites/`
+			// contains staging alone) — that arm survives for the per-mode tests
+			// and for nothing else, until INC-D3b deletes it outright.
+			// NOT a literal here: it comes from the
 			// single `commerceMode` const above, which ALSO decides what
 			// `buildEmdashOptions` registers, so the bundle's branch and the
 			// descriptor's storage/allowedHosts can never be two different

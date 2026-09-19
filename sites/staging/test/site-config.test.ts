@@ -943,6 +943,21 @@ describe("astro.config", () => {
 				args[2],
 				"buildEmdashOptions must be passed the same egress const the defines bake",
 			).toBe(egressDefine?.[1]);
+			// BOTH egress defines, not just the email one: a future edit that split the
+			// facilitator URL onto a second const would leave its host un-allowlisted
+			// while this test stayed green (review round 4).
+			const facilitatorDefine =
+				/__OTTA_X402_FACILITATOR_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.facilitatorUrl/.exec(
+					source,
+				);
+			expect(
+				facilitatorDefine?.[1],
+				"__OTTA_X402_FACILITATOR_URL__ must be baked from a named const",
+			).toBeTypeOf("string");
+			expect(
+				facilitatorDefine?.[1],
+				"both egress defines must come from the SAME const buildEmdashOptions is passed",
+			).toBe(args[2]);
 
 			// With the source tie pinned, rebuilding the descriptor from the baked
 			// values is a meaningful check of the two halves' agreement.

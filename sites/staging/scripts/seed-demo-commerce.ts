@@ -461,7 +461,8 @@ export async function fetchCmsProducts(
 export type SeedOutcome =
 	| { kind: "priced"; activated: boolean; stocked: number }
 	| { kind: "skipped"; reason: string }
-	| { kind: "skipped-inactive"; reason: string };
+	| { kind: "skipped-inactive"; reason: string }
+	| { kind: "skipped-unstocked"; reason: string };
 
 export interface SeedDeps {
 	/** The SITE — the only address this script needs now that commerce is
@@ -620,6 +621,17 @@ export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<Seed
 			// loudly rather than counted as "left as-is" or healed behind their back.
 			return { kind: "skipped-inactive", reason: `already priced (sku ${sku}) but NOT ACTIVE` };
 		}
+		if (existing !== null && existing.onHand === 0) {
+			// Priced, active, listed — and at ZERO STOCK, so every add-to-cart fails.
+			// This is what an earlier run that DIED between `products:save-identity`
+			// and `products:restock` leaves behind (it has happened on a live run), and
+			// the generic skip below would report it as "left as-is": the same
+			// looks-fine lie the inactive branch above exists to prevent, on the stock
+			// axis. Report it, and still write nothing — the stock is the merchant's.
+			// A KNOWN zero only: `null` is "no inventory record read", not empty, and
+			// claiming a stranding on an unreadable count would cry wolf.
+			return { kind: "skipped-unstocked", reason: `already priced (sku ${sku}) but ZERO STOCK` };
+		}
 		return { kind: "skipped", reason: `already priced (sku ${sku})` };
 	}
 
@@ -686,6 +698,15 @@ async function main(): Promise<void> {
 			);
 			continue;
 		}
+		if (outcome.kind === "skipped-unstocked") {
+			stranded.push(row.slug);
+			// `warn`, not `info` — priced, active and at zero stock is INVISIBLY
+			// broken: the product lists normally and only fails at add-to-cart.
+			console.warn(
+				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It is on sale but UNBUYABLE — every add-to-cart will fail. This is what a run interrupted between pricing and restocking leaves behind. Nothing was written to it: the stock level is yours to set, from Pricing & inventory.`,
+			);
+			continue;
+		}
 		if (outcome.kind === "skipped") {
 			skipped++;
 			console.info(`[otta]   ${where} — SKIPPED, ${outcome.reason}; left untouched`);
@@ -697,12 +718,12 @@ async function main(): Promise<void> {
 		);
 	}
 
-	// The summary must never read as success while a product is stranded
-	// priced-but-inactive — that state is invisible in the storefront and was
-	// exactly what the old "left as-is" wording papered over.
+	// The summary must never read as success while a product is stranded — priced
+	// but inactive, or priced but at zero stock. Both states look fine from the
+	// admin list and are exactly what the old "left as-is" wording papered over.
 	if (stranded.length > 0) {
 		console.warn(
-			`[otta] done — ${priced} priced, ${skipped} left as-is, and ${stranded.length} PRICED BUT NOT ACTIVE and therefore not on sale: ${stranded.join(", ")}. See the lines above.`,
+			`[otta] done — ${priced} priced, ${skipped} left as-is, and ${stranded.length} STRANDED and not buyable (not active, or zero stock): ${stranded.join(", ")}. See the lines above.`,
 		);
 		return;
 	}

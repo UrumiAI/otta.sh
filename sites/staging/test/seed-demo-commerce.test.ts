@@ -316,6 +316,32 @@ describe("seed-demo-commerce", () => {
 		expect(calls.map((c) => c.step)).toEqual(["read"]);
 	});
 
+	test("RE-RUN over a PRICED-BUT-UNSTOCKED row reports it distinctly — priced, active and unbuyable is not success", async () => {
+		// THE CRASH-BETWEEN-STEPS CASE (review round 4). A run that dies between
+		// `products:save-identity` and `products:restock` leaves the product priced,
+		// active, listed — and at zero stock, so every add-to-cart fails. On the
+		// retry the sku makes `shouldPrice` false and the generic skip would report
+		// it as "left as-is", which is the same "looks fine" lie the inactive branch
+		// already exists to prevent. Structurally identical guard, on the stock axis:
+		// SAY so, and write nothing (the stock is the merchant's to set).
+		const { calls, deps } = stubSite([detailRow({ sku: "OTTA-TEE", active: true, onHand: 0 })]);
+		const outcome = await seedOneProduct(TEE, deps);
+
+		expect(outcome).toEqual({
+			kind: "skipped-unstocked",
+			reason: "already priced (sku OTTA-TEE) but ZERO STOCK",
+		});
+		expect(calls.map((c) => c.step)).toEqual(["read"]);
+	});
+
+	test("a priced row whose stock is UNKNOWN (`onHand: null`) is a plain skip, not a stranding report", async () => {
+		// `null` is "no inventory record read", NOT zero — claiming a stranding on an
+		// unreadable count would cry wolf on every run. Only a KNOWN zero strands.
+		const { deps } = stubSite([detailRow({ sku: "OTTA-TEE", active: true, onHand: null })]);
+		const outcome = await seedOneProduct(TEE, deps);
+		expect(outcome).toEqual({ kind: "skipped", reason: "already priced (sku OTTA-TEE)" });
+	});
+
 	test("THE UNPUBLISH IS NOT UNDONE: no publish is sent for ANY product this script skips", async () => {
 		// THE REGRESSION THIS PINS (review round 3, A1). A publish is not a probe:
 		// `content:afterPublish` upserts the commerce row and opens the publish
