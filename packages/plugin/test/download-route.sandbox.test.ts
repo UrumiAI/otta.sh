@@ -1,144 +1,175 @@
-import { signStripeWebhook } from "@otta-sh/payments-stripe";
-import { afterEach, describe, expect, test } from "vitest";
+/**
+ * Step 4.9 (download leg): the entitlement-gated digital download under the
+ * workerd-on-Node sandbox. The route authorizes delivery ONLY when an active
+ * entitlement exists — the file is never served without one.
+ *
+ * WHAT INC-D3a CHANGED HERE. The check used to be a request to a REAL service
+ * over `ctx.http`, and this suite stood that service up on Postgres to answer
+ * it. The transport is gone — the check is a read against the plugin's own
+ * document store on `ctx.storage` — so there is no service to start, no
+ * `commerceServiceBaseUrl` to hand the sandbox, and no Postgres in this file at
+ * all. The fixtures are written through the same `@otta-sh/store-emdash`
+ * adapters the plugin composes, and the grant mirrors, key for key, what
+ * `settleOrder` writes on a paid digital line (`ent:{order}:{sku}`, source
+ * `order_paid`) — the settle path itself is proven by its own sandbox suite, so
+ * repeating it here would only make this suite about a different subject.
+ *
+ * THE SUITE IS NO LONGER GATED, and that is deliberate rather than incidental:
+ * a `PG_CONNECTION_STRING` gate is what let this file rot silently through a
+ * whole retrofit, because a skipped suite is green.
+ *
+ * EGRESS IS ASSERTED BY CONSTRUCTION, more strictly than the old "the allowlist
+ * blocked the service host" case could: the boot declares NO allowed hosts at
+ * all, so any `ctx.http` call from this route throws. Every authorization below
+ * is therefore reached without touching the network. What replaces that case is
+ * the one failure mode the collapse introduced and the one this route must never
+ * get wrong — a boot with NO document store authorizes NOTHING (last case).
+ *
+ * The plugin holds no secret either way: `SandboxOptions` has no secret field at
+ * all, so none can even be handed to the sandbox.
+ */
 import {
-	LIVE_STRIPE_WEBHOOK_SECRET,
-	type LiveService,
-	startLiveService,
-} from "./helpers/start-live-service.js";
+	cents,
+	currency,
+	email as toEmail,
+	idempotencyKey,
+	orderId as toOrderId,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
+import {
+	EmdashCredentialVerifier,
+	EmdashCustomerStore,
+	EmdashEntitlementStore,
+	EmdashInventoryStore,
+	EmdashOrderStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
-// Step 4.9 (download leg): the entitlement-gated digital download under the
-// workerd-on-Node sandbox. The plugin route authorizes delivery ONLY when the
-// REAL service's entitlement check (reached via ctx.http + allowedHosts, the
-// plugin's sole egress) returns an active row — the file is never served
-// without one, and the plugin holds no secret (the webhook signing secret
-// below is used exclusively test-side to pay the order through the service's
-// own receiver; `SandboxOptions` has no secret field at all, so none can even
-// be handed to the sandbox). Postgres-required (the live service).
+/** A namespace no other suite writes under — the document store is
+ *  process-scoped and shared by every sandbox suite in this process. */
+const NS = "dl";
+const SKU = `SKU-${NS}-DIG`;
+const BUYER_REF = `${NS}-buyer@example.test`;
 
-const PG = process.env.PG_CONNECTION_STRING;
+let sandbox: SandboxHandle;
+let storage: StorageAccess;
+let orderStore: EmdashOrderStore;
+let entitlementStore: EmdashEntitlementStore;
+let credentialVerifier: EmdashCredentialVerifier;
 
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
-	for (const fn of cleanups.splice(0)) await fn();
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	const customerStore = new EmdashCustomerStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	credentialVerifier = new EmdashCredentialVerifier({
+		storage,
+		customerStore,
+		idGen: uuidIdGen,
+		clock: systemClock,
+	});
+	orderStore = new EmdashOrderStore({
+		storage,
+		inventory: new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock }),
+		idGen: uuidIdGen,
+		clock: systemClock,
+	});
+	entitlementStore = new EmdashEntitlementStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	// NO allowed hosts — see the module doc's egress note.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox?.close();
 });
 
-async function setup(): Promise<{ live: LiveService; sandbox: SandboxHandle }> {
-	const live = await startLiveService();
-	cleanups.push(() => live.stop());
-	const sandbox = await loadPluginInSandbox({
-		allowedHosts: [live.host],
+/** A one-line digital order (never reserves — §6) under `BUYER_REF`, UNPAID:
+ *  it carries no entitlement of its own until {@link payOrder} runs. */
+async function createDigitalOrder(slug: string): Promise<string> {
+	const id = `order-${NS}-${slug}`;
+	await orderStore.createFromCart({
+		orderId: toOrderId(id),
+		cartId: null,
+		currency: currency("USD"),
+		idempotencyKey: idempotencyKey(`seed-${id}`),
+		holdExpiresAt: "2099-01-01T00:00:00.000Z",
+		buyerRef: BUYER_REF,
+		paymentMethod: "stripe",
+		lines: [
+			{
+				productId: toProductId(`prod-${NS}-dig`),
+				sku: toSku(SKU),
+				title: "Digital Widget",
+				unitPrice: cents(900),
+				currency: currency("USD"),
+				quantity: 1,
+				fulfillmentKind: "digital",
+				reservationId: null,
+			},
+		],
+		totals: { subtotal: cents(900), total: cents(900), currency: currency("USD") },
 	});
-	cleanups.push(() => sandbox.close());
-	return { live, sandbox };
+	return id;
 }
 
-const BUYER_REF = "buyer@example.com";
-
-/** Seed a digital product (never reserves — §6) and check out a one-line
- *  order for it, paid via `paymentMethod: "stripe"`. */
-async function createDigitalOrder(
-	live: LiveService,
-): Promise<{ orderId: string; totalCents: number }> {
-	await fetch(`${live.baseUrl}/products/pdig/commerce`, {
-		method: "PUT",
-		headers: { "content-type": "application/json", "Idempotency-Key": "seed-pdig" },
-		body: JSON.stringify({
-			sku: "DIG-1",
-			price: { amount: 900, currency: "USD" },
-			title: "Digital Widget",
-			productKind: "digital",
-		}),
+/**
+ * Pay the order, exactly as `settleOrder` does on a verified `paid` webhook:
+ * flip the order and grant the digital line's entitlement under the SAME
+ * deterministic grant-once key (`ent:{order}:{sku}`), scoped to both the order
+ * id and the buyer ref — which is what makes the two download scopes below hit
+ * the one row.
+ */
+async function payOrder(orderId: string): Promise<void> {
+	await orderStore.markPaid(toOrderId(orderId));
+	await entitlementStore.grant({
+		orderId: toOrderId(orderId),
+		productId: toProductId(`prod-${NS}-dig`),
+		sku: toSku(SKU),
+		buyerRef: BUYER_REF,
+		source: "order_paid",
+		grantIdempotencyKey: idempotencyKey(`ent:${orderId}:${SKU}`),
 	});
-	const cart = (await (
-		await fetch(`${live.baseUrl}/carts`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ currency: "USD" }),
-		})
-	).json()) as { cartId: string };
-	await fetch(`${live.baseUrl}/carts/${cart.cartId}/lines`, {
-		method: "POST",
-		headers: { "content-type": "application/json", "Idempotency-Key": "add-dig-1" },
-		body: JSON.stringify({ sku: "DIG-1", qty: 1, productId: "pdig" }),
-	});
-	const co = (await (
-		await fetch(`${live.baseUrl}/checkout/orders`, {
-			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": "co-dig-1" },
-			body: JSON.stringify({ cartId: cart.cartId, paymentMethod: "stripe", buyerRef: BUYER_REF }),
-		})
-	).json()) as { order: { id: string; totals: { totalCents: number } } };
-	return { orderId: co.order.id, totalCents: co.order.totals.totalCents };
 }
 
-/** Settle the order through the service's own verified webhook receiver —
- *  on `paid` a digital line grants the entitlement (settle §5/§6). */
-async function payOrder(live: LiveService, orderId: string, totalCents: number): Promise<void> {
-	const signed = await signStripeWebhook(
-		{
-			eventId: `evt_${orderId}`,
-			type: "payment_intent.succeeded",
-			paymentIntentId: `pi_${orderId}`,
-			orderId,
-			amountCents: totalCents,
-			currency: "usd",
-		},
-		LIVE_STRIPE_WEBHOOK_SECRET,
-	);
-	const res = await fetch(`${live.baseUrl}/webhooks/stripe`, {
-		method: "POST",
-		headers: { "content-type": "application/json", "stripe-signature": signed.signatureHeader },
-		// `store-emdash`'s project reference drags in `astro-jsx.d.ts`'s DOM lib reference,
-		// shadowing Node's `BodyInit`: DOM pins its member to `ArrayBufferView<ArrayBuffer>`,
-		// which `signed.body`'s runtime type `Uint8Array<ArrayBufferLike>` doesn't satisfy.
-		body: signed.body as BodyInit,
+/** A real session for `email`, redeemed THROUGH the plugin's own login route —
+ *  the bearer a theme's first-party cookie layer would hold. */
+async function loginSession(email: string): Promise<string> {
+	const issued = await credentialVerifier.issueChallenge(toEmail(email));
+	if (!issued.ok) throw new Error(`login: challenge not issued (${issued.reason})`);
+	const verify = await sandbox.invokeRoute("storefront/account/login/verify", {
+		challengeId: issued.challengeId,
+		token: issued.token,
 	});
-	expect(res.status).toBe(200);
+	const result = (verify as { result?: { ok: boolean; cookie?: { value: string } } }).result;
+	if (result === undefined || !result.ok || result.cookie === undefined) {
+		throw new Error(`login: verify failed (${JSON.stringify(verify)})`);
+	}
+	return result.cookie.value;
 }
 
-/** Full magic-link login against the LIVE service → the bearer session token,
- *  exactly as the theme's first-party cookie layer would obtain it. */
-async function loginSession(live: LiveService, email: string): Promise<string> {
-	const reqRes = await fetch(`${live.baseUrl}/auth/login/request`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ email }),
-	});
-	expect(reqRes.status).toBe(200);
-	const sends = live.emailSender.sends.filter((s) => s.template === "customer-login-link");
-	const last = sends[sends.length - 1]!;
-	const verifyRes = await fetch(`${live.baseUrl}/auth/login/verify`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({
-			challengeId: last.data["challengeId"],
-			token: last.data["token"],
-		}),
-	});
-	expect(verifyRes.status).toBe(200);
-	return ((await verifyRes.json()) as { sessionToken: string }).sessionToken;
-}
-
-describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)", () => {
+describe("entitlement-gated download (workerd sandbox)", () => {
 	test("a paid digital order's download is authorized — by orderId scope and by session scope", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId, totalCents } = await createDigitalOrder(live);
-		await payOrder(live, orderId, totalCents);
+		const orderId = await createDigitalOrder("paid");
+		await payOrder(orderId);
 
-		const byOrder = await sandbox.invokeRoute("entitlements/download", { orderId, sku: "DIG-1" });
-		expect(byOrder).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+		const byOrder = await sandbox.invokeRoute("entitlements/download", { orderId, sku: SKU });
+		expect(byOrder).toEqual({ result: { authorized: true, sku: SKU } });
 
 		// Issue #33 / ADR-0011: a logged-in customer authorizes via their SESSION
-		// (the service derives the email server-side) — the plugin never forwards
-		// a raw email. `BUYER_REF` is the checkout email, and the session for it
-		// hits the same entitlement row.
-		const sessionToken = await loginSession(live, BUYER_REF);
+		// (the email is derived from the session's customer server-side) — the
+		// plugin never forwards a raw email. `BUYER_REF` is the checkout email, and
+		// the session for it hits the same entitlement row.
+		const sessionToken = await loginSession(BUYER_REF);
 		const bySession = await sandbox.invokeRoute("entitlements/download", {
 			sessionToken,
-			sku: "DIG-1",
+			sku: SKU,
 		});
-		expect(bySession).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+		expect(bySession).toEqual({ result: { authorized: true, sku: SKU } });
 	});
 
 	// Precedence-bug coverage (review): when the theme supplies BOTH `orderId`
@@ -146,116 +177,112 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 	// logged-in customer's OWN entitlement — the route retries session-scoped on
 	// an inactive orderId result (see the comment in download-route.ts).
 	test("both orderId AND sessionToken present: a stale/unrelated orderId does not shadow the session's own entitlement", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId, totalCents } = await createDigitalOrder(live);
-		await payOrder(live, orderId, totalCents);
-		const sessionToken = await loginSession(live, BUYER_REF);
+		const orderId = await createDigitalOrder("prec-paid");
+		await payOrder(orderId);
+		const sessionToken = await loginSession(BUYER_REF);
 
 		// A second, unrelated order for the same buyer — NEVER paid, so it carries
 		// no entitlement of its own. A theme bug (or a stale query param from
 		// another tab) supplies this orderId alongside a perfectly valid session.
-		const { orderId: staleOrderId } = await createDigitalOrder(live);
+		const staleOrderId = await createDigitalOrder("prec-stale");
 
 		const result = await sandbox.invokeRoute("entitlements/download", {
 			orderId: staleOrderId,
 			sessionToken,
-			sku: "DIG-1",
+			sku: SKU,
 		});
-		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+		expect(result).toEqual({ result: { authorized: true, sku: SKU } });
 	});
 
 	test("both orderId AND sessionToken present: a valid orderId authorizes even with an unrelated stranger's session", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId, totalCents } = await createDigitalOrder(live);
-		await payOrder(live, orderId, totalCents);
-		const strangerSession = await loginSession(live, "stranger@example.com");
+		const orderId = await createDigitalOrder("stranger-paid");
+		await payOrder(orderId);
+		const strangerSession = await loginSession(`${NS}-stranger@example.test`);
 
 		const result = await sandbox.invokeRoute("entitlements/download", {
 			orderId,
 			sessionToken: strangerSession,
-			sku: "DIG-1",
+			sku: SKU,
 		});
-		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+		expect(result).toEqual({ result: { authorized: true, sku: SKU } });
 	});
 
 	test("both orderId AND sessionToken present: neither scope entitled → NOT_ENTITLED, not UNAUTHENTICATED", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId: staleOrderId } = await createDigitalOrder(live); // unpaid
-		const strangerSession = await loginSession(live, "stranger2@example.com");
+		const staleOrderId = await createDigitalOrder("neither"); // unpaid
+		const strangerSession = await loginSession(`${NS}-stranger2@example.test`);
 
 		const result = await sandbox.invokeRoute("entitlements/download", {
 			orderId: staleOrderId,
 			sessionToken: strangerSession,
-			sku: "DIG-1",
+			sku: SKU,
 		});
 		expect(result).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
 	});
 
 	test("route input with a raw buyerRef is ignored — no orderId/session scope ⇒ INVALID_INPUT (the plugin never forwards emails)", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId, totalCents } = await createDigitalOrder(live);
-		await payOrder(live, orderId, totalCents);
+		const orderId = await createDigitalOrder("buyerref");
+		await payOrder(orderId);
 
 		const byBuyer = await sandbox.invokeRoute("entitlements/download", {
 			buyerRef: BUYER_REF,
-			sku: "DIG-1",
+			sku: SKU,
 		});
 		expect(byBuyer).toEqual({ result: { authorized: false, reason: "INVALID_INPUT" } });
 	});
 
 	test("an invalid session (no orderId scope) is the typed UNAUTHENTICATED, not a throw", async () => {
-		const { sandbox } = await setup();
 		const bad = await sandbox.invokeRoute("entitlements/download", {
 			sessionToken: "not-a-real-session-token",
-			sku: "DIG-1",
+			sku: SKU,
 		});
 		expect(bad).toEqual({ result: { authorized: false, reason: "UNAUTHENTICATED" } });
 	});
 
 	test("an unpaid order (no entitlement row) is denied NOT_ENTITLED; a paid order's wrong sku is denied too", async () => {
-		const { live, sandbox } = await setup();
-		const { orderId } = await createDigitalOrder(live);
+		const unpaidOrderId = await createDigitalOrder("unpaid");
 		// NOT paid — settle never ran, so no entitlement row exists.
-		const unpaid = await sandbox.invokeRoute("entitlements/download", { orderId, sku: "DIG-1" });
+		const unpaid = await sandbox.invokeRoute("entitlements/download", {
+			orderId: unpaidOrderId,
+			sku: SKU,
+		});
 		expect(unpaid).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
 
 		// And an entitlement never covers a sku it wasn't granted for.
+		const paidOrderId = await createDigitalOrder("wrong-sku");
+		await payOrder(paidOrderId);
 		const wrongSku = await sandbox.invokeRoute("entitlements/download", {
-			orderId,
-			sku: "SOME-OTHER-SKU",
+			orderId: paidOrderId,
+			sku: `${SKU}-OTHER`,
 		});
 		expect(wrongSku).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
 	});
 
 	test("malformed input (no sku, or no orderId/session scope) is the typed INVALID_INPUT, not a throw", async () => {
-		const { sandbox } = await setup();
-		const noSku = await sandbox.invokeRoute("entitlements/download", { orderId: "o-1" });
+		const noSku = await sandbox.invokeRoute("entitlements/download", { orderId: `order-${NS}-x` });
 		expect(noSku).toEqual({ result: { authorized: false, reason: "INVALID_INPUT" } });
 
-		const noScope = await sandbox.invokeRoute("entitlements/download", { sku: "DIG-1" });
+		const noScope = await sandbox.invokeRoute("entitlements/download", { sku: SKU });
 		expect(noScope).toEqual({ result: { authorized: false, reason: "INVALID_INPUT" } });
 	});
 
-	test("the route's only egress is the guarded ctx.http bridge: with the service host NOT in allowedHosts the check is blocked, nothing is authorized", async () => {
-		const live = await startLiveService();
-		cleanups.push(() => live.stop());
-		const { orderId, totalCents } = await createDigitalOrder(live);
-		await payOrder(live, orderId, totalCents);
+	test("with NO document store bound the route authorizes NOTHING: it fails closed on the missing store", async () => {
+		// The one failure mode the mode collapse introduced. Commerce truth is the
+		// document store now, so a deployment that never declared the commerce
+		// collections has no entitlement rows to read — and the ONLY safe answer to
+		// "may this file be served" is then a refusal. A route that fell back to a
+		// default, or that treated an absent store as an empty one, would authorize
+		// a download nobody ever paid for.
+		const orderId = await createDigitalOrder("nostore");
+		await payOrder(orderId); // genuinely entitled — against the store this boot lacks
 
-		// Same live service, but the sandbox's allowlist excludes it. If the
-		// route had ANY path to the network besides ctx.http+allowedHosts, this
-		// entitled request could still verify and authorize; instead the bridge
-		// rejects the fetch and the invocation surfaces an error — proving the
-		// allowlist is the plugin's entire outbound surface (DEVELOPMENT.md §5).
-		const sandbox = await loadPluginInSandbox({
-			allowedHosts: ["definitely-not-the-service.example"],
-		});
-		cleanups.push(() => sandbox.close());
-
-		const outcome = await sandbox.invokeRoute("entitlements/download", { orderId, sku: "DIG-1" });
-		expect("error" in outcome).toBe(true);
-		if ("error" in outcome) {
-			expect(outcome.error).toMatch(/not allowed to fetch/i);
+		const unstoraged = await loadPluginInSandbox({ allowedHosts: [] });
+		try {
+			const outcome = await unstoraged.invokeRoute("entitlements/download", { orderId, sku: SKU });
+			expect("error" in outcome).toBe(true);
+			if ("error" in outcome) expect(outcome.error).toContain(MISSING_STORAGE_MESSAGE);
+			expect(JSON.stringify(outcome)).not.toContain('"authorized":true');
+		} finally {
+			await unstoraged.close();
 		}
-	});
+	}, 300_000);
 });
