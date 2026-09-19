@@ -25,6 +25,8 @@
 import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
+	COMMERCE_STORAGE_COLLECTIONS,
+	COMMERCE_STORAGE_COLLECTION_NAMES,
 	PAYMENT_SECRET_KEYS,
 	STRIPE_API_HOST,
 	COUPONS_PAGE,
@@ -134,12 +136,128 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor).not.toHaveProperty("componentsEntry");
 	});
 
-	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {
-		// Phase 7's settings form uses ctx.kv, which em-dash provides
-		// UNGATED (context.ts: "Always available") — no capability, no
-		// storage declaration. Capabilities therefore stay exactly the two
-		// in the manifest (pinned above).
+	test('declares no storage collections on the "http" arm (the service holds commerce truth)', () => {
+		// Phase 7's settings form uses ctx.kv, which em-dash provides UNGATED
+		// (context.ts: "Always available") — no capability, no storage
+		// declaration. On the http arm commerce truth lives in the SERVICE's
+		// Postgres, so the plugin occupies no host storage at all and this key is
+		// absent. INC-D1 adds it on the in-process arm ONLY; see the block below.
 		expect(descriptor.storage).toBeUndefined();
+		expect(ottaPluginDescriptor(SERVICE_URL, { mode: "http" }).storage).toBeUndefined();
+	});
+});
+
+/**
+ * INC-D1 — the in-process descriptor's `storage` declaration, EXACTLY.
+ *
+ * This is the half of the fold-in the allowlist block below cannot see. Flipping
+ * `__OTTA_COMMERCE_MODE__` to `"in-process"` moves commerce truth from the
+ * service's Postgres onto `ctx.storage`, and `ctx.storage` hands a plugin ONLY the
+ * collections its DESCRIPTOR declared — `collectionOf` throws "storage collection
+ * '<name>' is not declared" for anything else. So the descriptor is not
+ * documentation here; it is the schema.
+ *
+ * AND THE INDEX LISTS ARE PART OF IT. A declared index is a READ CONTRACT: the
+ * host validates every `where`/`orderBy` field against this declaration and
+ * REFUSES an undeclared one at runtime (`storage-query.ts`: "Add '<field>' to
+ * storage.<collection>.indexes"). A descriptor that named all 36 collections but
+ * dropped one index would not be slower — `orders` would stop being listable by
+ * state, and it would fail in production, not in the build. That is why every
+ * assertion below compares the WHOLE map or the WHOLE index list, never a subset.
+ *
+ * NOTHING HERE IS TRANSCRIBED. The expected value is `COMMERCE_STORAGE_COLLECTIONS`
+ * itself — the union `@otta-sh/plugin` assembles from the twelve per-adapter
+ * declarations — rather than a hand-copied snapshot that would rot.
+ *
+ * AND BE HONEST ABOUT WHAT THAT COSTS (review round 3, B4). `commerceStorage()`
+ * returns that import BY REFERENCE, so every `toEqual` below is comparing an
+ * object with itself and CANNOT detect the adapters and the descriptor drifting
+ * apart — no assertion phrased this way ever could, because there is only one
+ * value. What these cases are is a REGRESSION GUARD in one direction: the day
+ * someone replaces the spread with a literal list, or drops a collection on the
+ * way through, or lets the in-process arm stop declaring storage at all, these
+ * stop passing. That is worth having; it is just not drift detection, and the
+ * previous wording claimed it was.
+ */
+describe("ottaPluginDescriptor storage, per mode, EXACTLY (INC-D1)", () => {
+	const inProcess = ottaPluginDescriptor(SERVICE_URL, { mode: "in-process" });
+
+	test("the in-process descriptor declares the commerce storage layout, whole", () => {
+		expect(inProcess.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
+	});
+
+	test("the declared collection set is EXACTLY the adapters' — no extras, none missing", () => {
+		// Sorted on both sides: a missing collection and a leaked extra are both
+		// failures, and key order in the spread is not a contract.
+		expect(Object.keys(inProcess.storage ?? {}).toSorted()).toEqual(
+			[...COMMERCE_STORAGE_COLLECTION_NAMES].toSorted(),
+		);
+	});
+
+	test("every collection's index AND uniqueIndex list matches the adapter's, entry for entry", () => {
+		// Per collection rather than one deep-equal, so a failure names the
+		// collection that drifted instead of printing a 32-entry diff.
+		for (const [name, declared] of Object.entries(COMMERCE_STORAGE_COLLECTIONS)) {
+			const actual = (inProcess.storage ?? {})[name];
+			expect(actual, `collection '${name}' is not declared by the descriptor`).toBeDefined();
+			expect(actual?.indexes, `indexes drifted on '${name}'`).toEqual(declared.indexes);
+			expect(actual?.uniqueIndexes, `uniqueIndexes drifted on '${name}'`).toEqual(
+				declared.uniqueIndexes,
+			);
+		}
+	});
+
+	test("COMPOSITE index declarations survive into the descriptor as arrays", () => {
+		// The one shape a naive `string[]` typing would silently flatten or drop.
+		// `orders` declares `["state","createdAt"]` and `order_sku_index` declares
+		// `["sku","createdAt"]`; a flattened composite is a DIFFERENT index, and the
+		// list query that needs it would fail at runtime with no build-time signal.
+		const orders = (inProcess.storage ?? {})["orders"]?.indexes ?? [];
+		expect(orders.some((entry) => Array.isArray(entry))).toBe(true);
+		expect(orders).toContainEqual(["state", "createdAt"]);
+		expect((inProcess.storage ?? {})["order_sku_index"]?.indexes).toContainEqual([
+			"sku",
+			"createdAt",
+		]);
+	});
+
+	test("the declaration is NOT VACUOUS — it is the whole 36-collection layout", () => {
+		// Without this, every assertion above passes over an empty object if the
+		// import ever resolves to `{}`.
+		expect(Object.keys(inProcess.storage ?? {}).length).toBe(
+			COMMERCE_STORAGE_COLLECTION_NAMES.length,
+		);
+		expect(COMMERCE_STORAGE_COLLECTION_NAMES.length).toBeGreaterThan(20);
+	});
+
+	test("declaring storage buys NO new capability — still EXACTLY the manifest's two", () => {
+		// `ctx.storage` is ungated in em-dash's vocabulary: there is no "storage"
+		// capability string to ask for, and the gate is the declaration itself. The
+		// sandbox-clean contract (`capabilities` are exactly the manifest's) must
+		// therefore survive the fold-in untouched — this is the assertion that would
+		// catch someone "fixing" a storage error by widening capabilities.
+		expect(inProcess.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
+	});
+
+	test("the in-process descriptor stays standard format with NO React entry", () => {
+		// A `format: "standard"` descriptor that declares `adminEntry` THROWS at
+		// build time ("Standard plugins use Block Kit for admin UI, not React
+		// components"). Folding the service in changes the transport, not the admin
+		// UI kit, and nothing about `storage` may be taken as licence to move.
+		expect(inProcess.format).toBe("standard");
+		expect(inProcess).not.toHaveProperty("adminEntry");
+		expect(inProcess).not.toHaveProperty("componentsEntry");
+		expect(inProcess.fieldWidgets).toBeUndefined();
+	});
+
+	test("the in-process descriptor keeps the same five Block Kit admin pages", () => {
+		expect(inProcess.adminPages).toEqual([
+			REPORTS_PAGE,
+			SETTINGS_PAGE,
+			TAX_PAGE,
+			SHIPPING_PAGE,
+			COUPONS_PAGE,
+		]);
 	});
 });
 
@@ -333,6 +451,36 @@ describe("buildEmdashOptions", () => {
 			entrypoint: "@emdash-cms/cloudflare/storage/r2",
 			config: { binding: "MEDIA" },
 		});
+	});
+
+	/**
+	 * INC-D1 review round 3, B1 — the egress URLs reach the DESCRIPTOR, not only the
+	 * bundle's defines.
+	 *
+	 * `manifest.ts` resolves `__OTTA_EMAIL_API_URL__` / `__OTTA_X402_FACILITATOR_URL__`
+	 * from Vite defines to decide whether the bundle builds an `EmailSender` and a
+	 * facilitator client at all. `allowedHosts` decides whether those calls are
+	 * permitted. Before this parameter existed the second half was unreachable: the
+	 * descriptor structurally could not allowlist either host, so the first build to
+	 * set an egress define would ship a sender aimed at a host the gate refuses —
+	 * every send failing, rows rescheduling to `failed`, and the sweep leg reporting
+	 * `count: 0` instead of the honest `skipped`.
+	 */
+	test("threads the in-process egress URLs into the registered descriptor's allowlist", () => {
+		const hosts = buildEmdashOptions(SERVICE_URL, "in-process", {
+			emailApiUrl: "https://api.email.example.com/v1/send",
+			facilitatorUrl: "https://facilitator.example.com",
+		}).plugins[0]?.allowedHosts;
+		expect(sorted(hosts)).toEqual(
+			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+		);
+	});
+
+	test("with no egress configured the allowlist is EXACTLY Stripe — fail-closed, unchanged", () => {
+		// Staging today supplies neither URL, so this is the list it actually ships.
+		expect(buildEmdashOptions(SERVICE_URL, "in-process").plugins[0]?.allowedHosts).toEqual([
+			STRIPE_API_HOST,
+		]);
 	});
 
 	test("registers the Otta plugin FIRST, trusted, unchanged", () => {
@@ -698,24 +846,136 @@ describe("astro.config", () => {
 	);
 
 	test(
-		'the commerce mode rides a THIRD build-time define, and this site is still "http"',
+		'the commerce mode rides a THIRD build-time define, and staging is now "in-process"',
 		async () => {
 			// TRANSITIONAL (work order 02 D6). `__OTTA_COMMERCE_MODE__` selects the
 			// plugin's commerce transport at BUILD time: "http" talks to
-			// @otta-sh/service over ctx.http, "in-process" will hold commerce truth
-			// on ctx.storage. The define, the factory branch it drives, the service
-			// and this assertion are all DELETED at INC-D3b — the flag exists only
-			// so the client contract can be run against both implementations before
-			// the HTTP one is removed, and must not be treated as permanent.
+			// @otta-sh/service over ctx.http, "in-process" holds commerce truth on
+			// ctx.storage and needs no service. The define, the factory branch it
+			// drives, the service and this assertion are all DELETED at INC-D3b — the
+			// flag exists only so the client contract can be run against both
+			// implementations before the HTTP one is removed, and must not be treated
+			// as permanent.
 			//
-			// It must be PRESENT, not merely correct: an absent define leaves the
-			// identifier undeclared in the worker bundle, and while the plugin's
-			// `typeof` guard makes that safe, baking the mode explicitly is what
-			// makes a site's transport readable from its own config.
+			// INC-D1 flips STAGING, and staging only. It must be PRESENT, not merely
+			// correct: an absent define leaves the identifier undeclared in the worker
+			// bundle, and while the plugin's `typeof` guard makes that safe, baking the
+			// mode explicitly is what makes a site's transport readable from its config.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).toContain("__OTTA_COMMERCE_MODE__");
-			expect(JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null")).toBe("http");
+			expect(JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null")).toBe("in-process");
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
+
+	/**
+	 * INC-D1, THE LOAD-BEARING ONE — the baked define and the REGISTERED descriptor
+	 * must describe the same transport.
+	 *
+	 * They are resolved in two different places and it is entirely possible for them
+	 * to disagree. `astro.config.ts` runs in NODE at config time, where
+	 * `__OTTA_COMMERCE_MODE__` does not exist — Vite applies a `define` to the
+	 * BUNDLE, never to the config module that declares it. So a descriptor built by
+	 * calling the plugin's own `resolveCommerceMode()` from this file would resolve
+	 * to the "http" DEFAULT no matter what the define says.
+	 *
+	 * The failure that produces is silent and total: the bundle holds commerce truth
+	 * on `ctx.storage`, while the descriptor declares no storage collections and an
+	 * allowlist containing the (now nonexistent) service host. Every commerce read
+	 * throws "storage collection 'carts' is not declared", and nothing about the
+	 * build says so. Hence the site resolves the mode ONCE and passes it in
+	 * explicitly, and hence this test.
+	 */
+	test(
+		"the baked mode and the REGISTERED descriptor cannot disagree about the transport",
+		async () => {
+			const config = (await import("../astro.config.js")).default;
+			const define = config.vite?.define as Record<string, string>;
+			const bakedMode = JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null") as string;
+			const bakedServiceUrl = JSON.parse(
+				define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null",
+			) as string;
+
+			// THE TIE IS PINNED IN THE SOURCE, NOT BY REBUILDING THE VALUE (review
+			// round 3, A3). `config.integrations` cannot answer this: `emdash()`
+			// captures its options in a closure and hands Astro back `{name, hooks}`,
+			// so the registered descriptor is not reachable from here. And calling
+			// `buildEmdashOptions(bakedServiceUrl, bakedMode)` here and comparing it to
+			// `ottaPluginDescriptor(bakedServiceUrl, {mode: bakedMode})` compares two
+			// values derived from ONE input — it is green no matter what the config
+			// registers, including for the precise mistake this whole `commerceMode`
+			// const exists to prevent: `emdash(buildEmdashOptions(serviceUrl))` with the
+			// mode argument dropped, which in Node resolves to the "http" default while
+			// the define still bakes "in-process".
+			//
+			// So read the source and require that ONE NAMED CONST feeds both consumers.
+			// Same technique this file already uses for the wrangler pairing invariant.
+			const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+			const modeDefine = /__OTTA_COMMERCE_MODE__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\)/.exec(
+				source,
+			);
+			expect(modeDefine?.[1], "__OTTA_COMMERCE_MODE__ must be baked from a named const").toBeTypeOf(
+				"string",
+			);
+			const registration = /emdash\(\s*buildEmdashOptions\(([^)]*)\)/.exec(source);
+			expect(registration?.[1], "the config must register via buildEmdashOptions(...)").toBeTypeOf(
+				"string",
+			);
+			const args = (registration?.[1] ?? "").split(",").map((a) => a.trim());
+			// Argument 2 is the mode, and it must be the SAME identifier the define
+			// bakes. An omitted argument fails here as `undefined`.
+			expect(
+				args[1],
+				"buildEmdashOptions must be passed the same mode const the define bakes",
+			).toBe(modeDefine?.[1]);
+			// Argument 3 is the egress const, and it must likewise be the same one the
+			// two egress defines are baked from (review round 3, B1) — otherwise the
+			// bundle can hold an email/facilitator URL whose host the descriptor never
+			// allowlists, and every send is refused by the gate.
+			const egressDefine =
+				/__OTTA_EMAIL_API_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.emailApiUrl/.exec(source);
+			expect(
+				egressDefine?.[1],
+				"__OTTA_EMAIL_API_URL__ must be baked from a named const",
+			).toBeTypeOf("string");
+			expect(
+				args[2],
+				"buildEmdashOptions must be passed the same egress const the defines bake",
+			).toBe(egressDefine?.[1]);
+			// BOTH egress defines, not just the email one: a future edit that split the
+			// facilitator URL onto a second const would leave its host un-allowlisted
+			// while this test stayed green (review round 4).
+			const facilitatorDefine =
+				/__OTTA_X402_FACILITATOR_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.facilitatorUrl/.exec(
+					source,
+				);
+			expect(
+				facilitatorDefine?.[1],
+				"__OTTA_X402_FACILITATOR_URL__ must be baked from a named const",
+			).toBeTypeOf("string");
+			expect(
+				facilitatorDefine?.[1],
+				"both egress defines must come from the SAME const buildEmdashOptions is passed",
+			).toBe(args[2]);
+
+			// With the source tie pinned, rebuilding the descriptor from the baked
+			// values is a meaningful check of the two halves' agreement.
+			const registered = buildEmdashOptions(bakedServiceUrl, bakedMode as "http" | "in-process")
+				.plugins[0];
+			expect(registered).toEqual(
+				ottaPluginDescriptor(bakedServiceUrl, { mode: bakedMode as "http" | "in-process" }),
+			);
+
+			// And the two halves agree in the direction that matters: in-process ⇒
+			// storage declared and the service host GONE from the allowlist.
+			if (bakedMode === "in-process") {
+				expect(registered?.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
+				expect(registered?.allowedHosts).not.toContain(new URL(bakedServiceUrl).hostname);
+				expect(registered?.allowedHosts).toContain(STRIPE_API_HOST);
+			} else {
+				expect(registered?.storage).toBeUndefined();
+			}
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);

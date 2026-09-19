@@ -316,15 +316,13 @@ paid plan:
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
    price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
-   against the service. On a deployed site every one of these matters — in particular
-   `COMMERCE_SERVICE_URL`, whose default is `http://127.0.0.1:3000` and would point the
-   writes at localhost:
+   against the SITE. It drives the site's own admin API — the route the Pricing &
+   inventory page uses — so it needs no service URL and no service token; only the site
+   URL and a token that can read the CMS and call that route:
 
    ```bash
    SITE_URL=https://<your-site-worker>.workers.dev \
-   COMMERCE_SERVICE_URL=https://<your-service-worker>.workers.dev \
-   EMDASH_TOKEN=<an admin API token, to read the CMS> \
-   SERVICE_API_TOKEN=<only if the write gate is on> \
+   EMDASH_TOKEN=<an admin API token> \
      pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
    ```
 

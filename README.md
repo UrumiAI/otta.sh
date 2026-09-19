@@ -32,57 +32,45 @@ Otta turns an EmDash site into a store. It ships as three parts:
 
 ## Quick start (local, ~2 minutes)
 
-A full store on your laptop — no Cloudflare account, no deploy. The site's D1 content
-database and R2 media bucket are emulated locally by the Astro Cloudflare adapter; only
-the commerce Postgres is real.
+A full store on your laptop — no Cloudflare account, no deploy, no database to run. The
+site's D1 content database and R2 media bucket are emulated locally by the Astro Cloudflare
+adapter, and commerce runs **in-process** inside the same worker (the plugin owns cart,
+order and inventory state in em-dash plugin storage), so there is no separate service and
+no Postgres in the loop.
 
 ```bash
 pnpm install
 
-# 1. Commerce database — any Postgres works; a throwaway container is fastest.
-#    (Host port 55432, not 5432, so it can't collide with a local Postgres.)
-docker run -d --name otta-pg \
-  -e POSTGRES_USER=otta -e POSTGRES_PASSWORD=otta -e POSTGRES_DB=otta \
-  -p 127.0.0.1:55432:5432 postgres:16
-
-# 2. Commerce service — migrates itself forward on boot, then listens on :3000.
-PG_CONNECTION_STRING=postgres://otta:otta@127.0.0.1:55432/otta \
-  pnpm dlx tsx@4 packages/service/src/index.ts
+# 1. Storefront + admin.
+pnpm --filter @otta-sh/site-staging dev
 ```
 
-```bash
-# 3. Storefront + admin, in a second terminal.
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
-```
-
-Check the service with `curl http://127.0.0.1:3000/health` → `{"ok":true}`. Then open the
-dev-only setup bypass, which claims the site and applies the full seed including three
-sample products:
+Then open the dev-only setup bypass, which claims the site and applies the full seed
+including three sample products:
 
 ```
 http://localhost:4321/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin
 ```
 
-The seed creates the three sample products as CMS **content**. Their prices and stock live
-in the commerce service, which the seed does not touch, so give them some:
+The seed creates the three sample products as CMS **content** only — prices and stock are
+commerce fields it does not touch — so give them some:
 
 ```bash
-# 4. Price, stock and activate the demo products (third terminal, or reuse the first).
+# 2. Price, stock and activate the demo products (second terminal).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
-#    then prices and activates each one in the commerce service.
-SITE_URL=http://localhost:4321 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 \
+#    then prices and stocks each one through the SITE's own admin API — the same
+#    route the Pricing & inventory page uses, so it needs no service URL and no
+#    service token of its own.
+SITE_URL=http://localhost:4321 \
   pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
 ```
 
-`/products` now renders a priced catalog and add-to-cart takes a real inventory hold
-against Postgres. Open **Pricing & inventory** in the admin to reprice, restock, or price
-a product of your own — that page is the only place commercial fields are edited; the CMS
-owns the title, description and images.
+`/products` now renders a priced catalog and add-to-cart takes a real inventory hold. Open
+**Pricing & inventory** in the admin to reprice, restock, or price a product of your own —
+that page is the only place commercial fields are edited; the CMS owns the title,
+description and images.
 
-Two things to know: the service is run through `tsx` rather than its built `dist` bin
-because the `@otta-sh/*` packages aren't published yet and their workspace export maps point
-at TypeScript sources ([#44](https://github.com/UrumiAI/otta.sh/issues/44)); and this
-storefront covers **catalog + cart only** — see [Status](#status).
+One thing to know: this storefront covers **catalog + cart only** — see [Status](#status).
 
 To deploy this for free on Cloudflare Workers, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3.

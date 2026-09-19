@@ -57,8 +57,17 @@ export type CommerceStorageLayout = Readonly<Record<string, CommerceCollectionDe
  * than a hope, so a case pins it: a collection declared by two modules would have
  * one module's indexes silently win here, and the loser's reads would fail at
  * runtime on a field it believed it had declared.
+ *
+ * FROZEN, because as of INC-D1 this is public API handed out BY REFERENCE: the
+ * deploying site's descriptor returns this very object as its `storage` block, so
+ * any holder of it holds the schema every `collectionOf` is validated against, and
+ * a collection deleted from it at runtime is a dead commerce path. `Readonly<>`
+ * says so to the type checker only, and the site widens through a cast on the way
+ * in. The freeze is SHALLOW — enough to stop the collection SET being edited under
+ * a holder, which is the mutation that would matter; the per-collection
+ * declarations are the adapter packages' own constants and are theirs to freeze.
  */
-export const COMMERCE_STORAGE_COLLECTIONS: CommerceStorageLayout = {
+export const COMMERCE_STORAGE_COLLECTIONS: CommerceStorageLayout = Object.freeze({
 	...INVENTORY_COLLECTIONS,
 	...CART_COLLECTIONS,
 	...ORDER_COLLECTIONS,
@@ -71,7 +80,7 @@ export const COMMERCE_STORAGE_COLLECTIONS: CommerceStorageLayout = {
 	...PAYMENT_EVENT_COLLECTIONS,
 	...SETTINGS_COLLECTIONS,
 	...REPORTING_COLLECTIONS,
-};
+});
 
 /** The collection names, for a caller that needs the list rather than the map. */
 export const COMMERCE_STORAGE_COLLECTION_NAMES: readonly string[] = Object.keys(

@@ -81,6 +81,22 @@ export {
 	type ProductsActionPayload,
 	type ProductsActionResult,
 } from "./admin/products-actions.js";
+// INC-D1 — the console's two interaction types and the products resource prefix,
+// exported so an OUT-OF-BROWSER caller can drive the admin route without
+// restating its wire strings. The staging quickstart seeder is the first: with
+// commerce in-process there is no service REST API to seed through any more, so
+// the seeder posts the same `otta_console_read` / `otta_console_act` envelopes
+// the React console posts. A literal copy of "otta_console_act" in a script is a
+// string that fails by being SILENTLY UNROUTED — `admin-route.ts` dispatches on
+// exactly these values, and a stale copy produces a refusal, not an error.
+//
+// EXACTLY THE THREE THE SEEDER USES. `CONSOLE_INTERACTIONS` (the set both
+// discriminators belong to) and `ConsoleFailure` (the route's internal refusal
+// shape) were exported alongside them and have no consumer outside this package;
+// a barrel entry with no caller is API surface bought with nothing, and this
+// barrel is `@otta-sh/plugin`'s public one.
+export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
+export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
 	AdminProductsClient,
 	// The TIER-AGNOSTIC surface, and the type `dispatchProductsAction`'s third
@@ -158,6 +174,23 @@ export {
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
 export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
+// INC-D1 — the storage layout commerce truth lives in, exported so the DEPLOYING
+// SITE's plugin descriptor can declare it without restating a single collection
+// name or index list. `commerce-storage.ts` was written for exactly this moment
+// ("the descriptor WILL import it when the deployment flips to this transport");
+// until now its only consumers were this package's own test tiers, which reach the
+// module directly, so it never needed to be on the barrel.
+//
+// A DECLARED INDEX IS A READ CONTRACT, not a performance knob: the host refuses a
+// `where`/`orderBy` on an undeclared field at RUNTIME. A site that declared a
+// subset of this map would not run slower — it would throw. That is why the map is
+// exported whole and must be spread, never transcribed.
+export {
+	COMMERCE_STORAGE_COLLECTIONS,
+	COMMERCE_STORAGE_COLLECTION_NAMES,
+	type CommerceCollectionDeclaration,
+	type CommerceStorageLayout,
+} from "./commerce/commerce-storage.js";
 // INC-C4 — the scheduled commerce sweep. The task name and schedule are exported
 // so a deploying site can assert what the plugin registers without restating the
 // strings, and `runCommerceSweeps` so a trigger can drive one tick on demand.

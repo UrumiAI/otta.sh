@@ -19,6 +19,7 @@
  *    `plugins: []`, still no sandbox runner.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
+import { type CommerceMode, type InProcessEgressUrls, resolveCommerceMode } from "@otta-sh/plugin";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
 import { ottaConsoleDescriptor } from "./otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "./otta-plugin-descriptor.js";
@@ -47,7 +48,49 @@ export interface StagingEmdashOptions {
 	plugins: PluginDescriptor[];
 }
 
-export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
+/**
+ * @param mode WHICH TRANSPORT THIS BUILD REGISTERS — and why it is a parameter
+ *   rather than a `resolveCommerceMode()` call inside the descriptor.
+ *
+ *   `resolveCommerceMode()` reads `__OTTA_COMMERCE_MODE__`, a VITE DEFINE. Vite
+ *   substitutes defines when it bundles the WORKER; it does not touch
+ *   `astro.config.ts`, which Node evaluates at config time, before any bundling —
+ *   so this builder runs with the define un-substituted and the plugin's fallback
+ *   ("http") is what `resolveCommerceMode()` would answer here, no matter what the
+ *   define says. Left implicit, staging would bake `in-process` into the plugin
+ *   bundle while REGISTERING an http descriptor: no `storage` block, so every
+ *   `collectionOf` throws, and the service host still allowlisted for a service the
+ *   bundle no longer calls. Passing the mode the config itself resolved keeps the
+ *   baked transport and the registered descriptor the same decision; the
+ *   cannot-disagree test in site-config.test.ts pins it — by reading
+ *   `astro.config.ts` AS SOURCE and requiring that the identifier the define is
+ *   baked from is the identifier passed here. It has to work that way: `emdash()`
+ *   captures its options in a closure, so the registered descriptor is not
+ *   reachable from a test, and rebuilding it from the baked mode would compare two
+ *   values derived from one input and stay green for the very omission described
+ *   above (review round 3, A3).
+ *
+ *   The default exists for callers inside the bundle, where the define IS
+ *   substituted and `resolveCommerceMode()` is the right answer.
+ *
+ * @param egress THE IN-PROCESS EGRESS URLS, threaded for EXACTLY the reason
+ *   `mode` is — and the omission was a real hole (review round 3, B1). The plugin
+ *   bundle resolves `__OTTA_EMAIL_API_URL__` and `__OTTA_X402_FACILITATOR_URL__`
+ *   from Vite defines (`manifest.ts`), while the DESCRIPTOR's `allowedHosts` is
+ *   built here. With no parameter for them the descriptor could never allowlist
+ *   either host, so the first person to add one of those defines would ship a
+ *   bundle holding a live `EmailSender` aimed at a host the gate refuses: every
+ *   send fails, rows reschedule and park `failed`, and the sweep leg reports
+ *   `count: 0` rather than the honest `skipped` — the exact failure
+ *   `manifest.ts`'s `resolveInProcessEgress` note documents. Same const, both
+ *   consumers, one decision; and with nothing configured the resolved allowlist is
+ *   byte-identical to before (Stripe only).
+ */
+export function buildEmdashOptions(
+	serviceUrl: string,
+	mode: CommerceMode = resolveCommerceMode(),
+	egress: InProcessEgressUrls = {},
+): StagingEmdashOptions {
 	return {
 		// No `session` — see the pairing invariant in the module doc above.
 		database: d1({ binding: "DB" }),
@@ -61,6 +104,6 @@ export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
 		// which is why they must not be one descriptor (ADR-0014 Decision 7).
 		// ORDER IS LOAD-BEARING for the site-config test, which reads
 		// `plugins[0]` as the Block Kit descriptor.
-		plugins: [ottaPluginDescriptor(serviceUrl), ottaConsoleDescriptor()],
+		plugins: [ottaPluginDescriptor(serviceUrl, { mode, egress }), ottaConsoleDescriptor()],
 	};
 }
