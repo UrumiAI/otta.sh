@@ -162,18 +162,14 @@ export {
 } from "./admin/admin-rules-client.js";
 export {
 	ALLOWED_HOSTS,
-	COMMERCE_SERVICE_BASE_URL,
 	IN_PROCESS_EGRESS_URLS,
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
-	SERVICE_TOKEN_KEY,
-	serviceTokenFromKv,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
-export { type CommerceMode, resolveCommerceMode } from "./commerce/commerce-mode.js";
 // INC-D1 — the storage layout commerce truth lives in, exported so the DEPLOYING
 // SITE's plugin descriptor can declare it without restating a single collection
 // name or index list. `commerce-storage.ts` was written for exactly this moment

@@ -1252,7 +1252,12 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
 - Delete `__OTTA_COMMERCE_MODE__`, `resolveCommerceMode`, `__OTTA_COMMERCE_SERVICE_URL__`,
   `COMMERCE_SERVICE_BASE_URL` and the derivation of `ALLOWED_HOSTS` from it — `ALLOWED_HOSTS` becomes a
   plain literal list (Stripe API, email API, x402 facilitator).
-- Delete the `settings:serviceToken` / `settings:internalToken` kv keys and their Settings-form fields.
+- Delete the `settings:serviceToken` / `settings:internalToken` kv keys and their Settings-form fields,
+  and `readAdminTokens` / `AdminTokens` with them.
+- **Landed here rather than in D3b (unavoidable):** deleting `resolveCommerceMode` leaves nothing to
+  dispatch on, so `makeCommerceClient(ctx)` / `makeAdminClients(ctx)` collapse to the in-process clients
+  unconditionally and the `makeCommerceClientFor` / `makeAdminClientsFor` factories go. The HTTP client
+  classes and their wire-contract suite are left in place for D3b to remove.
 - `site-config.test.ts` drops its parameterized two-mode block and asserts the single descriptor.
 - Acceptance: staging still serves; `site-config.test.ts` green; no `commerce.mode` string left in the
   repo. Depends: INC-D1 smoke-green. Size: **M**.
@@ -1276,8 +1281,15 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
   package that no longer exists, so this is not housekeeping — it is a required part of the deletion.
   Re-point an entry at a surviving package where the note still means something, and drop it where it
   does not.
-- Collapse `makeCommerceClient` to return the in-process client unconditionally; `commerceClientContract`
-  now has one tier.
+- ~~Collapse `makeCommerceClient` to return the in-process client unconditionally~~ — **this landed in
+  INC-D3a, not here.** Deleting `resolveCommerceMode` forced it: with no mode to dispatch on, both
+  `makeCommerceClient(ctx)` and `makeAdminClients(ctx)` already construct the in-process clients
+  unconditionally, and the `makeCommerceClientFor` / `makeAdminClientsFor` factories are gone. **Do not
+  re-plan this.** What is left for D3b is only the *dead* code the collapse orphaned: delete
+  `HttpCommerceClient` and the four admin HTTP clients (`AdminOrdersClient`, `AdminProductsClient`,
+  `AdminRulesClient`, `ReportingSettingsClient`) — see the bullet above — and then collapse
+  `commerceClientContract` to its single in-process tier, removing
+  `commerce-client-contract.http.test.ts` and the live-service harness with it.
 - Decide and record: do `packages/plugin/src/types.ts`'s hand-mirrored wire types stay as the admin
   route's response shapes, or get replaced by domain types? (D4 cost note.)
 - Acceptance: `pnpm -r build`, `pnpm test`, `pnpm test:pg`, T3 and all 20 sandbox suites green; **the

@@ -38,9 +38,7 @@
 		}
 	},
 	"scripts": {
-		"build": "tsdown",
-		"dev:worker": "wrangler dev",
-		"deploy": "wrangler deploy"
+		"build": "tsdown"
 	},
 	"dependencies": {
 		"@hono/node-server": "catalog:",
@@ -55,7 +53,6 @@
 		"@types/node": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
-		"vitest": "catalog:",
-		"wrangler": "catalog:"
+		"vitest": "catalog:"
 	}
 }

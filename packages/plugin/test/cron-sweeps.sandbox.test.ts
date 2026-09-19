@@ -181,8 +181,11 @@ async function placeOrder(
 beforeAll(async () => {
 	({ storage } = await storageBridge());
 	sandbox = await loadPluginInSandbox({
-		allowedHosts: ["commerce.otta.internal"],
-		commerceServiceBaseUrl: "https://commerce.otta.internal",
+		// A host that CANNOT exist (RFC 2606 `.invalid`), because the sweeps this
+		// suite drives make no egress at all: the allowlist is here to be non-empty
+		// and unreachable, not to name anything real. (It used to name a placeholder
+		// commerce-service host, which INC-D3a retired along with the service.)
+		allowedHosts: ["no-egress.invalid"],
 		storage: true,
 	});
 }, 180_000);

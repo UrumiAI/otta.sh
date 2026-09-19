@@ -214,8 +214,7 @@ export interface AdminProductsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
 	/** Admin token forwarded as `X-Internal-Token` on every guarded read.
-	 *  Sourced by the page handler from write-only `ctx.kv`
-	 *  (`settings:internalToken`). */
+	 *  Sourced by the page handler from write-only plugin kv. */
 	adminToken?: string;
 	/** The machine write-gate token (`X-Service-Token`, ADR-0007), sourced from
 	 *  write-only `ctx.kv`. Attached to the edit PATCH (a NON-GET the gate blocks

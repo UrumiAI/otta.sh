@@ -363,7 +363,7 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 				header: `${displayName} — Reports`,
 				title: "Reports are unavailable",
 				description:
-					"Reports could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+					"Reports could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 				toast: "Could not load reports",
 			});
 		}

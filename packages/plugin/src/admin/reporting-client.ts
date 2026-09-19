@@ -117,15 +117,15 @@ export interface ReportingSettingsClientOptions {
 	/** Admin token forwarded as `X-Internal-Token` on EVERY guarded read this
 	 *  client makes — the `/reports/*` reads (review J5) AND `GET /settings`,
 	 *  which is admin surface too (ADR-0010). Received here as a constructor
-	 *  option; the handlers source it from write-only `ctx.kv`
-	 *  (`settings:internalToken`) via `readAdminTokens`. The client itself never
-	 *  persists it. The privileged `PUT /settings` write uses THIS token too:
+	 *  option; the handlers source it from write-only plugin kv. The client
+	 *  itself never persists it. The privileged `PUT /settings` write uses THIS
+	 *  token too:
 	 *  `updateSettings` attaches `opts.adminToken ?? this.#adminToken`, so a
 	 *  per-call token overrides it and the constructor's is the fallback — which is
 	 *  the only path production takes, because the sole caller passes none. */
 	adminToken?: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
-	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  (ADR-0007), sourced from write-only `ctx.kv`.
 	 *  `PUT /settings` is a NON-GET, so the gate blocks it without this when the
 	 *  service secret is set — hence it is attached to the PUT. The `/reports/*`
 	 *  and `GET /settings` reads are exempt from THAT gate (it skips GET/HEAD), so
@@ -238,9 +238,11 @@ export class ReportingSettingsClient {
 					: undefined;
 			const message =
 				validationMessage ??
-				// A gate 401 can now stem from EITHER the admin token or the service
-				// token (ADR-0007) — name both so the remedy isn't misdirected (D5).
-				"settings update failed — check the admin token and service token in Settings, and the service connection";
+				// Deliberately names no credential. A gate 401 used to be worth
+				// attributing to a specific token, but INC-D3a deleted both the admin
+				// and the service token, so there is no provisioning step left to
+				// point an operator at — only "it did not take, try again".
+				"settings update failed — retry in a moment";
 			return { ok: false, status: res.status, message };
 		}
 		return { ok: true, settings: parsed.settings };

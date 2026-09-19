@@ -230,10 +230,8 @@ interface ProductsConsoleClient {
  * client had no in-process tier; it has one now, so nothing on this screen picks
  * a transport any more.
  *
- * ONE TOKEN READ PER REQUEST, still. The factory reads the write-only-kv pair
- * itself when nothing is handed to it, and this route has nothing else to do
- * with the tokens now that neither client is built here — so the read happens
- * once, inside the factory, and this route holds no token values at all.
+ * NO TOKENS AT ALL: neither client is built here, and the write-only-kv pair
+ * the factory used to read went with the commerce service (INC-D3a).
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
 	const clients = await makeAdminClients(ctx);

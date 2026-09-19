@@ -1,11 +1,12 @@
 /**
  * Minimal .env support for astro.config.ts (review item: VERIFIED that
  * Astro does NOT load .env into process.env for the config module itself —
- * an .env-only COMMERCE_SERVICE_URL reached dist/server/.dev.vars but the
- * define/allowedHosts silently got the placeholder). Vite's canonical
- * `loadEnv` is not resolvable from this package under pnpm isolation
- * (vite is a transitive dep), so this is a deliberately tiny, pure
- * KEY=VALUE parser — one variable, no dotenv dependency.
+ * an .env-only value reached dist/server/.dev.vars but the define/allowedHosts
+ * silently got the placeholder; measured on the since-retired
+ * COMMERCE_SERVICE_URL, and just as true of today's EMAIL_API_URL /
+ * X402_FACILITATOR_URL). Vite's canonical `loadEnv` is not resolvable from
+ * this package under pnpm isolation (vite is a transitive dep), so this is a
+ * deliberately tiny, pure KEY=VALUE parser — no dotenv dependency.
  */
 
 /** Parse KEY=VALUE lines; ignores comments/blank lines; strips one layer

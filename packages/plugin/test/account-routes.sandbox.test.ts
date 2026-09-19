@@ -1,89 +1,134 @@
-import { afterEach, describe, expect, test } from "vitest";
+/**
+ * Step 5.9: the storefront account pages under the workerd-on-Node sandbox (not
+ * trusted in-process — CLAUDE.md).
+ *
+ * WHAT INC-D3a CHANGED HERE. These routes used to reach a REAL service's
+ * `/auth` + `/me` surface over `ctx.http`, and this suite stood that service up
+ * on Postgres to answer them. The transport is gone — the routes run the
+ * identity use-cases in process over `ctx.storage` — so there is no service to
+ * start, no `commerceServiceBaseUrl` to hand the sandbox, and no Postgres in
+ * this file at all. The document store IS the backend now, and the suite seeds
+ * it through the same `@otta-sh/store-emdash` adapters the plugin composes.
+ *
+ * THE SUITE IS NO LONGER GATED, and that is deliberate rather than incidental:
+ * a `PG_CONNECTION_STRING` gate is what let this file rot silently through a
+ * whole retrofit, because a skipped suite is green.
+ *
+ * WHAT IS STILL DRIVEN THROUGH THE SANDBOX, unchanged: the login is redeemed by
+ * the PLUGIN's own `storefront/account/login/verify` route, so the session every
+ * case below carries was minted by the path a shopper actually takes. Only the
+ * challenge is issued host-side — this transport dispatches no mail yet (see
+ * `commerce-client-contract.in-process.test.ts`), so there is no message to
+ * capture and the verifier is the only place a shopper's token can come from.
+ *
+ * EGRESS IS ASSERTED BY CONSTRUCTION: the boot declares NO allowed hosts, so any
+ * `ctx.http` call from these routes throws. An account page that renders here
+ * reached the network for nothing.
+ *
+ * ── Platform-verified deviation from plan §4's session-cookie wording ──────
+ * The bearer session token is threaded as route input (the theme's first-party
+ * cookie layer, per the deviation documented in `account-routes.ts`).
+ */
+import {
+	cents,
+	currency,
+	email as toEmail,
+	idempotencyKey,
+	orderId as toOrderId,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
+import {
+	EmdashCredentialVerifier,
+	EmdashCustomerStore,
+	EmdashInventoryStore,
+	EmdashOrderStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
-import { type LiveService, startLiveService } from "./helpers/start-live-service.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
-// Step 5.9: the storefront account pages under the workerd-on-Node sandbox (not
-// trusted in-process — CLAUDE.md). The plugin routes reach the REAL service's
-// /auth + /me surface via ctx.http + allowedHosts (its sole egress); the bearer
-// session token is threaded as route input (the theme's first-party cookie
-// layer, per the platform-verified deviation in account-routes.ts).
-// Postgres-required (the live service).
+/** A namespace no other suite writes under — the document store is
+ *  process-scoped and shared by every sandbox suite in this process. */
+const NS = "acct";
 
-const PG = process.env.PG_CONNECTION_STRING;
+let sandbox: SandboxHandle;
+let storage: StorageAccess;
+let orderStore: EmdashOrderStore;
+let credentialVerifier: EmdashCredentialVerifier;
 
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
-	for (const fn of cleanups.splice(0)) await fn();
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	const customerStore = new EmdashCustomerStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	// The verifier shares that ONE customer store, mirroring
+	// `createInProcessCommerceStores`'s own wiring — a challenge resolves to the
+	// same customer the isolate's login route will.
+	credentialVerifier = new EmdashCredentialVerifier({
+		storage,
+		customerStore,
+		idGen: uuidIdGen,
+		clock: systemClock,
+	});
+	orderStore = new EmdashOrderStore({
+		storage,
+		inventory: new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock }),
+		idGen: uuidIdGen,
+		clock: systemClock,
+	});
+	// NO allowed hosts — see the module doc's egress note.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox?.close();
 });
 
-async function setup(): Promise<{ live: LiveService; sandbox: SandboxHandle }> {
-	const live = await startLiveService();
-	cleanups.push(() => live.stop());
-	const sandbox = await loadPluginInSandbox({
-		allowedHosts: [live.host],
-		commerceServiceBaseUrl: live.baseUrl,
+/**
+ * One GUEST order under `buyerRef=email`: it names an email and no customer,
+ * which is the state every order is in until its buyer proves that inbox.
+ * Logging in as the same address is what claims it, and that is the path the
+ * ownership case below takes.
+ */
+async function createGuestOrder(input: { email: string; slug: string }): Promise<string> {
+	const id = `order-${NS}-${input.slug}`;
+	await orderStore.createFromCart({
+		orderId: toOrderId(id),
+		cartId: null,
+		currency: currency("USD"),
+		idempotencyKey: idempotencyKey(`seed-${id}`),
+		holdExpiresAt: "2099-01-01T00:00:00.000Z",
+		buyerRef: input.email,
+		paymentMethod: "stripe",
+		lines: [
+			{
+				productId: toProductId(`prod-${NS}-${input.slug}`),
+				sku: toSku(`SKU-${NS}-${input.slug.toUpperCase()}`),
+				title: "Item",
+				unitPrice: cents(1500),
+				currency: currency("USD"),
+				quantity: 1,
+				fulfillmentKind: "physical",
+				reservationId: null,
+			},
+		],
+		totals: { subtotal: cents(1500), total: cents(1500), currency: currency("USD") },
 	});
-	cleanups.push(() => sandbox.close());
-	return { live, sandbox };
+	return id;
 }
 
-/** Seed + check out a one-line physical order under `buyerRef=email`. */
-async function createGuestOrder(
-	live: LiveService,
-	input: { email: string; sku: string; productId: string },
-): Promise<string> {
-	await fetch(`${live.baseUrl}/products/${input.productId}/commerce`, {
-		method: "PUT",
-		headers: { "content-type": "application/json", "Idempotency-Key": `seed-${input.productId}` },
-		body: JSON.stringify({
-			sku: input.sku,
-			price: { amount: 1500, currency: "USD" },
-			title: "Item",
-			productKind: "physical",
-			initialOnHand: 5,
-		}),
-	});
-	const cart = (await (
-		await fetch(`${live.baseUrl}/carts`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ currency: "USD" }),
-		})
-	).json()) as { cartId: string };
-	await fetch(`${live.baseUrl}/carts/${cart.cartId}/lines`, {
-		method: "POST",
-		headers: { "content-type": "application/json", "Idempotency-Key": `add-${cart.cartId}` },
-		body: JSON.stringify({ sku: input.sku, qty: 1, productId: input.productId }),
-	});
-	const co = (await (
-		await fetch(`${live.baseUrl}/checkout/orders`, {
-			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": `co-${cart.cartId}` },
-			body: JSON.stringify({ cartId: cart.cartId, paymentMethod: "stripe", buyerRef: input.email }),
-		})
-	).json()) as { order: { id: string } };
-	return co.order.id;
-}
-
-/** Drive the magic-link login THROUGH the plugin sandbox: request the link on
- *  the service, read the emitted token, then verify via the plugin route (which
- *  returns the session-cookie descriptor). Returns the bearer session token. */
-async function loginThroughSandbox(
-	live: LiveService,
-	sandbox: SandboxHandle,
-	email: string,
-): Promise<string> {
-	await fetch(`${live.baseUrl}/auth/login/request`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ email }),
-	});
-	const sends = live.emailSender.sends.filter((s) => s.template === "customer-login-link");
-	const last = sends[sends.length - 1]!;
+/** Drive the magic-link login THROUGH the plugin sandbox: issue the challenge on
+ *  the verifier (nothing emails it yet), then redeem it via the plugin route,
+ *  which returns the session-cookie descriptor. Returns the bearer token. */
+async function loginThroughSandbox(email: string): Promise<string> {
+	const issued = await credentialVerifier.issueChallenge(toEmail(email));
+	if (!issued.ok) throw new Error(`login: challenge not issued (${issued.reason})`);
 	const verify = await sandbox.invokeRoute("storefront/account/login/verify", {
-		challengeId: last.data["challengeId"] as string,
-		token: last.data["token"] as string,
+		challengeId: issued.challengeId,
+		token: issued.token,
 	});
 	expect("result" in verify).toBe(true);
 	const result = (verify as { result: { ok: boolean; cookie?: { name: string; value: string } } })
@@ -93,22 +138,13 @@ async function loginThroughSandbox(
 	return result.cookie!.value;
 }
 
-describe.skipIf(PG === undefined)("storefront account pages (workerd sandbox)", () => {
+describe("storefront account pages (workerd sandbox)", () => {
 	test("a logged-in customer sees only their own orders on /account/orders", async () => {
-		const { live, sandbox } = await setup();
-		const orderA = await createGuestOrder(live, {
-			email: "a@example.com",
-			sku: "SA",
-			productId: "pa",
-		});
-		const orderB = await createGuestOrder(live, {
-			email: "b@example.com",
-			sku: "SB",
-			productId: "pb",
-		});
+		const orderA = await createGuestOrder({ email: `${NS}-a@example.test`, slug: "a" });
+		const orderB = await createGuestOrder({ email: `${NS}-b@example.test`, slug: "b" });
 
-		const tokenA = await loginThroughSandbox(live, sandbox, "a@example.com");
-		await loginThroughSandbox(live, sandbox, "b@example.com"); // links B's order
+		const tokenA = await loginThroughSandbox(`${NS}-a@example.test`);
+		await loginThroughSandbox(`${NS}-b@example.test`); // claims B's order
 
 		const orders = await sandbox.invokeRoute("storefront/account/orders", { sessionToken: tokenA });
 		expect("result" in orders).toBe(true);
@@ -125,11 +161,10 @@ describe.skipIf(PG === undefined)("storefront account pages (workerd sandbox)", 
 	});
 
 	test("an unauthenticated request to /account/orders redirects to /account/login", async () => {
-		const { sandbox } = await setup();
 		const noToken = await sandbox.invokeRoute("storefront/account/orders", {});
 		expect(noToken).toEqual({ result: { ok: false, redirectTo: "/account/login" } });
 
-		// A bogus/expired session token → the service answers 401 → same redirect.
+		// A bogus/expired session token resolves to no customer → same redirect.
 		const badToken = await sandbox.invokeRoute("storefront/account/orders", {
 			sessionToken: "not-a-real-session",
 		});

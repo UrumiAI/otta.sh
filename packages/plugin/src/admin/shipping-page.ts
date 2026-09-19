@@ -38,7 +38,6 @@ import {
 	listLevel,
 	noticeBanner,
 	PATH_FIELD,
-	readAdminTokens,
 	readString,
 	screenActions,
 	type ListDetailInput,
@@ -281,13 +280,11 @@ export function createShippingPageHandler(): RouteHandler<ShippingPageInput> {
 		// document store, and the page cannot tell which — everything below is
 		// typed against `AdminRulesSurface`, the structural surface both answer to.
 		//
-		// The tokens are read ONCE, here, and PASSED IN rather than re-read inside
-		// the factory. They are transport credentials (`X-Internal-Token` /
-		// `X-Service-Token`) that the in-process tier has nothing to check against
-		// and deliberately ignores (ADR-0014 D3).
+		// NO TOKENS: `X-Internal-Token` / `X-Service-Token` were transport
+		// credentials for the commerce service, and there is no service to
+		// authenticate to (ADR-0014 D3, INC-D3a).
 		async createClient(ctx) {
-			const tokens = await readAdminTokens(ctx);
-			const clients = await makeAdminClients(ctx, tokens);
+			const clients = await makeAdminClients(ctx);
 			return clients.rules;
 		},
 		// The zones level's per-row "View methods" BUTTON and the methods
@@ -625,7 +622,7 @@ function zonesFailClosed() {
 		header: "Shipping zones",
 		title: "Shipping zones are unavailable",
 		description:
-			"Shipping zones could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Shipping zones could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load shipping zones",
 	});
 }
@@ -1058,7 +1055,7 @@ function methodsFailClosed() {
 		header: "Shipping methods",
 		title: "Shipping methods are unavailable",
 		description:
-			"Shipping methods could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Shipping methods could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load shipping methods",
 	});
 }
@@ -1268,7 +1265,7 @@ function ratesFailClosed() {
 		header: "Shipping rates",
 		title: "Shipping rates are unavailable",
 		description:
-			"Shipping rates could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Shipping rates could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load shipping rates",
 	});
 }
@@ -1366,8 +1363,7 @@ function saveZoneNotice(result: RulesUpdateResult<ShippingZoneWire>): Notice {
 	return {
 		variant: "error",
 		title: "Zone not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
@@ -1404,8 +1400,7 @@ function deleteZoneNotice(result: RulesDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Zone not deleted",
-		description:
-			"The zone could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The zone could not be deleted — retry in a moment.",
 	};
 }
 
@@ -1525,8 +1520,7 @@ function saveMethodNotice(result: RulesUpdateResult<ShippingMethodWire>): Notice
 	return {
 		variant: "error",
 		title: "Method not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
@@ -1564,8 +1558,7 @@ function deleteMethodNotice(result: RulesDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Method not deleted",
-		description:
-			"The method could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The method could not be deleted — retry in a moment.",
 	};
 }
 
@@ -1711,8 +1704,7 @@ function saveRateNotice(result: RulesCasUpdateResult<ShippingRateWire>): Notice 
 	return {
 		variant: "error",
 		title: "Rate not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
@@ -1748,8 +1740,7 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Rate not deleted",
-		description:
-			"The rate could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The rate could not be deleted — retry in a moment.",
 	};
 }
 

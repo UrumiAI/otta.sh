@@ -1,4 +1,13 @@
-import { afterEach, describe, expect, test } from "vitest";
+import {
+	cents as toCents,
+	type CouponRecord,
+	type CouponType,
+	currency as toCurrency,
+	idempotencyKey,
+	orderId,
+} from "@otta-sh/domain";
+import { EmdashCouponStore, type StorageAccess, uuidIdGen } from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import {
 	decodeCarrier,
@@ -6,6 +15,7 @@ import {
 	encodeCarrier,
 	encodePath,
 } from "../src/admin/scaffold/index.js";
+import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../src/commerce/commerce-storage.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
@@ -22,12 +32,8 @@ import {
 	panelLabels,
 	type LooseBlock,
 } from "./helpers/blocks.js";
-import {
-	type RecordedRequest,
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 // The admin Coupons console under the REAL workerd-on-Node sandbox
 // (ADMIN-CONSOLE.md §12.2): a keyset-paged coupons list (search =
@@ -41,6 +47,28 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // Money is integer minor units via the shared money-input helper; percentage
 // rates are integer basis points via the shared exact-integer percent parser
 // (percent-input).
+//
+// THERE IS NO COUPON-ADMIN HTTP SURFACE ANY MORE (INC-D3a). `makeAdminClients`
+// hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
+// so every fixture below is written as a REAL document through the same
+// `@otta-sh/store-emdash` coupon store the plugin reads, and every "what
+// landed" claim is read back off that store rather than off a recorded request
+// body — a strictly stronger claim, since a recorded `PUT /admin/coupons/c-five`
+// proved only that a request was FORMED. Four consequences, stated once because
+// many cases inherit them:
+//  * There is no admin token to forward or withhold: `X-Internal-Token` /
+//    `X-Service-Token` authenticated a caller TO the commerce service, and the
+//    console routes are gated by EmDash's own admin auth (ADR-0014 D3).
+//  * "no POST/PUT sent" is now "nothing was written", asserted on the record —
+//    which is the property those assertions were always standing in for.
+//  * `usesCount` is STORE-OWNED (moved only by redeem/release), so a fixture
+//    that wants a redeemed coupon earns it by actually redeeming: `seedCoupons`
+//    runs one real `redeem` per use, which is also what puts the redemption rows
+//    behind the forbid-if-redeemed delete guard.
+//  * `createdAt` is stamped from the store's injected clock, so the seeder drives
+//    a settable clock and each fixture row keeps the exact `createdAt` it
+//    declares — the list's newest-first order is the fixture's, not the wall
+//    clock's.
 
 interface CouponRow {
 	id: string;
@@ -59,13 +87,12 @@ interface CouponRow {
 	createdAt: string;
 }
 
-/** A stateful stub standing in for the coupon-admin HTTP surface. Mutations
- *  (POST/PUT/DELETE) move real state read back by GET, so create→list,
- *  edit→reload and delete→idempotent-replay exercise real transitions. The
- *  PUT handler mirrors the REAL service's omit⇒null coercion (rules-admin.ts
- *  maps every absent update field to null before the store call) — the wire
- *  genuinely cannot express "leave unchanged", which is exactly what the
- *  full-replace tests below depend on. */
+/** The fixture language of this file: the rows a case wants to exist. They are
+ *  no longer answers a stub gives back — `seedCoupons` writes each one as a real
+ *  coupon document, so create→list, edit→reload and delete→idempotent-replay
+ *  exercise the store's own transitions. The full-replace tests below depend on
+ *  the wire genuinely being unable to express "leave unchanged", and it still
+ *  cannot: `updateCoupon` takes every editable field on every call. */
 function makeCouponsState() {
 	const coupons: CouponRow[] = [
 		{
@@ -102,134 +129,6 @@ function makeCouponsState() {
 		},
 	];
 	return { coupons };
-}
-
-function sortedNewestFirst(rows: CouponRow[]): CouponRow[] {
-	return rows.toSorted(
-		(a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
-	);
-}
-
-function attachCouponsStub(stub: StubCommerceServer, state: ReturnType<typeof makeCouponsState>) {
-	stub.respondWith("GET", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const [path, query = ""] = req.url.split("?");
-		if (path === "/admin/coupons") {
-			const q = new URLSearchParams(query);
-			// A service whose filter narrows its own PAGE WINDOW rather than its
-			// query — the shape the products list already has for "Low stock only",
-			// and a legal one for any list port: a page of zero matches with more
-			// pages still behind it. Staged by a sentinel needle, because this stub's
-			// ordinary path filters BEFORE it slices and so can never produce it.
-			if (`${q.get("search") ?? ""}${q.get("cursor") ?? ""}`.toLowerCase().includes("narrowed")) {
-				return { status: 200, body: { ok: true, coupons: [], nextCursor: "0|NARROWED" } };
-			}
-			const cursor = q.get("cursor");
-			let search = q.get("search");
-			let offset = 0;
-			if (cursor !== null) {
-				// Opaque-to-the-plugin cursor: "<offset>|<search-or-empty>" (the real
-				// service embeds the filter in its base64url token the same way).
-				const [offsetStr = "0", embedded = ""] = cursor.split("|");
-				offset = Number.parseInt(offsetStr, 10);
-				search = embedded.length > 0 ? embedded : null;
-			}
-			const limit = Number.parseInt(q.get("limit") ?? "25", 10);
-			let rows = sortedNewestFirst(state.coupons);
-			if (search !== null) {
-				const needle = search.toLowerCase();
-				rows = rows.filter((r) => r.code.toLowerCase() === needle); // EXACT, case-insensitive
-			}
-			const page = rows.slice(offset, offset + limit);
-			const nextCursor = offset + limit < rows.length ? `${offset + limit}|${search ?? ""}` : null;
-			// `total` is the count of the whole FILTERED set (INC-23) — computed
-			// before the slice, exactly as the service's COUNT(*) is taken under the
-			// list's own predicate rather than over its page.
-			return { status: 200, body: { ok: true, coupons: page, nextCursor, total: rows.length } };
-		}
-		return { status: 404, body: { error: "unknown" } };
-	});
-
-	stub.respondWith("POST", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		if (req.url !== "/admin/coupons") return { status: 404, body: { error: "unknown" } };
-		const body = req.body as Record<string, unknown>;
-		if (
-			state.coupons.some((c) => c.id === body.id) ||
-			state.coupons.some((c) => c.code === body.code)
-		) {
-			return { status: 500, body: { ok: false, error: "internal_error" } };
-		}
-		const created: CouponRow = {
-			id: String(body.id),
-			code: String(body.code),
-			type: String(body.type),
-			amountCents: (body.amountCents ?? null) as number | null,
-			rateBps: (body.rateBps ?? null) as number | null,
-			capCents: (body.capCents ?? null) as number | null,
-			currency: (body.currency ?? null) as string | null,
-			minSubtotalCents: (body.minSubtotalCents ?? null) as number | null,
-			startsAt: (body.startsAt ?? null) as string | null,
-			expiresAt: (body.expiresAt ?? null) as string | null,
-			maxUses: (body.maxUses ?? null) as number | null,
-			maxUsesPerCustomer: (body.maxUsesPerCustomer ?? null) as number | null,
-			usesCount: 0,
-			createdAt: `2026-07-2${state.coupons.length}T00:00:00.000Z`,
-		};
-		state.coupons.push(created);
-		return { status: 201, body: { ok: true, coupon: created } };
-	});
-
-	stub.respondWith("PUT", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const match = /^\/admin\/coupons\/([^/]+)$/.exec(req.url);
-		if (match === null) return { status: 404, body: { error: "unknown" } };
-		const couponId = decodeURIComponent(match[1] ?? "");
-		const coupon = state.coupons.find((c) => c.id === couponId);
-		if (coupon === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-		const body = req.body as Record<string, unknown>;
-		// The REAL service's omit⇒null coercion — an absent key CLEARS the field.
-		coupon.amountCents = (body.amountCents ?? null) as number | null;
-		coupon.rateBps = (body.rateBps ?? null) as number | null;
-		coupon.capCents = (body.capCents ?? null) as number | null;
-		coupon.minSubtotalCents = (body.minSubtotalCents ?? null) as number | null;
-		coupon.startsAt = (body.startsAt ?? null) as string | null;
-		coupon.expiresAt = (body.expiresAt ?? null) as string | null;
-		coupon.maxUses = (body.maxUses ?? null) as number | null;
-		coupon.maxUsesPerCustomer = (body.maxUsesPerCustomer ?? null) as number | null;
-		return { status: 200, body: { ok: true, coupon } };
-	});
-
-	stub.respondWith("DELETE", (req: RecordedRequest) => {
-		if (req.headers["x-internal-token"] === undefined) {
-			return { status: 401, body: { ok: false, error: "unauthorized" } };
-		}
-		const match = /^\/admin\/coupons\/([^/]+)$/.exec(req.url);
-		if (match === null) return { status: 404, body: { error: "unknown" } };
-		const couponId = decodeURIComponent(match[1] ?? "");
-		const idx = state.coupons.findIndex((c) => c.id === couponId);
-		if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
-		if ((state.coupons[idx]?.usesCount ?? 0) > 0) {
-			return { status: 409, body: { ok: false, reason: "IN_USE_BY_REDEMPTIONS" } };
-		}
-		state.coupons.splice(idx, 1);
-		return { status: 200, body: { ok: true } };
-	});
-}
-
-async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token: string) {
-	await sandbox.invokeRoute("admin", {
-		type: "form_submit",
-		action_id: "save-token",
-		values: { internalToken: token },
-	});
-	stub.requests.length = 0;
 }
 
 // Block-search helpers built on the recursive traversal in
@@ -297,23 +196,110 @@ function formInitialValues(blocks: Blk[], submitActionId: string): Record<string
 	return out;
 }
 
+let storage: StorageAccess;
+let couponStore: EmdashCouponStore;
 let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
-afterEach(async () => {
+
+/** The instant the NEXT seeded coupon is stamped with. The store takes its
+ *  `createdAt` from its clock, and this file's ordering/`Created` assertions are
+ *  about the fixture's declared instants — so the seeder drives the clock rather
+ *  than letting the wall clock collapse every row into one millisecond. */
+let seedNow = new Date("2026-01-01T00:00:00.000Z");
+
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	couponStore = new EmdashCouponStore({
+		storage,
+		idGen: uuidIdGen,
+		clock: { now: () => seedNow },
+	});
+	// ONE boot for the file: the isolate holds no per-case state now that the
+	// fixtures live in the store.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
 	await sandbox?.close();
 	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
 });
 
-async function boot(state: ReturnType<typeof makeCouponsState>, token = "admin-token-xyz") {
-	stub = await startStubCommerceServer();
-	attachCouponsStub(stub, state);
-	sandbox = await loadPluginInSandbox({
-		allowedHosts: [stub.host],
-		commerceServiceBaseUrl: stub.baseUrl,
-	});
-	if (token.length > 0) await seedToken(sandbox, stub, token);
+beforeEach(async () => {
+	await resetStore();
+});
+
+/** Empty every declared collection. The store is process-scoped by design
+ *  (`storageBridge`) and this screen's reads are REGISTRY-WIDE — "32 coupons in
+ *  the set" is a claim about the whole store, not about a namespace — so each
+ *  case starts from nothing rather than narrowing a shared catalogue. */
+async function resetStore(): Promise<void> {
+	for (const name of COMMERCE_STORAGE_COLLECTION_NAMES) {
+		const collection = storage[name];
+		if (collection === undefined) continue;
+		for (;;) {
+			const page = await collection.query({ limit: 200 });
+			if (page.items.length === 0) break;
+			for (const { id } of page.items) await collection.delete(id);
+		}
+	}
+}
+
+/**
+ * Write one case's fixture as real coupon documents.
+ *
+ * `usesCount` is not a column a fixture may assert into existence — the store
+ * owns it and moves it only through `redeem`/`release`. So a row that wants N
+ * uses is REDEEMED N times, each under its own idempotency key. That costs a
+ * little seeding time and buys the thing the old stub could only pretend at: the
+ * redemption rows really exist, which is what the forbid-if-redeemed delete
+ * guard counts.
+ */
+async function seedCoupons(state: { coupons: CouponRow[] }): Promise<void> {
+	await resetStore();
+	for (const row of state.coupons) {
+		seedNow = new Date(row.createdAt);
+		await couponStore.create({
+			id: row.id,
+			code: row.code,
+			type: row.type as CouponType,
+			amountCents: row.amountCents === null ? null : toCents(row.amountCents),
+			rateBps: row.rateBps,
+			capCents: row.capCents === null ? null : toCents(row.capCents),
+			currency: row.currency === null ? null : toCurrency(row.currency),
+			minSubtotalCents: row.minSubtotalCents === null ? null : toCents(row.minSubtotalCents),
+			startsAt: row.startsAt,
+			expiresAt: row.expiresAt,
+			maxUses: row.maxUses,
+			maxUsesPerCustomer: row.maxUsesPerCustomer,
+		});
+		for (let i = 0; i < row.usesCount; i++) {
+			const redeemed = await couponStore.redeem({
+				couponId: row.id,
+				orderId: orderId(`seed-order-${row.id}-${i}`),
+				idempotencyKey: idempotencyKey(`seed-use-${row.id}-${i}`),
+				createdAt: row.createdAt,
+			});
+			expect(redeemed.ok, `seeding use ${i + 1} of ${row.code}`).toBe(true);
+		}
+	}
+}
+
+/** The seeding call every case opens with. The name is unchanged from the
+ *  stub-HTTP era on purpose — it is still "put the world in this shape before
+ *  the screen reads it"; only the world changed. */
+async function boot(state: { coupons: CouponRow[] }): Promise<void> {
+	await seedCoupons(state);
+}
+
+/** The persisted record, by id — the replacement for every "what did the
+ *  request body say" assertion. */
+async function stored(couponId: string): Promise<CouponRecord | null> {
+	return couponStore.findById(couponId);
+}
+
+/** How many coupons exist at all — the replacement for "the stub state still
+ *  holds exactly one FIVEOFF". */
+async function couponCount(): Promise<number> {
+	return couponStore.countCoupons({});
 }
 
 /** The list, freshly loaded. */
@@ -409,14 +395,12 @@ const SUMMER25_PREFILL = {
 };
 
 describe("admin Coupons console — list level (workerd sandbox)", () => {
-	test("page_load /coupons renders the list newest-first with honest discount/window/uses columns (no Type column) and forwards the kv-sourced admin token", async () => {
+	test("page_load /coupons renders the list newest-first with honest discount/window/uses columns (no Type column), off the plugin's own store", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" });
 		const blocks = blocksOf(outcome);
 		expect(headerTexts(blocks)).toContain("Coupons");
-		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/coupons"));
-		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
 		const table = tableOf(blocks) as
 			| { columns?: Array<{ key: string; label: string; format?: string }> }
 			| undefined;
@@ -454,17 +438,14 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect((table?.columns ?? []).some((c) => c.label.includes("USD"))).toBe(false);
 	});
 
-	test("NO-TOKEN page_load /coupons fails closed with E-7's normative banner (no raw HTTP status/URL, no single named cause)", async () => {
-		const state = makeCouponsState();
-		await boot(state, "");
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" });
-		const banner = bannerOf(blocksOf(outcome));
-		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/coupons|401/);
-		// X-42: the fail-closed banner must not name a single cause.
-		expect(String(banner?.description)).toMatch(/admin token in Settings/i);
-		expect(String(banner?.description)).toMatch(/fault in the console itself/i);
-	});
+	// DELETED: "NO-TOKEN page_load /coupons fails closed with E-7's normative
+	// banner". It withheld the kv admin token so the stub answered 401 and the
+	// list's `onError` fired. There is no token — `makeAdminClients` builds the
+	// rules client over `ctx.storage` with no credential of any kind — so the
+	// input that produced it cannot be expressed. The fail-closed arm is still
+	// wired; its only remaining producer is storage itself failing, which this
+	// tier cannot induce without breaking the bridge the whole suite runs on, and
+	// a fixture that faked one would assert on itself.
 
 	test("apply-filter searches by EXACT code, case-insensitively, and keeps the entered value in the (inline, L-2) search form", async () => {
 		const state = makeCouponsState();
@@ -472,10 +453,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		const list = blocksOf(
 			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
 		);
-		stub!.requests.length = 0;
 		const blocks = await submitForm(list, "coupons:apply-filter", { search: "fiveoff" });
-		const req = stub!.requests.find((r) => r.url.startsWith("/admin/coupons"));
-		expect(req?.url).toContain("search=fiveoff");
+		// The EXACTNESS is asserted by the RESULT, not by a query string: a
+		// lower-case needle reached a coupon stored upper-case (case-insensitive),
+		// and the OTHER coupon — which no exact code match can reach — is absent.
 		expect(tableRows(blocks).map((r) => r.code)).toEqual(["FIVEOFF"]);
 		const filterField = formFields(blocks, "coupons:apply-filter").find(
 			(f) => f.action_id === "search",
@@ -530,42 +511,37 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		).toBeUndefined();
 	});
 
-	test("INC-12 outcome 3: a filtered page narrowed to zero WITH a page behind it keeps `Load more` alive — no `empty` block, no `empty_text`, and the note says the scan can continue", async () => {
-		const state = makeCouponsState();
-		await boot(state);
-		const blocks = await submitForm(
-			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),
-			"coupons:apply-filter",
-			{ search: "NARROWED" },
-		);
-		assertBlockContract(blocks, { screen: "coupons", level: "list" });
-		expect(tableRows(blocks)).toHaveLength(0);
-		// The designed zero state would REPLACE the table, and `empty_text` would
-		// collapse it to a bare <p> — either one takes the operator's only way
-		// forward with it.
-		expect(findBlocks(blocks, "empty")).toEqual([]);
-		expect(tableOf(blocks)).toBeDefined();
-		expect(tableOf(blocks)?.empty_text).toBeUndefined();
-		expect(tableOf(blocks)?.next_cursor).toBeDefined();
-		expect(
-			findBlocks(blocks, "context").some((c) => String(c.text).includes("Load more scans further")),
-		).toBe(true);
-		// The undo is still one click away on the summary section — the state that
-		// suppressed the `empty` block did not take `Clear filters` with it.
-		expect(
-			(findBlocks(blocks, "section")[0]?.accessory as { label?: string } | undefined)?.label,
-		).toBe("Clear filters");
-		// And the scan really does continue: the cursor round-trips.
-		const page2 = blocksOf(
-			await sandbox!.invokeRoute("admin", {
-				type: "block_action",
-				action_id: "coupons:page",
-				value: { cursor: tableOf(blocks)?.next_cursor },
-			}),
-		);
-		assertBlockContract(page2, { screen: "coupons", level: "list" });
-		expect(bannerOf(page2)).toBeUndefined();
-	});
+	// DELETED: "INC-12 outcome 3: a filtered page narrowed to zero WITH a page
+	// behind it keeps `Load more` alive". The stub staged that shape with a
+	// sentinel needle, because a list that filters before it slices can never
+	// produce it. The real store cannot produce it EITHER, and for a stronger
+	// reason than staging difficulty: `listCoupons` answers a search by resolving
+	// the code claim, so a filtered read returns at most one row and never a
+	// cursor. Outcome 3 is unreachable for THIS list, so the case was asserting on
+	// the stub's own contrivance.
+	//
+	// WHERE THE RULE IT GUARDED IS ACTUALLY COVERED — this paragraph first said
+	// "the products console, whose filter really does narrow a page window", and
+	// that was wrong twice over, so it is corrected rather than left standing.
+	// `products-console-route.sandbox.test.ts` makes no such assertion: its
+	// `cursors` block pins page one handing back a token, a continuation being
+	// honoured, and two refusal shapes — never a zero-row page that still carries
+	// a cursor. Nor could it usefully make one. That route answers the REACT tier
+	// with a JSON `nextCursor`; it renders no Block Kit list at all, so the "Load
+	// more" button, the `empty_text` short-circuit and the scan note that outcome 3
+	// is a rule ABOUT have no existence there. And its filters are server-side
+	// predicates taken under the SAME predicate as its count, so a page that comes
+	// back empty has nothing behind it either.
+	//
+	// The rule lives one level down, in `listOutcome`
+	// (`@otta-sh/admin-presentation`) — the single decision both the Block Kit
+	// scaffold and the React lists call — and is covered directly there, in
+	// `packages/admin-presentation/test/presentation.test.ts`: "3. zero WITH a page
+	// behind it: NO empty state, a scan note instead", plus its filtered twin "3b.
+	// zero, FILTERED, with a page behind it leads with the filter's own words",
+	// which is the exact shape this case was staging. That is the closer gate
+	// anyway: the deleted case reached a shared decision through a screen that had
+	// to fake reaching it.
 
 	test("INC-12: the intro line leads with the row count, pluralized, page-scoped only when paging is in play, and silent at zero", async () => {
 		const state = makeCouponsState();
@@ -658,15 +634,15 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(tableRows(firstBlocks)).toHaveLength(25);
 		const nextToken = tableOf(firstBlocks)?.next_cursor;
 		expect(nextToken).toBeDefined();
-		stub!.requests.length = 0;
 
 		const second = await sandbox!.invokeRoute("admin", {
 			type: "block_action",
 			action_id: "coupons:page",
 			value: { cursor: nextToken },
 		});
-		const pagedReq = stub!.requests.find((r) => r.url.startsWith("/admin/coupons"));
-		expect(pagedReq?.url).toContain("cursor=");
+		// The cursor really did move the window: page 2 holds the REMAINING rows and
+		// offers no cursor of its own, which only a seek past the first page can
+		// produce.
 		const secondRows = tableRows(blocksOf(second));
 		expect(secondRows).toHaveLength(7); // 32 total = 25 + 7
 		expect(tableOf(blocksOf(second))?.next_cursor).toBeUndefined();
@@ -695,7 +671,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		}
 	});
 
-	test("create (fixed_amount) POSTs EXACT integer minor units; the five shared axes are not on this form and are sent explicit null", async () => {
+	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const outcome = await sandbox!.invokeRoute("admin", {
@@ -709,9 +685,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				currency: "usd",
 			},
 		});
-		const post = stub!.requests.find((r) => r.method === "POST" && r.url === "/admin/coupons");
-		expect(post).toBeDefined();
-		expect(post!.body).toEqual({
+		// EXACT integer minor units on the RECORD, and the five shared axes — which
+		// have no field on this form — stored as explicit nulls rather than as
+		// anything a coercion invented.
+		expect(await stored("c-ten")).toEqual({
 			id: "c-ten",
 			code: "TENOFF",
 			type: "fixed_amount",
@@ -724,6 +701,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			expiresAt: null,
 			maxUses: null,
 			maxUsesPerCustomer: null,
+			usesCount: 0,
 		});
 		const blocks = blocksOf(outcome);
 		const banner = bannerOf(blocks);
@@ -732,7 +710,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(tableRows(blocks).some((r) => r.code === "TENOFF")).toBe(true);
 	});
 
-	test("create (percentage) POSTs exact basis points + cap; the five shared axes are sent explicit null even when the request smuggles extra keys", async () => {
+	test("create (percentage) stores exact basis points + cap; the five shared axes land as explicit null even when the request smuggles extra keys", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		await sandbox!.invokeRoute("admin", {
@@ -753,8 +731,9 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				maxUses: "50",
 			},
 		});
-		const post = stub!.requests.find((r) => r.method === "POST" && r.url === "/admin/coupons");
-		expect(post!.body).toEqual({
+		// The five shared axes reached the record as EXPLICIT nulls — the smuggled
+		// keys were not read — and the economics landed as exact integers.
+		expect(await stored("c-pct")).toEqual({
 			id: "c-pct",
 			code: "PCT7",
 			type: "percentage",
@@ -767,6 +746,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			expiresAt: null,
 			maxUses: null,
 			maxUsesPerCustomer: null,
+			usesCount: 0,
 		});
 	});
 
@@ -777,7 +757,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		["a non-numeric amount", { amount: "abc", currency: "USD" }],
 		["a bad currency", { amount: "5.00", currency: "US" }],
 	])(
-		"fixed_amount create with %s is caught at the plugin boundary — no POST sent (money parse edge)",
+		"fixed_amount create with %s is caught at the plugin boundary — nothing is written (money parse edge)",
 		async (_label, overrides) => {
 			const state = makeCouponsState();
 			await boot(state);
@@ -786,7 +766,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				action_id: "coupons:create",
 				values: { id: "c-bad", code: "BAD", type: "fixed_amount", ...overrides },
 			});
-			expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+			expect(await stored("c-bad"), "nothing is written").toBeNull();
 			expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
 		},
 	);
@@ -796,7 +776,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		["a zero rate", "0"],
 		["a non-numeric rate", "ten"],
 	])(
-		"percentage create with %s is caught at the plugin boundary — no POST sent (percent parse edge)",
+		"percentage create with %s is caught at the plugin boundary — nothing is written (percent parse edge)",
 		async (_label, ratePercent) => {
 			const state = makeCouponsState();
 			await boot(state);
@@ -812,7 +792,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 					ratePercent,
 				},
 			});
-			expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+			expect(await stored("c-bad"), "nothing is written").toBeNull();
 			expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
 		},
 	);
@@ -833,7 +813,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				cap: "",
 			},
 		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await stored("c-x"), "nothing is written").toBeNull();
 		expect(bannerOf(blocksOf(fixedWithRate))?.variant).toBe("error");
 
 		const pctWithAmount = await sandbox!.invokeRoute("admin", {
@@ -849,7 +829,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				cap: "",
 			},
 		});
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await stored("c-y"), "nothing is written").toBeNull();
 		expect(bannerOf(blocksOf(pctWithAmount))?.variant).toBe("error");
 	});
 
@@ -870,7 +850,8 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		const banner = bannerOf(blocksOf(outcome));
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
-		expect(state.coupons.filter((c) => c.code === "FIVEOFF")).toHaveLength(1);
+		expect((await stored("c-five"))?.code, "the original survives").toBe("FIVEOFF");
+		expect(await couponCount(), "and nothing was added").toBe(2);
 	});
 
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
@@ -963,7 +944,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			cap: "20.00",
 		};
 		const refused = await submitForm(screen, "coupons:create", typed);
-		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(await stored("summer26"), "the refused create must write nothing").toBeNull();
 		expect(bannerOf(refused)?.variant).toBe("error");
 		// Still the create screen (not the list), and every value is back.
 		expect(headerTexts(refused)).toEqual(["New coupon"]);
@@ -979,37 +960,24 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			...typed,
 			ratePercent: "10",
 		});
-		expect(state.coupons.find((c) => c.code === "SUMMER26")?.rateBps).toBe(1000);
+		expect((await stored("summer26"))?.rateBps).toBe(1000);
 		expect(bannerOf(created)?.variant).toBe("default");
 		// Success DROPS the draft and returns to the list.
 		expect(headerTexts(created)).toEqual(["Coupons"]);
 		expect(formFor(created, "coupons:create")).toBeUndefined();
 	});
 
-	test("INC-14/DA-3a-i: a SERVICE refusal (duplicate id/code) keeps the typed values too", async () => {
-		const state = makeCouponsState();
-		await boot(state);
-		const screen = await openNewCouponScreen();
-		const refused = await submitForm(screen, "coupons:create", {
-			id: "c-five",
-			code: "FIVEOFF",
-			type: "fixed_amount",
-			amount: "5.00",
-			currency: "USD",
-			ratePercent: "",
-			cap: "",
-		});
-		expect(bannerOf(refused)?.variant).toBe("error");
-		expect(headerTexts(refused)).toEqual(["New coupon"]);
-		expect(formInitialValues(refused, "coupons:create")).toEqual({
-			id: "c-five",
-			code: "FIVEOFF",
-			type: "fixed_amount",
-			amount: "5.00",
-			currency: "USD",
-		});
-		expect(state.coupons.filter((c) => c.code === "FIVEOFF")).toHaveLength(1);
-	});
+	// DELETED (INC-D3a): "a SERVICE refusal (duplicate id/code) keeps the typed
+	// values too". There is no service to refuse anything any more, and the
+	// in-process store does not answer a collision with a typed refusal — it
+	// THROWS (`CouponIdCollisionError`). A throw inside a custom action is caught
+	// by the engine and rendered as the generic ACTION_OUTCOME_UNKNOWN banner on
+	// the ROOT LIST, which by construction carries no draft, so there is no
+	// create screen left to put the typed values back into. The DA-3a-i
+	// guarantee itself is untouched and still pinned by the test above: a refusal
+	// the PLUGIN raises (the unparseable rate) re-renders the create screen with
+	// every typed value verbatim. What the duplicate case still guarantees — a
+	// generic notice and an unchanged registry — is asserted at line ~815.
 });
 
 // ---------------------------------------------------------------------------
@@ -1296,15 +1264,14 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(option).toBeDefined();
 		// §12.2's own picker vocabulary: `<code> · 20% off · 3 uses`.
 		expect(option!.label).toBe("FIVEOFF · $5.00 off · 0 uses");
-		stub!.requests.length = 0;
 
 		const blocks = await openCoupon("FIVEOFF");
-		// The detail load is the exact-search list read — the only read that
-		// carries startsAt/expiresAt (GET /admin/coupons/:code omits them, and
-		// the full-replace edit form MUST pre-fill the window or saving would
-		// silently clear it).
-		const loadReq = stub!.requests.find((r) => r.url.startsWith("/admin/coupons?"));
-		expect(loadReq?.url).toContain("search=FIVEOFF");
+		// The detail load is the exact-search read — the only read that carries
+		// startsAt/expiresAt, and the full-replace edit form MUST pre-fill the
+		// window or saving would silently clear it. In-process there is no
+		// request to inspect, so the WINDOW ITSELF is the evidence: the `Valid`
+		// field and the date pre-fills below are only renderable if that read
+		// carried the window.
 		expect(headerTexts(blocks)).toContain("Coupon — FIVEOFF");
 		expect(panelLabels(blocks)).toEqual(["Coupon", "Redemptions"]); // D-2, constant set
 		const fields = detailFields(blocks);
@@ -1422,16 +1389,15 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(byId.has("cap")).toBe(false);
 	});
 
-	test("UNCHANGED semantics: saving the untouched pre-fill PUTs a full replacement carrying every current value — nothing is cleared", async () => {
+	test("UNCHANGED semantics: saving the untouched pre-fill writes a full replacement carrying every current value — nothing is cleared", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
 		const outcome = await submitForm(blocks, "coupons:save", { ...FIVEOFF_PREFILL });
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.url).toBe("/admin/coupons/c-five");
-		// EVERY editable key is present and explicit (never relying on the wire's
-		// omit⇒null coercion), with "unset" as an explicit null.
-		expect(put!.body).toEqual({
+		// EVERY editable key is written explicitly (the save is a full replace,
+		// never relying on an omit⇒null coercion), with "unset" as an explicit
+		// null — and in-process the PERSISTED RECORD is what proves it.
+		expect(await stored("c-five")).toMatchObject({
 			amountCents: 500,
 			rateBps: null,
 			capCents: null,
@@ -1444,9 +1410,6 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
-		const coupon = state.coupons.find((c) => c.id === "c-five");
-		expect(coupon?.minSubtotalCents).toBe(3500); // unchanged
-		expect(coupon?.startsAt).toBe("2026-07-01T00:00:00.000Z"); // unchanged
 	});
 
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
@@ -1462,13 +1425,8 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			minSubtotal: "",
 			startsAt: "",
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.body).toMatchObject({
-			amountCents: 500,
-			minSubtotalCents: null,
-			startsAt: null,
-		});
-		const coupon = state.coupons.find((c) => c.id === "c-five");
+		const coupon = await stored("c-five");
+		expect(coupon?.amountCents).toBe(500); // carried, not clobbered
 		expect(coupon?.minSubtotalCents).toBeNull();
 		expect(coupon?.startsAt).toBeNull();
 		// The re-rendered edit form reflects the clear — its pre-fill is blank now.
@@ -1500,16 +1458,15 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(byId.has("amount")).toBe(false);
 	});
 
-	test("UNCHANGED semantics (percentage): saving the untouched pre-fill PUTs a full replacement carrying rate/cap/window/use bounds — nothing is cleared", async () => {
+	test("UNCHANGED semantics (percentage): saving the untouched pre-fill writes a full replacement carrying rate/cap/window/use bounds — nothing is cleared", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("SUMMER25");
 		const outcome = await submitForm(blocks, "coupons:save", { ...SUMMER25_PREFILL });
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.url).toBe("/admin/coupons/c-summer");
-		expect(put!.body).toEqual({
+		expect(bannerOf(outcome)?.variant).toBe("default");
+		expect(await stored("c-summer")).toMatchObject({
 			amountCents: null,
-			rateBps: 1000,
+			rateBps: 1000, // unchanged
 			capCents: 2000,
 			minSubtotalCents: null,
 			startsAt: null,
@@ -1517,13 +1474,6 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: 100,
 			maxUsesPerCustomer: 1,
 		});
-		expect(bannerOf(outcome)?.variant).toBe("default");
-		const coupon = state.coupons.find((c) => c.id === "c-summer");
-		expect(coupon?.rateBps).toBe(1000); // unchanged
-		expect(coupon?.capCents).toBe(2000);
-		expect(coupon?.expiresAt).toBe("2026-09-01T00:00:00.000Z");
-		expect(coupon?.maxUses).toBe(100);
-		expect(coupon?.maxUsesPerCustomer).toBe(1);
 	});
 
 	test("CLEAR semantics (percentage): blanking cap/expiry/use bounds saves each as an explicit null while the rate is carried; the reloaded form shows them cleared", async () => {
@@ -1540,15 +1490,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: "",
 			maxUsesPerCustomer: "",
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.body).toMatchObject({
-			rateBps: 1000, // carried, not clobbered
-			capCents: null,
-			expiresAt: null,
-			maxUses: null,
-			maxUsesPerCustomer: null,
-		});
-		const coupon = state.coupons.find((c) => c.id === "c-summer");
+		const coupon = await stored("c-summer");
 		expect(coupon?.capCents).toBeNull();
 		expect(coupon?.expiresAt).toBeNull();
 		expect(coupon?.maxUses).toBeNull();
@@ -1563,7 +1505,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(bannerOf(outcome)?.variant).toBe("default");
 	});
 
-	test("CHANGED semantics (percentage): edited rate/cap/expiry/use bounds PUT exact integers (bps, minor units), with a NEW expiry day resolved to the END of that day", async () => {
+	test("CHANGED semantics (percentage): edited rate/cap/expiry/use bounds persist exact integers (bps, minor units), with a NEW expiry day resolved to the END of that day", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("SUMMER25");
@@ -1575,8 +1517,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: "200",
 			maxUsesPerCustomer: "2",
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.body).toEqual({
+		const banner = bannerOf(outcome);
+		expect(banner?.variant).toBe("default");
+		expect(String(banner?.title)).toContain("saved");
+		expect(await stored("c-summer")).toMatchObject({
 			amountCents: null,
 			rateBps: 1250, // "12.5" ⇒ exact integer bps, padded fraction
 			capCents: 2500,
@@ -1590,47 +1534,43 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: 200,
 			maxUsesPerCustomer: 2,
 		});
-		const banner = bannerOf(outcome);
-		expect(banner?.variant).toBe("default");
-		expect(String(banner?.title)).toContain("saved");
-		const coupon = state.coupons.find((c) => c.id === "c-summer");
-		expect(coupon?.rateBps).toBe(1250);
-		expect(coupon?.capCents).toBe(2500);
-		expect(coupon?.maxUses).toBe(200);
 	});
 
-	test("an expiry at-or-before the start is caught at the plugin boundary on SAVE — no PUT sent", async () => {
+	test("an expiry at-or-before the start is caught at the plugin boundary on SAVE — nothing is written", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("SUMMER25");
+		const before = await stored("c-summer");
 		const outcome = await submitForm(blocks, "coupons:save", {
 			...SUMMER25_PREFILL,
 			startsAt: "2026-09-01T00:00:00Z",
 			expiresAt: "2026-08-01T00:00:00Z",
 		});
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(await stored("c-summer"), "nothing is written").toEqual(before);
 		expect(bannerOf(outcome)?.variant).toBe("error");
 	});
 
-	test("a percentage coupon cannot blank its rate — the one axis with no 'unset'; no PUT sent, context preserved", async () => {
+	test("a percentage coupon cannot blank its rate — the one axis with no 'unset'; nothing is written, context preserved", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("SUMMER25");
+		const before = await stored("c-summer");
 		const outcome = await submitForm(blocks, "coupons:save", {
 			...SUMMER25_PREFILL,
 			ratePercent: "",
 		});
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(await stored("c-summer"), "nothing is written").toEqual(before);
 		expect(bannerOf(outcome)?.variant).toBe("error");
 		expect(headerTexts(outcome)).toContain("Coupon — SUMMER25");
 	});
 
-	test("a fixed_amount coupon cannot blank its amount — the one axis with no 'unset' (the domain requires it); no PUT sent", async () => {
+	test("a fixed_amount coupon cannot blank its amount — the one axis with no 'unset' (the domain requires it); nothing is written", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
+		const before = await stored("c-five");
 		const outcome = await submitForm(blocks, "coupons:save", { ...FIVEOFF_PREFILL, amount: "" });
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(await stored("c-five"), "nothing is written").toEqual(before);
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
 		// still on the detail (the merchant's context is preserved)
@@ -1641,7 +1581,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
-		state.coupons = state.coupons.filter((c) => c.id !== "c-five"); // vanished mid-edit
+		await couponStore.delete("c-five"); // vanished mid-edit
 		const outcome = await submitForm(blocks, "coupons:save", { ...FIVEOFF_PREFILL });
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
@@ -1659,7 +1599,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		expect(bannerOf(blocks)?.variant).toBe("error");
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		// A tampered carrier names no coupon, so "nothing was written" is the
+		// whole registry standing untouched.
+		expect(await couponCount()).toBe(2);
+		expect(await stored("c-five")).toMatchObject({ amountCents: 500 });
 	});
 
 	test("an unredeemed coupon's detail offers a GENERIC 'Delete coupon' button (M-7: the code lives in confirm.title, not the button label) with audit-trail danger copy; a REDEEMED coupon's detail withholds it honestly (DA-7)", async () => {
@@ -1688,14 +1631,13 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(String(blockedNote?.text)).toMatch(/expiry to a past date/i);
 	});
 
-	test("deleting an unredeemed coupon DELETEs, returns to the list with a 'deleted' notice; a repeat delete is an idempotent no-op", async () => {
+	test("deleting an unredeemed coupon removes it, returns to the list with a 'deleted' notice; a repeat delete is an idempotent no-op", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
 		const deleteButton = actionButtons(blocks).find((e) => e.action_id === "coupons:delete");
 		const first = await click(deleteButton);
-		const del = stub!.requests.find((r) => r.method === "DELETE");
-		expect(del?.url).toBe("/admin/coupons/c-five");
+		expect(await stored("c-five"), "really gone from the store").toBeNull();
 		expect(headerTexts(first)).toContain("Coupons"); // back on the list
 		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
@@ -1727,7 +1669,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(String(banner?.description)).toMatch(/audit trail/i);
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|409/);
 		expect(headerTexts(blocks)).toContain("Coupon — SUMMER25"); // context preserved
-		expect(state.coupons.some((c) => c.id === "c-summer")).toBe(true); // never deleted
+		expect(await stored("c-summer"), "never deleted").not.toBeNull();
 	});
 
 	test("opening an unknown code renders an honest not-found view, never a fail-closed banner", async () => {
@@ -1865,7 +1807,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			expiresAt: before.expiresAt!.slice(0, 10),
 			showLimits: false,
 		});
-		const after = state.coupons.find((c) => c.id === "c-welcome");
+		const after = await stored("c-welcome");
 		expect(after?.capCents).toBe(before.capCents);
 		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
 		expect(after?.maxUses).toBe(before.maxUses);
@@ -1887,7 +1829,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: "",
 			maxUsesPerCustomer: "",
 		});
-		const after = state.coupons.find((c) => c.id === "c-welcome");
+		const after = await stored("c-welcome");
 		expect(after?.capCents).toBeNull();
 		expect(after?.minSubtotalCents).toBeNull();
 		expect(after?.maxUses).toBeNull();
@@ -1905,7 +1847,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(before.expiresAt).not.toMatch(/T00:00:00\.000Z$/);
 		const blocks = await openCoupon("WELCOME10");
 		await submitForm(blocks, "coupons:save", { ...formInitialValues(blocks, "coupons:save") });
-		const after = state.coupons.find((c) => c.id === "c-welcome");
+		const after = await stored("c-welcome");
 		expect(after?.startsAt).toBe(before.startsAt);
 		expect(after?.expiresAt).toBe(before.expiresAt);
 	});
@@ -1929,8 +1871,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			startsAt: newStart,
 			expiresAt: newExpiry,
 		});
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put!.body).toMatchObject({
+		expect(await stored("c-welcome")).toMatchObject({
 			startsAt: `${newStart}T00:00:00.000Z`, // a start OPENS its day
 			expiresAt: `${newExpiry}T23:59:59.999Z`, // an expiry CLOSES its day
 		});
@@ -1965,12 +1906,13 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			formInitialValues(blocks, "coupons:save"),
 		);
 		expect(bannerOf(outcome)?.variant).toBe("default");
-		const put = stub!.requests.find((r) => r.method === "PUT");
-		expect(put).toBeDefined();
 		// The stray value is hard-nulled, exactly as it was before the carrier
 		// existed: the inactive type's economics are inapplicable by construction.
-		expect(put!.body).toMatchObject({ amountCents: 500, rateBps: null, capCents: null });
-		expect(state.coupons.find((c) => c.id === "c-stray")?.capCents).toBeNull();
+		expect(await stored("c-stray")).toMatchObject({
+			amountCents: 500,
+			rateBps: null,
+			capCents: null,
+		});
 	});
 
 	test("a TAMPERED carried instant is refused as a current value, not trusted into the record — `2026-02-30` parses, and would sort after every real February day", async () => {
@@ -2003,7 +1945,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			expect(bannerOf(outcome)).toBeDefined();
 			// The bogus instant never lands: an untrusted current reads as "no
 			// current value", so the absent field clears rather than storing junk.
-			expect(state.coupons.find((c) => c.id === "c-welcome")?.expiresAt).not.toBe(bogus);
+			expect((await stored("c-welcome"))?.expiresAt).not.toBe(bogus);
 		}
 		expect(before.expiresAt).toBeDefined();
 	});
@@ -2022,11 +1964,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			startsAt: "",
 			expiresAt: "2027-02-30",
 		});
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.description)).toContain("Expires at must be a date like");
-		expect(state.coupons.find((c) => c.id === "c-welcome")?.expiresAt).toBe(before.expiresAt);
+		// Nothing was written: the stored instant is still the fixture's.
+		expect((await stored("c-welcome"))?.expiresAt).toBe(before.expiresAt);
 
 		// The same hole on the START edge, which resolves to a different instant.
 		const startOutcome = await submitForm(blocks, "coupons:save", {
@@ -2034,8 +1976,8 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			startsAt: "2027-04-31",
 			expiresAt: "",
 		});
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
 		expect(String(bannerOf(startOutcome)?.description)).toContain("Starts at must be a date like");
+		expect((await stored("c-welcome"))?.startsAt, "nothing is written").toBe(before.startsAt);
 	});
 
 	test("a date field submitted as a NON-STRING is refused with a banner, never read as a silent 'unchanged'", async () => {
@@ -2046,9 +1988,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			...formInitialValues(blocks, "coupons:save"),
 			expiresAt: null,
 		});
-		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
 		expect(bannerOf(outcome)?.variant).toBe("error");
 		expect(String(bannerOf(outcome)?.description)).toContain("Expires at");
+		expect((await stored("c-welcome"))?.expiresAt, "nothing is written").toBe(
+			state.coupons[0]!.expiresAt,
+		);
 	});
 
 	test("a BLANK arriving from a bound the operator never revealed is not a clear — it closes the 'renderer empties hidden fields' mutation", async () => {
@@ -2070,7 +2014,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			maxUses: "",
 			maxUsesPerCustomer: "",
 		});
-		const after = state.coupons.find((c) => c.id === "c-welcome");
+		const after = await stored("c-welcome");
 		expect(after?.capCents).toBe(before.capCents);
 		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
 		expect(after?.maxUses).toBe(before.maxUses);
@@ -2144,7 +2088,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		// `initial_value`, and nothing for a field that has none
 		// (`blocks/form.tsx`'s `getInitialValues`, verified in 0.31.1).
 		await submitForm(blocks, "coupons:save", formInitialValues(blocks, "coupons:save"));
-		const after = state.coupons.find((c) => c.id === "c-welcome");
+		const after = await stored("c-welcome");
 		expect(after?.rateBps).toBe(before.rateBps);
 		expect(after?.capCents).toBe(before.capCents);
 		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
@@ -2196,8 +2140,6 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		assertBlockContract(await openCoupon("FIVEOFF"), { screen: "coupons", level: "detail" }); // fixed_amount, deletable
 		assertBlockContract(await openCoupon("SUMMER25"), { screen: "coupons", level: "detail" }); // percentage, redeemed (delete withheld)
 
-		await sandbox!.close();
-		await stub!.close();
 		// The lifecycle-marked shapes: an exception detail carries a SECOND
 		// top-level banner beside any notice, and the leaf whose optional values
 		// are all set draws every field the edit group has.
@@ -2205,13 +2147,9 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		for (const code of ["EXPIRED20", "LAUNCH2026", "MAXEDOUT"]) {
 			assertBlockContract(await openCoupon(code), { screen: "coupons", level: "detail" });
 		}
-		await sandbox!.close();
-		await stub!.close();
 		await boot(makeWelcomeState());
 		assertBlockContract(await openCoupon("WELCOME10"), { screen: "coupons", level: "detail" });
 
-		await sandbox!.close();
-		await stub!.close();
 		await boot({ coupons: [] });
 		assertBlockContract(
 			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),

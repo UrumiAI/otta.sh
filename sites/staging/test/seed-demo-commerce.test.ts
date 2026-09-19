@@ -422,8 +422,8 @@ describe("seed-demo-commerce", () => {
 
 	test("a product with STILL no commerce row after the publish is an error, not a silent skip", async () => {
 		// The publish is what creates the row, via the plugin's content sync hook.
-		// If the row is still missing the hook did not run — which is what a build
-		// left on `__OTTA_COMMERCE_MODE__ = "http"` looks like from here.
+		// If the row is still missing the hook did not run — which is what a site
+		// built without the otta plugin registered looks like from here.
 		const { deps } = stubSite([null, null, null]);
 		await expect(seedOneProduct(TEE, deps)).rejects.toThrow(/still has no commerce row/);
 	});

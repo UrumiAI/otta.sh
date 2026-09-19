@@ -141,7 +141,7 @@ export interface EmailSenderEgress {
  * instead of draining the outbox into nowhere.
  *
  * Both kv reads are fail-soft (`readWriteOnlySecret` already swallows a rejection
- * to `undefined`, matching `serviceTokenFromKv`): a kv outage must degrade to an
+ * to `undefined`): a kv outage must degrade to an
  * unauthenticated send against the documented default from-address, never take
  * down the tick that was about to drain the outbox.
  */

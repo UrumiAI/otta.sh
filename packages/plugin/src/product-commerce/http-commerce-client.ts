@@ -36,7 +36,7 @@ export interface HttpCommerceClientOptions {
 	baseUrl: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
 	 *  (ADR-0007), sourced by the construction site from write-only `ctx.kv`
-	 *  (`settings:serviceToken`) via `serviceTokenFromKv`. Undefined ⇒ no header
+	 *  from write-only plugin kv. Undefined ⇒ no header
 	 *  is attached ⇒ byte-identical to the pre-gate wire. Attached to EVERY
 	 *  request (incl. GET reads and `logout`) — see `#baseHeaders`. */
 	serviceToken?: string;

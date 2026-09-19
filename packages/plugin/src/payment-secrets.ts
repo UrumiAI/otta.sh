@@ -3,13 +3,11 @@
  * INC-C3), held in WRITE-ONLY plugin kv.
  *
  * WHY THIS MODULE EXISTS. Until the fold-in these values were service
- * environment variables — `wrangler secret put …` entries on a separate Worker
- * (`packages/service/wrangler.jsonc`). With the service gone there is no second
- * deployable to hold them, so they move to the one operator-provisionable store
- * the plugin has: `ctx.kv`, under the `settings:*` convention, using exactly the
- * discipline `settings:serviceToken` (ADR-0007) already established — persisted
- * only on a non-empty submit, never rendered back into a block, and read through
- * a fail-closed reader.
+ * environment variables — `wrangler secret put …` entries on a separate Worker.
+ * With the service gone there is no second deployable to hold them, so they move
+ * to the one operator-provisionable store the plugin has: `ctx.kv`, under the
+ * `settings:*` convention — persisted only on a non-empty submit, never rendered
+ * back into a block, and read through a fail-closed reader.
  *
  * EVERY KEY IS AN EXISTING SERVICE ENV VAR, RENAMED — nothing here is invented:
  *

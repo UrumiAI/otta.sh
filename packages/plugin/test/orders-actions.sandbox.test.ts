@@ -15,6 +15,43 @@
  * vocabularies, badge suppression, the fail-closed banner's shape. None of that
  * outlives the renderer. Everything asserting BEHAVIOUR moved here.
  *
+ * THERE IS NO SERVICE BEHIND THESE WRITES ANY MORE (INC-D3a). The console's
+ * clients come from `makeAdminClients(ctx)`, which composes the commerce
+ * adapters straight over `ctx.storage` — so a write here is a write to a REAL
+ * document store in the same isolate, and the state a refusal is compared
+ * against is the state this file seeded through those same adapters. Every
+ * assertion that used to read a recorded HTTP request (a POST body, an
+ * `Idempotency-Key` header, an `X-Internal-Token`) is therefore gone: there is
+ * no request to record, and no token — the token pair authenticated a caller TO
+ * THE SERVICE, and ADR-0014 D3 deleted both with the deployment. What each write
+ * DID is now read back off the order itself, which is the stronger statement
+ * anyway: the old tests proved a request was addressed correctly, these prove
+ * the order moved.
+ *
+ * ONE PROPERTY LOST ITS SUBJECT ON THIS TIER AND MOVED RATHER THAN BEING DROPPED.
+ * F-2a's content-derived idempotency keys are still derived, exactly as before —
+ * `admin-refund:<order>:<amount>:<watermark>` and the rest — but a key is now an
+ * argument handed to a use-case inside this isolate instead of a header on a
+ * wire, so no test AT THIS TIER can observe the STRING. The refund key's
+ * derivation is therefore pinned one layer down, directly, in
+ * `orders-refund-key.test.ts` — including F-2a's positive case, that two
+ * deliberate identical refunds derive DIFFERENT keys because the observed
+ * watermark moved. What the key BUYS is still observable here too: a replayed
+ * note reads `Already added` (below), which is the dedupe the key performs.
+ *
+ * REFUNDS CANNOT COMPLETE ON THIS TIER, and that is recorded, not worked around.
+ * `InProcessAdminOrdersClient` composes NO payment gateways yet (INC-C1/C3 move
+ * the payment adapters), so every well-formed refund reaches its "no gateway is
+ * wired for this order's method" arm and answers `409
+ * REFUND_GATEWAY_UNAVAILABLE`. The refund cases below therefore cover everything
+ * IN FRONT of that arm — which is where DA-3a and DA-3b live and where the money
+ * bugs are — plus the honest notice the arm itself produces. The success,
+ * duplicate and fully-refunded notices, the `REFUND_EXCEEDS_TOTAL` ceiling
+ * refusal and the `GATEWAY_UNVERIFIED` ambiguous-timeout copy are unreachable
+ * until a gateway map is composed; they had exactly one previous source of truth,
+ * a stub answering an invented status code, and a test that stubs a reply it
+ * cannot provoke proves nothing about this tier.
+ *
  * THE STALE-WATERMARK REFUSAL IS THE GATE (ADR-0015 Decision 3, as amended), and
  * it is proven on every write that carries a watermark: `THE REFUSAL — a refund
  * whose watermark no longer matches applies NOTHING` for the refund ledger,
@@ -33,24 +70,37 @@
  * the client alone — see ADR-0015's amendment, which records where that
  * enforcement has a hole. The reachable confirm's own money validation — integer
  * minor units, a positive amount, no float laundered into cents — is `M-3/B-2`
- * below and stays, as does the service's over-refund refusal
- * (`REFUND_EXCEEDS_TOTAL`).
+ * below and stays.
  *
  * A green happy path is not evidence for any of this, so every refusal test also
- * asserts that NO POST was made.
+ * asserts the order is UNTOUCHED — read back through the same adapters.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { REFUND_TOO_HIGH_TITLE } from "@otta-sh/admin-presentation";
+import {
+	cents,
+	currency,
+	idempotencyKey,
+	orderId as toOrderId,
+	productId as toProductId,
+	sku as toSku,
+	type Order,
+} from "@otta-sh/domain";
+import {
+	EmdashInventoryStore,
+	EmdashOrderStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const ACT = "otta_console_act";
-const ORDER_ID = "ord-1";
-const ADMIN_TOKEN = "admin-token-xyz";
+
+/** $15.00, the total every seeded order carries — the figures in the refund copy
+ *  below are derived from it, so moving it moves them. */
+const TOTAL_CENTS = 1500;
 
 interface Notice {
 	variant: string;
@@ -64,115 +114,93 @@ interface ActOutcome {
 	notice?: Notice | null;
 }
 
-/** The order as the stub serves it. `state` is what a watermark is compared
- *  against, so every DA-3a test moves exactly this. */
-function order(state = "paid"): Record<string, unknown> {
-	return {
-		id: ORDER_ID,
-		state,
-		currency: "USD",
-		paymentMethod: "card",
-		buyerRef: "alice@example.com",
-		customerId: null,
-		createdAt: "2026-07-08T10:30:00.000Z",
-		reconciliationFlag: null,
-		reconciliationResolution: null,
-		fulfillment: null,
-		cancellation: null,
-		shippingAddress: null,
-		totals: {
-			currency: "USD",
-			subtotalCents: 1500,
-			discountCents: 0,
-			shippingCents: 0,
-			taxCents: 0,
-			totalCents: 1500,
-			appliedCouponCode: null,
-		},
-		lines: [],
-	};
+let sandbox: SandboxHandle;
+let storage: StorageAccess;
+let orderStore: EmdashOrderStore;
+let seq = 0;
+
+/** A namespace no other suite writes under. The document store is process-scoped
+ *  and reused across boots, so every id this file mints carries the prefix and
+ *  every case mints its own — no case can observe another's order. */
+const NS = "oa";
+
+beforeAll(async () => {
+	({ storage } = await storageBridge());
+	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	orderStore = new EmdashOrderStore({ storage, inventory, idGen: uuidIdGen, clock: systemClock });
+	// ONE boot for the file. The isolate holds no per-case state — the commerce
+	// truth lives in the store beside it — so a boot per case would only pay the
+	// bundle-and-spawn cost again.
+	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+}, 300_000);
+
+afterAll(async () => {
+	await sandbox?.close();
+});
+
+/**
+ * A fresh order, seeded through the SAME adapters the console's in-process
+ * client composes — so what a write re-reads is what this function wrote, and a
+ * divergence between the two is a real defect rather than a fixture artefact.
+ *
+ * `paid` by default, because that is the state every watermark case starts from:
+ * `createFromCart` lands an order in `pending` and `markPaid` moves it.
+ */
+async function seedOrder(
+	options: { paid?: boolean; capturedCents?: number } = {},
+): Promise<string> {
+	seq += 1;
+	const suffix = `${NS}-${String(seq)}`;
+	const id = `order-${suffix}`;
+	await orderStore.createFromCart({
+		orderId: toOrderId(id),
+		cartId: null,
+		currency: currency("USD"),
+		idempotencyKey: idempotencyKey(`create-${suffix}`),
+		holdExpiresAt: "2099-01-01T00:00:00.000Z",
+		buyerRef: `alice-${suffix}@example.com`,
+		paymentMethod: "stripe",
+		lines: [
+			{
+				productId: toProductId(`prod-${suffix}`),
+				sku: toSku(`SKU-${suffix.toUpperCase()}`),
+				title: "Linen apron",
+				unitPrice: cents(TOTAL_CENTS),
+				currency: currency("USD"),
+				quantity: 1,
+				fulfillmentKind: "digital",
+				reservationId: null,
+			},
+		],
+		totals: { subtotal: cents(TOTAL_CENTS), total: cents(TOTAL_CENTS), currency: currency("USD") },
+	});
+	if (options.paid !== false) await orderStore.markPaid(toOrderId(id));
+	// A SUCCEEDED capture is what gives the refund ceiling a non-zero value:
+	// `min(Σ captured, frozen total)`. Without one every ceiling — and so every
+	// "remains refundable" figure the copy quotes — is $0.00, which would let the
+	// partial-refund arithmetic in the stale-ledger notice go unchecked.
+	if (options.capturedCents !== undefined) {
+		await orderStore.recordPayment({
+			orderId: toOrderId(id),
+			gateway: "stripe",
+			providerRef: `pi-${suffix}`,
+			amount: cents(options.capturedCents),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+	}
+	return id;
 }
 
-/** $5.00 already refunded of a $15.00 capture, so $10.00 remains. The watermark
- *  an honest payload carries is therefore `500`, and the live ceiling is `1000`. */
-function refundsSummary(refundedTotalCents = 500): Record<string, unknown> {
-	return {
-		refunds: [],
-		currency: "USD",
-		capturedTotalCents: 1500,
-		refundedTotalCents,
-		ceilingCents: 1500,
-		remainingCents: 1500 - refundedTotalCents,
-		paymentMethod: "card",
-		refundable: true,
-	};
-}
-
-/** One request header, case-insensitively. */
-function header(
-	request: { headers: Record<string, string | string[] | undefined> } | undefined,
-	name: string,
-): string | undefined {
-	const value = request?.headers[name.toLowerCase()];
-	return typeof value === "string" ? value : undefined;
+/** The order as the store holds it right now — what a refusal must have left
+ *  alone, and what an applied write must have moved. */
+async function readOrder(id: string): Promise<Order> {
+	const order = await orderStore.getById(toOrderId(id));
+	if (order === null) throw new Error(`seeded order ${id} vanished`);
+	return order;
 }
 
 describe("the Orders write path (workerd sandbox)", () => {
-	let service: StubCommerceServer;
-	let sandbox: SandboxHandle;
-
-	/** GET routing is a function of the path, so a surface this write is not
-	 *  supposed to read 404s — which is itself part of every assertion. */
-	let orderState = "paid";
-	let refundedSoFar = 500;
-
-	beforeEach(async () => {
-		orderState = "paid";
-		refundedSoFar = 500;
-		service = await startStubCommerceServer();
-		service.respondWith("GET", (request) => {
-			const path = request.url.split("?")[0] ?? "";
-			if (path === `/admin/orders/${ORDER_ID}`) {
-				return { status: 200, body: { order: order(orderState), allowedTransitions: [] } };
-			}
-			if (path === `/admin/orders/${ORDER_ID}/refunds`) {
-				return { status: 200, body: refundsSummary(refundedSoFar) };
-			}
-			return { status: 404, body: { error: "no route" } };
-		});
-		service.respondWith("POST", () => ({
-			status: 200,
-			body: {
-				ok: true,
-				transitioned: true,
-				resolved: true,
-				recorded: true,
-				cancelled: true,
-				appended: true,
-				duplicate: false,
-				fullyRefunded: false,
-				note: { author: "ops", body: "hello", createdAt: "2026-07-08T10:30:00.000Z" },
-			},
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [service.host],
-			commerceServiceBaseUrl: service.baseUrl,
-		});
-		// The admin token rides every write; seeding it here is what lets each test
-		// assert the header rather than assume it.
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-token",
-			values: { internalToken: ADMIN_TOKEN },
-		});
-		service.requests.length = 0;
-	});
-
-	afterEach(async () => {
-		await sandbox.close();
-		await service.close();
-	});
-
 	/** One console write, exactly as `performAction` sends it. */
 	async function act(actionId: string, value: Record<string, string>): Promise<ActOutcome> {
 		const outcome = await sandbox.invokeRoute("admin", {
@@ -184,9 +212,21 @@ describe("the Orders write path (workerd sandbox)", () => {
 		return (outcome as { result: ActOutcome }).result;
 	}
 
-	const posts = (): typeof service.requests => service.requests.filter((r) => r.method === "POST");
-	const postTo = (suffix: string): (typeof service.requests)[number] | undefined =>
-		posts().find((r) => r.url === `/admin/orders/${ORDER_ID}${suffix}`);
+	/** Move a seeded order along the state machine using the console's own
+	 *  transitions, so a case that needs `shipped` gets there the way an operator
+	 *  would rather than by writing the field behind the domain's back. */
+	async function advance(id: string, path: readonly string[]): Promise<void> {
+		let from = "paid";
+		for (const to of path) {
+			const result = await act(`orders:transition-${to}`, {
+				orderId: id,
+				toState: to,
+				state: from,
+			});
+			expect(result.notice, `${from} → ${to}`).toBeNull();
+			from = to;
+		}
+	}
 
 	// -- the dispatch gate ------------------------------------------------------
 
@@ -194,11 +234,12 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// Reachable from a stale tab after a deploy that renamed an action, and from
 		// a console bug — never from a control this release rendered. Reporting it as
 		// an outcome would render a refund that never happened as done.
-		const result = await act("orders:no-such-action", { orderId: ORDER_ID });
+		const id = await seedOrder();
+		const result = await act("orders:no-such-action", { orderId: id });
 		expect(result.ok).toBe(false);
 		expect(result.title).toBe("Nothing was changed");
 		expect(String(result.description)).toContain("Nothing was applied");
-		expect(posts()).toHaveLength(0);
+		expect((await readOrder(id)).state).toBe("paid");
 	});
 
 	test("EVERY id in ORDERS_ACTION_IDS dispatches — the gate and the table cannot disagree", async () => {
@@ -222,39 +263,43 @@ describe("the Orders write path (workerd sandbox)", () => {
 
 	// -- transitions ------------------------------------------------------------
 
-	test("a transition POSTs with a content-derived Idempotency-Key and both tokens", async () => {
+	test("a transition APPLIES to the persisted order and reports no notice", async () => {
+		// What the deleted POST-body assertion was a proxy for. There is no request
+		// to inspect now, so the claim is made directly against the store the write
+		// went to: the order moved, and it moved to the state the id names.
+		const id = await seedOrder();
 		const result = await act("orders:transition-processing", {
-			orderId: ORDER_ID,
+			orderId: id,
 			toState: "processing",
 			state: "paid",
 		});
-		const post = postTo("/transition");
-		expect(post).toBeDefined();
-		expect(post?.body).toEqual({ toState: "processing" });
-		// F-2a: content-derived, never a nonce.
-		expect(header(post, "Idempotency-Key")).toBe(`admin-transition:${ORDER_ID}:processing`);
-		expect(header(post, "X-Internal-Token")).toBe(ADMIN_TOKEN);
 		expect(result.notice).toBeNull();
+		expect((await readOrder(id)).state).toBe("processing");
 	});
 
 	test("the target state comes from the ACTION ID, never from the operator-alterable payload", async () => {
-		// DA-6 item 4: `toState` in the payload is a lie an operator can tell.
+		// DA-6 item 4: `toState` in the payload is a lie an operator can tell. The
+		// handler is closed over the state its id was derived from, so the lie has
+		// nowhere to land — and the order proves it landed nowhere.
+		const id = await seedOrder();
 		await act("orders:transition-processing", {
-			orderId: ORDER_ID,
+			orderId: id,
 			toState: "refunded",
 			state: "paid",
 		});
-		expect(postTo("/transition")?.body).toEqual({ toState: "processing" });
+		expect((await readOrder(id)).state).toBe("processing");
 	});
 
 	test("DA-3a: a transition whose observed state no longer matches applies NOTHING and names both states", async () => {
-		orderState = "processing";
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
 		const result = await act("orders:transition-shipped", {
-			orderId: ORDER_ID,
+			orderId: id,
 			toState: "shipped",
+			// The operator SAW `paid`; the live order is `processing`.
 			state: "paid",
 		});
-		expect(posts()).toHaveLength(0);
+		expect((await readOrder(id)).state).toBe("processing");
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("The order changed — nothing was applied");
 		expect(result.notice?.description).toContain("was paid when you started");
@@ -266,91 +311,91 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// tab rendered before the watermark existed — and refusing is right for both.
 		// The refusal happens BEFORE the re-read, because no re-read can supply a
 		// watermark the operator never sent.
+		const id = await seedOrder();
 		for (const state of [undefined, "", "   "]) {
-			service.requests.length = 0;
 			const result = await act("orders:transition-processing", {
-				orderId: ORDER_ID,
+				orderId: id,
 				toState: "processing",
 				...(state === undefined ? {} : { state }),
 			});
-			expect(service.requests, JSON.stringify(state)).toHaveLength(0);
-			expect(result.notice?.title).toBe("That action could not be read");
+			expect(result.notice?.title, JSON.stringify(state)).toBe("That action could not be read");
+			expect((await readOrder(id)).state, JSON.stringify(state)).toBe("paid");
 		}
 	});
 
 	test("a no-op transition (ok but transitioned:false) reports a NON-error notice", async () => {
-		service.respondWith("POST", () => ({ status: 200, body: { ok: true, transitioned: false } }));
+		// The guarded flip matching 0 rows is not a failure — two tabs racing the
+		// same button is the ordinary case — so it gets a `default` notice rather
+		// than an error one or a silent success. Provoked HONESTLY here: the order
+		// is already `processing` and the watermark says so, so the re-read agrees
+		// and the flip finds nothing to move.
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
 		const result = await act("orders:transition-processing", {
-			orderId: ORDER_ID,
+			orderId: id,
 			toState: "processing",
-			state: "paid",
+			state: "processing",
 		});
 		expect(result.notice?.variant).toBe("default");
 		expect(result.notice?.title).toBe("No change");
 	});
 
 	test("an order that cannot be re-read before a transition applies nothing", async () => {
-		service.respondWith("GET", () => ({ status: 500, body: {} }));
+		// The re-read resolving `null` — an id that names no order, which is what a
+		// deleted-then-reloaded tab sends. The stub used to manufacture this with a
+		// 500; an unknown id provokes the same branch without inventing an outage.
 		const result = await act("orders:transition-processing", {
-			orderId: ORDER_ID,
+			orderId: `order-${NS}-does-not-exist`,
 			toState: "processing",
 			state: "paid",
 		});
-		expect(posts()).toHaveLength(0);
 		expect(result.notice?.title).toBe("Nothing was changed");
 	});
 
 	// -- notes ------------------------------------------------------------------
 
-	test("add-note POSTs with a content-derived Idempotency-Key and the admin token", async () => {
-		// REGRESSION GUARD. Until this increment the console's note, resolve and
-		// fulfilment writes carried their order id in a flat payload while the Block
-		// Kit handler they were forwarded to read it from a `block_id` carrier the
-		// console never sent — so all three answered "That action could not be read"
-		// and made no request at all. The extraction is what closes that.
-		const result = await act("orders:add-note", {
-			orderId: ORDER_ID,
-			author: "ops",
-			body: "hello",
-		});
-		const post = postTo("/notes");
-		expect(post).toBeDefined();
-		expect(post?.body).toEqual({ author: "ops", body: "hello" });
-		expect(header(post, "Idempotency-Key")).toBe(`admin-note:${ORDER_ID}:ops:hello`);
-		expect(header(post, "X-Internal-Token")).toBe(ADMIN_TOKEN);
+	test("add-note APPENDS the note to the order, and reports no notice", async () => {
+		// REGRESSION GUARD. Until INC-R2 the console's note, resolve and fulfilment
+		// writes carried their order id in a flat payload while the Block Kit handler
+		// they were forwarded to read it from a `block_id` carrier the console never
+		// sent — so all three answered "That action could not be read" and wrote
+		// nothing at all. The extraction is what closes that, and the note now on the
+		// order is the proof.
+		const id = await seedOrder();
+		const result = await act("orders:add-note", { orderId: id, author: "ops", body: "hello" });
 		expect(result.notice).toBeNull();
+		const timeline = await sandbox.invokeRoute("admin", {
+			type: "otta_console_read",
+			resource: "orders.detail",
+			orderId: id,
+		});
+		if ("error" in timeline) throw new Error(timeline.error);
+		const notes = (timeline.result as { notes: Array<{ author: string; body: string }> }).notes;
+		expect(notes).toEqual([expect.objectContaining({ author: "ops", body: "hello" })]);
 	});
 
-	test("add-note replays: the SAME note derives the SAME key, and a not-appended reply says so", async () => {
-		await act("orders:add-note", { orderId: ORDER_ID, author: "ops", body: "hello" });
-		const first = header(postTo("/notes"), "Idempotency-Key");
-		service.requests.length = 0;
-		service.respondWith("POST", () => ({
-			status: 200,
-			body: {
-				ok: true,
-				appended: false,
-				note: { author: "ops", body: "hello", createdAt: "2026-07-08T10:30:00.000Z" },
-			},
-		}));
-		const replay = await act("orders:add-note", {
-			orderId: ORDER_ID,
-			author: "ops",
-			body: "hello",
-		});
-		expect(header(postTo("/notes"), "Idempotency-Key")).toBe(first);
+	test("add-note replays: the SAME note dedupes, and the not-appended reply says so", async () => {
+		// F-2a's content-derived key, observed through what it BUYS rather than
+		// through a header that no longer travels anywhere: the second submission of
+		// a byte-identical note derives the same key, the domain answers it from the
+		// idempotency store, and the console says `Already added` instead of
+		// appending a second copy.
+		const id = await seedOrder();
+		const value = { orderId: id, author: "ops", body: "hello" };
+		const first = await act("orders:add-note", value);
+		expect(first.notice).toBeNull();
+		const replay = await act("orders:add-note", value);
 		expect(replay.notice?.variant).toBe("default");
 		expect(replay.notice?.title).toBe("Already added");
 	});
 
-	test("add-note with a blank author or body refuses inline and makes NO POST", async () => {
+	test("add-note with a blank author or body refuses inline and writes nothing", async () => {
+		const id = await seedOrder();
 		for (const values of [
 			{ author: "", body: "hello" },
 			{ author: "ops", body: "   " },
 		]) {
-			service.requests.length = 0;
-			const result = await act("orders:add-note", { orderId: ORDER_ID, ...values });
-			expect(posts()).toHaveLength(0);
+			const result = await act("orders:add-note", { orderId: id, ...values });
 			expect(result.notice?.variant).toBe("error");
 			expect(result.notice?.title).toBe("Note not added");
 		}
@@ -358,34 +403,37 @@ describe("the Orders write path (workerd sandbox)", () => {
 
 	// -- reconciliation ---------------------------------------------------------
 
-	test("resolve POSTs the disposition WITH the flag as displayed", async () => {
-		// The service compare-and-clears on `expectedFlag`, so a new anomaly raised
-		// mid-review conflicts instead of being cleared blind.
+	test("resolve CLEARS the flag as displayed and records the disposition", async () => {
+		// The domain compare-and-clears on `expectedFlag`, so a new anomaly raised
+		// mid-review conflicts instead of being cleared blind. The happy half of that
+		// rule: the flag the operator reviewed is the one on the order, so it clears.
+		const id = await seedOrder();
+		await orderStore.flagReconciliation(toOrderId(id), "amount mismatch");
 		const result = await act("orders:resolve-reconciliation", {
-			orderId: ORDER_ID,
+			orderId: id,
 			expectedFlag: "amount mismatch",
 			outcome: "written_off",
 			reason: "false alarm",
 			resolvedBy: "carol",
 		});
-		const post = postTo("/resolve-reconciliation");
-		expect(post?.body).toEqual({
-			expectedFlag: "amount mismatch",
-			outcome: "written_off",
-			reason: "false alarm",
-			resolvedBy: "carol",
-		});
-		expect(header(post, "Idempotency-Key")).toBe(`admin-resolve-reconciliation:${ORDER_ID}`);
 		expect(result.notice?.title).toBe("Reconciliation resolved");
+		const order = await readOrder(id);
+		expect(order.reconciliationFlag).toBeNull();
+		expect(order.reconciliationResolution).toMatchObject({
+			outcome: "written_off",
+			reason: "false alarm",
+			resolvedBy: "carol",
+		});
 	});
 
 	test("a STALE flag gets its own copy — nothing was cleared, review the new one", async () => {
-		service.respondWith("POST", () => ({
-			status: 409,
-			body: { ok: false, reason: "RECONCILIATION_FLAG_CHANGED" },
-		}));
+		// The other half, provoked the way it actually happens: a SECOND anomaly is
+		// flagged after the form rendered, so the flag on the order is no longer the
+		// one the operator reviewed.
+		const id = await seedOrder();
+		await orderStore.flagReconciliation(toOrderId(id), "a newer anomaly");
 		const result = await act("orders:resolve-reconciliation", {
-			orderId: ORDER_ID,
+			orderId: id,
 			expectedFlag: "amount mismatch",
 			outcome: "written_off",
 			reason: "false alarm",
@@ -396,170 +444,209 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(String(result.notice?.description)).toContain("Nothing was cleared");
 		// E-7: never a raw status or URL.
 		expect(String(result.notice?.description)).not.toMatch(/HTTP \d|409|\/admin\//);
+		// And the newer anomaly is still standing, which is the whole point.
+		expect((await readOrder(id)).reconciliationFlag).toBe("a newer anomaly");
 	});
 
-	test("resolve with a blank reason or resolver refuses inline and makes NO POST", async () => {
+	test("resolve with a blank reason or resolver refuses inline and clears nothing", async () => {
+		const id = await seedOrder();
+		await orderStore.flagReconciliation(toOrderId(id), "amount mismatch");
 		for (const values of [
 			{ reason: "", resolvedBy: "carol" },
 			{ reason: "false alarm", resolvedBy: " " },
 		]) {
-			service.requests.length = 0;
 			const result = await act("orders:resolve-reconciliation", {
-				orderId: ORDER_ID,
+				orderId: id,
 				expectedFlag: "amount mismatch",
 				outcome: "written_off",
 				...values,
 			});
-			expect(posts()).toHaveLength(0);
 			expect(result.notice?.title).toBe("Not resolved");
+			expect((await readOrder(id)).reconciliationFlag).toBe("amount mismatch");
 		}
 	});
 
 	// -- fulfilment -------------------------------------------------------------
 
-	test("record-fulfillment POSTs the tracking, normalising the shipped day to an instant", async () => {
+	test("record-fulfillment SHIPS the order with its tracking, normalising the shipped day to an instant", async () => {
+		// Recording fulfilment IS shipping (`processing → shipped`, atomically with
+		// the tracking envelope), so the order is advanced to `processing` first —
+		// which is also what makes the `NOT_FULFILLABLE` case below honest.
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
 		const result = await act("orders:record-fulfillment", {
-			orderId: ORDER_ID,
+			orderId: id,
 			carrier: "UPS",
 			trackingNumber: "1Z999",
 			trackingUrl: "https://ups.example/1Z999",
 			shippedAt: "2026-07-08",
 			recordedBy: "carol",
 		});
-		const post = postTo("/fulfillment");
-		expect(post?.body).toEqual({
+		expect(result.notice?.title).toBe("Order shipped");
+		const order = await readOrder(id);
+		expect(order.state).toBe("shipped");
+		expect(order.fulfillment).toMatchObject({
 			carrier: "UPS",
 			trackingNumber: "1Z999",
 			trackingUrl: "https://ups.example/1Z999",
-			// A date field yields a DAY; the service wants a full ISO instant, and a
+			// A date field yields a DAY; the domain wants a full ISO instant, and a
 			// day given as a shipping moment is the start of that day.
 			shippedAt: "2026-07-08T00:00:00.000Z",
 			recordedBy: "carol",
 		});
-		expect(header(post, "Idempotency-Key")).toBe(`admin-record-fulfillment:${ORDER_ID}`);
-		expect(result.notice?.title).toBe("Order shipped");
 	});
 
 	test("a non-http(s) tracking URL is refused before it can be emailed to a buyer", async () => {
-		// Defense in depth: the service schema enforces the same bound, and this
-		// value reaches a buyer's inbox, so a `javascript:`/`data:` URI never leaves
-		// the plugin.
+		// Defense in depth: the commerce input bounds enforce the same rule one layer
+		// down, and this value reaches a buyer's inbox, so a `javascript:`/`data:`
+		// URI never gets as far as the write.
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
 		for (const trackingUrl of ["javascript:alert(1)", "data:text/html,x", "ftp://x/y"]) {
-			service.requests.length = 0;
 			const result = await act("orders:record-fulfillment", {
-				orderId: ORDER_ID,
+				orderId: id,
 				carrier: "UPS",
 				trackingNumber: "1Z999",
 				trackingUrl,
 				recordedBy: "carol",
 			});
-			expect(posts(), trackingUrl).toHaveLength(0);
-			expect(result.notice?.title).toBe("Not shipped");
+			expect(result.notice?.title, trackingUrl).toBe("Not shipped");
 			expect(String(result.notice?.description)).toContain("http://");
+			expect((await readOrder(id)).state, trackingUrl).toBe("processing");
 		}
 	});
 
-	test("record-fulfillment with any required field blank refuses inline and makes NO POST", async () => {
+	test("record-fulfillment with any required field blank refuses inline and ships nothing", async () => {
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
 		for (const values of [
 			{ carrier: "", trackingNumber: "1Z999", recordedBy: "carol" },
 			{ carrier: "UPS", trackingNumber: " ", recordedBy: "carol" },
 			{ carrier: "UPS", trackingNumber: "1Z999", recordedBy: "" },
 		]) {
-			service.requests.length = 0;
-			const result = await act("orders:record-fulfillment", { orderId: ORDER_ID, ...values });
-			expect(posts()).toHaveLength(0);
+			const result = await act("orders:record-fulfillment", { orderId: id, ...values });
 			expect(result.notice?.title).toBe("Not shipped");
+			expect((await readOrder(id)).state).toBe("processing");
 		}
 	});
 
 	test("a NOT_FULFILLABLE order gets copy naming the state, not the status code", async () => {
-		service.respondWith("POST", () => ({
-			status: 409,
-			body: { ok: false, reason: "NOT_FULFILLABLE" },
-		}));
+		// A `paid` order has not been picked yet, so there is nothing to ship —
+		// the domain's own 409, provoked by the order's real state rather than by a
+		// stubbed reply.
+		const id = await seedOrder();
 		const result = await act("orders:record-fulfillment", {
-			orderId: ORDER_ID,
+			orderId: id,
 			carrier: "UPS",
 			trackingNumber: "1Z999",
 			recordedBy: "carol",
 		});
 		expect(result.notice?.title).toBe("Order can’t be shipped right now");
 		expect(String(result.notice?.description)).not.toMatch(/HTTP \d|409|\/admin\//);
+		expect((await readOrder(id)).state).toBe("paid");
 	});
 
 	// -- cancellation -----------------------------------------------------------
 
-	test("a per-reason cancel re-reads the order, then POSTs with the content-derived key", async () => {
+	test("a per-reason cancel re-reads the order, then cancels WITH the reason on file", async () => {
+		const id = await seedOrder();
 		const result = await act("orders:cancel-out_of_stock", {
-			orderId: ORDER_ID,
+			orderId: id,
 			reason: "out_of_stock",
 			state: "paid",
 		});
-		const post = postTo("/cancel");
-		expect(post?.body).toEqual({ reason: "out_of_stock", cancelledBy: "admin" });
-		expect(header(post, "Idempotency-Key")).toBe(`admin-cancel:${ORDER_ID}`);
 		expect(result.notice?.title).toBe("Order cancelled");
+		const order = await readOrder(id);
+		expect(order.state).toBe("cancelled");
+		// No reachable state is "cancelled with no reason recorded" — the envelope
+		// rides the same guarded flip, and `cancelledBy` defaults to `admin` on the
+		// per-reason control, which carries no actor field.
+		expect(order.cancellation).toMatchObject({ reason: "out_of_stock", cancelledBy: "admin" });
 	});
 
 	test("DA-3a: a cancel whose observed state no longer matches applies NOTHING and names both states", async () => {
-		orderState = "shipped";
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
+		await act("orders:record-fulfillment", {
+			orderId: id,
+			carrier: "UPS",
+			trackingNumber: "1Z999",
+			recordedBy: "carol",
+		});
 		const result = await act("orders:cancel", {
-			orderId: ORDER_ID,
+			orderId: id,
 			reason: "out_of_stock",
 			detail: "warehouse fire",
 			cancelledBy: "carol",
 			state: "paid",
 		});
-		expect(posts()).toHaveLength(0);
 		expect(result.notice?.title).toBe("The order changed — nothing was cancelled");
 		expect(result.notice?.description).toContain("was paid when you started");
 		expect(result.notice?.description).toContain("is now shipped");
+		const order = await readOrder(id);
+		expect(order.state).toBe("shipped");
+		expect(order.cancellation).toBeNull();
 	});
 
 	test("a cancel reason outside the closed set, or a missing watermark, is an unreadable payload", async () => {
+		const id = await seedOrder();
 		const cases: Record<string, string>[] = [
-			{ orderId: ORDER_ID, reason: "because", state: "paid" },
-			{ orderId: ORDER_ID, reason: "out_of_stock" },
+			{ orderId: id, reason: "because", state: "paid" },
+			{ orderId: id, reason: "out_of_stock" },
 		];
 		for (const value of cases) {
-			service.requests.length = 0;
 			const result = await act("orders:cancel", value);
-			expect(service.requests).toHaveLength(0);
-			expect(result.notice?.title).toBe("That action could not be read");
+			expect(result.notice?.title, JSON.stringify(value)).toBe("That action could not be read");
+			expect((await readOrder(id)).state, JSON.stringify(value)).toBe("paid");
 		}
 	});
 
 	test("a NOT_CANCELLABLE order gets copy that offers no retry", async () => {
-		service.respondWith("POST", () => ({
-			status: 409,
-			body: { ok: false, reason: "NOT_CANCELLABLE" },
-		}));
+		// A shipped order cannot be cancelled — the state machine says so, and the
+		// watermark MATCHES, so this is the domain refusing the write rather than
+		// the console refusing the payload.
+		const id = await seedOrder();
+		await advance(id, ["processing"]);
+		await act("orders:record-fulfillment", {
+			orderId: id,
+			carrier: "UPS",
+			trackingNumber: "1Z999",
+			recordedBy: "carol",
+		});
 		const result = await act("orders:cancel-fraud_suspected", {
-			orderId: ORDER_ID,
+			orderId: id,
 			reason: "fraud_suspected",
-			state: "paid",
+			state: "shipped",
 		});
 		// The write was ATTEMPTED, so this is an outcome to read rather than an input
 		// to correct — a prefilled retry would promise something no longer possible.
 		expect(result.notice?.title).toBe("Order can’t be cancelled right now");
+		expect((await readOrder(id)).state).toBe("shipped");
 	});
 
 	// -- refunds: THE GATE ------------------------------------------------------
 
 	test("THE REFUSAL — a refund whose watermark no longer matches applies NOTHING", async () => {
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
-		// drawn and this click. This is now the ONLY server-side window checked on a
+		// drawn and this click. This is the ONLY server-side window checked on a
 		// refund, so it carries the whole of DA-3a for the money path.
-		refundedSoFar = 900;
+		//
+		// A seeded order has an EMPTY refund ledger, so live `refundedTotalCents` is
+		// 0 and a payload claiming 500 is exactly the stale watermark this refuses.
+		// The remaining-refundable figure the copy quotes is the ceiling minus the
+		// ledger: this order captured $6.00 against a $15.00 total, so the ceiling is
+		// min(600, 1500) = $6.00 and nothing has come back yet. The ARITHMETIC is the
+		// point — a copy that quoted the order total, the captured total or a zero
+		// would all pass a test that only looked for the phrase.
+		const id = await seedOrder({ capturedCents: 600 });
 		const result = await act("orders:refund", {
-			orderId: ORDER_ID,
+			orderId: id,
 			amountCents: "500",
 			refundedSoFarCents: "500",
 			currency: "USD",
 			reason: "",
 			refundedBy: "carol",
 		});
-		expect(posts()).toHaveLength(0);
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
 		expect(result.notice?.description).toContain("someone else refunded this order");
 		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
@@ -569,185 +656,88 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
 
-	test("F-2a: the refund key is `admin-refund:<order>:<amount>:<watermark>` — content plus the OBSERVED watermark, never a nonce", async () => {
+	test("an HONEST watermark reaches the write, and this tier answers that no gateway is wired", async () => {
+		// THE ARM BEHIND THE GATE. Everything the console checks has passed — the
+		// amount parses as integer minor units, the currency is named, the watermark
+		// matches the live ledger — so the refund genuinely reaches
+		// `InProcessAdminOrdersClient.refundOrder`, which composes no payment
+		// gateways yet (INC-C1/C3) and answers `409 REFUND_GATEWAY_UNAVAILABLE`.
+		// That lands on `refundFailureNotice`'s default arm.
+		//
+		// This is the case the deleted success/duplicate/fully-refunded tests become
+		// until a gateway map exists: asserting the notice a stub was told to produce
+		// would have said nothing about this tier, and asserting a success would have
+		// been false.
+		const id = await seedOrder();
 		const result = await act("orders:refund", {
-			orderId: ORDER_ID,
+			orderId: id,
 			amountCents: "500",
-			refundedSoFarCents: "500",
+			refundedSoFarCents: "0",
 			currency: "USD",
 			reason: "damaged",
 			refundedBy: "carol",
 		});
-		const post = postTo("/refund");
-		expect(post?.body).toEqual({
-			amountCents: 500,
-			currency: "USD",
-			reason: "damaged",
-			refundedBy: "carol",
-		});
-		expect(header(post, "Idempotency-Key")).toBe(`admin-refund:${ORDER_ID}:500:500`);
-		expect(header(post, "X-Internal-Token")).toBe(ADMIN_TOKEN);
-		expect(result.notice?.title).toBe("Refund recorded");
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Not refunded");
+		// E-7 holds on this arm too: no status code, no path.
+		expect(String(result.notice?.description)).not.toMatch(/HTTP \d|409|\/admin\//);
 	});
 
-	test("F-2a: the SAME click twice derives the SAME key, and the replay reads `Already refunded`", async () => {
-		const value = {
-			orderId: ORDER_ID,
-			amountCents: "500",
-			refundedSoFarCents: "500",
-			currency: "USD",
-			refundedBy: "carol",
-		};
-		await act("orders:refund", value);
-		const first = header(postTo("/refund"), "Idempotency-Key");
-		service.requests.length = 0;
-		service.respondWith("POST", () => ({
-			status: 200,
-			body: { ok: true, recorded: true, duplicate: true, fullyRefunded: false },
-		}));
-		const replay = await act("orders:refund", value);
-		expect(header(postTo("/refund"), "Idempotency-Key")).toBe(first);
-		expect(replay.notice?.variant).toBe("default");
-		expect(replay.notice?.title).toBe("Already refunded");
-	});
-
-	test("F-2a, THE POSITIVE CASE: two DELIBERATE identical refunds derive DIFFERENT keys, so both apply", async () => {
-		// This is what the watermark buys, and why a render-time nonce cannot
-		// replace it: the domain resolves a refund by key ALONE with no amount
-		// comparison, so a reused key for a different intent reports money that
-		// never moved as already refunded.
-		await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "500",
-			refundedSoFarCents: "500",
-			currency: "USD",
-			refundedBy: "carol",
-		});
-		const first = header(postTo("/refund"), "Idempotency-Key");
-		// The first refund moved the ledger, so the operator's next view carries a
-		// new watermark — and the same amount against it is a different key.
-		refundedSoFar = 1000;
-		service.requests.length = 0;
-		await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "500",
-			refundedSoFarCents: "1000",
-			currency: "USD",
-			refundedBy: "carol",
-		});
-		const second = header(postTo("/refund"), "Idempotency-Key");
-		expect(first).toBe(`admin-refund:${ORDER_ID}:500:500`);
-		expect(second).toBe(`admin-refund:${ORDER_ID}:500:1000`);
-		expect(second).not.toBe(first);
-	});
-
-	test("DA-3b: each of the FOUR disjuncts of an unreadable confirm refuses and makes NO request", async () => {
+	test("DA-3b: each of the disjuncts of an unreadable confirm refuses and never reaches the write", async () => {
 		// A payload can carry a perfectly good `amountCents` and still be unreadable
-		// because the WATERMARK or the CURRENCY is missing. None of the four is
-		// fixable by re-typing the amount, so all four take the payload-level
-		// refusal — and, critically, none of them reaches the service.
+		// because the WATERMARK or the CURRENCY is missing. None of them is fixable
+		// by re-typing the amount, so all take the payload-level refusal — and,
+		// critically, none of them reaches the ledger re-read, which is why the
+		// refusal is `That action could not be read` rather than a ledger notice.
+		const id = await seedOrder();
 		const cases: Record<string, string>[] = [
 			// watermark missing, amount fine
 			{ amountCents: "1000", currency: "USD" },
 			// currency missing, amount fine
-			{ amountCents: "1000", refundedSoFarCents: "500" },
+			{ amountCents: "1000", refundedSoFarCents: "0" },
 			// amount not a positive integer of minor units
-			{ amountCents: "0", refundedSoFarCents: "500", currency: "USD" },
-			{ amountCents: "-100", refundedSoFarCents: "500", currency: "USD" },
-			{ amountCents: "not-a-number", refundedSoFarCents: "500", currency: "USD" },
+			{ amountCents: "0", refundedSoFarCents: "0", currency: "USD" },
+			{ amountCents: "-100", refundedSoFarCents: "0", currency: "USD" },
+			{ amountCents: "not-a-number", refundedSoFarCents: "0", currency: "USD" },
 		];
 		for (const value of cases) {
-			service.requests.length = 0;
 			const result = await act("orders:refund", {
-				orderId: ORDER_ID,
+				orderId: id,
 				reason: "damaged",
 				refundedBy: "carol",
 				...value,
 			});
-			expect(service.requests, JSON.stringify(value)).toHaveLength(0);
 			expect(result.notice?.title, JSON.stringify(value)).toBe("That action could not be read");
 		}
 	});
 
-	test("the service's own 409 REFUND_EXCEEDS_TOTAL is the over-refund guard — nothing else bounds the amount", async () => {
-		// There is no client-side ceiling check on this path: the one that existed
-		// lived on the deleted `-review` step and no surface ever called it. So an
-		// over-ceiling amount that clears the watermark compare reaches the service,
-		// and the SERVICE refuses it. This test is that guarantee.
-		service.respondWith("POST", () => ({
-			status: 409,
-			body: { ok: false, reason: "REFUND_EXCEEDS_TOTAL" },
-		}));
+	test("a ledger that cannot be re-read applies nothing", async () => {
+		// `getRefunds` resolving `null` — an id that names no order, which is what a
+		// deleted-then-reloaded tab sends. "Nothing came back" is not "nothing to
+		// say": the operator is told the ledger could not be re-checked rather than
+		// being shown a refund that never happened.
 		const result = await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "9999",
-			refundedSoFarCents: "500",
-			currency: "USD",
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(1);
-		// The SAME title the client-side ceiling check raises — an operator reading
-		// two titles for one refusal has to work out whether they hit two limits.
-		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
-		expect(String(result.notice?.description)).not.toMatch(/HTTP \d|409|\/admin\//);
-	});
-
-	test("an ambiguous gateway timeout tells the operator NOT to retry, and offers no retry affordance", async () => {
-		service.respondWith("POST", () => ({
-			status: 504,
-			body: { ok: false, reason: "GATEWAY_UNVERIFIED" },
-		}));
-		const result = await act("orders:refund", {
-			orderId: ORDER_ID,
+			orderId: `order-${NS}-does-not-exist`,
 			amountCents: "500",
-			refundedSoFarCents: "500",
+			refundedSoFarCents: "0",
 			currency: "USD",
 			refundedBy: "carol",
 		});
-		expect(result.notice?.title).toBe("Refund status unknown");
-		expect(String(result.notice?.description)).toContain("Do NOT retry");
-	});
-
-	test("a fully-refunding refund says so, and an unreachable ledger applies nothing", async () => {
-		service.respondWith("POST", () => ({
-			status: 200,
-			body: { ok: true, recorded: true, duplicate: false, fullyRefunded: true },
-		}));
-		const full = await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "1000",
-			refundedSoFarCents: "500",
-			currency: "USD",
-			refundedBy: "carol",
-		});
-		expect(full.notice?.title).toBe("Refund complete");
-
-		service.respondWith("GET", () => ({ status: 500, body: {} }));
-		service.requests.length = 0;
-		const unreadable = await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "500",
-			refundedSoFarCents: "500",
-			currency: "USD",
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(unreadable.notice?.title).toBe("Nothing was refunded");
+		expect(result.notice?.title).toBe("Nothing was refunded");
 	});
 
 	// -- money never crosses this boundary as a float ---------------------------
 
 	test("M-3/B-2: a payload's minor units must be a plain integer string — no float is ever laundered into cents", async () => {
+		const id = await seedOrder();
 		for (const amountCents of ["5.00", "1e3", " 500", "+500", "0x1f", "9007199254740993"]) {
-			service.requests.length = 0;
 			const result = await act("orders:refund", {
-				orderId: ORDER_ID,
+				orderId: id,
 				amountCents,
-				refundedSoFarCents: "500",
+				refundedSoFarCents: "0",
 				currency: "USD",
 				refundedBy: "carol",
 			});
-			expect(service.requests, amountCents).toHaveLength(0);
 			expect(result.notice?.title, amountCents).toBe("That action could not be read");
 		}
 	});

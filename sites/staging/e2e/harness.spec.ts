@@ -95,13 +95,13 @@ test.describe("harness configuration", () => {
 	});
 
 	test("every resolved e2e endpoint is loopback (§0.3 — no remote host, ever)", () => {
-		// The port guard above only covers Postgres. `COMMERCE_SERVICE_URL` and
-		// `OTTA_E2E_BASE_URL` are ordinary deployment variables that a shell used
-		// for deploying already exports; inherited, they would point the stack
-		// boot and the dev-bypass POST at real infrastructure. Same treatment.
+		// The port guard above only covers Postgres — and Postgres is the variable
+		// a deploying shell really does export, which is the whole reason for this
+		// check. The two `OTTA_E2E_*` URLs are e2e-only names, guarded anyway so
+		// that no resolved endpoint in this harness is merely trusted.
 		for (const [label, url] of [
 			["OTTA_E2E_BASE_URL", E2E_BASE_URL],
-			["COMMERCE_SERVICE_URL", E2E_SERVICE_URL],
+			["OTTA_E2E_SERVICE_URL", E2E_SERVICE_URL],
 			["PG_CONNECTION_STRING", E2E_PG_CONNECTION_STRING],
 		] as const) {
 			expect(() => assertLoopbackUrl(url, label), `${label} is not loopback`).not.toThrow();

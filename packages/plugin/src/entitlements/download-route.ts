@@ -26,11 +26,9 @@ export type EntitlementDownloadResult =
  * logged-in customer's `sessionToken` (the service derives the email).
  *
  * SECURITY (issue #33): this route NEVER accepts or forwards a `buyerRef` email.
- * The raw-email check scope is operator-only (gated by `X-Internal-Token` on the
- * service), and this storefront/sandbox path must NEVER read `settings:internalToken`
- * from kv — doing so would let the sandbox re-acquire the email existence oracle
- * this issue closed. The only token this route may touch is `settings:serviceToken`
- * (the write gate, ADR-0007), which does not unlock the buyerRef scope.
+ * The raw-email check scope was operator-only, and this storefront/sandbox path
+ * must never re-acquire the email existence oracle this issue closed — whatever
+ * the entitlement check runs over.
  *
  * SEAM NOTE: the actual file bytes / signed-R2-URL are served by the storefront
  * layer (Phase-2 scaffolding, not yet merged). This route returns the
@@ -49,10 +47,8 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 			return { authorized: false, reason: "INVALID_INPUT" };
 		}
 
-		// `checkEntitlement` is a GET (write-gate-exempt), but the SERVICE token is
-		// threaded for uniformity (ADR-0007) — undefined ⇒ no header ⇒ unchanged
-		// wire. That threading, and the choice of `settings:serviceToken` over
-		// `settings:internalToken`, now live in the one composition root.
+		// The client comes from the one composition root; commerce runs in-process,
+		// so this check is a storage read, not a request with a token on it.
 		const client = await makeCommerceClient(ctx);
 
 		// PRECEDENCE FIX (review): the service gives an `orderId` in the query
