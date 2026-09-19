@@ -25,7 +25,7 @@
  * with its locale and its degradation, and the typed error-code mapping — assert
  * nothing that can happen and are PARKED rather than mocked back into existence:
  * each is a `test.todo` at the foot of the `place` describe, naming the blocking
- * issue `#TBD-checkout-stripe-gateway`, so every run reports them as outstanding
+ * issue `#286`, so every run reports them as outstanding
  * instead of leaving the gap visible only in a commit message. What CAN be
  * asserted, and is
  * below, is that the refusal is contained: it reaches the caller as the guard's
@@ -425,7 +425,7 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	 * is indistinguishable from a property nobody ever cared about.
 	 *
 	 * BLOCKED ON: the stripe gateway is not wired in process —
-	 * issue #TBD-checkout-stripe-gateway. Each one comes back by ARRANGING the
+	 * issue #286. Each one comes back by ARRANGING the
 	 * condition against real data (a placed order, a replayed key, a ship-to on the
 	 * cart) rather than by scripting a reply; the names are kept verbatim as they
 	 * were deleted so the restoration is greppable against this file's history, and
@@ -433,43 +433,43 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	 * is what should be reworded at that point, not the property.
 	 */
 	test.todo("issues EXACTLY one call — POST /checkout/orders — forwarding Idempotency-Key verbatim and buyerRef un-rewritten", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("passes clientAction through UNMODIFIED — the client secret is data in transit", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("NEVER echoes the order's private fields (buyerRef / shippingAddress) back to the caller", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("forwards the optional ship-to snapshot (ADR-0009 slice c)", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a REPLAY of an order that has left pending (clientAction none, intentId '') is alreadyPlaced — not an error", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("returns the ORDER's own total, formatted — the figure the pay button states", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("the total honours the requested locale, and falls back rather than failing", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a REPLAY still carries the total — an order always has one", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a reply with NO totals block still places the order — total simply absent", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("an unformattable total drops the total and keeps the order (a lowercase currency, a symbol for a currency, a fractional total, a null total)", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a 502 becomes the typed PAYMENT_INTENT_FAILED, never RENDER_FAILED", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a 409 CART_CHECKED_OUT / RESERVATION_LOST / PRODUCT_NOT_PRICED becomes the typed reason", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 	test.todo("a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+		/* blocked on: stripe gateway not wired in-process — see issue #286 */
 	});
 });
 

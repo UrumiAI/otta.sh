@@ -856,7 +856,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 	// TODO it is, and stays red-by-absence until the page passes an explicit
 	// threshold into `getLowStock()` (or the client stops defaulting from the same
 	// store) and the E-1 claim can be made honestly again.
-	test.todo("settings-read failure should degrade only the low-stock label, not the whole screen — see issue #TBD-reports-degradation", () => {});
+	test.todo("settings-read failure should degrade only the low-stock label, not the whole screen — see issue #287", () => {});
 
 	test("low-stock rows render Title, then SKU, then On hand — the SKU→title map operators used to keep in their head", async () => {
 		await seedStock(`SKU-A-${SFX}`, 0, "Aluminum Water Bottle");

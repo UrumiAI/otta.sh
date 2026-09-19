@@ -55,7 +55,7 @@ folds per-transport duplicates into single cases.
 
 **Known coverage gap:** the checkout **success** path loses the assertions that
 rode on the HTTP tier's request log, so it is no longer covered past the point
-where the Stripe gateway is called. Tracked as `#TBD-checkout-stripe-gateway`.
+where the Stripe gateway is called. Tracked as `#286`.
 
 `@otta-sh/service` loses its `wrangler.jsonc` and its `wrangler dev` / `wrangler
 deploy` scripts — it is no longer a deployable.
