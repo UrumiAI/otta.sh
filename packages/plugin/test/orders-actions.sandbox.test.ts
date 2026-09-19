@@ -28,13 +28,16 @@
  * anyway: the old tests proved a request was addressed correctly, these prove
  * the order moved.
  *
- * ONE PROPERTY LOST ITS SUBJECT AND IS SAID OUT LOUD RATHER THAN QUIETLY DROPPED.
+ * ONE PROPERTY LOST ITS SUBJECT ON THIS TIER AND MOVED RATHER THAN BEING DROPPED.
  * F-2a's content-derived idempotency keys are still derived, exactly as before —
  * `admin-refund:<order>:<amount>:<watermark>` and the rest — but a key is now an
- * argument handed to a use-case inside this process instead of a header on a
- * wire, so no test can observe the STRING. What the key BUYS is still observable
- * and still tested: a replayed note reads `Already added` (below), which is the
- * dedupe the key performs.
+ * argument handed to a use-case inside this isolate instead of a header on a
+ * wire, so no test AT THIS TIER can observe the STRING. The refund key's
+ * derivation is therefore pinned one layer down, directly, in
+ * `orders-refund-key.test.ts` — including F-2a's positive case, that two
+ * deliberate identical refunds derive DIFFERENT keys because the observed
+ * watermark moved. What the key BUYS is still observable here too: a replayed
+ * note reads `Already added` (below), which is the dedupe the key performs.
  *
  * REFUNDS CANNOT COMPLETE ON THIS TIER, and that is recorded, not worked around.
  * `InProcessAdminOrdersClient` composes NO payment gateways yet (INC-C1/C3 move
@@ -143,7 +146,9 @@ afterAll(async () => {
  * `paid` by default, because that is the state every watermark case starts from:
  * `createFromCart` lands an order in `pending` and `markPaid` moves it.
  */
-async function seedOrder(options: { paid?: boolean } = {}): Promise<string> {
+async function seedOrder(
+	options: { paid?: boolean; capturedCents?: number } = {},
+): Promise<string> {
 	seq += 1;
 	const suffix = `${NS}-${String(seq)}`;
 	const id = `order-${suffix}`;
@@ -170,6 +175,20 @@ async function seedOrder(options: { paid?: boolean } = {}): Promise<string> {
 		totals: { subtotal: cents(TOTAL_CENTS), total: cents(TOTAL_CENTS), currency: currency("USD") },
 	});
 	if (options.paid !== false) await orderStore.markPaid(toOrderId(id));
+	// A SUCCEEDED capture is what gives the refund ceiling a non-zero value:
+	// `min(Σ captured, frozen total)`. Without one every ceiling — and so every
+	// "remains refundable" figure the copy quotes — is $0.00, which would let the
+	// partial-refund arithmetic in the stale-ledger notice go unchecked.
+	if (options.capturedCents !== undefined) {
+		await orderStore.recordPayment({
+			orderId: toOrderId(id),
+			gateway: "stripe",
+			providerRef: `pi-${suffix}`,
+			amount: cents(options.capturedCents),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+	}
 	return id;
 }
 
@@ -614,10 +633,12 @@ describe("the Orders write path (workerd sandbox)", () => {
 		//
 		// A seeded order has an EMPTY refund ledger, so live `refundedTotalCents` is
 		// 0 and a payload claiming 500 is exactly the stale watermark this refuses.
-		// The remaining-refundable figure the copy quotes is the ceiling, which with
-		// no captured payments recorded is min(Σ captured, total) = $0.00 — the
-		// honest number for an order whose money this tier cannot see moving yet.
-		const id = await seedOrder();
+		// The remaining-refundable figure the copy quotes is the ceiling minus the
+		// ledger: this order captured $6.00 against a $15.00 total, so the ceiling is
+		// min(600, 1500) = $6.00 and nothing has come back yet. The ARITHMETIC is the
+		// point — a copy that quoted the order total, the captured total or a zero
+		// would all pass a test that only looked for the phrase.
+		const id = await seedOrder({ capturedCents: 600 });
 		const result = await act("orders:refund", {
 			orderId: id,
 			amountCents: "500",
@@ -631,7 +652,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
 		// states an effect and leaves the operator to guess whether they hit a bug.
 		expect(result.notice?.description).toContain("$5.00 was staged");
-		expect(result.notice?.description).toContain("now remains refundable");
+		expect(result.notice?.description).toContain("$6.00 now remains refundable");
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
 

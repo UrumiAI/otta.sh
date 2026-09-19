@@ -397,10 +397,24 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(refused.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
 		expect(formInitialValues(refused, "tax:create-class")).toEqual({ name: "Reduced rate" });
 
-		// (The old "a SERVICE refusal keeps them too" arm, driven by resubmitting a
-		// duplicate id, is gone with the transport: a collision now REJECTS and the
-		// scaffold's net renders the root registry, which carries no draft by
-		// construction. See the duplicate-create case above.)
+		// A STORE refusal does NOT keep them — asserted, not described. Under the
+		// transport a duplicate id came back as `{ok:false}` and the screen
+		// re-rendered ITSELF with the draft intact ("a SERVICE refusal keeps them
+		// too"); in-process the collision REJECTS, the scaffold's custom-action net
+		// catches it and renders the ROOT registry, which carries no draft by
+		// construction. That is a real narrowing of the property above, so it gets
+		// a real assertion rather than a comment: if the client ever learns to
+		// answer `{ok:false}` on a collision, this is what fails and says the
+		// create screen — and the operator's typing — came back.
+		const dup = await submitForm(refused, "tax:create-class", {
+			id: "standard",
+			name: "Standard again",
+		});
+		expect(bannerOf(dup)?.variant).toBe("error");
+		expect(dup.some((b) => b.type === "header" && b.text === "Tax classes")).toBe(true);
+		expect(formFor(dup, "tax:create-class")).toBeUndefined();
+		// And the refusal really was a refusal: the registry is unchanged.
+		expect(await listClassIds()).toEqual(["standard"]);
 
 		// Success drops the draft and returns to the registry.
 		const created = await submitForm(refused, "tax:create-class", {

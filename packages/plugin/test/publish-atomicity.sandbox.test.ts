@@ -448,8 +448,21 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 		const id = pid("p12");
 		const content = publishedClean(id, T2);
 
+		productCalls.reset();
 		await afterPublish(content);
+		const firstCalls = [...productCalls.calls];
 		const first = await requireDoc(id);
+		// BOTH TRANSITIONS RAN, TWICE — the in-process form of the wire test's
+		// `expect(putKeys).toHaveLength(2)` / `expect(actKeys).toHaveLength(2)`.
+		// Final row state alone cannot tell "the activate ran again and no-opped"
+		// from "the activate never ran at all", and the no-double-write property
+		// IS that distinction. The store's own operation log can: `upsert` and the
+		// publish-gate flip each OPEN with a `getVersioned` on the row whether or
+		// not they go on to write, so a per-delivery count of `getVersioned`
+		// counts the transitions that ran and a count of `compareAndSet` counts
+		// the ones that wrote.
+		expect(firstCalls.filter((call) => call === "getVersioned")).toHaveLength(2);
+		expect(firstCalls.filter((call) => call === "compareAndSet")).toHaveLength(2);
 		// §2.9, NOW ASSERTED RATHER THAN DESCRIBED — `product_commerce` carries ONE
 		// `idempotency_key` column and the two transitions share it. On a FIRST
 		// publish the activate applies last, so the column ends up holding the
@@ -457,8 +470,18 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 		expect(first.idempotencyKey).toBe(`products:${id}:published:${T2}`);
 		expect(first.active).toBe(true);
 
+		productCalls.reset();
 		await afterPublish(content);
+		const secondCalls = [...productCalls.calls];
 		const second = await requireDoc(id);
+		// THE SECOND DELIVERY RAN BOTH TRANSITIONS AGAIN — two `getVersioned` —
+		// and only ONE of them wrote. That single `compareAndSet` is the upsert;
+		// the activate re-ran and found `active` already true, so it returned
+		// without touching the row. A handler that simply stopped calling
+		// `activate` on a replay would also leave the row looking exactly like
+		// this, and only the call count tells the two apart.
+		expect(secondCalls.filter((call) => call === "getVersioned")).toHaveLength(2);
+		expect(secondCalls.filter((call) => call === "compareAndSet")).toHaveLength(1);
 		// …which is why a redelivered afterPublish RE-APPLIES the upsert: the stored
 		// key is the activate's, not the upsert's, so the replay guard does not
 		// recognise it. Nothing the merchant can see changes (same title, same
@@ -577,20 +600,42 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 
 	test("T19 an ABSENT data.title at publish still upserts the row and still activates — a title problem never blocks a publish", async () => {
 		const id = pid("p19");
+		// SEEDED FIRST, AND THAT IS THE WHOLE POINT. The claim is OMISSION — the
+		// title is left out of the upsert input, not written as an explicit null —
+		// and `upsert` distinguishes the two (`title: input.title !== undefined ?
+		// input.title : doc.title`). On an empty row both spellings end in the same
+		// `title = NULL`, so the assertion this case used to make against the PUT
+		// body (`not.toHaveProperty("title")`) has no black-box equivalent there.
+		// Against a row that ALREADY HOLDS a title it does: omission preserves it,
+		// an explicit null erases it.
+		await seedRow(id);
 
 		const content = publishedClean(id, T2);
 		delete (content["data"] as Record<string, unknown>)["title"];
 		const outcome = await afterPublish(content);
 
 		// The title is best-effort: it is omitted from the write and logged, and
-		// the row is still created/refreshed. Vetoing the upsert here would mean a
-		// collection whose title field is missing or named something else never
-		// gets a product_commerce row at all — it would vanish from Pricing &
-		// inventory, a worse failure than an untitled, unpurchasable product.
+		// the row is still refreshed and still activated. Vetoing the upsert here
+		// would mean a collection whose title field is missing or named something
+		// else never gets a product_commerce row at all — it would vanish from
+		// Pricing & inventory, a worse failure than an untitled, unpurchasable
+		// product.
 		const doc = await requireDoc(id);
-		expect(doc.title).toBeNull();
+		expect(doc.title).toBe(OLD_TITLE); // OMITTED, not nulled.
 		expect(doc.contentUpdatedAt).toBe(T2);
 		expect(doc.active).toBe(true);
 		expect(outcome).toEqual({ result: null });
+
+		// …and on a row that does NOT exist yet the same publish still MINTS one
+		// and still activates it. (Its `title` is null because nothing has ever
+		// set one — this arm is about the row existing at all; the omission-vs-null
+		// distinction is settled by the seeded arm above.)
+		const bareId = pid("p19-bare");
+		const bare = publishedClean(bareId, T2);
+		delete (bare["data"] as Record<string, unknown>)["title"];
+		await afterPublish(bare);
+		const bareDoc = await requireDoc(bareId);
+		expect(bareDoc.title).toBeNull();
+		expect(bareDoc.active).toBe(true);
 	});
 });

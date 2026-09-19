@@ -518,9 +518,30 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 	// reason than staging difficulty: `listCoupons` answers a search by resolving
 	// the code claim, so a filtered read returns at most one row and never a
 	// cursor. Outcome 3 is unreachable for THIS list, so the case was asserting on
-	// the stub's own contrivance. The rendering rule it guarded is a scaffold one
-	// and is covered where a list can actually reach it (the products console,
-	// whose filter really does narrow a page window).
+	// the stub's own contrivance.
+	//
+	// WHERE THE RULE IT GUARDED IS ACTUALLY COVERED — this paragraph first said
+	// "the products console, whose filter really does narrow a page window", and
+	// that was wrong twice over, so it is corrected rather than left standing.
+	// `products-console-route.sandbox.test.ts` makes no such assertion: its
+	// `cursors` block pins page one handing back a token, a continuation being
+	// honoured, and two refusal shapes — never a zero-row page that still carries
+	// a cursor. Nor could it usefully make one. That route answers the REACT tier
+	// with a JSON `nextCursor`; it renders no Block Kit list at all, so the "Load
+	// more" button, the `empty_text` short-circuit and the scan note that outcome 3
+	// is a rule ABOUT have no existence there. And its filters are server-side
+	// predicates taken under the SAME predicate as its count, so a page that comes
+	// back empty has nothing behind it either.
+	//
+	// The rule lives one level down, in `listOutcome`
+	// (`@otta-sh/admin-presentation`) — the single decision both the Block Kit
+	// scaffold and the React lists call — and is covered directly there, in
+	// `packages/admin-presentation/test/presentation.test.ts`: "3. zero WITH a page
+	// behind it: NO empty state, a scan note instead", plus its filtered twin "3b.
+	// zero, FILTERED, with a page behind it leads with the filter's own words",
+	// which is the exact shape this case was staging. That is the closer gate
+	// anyway: the deleted case reached a shared decision through a screen that had
+	// to fake reaching it.
 
 	test("INC-12: the intro line leads with the row count, pluralized, page-scoped only when paging is in play, and silent at zero", async () => {
 		const state = makeCouponsState();

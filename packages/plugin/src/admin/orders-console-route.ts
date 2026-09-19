@@ -227,7 +227,7 @@ const UNAVAILABLE: ConsoleFailure = {
 	ok: false,
 	title: "Orders are unavailable",
 	description:
-		"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		"Orders could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 };
 
 const NOT_FOUND: ConsoleFailure = {

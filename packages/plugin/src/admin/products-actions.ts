@@ -492,8 +492,7 @@ function editOutcome(
 			return applied({
 				variant: "error",
 				title: "Save failed",
-				description:
-					"The change could not be saved — check the service connection and the admin token in Settings.",
+				description: "The change could not be saved — retry in a moment.",
 			});
 	}
 }
@@ -676,8 +675,7 @@ function stockFailureNotice(
 			return {
 				variant: "error",
 				title: "Stock change failed",
-				description:
-					"The change could not be saved — check the service connection and the admin token in Settings.",
+				description: "The change could not be saved — retry in a moment.",
 			};
 	}
 }

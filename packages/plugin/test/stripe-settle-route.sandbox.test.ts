@@ -31,7 +31,11 @@ import {
 	startStubCommerceServer,
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
-import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import {
+	loadPluginInSandbox,
+	productionAllowedHosts,
+	type SandboxHandle,
+} from "./sandbox/harness.js";
 
 const WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
 const EDGE_TOKEN = "otta_edge_sandbox_NEVER_LEAK";
@@ -86,7 +90,12 @@ describe("webhooks/stripe/settle under workerd", () => {
 			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
 		}));
 		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
+			// PRODUCTION'S OWN LIST plus the stub, not the stub alone: this suite
+			// drives the Stripe settle path, and booting it under a gate that omits
+			// `STRIPE_API_HOST` would exercise that path under a narrower allowlist
+			// than any deployment has (review round 3, item 1). The stub's host is
+			// still the only one anything here actually reaches — asserted below.
+			allowedHosts: productionAllowedHosts([stub.host]),
 			storage: true,
 		});
 
@@ -168,7 +177,12 @@ describe("webhooks/stripe/settle under workerd", () => {
 			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
 		}));
 		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
+			// PRODUCTION'S OWN LIST plus the stub, not the stub alone: this suite
+			// drives the Stripe settle path, and booting it under a gate that omits
+			// `STRIPE_API_HOST` would exercise that path under a narrower allowlist
+			// than any deployment has (review round 3, item 1). The stub's host is
+			// still the only one anything here actually reaches — asserted below.
+			allowedHosts: productionAllowedHosts([stub.host]),
 			storage: true,
 		});
 		await sandbox.invokeRoute("admin", {

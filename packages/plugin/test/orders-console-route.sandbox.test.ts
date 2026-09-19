@@ -27,7 +27,8 @@
  * refusals are proven; this file covers the ROUTE: which branch a request lands
  * on, and what a refusal on the branch itself looks like.
  *
- * TWO CASES LOST THEIR SUBJECT OUTRIGHT AND ARE DELETED RATHER THAN WEAKENED:
+ * THREE CASES LOST THEIR SUBJECT OUTRIGHT AND ARE DELETED RATHER THAN WEAKENED
+ * (the third is documented at the point it stood, beside the transition cases):
  *  - *"a service that does not report a total does not get one invented"*. The
  *    absent-total case existed because a service older than INC-23 omitted the
  *    field. `#page` computes `total` with `countOrders` on every page it serves,
@@ -398,6 +399,64 @@ describe("the console's read/write branch on the otta admin route", () => {
 			expect(result["cursorRejected"]).toBe(true);
 			expect(rowsOf(result)).toHaveLength(PAGE_LIMIT);
 		});
+
+		test("a paged relative period sends the SAME instants page one was minted with", async () => {
+			// THE OBLIGATION A CLIENT THAT SENDS BOTH TAKES ON: re-resolving "last 7
+			// days" at page-two time must not yield a different window, or every
+			// `Load more` would be refused. It cannot here, and by construction rather
+			// than by luck — `periodWindow` resolves a preset to WHOLE-DAY bounds, so
+			// two requests on the same UTC day resolve to the same two instants. (A
+			// scan that crosses UTC midnight genuinely does describe a different
+			// window; the refusal and the page-one recovery are the right answer to
+			// that, not a defect to design around.)
+			//
+			// THE PROOF MOVED WITH THE TRANSPORT. It used to compare the `from`/`to`
+			// query params of two recorded requests. The filter is now compared
+			// against the cursor's own as a PREDICATE inside the isolate, so a
+			// re-resolution that drifted by so much as a millisecond would make page
+			// two disagree with its token — which surfaces as `cursorRejected` and a
+			// re-issued page one. Asserting the absence of that flag, and the single
+			// remaining row, is the same claim read off the outcome.
+			const paged = await list({ search: tag, period: "last7" });
+			expect(paged["cursorRejected"]).toBeUndefined();
+			expect(rowsOf(paged)).toHaveLength(PAGE_LIMIT);
+			const cursor = paged["nextCursor"] as string;
+			expect(cursor).toEqual(expect.any(String));
+
+			const second = await list({ search: tag, period: "last7" }, { cursor });
+			expect(second["ok"]).toBe(true);
+			// The instants re-resolved identically, so the token was HONOURED — a
+			// drifting window would have refused it and re-served page one.
+			expect(second["cursorRejected"]).toBeUndefined();
+			expect(rowsOf(second)).toHaveLength(1);
+			const firstIds = new Set(rowsOf(paged).map((o) => o["id"]));
+			expect(firstIds.has(rowsOf(second)[0]?.["id"])).toBe(false);
+		});
+
+		test("a refusal that is NOT about the cursor stays a failure", async () => {
+			// The distinction the console cannot make for itself. A storage fault, a
+			// malformed filter, a bug in the console's own code: none is answerable by
+			// asking again without the cursor, and none may be reported as a page the
+			// operator did not get — the address they are on still names a real page,
+			// and rewriting it would throw that away at the moment a reload would have
+			// restored it.
+			//
+			// PROVOKED BY THE FILTER, not by unplugging a service: `toDomainFilter`
+			// bounds `search` at 200 characters and THROWS past it, before the cursor
+			// is ever looked at. So this request carries a perfectly good cursor and
+			// still fails — which is exactly the shape that must not be laundered into
+			// a flagged page one.
+			const result = await list(
+				{ search: "x".repeat(201) },
+				{ cursor: firstPage["nextCursor"] as string },
+			);
+			expect(result["ok"]).toBe(false);
+			expect(result["cursorRejected"]).toBeUndefined();
+			// The fail-closed banner, not a page: nothing that could be mistaken for
+			// rows the operator asked for.
+			expect(result["title"]).toBe("Orders are unavailable");
+			expect(result["orders"]).toBeUndefined();
+		});
 	});
 
 	// -- the detail -------------------------------------------------------------
@@ -422,26 +481,21 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["transitions"]).toEqual(["processing", "completed", "refunded"]);
 	});
 
-	test("every offered transition is inside the plugin's closed ORDER_STATES (DA-6)", async () => {
-		// The ids are fixed at module load and an id this plugin never registered is
-		// refused rather than dispatched, so a button for a state outside the closed
-		// list could only ever refuse. On this tier the list is DERIVED from the
-		// domain state machine (`legalNextStates`) rather than taken from a service's
-		// word for it, so a state outside `ORDER_STATES` is unreachable by
-		// construction — which is the claim, and it is the one asserted here.
-		const tag = "closedstates";
-		const id = await seedOrder({ tag });
-		const result = await invoke({ type: READ, resource: "orders.detail", orderId: id });
-		const statuses = (
-			(await list({ search: "vocabulary-matches-nothing" }))["vocabulary"] as Record<
-				string,
-				unknown
-			>
-		)["statuses"] as string[];
-		for (const transition of result["transitions"] as string[]) {
-			expect(statuses).toContain(transition);
-		}
-	});
+	// DELETED: *"a service-offered state OUTSIDE the plugin's closed ORDER_STATES
+	// is never offered (DA-6)"*. That case worked by making the service answer
+	// `allowedTransitions: ["teleported", "completed"]` and asserting `teleported`
+	// was filtered out. `InProcessAdminOrdersClient.getOrder` takes the list
+	// STRAIGHT from `legalNextStates`, so there is no outside party left to offer
+	// an out-of-band state and no way to inject one as a black box — every
+	// candidate is already a member of `ORDER_STATES` before the filter sees it.
+	// It was briefly retained as "every offered transition is a member of
+	// ORDER_STATES", which is a tautology on this tier: it cannot fail, so it is
+	// deleted rather than left standing as coverage it does not provide. The rule
+	// itself is NOT gone — `offeredTransitions`'s `ORDER_STATE_SET.has(t)` guard in
+	// `src/admin/orders-read.ts` is unchanged, and it is a pure exported function,
+	// so the place it can still be proven is a direct unit test of that function
+	// rather than a route case. The two steering filters beside it ARE reachable
+	// here and are asserted below and in `orders.detail answers the order…`.
 
 	test("a PROCESSING order is offered no bare `shipped` — it is steered to the Fulfilment form", async () => {
 		// A bare `shipped` would ship without tracking and email the buyer an empty

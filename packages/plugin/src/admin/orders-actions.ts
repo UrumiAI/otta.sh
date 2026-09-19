@@ -274,7 +274,7 @@ function transitionAction(toState: string): OrdersAction {
 				variant: "error",
 				title: "Status change failed",
 				description:
-					"That status change could not be applied — check the order state and the admin token in Settings.",
+					"That status change could not be applied — check the order state, then retry in a moment.",
 			});
 		}
 		if (!result.transitioned) {
@@ -314,8 +314,7 @@ const addNoteAction: OrdersAction = async (client, payload) => {
 		return applied({
 			variant: "error",
 			title: "Note not added",
-			description:
-				"That note could not be saved — check the order and the admin token in Settings.",
+			description: "That note could not be saved — check the order, then retry in a moment.",
 		});
 	}
 	if (!result.appended) {
@@ -366,7 +365,7 @@ const resolveReconciliationAction: OrdersAction = async (client, payload) => {
 						variant: "error",
 						title: "Not resolved",
 						description:
-							"That reconciliation could not be resolved — check the order and the admin token in Settings.",
+							"That reconciliation could not be resolved — check the order, then retry in a moment.",
 					},
 		);
 	}
@@ -437,7 +436,7 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 						variant: "error",
 						title: "Not shipped",
 						description:
-							"That fulfilment could not be recorded — check the order and the admin token in Settings.",
+							"That fulfilment could not be recorded — check the order, then retry in a moment.",
 					},
 		);
 	}
@@ -528,7 +527,7 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 						variant: "error",
 						title: "Not cancelled",
 						description:
-							"That cancellation could not be recorded — check the order and the admin token in Settings.",
+							"That cancellation could not be recorded — check the order, then retry in a moment.",
 					},
 		);
 	}
@@ -736,7 +735,7 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				variant: "error",
 				title: "Not refunded",
 				description:
-					"That refund could not be processed — check the order and the admin token in Settings.",
+					"That refund could not be processed — check the order, then retry in a moment.",
 			};
 	}
 }

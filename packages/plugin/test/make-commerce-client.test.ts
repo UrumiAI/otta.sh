@@ -16,6 +16,12 @@ import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.j
 import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
+import {
+	EMAIL_API_KEY_KEY,
+	STRIPE_SECRET_KEY_KEY,
+	STRIPE_WEBHOOK_SECRET_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+} from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
 import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
 
@@ -38,7 +44,22 @@ function makeUnusedStorage(): StorageAccess {
 	);
 }
 
-function makeCtx(): { ctx: PluginContext } {
+/**
+ * A RECORDING kv, not a null-returning stub.
+ *
+ * `ctx.kv` is a live CREDENTIAL store (`payment-secrets.ts`: the Stripe secret
+ * key, the Stripe webhook secret, the email API key and the x402 facilitator
+ * credential all live there under `settings:*`). A stub that simply answered
+ * `null` would let an eager read at construction pass unnoticed — so every key
+ * read is recorded, which keeps "building a client reads no credential" an
+ * assertion rather than an assumption.
+ */
+function makeCtx(seed: Record<string, string> = {}): {
+	ctx: PluginContext;
+	kvReads: string[];
+} {
+	const store = new Map<string, unknown>(Object.entries(seed));
+	const kvReads: string[] = [];
 	const ctx: PluginContext = {
 		storage: makeUnusedStorage(),
 		http: {
@@ -47,28 +68,41 @@ function makeCtx(): { ctx: PluginContext } {
 			},
 		},
 		kv: {
-			async get<T>(): Promise<T | null> {
-				return null;
+			async get<T>(key: string): Promise<T | null> {
+				kvReads.push(key);
+				return store.has(key) ? (store.get(key) as T) : null;
 			},
-			async set(): Promise<void> {
-				// no-op
+			async set(key: string, value: unknown): Promise<void> {
+				store.set(key, value);
 			},
-			async delete(): Promise<boolean> {
-				return false;
+			async delete(key: string): Promise<boolean> {
+				return store.delete(key);
 			},
 			async list(): Promise<Array<{ key: string; value: unknown }>> {
-				return [];
+				return [...store].map(([key, value]) => ({ key, value }));
 			},
 		},
 	};
-	return { ctx };
+	return { ctx, kvReads };
 }
 
 describe("makeCommerceClient", () => {
-	test("returns the in-process client", async () => {
-		const { ctx } = makeCtx();
+	test("returns the in-process client, and reads NO credential from kv", async () => {
+		// SEEDED, so a read would be a read of something real: if the composition
+		// root ever starts reaching for a payment credential merely to build a
+		// client, the recorded key names it.
+		const { ctx, kvReads } = makeCtx({
+			[STRIPE_SECRET_KEY_KEY]: "sk_test_NEVER_READ",
+			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_NEVER_READ",
+			[EMAIL_API_KEY_KEY]: "email_NEVER_READ",
+			[X402_FACILITATOR_API_KEY_KEY]: "x402_NEVER_READ",
+		});
 		const client = await makeCommerceClient(ctx);
 		expect(client).toBeInstanceOf(InProcessCommerceClient);
+		// There is no service left to authenticate to, and the x402 wiring
+		// short-circuits on an unconfigured facilitator URL BEFORE it touches kv —
+		// so construction is credential-free, and an eager read fails here.
+		expect(kvReads).toEqual([]);
 	});
 
 	test("the client spans the whole port — 25 methods, none of them a stub's", async () => {

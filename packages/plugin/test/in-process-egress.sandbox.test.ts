@@ -239,7 +239,7 @@ beforeAll(async () => {
 		loadPluginInSandbox({
 			// SAME baked URLs, host NOT granted. Everything else is identical, so a
 			// difference in outcome can only be the gate.
-			allowedHosts: ["commerce.otta.internal"],
+			allowedHosts: ["not-the-stub.invalid"],
 			storage: true,
 			...egress,
 		}),

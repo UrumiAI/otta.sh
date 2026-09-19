@@ -224,7 +224,29 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		// commerce query plus exactly one stock read per distinct sku — no second
 		// round over the page, and no per-product re-read.
 		expect(productCalls.queries).toHaveLength(1);
-		expect(inventoryCalls.gets).toEqual(["SKU-PLP-A", "SKU-PLP-B"]);
+		// SORTED, because the claim is ONE READ PER DISTINCT SKU and not a read
+		// order: the join issues the page's stock reads concurrently, so the log's
+		// order is settlement order and asserting it raw makes this case flake on a
+		// property nothing depends on. Sorting keeps both halves that DO matter —
+		// which skus were read, and that none was read twice.
+		expect(inventoryCalls.gets.toSorted()).toEqual(["SKU-PLP-A", "SKU-PLP-B"]);
+
+		// THE COMBINED COUNT, restored. The transport-era form of this case asserted
+		// `stubServer.requests` had length 1 — a claim about the page's TOTAL cost,
+		// not just about the shape of the one call it expected. Asserting the two
+		// logs separately lets a THIRD kind of read appear (a per-id
+		// `product_commerce.get`, an inventory `query` scanning the collection)
+		// without any existing expectation noticing, which is precisely the N+1
+		// regression this case exists to catch. So the total is pinned too, and the
+		// two reads that are not supposed to happen at all are pinned at zero:
+		expect(productCalls.gets).toHaveLength(0);
+		expect(inventoryCalls.queries).toHaveLength(0);
+		expect(
+			productCalls.queries.length +
+				productCalls.gets.length +
+				inventoryCalls.queries.length +
+				inventoryCalls.gets.length,
+		).toBe(3); // 1 commerce query + 1 stock read per distinct sku (2)
 
 		// And the stock signal is demonstrably what the join produced.
 		const items = result["items"] as Array<Record<string, unknown>>;
@@ -334,9 +356,11 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		});
 	});
 
-	test("duplicate ids within a page collapse into the single batched read", async () => {
+	test("duplicate ids within a page collapse into the single batched read — on BOTH sides of the join", async () => {
 		await seedProduct({ id: "plp-dup", sku: "SKU-D", amount: 100, currency: "USD", onHand: 1 });
+		// Both logs, because both halves are under test: seeding reads inventory too.
 		productCalls.reset();
+		inventoryCalls.reset();
 
 		const result = await renderList({
 			items: [contentItem("plp-dup"), contentItem("plp-dup")],
@@ -345,6 +369,14 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		expect(result["ok"]).toBe(true);
 		expect(productCalls.queries).toHaveLength(1);
 		expect(queriedIds(productCalls.queries[0])).toEqual(["plp-dup"]);
+
+		// THE INVENTORY SIDE DEDUPES TOO, restored. The commerce half collapsing a
+		// repeated id is only half the claim: the stock join is a document read per
+		// DISTINCT sku, so a page naming one product twice must cost ONE stock read,
+		// not two. Without this, the dedup could quietly move from "the page's ids
+		// are deduped" to "the commerce QUERY's `in` list is deduped" — which reads
+		// identically above and doubles the stock reads on every repeated row.
+		expect(inventoryCalls.gets).toEqual(["SKU-D"]);
 	});
 
 	test("a page at EXACTLY the size cap (48) is accepted and still one batched read — the cap boundary is inclusive", async () => {

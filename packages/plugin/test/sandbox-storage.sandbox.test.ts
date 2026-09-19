@@ -27,7 +27,10 @@ describe("ctx.storage under workerd", () => {
 
 	beforeAll(async () => {
 		sandbox = await loadPluginInSandbox({
-			allowedHosts: ["commerce.otta.internal"],
+			// Unreachable by construction (RFC 2606 `.invalid`): this suite drives
+			// `ctx.storage`, never the network, so the list only has to grant nothing
+			// that exists.
+			allowedHosts: ["no-egress.invalid"],
 			entry: "commerce/testing/storage-probe-entry.ts",
 			storage: true,
 		});

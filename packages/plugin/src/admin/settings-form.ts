@@ -25,14 +25,19 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
- * `docs/admin/ADMIN-CONSOLE.md` §12.6) — ONE page, TWO named groups, TWO save
- * paths made visible, not hidden:
+ * `docs/admin/ADMIN-CONSOLE.md` §12.6) — ONE page, THREE named groups, THREE
+ * save paths made visible, not hidden:
  *  - `storeDisplayName` (kv tier, "Store" group) saves via `ctx.kv.set`.
- *  - `holdTtlMinutes` / `lowStockThreshold` (service tier, "Checkout & holds"
- *    group) save via `PUT /settings` over `ctx.http`, surfacing the service's
- *    `400` validation error INLINE (never swallowed).
+ *  - `holdTtlMinutes` / `lowStockThreshold` (operational tier, "Checkout &
+ *    holds" group) save through the reporting/settings client `makeAdminClients`
+ *    hands back. Since INC-D3a that is ALWAYS the in-process client writing this
+ *    plugin's own store — no HTTP hop, no token — and its validation rejection
+ *    is surfaced INLINE (never swallowed), read from the structural `reason`
+ *    rather than from an HTTP status the in-process tier does not have.
+ *  - the write-only payment/email credentials ("Payments & email" group) save
+ *    into write-only plugin kv, one key per secret ({@link PAYMENT_SECRET_FIELDS}).
  *
- * RETIRED (work order 02, INC-D3a): this screen used to carry a third
+ * RETIRED (work order 02, INC-D3a): this screen used to carry a FOURTH
  * "Service connection" group with two more write-only secret forms —
  * `internalToken` (`X-Internal-Token`, the token the guarded `/reports/*`
  * reads and the privileged `PUT /settings` needed) and `serviceToken`
@@ -48,8 +53,8 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  *
  * S-5 / S-4: every save re-renders the FULL screen (all three accordions) plus
  * a notice banner — never a fragment. Two live bugs this fixes (§12.6):
- * `save-display`'s success path used to return `[header, section]` (the other
- * three forms vanished, and since the host's `page_load` effect never re-fires
+ * `save-display`'s success path used to return `[header, section]` (every other
+ * form vanished, and since the host's `page_load` effect never re-fires
  * on its own, the operator had to navigate away to recover — the receipt was
  * terminal), and the invalid-name branch used to return `[header, banner]`
  * with no field to correct. Both branches now go through {@link renderPage}.
@@ -622,17 +627,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 }
 
 /**
- * Render the full Settings page from kv + `GET /settings` — a GUARDED read
- * since ADR-0010. Always the FULL three-accordion screen (S-5): the caller
- * supplies an optional `notice` for the top banner (an action's outcome); a
- * bare page load passes none.
+ * Render the full Settings page from kv + the client's `getSettings()` read
+ * (in-process since INC-D3a; the surface is the same one ADR-0010 guarded when
+ * it was an HTTP `GET /settings`). Always the FULL three-accordion screen
+ * (S-5): the caller supplies an optional `notice` for the top banner (an
+ * action's outcome); a bare page load passes none.
  *
- * E-1 / director ruling: `GET /settings` feeds ONLY the "Checkout & holds"
+ * E-1 / director ruling: `getSettings()` feeds ONLY the "Checkout & holds"
  * group — a SECONDARY read on a screen with no single primary collection (§4.1
  * has no list/detail "primary data block" concept to fail closed on). Its
  * failure therefore degrades to a `context` line inside that one group,
- * never a screen-wide fail-closed banner: the display name and both token
- * forms need no service read at all, and must keep working (no bootstrap
+ * never a screen-wide fail-closed banner: the display name and the payment
+ * secret forms need no settings read at all, and must keep working (no bootstrap
  * lockout). An earlier draft rendered a top-level `error` banner here, which
  * §12.6's listing implied — that is the N-1 defect this fixes; E-1's
  * primary/secondary split is the rule, and it wins.

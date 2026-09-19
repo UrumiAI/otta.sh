@@ -37,7 +37,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
-import { resolveInProcessEgress } from "../../src/manifest.js";
+import {
+	type InProcessEgressUrls,
+	resolveAllowedHosts,
+	resolveInProcessEgress,
+	STRIPE_API_HOST,
+} from "../../src/manifest.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -83,8 +88,52 @@ const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
 // binary path directly instead.
 const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
 
+/**
+ * The allowlist a REAL deployment boots with, plus whatever extra hosts (a stub
+ * server, usually) the suite needs — for a boot that must NOT run under a gate
+ * narrower than production's.
+ *
+ * WHY THIS EXISTS (review round 3, item 1). {@link SandboxOptions.allowedHosts}
+ * is taken verbatim, which is right for the many suites whose whole claim is a
+ * DELIBERATELY narrow gate (`allowedHosts: []` — "this screen reaches the
+ * network never"; a single stub host — "the stub's recorded requests are the
+ * plugin's entire egress"). Those are strictly stronger than production, so they
+ * cannot produce a false green. The reverse case can: a suite that exercises a
+ * path production reaches Stripe from, booted WITHOUT `STRIPE_API_HOST`, is
+ * running under a gate no deployment has — and a Stripe grant lost from
+ * `resolveAllowedHosts` would leave it green.
+ *
+ * So such a boot derives its list from production's OWN resolver rather than
+ * restating it, and the assertion below is the central guard the review asked
+ * for: drop `STRIPE_API_HOST` from `resolveAllowedHosts` and every suite that
+ * boots this way fails, loudly, naming the reason.
+ */
+export function productionAllowedHosts(
+	extraHosts: readonly string[] = [],
+	egress: InProcessEgressUrls = {},
+): string[] {
+	const hosts = resolveAllowedHosts(egress);
+	if (!hosts.includes(STRIPE_API_HOST)) {
+		throw new Error(
+			`resolveAllowedHosts no longer grants ${STRIPE_API_HOST}: a sandbox boot that ` +
+				"exercises the Stripe path would run under a gate no real deployment has. " +
+				`Resolved: ${JSON.stringify(hosts)}`,
+		);
+	}
+	return [...new Set([...hosts, ...extraHosts])];
+}
+
 export interface SandboxOptions {
-	/** Hosts `ctx.http.fetch` is allowed to reach (plan §5). */
+	/**
+	 * Hosts `ctx.http.fetch` is allowed to reach (plan §5).
+	 *
+	 * TAKEN VERBATIM, deliberately — production derives its list from the egress
+	 * defines, this takes what the suite hands it, because most suites' claim IS
+	 * the narrow list (`[]` = no egress at all; one stub host = the stub's
+	 * recorded requests are the whole of it). A boot that must match production's
+	 * real gate — anything exercising a Stripe path — passes
+	 * {@link productionAllowedHosts} here instead of restating the hosts.
+	 */
 	allowedHosts: string[];
 	/**
 	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process

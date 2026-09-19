@@ -29,9 +29,12 @@
  * import the migrated-screen registry from THIS file — never RUN by vitest, but
  * very much LOADED by it — which dragged in `@playwright/test` (undeclared in
  * `sites/staging`, resolving only by walking up to the root) and, worse, the
- * module-load env guards below. `COMMERCE_SERVICE_URL` is the staging site's
- * ordinary BUILD-time variable, so merely having it set to a real URL made the
- * whole unit suite throw on an e2e loopback check it was never subject to.
+ * module-load env guards below. Those guards then read `COMMERCE_SERVICE_URL`,
+ * which was at the time the staging site's ordinary BUILD-time variable, so
+ * merely having it set to a real URL made the whole unit suite throw on an e2e
+ * loopback check it was never subject to. (INC-D3a retired that variable, and
+ * the guard now reads `OTTA_E2E_SERVICE_URL` — but the split below is what made
+ * the collision impossible rather than merely unlikely, so it stands.)
  *
  * The registry now lives in `./registry.js` — no imports, no environment, no
  * code at load — and this file re-exports it. Anything else the unit tier ever
@@ -51,12 +54,15 @@ export const E2E_VIEWPORT = { width: 1440, height: 2200 } as const;
 /**
  * Loopback hostnames, and the guard that keeps every e2e endpoint on one.
  *
- * `COMMERCE_SERVICE_URL` and `PG_CONNECTION_STRING` are ordinary deployment
- * variables: a shell that has been used to deploy or to tunnel exports them
- * pointing at real infrastructure, and this harness reads both. Nothing about
- * "it is only a test run" stops an inherited export from aiming the stack boot,
- * or a dev-bypass POST, at production. So the values are guarded rather than
- * trusted, at module load, where the failure is loud and precedes any request.
+ * `PG_CONNECTION_STRING` is an ordinary deployment variable: a shell that has
+ * been used to deploy or to tunnel exports it pointing at real infrastructure,
+ * and this harness reads it. Nothing about "it is only a test run" stops an
+ * inherited export from aiming the stack boot, or a dev-bypass POST, at
+ * production. So the values are guarded rather than trusted, at module load,
+ * where the failure is loud and precedes any request. The two `OTTA_E2E_*` URLs
+ * get the same treatment even though nothing but an e2e run sets them — the
+ * guard is one line and a harness that trusts *some* of its endpoints is the
+ * one that eventually trusts the wrong one.
  */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -97,10 +103,19 @@ export const E2E_BASE_URL = assertLoopbackUrl(
 	"OTTA_E2E_BASE_URL",
 );
 
-/** The commerce service the site is built against, per §0.2. */
+/**
+ * The standalone `@otta-sh/service` process the §0.2 stack boots.
+ *
+ * The SITE does not use it: since INC-D3a the storefront runs commerce
+ * in-process and reads no commerce address at build or at run time. This value
+ * only says which port Playwright boots the service on and where it polls
+ * `/health`. It was read from `COMMERCE_SERVICE_URL` until that variable was
+ * retired with the rest of the mode plumbing; the `OTTA_E2E_` name says plainly
+ * that it is an e2e knob and not something a deployment shell already exports.
+ */
 export const E2E_SERVICE_URL = assertLoopbackUrl(
-	process.env["COMMERCE_SERVICE_URL"] ?? "http://127.0.0.1:3500",
-	"COMMERCE_SERVICE_URL",
+	process.env["OTTA_E2E_SERVICE_URL"] ?? "http://127.0.0.1:3500",
+	"OTTA_E2E_SERVICE_URL",
 );
 
 /**

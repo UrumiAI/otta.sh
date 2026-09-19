@@ -64,15 +64,15 @@ const stack: WebServer[] = [
 		},
 	},
 	{
-		// COMMERCE_SERVICE_URL is BUILD-TIME (sites/staging/README.md): it is
-		// baked into the plugin bundle and into the descriptor's allowedHosts,
-		// so it has to be set on the dev process, not flipped at runtime.
+		// The site needs NO commerce address: INC-D3a folded the service into the
+		// plugin, so this dev server runs commerce in-process against its own
+		// store. It used to be handed `COMMERCE_SERVICE_URL` here, which the build
+		// no longer reads at all.
 		command: `pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port}`,
 		url: E2E_BASE_URL,
 		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
 		env: {
-			COMMERCE_SERVICE_URL: E2E_SERVICE_URL,
 			// `astro@7`'s dev command DAEMONIZES ITSELF when it detects an agentic
 			// environment (via `am-i-vibing` — Claude Code, Cursor and friends): it
 			// spawns a background server and the foreground process exits, which

@@ -512,7 +512,7 @@ function classesFailClosed() {
 		header: "Tax classes",
 		title: "Tax classes are unavailable",
 		description:
-			"Tax classes could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax classes could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load tax classes",
 	});
 }
@@ -931,7 +931,7 @@ function ratesFailClosed() {
 		header: "Tax rates",
 		title: "Tax rates are unavailable",
 		description:
-			"Tax rates could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax rates could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load tax rates",
 	});
 }
@@ -1008,7 +1008,7 @@ function rateDetailFailClosed() {
 		header: "Tax rate",
 		title: "Tax rate is unavailable",
 		description:
-			"Tax rate could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax rate could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load this tax rate",
 	});
 }
@@ -1126,8 +1126,7 @@ function saveClassNotice(result: RulesUpdateResult<TaxClassWire>): Notice {
 	return {
 		variant: "error",
 		title: "Class not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
@@ -1177,8 +1176,7 @@ function deleteClassNotice(result: TaxClassDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Class not deleted",
-		description:
-			"The class could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The class could not be deleted — retry in a moment.",
 	};
 }
 
@@ -1310,8 +1308,7 @@ function saveRateNotice(result: RulesCasUpdateResult<TaxRateWire>): Notice {
 	return {
 		variant: "error",
 		title: "Rate not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
@@ -1344,7 +1341,6 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Rate not deleted",
-		description:
-			"The rate could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The rate could not be deleted — retry in a moment.",
 	};
 }

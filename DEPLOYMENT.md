@@ -137,22 +137,24 @@ prune (every 30s, `EMAIL_DISPATCH_INTERVAL_MS`). Which brings us to the gap:
 > Fixed end-state: #28 adds the order-expiry leg to the Node self-interval; when it closes,
 > delete the external cron and this box.
 
-### 2.5 The site against a Node service
+### 2.5 A site alongside a Node service
 
-Three options, in increasing effort:
+> **No site in this repo talks to the Node service over HTTP.** The plugin runs commerce
+> **in-process**, and the mode plumbing that used to let it call a service instead — the
+> `COMMERCE_SERVICE_URL` build-time variable and its bundle define — is gone. `sites/staging`
+> reads no service URL at build time; setting one changes nothing. The Node service of §2.2
+> is for **API consumers you write yourself**, not for pointing a storefront at.
 
-- **Point the Workers site at your Node service.** `sites/staging` happily targets any
-  service URL: build it with `COMMERCE_SERVICE_URL=https://your-service.example.com` and
-  deploy per §3.1. The service URL must be reachable **from Cloudflare's network** — which
-  conflicts with §2.0's keep-it-private posture unless you expose it deliberately
-  (provision the `SERVICE_API_TOKEN` write gate per §4 first).
+So there is one site option, plus one rule that applies to it:
+
 - **Run an EmDash site on Node.** Follow EmDash's upstream Node deployment guide
   (`deployment/nodejs.mdx` in the [EmDash repo](https://github.com/emdash-cms/emdash)) and
   apply the Otta deltas from `sites/staging`: register the plugin trusted via a descriptor
-  (ADR-0006), bake `COMMERCE_SERVICE_URL` at build time, and port the theme pages + `/cart/*`
-  cookie-shim endpoints. No Node-adapter site exists in this repo; this path is
+  (ADR-0006) and port the theme pages + `/cart/*` cookie-shim endpoints. Commerce then runs
+  in-process inside that Node site, against its own configured store — nothing to point at
+  the §2.2 service. No Node-adapter site exists in this repo; this path is
   link-out-plus-deltas, not a tested recipe.
-- Either way, **put HTTPS in front of the site before first boot**: the setup wizard's
+- And whatever you front it with, **put HTTPS in front of the site before first boot**: the setup wizard's
   passkey step needs a WebAuthn secure context, which workers.dev gives you automatically
   but bare Node does not — terminate TLS first (the one exception: `localhost` is a secure
   context, so claiming over an SSH tunnel at `http://localhost` works).
@@ -301,7 +303,7 @@ placeholder-named Worker, not yours. In order of appearance in a deployment's li
 | Secret | Deployable | Required? | When to set |
 |---|---|---|---|
 | `EMDASH_ENCRYPTION_KEY` | site | yes | before the site's first boot |
-| `INTERNAL_API_TOKEN` | commerce | Shape A: yes (§2.4); Shape B: for the admin reports/settings UI | any time |
+| `INTERNAL_API_TOKEN` | commerce | Shape A: yes (§2.4). Shape B: **not used** — nothing reads it there | any time |
 | `SERVICE_API_TOKEN` | commerce | to close the write gate | any time |
 | `STRIPE_WEBHOOK_SECRET` | commerce | for Stripe payments | before enabling Stripe |
 | `STRIPE_SECRET_KEY` | commerce | to take **real** payments (and to refund) | with the webhook secret |
@@ -330,17 +332,22 @@ placeholder-named Worker, not yours. In order of appearance in a deployment's li
 > **Interplay with `INTERNAL_API_TOKEN`:** routes behind both gates (e.g. `PUT /settings`,
 > the `/admin/*` writes) require **both** headers when both secrets are set.
 
-- **`INTERNAL_API_TOKEN`** — the shared secret for the operational surface. Unset, those
+- **`INTERNAL_API_TOKEN`** — the shared secret for the standalone service's operational
+  surface, and **only** that: it is read by `@otta-sh/service`'s entries, so it means
+  something on Shape A and nothing on Shape B, where no commerce HTTP API is served at all.
+  Unset, those
   endpoints answer **503** (disabled — never silently open): `POST /internal/expire-holds`,
   `POST /internal/expire-orders`, `POST /internal/dispatch-emails`, and — **reads
   included** (ADR-0010) — the entire `/admin/*`, `/reports/*` and `/settings` surface. That
   means the `/admin/*` order transition and rules CRUD, the rules **GET** reads (shipping
   zones/methods/rates, tax classes/rates, coupon lookup by code), and **both** verbs on
   `/settings`. `SERVICE_API_TOKEN`'s write gate exempts GET/HEAD, so this token is the only
-  thing that closes those reads. Callers send it as
-  `X-Internal-Token`: your §2.4 cron on Shape A. The plugin's admin console does not — it
-  reads and writes commerce in-process, with no HTTP hop and nothing to provision on its
-  side. The Worker cron path needs no token either (it calls the domain directly, §6).
+  thing that closes those reads. One caller sends it as
+  `X-Internal-Token`: your §2.4 cron on Shape A. The plugin's admin console never did and
+  now structurally cannot — it reads and writes commerce in-process, with no HTTP hop and
+  nothing to provision on its side (INC-D3a deleted the `settings:internalToken` field and
+  kv key along with the rest of the service plumbing). The Worker cron path needs no token
+  either (it calls the domain directly, §6).
 - **Stripe** — `STRIPE_WEBHOOK_SECRET` wires the Stripe gateway; until set,
   `POST /webhooks/stripe` answers 503. The webhook URL is **public by design**: it is the
   single exemption from the `X-Service-Token` write gate, authenticated instead by
@@ -398,7 +405,7 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `CART_HOLD_TTL_MS` | both | `900000` (15 min) | cart-hold **and** checkout TTL (one knob drives both); must parse as a positive number or boot/first-request fails |
 | `HOLD_SWEEP_INTERVAL_MS` | Node only | `60000` | self-interval hold-sweep cadence |
 | `EMAIL_DISPATCH_INTERVAL_MS` | Node only | `30000` | self-interval outbox-drain + challenge-prune cadence |
-| `INTERNAL_API_TOKEN` | both | unset ⇒ operational surface 503s | §4 |
+| `INTERNAL_API_TOKEN` | service entries only | unset ⇒ operational surface 503s | §4 — the site Worker reads it nowhere |
 | `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision it to close the gate |
 | `STRIPE_WEBHOOK_SECRET` | both | unset ⇒ webhook 503, gateway unwired | §4 |
 | `STRIPE_SECRET_KEY` | both | unset ⇒ **offline, unpayable** intents + no refunds (boot warns) | §4 — set it to create real PaymentIntents |
@@ -438,7 +445,7 @@ reads/writes past it is a database decision, not an app-tier one.
 | Symptom | Cause → fix |
 |---|---|
 | Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.4); turn `session` off |
-| `/internal/*`, `/admin/*`, `/reports/*`, `/settings` answer 503 — **reads too**, e.g. `GET /admin/tax/classes`, `GET /settings`, and the plugin's Shipping/Tax/Coupons/Settings screens showing "unavailable" | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4). Since ADR-0010 the admin **read** surface is gated too, so a deployment that never set this now 503s where it previously answered 200 |
+| The standalone service's `/internal/*`, `/admin/*`, `/reports/*`, `/settings` answer 503 — **reads too**, e.g. `GET /admin/tax/classes`, `GET /settings` | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4). Since ADR-0010 the admin **read** surface is gated too, so a deployment that never set this now 503s where it previously answered 200. Shape A only: the plugin's Shipping/Tax/Coupons/Settings screens read in-process and are never affected by this token |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` |
 | `POST /webhooks/stripe` answers 503 | `STRIPE_WEBHOOK_SECRET` unset (§4) |

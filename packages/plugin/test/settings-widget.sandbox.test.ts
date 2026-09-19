@@ -12,6 +12,7 @@ import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-sto
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
+	contextTexts,
 	field,
 	findBlocks,
 	formFor,
@@ -56,6 +57,42 @@ afterEach(async () => {
 	await sandbox?.close();
 	sandbox = undefined;
 });
+
+/**
+ * Make JUST the operational-settings read fail, leaving kv and every other
+ * collection reachable — the input the "no admin token ⇒ the guarded GET
+ * /settings 401s" fixture used to supply before there were any tokens.
+ *
+ * The bridge resolves `storage[name]` FRESH on every call (see
+ * `sandbox/storage-bridge.ts`), so swapping one collection for a proxy that
+ * throws on reads is enough to fail that one read and nothing else. It is a
+ * fault injected at the seam the store itself uses, exactly as
+ * `publish-atomicity.sandbox.test.ts` injects one, and the real collection is
+ * put back in a `finally` so the process-shared store is never left broken for
+ * the next test.
+ */
+async function withSettingsReadFailing<T>(body: () => Promise<T>): Promise<T> {
+	const { storage } = await storageBridge();
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}
 
 /** Every form's submit action_id the Settings screen renders on a FULL-screen
  *  render (S-5) — eight now, not the four this file used to pin before the
@@ -341,6 +378,46 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
 		expect(outcome).toEqual({ error: MISSING_STORAGE_MESSAGE });
+	});
+
+	// RESTORED from "with NO admin token the guarded GET /settings degrades to a
+	// context line (E-1 secondary read), never a top-level banner". The TOKEN is
+	// gone, and so is the "both token forms still render" half of that case — but
+	// the property it existed for is not the token, it is E-1: a FAILED read of
+	// the operational settings degrades inside its own group and never fails the
+	// screen closed. `renderPage`'s catch and `checkoutGroup`'s context branch are
+	// both still live in `settings-form.ts`, so the case is restated against the
+	// input that still exists — a storage fault on the settings collection alone.
+	test("a FAILED operational-settings read degrades to a context line inside its own group (E-1 secondary read), never a top-level banner — and every other form still renders", async () => {
+		const handle = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = handle;
+		const blocks = await withSettingsReadFailing(async () =>
+			blocksOf(await handle.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+		);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		// E-1 / director ruling: `getSettings()` feeds ONLY "Checkout & holds", so
+		// its failure is a SECONDARY read failure — a `context` line inside that
+		// one group, never a screen-wide fail-closed banner. (An earlier draft
+		// rendered the banner, which §12.6's listing implied; that is the N-1
+		// defect E-1 fixed, and this is what keeps it fixed.)
+		expect(findBlocks(blocks, "banner")).toHaveLength(0);
+		expect(
+			contextTexts(blocks).some((text) => /Operational settings could not be loaded/.test(text)),
+		).toBe(true);
+		// INC-15: the closed group's LABEL says so as a FACT too, rather than
+		// inventing a zero that would read as a stored value.
+		expect(groupLabels(blocks).get("settings:checkout")).toBe("Checkout & holds — not loaded");
+
+		// NO LOCKOUT: everything that needs no settings read is still on the page,
+		// so an operator can still work the screen while that one read is down.
+		expect(formFor(blocks, "save-display")).toBeDefined();
+		expect(formFor(blocks, "save-stripe-secret-key")).toBeDefined();
+		expect(formFor(blocks, "save-payment-settings")).toBeDefined();
+		// The operational form itself is absent — there is nothing to prefill it
+		// with, so the context line REPLACES it rather than sitting beside a
+		// zeroed one.
+		expect(formFor(blocks, "save-operational")).toBeUndefined();
 	});
 
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
@@ -648,18 +725,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
 	});
 
-	// INC-D3a deletes the old "a label states an unset or unreadable value as a
-	// FACT" case (a stubbed GET 503 forcing `checkoutGroupLabel`'s "not loaded"
-	// branch): `client.getSettings()` reads a real in-process store now
-	// (`EmdashSettingsStore.get()` defaults an absent document rather than
-	// erroring), and this suite's shared storage bridge has no way to fail
-	// just the settings collection while leaving kv and every other collection
-	// reachable, short of mutating process-shared state other tests in this
-	// file depend on. The "not loaded" branch (`renderPage`'s own catch, still
-	// live in `settings-form.ts`) is exercised the same way the NO-STORAGE case
-	// above exercises the whole-page failure — a synthetic PARTIAL failure
-	// would need to mock the storage layer, which this integration suite does
-	// not do.
+	// The old "a label states an unset or unreadable value as a FACT" case used a
+	// stubbed GET 503 to force `checkoutGroupLabel`'s "not loaded" branch. There
+	// is no stub any more, but the branch is reachable all the same: the E-1 case
+	// above injects a storage fault on the settings collection alone
+	// (`withSettingsReadFailing`) and asserts that label together with the context
+	// line it belongs to, which is where the two facts are one render anyway.
+	// UNREACHABLE: `client.getSettings()` returning a VALUE the label cannot read
+	// — `EmdashSettingsStore.get()` defaults an absent document rather than
+	// erroring, so "unset" and "default" are the same state by construction.
 
 	test("INC-15: the labels track saves — a saved display name and a first-ever secret save are stated on the SAME response that saved them", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -683,16 +757,24 @@ describe("Settings admin form (workerd sandbox)", () => {
 				values: { stripeSecretKey: "qa-local-stripe-key" },
 			}),
 		);
-		expect(groupLabels(savedKey).get("settings:payments")).not.toContain("stripe key");
-		expect(groupLabels(savedKey).get("settings:payments")).toContain("webhook");
+		// THE WHOLE LABEL, EXACTLY — a substring check ("no longer mentions the
+		// stripe key, still mentions the webhook") passes just as happily on a
+		// label that dropped the wrong entry, reordered the remaining four, or
+		// lost the "no " prefix that makes the list read as MISSING rather than
+		// as present.
+		expect(groupLabels(savedKey).get("settings:payments")).toBe(
+			"Payments & email — no webhook, email, x402, edge",
+		);
 
 		// …and a later page load agrees, so the label is reporting kv, not the
-		// interaction it was submitted with.
+		// interaction it was submitted with. Stated as the same literal, not as
+		// equality with the line above: two identically-wrong labels would satisfy
+		// a comparison of one against the other.
 		const reloaded = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		expect(groupLabels(reloaded).get("settings:payments")).toEqual(
-			groupLabels(savedKey).get("settings:payments"),
+		expect(groupLabels(reloaded).get("settings:payments")).toBe(
+			"Payments & email — no webhook, email, x402, edge",
 		);
 
 		// SECURITY PIN: no part of the secret value appears in any of these

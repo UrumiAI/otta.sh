@@ -19,10 +19,15 @@
  * composition root wires NONE yet (`make-commerce-client.ts` fills the `x402`
  * slot only; `createOrderFromCart` refuses a method it has no gateway for, by
  * throwing). So there is no reachable success path through `place` at all in
- * this build, and the cases that pinned its successful shape — the client-secret
- * passthrough, the ship-to forward, the replay's `alreadyPlaced`, the formatted
- * order total and its degradation — assert nothing that can happen and are
- * deleted rather than mocked back into existence. What CAN be asserted, and is
+ * this build, and the cases that pinned its successful shape — the idempotency-key
+ * forwarding, the buyerRef and client-secret passthrough, the ship-to forward, the
+ * private-field stripping, the replay's `alreadyPlaced`, the formatted order total
+ * with its locale and its degradation, and the typed error-code mapping — assert
+ * nothing that can happen and are PARKED rather than mocked back into existence:
+ * each is a `test.todo` at the foot of the `place` describe, naming the blocking
+ * issue `#TBD-checkout-stripe-gateway`, so every run reports them as outstanding
+ * instead of leaving the gap visible only in a commit message. What CAN be
+ * asserted, and is
  * below, is that the refusal is contained: it reaches the caller as the guard's
  * `RENDER_FAILED` with no internals attached, and it leaves the cart and its
  * stock hold exactly as it found them. `commerce-client-contract.in-process.test.ts`
@@ -58,6 +63,7 @@ import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	EmdashProductCommerceStore,
+	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	systemClock,
 	uuidIdGen,
@@ -78,6 +84,9 @@ let storage: StorageAccess;
 let orderStore: EmdashOrderStore;
 let productQueries: unknown[];
 let productGets: string[];
+/** Every method name the plugin invoked on the `orders` collection — the store
+ *  work a route that rejects its input must not have done. */
+let orderOps: string[];
 let seq = 0;
 
 function commerceStore(): EmdashProductCommerceStore {
@@ -94,17 +103,19 @@ function inventoryStore(): EmdashInventoryStore {
  * the collection per call (see `sandbox/storage-bridge.ts`), so wrapping it here
  * counts the plugin's real reads with nothing added to `src/`.
  */
-function instrumentProductCommerce(): void {
-	const target = storage[PRODUCT_COMMERCE_COLLECTION];
-	if (target === undefined) throw new Error("no 'product_commerce' collection to instrument");
-	storage[PRODUCT_COMMERCE_COLLECTION] = new Proxy(target, {
+function instrument(
+	collection: string,
+	record: (method: string, args: readonly unknown[]) => void,
+): void {
+	const target = storage[collection];
+	if (target === undefined) throw new Error(`no '${collection}' collection to instrument`);
+	storage[collection] = new Proxy(target, {
 		get(_holder, property) {
 			const value = Reflect.get(target, property) as unknown;
 			if (typeof value !== "function") return value;
 			const bound = (value as (...args: unknown[]) => unknown).bind(target);
 			return (...args: unknown[]) => {
-				if (property === "query") productQueries.push(args[0]);
-				if (property === "get") productGets.push(String(args[0]));
+				record(String(property), args);
 				return bound(...args);
 			};
 		},
@@ -201,7 +212,14 @@ beforeAll(async () => {
 	({ storage } = await storageBridge());
 	productQueries = [];
 	productGets = [];
-	instrumentProductCommerce();
+	orderOps = [];
+	instrument(PRODUCT_COMMERCE_COLLECTION, (method, args) => {
+		if (method === "query") productQueries.push(args[0]);
+		if (method === "get") productGets.push(String(args[0]));
+	});
+	instrument(ORDERS_COLLECTION, (method) => {
+		orderOps.push(method);
+	});
 	orderStore = new EmdashOrderStore({
 		storage,
 		inventory: inventoryStore(),
@@ -224,6 +242,7 @@ beforeEach(() => {
 	// are cleared immediately before each exercise rather than after each case.
 	productQueries.length = 0;
 	productGets.length = 0;
+	orderOps.length = 0;
 });
 
 describe("storefront/checkout/summary (workerd sandbox)", () => {
@@ -388,6 +407,69 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", input));
 		expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
 		expect(productQueries).toHaveLength(0);
+		// ...and no order was minted on the way to refusing, which is the half the
+		// old `stubServer.requests` count carried.
+		expect(orderOps).toEqual([]);
+	});
+
+	/**
+	 * PARKED, NOT DELETED — the `place` SUCCESS PATH.
+	 *
+	 * Every case below asserted the shape of a SUCCESSFUL place, and there is no
+	 * reachable success path through `place` in this build: the domain asks for the
+	 * `stripe` gateway and the in-process composition root wires none
+	 * (`make-commerce-client.ts` fills the `x402` slot only), so `createOrderFromCart`
+	 * throws before any of these properties can exist. They are recorded as
+	 * `test.todo` rather than deleted so the coverage they represent is visible in
+	 * every run's output instead of living only in a commit message — a deleted test
+	 * is indistinguishable from a property nobody ever cared about.
+	 *
+	 * BLOCKED ON: the stripe gateway is not wired in process —
+	 * issue #TBD-checkout-stripe-gateway. Each one comes back by ARRANGING the
+	 * condition against real data (a placed order, a replayed key, a ship-to on the
+	 * cart) rather than by scripting a reply; the names are kept verbatim as they
+	 * were deleted so the restoration is greppable against this file's history, and
+	 * the transport wording in a few of them ("issues EXACTLY one call", "a 502")
+	 * is what should be reworded at that point, not the property.
+	 */
+	test.todo("issues EXACTLY one call — POST /checkout/orders — forwarding Idempotency-Key verbatim and buyerRef un-rewritten", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("passes clientAction through UNMODIFIED — the client secret is data in transit", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("NEVER echoes the order's private fields (buyerRef / shippingAddress) back to the caller", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("forwards the optional ship-to snapshot (ADR-0009 slice c)", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a REPLAY of an order that has left pending (clientAction none, intentId '') is alreadyPlaced — not an error", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("returns the ORDER's own total, formatted — the figure the pay button states", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("the total honours the requested locale, and falls back rather than failing", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a REPLAY still carries the total — an order always has one", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a reply with NO totals block still places the order — total simply absent", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("an unformattable total drops the total and keeps the order (a lowercase currency, a symbol for a currency, a fractional total, a null total)", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a 502 becomes the typed PAYMENT_INTENT_FAILED, never RENDER_FAILED", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a 409 CART_CHECKED_OUT / RESERVATION_LOST / PRODUCT_NOT_PRICED becomes the typed reason", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
+	});
+	test.todo("a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason", () => {
+		/* blocked on: stripe gateway not wired in-process — see issue #TBD-checkout-stripe-gateway */
 	});
 });
 
@@ -470,6 +552,13 @@ describe("storefront/order (workerd sandbox)", () => {
 	test("a blank orderId is rejected BEFORE any store work", async () => {
 		const result = resultOf(await sandboxHandle.invokeRoute("storefront/order", {}));
 		expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+		// WHAT "BEFORE ANY STORE WORK" MEANS NOW. The old proof was
+		// `stubServer.requests` being empty; with no request to count, the same claim
+		// is made against the `orders` collection the route would have read — every
+		// method call on it is recorded (see `instrument`), and a guard that ran
+		// AFTER the read would show up here as a `get`.
+		expect(orderOps).toEqual([]);
+		expect(productQueries).toHaveLength(0);
 	});
 });
 

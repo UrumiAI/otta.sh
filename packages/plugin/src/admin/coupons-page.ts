@@ -826,7 +826,7 @@ function couponsFailClosed() {
 		title: "Coupons are unavailable",
 		// E-7's normative blockquote, verbatim — never a single named cause (X-42).
 		description:
-			"Coupons could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Coupons could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load coupons",
 	});
 }
@@ -869,7 +869,7 @@ function couponFailClosed() {
 		header: "Coupon",
 		title: "This coupon is unavailable",
 		description:
-			"This coupon could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"This coupon could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load the coupon",
 	});
 }
@@ -1843,8 +1843,7 @@ function saveCouponOutcome(
 	return showLeaf([code], {
 		variant: "error",
 		title: "Coupon not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	});
 }
 
@@ -1892,8 +1891,7 @@ function deleteCouponOutcome(
 	return showLeaf([code], {
 		variant: "error",
 		title: "Coupon not deleted",
-		description:
-			"The coupon could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The coupon could not be deleted — retry in a moment.",
 	});
 }
 

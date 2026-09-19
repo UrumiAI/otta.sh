@@ -57,8 +57,9 @@ import {
 export const SWEEP_TASK_NAME = "commerce-sweeps";
 
 /** Every fifteen minutes — the cadence the standalone service ran its
- *  `scheduled()` handler on, carried over unchanged. The site's own Cron Trigger fires every minute; that drives the
- *  host's EXECUTOR, and this is what decides when the task is due. */
+ *  `scheduled()` handler on, carried over unchanged. The site's own Cron
+ *  Trigger fires every minute; that drives the host's EXECUTOR, and this is
+ *  what decides when the task is due. */
 export const SWEEP_SCHEDULE = "*/15 * * * *";
 
 /** What `ensureSweepTaskScheduled` reports, so a caller (and a suite) can see

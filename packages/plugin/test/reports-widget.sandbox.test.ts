@@ -63,16 +63,23 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // string is a claim about what was ASKED, while a bound proven by which seeded
 // day appears in the table is a claim about what was ANSWERED.
 //
-// ONE CASE IS GONE. "Refunded falls back to the stated gap against a service
-// whose buckets carry no refundedCents key" tested the renderer's em-dash
-// fallback for an ABSENT `refundedCents`. That key can no longer be absent: the
-// in-process client emits it always, zero included (its class doc says so, and
-// says why), and there is no older transport left to omit it. The fallback is
-// now unreachable code rather than a behaviour with a test — reported as such
-// rather than pinned by a case that would have to fake a wire nothing speaks.
+// ONE CASE MOVED OUT OF THIS SUITE, rather than being deleted. "Refunded falls
+// back to the stated gap against a service whose buckets carry no refundedCents
+// key" tested the renderer's em-dash fallback for an ABSENT `refundedCents`. No
+// PRODUCER can omit the key any more — the in-process client emits it always,
+// zero included — but the RENDERER still branches on it (`reports-page.ts`'s
+// `readRefunded`, which also has to refuse a present-but-unusable figure), and a
+// branch with no test is a branch that rots into a confident `$0.00` over an
+// amount nobody reported. The claim never needed a transport, so it is now a
+// direct unit test over the exported `buildReportsBlocks`:
+// `test/reports-refunded-fallback.test.ts`.
 //
-// ONE CASE INVERTED, and it is a real behavioural change — see "a failed
-// settings read now takes the whole screen down" for the mechanism.
+// ONE CASE IS PARKED AS A `test.todo`, NOT INVERTED. "A failed settings read
+// degrades the low-stock label instead of taking the screen down" stopped being
+// true at INC-D3a — see the todo below for the mechanism. It was briefly
+// rewritten to assert the NEW behaviour, which would have pinned a regression as
+// the spec; the property is stated as a todo instead, so the next person to fix
+// the degradation finds a claim to satisfy rather than a passing test to delete.
 
 /** Every seeded id is suffixed: the document store is shared by every sandbox
  *  suite in this process (see `sandbox/storage-bridge.ts`), and `lowStock`
@@ -826,42 +833,30 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(String(group(blocks, "reports:revenue")?.label)).toBe("Revenue by day");
 	});
 
-	test("a failed settings read now takes the whole screen down — the threshold is no longer a label the page can do without", async () => {
-		// THIS CASE INVERTED AT INC-D3a, and the inversion is real behaviour
-		// rather than a test artefact. It used to assert that a failing
-		// `GET /settings` degraded the low-stock LABEL ("Low stock (1)", no
-		// threshold) while the four reports still rendered — the page asks for
-		// settings with a `.catch(() => undefined)` precisely so that a cosmetic
-		// read cannot take the screen down.
-		//
-		// In process, the low-stock REPORT reads the settings store too: the
-		// client defaults its threshold from `SettingsStore` when the caller
-		// passes none, and this page passes none. So a settings-store fault fails
-		// `getLowStock()` as well, that rejection is inside the page's
-		// `Promise.all`, and the screen fails closed. The catch on `getSettings()`
-		// is now cover for a failure mode that cannot occur alone — reported as a
-		// follow-up rather than papered over here with an assertion that pretends
-		// the old degradation still happens.
-		const settings = collection(SETTINGS_COLLECTION);
-		storage[SETTINGS_COLLECTION] = new Proxy(settings, {
-			get(_holder, property) {
-				const value = Reflect.get(settings, property) as unknown;
-				if (typeof value !== "function") return value;
-				return () => {
-					throw new Error("injected settings-store fault");
-				};
-			},
-		}) as StorageAccess[string];
-		try {
-			await seedStandardRange();
-			const blocks = blocksOf(await reports(RANGE));
-			assertBlockContract(blocks, { screen: "reports", level: "list" });
-			expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(true);
-			expect(findBlocks(blocks, "table")).toHaveLength(0);
-		} finally {
-			storage[SETTINGS_COLLECTION] = settings;
-		}
-	});
+	// PARKED, NOT PASSING, AND DELIBERATELY NOT ASSERTED THE OTHER WAY.
+	//
+	// This slot used to hold "a failed settings read degrades the low-stock label
+	// instead of taking the screen down": the E-1 property that a COSMETIC read —
+	// the threshold that turns "Low stock (1)" into "Low stock (1) — at or below
+	// 5" — can never cost the operator the four reports. The page still asks for
+	// settings with a `.catch(() => undefined)` precisely so that it cannot.
+	//
+	// INC-D3a broke that property. In process the low-stock REPORT reads the
+	// settings store too (the client defaults its threshold from `SettingsStore`
+	// when the caller passes none, and this page passes none), so a settings-store
+	// fault fails `getLowStock()` as well, that rejection is inside the page's
+	// `Promise.all`, and the whole screen fails closed. The `getSettings()` catch
+	// is now cover for a failure mode that cannot occur alone.
+	//
+	// The case was briefly rewritten to ASSERT the new behaviour — a green test
+	// stating that one unreadable label takes four reports with it. That pins a
+	// regression as the spec: the next person to fix the degradation would have had
+	// to delete a passing test to do it, and every reader in between would have
+	// read the fail-closed screen as intended. So the property is stated as the
+	// TODO it is, and stays red-by-absence until the page passes an explicit
+	// threshold into `getLowStock()` (or the client stops defaulting from the same
+	// store) and the E-1 claim can be made honestly again.
+	test.todo("settings-read failure should degrade only the low-stock label, not the whole screen — see issue #TBD-reports-degradation", () => {});
 
 	test("low-stock rows render Title, then SKU, then On hand — the SKU→title map operators used to keep in their head", async () => {
 		await seedStock(`SKU-A-${SFX}`, 0, "Aluminum Water Bottle");
