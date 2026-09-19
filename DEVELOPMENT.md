@@ -41,6 +41,16 @@ violations that are the entire point of the commerce service.
   process, so it cannot exercise a real race — it verifies the _SQL is correct_, not that
   it's _race-safe_. Mark the no-oversell test to run only against Postgres (and D1 later),
   and say so in the test name.
+- **Real D1 is its own tier, and it is the release gate.** `pnpm test:d1` runs the contract
+  suites and the races against a real D1 inside `workerd`, under the Cloudflare workers
+  pool — the dialect the storefront actually ships on, and the only tier that exercises the
+  host's own Kysely wiring. It lives in a **separate vitest project**
+  (`packages/store-emdash/vitest.d1.config.ts`), deliberately not aggregated into the root
+  config: the root config turns file parallelism off whenever `PG_CONNECTION_STRING` is set,
+  and that guard belongs to the Postgres tier alone. Everything is local (miniflare's D1
+  simulator — no Cloudflare account, token or remote database), but it boots workerd and
+  re-migrates per file, so it runs as CI's `d1` job — nightly, on demand, and gating the
+  merge into `main` — rather than on every PR.
 
 Both dialects run the single-statement atomic write unchanged:
 

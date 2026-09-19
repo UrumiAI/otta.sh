@@ -28,6 +28,19 @@ pnpm test         # vitest
 pnpm format       # oxfmt, tabs
 ```
 
+Two heavier tiers need a backing store and stay out of that loop:
+
+```bash
+PG_CONNECTION_STRING=<local pg> pnpm test:pg   # the race tier (no-oversell and friends)
+pnpm test:d1                                   # real D1 inside workerd, via the workers pool
+```
+
+`pnpm test:d1` runs a separate vitest project (`packages/store-emdash/vitest.d1.config.ts`), so the
+root `pnpm test` does not include it. It is entirely local — the D1 is miniflare's simulator, and
+no Cloudflare account, API token or remote database is involved — but it boots workerd and
+re-migrates a fresh database per test file, so expect minutes rather than seconds. In CI it is the
+`d1` job: nightly, on demand, and as the release gate on pull requests into `main`.
+
 ## TDD, contract-first
 
 The order is always: **failing test → code → green → refactor.** For anything in
