@@ -358,7 +358,7 @@ INC-D6 ran on 2026-09-20 against `emdash@0.38.0`, published 2026-09-15, the firs
 The released `0.38.0` numbers the conditional-write migration **`077_plugin_storage_revisions`** —
 the same name the vendored merge renumbered it to. Stronger than that: the released build's
 `src/database/migrations/runner.ts` is **byte-identical** to the vendored build's (519
-lines, `diff` silent), the `migrations/` directory listings are identical, and both builds carry
+lines, `diff` silent), `runner.ts`'s migration list is identical, and both builds carry
 **76** migrations in the same order (`001`–`009`, then `011`–`077`; there is no `010` in either),
 with `077_plugin_storage_revisions` last in `MIGRATION_NAMES` in both.
 

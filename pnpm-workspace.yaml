@@ -12,7 +12,7 @@ packages:
 # the subpaths (`./portable-text-table`, `./listing-policy`) whose absence forced
 # them to be vendored alongside the core.
 #
-# The one-copy outcome is an invariant, not a coincidence — a future release of
+# The one-copy outcome is a coincidence of agreement, not an invariant — a future release of
 # `@emdash-cms/cloudflare` that pins a DIFFERENT exact `emdash` would put a second
 # copy in the store, binding the Worker bridge to a host without the
 # conditional-write primitives: no install error, no type error.
