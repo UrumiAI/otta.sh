@@ -1,172 +1,64 @@
 # Deploying Otta
 
-How to stand up a working Otta store from a fresh clone: the commerce service plus a
-storefront site, in either of the two supported shapes. Architecture background lives in
+How to stand up a working Otta store from a fresh clone. Architecture background lives in
 [`README.md`](./README.md); design decisions in [`adr/`](./adr/). This guide is
-self-contained — section references like "§4" point inside this file.
+self-contained — section references like "§2" point inside this file.
 
 ---
 
 ## 0. What you are deploying
 
-Otta is **two deployables and two databases**:
+Otta is **one deployable and one database**: the storefront site (`sites/staging`) — an
+EmDash CMS site with the Otta plugin registered trusted, running commerce **in-process**
+inside the same Worker. There is no separate commerce service and no second database:
+commerce truth lives in the host's per-plugin document store on the site's own D1 database,
+alongside CMS content ([ADR-0018](./adr/0018-plugin-owns-commerce-truth-in-process.md),
+[ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md),
+[ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)).
 
-1. **The commerce service** (`@otta-sh/service`) — a Hono REST API that owns all money and
-   stock truth. As a Node bin (`dist/index.mjs` post-publish; run via tsx from a checkout
-   today — see §2.2) it needs a **Postgres** database and migrates itself forward on boot.
-   On Workers (Shape B) it is not a separate deployable: commerce runs **in-process inside
-   the site Worker** — see item 2.
-2. **The storefront site** (`sites/staging`) — an EmDash CMS site with the Otta plugin
-   registered trusted in-process, talking to commerce in-process. It needs a **content
-   database of its own** (D1 on Workers), entirely separate from the commerce Postgres.
-   `sites/staging` is the reference site: copy it for your own store rather than treating it
-   as staging-only.
+`sites/staging` is the reference site: copy it for your own store rather than treating it as
+staging-only.
 
-> **Status honesty.** The commerce **service** is feature-complete (Phases 0–7, per the root
-> README): catalog, inventory, cart, checkout, orders, customers with magic-link auth,
-> Stripe + x402 payments, tax, shipping, discounts, entitlements, reporting, and settings.
-> The reference **storefront** deliberately covers **catalog + cart only**. Two page surfaces
-> are not built yet: the checkout/payment/download pages (issue #27) and the customer
-> account/login pages (a parallel follow-up scoped in the site package's README — no issue
-> yet). Deploying today gives you a browsable catalog and carts with real inventory holds;
-> completing a purchase end-to-end means building the #27 surface or driving the service API
-> directly. When #27 and the account-pages task close, this banner shrinks to a version note.
-
-| | Shape A | Shape B |
-|---|---|---|
-| Service runtime | Node process (§2.2) | in-process, inside the site Worker |
-| Commerce DB | any Postgres you can reach | external Postgres via Hyperdrive |
-| Site runtime | EmDash on Node (link-out, §2.5) | `sites/staging` on Workers **free** plan |
-| Sweeps | self-intervals + one external driver (§2.4) | `*/15` cron runs all four (§6) |
-| Starts at | §2 | §3 |
+> **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
+> checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
+> discounts, entitlements, reporting, and settings. The reference **storefront**
+> deliberately covers **catalog + cart only**. Two page surfaces are not built yet: the
+> checkout/payment/download pages (issue #27) and the customer account/login pages (a
+> parallel follow-up scoped in the site package's README — no issue yet). Deploying today
+> gives you a browsable catalog and carts with real inventory holds; completing a purchase
+> end-to-end means building the #27 surface. When #27 and the account-pages task close, this
+> banner shrinks to a version note.
 
 ## 1. Universal contracts
 
-Three rules hold in every shape. Everything else in this guide is a consequence of them.
+Three rules hold. Everything else in this guide is a consequence of them.
 
 - **Deploy-then-claim.** A freshly deployed site is unclaimed: **the first visitor to
   complete the setup wizard becomes the admin.** Claim it immediately after the first
   request, in the same session. The wizard's passkey step requires a WebAuthn **secure
-  context** — HTTPS, or `localhost` (see §2.5 and §3.2). If the unclaimed window worries
+  context** — HTTPS, or `localhost` (see §2.2). If the unclaimed window worries
   you, front `/_emdash/*` with Cloudflare Access until setup is claimed, then remove it.
 - **Seed reality.** The site's first request runs the CMS migrations and applies the seed's
   **schema, settings, and menus only**. Sample content (the 3 demo products) is applied
   **only** when the setup wizard is completed with "include sample content" checked. An
   empty `/products` page right after first boot is **healthy, not a failed boot**.
-- **Secrets model.** Every payment and token secret lives **commerce-side** (§4) — the
-  standalone Node process on Shape A, or the site Worker itself on Shape B, where commerce
-  runs in-process. The site carries exactly one secret of its own: `EMDASH_ENCRYPTION_KEY`.
-  Nothing secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config
-  tests).
+- **Secrets model.** There is one deployable, so there is one place secrets can live — and
+  two stores inside it (§3). Two are **Worker secrets** (`wrangler secret put`):
+  `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment and email **credential** is
+  provisioned by the operator in the admin console's **Settings** page and held in
+  **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
+  never rendered back into a block, read through a fail-closed reader. Nothing
+  secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config tests,
+  which reject any `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`).
 
-## 2. Shape A — Node + Postgres
-
-The service as a plain Node process against any Postgres you can reach. There is no
-Node-hosted site in this repo — §2.5 covers your options for the storefront half.
-
-### 2.0 Network posture
-
-The Node bin listens on `PORT` (default 3000) on **all interfaces — it has no bind-address
-knob**: the entry calls `serve({ fetch, port })` with no hostname parameter, and there is no
-`HOST` env var — do not go looking for one. Issue #43 tracks adding it; once it closes, bind
-to loopback directly and this paragraph becomes one line. Until then, keep the service off
-the public network by external means: an OS firewall, a private network / VPC, or a
-loopback-mapped container port (e.g. `-p 127.0.0.1:3000:3000`).
-
-Expose nothing publicly until you enable Stripe; then expose **only** `POST
-/webhooks/stripe` through a reverse-proxy path allowlist. Anything more exposes the write
-surface described in §4 — which you close by provisioning `SERVICE_API_TOKEN` on both
-sides (§4). Until that token is set the write surface is open:
-
-> **Posture:** while `SERVICE_API_TOKEN` is unset, every mutating route is unauthenticated
-> (§4). Treat a publicly reachable service whose gate is still open as non-production —
-> test-mode payment credentials only, never live-mode Stripe keys on an open write surface.
-> Provisioning the token on both sides (§4) closes the gate and lifts this restriction.
-
-### 2.1 Provision Postgres
-
-Managed or self-hosted both work — the suite runs against Postgres 16 in CI; older
-versions are untested. Pooled vs direct: the service runs its own
-`pg` pool and a Kysely migrator that use **prepared statements**, so give it a **direct
-connection or a session-mode pooler**. A transaction-mode pooler (e.g. PgBouncer in
-transaction mode) breaks prepared statements and will fail in confusing ways. Size the pool
-conservatively; the database is the scaling arbiter (§6).
-
-### 2.2 Run the service
-
-The `@otta-sh/*` packages are not published yet, and inside the workspace their export maps
-point at TypeScript sources — so from a checkout, run the Node entry with a TS-executing
-runner rather than the built `dist/index.mjs` (that file is the entry for a future
-published install; plain `node` cannot resolve its workspace imports today — issue #44;
-when it closes, this step becomes `node dist/index.mjs`). From the repo root:
-
-```bash
-pnpm install
-PG_CONNECTION_STRING=postgres://USER:PASSWORD@YOUR-DB-HOST:5432/YOUR-DB-NAME \
-  pnpm dlx tsx@4 packages/service/src/index.ts
-```
-
-`PG_CONNECTION_STRING` is required — the entry throws at startup without it. Migrations run
-automatically before the server starts listening (forward-only, idempotent). Smoke it:
-
-```bash
-curl http://127.0.0.1:3000/health
-# {"ok":true}
-```
-
-### 2.3 Configure
-
-All configuration is environment variables — see the reference table in §5 and the secrets
-checklist in §4. The Node bin self-schedules two maintenance intervals out of the box: a
-hold sweep (every 60s, `HOLD_SWEEP_INTERVAL_MS`) and an email-outbox drain + login-challenge
-prune (every 30s, `EMAIL_DISPATCH_INTERVAL_MS`). Which brings us to the gap:
-
-### 2.4 The order-expiry sweep gap
-
-> **Caveat — issue #28.** The Node bin's self-intervals run hold sweeps, email dispatch, and
-> login-challenge pruning — **order expiry is the one missing sweep**. Hold correctness does
-> not depend on the timer (expiry is also lazy-on-read), but order expiry is clock-driven,
-> so on Shape A you must drive it externally until #28 lands: set `INTERNAL_API_TOKEN` (§4)
-> and run this on a schedule (cron, systemd timer — every 5–15 minutes is fine):
->
-> ```bash
-> curl -X POST -H "X-Internal-Token: $INTERNAL_API_TOKEN" \
->   http://127.0.0.1:3000/internal/expire-orders
-> ```
->
-> Fixed end-state: #28 adds the order-expiry leg to the Node self-interval; when it closes,
-> delete the external cron and this box.
-
-### 2.5 A site alongside a Node service
-
-> **No site in this repo talks to the Node service over HTTP.** The plugin runs commerce
-> **in-process**, and the mode plumbing that used to let it call a service instead — the
-> `COMMERCE_SERVICE_URL` build-time variable and its bundle define — is gone. `sites/staging`
-> reads no service URL at build time; setting one changes nothing. The Node service of §2.2
-> is for **API consumers you write yourself**, not for pointing a storefront at.
-
-So there is one site option, plus one rule that applies to it:
-
-- **Run an EmDash site on Node.** Follow EmDash's upstream Node deployment guide
-  (`deployment/nodejs.mdx` in the [EmDash repo](https://github.com/emdash-cms/emdash)) and
-  apply the Otta deltas from `sites/staging`: register the plugin trusted via a descriptor
-  (ADR-0006) and port the theme pages + `/cart/*` cookie-shim endpoints. Commerce then runs
-  in-process inside that Node site, against its own configured store — nothing to point at
-  the §2.2 service. No Node-adapter site exists in this repo; this path is
-  link-out-plus-deltas, not a tested recipe.
-- And whatever you front it with, **put HTTPS in front of the site before first boot**: the setup wizard's
-  passkey step needs a WebAuthn secure context, which workers.dev gives you automatically
-  but bare Node does not — terminate TLS first (the one exception: `localhost` is a secure
-  context, so claiming over an SSH tunnel at `http://localhost` works).
-
-## 3. Shape B — Cloudflare Workers (free tier)
+## 2. Cloudflare Workers (free tier)
 
 The site as a Worker, with commerce running in-process inside it. This shape is
 deploy-verified and is what `sites/staging` is built for.
 
-### 3.0 Cost preconditions
+### 2.0 Cost preconditions
 
-The free-tier claim rests on three deliberate choices — undo any of them and you are on a
+The free-tier claim rests on two deliberate choices — undo either of them and you are on a
 paid plan:
 
 - **The plugin runs trusted in-process** — no `worker_loaders` binding. Worker Loaders (the
@@ -176,11 +68,10 @@ paid plan:
 - **No Cloudflare Images or Stream.** Media lives in R2; the site uses Astro's built-in
   image service (the config deliberately does not set `imageService: "cloudflare"` — that is
   the paid resizing product).
-- **The service cron is `*/15`**, not every minute, so a serverless Postgres origin (e.g.
-  Neon's free tier) can autosuspend between ticks. The site's every-minute cron touches only
-  D1, within free limits.
 
-### 3.1 The site Worker
+The site's single `* * * * *` cron touches only D1, within free limits (§5).
+
+### 2.1 The site Worker
 
 1. **Create the content resources** (from `sites/staging`):
 
@@ -193,7 +84,7 @@ paid plan:
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
    D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
-   `global_fetch_strictly_public` compatibility flag alone — §3.4 explains it.
+   `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
 
 3. **Set the site's one secret** (the only secret first boot needs):
 
@@ -228,7 +119,7 @@ paid plan:
    rebuild** — step 4 owns the build, so your Worker name, D1, and R2 bindings are never
    silently the tracked template's placeholders.
 
-### 3.2 First boot and claim
+### 2.2 First boot and claim
 
 1. **Hit the site once** — `https://<your-worker>.<your-subdomain>.workers.dev/`. The first
    request runs the CMS migrations and applies the seed's schema/settings/menus (one-time
@@ -239,14 +130,14 @@ paid plan:
    complete setup becomes the admin — do not deploy and walk away. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
-   and publish a product in the admin and watch the service log the sync upsert; price it
-   in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
+   and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
+   it in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
    price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing &
-   inventory page uses — so it needs no service URL and no service token; only the site
-   URL and a token that can read the CMS and call that route:
+   inventory page uses — so it needs only the site URL and a token that can read the CMS
+   and call that route:
 
    ```bash
    SITE_URL=https://<your-site-worker>.workers.dev \
@@ -259,111 +150,86 @@ paid plan:
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 
-### 3.3 Failed-first-boot recovery
+### 2.3 Failed-first-boot recovery
 
 **Only for an actual failed boot** — errors in `wrangler tail` (migration failures, partial
-schema seed). An empty `/products` catalog is NOT a failed boot (§3.2 step 1); never reset a
+schema seed). An empty `/products` catalog is NOT a failed boot (§2.2 step 1); never reset a
 healthy database. The seed applies only to an **empty** D1 database, so a midway failure
 cannot be retried in place:
 
 1. `wrangler d1 delete YOUR-D1-DATABASE-NAME` and `wrangler d1 create YOUR-D1-DATABASE-NAME`.
 2. Update `database_id` in your `wrangler.local.jsonc` with the new id.
-3. **Rebuild** (the wrangler config is read at build time — §3.1 step 4), redeploy, then
-   claim the admin again (§3.1 step 5 → §3.2).
+3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
+   claim the admin again (§2.1 step 5 → §2.2).
 
-### 3.4 workers.dev networking — the #1 footgun
+### 2.4 The `global_fetch_strictly_public` pairing invariant
 
-> **Why the site ships `global_fetch_strictly_public`.** Cloudflare blocks
-> Worker→`*.workers.dev` subrequests and **stubs them with a 404** that never leaves
-> Cloudflare (deploy-verified: parallel `wrangler tail`s showed the request never reached
-> the service; direct curl worked). The site's `wrangler.jsonc` therefore carries the
-> `global_fetch_strictly_public` compatibility flag, which is what lets its `ctx.http`
-> calls reach a service Worker on workers.dev.
+> The site's `wrangler.jsonc` carries the `global_fetch_strictly_public` compatibility flag.
+> That flag silently breaks the D1 Sessions API — its internal routing request is blocked and
+> **every SSR request hangs with nothing in the logs** — so `d1()` in the site config must
+> keep `session` **off** while the flag is present. Both halves are pinned by tests:
+> `sites/staging/test/site-config.test.ts` (session stays off, placeholder equality) and
+> `sites/staging/test/wrangler-config.test.ts` (flag presence, template hygiene). Do not
+> "fix" one side without the other.
 >
-> **Pairing invariant:** that flag silently breaks the D1 Sessions API — its internal
-> routing request is blocked and **every SSR request hangs with nothing in the logs** — so
-> `d1()` in the site config must keep `session` **off** while the flag is present. Both
-> halves are pinned by tests: `sites/staging/test/site-config.test.ts` (session stays off,
-> placeholder equality) and `sites/staging/test/wrangler-config.test.ts` (flag presence,
-> template hygiene). Do not "fix" one side without the other.
->
-> Fixed end-state — issue #32: a **custom domain on the commerce service** (custom domains
-> are not subject to the workers.dev subrequest block) lets the site drop the flag and
-> re-enable `session: "auto"`, and deletes this box. A custom domain is also what unlocks
-> zone-level WAF rules (§4).
+> A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules (§3).
 
-## 4. Secrets & tokens checklist
+## 3. Secrets & tokens checklist
 
-All of these live on **commerce** (Node env vars on Shape A, `wrangler secret put` on the
-site Worker on Shape B, where commerce runs in-process) except the first (site only). On
-Workers, **every `wrangler secret put` below** needs `--config wrangler.local.jsonc`:
-without it, wrangler defaults to the tracked template and uploads the secret to the
-placeholder-named Worker, not yours. In order of appearance in a deployment's life:
+Two of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
+**plugin credentials** the operator types into the admin console's **Settings** page, which
+persists them to write-only plugin `kv` under `settings:*`. On Workers, **every `wrangler
+secret put` below** needs `--config wrangler.local.jsonc`: without it, wrangler defaults to
+the tracked template and uploads the secret to the placeholder-named Worker, not yours. In
+order of appearance in a deployment's life:
 
-| Secret | Deployable | Required? | When to set |
+| Secret | Where it lives | Required? | When to set |
 |---|---|---|---|
-| `EMDASH_ENCRYPTION_KEY` | site | yes | before the site's first boot |
-| `INTERNAL_API_TOKEN` | commerce | Shape A: yes (§2.4). Shape B: **not used** — nothing reads it there | any time |
-| `SERVICE_API_TOKEN` | commerce | to close the write gate | any time |
-| `STRIPE_WEBHOOK_SECRET` | commerce | for Stripe payments | before enabling Stripe |
-| `STRIPE_SECRET_KEY` | commerce | to take **real** payments (and to refund) | with the webhook secret |
-| `X402_PAYTO` + `X402_FACILITATOR_SECRET` | commerce | for x402 (non-production only today) | see fail-closed box |
-| `EMAIL_API_KEY` (with `EMAIL_API_URL` / `EMAIL_FROM` vars) | commerce | optional | when wiring real email |
+| `EMDASH_ENCRYPTION_KEY` | Worker secret | yes | before the site's first boot |
+| `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
+| Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments | before enabling Stripe |
+| Stripe secret key | admin Settings (`settings:stripeSecretKey`) | to take **real** payments (and to refund) | with the webhook secret |
+| x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
+| Email API key (with the `EMAIL_API_URL` / `EMAIL_FROM` build-time values) | admin Settings | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
   never echoed into logs; **back it up in a password manager** (it protects the CMS's
   encrypted data — losing it strands that data).
 
-> **`SERVICE_API_TOKEN` — the write gate ([ADR-0007](./adr/0007-dedicated-service-token-header.md)).**
+> **The Stripe webhook endpoint is public by design, and permanently site-owned.**
+> Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
+> — register **that** path in the Stripe dashboard. It is a transport shim: it reads the raw
+> delivered bytes, never parses them, attaches the edge token, and dispatches the plugin's
+> **public** `webhooks/stripe/settle` route in-process, replaying the status the plugin asks
+> for so Stripe's retry behaviour stays correct. It holds no Stripe secret and verifies no
+> signature itself.
 >
-> When set, every non-GET/HEAD request to commerce's HTTP API must carry the token in the
-> dedicated **`X-Service-Token`** header — *not* `Authorization: Bearer`, which is the
-> customer session credential. This only matters for callers that reach commerce over HTTP
-> directly: the storefront plugin no longer does — it talks to commerce in-process, with no
-> HTTP hop and nothing to provision on its side.
+> **The trust anchor is the Stripe HMAC**, verified unconditionally inside the plugin route
+> against `settings:stripeWebhookSecret` — never switchable off by any token. A webhook is
+> always unauthenticated, and an anonymous request only ever reaches the host's *public*
+> plugin-route dispatcher, so the route being public is structural, not a relaxation.
 >
-> **While unset the write surface is open:** every mutating route is unauthenticated — cart
-> creation and line writes, `POST /checkout/orders`, `/inventory/*` mutations, entitlement
-> grants — so on a publicly reachable URL anyone who finds it can create orders and burn
-> inventory holds. The Worker entry logs a warning once per isolate when the gate is open;
-> **the Node entry is silent** — issue #42 tracks warning parity. Provision the token before
-> exposing commerce's HTTP API publicly (§2.0).
->
-> **Interplay with `INTERNAL_API_TOKEN`:** routes behind both gates (e.g. `PUT /settings`,
-> the `/admin/*` writes) require **both** headers when both secrets are set.
+> **`OTTA_WH_TOKEN` is the cheap outer gate** in front of that anchor: it lets the public
+> route refuse an *unattributed* request before it reads another kv key, builds a gateway or
+> opens a store. Provision the same value on both halves — `wrangler secret put
+> OTTA_WH_TOKEN` on the site and the matching field in admin Settings. Unset on the plugin
+> side, the gate **passes through** (degrading to "cryptographic anchor only", never to
+> "nothing works" and never to "nothing is checked"); set on the plugin side but unset on
+> the site, **every delivery 401s** — that is the dangerous direction, and the reason the
+> endpoint replays the 401 into Stripe's dashboard rather than swallowing it.
 
-- **`INTERNAL_API_TOKEN`** — the shared secret for the standalone service's operational
-  surface, and **only** that: it is read by `@otta-sh/service`'s entries, so it means
-  something on Shape A and nothing on Shape B, where no commerce HTTP API is served at all.
-  Unset, those
-  endpoints answer **503** (disabled — never silently open): `POST /internal/expire-holds`,
-  `POST /internal/expire-orders`, `POST /internal/dispatch-emails`, and — **reads
-  included** (ADR-0010) — the entire `/admin/*`, `/reports/*` and `/settings` surface. That
-  means the `/admin/*` order transition and rules CRUD, the rules **GET** reads (shipping
-  zones/methods/rates, tax classes/rates, coupon lookup by code), and **both** verbs on
-  `/settings`. `SERVICE_API_TOKEN`'s write gate exempts GET/HEAD, so this token is the only
-  thing that closes those reads. One caller sends it as
-  `X-Internal-Token`: your §2.4 cron on Shape A. The plugin's admin console never did and
-  now structurally cannot — it reads and writes commerce in-process, with no HTTP hop and
-  nothing to provision on its side (INC-D3a deleted the `settings:internalToken` field and
-  kv key along with the rest of the service plumbing). The Worker cron path needs no token
-  either (it calls the domain directly, §6).
-- **Stripe** — `STRIPE_WEBHOOK_SECRET` wires the Stripe gateway; until set,
-  `POST /webhooks/stripe` answers 503. The webhook URL is **public by design**: it is the
-  single exemption from the `X-Service-Token` write gate, authenticated instead by
-  `Stripe-Signature` HMAC over the raw body (Stripe cannot carry our token).
-  **`STRIPE_SECRET_KEY` decides whether checkout can actually be paid.** With it,
-  `createIntent` performs a real `POST /v1/payment_intents` — the buyer gets a LIVE client
-  secret, `metadata[order_id]` carries the settlement key the webhook is matched on, and the
-  checkout `Idempotency-Key` travels as Stripe's native one — and refunds become available.
-  **Without it**, `createIntent` mints an OFFLINE deterministic handle (`pi_<orderId>` plus a
-  fake client secret that no Stripe.js/Elements can ever pay) and the service logs a loud
-  boot warning (`STRIPE_WEBHOOK_SECRET is set but STRIPE_SECRET_KEY is NOT …`). That stays a
-  warning, never a boot failure: staging and e2e run offline on purpose. A live-intent
-  failure (Stripe down or rejecting) answers **502 `PAYMENT_INTENT_FAILED`**; the `pending`
-  order row is kept deliberately — retrying with the same `Idempotency-Key` re-issues the
-  *same* PaymentIntent, and `expire-orders` sweeps the order at the checkout TTL (releasing
-  stock and any coupon use) if it never gets paid.
+- **Stripe** — until the webhook signing secret is set, the settle route answers
+  `NOT_CONFIGURED`. **The Stripe secret key decides whether checkout can actually be paid.**
+  With it, `createIntent` performs a real `POST /v1/payment_intents` — the buyer gets a LIVE
+  client secret, `metadata[order_id]` carries the settlement key the webhook is matched on,
+  and the checkout `Idempotency-Key` travels as Stripe's native one — and refunds become
+  available. **Without it**, `createIntent` mints an OFFLINE deterministic handle
+  (`pi_<orderId>` plus a fake client secret that no Stripe.js/Elements can ever pay). That
+  stays a warning, never a boot failure: staging and e2e run offline on purpose. A
+  live-intent failure (Stripe down or rejecting) answers **502 `PAYMENT_INTENT_FAILED`**; the
+  `pending` order is kept deliberately — retrying with the same `Idempotency-Key` re-issues
+  the *same* PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL
+  (releasing stock and any coupon use) if it never gets paid.
 
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
@@ -371,84 +237,74 @@ placeholder-named Worker, not yours. In order of appearance in a deployment's li
 > MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
 > **three-decimal** ones (BHD, JOD, KWD, OMR, TND) it is the mirror error — so the live
 > `createIntent` **refuses them before any network call**, answering 502
-> `PAYMENT_INTENT_FAILED` (provider code `unsupported_currency` in the service log). Do not
-> price a catalog in those currencies against a secret-key-configured deployment; the
-> offline (no-secret-key) path is unaffected. Lifting this needs an exponent-aware money
-> boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
+> `PAYMENT_INTENT_FAILED` (provider code `unsupported_currency`). Do not price a catalog in
+> those currencies against a secret-key-configured deployment; the offline (no-secret-key)
+> path is unaffected. Lifting this needs an exponent-aware money boundary, not an adapter
+> tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
 > `packages/payments-stripe/src/index.ts`.
 
-> **x402 is fail-closed.** The only facilitator the service can currently wire is the
-> **offline TEST facilitator** — a shared-secret HMAC check, not real x402 verification:
-> any holder of `X402_FACILITATOR_SECRET` can forge a settling proof. Setting `X402_PAYTO`
-> + `X402_FACILITATOR_SECRET` without the explicit `X402_ALLOW_TEST_FACILITATOR=true`
-> opt-in **refuses to start** (a thrown error, never a silently-armed gateway), and the
-> opt-in path warns loudly at startup. **Never set `X402_ALLOW_TEST_FACILITATOR=true` in
-> production.** `X402_ACCEPTS` (optional, default `eip155:8453`) is the comma-separated
-> accepted-networks list. Fixed end-state: a real facilitator client behind the
-> `X402PaymentGateway` seam retires the opt-in gate and this box.
+> **x402 settles against a real facilitator over `ctx.http`.** The configured facilitator
+> credential goes **on the wire** as `Authorization: Bearer …` to the facilitator host, so
+> provision a credential that was minted to be sent. The facilitator host must be in the
+> plugin's `allowedHosts` — it is seeded at **build** time from the site's Astro config, not
+> from `kv`, so changing facilitators is a rebuild, not a settings edit. The pay-to address
+> and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
+> and live alongside it in Settings.
 
-- **Email** — with `EMAIL_API_URL` unset the service uses the console sender: emails are
-  **logged, not delivered** (visible in `wrangler tail` on Workers). Set `EMAIL_API_URL` +
-  `EMAIL_API_KEY` + `EMAIL_FROM` for a real HTTP email provider, and `STOREFRONT_BASE_URL`
-  so magic-link login emails carry a clickable URL (unset, they carry raw challenge
-  credentials only).
+- **Email** — with no email API URL configured the console sender is used: emails are
+  **logged, not delivered** (visible in `wrangler tail`). The API URL and From address are
+  build-time values (the URL also seeds `allowedHosts`); the API key is a Settings
+  credential. Set the storefront base URL so magic-link login emails carry a clickable URL
+  (unset, they carry raw challenge credentials only).
 
-## 5. Environment variable reference
+## 4. Egress and `allowedHosts`
 
-Node bin and Worker read the **same names by design** — on Workers, plain vars go in
-`vars`, secrets via `wrangler secret put`. "Entry" says who reads it.
+The plugin's only egress is `ctx.http.fetch`, gated by the descriptor's `allowedHosts`
+allowlist (capability `network:request`). That allowlist is resolved at **build** time
+(`packages/plugin/src/manifest.ts`, fed by `sites/staging/astro.config.ts`) and contains:
 
-| Variable | Entry | Default | What it does |
-|---|---|---|---|
-| `PG_CONNECTION_STRING` | Node only | — (boot throws) | Postgres DSN. Workers use the `HYPERDRIVE` binding instead — no DSN secret on Workers |
-| `PORT` | Node only | `3000` | listen port (no bind-address knob — issue #43, §2.0) |
-| `CART_HOLD_TTL_MS` | both | `900000` (15 min) | cart-hold **and** checkout TTL (one knob drives both); must parse as a positive number or boot/first-request fails |
-| `HOLD_SWEEP_INTERVAL_MS` | Node only | `60000` | self-interval hold-sweep cadence |
-| `EMAIL_DISPATCH_INTERVAL_MS` | Node only | `30000` | self-interval outbox-drain + challenge-prune cadence |
-| `INTERNAL_API_TOKEN` | service entries only | unset ⇒ operational surface 503s | §4 — the site Worker reads it nowhere |
-| `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision it to close the gate |
-| `STRIPE_WEBHOOK_SECRET` | both | unset ⇒ webhook 503, gateway unwired | §4 |
-| `STRIPE_SECRET_KEY` | both | unset ⇒ **offline, unpayable** intents + no refunds (boot warns) | §4 — set it to create real PaymentIntents |
-| `X402_PAYTO` | both | unset ⇒ x402 not configured | x402 pay-to address |
-| `X402_FACILITATOR_SECRET` | both | unset ⇒ x402 not configured | test-facilitator HMAC secret (§4) |
-| `X402_ACCEPTS` | both | `eip155:8453` | comma-separated x402 accepted networks |
-| `X402_ALLOW_TEST_FACILITATOR` | both | unset ⇒ x402 config **refuses to start** | must be `true` to arm the TEST facilitator — never in production (§4) |
-| `EMAIL_API_URL` | both | unset ⇒ console sender (log-only) | HTTP email API endpoint |
-| `EMAIL_API_KEY` | both | unset | email API key |
-| `EMAIL_FROM` | both | `no-reply@otta.local` | From address |
-| `STOREFRONT_BASE_URL` | both | unset ⇒ magic-link emails carry raw credentials, no URL | absolute base URL for login links |
-| `EMDASH_ENCRYPTION_KEY` | site, secret | — | §4 |
+| Host | When |
+|---|---|
+| `api.stripe.com` | always — the one constant entry |
+| the email API host | when an email API URL is configured |
+| the x402 facilitator host | when a facilitator URL is configured |
 
-## 6. Operations & scaling
+Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
+alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
+editing a text field should not be able to move it.
 
-**Cron cadences.** On Workers the service's `*/15` cron is the janitor for four jobs: the
-hold sweep (a bound on dead-hold lifetime — hold expiry is also lazy-on-read, so correctness
-never depends on the timer), **order expiry** (clock-driven, so this cron *is* its
-production driver on Workers), the order-email outbox drain, and the login-challenge prune.
-The Node bin runs the email/prune pair every 30s; at the Worker's 15-minute tick an
-order-status email can lag up to one tick — `POST /internal/dispatch-emails` is the
-on-demand lever. The cadence stays `*/15` so a serverless Postgres origin can autosuspend
-between ticks (§3.0). The **site's** cron is `* * * * *` — EmDash's scheduled publishing is
-minute-granular and the free-plan D1 limits are unaffected; it may be relaxed (e.g.
-`*/5 * * * *`) if cron noise ever matters more than publish latency.
+## 5. Operations & scaling
 
-**Scaling.** The app tier is stateless and scales horizontally: the Worker builds
-per-event `pg` pools (`max: 5` — Hyperdrive owns the real origin pool) and N Node replicas
-behind a load balancer work the same way; the sweeps are idempotent (guarded flips,
-atomic claims), so N replicas racing the same sweep never double-release or double-send;
-every command carries an idempotency key the store enforces once-only. The arbiter of all
-stock and money truth is the **single Postgres** — that is the scaling ceiling, and scaling
-reads/writes past it is a database decision, not an app-tier one.
+**Cron.** Two cadences, and they do different jobs. The **site's** Cron Trigger is
+`* * * * *` — that drives the host's cron *executor*, which claims due rows from its own
+task table. The **plugin** registers one task, `commerce-sweeps`, due every `*/15`; the
+executor fires the plugin's `cron` hook when it comes due. One task drives all nine sweep
+legs: they share a store composition and a clock, and splitting them would only put nine
+rows in contention on the same documents.
 
-## 7. Troubleshooting
+Every leg is **idempotent** and runs in its own try/catch with its own label, so a leg that
+throws cannot starve the eight beside it; a tick always returns a summary, and each leg logs
+one line on success and one `console.error` on failure (visible in `wrangler tail`). Per
+[ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md), these sweepers are not
+an optimization — a coupling that spans two aggregates is made idempotently completable
+rather than transactional, so **a missing sweeper is a correctness bug**. The site's cron
+may be relaxed (e.g. `*/5 * * * *`) if cron noise ever matters more than publish latency,
+but relaxing it past the task's own `*/15` delays every sweep.
+
+**Scaling.** Commerce truth is one document per aggregate in the site's D1 database, written
+by compare-and-set; every command carries an idempotency key the store enforces once-only,
+and the sweeps are idempotent, so concurrent isolates racing the same sweep never
+double-release or double-send. A hot aggregate therefore retries rather than blocking: the
+contention budget is a measured number recorded in ADR-0019, not a hope. The scaling ceiling
+is that single D1 database.
+
+## 6. Troubleshooting
 
 | Symptom | Cause → fix |
 |---|---|
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.4); turn `session` off |
-| The standalone service's `/internal/*`, `/admin/*`, `/reports/*`, `/settings` answer 503 — **reads too**, e.g. `GET /admin/tax/classes`, `GET /settings` | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4). Since ADR-0010 the admin **read** surface is gated too, so a deployment that never set this now 503s where it previously answered 200. Shape A only: the plugin's Shipping/Tax/Coupons/Settings screens read in-process and are never affected by this token |
+| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); turn `session` off |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
-| Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` |
-| `POST /webhooks/stripe` answers 503 | `STRIPE_WEBHOOK_SECRET` unset (§4) |
-| Node bin exits: `PG_CONNECTION_STRING is required` | Set the DSN (§2.2) |
-| Worker 500s: `Missing Hyperdrive connection string` | `hyperdrive` binding absent or misconfigured — check the binding name and id in the config you deployed with |
-| Service refuses to start: `x402 is configured … refusing to start` | Fail-closed x402 gate — remove the x402 vars or (non-production only) opt in (§4) |
+| `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
+| Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
+| Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and hit a storefront route once (§5) |
+| An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

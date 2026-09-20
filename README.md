@@ -75,32 +75,15 @@ One thing to know: this storefront covers **catalog + cart only** — see [Statu
 To deploy this for free on Cloudflare Workers, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3.
 
-## Why two parts
-
-**EmDash's plugin sandbox has no atomic write, compare-and-set, or transaction.** Plugins
-get no direct database access — everything crosses a capability-scoped RPC bridge as JSON
-copies — and `ctx.storage` is an unconditional upsert whose declared unique indexes are
-silently downgraded. Any read-then-write spans two bridge calls and can interleave, so the
-sandbox can't express a guarded update, a uniqueness constraint, or a multi-document
-commit. Those are the ordinary building blocks of an order pipeline, so for now the
-transactional database sits off to the side, in the commerce service.
-
-The gap is closing. [emdash-cms/emdash#2169](https://github.com/emdash-cms/emdash/pull/2169)
-(ours, currently a draft) adds `ctx.storage.<collection>.updateIf(id, { where, set?,
-delta? })` — a guarded `UPDATE … RETURNING` run inside the sandbox. Two sibling primitives,
-not yet proposed upstream, cover the rest: an atomic `insert` that classifies unique
-violations, and `ctx.storage.batch([...])` for all-or-nothing multi-collection writes.
-With all three, a `@otta-sh/store-emdash` adapter already passes the domain's full
-`InventoryStore` contract in-process. Once orders, payments, webhooks, and reporting
-follow, the split becomes a deployment choice rather than a correctness requirement.
-
 ## Architecture (summary)
 
 - **Product model = hybrid.** Content (title, description, images, SEO, taxonomies)
   lives in a native EmDash `products` collection; commercial data (price, SKU, stock,
   tax, shipping) lives in the commerce service. Link key = the CMS content `id`.
-- **Separate databases.** Commerce Postgres is independent of the EmDash content DB
-  (independent scaling; no cross-DB joins — joined in app code at render time).
+- **One database.** Commerce truth and CMS content share the site's single D1 database:
+  content lives in the CMS's own tables, commerce lives in the host's per-plugin document
+  store (`ctx.storage`), namespaced by plugin id and collection. They are not joined in
+  SQL — the hybrid product model is joined in app code at render time.
 - **Ports and adapters.** `@otta-sh/domain` is pure (no IO); every store is a Kysely
   adapter dialect-parameterized over better-sqlite3 (dev) and Postgres (CI/prod). The
   REST API in `@otta-sh/service` mirrors the domain ports 1:1, and the same client-side
