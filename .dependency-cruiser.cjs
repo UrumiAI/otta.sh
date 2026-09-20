@@ -6,6 +6,8 @@ module.exports = {
 	forbidden: [
 		{
 			name: "domain-is-io-free",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment below and in the last clause of `to.path`. Tracked separately.
 			comment:
 				"@otta-sh/domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
 				"and no dependency on adapter/service/plugin packages (DEVELOPMENT.md §3).",
@@ -210,6 +212,8 @@ module.exports = {
 				"the plugin rule's comment sets out. Every case this rule and " +
 				"the plugin rule turn on are executed in " +
 				"packages/plugin/test/depcruise-boundary.test.ts.",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment above and in three clauses of `to.path`. Tracked separately.
 			severity: "error",
 			from: { path: "^packages/store-emdash/src" },
 			to: {
