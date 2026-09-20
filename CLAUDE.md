@@ -6,9 +6,10 @@ Operational guide for Claude working in this repo. The **why** lives in
 conventions, and the guardrails that must not be crossed.
 
 > **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
-> `@otta-sh/domain`, `@otta-sh/service`, the storefront/admin adapters, and the EmDash plugin
-> all exist under `packages/`. Treat the commands below as live, not aspirational; if one
-> genuinely doesn't exist, say so rather than inventing output.
+> `@otta-sh/domain`, the EmDash plugin (which now carries the commerce service in-process),
+> `@otta-sh/store-emdash`, the payment adapters and the React admin all exist under
+> `packages/`. Treat the commands below as live, not aspirational; if one genuinely doesn't
+> exist, say so rather than inventing output.
 
 ---
 
@@ -72,8 +73,7 @@ changed. Migrations are forward-only.
   | Area changed | Tag |
   |---|---|
   | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
-  | `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
-  | Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
+  | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
