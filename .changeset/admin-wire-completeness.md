@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -9,7 +7,7 @@ Close the three recorded gaps where the admin wire knew something the console
 could not say (INC-23). One theme — the wire stops lying by omission — across a
 refunded amount that existed nowhere, a stock count the detail collapsed, and a
 set size the lists never sent. Three required port members, one required wire
-field and one widened wire type, hence `minor` on all four published packages.
+field and one widened wire type, hence `minor` on both published packages.
 
 - `@otta-sh/domain`: `PeriodBucket` gains a required `refundedCents: Cents`
   beside `revenueCents` — money returned on the orders in that bucket, per

@@ -1,6 +1,5 @@
 ---
 "@otta-sh/plugin": patch
-"@otta-sh/service": patch
 ---
 
 Thread `productId` through the storefront add-to-cart path so a storefront cart

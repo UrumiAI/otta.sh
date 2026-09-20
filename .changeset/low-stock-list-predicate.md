@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
 ---
 
 Add a low-stock filter to the admin Products list port, so the "Low stock only"

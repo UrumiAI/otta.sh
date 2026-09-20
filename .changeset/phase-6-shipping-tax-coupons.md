@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 ---
 
 Phase 6 — shipping / tax / coupons. Replaces the Phase-4 checkout-totals stub

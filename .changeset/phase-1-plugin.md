@@ -1,6 +1,5 @@
 ---
 "@otta-sh/plugin": minor
-"@otta-sh/service": minor
 ---
 
 Phase 1 — `@otta-sh/plugin`, the first Otta EmDash plugin package: sandbox-clean

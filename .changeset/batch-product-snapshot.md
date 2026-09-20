@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": patch
 ---
 
 Removes the per-cart-line N+1 product-snapshot read in both checkout paths by adding a single bulk store method and rewiring both callers to fetch once. Snapshot semantics are unchanged: an order line still snapshots price + title at purchase time, and every per-line null / price / currency / kind check is byte-for-byte identical.

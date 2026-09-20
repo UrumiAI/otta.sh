@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 ---
 
 Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3).

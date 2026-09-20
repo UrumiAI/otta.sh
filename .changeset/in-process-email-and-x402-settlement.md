@@ -2,7 +2,6 @@
 "@otta-sh/domain": minor
 "@otta-sh/payments-x402": minor
 "@otta-sh/plugin": minor
-"@otta-sh/service": patch
 ---
 
 Dispatch order emails and settle x402 payments from inside the plugin, over

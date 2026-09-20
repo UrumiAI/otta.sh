@@ -1,8 +1,6 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
-"@otta-sh/store-postgres": patch
 ---
 
 **Breaking:** a product's title is now edited only in the CMS.

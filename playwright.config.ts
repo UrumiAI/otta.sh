@@ -19,31 +19,33 @@
  * `OTTA_E2E_START_STACK=1` has Playwright boot DIRECTOR-SPEC §0.2's stack.
  */
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
-import {
-	E2E_BASE_URL,
-	E2E_PG_CONNECTION_STRING,
-	E2E_SERVICE_URL,
-	E2E_STARTS_STACK,
-	E2E_VIEWPORT,
-} from "./sites/staging/e2e/harness.js";
+import { E2E_BASE_URL, E2E_STARTS_STACK, E2E_VIEWPORT } from "./sites/staging/e2e/harness.js";
 
 /** Playwright does not export `TestConfigWebServer`, so it is reached through
- *  the config type. Without the annotation the two entries below infer a UNION
- *  whose `env` members carry `?: undefined` optionals, which the index
- *  signature `{ [k: string]: string }` rejects — a real TS2769 that went
- *  unnoticed because nothing type-checked this file. */
+ *  the config type. The annotation dates from when `stack` held two entries and
+ *  inferred a UNION whose `env` members carried `?: undefined` optionals, which
+ *  the index signature `{ [k: string]: string }` rejects — a real TS2769 that
+ *  went unnoticed because nothing type-checked this file. It is kept now that
+ *  INC-D3b left one entry: it costs nothing and restores the same guard the
+ *  moment a second process is ever added back. */
 type WebServer = Extract<
 	NonNullable<PlaywrightTestConfig["webServer"]>,
 	readonly unknown[]
 >[number];
 
 /**
- * DIRECTOR-SPEC §0.2, step 1 + step 2 — opt-in, because booting a
- * database-backed service is not something a bare `pnpm test:e2e` should do.
- * The database is the LOCAL test Postgres on **55432**. Port 5432 is an SSH
- * tunnel to PRODUCTION (§0.3) and must appear nowhere in this repo's e2e
- * surface; `harness.spec.ts` enforces that across every e2e file plus this one,
- * and `assertLoopbackUrl` re-checks the resolved values at module load.
+ * DIRECTOR-SPEC §0.2 — opt-in, because booting a dev server is not something a
+ * bare `pnpm test:e2e` should do.
+ *
+ * ONE ENTRY, not two. Until INC-D3b this array booted a standalone commerce
+ * service (`packages/service/src/index.ts`) against the local test Postgres and
+ * waited on its `/health`, then the site beside it. INC-D3a folded commerce
+ * into the plugin and INC-D3b deleted the service package, so there is a single
+ * process to start and no commerce address, port or `INTERNAL_API_TOKEN` to
+ * hand it. The §0.3 port rule is unchanged and is still enforced where it
+ * always was — `assertLoopbackUrl` re-checks every resolved endpoint at harness
+ * module load, and `harness.spec.ts` greps this file and the harness for a bare
+ * 5432 (the SSH tunnel to PRODUCTION) on every run.
  *
  * `reuseExistingServer` is OFF under CI and on locally. Adopting whatever holds
  * the port is convenient at a desk and wrong in an automated run: a sibling
@@ -52,17 +54,6 @@ type WebServer = Extract<
  * this worktree, so a local reuse cannot silently grade the wrong tree either.
  */
 const stack: WebServer[] = [
-	{
-		command: "pnpm dlx tsx@4 packages/service/src/index.ts",
-		url: `${E2E_SERVICE_URL}/health`,
-		reuseExistingServer: process.env["CI"] === undefined,
-		timeout: 120_000,
-		env: {
-			PORT: new URL(E2E_SERVICE_URL).port,
-			PG_CONNECTION_STRING: E2E_PG_CONNECTION_STRING,
-			INTERNAL_API_TOKEN: process.env["INTERNAL_API_TOKEN"] ?? "local-e2e-token",
-		},
-	},
 	{
 		// The site needs NO commerce address: INC-D3a folded the service into the
 		// plugin, so this dev server runs commerce in-process against its own

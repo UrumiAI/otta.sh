@@ -3,7 +3,6 @@
 "@otta-sh/admin-react": minor
 "@otta-sh/domain": minor
 "@otta-sh/plugin": patch
-"@otta-sh/service": patch
 ---
 
 Wire the Pricing & inventory screen's "Low stock only" filter to the server-side
@@ -12,7 +11,7 @@ before. The filter now applies to the whole catalogue rather than the rows on
 one fetched page, and pagination works correctly across a filtered scan.
 
 The two presentation packages take the larger bump: they LOSE exported surface,
-while the plugin and the service only gain an optional field.
+while the plugin only gains an optional field.
 
 - `@otta-sh/plugin`: `ProductsListFilter` gains an optional `lowStockThreshold`
   field, carried on the admin Products list request once the console has

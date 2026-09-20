@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": patch
-"@otta-sh/service": patch
 "@otta-sh/plugin": patch
 ---
 

@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
 ---
 
 Batch the per-line checkout ADOPT and settle COMMIT into single guarded UPDATE

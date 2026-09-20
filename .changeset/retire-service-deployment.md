@@ -1,6 +1,5 @@
 ---
 "@otta-sh/plugin": minor
-"@otta-sh/service": patch
 ---
 
 Retire the commerce-service deployment and the two-mode plumbing.

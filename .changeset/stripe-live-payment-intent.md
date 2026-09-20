@@ -1,7 +1,6 @@
 ---
 "@otta-sh/domain": minor
 "@otta-sh/payments-stripe": minor
-"@otta-sh/service": minor
 ---
 
 Live Stripe `paymentIntents.create` in `StripePaymentGateway.createIntent` when a

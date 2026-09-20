@@ -1,8 +1,6 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
-"@otta-sh/store-postgres": patch
 ---
 
 Carry stock on the admin Products list projection, and the product title on the
@@ -13,8 +11,7 @@ learn whether anything was in stock; the low-stock report listed bare SKUs.
 `ProductSummary` (and the `GET /admin/products` wire) gains `onHand: number |
 null`, and `LowStockRow` (and `GET /reports/low-stock`) gains `title: string |
 null`. Both are REQUIRED fields on exported interfaces, hence `minor` for the
-packages that export them; `store-postgres` changes adapter behaviour only and
-stays `patch` — the same split as `title-single-writer`.
+packages that export them.
 
 **`null` is not `0`.** `onHand: null` means there is no `inventory` record for
 the sku — "unknown" — while `0` means a known sku that is out of stock. Nothing

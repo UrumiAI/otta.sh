@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
 ---
 
 Fix: renaming a product's SKU silently abandoned its stock.

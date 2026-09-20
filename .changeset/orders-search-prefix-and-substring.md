@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": patch
 ---
 
 Orders search stops being exact-match only. `OrderListFilter.search` now matches an order-id
@@ -9,10 +7,6 @@ PREFIX or a `buyer_ref` SUBSTRING, ORed, with `lower()` on both sides of both ha
 exact lookup that worked before still RETURNS the same row — a whole id is its own prefix, a
 whole address its own substring — but it no longer runs the same PLAN: the old exact pair was
 served by an index and the new predicate scans (see below). Results preserved, cost changed.
-
-`@otta-sh/service` is bumped because its `GET /admin/orders` answers differently for the same
-query, though no service source changed — only its test coverage. `@otta-sh/plugin` is NOT
-bumped: it forwards `search` verbatim and has no code, wire or copy change here.
 
 - **A prefix, because a prefix is all the operator can see.** The console never renders a full
   uuid — it renders the shortest unique prefix (the git-style short id). Pasting the characters

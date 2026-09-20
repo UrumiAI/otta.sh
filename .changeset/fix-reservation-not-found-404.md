@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
-"@otta-sh/service": minor
 ---
 
 Typed 404 for `POST /inventory/commit` and `POST /inventory/release` against an

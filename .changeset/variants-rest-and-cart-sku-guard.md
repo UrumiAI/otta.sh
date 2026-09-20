@@ -1,5 +1,4 @@
 ---
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
