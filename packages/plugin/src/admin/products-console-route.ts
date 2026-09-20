@@ -53,7 +53,7 @@ import {
 	type ProductsListResult,
 	type ProductSummaryWire,
 	type TaxClassWire,
-} from "./admin-products-client.js";
+} from "./admin-products-surface.js";
 import {
 	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	PRODUCTS_UNAVAILABLE_TITLE,
@@ -83,7 +83,7 @@ import {
 	toClientFilter,
 } from "./products-read.js";
 import { makeAdminClients } from "./make-admin-clients.js";
-import type { ReportingSettingsSurface } from "./reporting-client.js";
+import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 import { readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
@@ -153,8 +153,8 @@ export interface ProductsConsoleListPayload {
 	/**
 	 * THE PAGE THE REQUEST ASKED FOR WAS REFUSED, and these are the first page's
 	 * rows instead — the cursor disagreed with the filters beside it, or would not
-	 * decode, and `AdminProductsClient` performed the service's own prescribed
-	 * remedy (drop the token, re-issue page one) before this route saw a result.
+	 * decode, and `listProducts` performed the prescribed remedy (drop the token,
+	 * re-issue page one) before this route saw a result.
 	 * On the SUCCESS payload because the request was answered; forwarded because
 	 * an address naming that page must be corrected and the merchant is owed a
 	 * sentence. Same contract as the Orders route's.

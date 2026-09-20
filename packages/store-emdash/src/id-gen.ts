@@ -6,11 +6,10 @@ import type { IdGen } from "@otta-sh/domain";
  * sandbox, where a `node:` import is a runtime failure the type system would not
  * have caught.
  *
- * This duplicates `@otta-sh/store-postgres`'s `uuidIdGen` on purpose. Importing
- * it instead is forbidden by `store-emdash-is-sandbox-clean`, and rightly: that
- * package's entry pulls a Kysely/pg graph into a module that ships inside the
- * isolate. The duplication is also temporary in one direction — the
- * store-postgres copy goes when that package does, and this one is what remains.
+ * This duplicated `@otta-sh/store-postgres`'s `uuidIdGen` on purpose. Importing
+ * it instead was forbidden by `store-emdash-is-sandbox-clean`, and rightly: that
+ * package's entry pulled a Kysely/pg graph into a module that ships inside the
+ * isolate. `@otta-sh/store-postgres` is gone now; this is what remains.
  */
 export const uuidIdGen: IdGen = {
 	newId(): string {

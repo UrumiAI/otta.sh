@@ -31,7 +31,7 @@ import type {
 	RevenueBucketWire,
 	StatusCountWire,
 	TopProductWire,
-} from "./reporting-client.js";
+} from "./reporting-settings-surface.js";
 
 /** The admin Reports page's `admin.pages` manifest entry (§4.1). The page
  *  renders numbers and tables, NOT a chart.

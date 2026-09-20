@@ -8,7 +8,8 @@ import {
 
 // The order-fulfillment spec (admin-UX Increment 1) run against the in-memory
 // fake first. The pg/sqlite dialect runs — incl. the concurrent record + the
-// record-vs-cancel race — live in @otta-sh/store-postgres.
+// record-vs-cancel race — now live in store-emdash's
+// order-fulfillment-contract.dialects.test.ts; @otta-sh/store-postgres is gone.
 
 orderFulfillmentContract(
 	async () => {

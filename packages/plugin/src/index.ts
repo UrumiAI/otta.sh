@@ -28,11 +28,10 @@ export {
 	type SettingsFormInput,
 } from "./admin/settings-form.js";
 export {
-	ReportingSettingsClient,
 	type LowStockWire,
 	type OperationalSettingsWire,
-	// The TIER-AGNOSTIC surface the Reports page, the Settings form and the
-	// Products console now hold (work order 02, INC-B10c-ii). Exported from the
+	// The surface the Reports page, the Settings form and the Products console
+	// hold (work order 02, INC-B10c-ii). Exported from the
 	// entry point because a parameter type a consumer cannot name is not a usable
 	// signature.
 	type ReportingSettingsSurface,
@@ -43,7 +42,7 @@ export {
 	// before falling back to the HTTP tier's legacy `status`.
 	type UpdateSettingsFailureReason,
 	type UpdateSettingsResult,
-} from "./admin/reporting-client.js";
+} from "./admin/reporting-settings-surface.js";
 // The Orders WRITE path (INC-R2, ADR-0015). It replaces the Block Kit Orders
 // page handler this barrel used to export alongside `ORDERS_PAGE`: that screen
 // was retired once the React console's writes moved off it, so `/orders` is
@@ -59,7 +58,6 @@ export {
 	type OrdersActionResult,
 } from "./admin/orders-actions.js";
 export {
-	AdminOrdersClient,
 	type OrderDetailResult,
 	type OrderDetailWire,
 	type OrderLineWire,
@@ -68,7 +66,7 @@ export {
 	type OrderSummaryWire,
 	type OrderTotalsWire,
 	type TransitionOrderResult,
-} from "./admin/admin-orders-client.js";
+} from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
 // export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
 // React console's writes moved off it, so `/products` is served by the
@@ -98,8 +96,7 @@ export {
 export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
 export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
-	AdminProductsClient,
-	// The TIER-AGNOSTIC surface, and the type `dispatchProductsAction`'s third
+	// The surface, and the type `dispatchProductsAction`'s third
 	// parameter now has (work order 02, INC-B10b-i). Exported from the entry point
 	// because a parameter type a consumer cannot name is not a usable signature.
 	type AdminProductsSurface,
@@ -107,7 +104,7 @@ export {
 	type ProductsListFilter,
 	type ProductsListResult,
 	type ProductSummaryWire,
-} from "./admin/admin-products-client.js";
+} from "./admin/admin-products-surface.js";
 export {
 	createTaxPageHandler,
 	TAX_ACTION_IDS,
@@ -132,9 +129,7 @@ export {
 } from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
 export {
-	AdminRulesClient,
-	type AdminRulesClientOptions,
-	// The TIER-AGNOSTIC surface the three rules console pages now hold (work
+	// The surface the three rules console pages hold (work
 	// order 02, INC-B10c-i). Exported from the entry point because a parameter
 	// type a consumer cannot name is not a usable signature.
 	type AdminRulesSurface,
@@ -159,7 +154,7 @@ export {
 	type TaxRateEdit,
 	type TaxRateInput,
 	type TaxRateWire,
-} from "./admin/admin-rules-client.js";
+} from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
 	IN_PROCESS_EGRESS_URLS,
@@ -283,7 +278,6 @@ export {
 	type ProductCommerceBatchItem,
 	type UpsertProductCommerceInput,
 } from "./product-commerce/commerce-client.js";
-export { HttpCommerceClient } from "./product-commerce/http-commerce-client.js";
 // ── Phase 2: catalog display (plan §7 steps 4–10, route shape per ADR-0003) ──
 export {
 	CommerceBatchLoader,

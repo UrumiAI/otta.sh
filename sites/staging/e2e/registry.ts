@@ -11,8 +11,9 @@
  * That was wrong in two ways at once, both of which this split fixes:
  *
  *  1. **`harness.ts` runs side effects at import.** It resolves and
- *     loopback-guards `OTTA_E2E_BASE_URL`, `OTTA_E2E_SERVICE_URL` and
- *     `PG_CONNECTION_STRING` at module load — deliberately, because an
+ *     loopback-guards `OTTA_E2E_BASE_URL` and `PG_CONNECTION_STRING` at module
+ *     load (and, until INC-D3b deleted the service package, a commerce service
+ *     URL beside them) — deliberately, because an
  *     inherited export must not aim an e2e run at production. The service URL
  *     was then read from `COMMERCE_SERVICE_URL`, which was ALSO the staging
  *     site's ordinary build-time variable, so

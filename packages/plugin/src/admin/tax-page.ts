@@ -21,7 +21,7 @@ import {
 	type TaxClassDeleteResult,
 	type TaxClassWire,
 	type TaxRateWire,
-} from "./admin-rules-client.js";
+} from "./admin-rules-surface.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,

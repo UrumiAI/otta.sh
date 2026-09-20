@@ -23,7 +23,7 @@ import {
 	type RulesCreateResult,
 	type RulesDeleteResult,
 	type RulesUpdateResult,
-} from "./admin-rules-client.js";
+} from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
@@ -89,10 +89,9 @@ import {
  * needs last, below the picker, rendered as a link the eye reads as another
  * row affordance. Nothing about what a create SUBMITS changed.
  *
- * THE F-5a TRAP THIS SCREEN IS BUILT TO AVOID. `updateCoupon` sends a PUT
- * (`admin-rules-client.ts:493-496`) and the service coerces every omitted key
- * to `null` unconditionally (`rules-admin.ts:434-443`) — there is no partial
- * update on the wire. So the edit form is NEVER split into sibling forms
+ * THE F-5a TRAP THIS SCREEN IS BUILT TO AVOID. `updateCoupon` is a FULL
+ * REPLACE: every omitted key is coerced to `null` unconditionally, so there is
+ * no partial update. So the edit form is NEVER split into sibling forms
  * (F-5a forbids it here: splitting would let an operator saving a "Discount"
  * form silently wipe `startsAt`/`expiresAt`/`maxUses`/`maxUsesPerCustomer`).
  * It stays ONE form, kept inside budget by `condition`-gating the type-

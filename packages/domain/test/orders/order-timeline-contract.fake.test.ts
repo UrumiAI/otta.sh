@@ -7,9 +7,10 @@ import {
 } from "@otta-sh/domain/testing";
 
 // The order timeline / audit spec (admin-UX Increment 1, timeline slice) run
-// against the in-memory fake first. The pg/sqlite dialect runs — incl. the
-// Postgres-required exactly-one-event-under-race cases — live in
-// @otta-sh/store-postgres.
+// against the in-memory fake first. The pg/sqlite dialect runs now live in
+// store-emdash's order-timeline-contract.dialects.test.ts — @otta-sh/store-postgres
+// is gone, and its Postgres-required exactly-one-event-under-race cases have
+// not been re-created there yet.
 
 orderTimelineContract(
 	async () => {

@@ -19,14 +19,14 @@
  */
 
 import type { PluginContext } from "../types.js";
-import type { AdminOrdersSurface } from "./admin-orders-client.js";
-import type { AdminProductsSurface } from "./admin-products-client.js";
-import type { AdminRulesSurface } from "./admin-rules-client.js";
+import type { AdminOrdersSurface } from "./admin-orders-surface.js";
+import type { AdminProductsSurface } from "./admin-products-surface.js";
+import type { AdminRulesSurface } from "./admin-rules-surface.js";
 import { InProcessAdminOrdersClient } from "./in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "./in-process-admin-products-client.js";
 import { InProcessAdminRulesClient } from "./in-process-admin-rules-client.js";
 import { InProcessReportingSettingsClient } from "./in-process-reporting-settings-client.js";
-import type { ReportingSettingsSurface } from "./reporting-client.js";
+import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 
 /**
  * The admin surfaces a console route may ask for.

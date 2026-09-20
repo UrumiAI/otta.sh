@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { RevenueBucketWire } from "../src/admin/reporting-client.js";
+import type { RevenueBucketWire } from "../src/admin/reporting-settings-surface.js";
 import { buildReportsBlocks } from "../src/admin/reports-page.js";
 import { findBlocks, type LooseBlock } from "./helpers/blocks.js";
 

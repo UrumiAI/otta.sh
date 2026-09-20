@@ -32,9 +32,8 @@ egress (ADR-0018).
   not make a consumer resolve a package this one does not depend on. The mirror is
   drift-checked at the composition root (both directions), the published types name no
   host package, and a test asserts that of every emitted declaration. Optional because
-  the HTTP transport never reads it and the unit suites that hand-build a context have
-  none to offer; the in-process composition demands it by name and fails loudly without
-  it. No new capability: the host builds the store on an always-available path and
+  the unit suites that hand-build a context have none to offer; the in-process composition
+  demands it by name and fails loudly without it. No new capability: the host builds the store on an always-available path and
   there is no capability string for it. Declaration emit for the package now runs in
   TypeScript project mode, which is what a value-level import of a workspace source
   package requires.
@@ -49,8 +48,7 @@ egress (ADR-0018).
 - The packaging guard builds what the package's own build builds, declarations
   included — it had been skipping them, which is why it stayed green against a build
   that could not run at all.
-- The client contract's storefront slice now runs on BOTH transports from the same
-  cases — the in-process tier over a real per-collection repository on SQLite, the
-  HTTP tier over a live service — and the workerd suites carry a real
+- The client contract's storefront slice now runs against the in-process tier over a
+  real per-collection repository on SQLite, and the workerd suites carry a real
   `ctx.storage`, with a new suite driving a commerce write, read and join read
   from inside the isolate.

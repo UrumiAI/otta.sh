@@ -2,22 +2,22 @@
  * `commerceClientContract` — the transport-agnostic client contract (work order
  * 02, INC-A7 / D6 / D7 tier T5).
  *
- * WHAT THIS IS. The behavioural spec of the commerce client surface, lifted out
- * of the HTTP client's own test files so it can be run against a SECOND
- * transport. Every case here is shaped as *arrange backend state* → *call a
- * client method* → *assert the returned value or the typed rejection*. Nothing
- * in this file knows how the call travels: no URLs, no headers, no status codes,
- * no request recording. Those assertions are real and they are kept — they live
- * in the HTTP tier's own file, which is the transport's file and dies with the
- * transport.
+ * WHAT THIS IS. The behavioural spec of the commerce client surface. Every case
+ * here is shaped as *arrange backend state* → *call a client method* → *assert
+ * the returned value or the typed rejection*. Nothing in this file knows how the
+ * call travels: no URLs, no headers, no status codes, no request recording.
  *
- * WHY IT EXISTS. The HTTP client's test body *is* the spec (D6, "Why keep a flag
- * at all"). INC-B10a/b/c build an in-process client and must prove it
- * behaviourally identical before INC-D3b deletes the HTTP one. A spec that only
- * one transport can execute cannot do that. So the spec moves here and the
- * implementation-specific residue stays behind.
+ * WHY IT EXISTS, AND WHY IT OUTLIVED ITS OCCASION. It was lifted out of the HTTP
+ * client's own test files so the in-process client could be proved behaviourally
+ * identical BEFORE the HTTP one was deleted — a spec only one transport can
+ * execute cannot do that. INC-D3b has now deleted the HTTP tier, so the
+ * in-process tier is the only one left and
+ * `commerce-client-contract.in-process.test.ts` is the only file that runs this.
+ * The spec stays separate from that runner anyway: it is the port's behavioural
+ * contract, and keeping it free of any one implementation's construction detail
+ * is what would let a second implementation be held to it again.
  *
- * THREE SLICES, one per consuming increment:
+ * THREE SLICES, one per increment that consumed it:
  *   - `storefrontCommerceClientContract`       → INC-B10a (`CommerceClient`)
  *   - `adminOrdersProductsClientContract`      → INC-B10b (orders + products)
  *   - `adminRulesReportingClientContract`      → INC-B10c (rules + reporting)
@@ -36,26 +36,27 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { AdminOrdersClient } from "../../src/admin/admin-orders-client.js";
-import type { AdminProductsClient } from "../../src/admin/admin-products-client.js";
-import type { AdminRulesClient } from "../../src/admin/admin-rules-client.js";
-import type { ReportingSettingsClient } from "../../src/admin/reporting-client.js";
+import type { AdminOrdersSurface } from "../../src/admin/admin-orders-surface.js";
+import type { AdminProductsSurface } from "../../src/admin/admin-products-surface.js";
+import type { AdminRulesSurface } from "../../src/admin/admin-rules-surface.js";
+import type { ReportingSettingsSurface } from "../../src/admin/reporting-settings-surface.js";
 import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/commerce-client.js";
 
 // ── The tier interface ────────────────────────────────────────────────────
 //
-// A "tier" is one transport plus the means to seed state behind it. The four
-// admin surfaces are named by `Pick<…>` of the classes that implement them
-// TODAY purely to borrow their method signatures — this file never constructs
-// one, and at INC-D3b the `Pick` targets swap to the in-process classes while
-// every case below stays put.
+// A "tier" is one implementation plus the means to seed state behind it. The
+// four admin surfaces are named by `Pick<…>` of the PORTS in `src/admin/*-
+// surface.ts` purely to borrow their method signatures — this file never
+// constructs one. Restating each method here rather than aliasing the port whole
+// is what keeps the cases below and the port from drifting apart silently: a
+// method added to a port is not exercised until it is named here too.
 
-/** The admin orders surface the contract exercises — the class's WHOLE public
- *  surface, named method by method, for the same reason products is: INC-B10b-ii
- *  folds all twelve in-process, and a surface that listed fewer would let one be
+/** The admin orders surface the contract exercises — the port's WHOLE surface,
+ *  named method by method, for the same reason products is: all twelve are
+ *  implemented in-process, and a surface that listed fewer would let one be
  *  forgotten silently. */
 export type OrdersClientSurface = Pick<
-	AdminOrdersClient,
+	AdminOrdersSurface,
 	| "listOrders"
 	| "getOrder"
 	| "transitionOrder"
@@ -69,19 +70,19 @@ export type OrdersClientSurface = Pick<
 	| "listNotes"
 	| "addNote"
 >;
-/** The admin products surface the contract exercises — the class's WHOLE public
- *  surface, named method by method, because INC-B10b-i folds all six in-process
+/** The admin products surface the contract exercises — the port's WHOLE
+ *  surface, named method by method, because all six are implemented in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
 export type ProductsClientSurface = Pick<
-	AdminProductsClient,
+	AdminProductsSurface,
 	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
 >;
 /** The rules surface the contract exercises (shipping, tax, coupons) — the
- *  class's WHOLE public surface, all twenty-five methods named one by one,
- *  because INC-B10c-i folds all twenty-five in-process and a surface that listed
- *  fewer would let one be forgotten silently. */
+ *  port's WHOLE surface, all twenty-five methods named one by one, because all
+ *  twenty-five are implemented in-process and a surface that listed fewer would
+ *  let one be forgotten silently. */
 export type RulesClientSurface = Pick<
-	AdminRulesClient,
+	AdminRulesSurface,
 	| "listZones"
 	| "createZone"
 	| "updateZone"
@@ -112,12 +113,13 @@ export type RulesClientSurface = Pick<
  * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
  *
  * EVERY METHOD IS LISTED, for the same reason `RulesClientSurface` lists all
- * twenty-five: adding a method to `ReportingSettingsClient` without deciding what
- * the in-process tier does about it has to be a COMPILE error here, not a gap
- * discovered when a console screen is bound to a tier that cannot serve it.
+ * twenty-five: adding a method to `ReportingSettingsSurface` without deciding
+ * what the implementation does about it has to be a COMPILE error here, not a
+ * gap discovered when a console screen is bound to a client that cannot serve
+ * it.
  */
 export type ReportingClientSurface = Pick<
-	ReportingSettingsClient,
+	ReportingSettingsSurface,
 	| "getRevenue"
 	| "getOrdersByStatus"
 	| "getTopProducts"
@@ -300,7 +302,13 @@ export interface CommerceClientTier {
 	 *  subject is an elapsed deadline skip, saying so in their own names. */
 	readonly clock?: CommerceClientTierClock;
 	/** OPTIONAL: see {@link CommerceClientTierPayments}. Absent ⇒ the cases whose
-	 *  subject is a minted order skip, saying so in their own names. */
+	 *  subject is a minted order skip, saying so in their own names. NO TIER
+	 *  DECLARES IT since the HTTP tier was deleted, so those three cases (the
+	 *  checkout replay, the lapsed-hold checkout, the refund ceiling) now skip
+	 *  everywhere: a composition-layer gap, not an unguarded invariant — each is
+	 *  covered at the domain layer, in `orders/create-order-from-cart.test.ts` and
+	 *  `refund-order-contract.ts`. They start running again the day the payment
+	 *  adapters move in-process, with no edit to any case. */
 	readonly payments?: CommerceClientTierPayments;
 	arrange: CommerceClientTierArrange;
 }
@@ -1011,11 +1019,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		// TWO CASES ARE GATED, in opposite directions, and each names its reason
 		// in its own title so a test report says why rather than a comment:
 		//  - the elapsed-deadline case needs `tier.clock`, which a shared,
-		//    long-lived backend cannot offer;
+		//    long-lived backend could not offer;
 		//  - the minted-order case needs `tier.payments`, which the transport
 		//    that has not yet received the payment adapters cannot offer.
 		// Neither is a weakened case. Each runs in full where it can run at all,
-		// and starts running on the other tier the day that tier grows the hook.
+		// and starts running the day the surviving tier grows the hook it lacks.
 
 		// ── identity: the session is the only credential ───────────────────
 		//
@@ -1790,10 +1798,10 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 
 /**
  * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
- * test file in `packages/plugin/test/` ever exercised `AdminOrdersClient` or
- * `AdminProductsClient`. There was nothing to move, so the cases below are
- * written against the tier interface from the start and run on both transports
- * for free.
+ * test file in `packages/plugin/test/` ever exercised the old HTTP admin orders
+ * or products client. There was nothing to move, so the cases below were written
+ * against the tier interface from the start — which is why they cost nothing
+ * when the HTTP tier was deleted.
  *
  * PRODUCTS IS COVERED (INC-B10b-i) — all six methods: `listProducts`,
  * `getProduct`, `updateProduct`, `restock`, `removeStock`, `getTaxClasses`.
@@ -1869,10 +1877,11 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		 *  that has no orders surface fails by name here rather than running the
 		 *  twelve methods' cases against a stub that would agree with anything. */
 		let orders: OrdersClientSurface;
-		/** THE STOREFRONT CLIENT, for the two states the admin surface can read but
-		 *  cannot produce: a soft-deleted row (`softDeleteProductCommerce`) and a sku
-		 *  under a live cart hold (`addCartLine`). Both are admin-facing outcomes
-		 *  reached only through a shopper-facing write, and both tiers have it. */
+		/** THE STOREFRONT CLIENT, for the states one surface can reach and the other
+		 *  cannot: a soft-deleted row (`softDeleteProductCommerce`) and a sku under a
+		 *  live cart hold (`addCartLine`) are admin-facing outcomes reached only
+		 *  through a shopper-facing write; and `getPublicOrder` is the guest read of
+		 *  an order only the console can have fulfilled or cancelled. */
 		let storefront: CommerceClient;
 
 		const makeAdminClients = assertAdminClients(tier);
@@ -2268,6 +2277,105 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					{ idempotencyKey: "adm-o-cancel-4" },
 				),
 			).toMatchObject({ ok: false, status: 400 });
+		});
+
+		// ── the guest's read of an order the console has acted on ─────────
+		//
+		// THE STAFF SIDE OF THE PUBLIC WHITELIST. The storefront slice pins the
+		// TOP-LEVEL redaction on a pending order (`getPublicOrder` omits
+		// `buyerRef`/`customerId`/`shippingAddress`); what it cannot reach is the
+		// two sub-objects only an admin write can create. Both are TRIMMED, not
+		// passed through: a guest reading their own order may see where the parcel
+		// is and why it was cancelled, never who in the shop touched it, when they
+		// did, or what free text they typed. The fields are ABSENT rather than
+		// nulled, so a caller cannot tell "redacted" from "never there". These two
+		// cases stand where the deleted service suite's public-order redaction test
+		// stood; the type guards them, and this proves the composition honours it.
+
+		test("a guest's read of a SHIPPED order trims fulfillment to carrier and tracking, never the staff witness", async () => {
+			await tier.arrange.order({ orderId: "adm-o-pubful", buyerRef: "pubful@example.test" });
+			// Fulfillment IS the `processing → shipped` flip, so the order has to be
+			// walked there first — a pending one is NOT_FULFILLABLE.
+			for (const [to, key] of [
+				["paid", "adm-o-pubful-t1"],
+				["processing", "adm-o-pubful-t2"],
+			] as const) {
+				expect(await orders.transitionOrder("adm-o-pubful", to, { idempotencyKey: key })).toEqual({
+					ok: true,
+					transitioned: true,
+				});
+			}
+			expect(
+				await orders.recordFulfillment(
+					"adm-o-pubful",
+					{
+						carrier: "UPS",
+						trackingNumber: "1Z-ADM-O-PUBFUL",
+						trackingUrl: "https://tracking.example.test/1Z-ADM-O-PUBFUL",
+						recordedBy: "ops@example.test",
+					},
+					{ idempotencyKey: "adm-o-pubful-f1" },
+				),
+			).toMatchObject({ ok: true });
+
+			const read = await storefront.getPublicOrder("adm-o-pubful");
+			expect(read.ok).toBe(true);
+			if (!read.ok) throw new Error("unreachable");
+			const fulfillment = read.order.fulfillment;
+			expect(fulfillment).toMatchObject({
+				carrier: "UPS",
+				trackingNumber: "1Z-ADM-O-PUBFUL",
+				trackingUrl: "https://tracking.example.test/1Z-ADM-O-PUBFUL",
+			});
+			expect(typeof fulfillment?.shippedAt).toBe("string");
+			for (const field of ["recordedBy", "recordedAt"]) {
+				expect(fulfillment, `${field} must not reach a guest`).not.toHaveProperty(field);
+			}
+			// And the top-level whitelist still holds on an order that has moved.
+			for (const field of [
+				"buyerRef",
+				"customerId",
+				"shippingAddress",
+				"reconciliationFlag",
+				"reconciliationResolution",
+			]) {
+				expect(read.order, `${field} must not reach a guest`).not.toHaveProperty(field);
+			}
+			// The console's own read is the UNTRIMMED one — the trim is the public
+			// projection's, not a field the write failed to record.
+			expect((await orders.getOrder("adm-o-pubful"))?.order.fulfillment).toMatchObject({
+				recordedBy: "ops@example.test",
+			});
+		});
+
+		test("a guest's read of a CANCELLED order keeps the reason and drops the detail and the canceller", async () => {
+			await tier.arrange.order({ orderId: "adm-o-pubcan", buyerRef: "pubcan@example.test" });
+			expect(
+				await orders.cancelOrder(
+					"adm-o-pubcan",
+					{
+						reason: "customer_request",
+						detail: "buyer called to cancel",
+						cancelledBy: "ops@example.test",
+					},
+					{ idempotencyKey: "adm-o-pubcan-1" },
+				),
+			).toEqual({ ok: true, cancelled: true });
+
+			const read = await storefront.getPublicOrder("adm-o-pubcan");
+			expect(read.ok).toBe(true);
+			if (!read.ok) throw new Error("unreachable");
+			const cancellation = read.order.cancellation;
+			expect(cancellation).toMatchObject({ reason: "customer_request" });
+			expect(typeof cancellation?.cancelledAt).toBe("string");
+			for (const field of ["detail", "cancelledBy"]) {
+				expect(cancellation, `${field} must not reach a guest`).not.toHaveProperty(field);
+			}
+			// Recorded in full on the console side, so the absence above is the trim.
+			expect((await orders.getOrder("adm-o-pubcan"))?.order.cancellation).toMatchObject({
+				detail: "buyer called to cancel",
+				cancelledBy: "ops@example.test",
+			});
 		});
 
 		// ── getCustomerContext ────────────────────────────────────────────

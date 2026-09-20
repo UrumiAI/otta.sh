@@ -2,7 +2,6 @@
 "@otta-sh/domain": minor
 "@otta-sh/payments-x402": minor
 "@otta-sh/plugin": minor
-"@otta-sh/service": patch
 ---
 
 Dispatch order emails and settle x402 payments from inside the plugin, over
@@ -10,12 +9,11 @@ Dispatch order emails and settle x402 payments from inside the plugin, over
 and `X402Facilitator` ports, the rendered wire bodies, the `Idempotency-Key`
 dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
 
-- `@otta-sh/domain`: `renderEmail` / `customerSafeCancellationCopy` move here
-  verbatim from `@otta-sh/service`, beside `buildOrderEmailData` and the
-  `EmailTemplate` union. They are pure functions of a template plus explicit
-  data — no IO, no store reach-back — so the purity contract is unchanged; they
-  had to move because BOTH `EmailSender` adapters now need them and they live in
-  packages that cannot import each other. Money still renders from integer minor
+- `@otta-sh/domain`: `renderEmail` / `customerSafeCancellationCopy` now live
+  here, beside `buildOrderEmailData` and the `EmailTemplate` union. They are
+  pure functions of a template plus explicit data — no IO, no store reach-back —
+  so the purity contract is unchanged; the domain is the one place every
+  `EmailSender` adapter can reach them from. Money still renders from integer minor
   units, and now renders a NEGATIVE amount correctly (`-550` was "-6.-50") and a
   non-integer not at all. `PaymentEventStore` also grows
   `orderForDedupeKey(key)`: `dedupe`'s boolean says a row EXISTS, not whose it
@@ -41,8 +39,8 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   timeout-bounded) and the x402 wiring (`wireX402Gateway` /
   `x402GatewayFromCtx`), both reaching their provider only via `ctx.http` +
   `allowedHosts`. Adds the PUBLIC `entitlements/x402/settle` route — the
-  in-process equivalent of the service's `POST /entitlements/grant`, behind the
-  SAME two layers the Stripe webhook route uses — the shared edge token
+  in-process entitlement grant, behind the SAME two layers the Stripe webhook
+  route uses — the shared edge token
   (`settings:edgeToken`, pass-through when unset) as a cheap outer gate, then
   the real check: the order must be `paymentMethod: "x402"`, the proof must
   verify through the configured facilitator, and the on-chain `transaction` must
@@ -58,12 +56,6 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   override) and reports `skipped` when no email URL was baked in. Secrets stay in
   write-only kv; every kv read is fail-soft and every missing-config path yields
   no sender / no gateway rather than an unverified settlement.
-- `@otta-sh/service`: imports `renderEmail` from the domain instead of its own
-  deleted copy. No behavior change. NOTE that the service is untouched
-  otherwise: it still wires only the offline `createTestFacilitator` behind
-  `X402_ALLOW_TEST_FACILITATOR`, and that gate still guards exactly what it
-  always did for as long as the service runs — the in-process path simply cannot
-  reach that facilitator.
 
 ACTION REQUIRED ON UPGRADE — RE-PROVISION THE x402 FACILITATOR CREDENTIAL. The
 kv key is now `settings:x402FacilitatorApiKey`; the old

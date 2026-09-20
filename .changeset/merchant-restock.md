@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -24,16 +22,6 @@ reservation-scoped, so a merchant had no safe path to change a live sku's raw on
   is a typed `StockMovementMismatchError`. An unknown sku is a clean `UNKNOWN_SKU` that does
   NOT consume the key (mirrors `reserve`'s parity) and never auto-creates the row —
   `seedOnHand` stays the sole create path.
-- **Adapters (`[Adapters]`).** Kysely implementation (sqlite + pg) with the atomic movement as
-  a single guarded UPDATE inside the claim transaction (no read-modify-write). Forward-only
-  migration `0016_inventory_stock_movements`. The Postgres no-oversell races are green
-  (restock +N racing M reservations; N guarded removals racing M reservations; concurrent
-  same-key restock/removal replays applied exactly once).
-- **Service (`[Service]`).** `POST /admin/products/:id/restock` and `.../remove-stock` under
-  the `X-Service-Token` write gate + internal token, resolving the productId to its
-  authoritative sku (never trusting a client-supplied one). A restock is additive (not
-  idempotent by nature), so the `Idempotency-Key` header is REQUIRED — there is no safe
-  content-only fallback.
 - **Plugin (`[Plugin]`).** Restock + remove-stock forms on the product detail (integer-only
   qty inputs — same integer discipline as money, never a float widget; clear copy showing
   current available and danger copy on removal). Each carries a per-render nonce so a

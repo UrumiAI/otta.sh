@@ -19,8 +19,8 @@ import {
 	type ProductsListFilter,
 	type ProductSummaryWire,
 	type TaxClassWire,
-} from "./admin-products-client.js";
-import type { ReportingSettingsSurface } from "./reporting-client.js";
+} from "./admin-products-surface.js";
+import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 import { readString } from "./scaffold/index.js";
 import { PRODUCT_KIND_LABELS } from "@otta-sh/admin-presentation";
 import type { SelectOption } from "../types.js";

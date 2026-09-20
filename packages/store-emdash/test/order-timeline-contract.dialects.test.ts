@@ -7,16 +7,113 @@
  * from `InMemoryOrderNotesStore` (the notes adapter is INC-B8's), and the fulfillment,
  * cancellation and reconciliation artifacts from the fields the guarded flips wrote.
  * `countingIds` makes the same-instant `(at, id)` tie-break append order.
+ *
+ * Plus the Postgres-only exactly-one-audit-event race the deleted
+ * `@otta-sh/store-postgres` suite of the same name carried, re-pointed at
+ * `EmdashOrderStore`. It is the audit half of the transition invariant, and it is
+ * Postgres-required for the same reason every other race here is: better-sqlite3
+ * serializes writes in one process, so it can verify the write's SHAPE and never
+ * the contention.
  */
+import {
+	cents,
+	currency,
+	idempotencyKey,
+	orderId,
+	productId,
+	reservationId,
+	sku,
+	type CreateOrderInput,
+} from "@otta-sh/domain";
 import { orderTimelineContract } from "@otta-sh/domain/testing";
+import { expect, test } from "vitest";
+import { collectionOf, ORDERS_COLLECTION, type OrderDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
+import { barrierCall, isUpdateWrite, onId, withCollection } from "./helpers/fault-injection.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness, orderTimelineHarness } from "./order-harness.js";
+
+const USD = currency("USD");
+
+/** One pending, physically-reserved order — the SQL suite's own seed, unchanged. */
+function pendingInput(id: string, key: string): CreateOrderInput {
+	return {
+		orderId: orderId(id),
+		cartId: "cart-1",
+		currency: USD,
+		idempotencyKey: idempotencyKey(key),
+		holdExpiresAt: "2026-07-10T00:15:00.000Z",
+		buyerRef: "buyer@example.com",
+		paymentMethod: "stripe",
+		lines: [
+			{
+				productId: productId("p1"),
+				sku: sku("SKU-1"),
+				title: "Widget",
+				unitPrice: cents(500),
+				currency: USD,
+				quantity: 1,
+				fulfillmentKind: "physical",
+				reservationId: reservationId("res-1"),
+			},
+		],
+		totals: { subtotal: cents(500), total: cents(500), currency: USD },
+	};
+}
 
 describeEachDialect("EmdashOrderStore timeline", (ctx) => {
 	const bound = ctx.useStorage(ORDER_LAYOUT);
 	orderTimelineContract(
 		async () => orderTimelineHarness(makeOrderHarness(bound.storage, { countingIds: true })),
 		{ dialect: ctx.dialect },
+	);
+
+	// Concurrency (Postgres-required, like the no-oversell race): N concurrent
+	// markPaid on the SAME pending order flip it EXACTLY ONCE — the guarded
+	// `state === fromState` check plus the pinned compare-and-set lets one caller
+	// win. The state-change audit is appended INSIDE that one guarded write (`#flipped`
+	// composes the new state and the event together), so EXACTLY ONE `state_change`
+	// event is written — a replay or a lost race is a 0-row flip and records none.
+	// This is the audit analogue of the outbox's first-wins `(orderId, toState)`.
+	//
+	// The COLLISION is pinned by a barrier rather than left to `Promise.all`. Lazy
+	// `pg.Pool` connection setup lets the first caller finish its whole
+	// read-modify-write before its peers' pinning reads return; every peer then sees
+	// `state === "paid"`, refuses at the `doc.state !== fromState` guard, and never
+	// reaches a compare-and-set at all — so the version of this test without the
+	// barrier stayed GREEN with the store's losing compare-and-set made to report a
+	// win. `barrierCall` holds all N read-modify-write flips on the order document
+	// until every one has arrived (which means every one pinned the SAME `pending`
+	// revision), then releases them into the real repository at once, where exactly
+	// one revision check can succeed. `createFromCart`'s own write is a
+	// create-if-absent, so `isUpdateWrite` leaves the seed alone.
+	test.runIf(ctx.canRace)(
+		"concurrent state flips write exactly one audit event (no double audit under a race)",
+		async () => {
+			const id = orderId("ord-audit-race");
+			const N = 12;
+			const barrier = barrierCall(
+				collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION),
+				onId(id, isUpdateWrite),
+				N,
+			);
+			const h = makeOrderHarness(bound.storage, {
+				countingIds: true,
+				storageForOrders: withCollection(bound.storage, ORDERS_COLLECTION, barrier.collection),
+			});
+			await h.store.createFromCart(pendingInput("ord-audit-race", "key-audit-race"));
+
+			const results = await Promise.all(Array.from({ length: N }, () => h.store.markPaid(id)));
+			// All N really did contend: each pinned the pending revision and tried to flip it.
+			expect(barrier.arrived()).toBe(N);
+			// Exactly one caller won the guarded flip; the rest are benign 0-row misses.
+			expect(results.filter((won) => won)).toHaveLength(1);
+
+			const events = await h.store.listEventsForOrder(id);
+			expect(events).toHaveLength(1);
+			expect(events[0]).toMatchObject({ fromState: "pending", toState: "paid" });
+			expect((await h.store.getById(id))?.state).toBe("paid");
+		},
+		120_000,
 	);
 });

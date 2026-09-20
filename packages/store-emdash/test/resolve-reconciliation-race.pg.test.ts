@@ -1,8 +1,8 @@
 /**
- * `resolveReconciliation` under concurrency, on the document adapter — the
- * store-postgres suite of the same name, re-pointed at `EmdashOrderStore`. Postgres
- * only: better-sqlite3 serializes writes in one process, so it verifies the shape
- * and never the contention.
+ * `resolveReconciliation` under concurrency, on the document adapter.
+ * `@otta-sh/store-postgres` is gone; this is the pg-tier coverage now, re-pointed
+ * at `EmdashOrderStore`. Postgres only: better-sqlite3 serializes writes in one
+ * process, so it verifies the shape and never the contention.
  *
  * The resolve is a compare-and-CLEAR, and the guard is EQUALITY against the flag the
  * operator reviewed (never a bare "is flagged"). The SQL got its once-only from

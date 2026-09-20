@@ -1,8 +1,9 @@
 /**
  * Storefront customer account — PLUGIN-OWNED PUBLIC ROUTES (Phase 5 §9, shape
- * per ADR-0003 and the cart-routes precedent). Thin, HTTP-only: each route
- * validates input → `HttpCommerceClient` call over `ctx.http` → serialize the
- * (already-typed) result. The plugin holds NO customer/session state.
+ * per ADR-0003 and the cart-routes precedent). Thin: each route validates
+ * input → calls the in-process `CommerceClient` from `makeCommerceClient` →
+ * serializes the (already-typed) result. The plugin holds NO customer/session
+ * state.
  *
  * ── Platform-verified deviation from plan §4's session-cookie wording ──────
  * Plan §4 has the plugin route set/read the session cookie directly. That is

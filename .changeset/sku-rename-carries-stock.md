@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
 ---
 
 Fix: renaming a product's SKU silently abandoned its stock.
@@ -33,7 +32,7 @@ never come apart:
   when the cart or order finished. Reservations are short-lived, so this is a "try again shortly".
 
 Both writers of the field behave identically — the admin **Pricing & inventory** edit and the
-integrator `PUT /products/:id/commerce` — because the rule belongs to the field, not to one
+integrator product-commerce upsert — because the rule belongs to the field, not to one
 caller. Writes that change nothing (a re-submitted identical SKU, a double-submitted save, an
 out-of-order CMS sync, a rejected edit) move no stock at all, so a double-click moves the units
 exactly once.
@@ -52,17 +51,16 @@ exactly once.
 - Setting a product's **first** SKU is not a rename, and still adopts an existing stock record for
   that SKU, units and all — the long-standing behaviour that lets a product re-linked to a SKU it
   used to own recover its stock. Renames refuse; first assignment adopts.
-- `initialOnHand` on the integrator PUT is create-only, as before, and a rename claims the new
-  SKU's record as part of the move — so a PUT that both renames and supplies `initialOnHand` lands
-  the carried count (or zero, if the old SKU had no record), never the supplied figure. Add stock
-  with **Restock** instead.
-- `SkuStockConflictError` and `SkuHeldStockError` currently surface as generic failures at the
-  HTTP boundary; mapping them to structured responses and legible messages in the admin console is
-  a follow-up.
+- `initialOnHand` on the integrator upsert is create-only, as before, and a rename claims the new
+  SKU's record as part of the move — so a save that both renames and supplies `initialOnHand`
+  lands the carried count (or zero, if the old SKU had no record), never the supplied figure. Add
+  stock with **Restock** instead.
+- `SkuStockConflictError` and `SkuHeldStockError` currently surface as generic failures outside
+  the domain; giving them legible messages in the admin console is a follow-up.
 - **A follow-up with a real stake:** the live-reservation check a rename runs is an unindexed scan
-  of the reservations table, and it runs while the rename holds the lock on the old SKU's inventory
-  row — the same lock a reservation's oversell-critical decrement needs. On a store whose
-  reservations table has grown large, that scan is time during which checkouts of that SKU wait on
-  the rename. Renames are rare, so this is a latency spike rather than a steady-state cost, but the
-  fix is a partial index on the reservations SKU covering only the live states, and it needs a
-  migration of its own rather than riding along here.
+  of the reservations, and it runs while the rename holds the old SKU's inventory row — the same
+  row a reservation's oversell-critical decrement needs. On a store whose reservations have grown
+  large, that scan is time during which checkouts of that SKU wait on the rename. Renames are
+  rare, so this is a latency spike rather than a steady-state cost, but the fix is an index on the
+  reservations SKU covering only the live states, and that is a storage-layer change of its own
+  rather than something to ride along here.

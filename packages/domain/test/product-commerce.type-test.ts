@@ -39,9 +39,10 @@ const badAmount: UpsertProductCommerceInput = {
  * is the content sync's `upsert` (see `UpsertProductCommerceInput.title`, still
  * present above). The guarded admin edit must not carry it, so re-adding a Title
  * input to the admin form fails to COMPILE rather than failing silently at
- * runtime. Rung 1 is the port type itself; rung 3 is the `.strict()`-backed HTTP
- * test in `packages/service/test/admin-product-edit-http.test.ts`; rung 4 is the
- * "Deliberately EXCLUDES" doc block on the port.
+ * runtime. Rung 1 is the port type itself; rung 3 is the "G2 / ADR-0013" case in
+ * `packages/plugin/test/products-actions.sandbox.test.ts` (the standalone
+ * `@otta-sh/service`'s `.strict()`-backed HTTP test of the same name is gone);
+ * rung 4 is the "Deliberately EXCLUDES" doc block on the port.
  * Reasoning: `adr/0013-product-title-is-cms-owned.md`.
  */
 const badEditTitle: UpdateProductCommerceFieldsInput = {

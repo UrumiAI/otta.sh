@@ -82,7 +82,7 @@ import {
 	type ProductEditWire,
 	type RestockResult,
 	type StockRemovalResult,
-} from "./admin-products-client.js";
+} from "./admin-products-surface.js";
 import { parseMinorUnitsInput } from "./money-input.js";
 import { readString, screenActions, type Notice } from "./scaffold/index.js";
 

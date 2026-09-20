@@ -237,8 +237,8 @@ function makeContext(dialect: "sqlite" | "postgres"): DialectContext {
 /**
  * Run one suite body against every available dialect. Postgres is reported as a
  * visibly skipped suite — naming the missing env var — rather than silently
- * absent, matching `@otta-sh/store-postgres`'s convention that a pg tier which
- * did not run says so.
+ * absent, the same convention the now-deleted `@otta-sh/store-postgres` used for
+ * a pg tier that did not run.
  */
 export function describeEachDialect(name: string, fn: (ctx: DialectContext) => void): void {
 	describe(`${name} [sqlite]`, () => {

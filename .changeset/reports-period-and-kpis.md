@@ -14,15 +14,15 @@ equally well as all-time or as today. Now:
   submit id is registered in `REPORTS_ACTION_IDS`, so a period change can never
   fall through the dispatcher to a blank console. The form carries the bucket
   interval, so changing the period on a weekly report keeps it weekly. An
-  unusable range (backwards, incomplete, wider than the service's 400-day cap)
-  renders the default period with a banner saying why — always a 200.
+  unusable range (backwards, incomplete, wider than the 400-day reporting cap)
+  renders the default period with a banner saying why — never an error screen.
 - Every period is WHOLE DAYS, default included: `from` at the start of its day,
   `to` at the end of its. The default and a hand-entered identical period are
   therefore the same query, and "last 30 days" is exactly 30 day-rows.
 - All four `stats` slots are used: Revenue, Orders, AOV and Refunded, each
   labelled with the period and, for money, its currency once. Money renders only
   through `formatMoney`; an average with no orders to average renders an
-  em-dash, never `$0.00`. The refunded AMOUNT is absent from the reporting wire,
+  em-dash, never `$0.00`. The refunded AMOUNT is absent from the reporting read,
   and the tile says so rather than showing a figure it cannot know. Four filled
   slots is the SINGLE-CURRENCY case: a multi-currency window spends cards on
   revenue it cannot combine into one figure, and the cards that fall off the end
@@ -30,10 +30,10 @@ equally well as all-time or as today. Now:
 - Revenue by day emits the zero-revenue days, so a month of steady sales and a
   month with a three-week hole no longer render identically — for periods up to
   92 days in a single currency, where the fill shows shape rather than becoming
-  the table. Otherwise the wire's sparse series renders and the group states the
+  the table. Otherwise the sparse series renders as it comes and the group states the
   omission. The label drops the internal "(N buckets)" vocabulary.
 - The low-stock group states the threshold its rows were selected by
-  (`Low stock (3) — at or below 5`), read from `GET /settings`; a failed settings
+  (`Low stock (3) — at or below 5`), read from settings; a failed settings
   read drops the threshold from the label instead of taking the screen down.
 
 Also corrects a false claim in this file's own documentation: Block Kit does ship

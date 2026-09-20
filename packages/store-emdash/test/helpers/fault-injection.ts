@@ -288,6 +288,83 @@ export function parkRead<T>(
 	};
 }
 
+/** A crowd held at one write, and the handles to observe the barrier. */
+export interface BarrieredCollection<T> {
+	readonly collection: StorageCollection<T>;
+	/** Resolves once `count` callers have arrived and been released together. */
+	readonly opened: Promise<void>;
+	/** How many callers have arrived at the barrier so far. */
+	arrived(): number;
+}
+
+/**
+ * Hold the first `count` matching writes until ALL of them have arrived, then let
+ * the whole crowd go at once. Every call is then performed for real.
+ *
+ * **This is what makes a `Promise.all` of N store calls an actual race.** Without
+ * it, N concurrent callers are not concurrent where it matters: `pg.Pool` opens
+ * its connections lazily, so the first caller gets the one warm connection and
+ * completes its read AND its write while its peers are still finishing a TCP
+ * connect. Measured on the note-append shape, the winner's create-if-absent
+ * committed ~20 ms before any peer's pre-read returned — so every peer read the
+ * committed document and took the replay branch, and no two callers ever reached
+ * `compareAndSet` on the same revision. A suite like that passes on an
+ * implementation whose loser path is broken, because the loser path is never
+ * entered. Rejecting the call graph's OWN scheduling and pinning the collision
+ * here is the only way the assertion means what it says.
+ *
+ * The barrier is one-shot: once open it stays open, so the retry each loser is
+ * about to perform passes straight through and the crowd cannot deadlock. A
+ * caller that never reaches the write (a guard refused it earlier) means the
+ * barrier never fills and the case times out — which is the honest failure, since
+ * such a run would not have been a race either. Assert `arrived()` to pin it.
+ */
+export function barrierCall<T>(
+	raw: StorageCollection<T>,
+	match: CallMatcher,
+	count: number,
+): BarrieredCollection<T> {
+	let waiting = 0;
+	let open = false;
+	let openGate: (() => void) | undefined;
+	const opened = new Promise<void>((resolve) => {
+		openGate = resolve;
+	});
+
+	const hold = async (call: StorageCall): Promise<void> => {
+		if (open || !match(call)) return;
+		waiting++;
+		if (waiting >= count) {
+			open = true;
+			openGate?.();
+		}
+		await opened;
+	};
+
+	return {
+		collection: delegatingCollection(raw, {
+			async compareAndSet(id, expectedRevision, data) {
+				await hold({ method: "compareAndSet", id, expectedRevision });
+				return raw.compareAndSet(id, expectedRevision, data);
+			},
+			async put(id, data) {
+				await hold({ method: "put", id });
+				return raw.put(id, data);
+			},
+			async compareAndDelete(id, revision) {
+				await hold({ method: "compareAndDelete", id });
+				return raw.compareAndDelete(id, revision);
+			},
+			async updateIf(id, args) {
+				await hold({ method: "updateIf", id });
+				return raw.updateIf(id, args);
+			},
+		}),
+		opened,
+		arrived: () => waiting,
+	};
+}
+
 /** Where the throw goes relative to the real call. */
 export type FailMode =
 	/** Perform the real call, THEN throw: "the process died after this write". */

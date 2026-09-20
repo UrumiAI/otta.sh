@@ -9,11 +9,11 @@
  * chances to miss one. It was a one-line diff in this file instead, and
  * INC-D3a has now deleted the other arm outright.
  *
- * NOT ROUTED THROUGH HERE, deliberately: the four admin HTTP clients
- * (`admin-orders-client`, `admin-products-client`, `admin-rules-client`,
- * `reporting-client`). They are function-export modules over a bare
- * `{ fetch, baseUrl }` transport rather than implementations of this port, so
- * folding them in is its own change — INC-D3b deletes them.
+ * NOT ROUTED THROUGH HERE, deliberately: the four admin surfaces
+ * (`admin-orders-surface`, `admin-products-surface`, `admin-rules-surface`,
+ * `reporting-settings-surface`). They are their own ports rather than
+ * implementations of this one, and `makeAdminClients` constructs them; INC-D3b
+ * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";

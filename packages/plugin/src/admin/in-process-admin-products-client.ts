@@ -3,9 +3,9 @@
  * commerce truth held on the plugin's own document store (work order 02,
  * INC-B10b-i).
  *
- * WHAT THIS CLASS IS. The in-process twin of `AdminProductsClient`: the same six
- * methods, the same argument shapes, the same RETURN VALUES — including every
- * field the HTTP wire carries — with the `@otta-sh/domain` use-cases composed
+ * WHAT THIS CLASS IS. The sole implementation of `AdminProductsSurface`: the same
+ * six methods, the same argument shapes, the same RETURN VALUES — including every
+ * field the `*Wire` types carry — with the `@otta-sh/domain` use-cases composed
  * over the `@otta-sh/store-emdash` adapters bound to `ctx.storage` instead of a
  * commerce service. Nothing here reaches for egress; `ctx.http` is never
  * touched.
@@ -94,7 +94,7 @@ import type {
 	RestockResult,
 	StockRemovalResult,
 	TaxClassWire,
-} from "./admin-products-client.js";
+} from "./admin-products-surface.js";
 
 /** The page-size bounds the list query schema enforced (`productsListQuery`:
  *  `min(1).max(100)`, default 25). Mirrored, not imported — the service package
@@ -104,7 +104,11 @@ const DEFAULT_LIMIT = 25;
 
 /** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
  *  no greater than this). Far above the shopper-facing cart cap on purpose: this
- *  is the merchant's own surface. */
+ *  is the merchant's own surface.
+ *
+ *  UNASSERTED: nothing yet drives a quantity past this ceiling. Tracked in issue
+ *  #289 together with three sibling bounds in these admin clients that are
+ *  likewise implemented but unpinned. */
 const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
 
 export class InProcessAdminProductsClient implements AdminProductsSurface {

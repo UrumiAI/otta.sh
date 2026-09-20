@@ -4,9 +4,9 @@
  * settings tier) with commerce truth held on the plugin's own document store
  * (work order 02, INC-B10c-ii).
  *
- * WHAT THIS CLASS IS. The in-process twin of `ReportingSettingsClient`: the same
- * six methods, the same argument shapes, the same RETURN VALUES — every field the
- * HTTP wire carries — with the `@otta-sh/domain` reporting/settings use-cases
+ * WHAT THIS CLASS IS. The sole implementation of `ReportingSettingsSurface`: the
+ * same six methods, the same argument shapes, the same RETURN VALUES — every field
+ * the `*Wire` types carry — with the `@otta-sh/domain` reporting/settings use-cases
  * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
  * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
  * never touched.
@@ -96,7 +96,7 @@ import type {
 	StatusCountWire,
 	TopProductWire,
 	UpdateSettingsResult,
-} from "./reporting-client.js";
+} from "./reporting-settings-surface.js";
 
 /** `topProductsQuery.limit`: `z.coerce.number().int().positive().max(1000)`.
  *  Mirrored, not imported — the service package goes away. */

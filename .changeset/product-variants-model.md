@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
 ---
 
 One commerce row per sellable unit: a product can now carry variants, keyed by the product plus a

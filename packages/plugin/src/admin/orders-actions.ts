@@ -72,7 +72,7 @@ import {
 	fit,
 	formatAmount as formatTotal,
 } from "@otta-sh/admin-presentation";
-import type { AdminOrdersSurface, RefundsSummaryWire } from "./admin-orders-client.js";
+import type { AdminOrdersSurface, RefundsSummaryWire } from "./admin-orders-surface.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
 import type { SelectOption } from "../types.js";
 

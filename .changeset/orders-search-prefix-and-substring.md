@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": patch
 ---
 
 Orders search stops being exact-match only. `OrderListFilter.search` now matches an order-id
@@ -9,10 +7,6 @@ PREFIX or a `buyer_ref` SUBSTRING, ORed, with `lower()` on both sides of both ha
 exact lookup that worked before still RETURNS the same row — a whole id is its own prefix, a
 whole address its own substring — but it no longer runs the same PLAN: the old exact pair was
 served by an index and the new predicate scans (see below). Results preserved, cost changed.
-
-`@otta-sh/service` is bumped because its `GET /admin/orders` answers differently for the same
-query, though no service source changed — only its test coverage. `@otta-sh/plugin` is NOT
-bumped: it forwards `search` verbatim and has no code, wire or copy change here.
 
 - **A prefix, because a prefix is all the operator can see.** The console never renders a full
   uuid — it renders the shortest unique prefix (the git-style short id). Pasting the characters
@@ -38,7 +32,7 @@ bumped: it forwards `search` verbatim and has no code, wire or copy change here.
   escaped first so it cannot re-escape the other two rules' output. The empty string, by the
   same logic, matches EVERYTHING — every string starts with and contains `""` — which is the
   inverted reading of "search for nothing" and is now pinned rather than left to be discovered.
-  The service's query schema requires `min(1)`, so the wire cannot send it.
+  A caller with nothing to search for is expected to omit the field rather than send it empty.
 - **The sequential scan is the design.** An unanchored substring cannot be served by a b-tree, so
   this predicate no longer uses `idx_orders_buyer_ref_lower`, and the anchored id half cannot use
   the primary key under a default collation. A trigram or full-text index was declined at this
@@ -56,8 +50,7 @@ bumped: it forwards `search` verbatim and has no code, wire or copy change here.
   likewise untouched. The two predicates now differ on purpose, and a contract case pins the
   difference.
 - **The cursor gate is unaffected.** It compares the search STRING, not what the string selects,
-  so the canonical form on the wire is identical before and after. The admin Orders HTTP suite is
-  unchanged apart from added cases.
+  so the canonical form of a cursor is identical before and after.
 
 No wire, schema or migration change, and no console copy change — the search label already named
 both columns rather than promising exactness.

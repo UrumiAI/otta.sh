@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -14,8 +12,9 @@ coupon editing/creation UI, no new coupon fields — both are separate slices.
   keyset-paginated `CouponSummary` projection, ordered `created_at DESC, id
   DESC` (the only sort this slice offers). `coupons` had NO `created_at`
   column before this slice — `create()` now stamps one from the injected
-  `Clock` (`KyselyCouponStore`/`InMemoryCouponStore` both gain a required
-  `clock` constructor option). `CouponListFilter` is deliberately minimal:
+  `Clock` (`InMemoryCouponStore` and every `CouponStore` adapter gain a
+  required `clock` constructor option). `CouponListFilter` is deliberately
+  minimal:
   `search`, a case-insensitive EXACT match on `code` (the strictest `search` in
   the product — a coupon code is a structured identifier, not free text like a
   product title, so there is no substring half, and it did not follow the later
@@ -29,19 +28,9 @@ coupon editing/creation UI, no new coupon fields — both are separate slices.
   pin the spec (empty, projection, ordering, identical-`created_at`
   tie-break, exact-code search, pagination no-overlap/no-gap, limit
   boundary).
-- `@otta-sh/store-postgres`: migration `0018_coupons_admin_list` adds
-  `coupons.created_at` (`NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'` — a
-  sentinel, not nullable, so a pre-migration row sorts deterministically to
-  the end of the DESC keyset on BOTH dialects; pg and better-sqlite3 order
-  NULLs oppositely in DESC, which a nullable sort-key column would have
-  exposed) plus a composite `(created_at, id)` index, mirroring `0015`'s
-  precedent for `listProducts`. `listCoupons` is a single `coupons` SELECT —
-  no join.
-- `@otta-sh/service`: adds the internal-token-guarded `GET /admin/coupons`
-  (mounted alongside the existing coupon CRUD in `rules-admin.ts`) with the
-  same opaque base64url keyset cursor discipline as `GET /admin/products` — a
-  malformed/tampered cursor fails CLOSED to 400 and the decoded limit is
-  re-clamped, never trusted past 100.
-- `@otta-sh/plugin`: adds `AdminRulesClient.listCoupons(filter, opts)` (client
-  method only — the admin UI screen is a follow-up slice), returning the
-  `CouponSummaryWire` projection + an opaque `nextCursor`.
+- `@otta-sh/plugin`: the admin rules client gains `listCoupons(filter, opts)`
+  (client method only — the admin UI screen is a follow-up slice), returning
+  the `CouponSummaryWire` projection + an opaque `nextCursor`. The cursor keeps
+  the same base64url discipline as the admin products list: a malformed or
+  tampered cursor fails CLOSED and the decoded limit is re-clamped, never
+  trusted past 100.

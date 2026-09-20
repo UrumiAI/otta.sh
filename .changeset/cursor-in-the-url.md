@@ -16,11 +16,11 @@ which is the same reset the list already performs in memory.
 
 Carrying the token in a public address is safe because of what the route does
 with it, not because of what it looks like: the token is unsigned base64url
-JSON, so it can be read and written by anyone, and the service re-validates the
+JSON, so it can be read and written by anyone, and the route re-validates the
 filter it carries through the same schema a query string is held to and
 re-clamps its page limit, both failing closed. A hand-written token can
 therefore only restate a query the operator was already permitted to make. The
-console itself never parses or mints one — the encoding belongs to the service —
+console itself never parses or mints one — the encoding belongs to the plugin —
 and it writes the value through the query encoder, so a future token whose
 alphabet is less forgiving than today's base64url still survives the round trip.
 
@@ -38,11 +38,11 @@ relative period the instants sent beside the cursor are the ones it was minted
 with, which holds by construction: presets resolve to whole-day bounds, so two
 requests on the same UTC day resolve identically.
 
-A refused cursor is recovered where the service's own error code can be read.
+A refused cursor is recovered where the route's own error code can be read.
 `cursor filter mismatch` and `invalid cursor` both mean "drop the token and
 re-issue page one with these parameters", so the client does exactly that, once,
 and reports it as a flag on a successful page rather than as an error. That is
-what lets the console tell a refused PAGE from an unreachable SERVICE — the two
+what lets the console tell a refused PAGE from an unreachable ROUTE — the two
 want opposite treatments of the address bar — and it is why the Pricing &
 inventory route now resolves the low-stock threshold before paging too: a paged
 request that omitted it would describe fewer axes than its token and be refused
@@ -51,7 +51,7 @@ every time.
 An address naming a page that will not open degrades to the first page of those
 filters, with a notice that says so and deliberately does not say why: every
 failure reaches this tier in one shape, so a rejected token, an expired session,
-a failing service and a dropped connection are indistinguishable here, and copy
+a failing route and a dropped connection are indistinguishable here, and copy
 naming one of them would send an operator to fix the wrong thing. Only a genuine
 cursor refusal resets, because only that one arrives as a page rather than as a
 failure; everything else leaves the cursor in the address, so a reload after
@@ -69,7 +69,7 @@ ended. A filter change or a reload starts a fresh scan. This is also what a
 transient settings blip on a low-stock continuation now costs: the ability to
 page further, never the scan.
 
-**Follow-up, not done here (service-side).** The gate compares a cursor against
+**Follow-up, not done here (route-side).** The gate compares a cursor against
 the request's filter params only when the request states at least one axis;
 absent params still claim nothing. So a token minted under a filter, sent beside
 a request naming no filter at all, is still answered from the token — the one

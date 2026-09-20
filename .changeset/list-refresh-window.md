@@ -35,7 +35,7 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   the stack truncated to match — a window half reconciled would carry one count line over
   rows read at two different moments, and a stack claiming the old depth would number them
   wrongly. A walk that re-read *nothing* leaves the window entirely alone under its own
-  title, because the rows on screen are still coherent. A page the service refuses mid-walk
+  title, because the rows on screen are still coherent. A page the plugin refuses mid-walk
   is discarded rather than merged: the recovered first page answers a different question,
   and merging it would silently relocate a window that opens elsewhere — and because the
   committed window then ends on the very token that was refused, paging is withdrawn there
@@ -47,7 +47,7 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   pre-refresh verdict (and the withheld exact count) in rather than believing the value a
   continuation reports by contract.
 - **A walk that was REFUSED gets its own sentence.** It ends on a window with fewer pages
-  than it had *and* on the token the service just rejected, so neither of the other two
+  than it had *and* on the token the plugin just rejected, so neither of the other two
   notices may stand there: the paging-stopped one opens by promising the rows on screen are
   unaffected, and the partial-refresh one ends by naming `Load more`, which would re-send
   that token. Both stop notices are announced, because either way rows the operator had are
@@ -69,6 +69,6 @@ the walk trades depth for latency, and letting Apply cancel it needs a rule for 
 half-rebuilt window then shows. Reachable today only at depths no fixture exercises;
 recorded so it is a decision rather than a discovery.
 
-No service or plugin API changes — a refresh is built from requests the service already
+No plugin API changes — a refresh is built from requests the plugin already
 answers, and the browser still never parses a cursor. The Block Kit lists replace rather
 than accumulate and are untouched.

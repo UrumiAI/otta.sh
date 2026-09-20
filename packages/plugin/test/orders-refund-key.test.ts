@@ -32,7 +32,7 @@ import {
 	type OrdersActionPayload,
 	type OrdersActionResult,
 } from "../src/admin/orders-actions.js";
-import type { AdminOrdersSurface, RefundsSummaryWire } from "../src/admin/admin-orders-client.js";
+import type { AdminOrdersSurface, RefundsSummaryWire } from "../src/admin/admin-orders-surface.js";
 
 const ORDER_ID = "order-refund-key-1";
 

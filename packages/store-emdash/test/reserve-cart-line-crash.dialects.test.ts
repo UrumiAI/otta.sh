@@ -1,6 +1,7 @@
 /**
- * The reserve ↔ cart-line crash window against the document adapter — the
- * store-postgres suite of the same name, re-pointed at `EmdashCartStore`.
+ * The reserve ↔ cart-line crash window against the document adapter.
+ * `@otta-sh/store-postgres` is gone; this is the dialect coverage now,
+ * re-pointed at `EmdashCartStore`.
  *
  * The one substantive improvement over the SQL version: it no longer HAND-SEEDS
  * the crashed state. `seedCrashedHold` there inserted a `cart_mutations` row, a

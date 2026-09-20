@@ -1,6 +1,6 @@
 /**
- * Hold expiry against the document adapter — the store-postgres suite of the same
- * name, re-pointed at `EmdashCartStore`.
+ * Hold expiry against the document adapter. `@otta-sh/store-postgres` is gone;
+ * this is the dialect coverage now, re-pointed at `EmdashCartStore`.
  *
  * The four cases are the specification of ADR-0019 §7.7: an expired hold is
  * released and its stock returns, a lazy read racing the sweep returns stock

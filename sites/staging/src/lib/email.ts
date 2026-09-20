@@ -1,8 +1,9 @@
 /**
  * The `buyerRef` guard — a check NOTHING upstream performs.
  *
- * `POST /checkout/orders` types `buyerRef` as `z.string().min(1).max(320)` with
- * no regex (`packages/service/src/schemas.ts`), and the domain treats it as an
+ * `POST /checkout/orders` types `buyerRef` as a length-only bound, max 320,
+ * with no regex (`checkout-route-input.ts`'s `nonEmptyString` /
+ * `BUYER_REF_MAX`), and the domain treats it as an
  * opaque string. That permissiveness is deliberate — the field is documented as
  * an "email/session claim token", not strictly an email — so `"asdf"`, `" "`
  * and `"jo@"` all produce a perfectly valid order. The consequences are not

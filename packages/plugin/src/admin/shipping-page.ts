@@ -22,7 +22,7 @@ import {
 	type ShippingMethodWire,
 	type ShippingRateWire,
 	type ShippingZoneWire,
-} from "./admin-rules-client.js";
+} from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,

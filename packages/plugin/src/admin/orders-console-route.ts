@@ -55,7 +55,7 @@ import {
 	type OrderSummaryWire,
 	type OrderTimelineWire,
 	type RefundsSummaryWire,
-} from "./admin-orders-client.js";
+} from "./admin-orders-surface.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import {
 	CANCELLATION_REASONS,

@@ -5,8 +5,7 @@
 Re-lay the admin Orders console onto the design spec's §11 — the REFERENCE screen
 the other six pattern-match on. One flat full-width stack becomes a collapsed
 filter panel over the data (list) and five blocks plus four task-named panels
-(detail). Presentation only: no port, wire-format or money-handling change, and
-the service is untouched.
+(detail). Presentation only: no port change and no money-handling change.
 
 **The list (§11.1).** `header` + one 101-char `context` + a **collapsed** 4-field
 `filterPanel` accordion + the table + the drill-in picker — nothing else above the
@@ -65,9 +64,9 @@ instead of silently bouncing the operator to the list (DA-3b).
 **Status moves are one `actions` block with per-state ids derived from
 `ORDER_STATES`** (DA-6) — the old one-block-per-button split existed only because
 every button shared the literal id `orders:transition` and they collided as React
-keys. `customActions` is derived from the same constant and a service-offered state
-outside it renders **no button**, because `admin-route.ts` falls through an
-unregistered id to `{blocks: []}` — a blank console.
+keys. `customActions` is derived from the same constant and an offered state outside it
+renders **no button**, because `admin-route.ts` falls through an unregistered id
+to `{blocks: []}` — a blank console.
 
 Also: `formatTotal`'s catch branch renders `—` instead of raw minor units (a wrong
 number dressed as a formatted total, M-1) and the totals block says so when it
@@ -102,7 +101,7 @@ unreadable payload rather than as licence to skip the comparison.
 
 Copy and layout follow-ups in the same pass: the DA-3a refusal restores its causal
 clause (*"someone else refunded this order since you started"*); the fail-closed
-banner stops claiming the service is unreachable when a console bug lands on the
+banner stops blaming an unreachable back end when a console bug lands on the
 same path (E-7/X-42); both destructive group labels carry their consequence (D-6a);
 `Remaining` becomes `Remaining refundable` and a total that disagrees with its
 capture is reconciled in one line (M-11/M-11a), with the degenerate `$0.00 of $0.00`
@@ -128,6 +127,6 @@ clauses on each of the four refusal paths; a **positive** watermark assertion (t
 deliberate identical refunds derive **different** idempotency keys, so both apply —
 the property the whole no-nonce design rests on, and the one nothing asserted); a
 `shipped`-order assertion that `Mark refunded` really is offered, against a fixture
-whose `allowedTransitions` is the domain state machine copied verbatim; and a
-service-side assertion that `GET /admin/orders/:id` on a shipped order returns
-`["delivered", "refunded"]`, which is the wire shape the watermark exists for.
+whose `allowedTransitions` is the domain state machine copied verbatim; and an
+assertion that reading a shipped order offers exactly
+`["delivered", "refunded"]`, which is the shape the watermark exists for.

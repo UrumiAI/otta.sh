@@ -54,10 +54,10 @@ it("accepts the host's own ctx.storage as a StorageAccess", () => {
 });
 
 describe("the in-process id and clock adapters", () => {
-	// `uuidIdGen` duplicates `@otta-sh/store-postgres`'s function deliberately:
+	// `uuidIdGen` duplicated `@otta-sh/store-postgres`'s function deliberately:
 	// `store-emdash-is-sandbox-clean` forbids importing that package, because it
 	// would drag a Kysely/pg graph into a module that is bundled into workerd. The
-	// store-postgres copy is deleted with that package; this one survives it.
+	// store-postgres package is gone; this is the surviving copy.
 	it("draws distinct v4 UUIDs", () => {
 		const drawn = new Set<string>();
 		for (let i = 0; i < 1000; i++) drawn.add(uuidIdGen.newId());

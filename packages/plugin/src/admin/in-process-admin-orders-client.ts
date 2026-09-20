@@ -2,9 +2,9 @@
  * `InProcessAdminOrdersClient` — the admin Orders console surface with commerce
  * truth held on the plugin's own document store (work order 02, INC-B10b-ii).
  *
- * WHAT THIS CLASS IS. The in-process twin of `AdminOrdersClient`: the same
+ * WHAT THIS CLASS IS. The sole implementation of `AdminOrdersSurface`: the same
  * twelve methods, the same argument shapes, the same RETURN VALUES — including
- * every field the HTTP wire carries — with the `@otta-sh/domain` use-cases
+ * every field the `*Wire` types carry — with the `@otta-sh/domain` use-cases
  * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
  * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
  * never touched.
@@ -41,9 +41,10 @@
  * 409 for a state-machine/ceiling conflict, 400 for a refused input) rather than
  * inventing a code of its own.
  *
- * WHAT WAS PORTED, AND FROM WHERE. Four pieces of the service's route layer
- * (`packages/service/src/routes/admin.ts`) are behaviour rather than framing, so
- * they are mirrored here and named so the two can be compared by eye:
+ * WHAT WAS PORTED, AND FROM WHERE. Four pieces of the standalone
+ * `@otta-sh/service` package's admin route layer (now deleted) are behaviour
+ * rather than framing, so they are mirrored here and named so the two could be
+ * compared by eye:
  *  - the orders list's opaque cursor (position + filter + limit, base64url JSON),
  *    its RE-VALIDATION on decode, and the fail-closed disagreement check between
  *    a token's filter/limit and the caller's — plus the client-side recovery that
@@ -153,7 +154,7 @@ import type {
 	RefundWire,
 	ResolveReconciliationResult,
 	TransitionOrderResult,
-} from "./admin-orders-client.js";
+} from "./admin-orders-surface.js";
 
 /** The page-size bounds the list query schema enforced (`ordersListQuery`:
  *  `min(1).max(100)`, default 25). Mirrored, not imported — the service package
@@ -257,8 +258,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
 		);
 		if (res.ok) return { ok: true, transitioned: res.transitioned };
-		// The transition surface carries no `reason` on the wire — only the status,
-		// exactly as `AdminOrdersClient.transitionOrder` returns it.
+		// `TransitionOrderResult` carries no `reason` on its failure arm — only the
+		// status, which is the shape `AdminOrdersSurface.transitionOrder` declares.
 		return { ok: false, status: res.reason === "ORDER_NOT_FOUND" ? 404 : 409 };
 	}
 

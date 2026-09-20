@@ -3,11 +3,12 @@
  * hand-rolled, no schema library in the plugin, because the routes are
  * reachable by anything that can POST to `/_emdash/api/plugins/otta/...`).
  *
- * Everything here runs BEFORE any `ctx.http` egress: a garbage body must never
- * become an upstream round trip, and certainly never an order. Bounds mirror
- * `@otta-sh/service`'s own `checkoutBody` / `shippingAddressBody`
- * (`packages/service/src/schemas.ts`) so a request this layer accepts is one
- * the service will not reject on shape — the service re-validates regardless.
+ * Everything here runs BEFORE any commerce-client call: a garbage body must
+ * never become an in-process round trip, and certainly never an order. Bounds
+ * mirror the `checkoutBody` / `shippingAddressBody` schemas the standalone
+ * `@otta-sh/service` used to enforce before it was folded into the plugin, so
+ * a request this layer accepts is one the commerce client will not reject on
+ * shape — it re-validates regardless.
  *
  * `buyerRef` is checked for LENGTH only, never for format: the service
  * documents it as an "email/session claim token", and the *site* owns the

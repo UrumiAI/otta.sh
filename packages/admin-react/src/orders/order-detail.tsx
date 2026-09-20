@@ -262,8 +262,9 @@ const PILLED_ORDER_STATE = "failed";
  * with a visible ellipsis so an operator can SEE that it was cut.
  *
  * `buyerRef` is unverified free text up to 320 characters
- * (`min(1).max(320)`, format unchecked — `packages/service/src/schemas.ts`,
- * `packages/plugin/src/storefront/checkout-route-input.ts`) landing inside a
+ * (`min(1).max(320)`, format unchecked — the bound now lives solely in
+ * `packages/plugin/src/storefront/checkout-route-input.ts`, the standalone
+ * service's copy of it having been deleted with that package) landing inside a
  * ~200-character sentence (`order-refund-copy.ts`'s `CONFIRM_BUDGET`). That
  * function already refuses to overflow the budget, but its own answer to
  * overflow is to DROP the recipient silently and say "this order's buyer" —
@@ -772,7 +773,8 @@ export function OrderDetail({
 					// meant to stay fully selectable and copy-pasteable, which a
 					// clamp inside the DOM cannot honestly promise. `buyerRef` is
 					// caller-supplied free text up to 320 characters with no format
-					// check (`packages/service/src/schemas.ts`), so the heading's ONE
+					// check (`plugin/src/storefront/checkout-route-input.ts`), so the
+					// heading's ONE
 					// unbroken token has to be able to WRAP rather than push the rest
 					// of the line — including the date — off the viewport. THE
 					// PRINCIPLE: layout containment via CSS wherever the full value

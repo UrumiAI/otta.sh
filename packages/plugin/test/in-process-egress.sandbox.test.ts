@@ -45,10 +45,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import type { CommerceSweepSummary, SweepLegOutcome } from "../src/cron/index.js";
 import { X402_SETTLE_ROUTE } from "../src/payments/x402-settle-route.js";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
@@ -66,7 +63,7 @@ const EMAIL_FROM = "orders@egress.example";
 const EMAIL_PATH = "/email/send";
 const FACILITATOR_PATH = "/x402/verify";
 
-let stub: StubCommerceServer;
+let stub: StubHttpServer;
 let granted: SandboxHandle;
 let refused: SandboxHandle;
 let storage: StorageAccess;
@@ -208,7 +205,7 @@ function postsTo(pathname: string): number {
 
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	stub = await startStubCommerceServer();
+	stub = await startStubHttpServer();
 	stub.respondWith("POST", (req) => {
 		if (req.url === FACILITATOR_PATH) {
 			const asked = req.body as { orderId?: string; transaction?: string };

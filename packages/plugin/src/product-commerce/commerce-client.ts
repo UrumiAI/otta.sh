@@ -1,12 +1,33 @@
 /**
- * The `CommerceClient` transport port (ADR-0002 §3 / plan §5): storefront
- * routes and the widget's save route depend on this INTERFACE, never on
- * `fetch` directly. `HttpCommerceClient` (http-commerce-client.ts) is the
- * only adapter this phase builds — `InProcessCommerceClient` is deferred
- * (ADR-0002 §6: no premature abstraction beyond a second real adapter).
+ * The `CommerceClient` port (ADR-0002 §3 / plan §5): storefront routes and the
+ * widget's save route depend on this INTERFACE, never on `fetch` directly.
+ * `InProcessCommerceClient` (`src/commerce/in-process-commerce-client.ts`) is
+ * now its only implementation — work order 02 folded the commerce service into
+ * the plugin, and INC-D3a/D3b deleted the `ctx.http` adapter that used to be the
+ * other one.
  *
- * Wire types mirror `@otta-sh/service`'s `PUT/GET/DELETE /products/:id/commerce`
- * 1:1 (money as an integer + ISO-4217 string, never a float).
+ * ── WHY THE `*Wire` TYPES STAY (the INC-D3b call, to cost out at INC-D4) ──
+ *
+ * These interfaces, and the matching ones in `src/admin/*-surface.ts`, were
+ * written to mirror the commerce service's JSON 1:1. That service is gone, so
+ * nothing here mirrors anything over a network any more and the word "wire" is
+ * HISTORICAL — it now just names the shape the plugin's own route handlers
+ * return and the Block Kit renderers and storefront routes consume.
+ *
+ * They stay as they are. They are deliberately decoupled from the domain's
+ * branded money (`Cents`) and its use-case result unions, and neither belongs in
+ * presentation code: a Block Kit renderer that had to unwrap a branded scalar,
+ * or a storefront route that had to narrow a domain result union, would be
+ * carrying the domain's vocabulary into a layer whose job is to format strings.
+ * The plugin's sandbox-cleanliness rule (no `@otta-sh/domain` import from these
+ * modules) points the same way.
+ *
+ * INC-D4 should cost out only the NARROWER question: de-duplicating these
+ * `*Wire` interfaces against the domain's READ MODELS, which are the shapes they
+ * actually restate field-for-field. That is a real duplication with a real
+ * maintenance cost, and it is a separate decision from "use domain types in the
+ * plugin", which the paragraph above rejects. Nothing about it is required for
+ * correctness today.
  */
 
 export interface CommerceMoney {
@@ -88,11 +109,11 @@ export interface ProductCommerceBatchItem {
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 
 // ── Variants wire types ──────────────────────────────────────────────────
-// Mirror `@otta-sh/service`'s `serializeVariant`/`serializeVariantSummary` 1:1.
-// Money is an integer minor-unit amount + an ISO-4217 string, and ABSENT IS
-// ABSENT: an unpriced size is `null`, never `0` and never a zero-amount object.
+// The shape the plugin's own variant serialization returns. Money is an integer
+// minor-unit amount + an ISO-4217 string, and ABSENT IS ABSENT: an unpriced size
+// is `null`, never `0` and never a zero-amount object.
 
-/** One sellable unit of a product, as the service serializes it. */
+/** One sellable unit of a product, as the plugin serializes it. */
 export interface ProductVariantWire {
 	productId: string;
 	/** The CMS repeater row's stable, IMMUTABLE key — the variant's identity
@@ -277,9 +298,9 @@ export interface CommerceClient {
 	): Promise<void>;
 	// ── end variants ──────────────────────────────────────────────────────
 
-	// ── Phase 3 group E: cart (plan §6, wire mirrors @otta-sh/service's ─────
-	// `/carts` routes 1:1, hand-rolled like the wire types above — the
-	// plugin declares no runtime dependency on @otta-sh/domain/service). ────
+	// ── Phase 3 group E: cart (plan §6) ────────────────────────────────────
+	// Hand-rolled like the wire types above: these modules declare no runtime
+	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
 	createCart(currency?: string): Promise<{ cartId: string }>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
 	addCartLine(
@@ -305,10 +326,9 @@ export interface CommerceClient {
 	): Promise<CartResult<Record<string, never>>>;
 	// ── end Phase 3 group E: cart ─────────────────────────────────────────
 
-	// ── Phase 5: storefront customer account (plan §7, wire mirrors ───────
-	// @otta-sh/service's /auth + /me routes 1:1; the bearer session token is
-	// passed through from the plugin's first-party cookie layer, never held
-	// by the sandboxed plugin itself). ────────────────────────────────────
+	// ── Phase 5: storefront customer account (plan §7) ────────────────────
+	// The bearer session token is passed through from the plugin's first-party
+	// cookie layer, never held by the sandboxed plugin itself. ─────────────
 	requestLoginLink(email: string): Promise<{ ok: true }>;
 	verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult>;
 	logout(sessionToken: string): Promise<void>;
@@ -330,12 +350,11 @@ export interface CommerceClient {
 	 * `buyerRef`: the raw-email scope is operator-only and its secret is one the
 	 * sandbox does not and must not hold.
 	 *
-	 * DECLARED HERE, not only on `HttpCommerceClient`: `entitlements/download-route.ts`
-	 * calls it through the client it is handed, so the PORT has to carry it. The
-	 * declaration was missing while that route constructed the concrete class
-	 * directly; INC-A6 routes it through `makeCommerceClient`, which returns the
-	 * port. `HttpCommerceClient` already implements exactly this signature, so
-	 * adding it changes no behaviour — only what the type system knows.
+	 * DECLARED HERE, on the PORT: `entitlements/download-route.ts` calls it
+	 * through the client it is handed, so the port has to carry it. The
+	 * declaration was missing while that route constructed a concrete client
+	 * directly; INC-A6 routed it through `makeCommerceClient`, which returns the
+	 * port instead.
 	 */
 	checkEntitlement(
 		scope: { orderId?: string },
@@ -345,9 +364,8 @@ export interface CommerceClient {
 	// ── end delivery authorization ────────────────────────────────────────
 
 	// ── Phase 4: checkout (quote → order → public order read) ─────────────
-	// Wire mirrors @otta-sh/service's routes/orders.ts 1:1. Every typed failure
-	// rides the same `{ ok: false, reason }` envelope regardless of status
-	// (adapter rule #2 — 400/404/409/502 all carry one), so callers branch on
+	// Every typed failure rides the same `{ ok: false, reason }` envelope
+	// (adapter rule #2, "no status-code-as-logic"), so callers branch on
 	// the token and never on an HTTP code.
 	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
 	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
@@ -363,8 +381,8 @@ export interface CommerceClient {
 }
 
 // ── Phase 4: checkout wire types ───────────────────────────────────────────
-// Mirror @otta-sh/service's `quoteBody`/`checkoutBody` (schemas.ts) and its
-// quote/checkout/public-order serializations 1:1. Money is integer minor units
+// The request shapes the plugin's checkout routes accept and the
+// quote/checkout/public-order shapes they return. Money is integer minor units
 // + an ISO-4217 string, never a float.
 
 export interface QuoteRequestWire {
@@ -384,8 +402,8 @@ export interface QuoteBreakdownWire {
 	appliedCouponCode: string | null;
 }
 
-/** `@otta-sh/service`'s quote rejections: the cart pre-checks it runs before
- *  `computeQuote` (`orders.ts`) plus `QuoteFailure`'s own union. */
+/** The quote rejections: the cart pre-checks run before `computeQuote`, plus
+ *  the domain `QuoteFailure`'s own union. */
 export type QuoteFailureReason =
 	| "CART_NOT_FOUND"
 	| "CART_EMPTY"
@@ -502,8 +520,8 @@ export type PublicOrderResult =
 // ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────
-// Mirror @otta-sh/service's serializeOrder / serializeCustomer / serializeAddress
-// 1:1. Money is integer minor units + ISO-4217 string, never a float.
+// The order / customer / address shapes the account routes return. Money is
+// integer minor units + ISO-4217 string, never a float.
 export interface OrderTotalsWire {
 	currency: string;
 	subtotalCents: number;
@@ -555,8 +573,8 @@ export type AuthedResult<T> = ({ ok: true } & T) | { ok: false; reason: "UNAUTHE
 // ── end Phase 5 customer account wire types ────────────────────────────────
 
 // ── Phase 3 group E: cart wire types (plan §6) ─────────────────────────────
-// Mirror `@otta-sh/service`'s `routes/carts.ts` serialization 1:1: NO price
-// field on a line (a cart line snapshots no price — domain `CartStore`'s own
+// The cart serialization: NO price field on a line (a cart line snapshots no
+// price — domain `CartStore`'s own
 // documented invariant; the live price is read from `product_commerce`
 // elsewhere, at display/checkout, never stored on the line).
 export interface CartLineWire {
@@ -576,9 +594,9 @@ export interface CartWire {
 	 *
 	 * REQUIRED, never optional: an optional field would let TypeScript's own
 	 * narrowing bless a bare `!== null` on a value that can still arrive
-	 * `undefined` over a skewed wire. `HttpCommerceClient.getCart` NORMALIZES a
-	 * missing, empty or non-string value to `null` before any consumer sees it,
-	 * which is what makes this declaration honest at runtime too.
+	 * `undefined`. `InProcessCommerceClient`'s `serializeCart` copies the domain
+	 * `Cart.orderId`, which is itself `OrderId | null` and never absent, so the
+	 * declaration is honest at runtime and not merely by assertion.
 	 *
 	 * Not a payment signal (it is stamped before the payment intent), and a null
 	 * does NOT prove that no order exists for the cart.
@@ -590,13 +608,11 @@ export interface CartWire {
 
 /**
  * Typed cart-mutation failures — SEMANTIC TOKENS, never English (matches
- * Phase 2's `AvailabilityToken` pattern): `@otta-sh/service`'s `CartFailure`
- * union verbatim (adapter-architecture rule #2, "no status-code-as-logic" —
- * `OUT_OF_STOCK` rides a 200, `CART_NOT_FOUND`/`LINE_NOT_FOUND` a 404,
- * `CART_CHECKED_OUT`/`LINE_CHECKED_OUT`/`HOLD_EXPIRED` a 409 — the CLIENT
- * normalizes all of these back to a uniform `{ ok: false; reason }` value,
- * see `HttpCommerceClient`'s `#cartResult`, so callers branch on the token,
- * never the HTTP status).
+ * Phase 2's `AvailabilityToken` pattern): the domain `CartFailure` union
+ * verbatim. Adapter-architecture rule #2, "no status-code-as-logic": every one
+ * of these rides the same uniform `{ ok: false; reason }` value, so callers
+ * branch on the token and there is no status to reach for even where the route
+ * layer picks one.
  */
 export type CartFailureReason =
 	| "OUT_OF_STOCK"
