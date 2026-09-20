@@ -56,5 +56,6 @@ folds per-transport duplicates into single cases.
 rode on the HTTP tier's request log, so it is no longer covered past the point
 where the Stripe gateway is called. Tracked as `#286`.
 
-`@otta-sh/service` loses its `wrangler.jsonc` and its `wrangler dev` / `wrangler
-deploy` scripts — it is no longer a deployable.
+With the plugin no longer calling out to it, the commerce service stops being a
+separately deployed Worker: there is one deployable left, and it is the site the
+plugin runs in.

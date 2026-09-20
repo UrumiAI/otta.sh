@@ -8,29 +8,29 @@ Fix: a product priced in the admin console could never be stocked.
 Setting a SKU on the **Pricing & inventory** page wrote only `product_commerce` — nothing ever
 created the product's inventory record. The merchant's next step, Restock, then failed with "No
 stock record yet" (`NO_INVENTORY_ROW`), permanently, with no way forward from the admin UI.
-`initialOnHand` on the integrator `PUT /products/:id/commerce` was the only thing in the whole
-system that had ever created one.
+`initialOnHand` on the integrator commerce upsert was the only thing in the whole system that
+had ever created one.
 
 The invariant is now **a product with a SKU has an inventory record**, held by the data rather
 than by one caller, so *both* write paths seed it:
 
 - the admin commerce edit seeds a zero record for the resulting SKU after an applied edit;
-- `PUT /products/:id/commerce` seeds `0` when it carries a SKU and no `initialOnHand`, so the
-  integrator path can no longer mint a SKU with nothing behind it either.
+- the integrator commerce upsert seeds `0` when it carries a SKU and no `initialOnHand`, so that
+  path can no longer mint a SKU with nothing behind it either.
 
-The seed is the existing create-if-absent `INSERT … ON CONFLICT (sku) DO NOTHING`, so it can
-never clobber a live or already-decremented count.
+The seed is the existing create-if-absent write — it takes effect only when the SKU has no
+record at all — so it can never clobber a live or already-decremented count.
 
 **One behaviour change to know about: initial stock now only lands on the first save that carries
 the SKU.** Because the seed is create-if-absent and now runs as soon as a SKU exists, an
 `initialOnHand` sent on a *later* save is silently discarded — the record is already there at `0`.
 Previously that later save was the only way to heal a product whose stock record had gone missing.
 
-In practice this only affects the integrator `PUT /products/:id/commerce`: send `initialOnHand`
+In practice this only affects the integrator commerce upsert: send `initialOnHand`
 with the first SKU-bearing call, or add stock afterwards with **Restock** on Pricing & inventory,
 which now always has a record to add to. Nothing is lost. (The CMS "Product data" panel also had a
 Stock input with this hazard, but it is deleted in the same release — see "one home per field" —
-so the only stock paths that ship are the integrator PUT and Restock.)
+so the only stock paths that ship are the integrator upsert and Restock.)
 
 The discard is deliberate: the seed must never overwrite a live or already-decremented count.
 

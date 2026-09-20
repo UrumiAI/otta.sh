@@ -117,6 +117,27 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(keys).not.toContain("admin/settings");
 	});
 
+	// Manifest-level, not behavioral: em-dash's host — not this sandboxed plugin
+	// — is what enforces `public` by routing an anonymous request only through
+	// its own public dispatcher (see the route registration's comment in
+	// plugin.ts); invoking the sandbox directly (as every other test in this
+	// file does via `sandbox.invokeRoute`) bypasses that host-side gate
+	// entirely, so it cannot prove auth either way. The manifest flag IS the
+	// contract the host reads, and it previously had zero coverage anywhere in
+	// the repo: `service/test/admin-read-gate.test.ts` and
+	// `service/test/auth.test.ts` pinned the (now-deleted) service's own gate,
+	// not this one.
+	test("the admin route is registered non-public — em-dash must NOT treat it as anonymous/public dispatch", () => {
+		const adminRoute = plugin.routes?.admin;
+		expect(adminRoute).toBeDefined();
+		// `RouteEntry` is `RouteHandler | { handler; public? }` — a bare-function
+		// entry carries no `public` flag at all, which is itself not the
+		// non-public admin shape this asserts.
+		if (typeof adminRoute === "function")
+			throw new Error("admin route registered as a bare handler, with no `public` flag");
+		expect(adminRoute?.public).toBe(false);
+	});
+
 	test("page_load /reports renders the Reports blocks over real in-process order/inventory data", async () => {
 		const { storage } = await storageBridge();
 		await seedReportingFixtures(storage);

@@ -31,7 +31,7 @@ existing suite, staging and e2e keep running unchanged.
   `STRIPE_UNSUPPORTED_CURRENCIES` deny-list (Stripe's documented zero- and
   three-decimal sets) is checked **before any network call**, throwing a terminal
   `PaymentIntentError` with provider code `unsupported_currency` — so checkout
-  answers 502 instead of overcharging. The offline path is not gated (it moves no
+  refuses instead of overcharging. The offline path is not gated (it moves no
   money). Lifting the restriction needs an exponent-aware money boundary.
 
 **`@otta-sh/domain`**
@@ -49,21 +49,12 @@ existing suite, staging and e2e keep running unchanged.
 - The idempotent-replay short-circuit no longer calls `createIntent` when the
   replayed order has left `pending` (paid / failed / expired / cancelled): now
   that this is a live provider call, a gateway outage must not turn a replay of an
-  already-PAID order into a 502. Such a replay returns the order with an empty
-  handle — `intentId: ""`, `clientAction: { kind: "none" }` (no new intent was
-  minted and none is needed); the wire shape is unchanged.
+  already-PAID order into a payment failure. Such a replay returns the order with
+  an empty handle — `intentId: ""`, `clientAction: { kind: "none" }` (no new intent was
+  minted and none is needed); the returned shape is unchanged.
 - **Fix:** `createOrderFromCart`'s outer catch released the coupon redemption for
   *any* throw after redeem, including throws after the order row was inserted — the
   order kept its discounted total while the use was handed back. An `orderMinted`
   ownership handoff (symmetric with the existing `onFailure` plumbing) now releases
   only while no order row owns the redemption. `RESERVATION_LOST` keeps its eager
   release (recovery there is a new cart + new key) — a deliberate asymmetry.
-
-**`@otta-sh/service`**
-
-- New `stripe-wiring.ts` (`wireStripeGateway`), used by both the Node bin and the
-  Worker entry: `STRIPE_WEBHOOK_SECRET` without `STRIPE_SECRET_KEY` now means
-  checkout hands buyers unpayable offline client secrets, so boot logs a loud
-  `console.warn`. **Warn, never throw** — staging/e2e run without a secret key.
-- `POST /checkout/orders` answers **502** `{ ok: false, reason:
-  "PAYMENT_INTENT_FAILED" }` when the gateway call fails.

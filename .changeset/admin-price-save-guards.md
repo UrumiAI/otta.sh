@@ -24,7 +24,7 @@ but it now has four states:
   storefront immediately, and `Discard` appears beside `Save`;
 - **in flight** — only the button that was clicked reads `Saving…`, and it stays
   that way until the re-read that follows the write lands, so no save button is
-  ever re-armed against a watermark the service has already superseded;
+  ever re-armed against a watermark the store has already superseded;
 - **saved** — a receipt renders inside the section, under the button, naming the
   two amounts and saying that orders already placed keep the price they were
   charged. It persists; nothing dismisses it.

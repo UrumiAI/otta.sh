@@ -24,20 +24,13 @@ admin's disposition and clears the flag.
   `outcome ∈ {refunded, fulfilled, written_off}` RECORDS the disposition — it moves no
   money; an actual refund/cancel stays the separate `transitionOrder` command. Resolving a
   never-flagged order is `NOT_IN_RECONCILIATION`; an already-resolved order is a benign
-  idempotent no-op (mirrors `transitionOrder`'s already-at-target no-op).
-- **Adapters (`[Adapters]`).** Forward-only migration `0011` adds four nullable
-  `reconciliation_*` columns; the Kysely adapter implements the guarded flip and hydrates the
-  resolution. Green against the shared `orderStoreContract` on better-sqlite3 and Postgres,
-  plus a Postgres race test: N concurrent resolves on one flagged order yield exactly one
-  winner and write the disposition exactly once.
-- **Service (`[Service]`).** `POST /admin/orders/:id/resolve-reconciliation` mirrors the port
-  1:1 (body requires `expectedFlag`), under the internal-token + `X-Service-Token` write gate;
-  `RECONCILIATION_FLAG_CHANGED` and `NOT_IN_RECONCILIATION` map to 409; the order wire gains
-  `reconciliationResolution`.
+  idempotent no-op (mirrors `transitionOrder`'s already-at-target no-op). The recorded
+  disposition is hydrated onto the order read as `reconciliationResolution`. Green against
+  the shared `orderStoreContract`, including the race where N concurrent resolves on one
+  flagged order yield exactly one winner and write the disposition exactly once.
 - **Plugin (`[Plugin]`).** The order detail page surfaces an open flag with an alert banner +
   a resolve form (outcome/reason/resolvedBy; the displayed flag rides along as
-  `expectedFlag`), shows the recorded disposition once resolved, and threads the tokens via
-  `readAdminTokens`. The outcome copy makes explicit that resolving records a disposition and
-  does NOT move money ("refunded (recorded only — issue the refund separately)" + a context
-  caption); a stale-review 409 surfaces a dedicated "reconciliation state changed — reload"
-  notice. Sandbox-clean.
+  `expectedFlag`) and shows the recorded disposition once resolved. The outcome copy makes
+  explicit that resolving records a disposition and does NOT move money ("refunded (recorded only — issue the refund separately)" + a context
+  caption); a stale-review conflict surfaces a dedicated "reconciliation state changed —
+  reload" notice. Sandbox-clean.

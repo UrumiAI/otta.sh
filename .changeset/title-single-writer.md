@@ -23,9 +23,9 @@ and rejected, and the reasoning is recorded in
 **Breaking API changes** (relevant if you integrate directly, not if you only use the console):
 
 - `UpdateProductCommerceFieldsInput` (`@otta-sh/domain`) no longer has a `title` field.
-- `PATCH /admin/products/:id` no longer accepts `title`. Its body schema is now **strict**: an
-  unrecognised key is a `400` naming the field, rather than being silently dropped behind a
-  `200`. Anything still sending `title` on that route will now fail on **every** edit, which is
-  deliberate — a silently discarded rename is the failure this release removes.
-- `PUT /products/:id/commerce` is **unchanged** and still accepts `title`. It is the CMS sync's
-  channel and the one sanctioned writer.
+- The product-edit command behind the Pricing & inventory form no longer accepts `title`, and
+  its input is now **strict**: an unrecognised key is rejected by name rather than silently
+  dropped behind a success. Anything still sending `title` will now fail on **every** edit,
+  which is deliberate — a silently discarded rename is the failure this release removes.
+- The CMS content sync's own write path is **unchanged** and still carries `title`. It is the
+  one sanctioned writer.

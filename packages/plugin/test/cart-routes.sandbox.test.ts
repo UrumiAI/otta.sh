@@ -392,6 +392,16 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		// `toBeNull()` alone would also pass on an absent key.
 		expect(cart).toHaveProperty("orderId");
 		expect(cart.orderId).toBeNull();
+		// AND NO PRICE ON A LINE, the other half of the same pass-through: a cart
+		// line snapshots none, and the live price is read from the commerce row at
+		// display and at checkout. ABSENT rather than null — a nulled key would
+		// still tell a caller the field is there and invite a probe. `serializeLine`
+		// is a typed whitelist, so this is belt-and-braces over the type; it stands
+		// where the deleted service suite's cart-line price guard stood.
+		for (const line of cart.lines) {
+			expect(line).not.toHaveProperty("price");
+			expect(line).not.toHaveProperty("unitPriceCents");
+		}
 	});
 
 	test("cart/read maps an unknown cart to the typed CART_NOT_FOUND reason (not a thrown error)", async () => {

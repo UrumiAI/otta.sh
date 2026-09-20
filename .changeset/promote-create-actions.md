@@ -40,7 +40,7 @@ construction rather than by arithmetic).
 **A refusal no longer costs the operator their typing, and now that is a
 property of the response rather than of the client.** Every create refusal —
 a blank id, an unparseable percent, a cross-type field, a duplicate id
-rejected by the service — re-renders the create screen with everything that
+rejected by the store — re-renders the create screen with everything that
 was submitted put back as `initial_value` (DA-3a-i). Before this, the values
 survived only as unsubmitted state in a form the client happened to keep
 mounted, and the E-2 path did not keep it: clicking a create button from an

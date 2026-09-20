@@ -22,15 +22,12 @@ CMS document and the title by renaming it.
   concurrent edit is a `stale` result the caller reloads on, never a silent
   clobber. Idempotent replay dedupes a double-submit; currency integrity is
   atomic (a price edit can never silently switch an already-priced product's
-  currency); `price > 0` and non-negative dimensions are validated
+  currency); a sku already held by another live product is a typed `SKU_TAKEN`
+  rejection; `price > 0` and non-negative dimensions are validated
   (`InvalidProductFieldError`). Never touches `active`/`deletedAt`/watermarks.
-- **Adapters** — the fake and the Kysely store (sqlite + Postgres) implement the
-  guarded update as a single atomic conditional `UPDATE` + a classify-the-no-op
-  re-read, contract-pinned to identical guard order across all three.
-- **Service** — `PATCH /admin/products/:id` mirroring the port under the
-  X-Service-Token write gate (+ the admin X-Internal-Token): stale → 409
-  `STALE_EDIT` with the current watermark, currency → 409 `CURRENCY_MISMATCH`,
-  SKU collision → 409 `SKU_TAKEN`, non-positive price → 400, unknown → 404.
+  The guarded update is a single atomic conditional write plus a
+  classify-the-no-op re-read, contract-pinned so every adapter applies the
+  guards in the same order and a stale edit reports the current watermark.
 - **Plugin** — an edit form on the product detail leaf. Money is a TEXT input
   parsed to integer minor units by exact integer string math (never a Block Kit
   `number_input`, which hands back a JS float); currency is fixed for an

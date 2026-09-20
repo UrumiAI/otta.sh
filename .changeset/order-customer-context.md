@@ -25,18 +25,11 @@ safe because `linkGuestOrders` already treats that email match as ownership proo
   (`claimed`/`unclaimed`/`guest`), and aggregates addresses, sessions, order count, and
   recent orders (excluding the viewed order, capped) under the union key — identical
   context from ANY of the person's orders.
-- **Adapters (`[Adapters]`).** One shared `orderFilterConditions` builder feeds both
-  `listOrders` and `countOrders` (case-folding kept in sync structurally);
-  `listForCustomer` never selects `token_hash`. Green against the extended contracts on
-  better-sqlite3 and Postgres. No index exists yet on `orders.customer_id`/`buyer_ref`
-  (pre-existing debt — tracked in the indices follow-up), so the new predicates seq-scan.
-- **Service (`[Service]`).** `GET /admin/orders/:id/customer-context` mirrors the use-case
-  1:1 under the internal-token guard (a read — the write gate does not apply). This is the
-  first admin-surface routing of customer PII (email, address book, session metadata):
-  token-gated, token-free on the wire, and never logged.
 - **Plugin (`[Plugin]`).** The order detail gains a read-only "Customer" section: identity
   with honest linkage copy ("order not yet claimed" / "Guest — no account"), the profile
   address book behind a prominent "NOT the address this order shipped to" disclaimer
   (orders capture no shipping address), token-free session history, and the person's other
   recent orders. Fetched in parallel with notes; a failed read degrades to an explicit
-  "unavailable" body — never a blank section, never a blanked detail page. Sandbox-clean.
+  "unavailable" body — never a blank section, never a blanked detail page. This is the
+  first admin surface to render customer PII (email, address book, session metadata):
+  token-free throughout, and never logged. Sandbox-clean.

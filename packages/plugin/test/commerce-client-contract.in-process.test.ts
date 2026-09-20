@@ -8,11 +8,13 @@
  * bound to a rejecting stub precisely so a method that reached for egress would
  * fail the suite rather than quietly work.
  *
- * WHY THE SAME CASES, UNCHANGED. The contract is the equivalence proof: the
- * cases were lifted out of the HTTP client's own suites so both transports can
- * execute them, and the value of that evaporates the moment a tier narrows,
- * skips or reorders one. A case that fails here is a composition or an adapter
- * defect, never a case to soften.
+ * WHY THE SAME CASES, UNCHANGED. The contract was the equivalence proof: the
+ * cases were lifted out of the HTTP client's own suites so both transports could
+ * execute them, and the value of that would have evaporated the moment a tier
+ * narrowed, skipped or reordered one. INC-D3b deleted the HTTP tier and this is
+ * the only one left, but the cases stay exactly as they were, because they are
+ * the PORT's spec rather than this composition's: a case that fails here is a
+ * composition or an adapter defect, never a case to soften.
  *
  * WHAT IS REAL AND WHAT IS NOT. The document store is real — real databases,
  * never mocks, because no fake can lose a compare-and-set race — and it is built
@@ -27,16 +29,19 @@
  * on the host in any form.
  *
  * Rows ARE cleared per case here, which is what makes `reset()` a real reset in
- * this tier rather than the documented no-op the HTTP tier implements.
+ * this tier rather than the documented no-op the HTTP tier implemented.
  *
- * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE, and the other tier
- * declares the reverse. Neither is a tier excusing itself: the two gaps are real,
- * they are opposite, and each is pinned by a case that names its own gate — so a
- * test report says which tier skipped what and why. The clock is offerable HERE
+ * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE; the HTTP tier
+ * declared the reverse, and the two gaps were real and opposite rather than a
+ * tier excusing itself. Each is still pinned by a case that names its own gate,
+ * so a test report says what skipped and why. The clock is offerable HERE
  * because this backend is rebuilt per case, so winding it forward costs nothing
  * `reset()` cannot put back. The gateways are not offerable here YET, because the
- * payment adapters have not moved in-process; when they do, the payments hook
- * appears and the shared checkout case starts running with no edit to any case.
+ * payment adapters have not moved in-process; with the HTTP tier gone the gated
+ * checkout and refund-ceiling cases therefore skip everywhere, and their
+ * invariants are held at the DOMAIN layer meanwhile (see the note on
+ * `CommerceClientTier.payments`). When the adapters land, the payments hook
+ * appears here and those cases start running with no edit to any case.
  */
 import { email as toEmail } from "@otta-sh/domain";
 import { FixedClock } from "@otta-sh/domain/testing";
@@ -62,9 +67,9 @@ import {
 
 /**
  * The in-process tier. `arrange` programs state through the client's own writes
- * and through the domain PORTS, exactly as the HTTP tier does — so the two tiers
- * seed identically and a difference in a case's outcome can only come from the
- * transport under test.
+ * and through the domain PORTS, exactly as the HTTP tier did — the two tiers
+ * seeded identically, so a difference in a case's outcome could only have come
+ * from the transport under test.
  */
 function inProcessTier(): CommerceClientTier {
 	let harness: InProcessCommerceHarness | undefined;
@@ -101,7 +106,7 @@ function inProcessTier(): CommerceClientTier {
 			await open?.close();
 		},
 		async reset() {
-			// A REAL reset, unlike the HTTP tier's documented no-op: it empties the
+			// A REAL reset, unlike the HTTP tier's documented no-op was: it empties the
 			// rows and keeps the schema, which is the only form of reset that keeps the
 			// revision trigger the guarded writes depend on.
 			await harness?.reset();
@@ -116,11 +121,11 @@ function inProcessTier(): CommerceClientTier {
 		 * would let its slice pass against nothing, answering "no revenue" where the
 		 * honest answer would have been "not wired yet".
 		 *
-		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that is the design rather
-		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticate a caller TO
-		 * THE SERVICE, and there is no service here. EmDash's own admin auth and CSRF
-		 * gate the console routes (ADR-0014 D3), so the gated tier's auth-rejection
-		 * cases are transport cases and stay in the HTTP tier's own file.
+		 * NO TOKENS ARE THREADED, unlike the HTTP tier, and that was the design rather
+		 * than a gap: `X-Internal-Token` / `X-Service-Token` authenticated a caller TO
+		 * THE SERVICE, and there is no service any more. EmDash's own admin auth and
+		 * CSRF gate the console routes (ADR-0014 D3); the auth-rejection cases were
+		 * transport cases and went with the HTTP tier's own file.
 		 */
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
 			const ctx = harnessOrThrow().ctx;
@@ -169,8 +174,8 @@ function inProcessTier(): CommerceClientTier {
 			 * `requestLoginLink` for one reason — this transport dispatches no mail yet,
 			 * and the emitted token is part of no reply, so there is no message to
 			 * capture and this is the only way to hold a token a shopper would have
-			 * received. The other tier, which does dispatch, captures the mail instead.
-			 * The redemption is the client's own on both, which is the half the cases
+			 * received. The HTTP tier, which did dispatch, captured the mail instead.
+			 * The redemption was the client's own on both, which is the half the cases
 			 * are actually about.
 			 */
 			async session(email) {
@@ -217,7 +222,7 @@ describe("commerceClientContract over InProcessCommerceClient", () => {
 
 /** The admin slice gets its OWN tier instance — its own database and its own
  *  `reset()` — so the console cases and the storefront cases cannot seed over
- *  each other, exactly as the HTTP file stands a second service for its admin
+ *  each other, exactly as the HTTP file stood a second service for its admin
  *  slice. */
 const admin = inProcessTier();
 
@@ -232,13 +237,14 @@ describe("commerceClientContract over the in-process admin clients", () => {
 /**
  * WHAT STAYS IN THIS FILE, AND WHY EACH ONE CANNOT BE SHARED.
  *
- * Most of what this file used to assert alone now lives in the shared contract and
- * runs on both transports: the watermark, variant-key, title, zero-price and
- * batch-cap refusals, and every identity case. Each moved because the OTHER
- * transport can be held to it too — a bound proven on one implementation is not
- * evidence about the port.
+ * Most of what this file used to assert alone now lives in the shared contract:
+ * the watermark, variant-key, title, zero-price and batch-cap refusals, and every
+ * identity case. Each moved because the OTHER transport could be held to it too —
+ * a bound proven on one implementation is not evidence about the port — and each
+ * stays there now that transport is gone, because the contract is the port's spec
+ * and not one tier's file.
  *
- * What is left below is what genuinely does not survive the move, with the reason
+ * What is left below is what genuinely did not survive the move, with the reason
  * recorded per block rather than left to be rediscovered. None of it is a case that
  * was merely inconvenient to share.
  */
@@ -262,17 +268,17 @@ async function expectRefusal(call: Promise<unknown>, field: string): Promise<voi
 /**
  * THE BOUNDS WHOSE REFUSAL IS NOT COMPARABLE ACROSS TRANSPORTS.
  *
- * These two are here rather than in the shared contract because the other transport
- * does not REJECT on them: its cart and quote routes normalize a bad value into one
- * of the port's typed cart tokens, so the same input produces a rejection on this
- * tier and a resolved `{ ok: false, reason }` on that one. Those are two different
- * behaviours, and a shared case would have to assert one of them loosely enough to
- * accept the other — exactly the softening that makes an equivalence proof
+ * These two are here rather than in the shared contract because the HTTP transport
+ * did not REJECT on them: its cart and quote routes normalized a bad value into one
+ * of the port's typed cart tokens, so the same input produced a rejection on this
+ * tier and a resolved `{ ok: false, reason }` on that one. Those were two different
+ * behaviours, and a shared case would have had to assert one of them loosely enough
+ * to accept the other — exactly the softening that makes an equivalence proof
  * worthless. So the strict assertion lives on the tier that can make it, and the
- * difference is named instead of papered over.
+ * difference stays named instead of papered over.
  *
- * The egress count is here for a simpler reason: the other transport's whole job is
- * egress, so it has nothing to assert.
+ * The egress count is here for a simpler reason: that transport's whole job was
+ * egress, so it had nothing to assert.
  */
 describe("in-process commerce refuses malformed shopper input before any store call", () => {
 	let harness: InProcessCommerceHarness;
@@ -290,10 +296,10 @@ describe("in-process commerce refuses malformed shopper input before any store c
 	});
 
 	// THE EMPTY VARIANT KEY, here rather than in the shared contract. The shared
-	// case asserts a whitespace key on all three writers, because an EMPTY one makes
-	// the other transport build a path with an empty segment and miss its route
-	// altogether — so a shared empty-key case would assert a route miss on that tier
-	// and the bound on this one. The bound itself still deserves an assertion, and
+	// case asserts a whitespace key on all three writers, because an EMPTY one made
+	// the HTTP transport build a path with an empty segment and miss its route
+	// altogether — so a shared empty-key case would have asserted a route miss on
+	// that tier and the bound on this one. The bound deserves an assertion, and
 	// this is the tier that checks it before any call, so it is asserted here.
 	test("an empty variant key is refused by the bound, not by a missing route", async () => {
 		await expectRefusal(
@@ -324,10 +330,10 @@ describe("in-process commerce refuses malformed shopper input before any store c
 /**
  * THE TWO GAPS, PINNED.
  *
- * Both are deliberate, both are invisible unless a test says so, and NEITHER can be
- * a shared case — because in each the other transport does the very thing this one
- * does not, so there is no single outcome for a shared case to assert. They are the
- * two places the transports genuinely differ today, recorded here rather than only
+ * Both are deliberate, both are invisible unless a test says so, and NEITHER could
+ * be a shared case — because in each the HTTP transport did the very thing this one
+ * does not, so there was no single outcome for a shared case to assert. They were
+ * the two places the transports genuinely differed, recorded here rather than only
  * in prose so the difference has a test standing over it. Each fails the day the
  * missing piece lands, which is exactly when someone should come back and delete it.
  */
@@ -343,10 +349,11 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		await harness.close();
 	});
 
-	// THE HEADLINE DIFFERENCE between the tiers, seen from this side: the other one
-	// composes a gateway and checks out successfully, which is why the shared
-	// checkout-replay case runs there and skips here. What this case adds — and the
-	// shared one cannot — is that the refusal damages nothing.
+	// THE HEADLINE DIFFERENCE between the tiers, seen from this side: the HTTP one
+	// composed a gateway and checked out successfully, which is why the shared
+	// checkout-replay case ran there and skips here — and, now that it is gone,
+	// skips everywhere. What this case adds — and the shared one cannot — is that
+	// the refusal damages nothing.
 	test("checkout has NO payment gateway: a real cart with a held line survives the refusal intact", async () => {
 		// A genuine cart, priced, with stock held for its line — so the refusal is
 		// asserted against the state it must not damage rather than against nothing.
@@ -386,9 +393,9 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		});
 	});
 
-	// NOT SHAREABLE for the mirror-image reason: the other transport DOES dispatch the
-	// login mail — the shared identity cases mint their sessions by capturing it — so
-	// "no mail left the process" is true here and false there, by design on both.
+	// NOT SHAREABLE for the mirror-image reason: the HTTP transport DID dispatch the
+	// login mail — the shared identity cases minted their sessions by capturing it —
+	// so "no mail left the process" was true here and false there, by design on both.
 	test("a login link records ONE challenge and dispatches NO mail", async () => {
 		const challenges = harness.ctx.storage?.["login_challenges"];
 		if (challenges === undefined)
@@ -411,18 +418,18 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
  *
  * ADR-0019 §6 sets the FLOOR every dialect must meet — an id PREFIX, a folded
  * buyer-ref PREFIX, or an EXACT folded line sku — and says plainly that a dialect
- * may answer MORE. Postgres does: it plans the buyer-ref half as an unanchored
- * `like '%q%'`, so a fragment from the MIDDLE of an address finds the order there.
+ * may answer MORE. Postgres did: it planned the buyer-ref half as an unanchored
+ * `like '%q%'`, so a fragment from the MIDDLE of an address found the order there.
  * The document store behind this tier indexes a folded prefix key and cannot, and
  * that is a ratified divergence (2026-09-13) rather than a defect: a prefix is the
- * floor both tiers meet, and the superset is sanctioned where the dialect offers
- * it for free.
+ * floor every dialect meets, and the superset is sanctioned where the dialect
+ * offers it for free.
  *
- * IT CANNOT BE A SHARED CASE, for the same reason none of the others can: the two
- * tiers produce OPPOSITE answers to the identical call, so a shared case would
- * have to assert one of them loosely enough to accept the other. The shared slice
- * therefore asserts the floor and NEVER a negative, and each tier pins its own
- * half here — this file the miss, the HTTP file the hit. Should the document store
+ * IT COULD NOT BE A SHARED CASE, for the same reason none of the others could: the
+ * two tiers produced OPPOSITE answers to the identical call, so a shared case would
+ * have had to assert one of them loosely enough to accept the other. The shared
+ * slice therefore asserts the floor and NEVER a negative, and each tier pinned its
+ * own half — this file the miss, the HTTP file the hit. Should the document store
  * ever gain substring search, this case fails and is deleted, which is exactly the
  * moment someone should be told.
  */
@@ -454,7 +461,7 @@ describe("in-process admin orders: search is PREFIX-only, by dialect (ADR-0019 �
 		]);
 
 		// The superset, absent: "guerite@" is a genuine fragment of the very same
-		// buyer ref, and the HTTP tier's Postgres dialect finds it. Here it does not,
+		// buyer ref, and the HTTP tier's Postgres dialect found it. Here it does not,
 		// and the count agrees with the page rather than describing a set the rows do
 		// not.
 		const midString = await orders.listOrders({ search: "guerite@" });

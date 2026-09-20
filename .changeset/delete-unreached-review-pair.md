@@ -26,7 +26,7 @@ refused a blank `Refunded by`. All three lived only on the refund review step.
 The reachable refund confirm keeps its stale-watermark refusal (re-read the
 ledger, refuse on a mismatch, refuse a missing watermark fail-closed) and its
 money validation (integer minor units, a positive amount, no float laundered
-into cents); an over-ceiling amount is refused by the service as
+into cents); an over-ceiling amount is refused by the domain as
 `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`. Re-introducing a
 server-side two-step confirm means writing all three against that flow's shape,
 not restoring them.

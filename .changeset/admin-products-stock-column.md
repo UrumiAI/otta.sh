@@ -58,7 +58,7 @@ bare SKUs, and the SKU→title mapping lived in the operator's head.
   reading aid, identity travels in the option's value, and nothing parses a label
   back into fields.
 
-No service, wire, or schema change: this is the console rendering `onHand`, which the
+No port, wire, or schema change: this is the console rendering `onHand`, which the
 admin products list projection already carries.
 
 Three consequences worth carrying forward, none of them blocking here:
@@ -66,7 +66,7 @@ Three consequences worth carrying forward, none of them blocking here:
 - The filter panel is now AT `MAX_FILTER_FIELDS` (4). The next filter added to this
   screen makes `filterPanel` throw, so the increments that revisit filters have to
   cut a field or raise the cap deliberately.
-- Each list and detail render now makes one extra, uncached `GET /settings`. It is
+- Each list and detail render now makes one extra, uncached settings read. It is
   deliberate and cheap: it runs in parallel with the reads beside it, so it costs no
   added latency, and it cannot fail either screen.
 - The back button drops every filter on this screen, the low-stock toggle included.

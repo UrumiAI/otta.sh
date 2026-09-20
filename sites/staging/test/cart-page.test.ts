@@ -564,14 +564,15 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 
 	test("the wire type really does carry the state this page now reads", () => {
 		// HONEST SCOPE: this pins the `CartWire` TypeScript DECLARATION, not what
-		// the plugin emits. `serializeCart` (`in-process-commerce-client.ts`)
-		// dropping the field would compile perfectly and arrive here as
-		// `undefined` — which the narrow fence above then renders as a live cart.
-		// #136 is closed by the `orderId` presence guard in
-		// `packages/plugin/test/cart-routes.sandbox.test.ts` (see the test below);
-		// no equivalent presence guard for `state` specifically is confirmed to
-		// exist there today. The `console.warn` pinned below is the runtime
-		// backstop either way.
+		// the plugin emits — but for this field the declaration IS the guard at
+		// the producer. `serializeCart` (`in-process-commerce-client.ts`) is
+		// annotated `: CartWire`, and `CartWire.state` is required, not optional,
+		// so a `serializeCart` that stopped emitting the field fails to compile
+		// rather than arriving here as `undefined`. Runtime coverage corroborates
+		// it: `packages/plugin/test/storefront-checkout.sandbox.test.ts` and the
+		// shared client contract both assert a read-back cart's `state`. What the
+		// type cannot catch is a THIRD state value — that is what the
+		// `console.warn` pinned below is the backstop for.
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "checked_out",

@@ -8,15 +8,15 @@ A refused SKU rename now reaches the operator as a sentence, beside the SKU fiel
 Renaming a SKU carries its stock across, and there are two states the domain refuses because it
 cannot carry them honestly: the new SKU already has a stock record of its own, or the old SKU
 still has live reservations against it. Both refusals were correct and atomic — nothing was
-written on either side — and both arrived at the console as a generic failure with a 500 behind
-it. On the one screen where the answer is "type a different SKU" or "wait a few minutes", the
-operator was told only that something had gone wrong, and the reason survived nowhere but the
-service log.
+written on either side — and both arrived at the console as an unexplained
+failure. On the one screen where the answer is "type a different SKU" or "wait a few minutes",
+the operator was told only that something had gone wrong, and the reason survived nowhere but
+the server log.
 
 - **Both writers answer with a structured conflict**, in the shape each already used for a SKU
   collision: a machine code — `SKU_STOCK_CONFLICT` or `SKU_HELD_STOCK` — plus the facts the answer
   needs, which are both SKUs, or the SKU and how many reservations still reference it. The admin
-  edit and the integrator `PUT /products/:id/commerce` behave identically, because the rule
+  edit and the integrator commerce upsert behave identically, because the rule
   belongs to the field rather than to one caller. Nothing else crosses the wire: no internal
   message, no error name, no stack, no hint of the tables the check ran against.
 - **One sentence per refusal, written once.** "That SKU already has stock of its own" names both
@@ -43,7 +43,7 @@ service log.
   re-applied on top of them — keeping the draft would make both false, and would leave one more
   Save between the operator and silently overwriting a writer they never saw.
 
-A count the service did not send is never rendered as `0`: zero reservations beside a refusal
+A count that never came back is never rendered as `0`: zero reservations beside a refusal
 caused by reservations would be the one thing the sentence must not say, so the copy drops the
 figure and keeps the fact.
 

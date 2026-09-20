@@ -19,22 +19,12 @@ Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
   store's inventory join) and pinned by five new
   `productCommerceStoreContract` cases; harnesses grow `seedStock` and
   `activate`.
-- `@otta-sh/store-postgres`: `KyselyProductCommerceStore.listCommerceByIds` as
-  ONE statement — `product_commerce LEFT JOIN inventory` with the
-  commerce-complete guards inline, identical on sqlite + pg. The §6
-  "inStock is one intra-service statement, never a second inventory round
-  trip" invariant is enforced by a query-count test (a Kysely plugin counts
-  root statement executions: exactly 1 per batch, 0 for an empty batch).
-- `@otta-sh/service`: `POST /catalog/commerce/batch` (own route file), a 1:1
-  serialization of the port: Zod-validated `{ productIds }` capped at 100
-  (a request-size guard ≥2× the PLP page cap, not pagination — 400 over
-  cap), `{ items }` response with money as integer + ISO-4217 string.
-  Live-server contract test on Postgres.
 - `@otta-sh/plugin`: the catalog-display stack, all behavior proven under the
-  REAL workerd sandbox. `getCommerceBatch` on `CommerceClient`/
-  `HttpCommerceClient` (over `ctx.http` + `allowedHosts` only); a
+  REAL workerd sandbox. `getCommerceBatch` on `CommerceClient`, with the batch
+  capped at 100 ids (a request-size guard ≥2× the PLP page cap, not
+  pagination — over the cap is refused); a
   request-scoped DataLoader-style `CommerceBatchLoader` (same-tick lookups
-  coalesce to one HTTP call; intra-render dedupe only — no cross-request
+  coalesce to one batch call; intra-render dedupe only — no cross-request
   cache in v1); the pure `joinProduct` content+commerce join
   (`purchasable ⟺ commerce !== null`, one computed truth); `formatMoney` +
   `majorUnits` behind the plugin's own branded `Cents`/`Currency` (a
@@ -49,8 +39,8 @@ Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
   returning localized, RTL-safe JSON view models (+ JSON-LD graph) for a
   thin theme page to render; availability is a semantic token themes
   localize; the PLP page cap (48) plus the loader guarantee the headline
-  N+1 gate — one page render issues exactly ONE commerce-batch HTTP call
-  and ZERO inventory-only calls (both pinned by call-count sandbox tests);
+  N+1 gate — one page render issues exactly ONE commerce-batch lookup
+  and ZERO inventory-only lookups (both pinned by call-count sandbox tests);
   non-purchasable items — the no-commerce AND the inactive kind alike — are
   shown and flagged, not filtered; unexpected render failures collapse to a
   structured, message-free `RENDER_FAILED` instead of leaking internals

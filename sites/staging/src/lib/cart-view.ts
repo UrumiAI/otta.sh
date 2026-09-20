@@ -115,12 +115,12 @@ export function isCartTerminal(state: string | undefined): boolean {
  * The companion to `isCartTerminal`'s deliberate tolerance: the page renders an
  * unrecognised state as a live cart, and logs that it did. Without this, a
  * third state would arrive as a permanent, silent mis-render. The other half of
- * that worry — a `serializeCart` that quietly stopped emitting the field —
- * was meant to be pinned at the producer instead (#136), but the test that did
- * that pinning lived in the now-deleted `@otta-sh/service`
- * (`carts.http.contract.test.ts`). No equivalent presence guard for `state` is
- * confirmed to exist against `InProcessCommerceClient`'s `serializeCart` today,
- * so this log is this field's only backstop again.
+ * that worry — a `serializeCart` that quietly stopped emitting the field — is
+ * pinned at the producer by the type itself: `InProcessCommerceClient`'s
+ * `serializeCart` is annotated `: CartWire`, whose `state` is a required field,
+ * so dropping it fails to compile. Read-back assertions on `state` in the
+ * plugin's sandbox and client-contract suites corroborate that at runtime. This
+ * log guards the half the type cannot: a third state VALUE.
  */
 export function isKnownCartState(state: string | undefined): boolean {
 	return state === "active" || state === "checked_out";

@@ -5,8 +5,8 @@
 
 Cancel an order WITH a structured reason (detail optional), and make the cancelled-
 notification email carry WHY instead of a reason-free notice (admin-UX Increment 1,
-"cancel with reason" slice). Before this slice, cancelling was a bare `POST
-.../transition {toState:"cancelled"}` — no reason captured, and the cancelled email said
+"cancel with reason" slice). Before this slice, cancelling was a bare transition to
+`cancelled` — no reason captured, and the cancelled email said
 only "Your order has been cancelled." Discovery: cancelling has never released reserved
 stock in this domain (only `pending → expired`'s guarded sweep and settle's failed-payment
 path do that, per the Phase 5 design doc); this slice does not change that — it is
@@ -25,7 +25,7 @@ The core design decisions:
   so it automatically covers every state the machine allows to cancel. Mutable-envelope
   only — it NEVER touches line items, prices, or totals (the snapshot invariant); it does
   NOT release inventory (that gap, if any, is unchanged and out of scope). The bare
-  `POST .../transition` stays available for other callers/back-compat — a cancellation via
+  transition stays available for other callers/back-compat — a cancellation via
   that path carries no reason (`cancellation === null`), mirroring `recordFulfillment`'s
   shipped-without-tracking case.
 
@@ -38,15 +38,12 @@ The core design decisions:
   new pure use-case `cancelOrder` (validate → derive legality → delegate; idempotent
   replay + the stale-race disambiguation mirror `recordFulfillment`/`transitionOrder`).
   `buildOrderEmailData` now carries the cancellation so the cancelled template can render it.
-- **Adapters (`[Adapters]`).** Forward-only migration `0013_order_cancellation` adds four
-  nullable columns to `orders` (portable text DDL, identical on better-sqlite3 + pg). Both
-  adapters green against the new `orderCancellationContract`; Postgres additionally runs the
-  concurrency races — N concurrent cancels resolve to exactly one winner, and cancelling
+- **Adapters (`[Adapters]`).** Every `OrderStore` adapter carries the four nullable
+  cancellation fields and is green against the new `orderCancellationContract`, which
+  pins the races too — N concurrent cancels resolve to exactly one winner, and cancelling
   racing `recordFulfillment` resolves to exactly one outcome (the order is never both
   cancelled and shipped) — extending PR #63's record-vs-cancel race to the reasoned path.
-- **Service (`[Service]`).** `POST /admin/orders/:id/cancel` mirrors the use-case 1:1 under
-  the internal-token guard + the X-Service-Token write gate (a non-GET); `serializeOrder`
-  gains `cancellation` (additive). `renderEmail`'s `order-cancelled` template renders the
+- **Customer email (`[Domain]`).** `renderEmail`'s `order-cancelled` template renders the
   reason ONLY through an explicit CUSTOMER-SAFE allowlist (`customerSafeCancellationCopy`):
   `customer_request` → "at your request", `out_of_stock` → "an item was unavailable";
   everything else — `fraud_suspected`, `pricing_error`, `other`, or any unknown value —
@@ -58,9 +55,9 @@ The core design decisions:
   cancellable order shows a danger-styled alert + the cancel form (reason select, optional
   detail, cancelledBy) and the bare "Mark cancelled" one-click is HIDDEN from the transition
   buttons (UI steering, extending PR #63's shipped-steering precedent — cancelling goes
-  through the form so an order is never cancelled without a reason; the service still
-  accepts the bare transition for other callers); a cancelled order shows the recorded
+  through the form so an order is never cancelled without a reason; the bare transition
+  is still accepted for other callers); a cancelled order shows the recorded
   reason read-only; a cancelled-without-reason order gets an honest note. A
-  `NOT_CANCELLABLE` conflict surfaces a "reload" notice, not a token-check error. Typed
-  `ctx.http` client method threads both tokens like the transition; sandbox-clean
-  (Block Kit only) — verified in the workerd-on-Node sandbox.
+  `NOT_CANCELLABLE` conflict surfaces a "reload" notice, not a token-check error. The
+  cancel travels through the console's admin orders client like the transition does;
+  sandbox-clean (Block Kit only) — verified in the workerd-on-Node sandbox.

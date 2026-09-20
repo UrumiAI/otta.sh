@@ -104,7 +104,11 @@ const DEFAULT_LIMIT = 25;
 
 /** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
  *  no greater than this). Far above the shopper-facing cart cap on purpose: this
- *  is the merchant's own surface. */
+ *  is the merchant's own surface.
+ *
+ *  UNASSERTED: nothing yet drives a quantity past this ceiling. Tracked in issue
+ *  #289 together with three sibling bounds in these admin clients that are
+ *  likewise implemented but unpinned. */
 const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
 
 export class InProcessAdminProductsClient implements AdminProductsSurface {

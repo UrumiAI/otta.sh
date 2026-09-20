@@ -91,9 +91,15 @@ function addNote(
  * (created / notes / fulfillment / cancellation / reconciliation resolution) into
  * one chronological view; and a historical order (no events) still yields a
  * useful partial timeline. Runs against the fake first, then each SQL dialect.
- * `@otta-sh/store-postgres` is gone; its Postgres-required
- * exactly-one-event-under-race cases (a fake/SQLite can't race) have not been
- * re-created against `store-emdash`'s `EmdashOrderStore` yet.
+ *
+ * The exactly-one-event-UNDER-CONTENTION case is Postgres-required (a fake or
+ * SQLite serializes writes and cannot race), so it is adapter-local rather than
+ * part of this shared spec: `@otta-sh/store-emdash`'s
+ * `test/order-timeline-contract.dialects.test.ts` carries "concurrent state flips
+ * write exactly one audit event (no double audit under a race)" as a
+ * `runIf(ctx.canRace)` case in the same `describeEachDialect` block that runs this
+ * contract against `EmdashOrderStore`. It replaces the case the deleted
+ * `@otta-sh/store-postgres` suite of the same name held.
  */
 export function orderTimelineContract(
 	makeHarness: () => Promise<OrderTimelineHarness>,

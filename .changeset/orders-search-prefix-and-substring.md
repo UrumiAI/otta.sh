@@ -32,7 +32,7 @@ served by an index and the new predicate scans (see below). Results preserved, c
   escaped first so it cannot re-escape the other two rules' output. The empty string, by the
   same logic, matches EVERYTHING — every string starts with and contains `""` — which is the
   inverted reading of "search for nothing" and is now pinned rather than left to be discovered.
-  The service's query schema requires `min(1)`, so the wire cannot send it.
+  A caller with nothing to search for is expected to omit the field rather than send it empty.
 - **The sequential scan is the design.** An unanchored substring cannot be served by a b-tree, so
   this predicate no longer uses `idx_orders_buyer_ref_lower`, and the anchored id half cannot use
   the primary key under a default collation. A trigram or full-text index was declined at this
@@ -50,8 +50,7 @@ served by an index and the new predicate scans (see below). Results preserved, c
   likewise untouched. The two predicates now differ on purpose, and a contract case pins the
   difference.
 - **The cursor gate is unaffected.** It compares the search STRING, not what the string selects,
-  so the canonical form on the wire is identical before and after. The admin Orders HTTP suite is
-  unchanged apart from added cases.
+  so the canonical form of a cursor is identical before and after.
 
 No wire, schema or migration change, and no console copy change — the search label already named
 both columns rather than promising exactness.

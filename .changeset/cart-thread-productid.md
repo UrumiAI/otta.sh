@@ -4,8 +4,8 @@
 
 Thread `productId` through the storefront add-to-cart path so a storefront cart
 can be quoted and ordered (fixes #80). Previously the add-to-cart flow only ever
-sent `sku`, so `cart_lines.product_id` persisted NULL and every
-`POST /checkout/quote` 409'd `PRODUCT_NOT_PRICED` — the whole storefront funnel
+sent `sku`, so a cart line's `productId` persisted NULL and every checkout quote
+was refused with `PRODUCT_NOT_PRICED` — the whole storefront funnel
 (PDP → cart → checkout) was blocked even for a priced, active product.
 
 The `productId` (the CMS content id — the join key to `product_commerce`) is the
@@ -15,20 +15,19 @@ piece that was missing. It is now carried end-to-end:
   `content.id`) alongside `sku`, and echoes it in the Block Kit button value.
 - The `storefront/cart/lines/add` route accepts an optional `productId`
   (validated: present-but-blank is `INVALID_INPUT`) and forwards it.
-- `CommerceClient.addCartLine` / `HttpCommerceClient` gain a `productId:
-  string | null` parameter; the wire OMITS the field when null, so a bare/legacy
-  add stays byte-identical (absent ⇒ null at the service).
+- `CommerceClient.addCartLine` gains a `productId: string | null` parameter; a
+  null is carried as an omission, so a bare/legacy add behaves exactly as before.
 
-The service `addLine` route already accepted `productId` — the storefront was the
-gap. The stale `cart-routes.ts` read-handler comment (which claimed the service
-hardcodes `productId: null`) is corrected; a price-annotated `GET /carts/:cartId`
-join remains a documented follow-up.
+The add-line operation itself already accepted `productId` — the storefront was
+the gap. The stale `cart-routes.ts` read-handler comment (which claimed the add
+hardcodes `productId: null`) is corrected; a price-annotated cart read remains a
+documented follow-up.
 
 SECURITY (surfaced in review, fixed here because threading `productId` makes it
-reachable): the service `addLine` now RECONCILES the two independent client
-inputs `sku` and `productId` against the trusted catalog. When a `product_commerce`
-row exists for the `productId`, its `sku` must equal the submitted `sku`, else the
-add is rejected with a new typed `409 SKU_MISMATCH` (mirrored into the plugin's
+reachable): the add-line path now RECONCILES the two independent client inputs
+`sku` and `productId` against the trusted catalog. When a commerce record exists
+for the `productId`, its `sku` must equal the submitted `sku`, else the add is
+rejected with a typed `SKU_MISMATCH` conflict (mirrored into the plugin's
 `CartFailureReason`) and no line is persisted. Without this, a caller could pair
 product A's `productId` (checkout takes price/title/entitlement from it) with
 product B's `sku` (order line + digital entitlement are keyed on the client `sku`)

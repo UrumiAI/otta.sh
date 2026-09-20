@@ -20,8 +20,14 @@ export interface OrderNotesStoreContractOptions {
  * replay. Append-only — no edit/delete surface exists in this slice. Runs against
  * the fake first, then each DB dialect. Money-free (a note is a plain merchant
  * annotation), so there is no concurrency/no-oversell case HERE.
- * `@otta-sh/store-postgres` is gone; no pg-backed concurrent-replay race for
- * this contract has been re-created in `store-emdash` yet.
+ *
+ * The concurrent-replay race that once-only guard needs is adapter-local and
+ * Postgres-required (a fake or SQLite serializes writes and cannot race), so it
+ * lives with the adapter rather than in this shared spec: `@otta-sh/store-emdash`'s
+ * `test/misc-contract.dialects.test.ts` carries "concurrent appends with one
+ * idempotency_key insert exactly once (no duplicates)" as a `runIf(ctx.canRace)`
+ * case in the same `describeEachDialect` block that runs this contract. It replaces
+ * the case the deleted `@otta-sh/store-postgres` suite of the same name held.
  */
 export function orderNotesStoreContract(
 	makeHarness: () => Promise<OrderNotesStoreHarness>,

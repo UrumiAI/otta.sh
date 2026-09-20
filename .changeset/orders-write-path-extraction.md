@@ -53,7 +53,7 @@ makes; both are things it would be wrong to leave unwritten.
   check does not run for the React console. That is pre-existing rather than
   introduced here: the reachable confirm re-reads the refund ledger and refuses on
   a watermark mismatch, and an over-ceiling amount surviving that is refused by
-  the service itself. What is lost is the earlier, better-worded refusal naming
+  the domain itself. What is lost is the earlier, better-worded refusal naming
   the remaining balance, not the ceiling.
 - Resolving a reconciliation flag derives its idempotency key from the order id
   alone, so two resolutions of two different anomalies on the same order collide
