@@ -1,6 +1,6 @@
 # 0002. Adapter-based split: the plugin↔authority boundary is a deployment choice
 
-- Status: accepted, **superseded in part 2026-09-20** by
+- Status: accepted, **partially superseded** 2026-09-20 by
   [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md) — the **plugin/service split
   only**: the separate commerce service is removed, Otta is one deployable, and the five "a
   service may remain preferable" reasons in the Context below are answered there as rejected

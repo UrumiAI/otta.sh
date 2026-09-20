@@ -19,7 +19,9 @@
   respected: a title still has one home, and the commerce document still only caches it.
   [ADR-0017](./0017-list-refresh-semantics.md) — unchanged; this record narrows what a list can
   *search*, not how it refreshes.
-- Forward reference: **ADR-0020** (one deployable — the commerce service is removed), to be written.
+- Forward reference, **since written**: [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)
+  (one deployable — the commerce service is removed, and ADR-0002's five "a service may remain" reasons
+  are answered there as rejected).
 - Amends: **nothing.**
 
 ## Context

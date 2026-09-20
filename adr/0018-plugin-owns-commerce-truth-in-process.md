@@ -11,12 +11,17 @@
   duration of the vendored host build only**, described below.
 - Refines: [ADR-0002](./0002-adapter-based-split.md) — the ports-and-adapters seams it designed
   are what make this possible, and nothing about them changes. This record does **not** answer
-  ADR-0002's five "a service may remain" reasons and does not retire the service: that is
-  **ADR-0020**'s job, and until it is written those reasons stand as written.
+  ADR-0002's five "a service may remain" reasons and does not itself retire the service: that
+  was [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)'s job, and it has since
+  been written — it answers all five as **rejected** (pre-launch, with no users) and removes
+  the service. Where this record leaves those reasons standing, read that as true of its own
+  date; ADR-0020 is where they were settled.
 - Relates to: [ADR-0013](./0013-product-title-is-cms-owned.md) (unchanged by this record; see
   the closing note)
-- Forward references: **ADR-0019** (the storage document model for commerce aggregates) and
-  **ADR-0020** (one deployable) — both **to be written**.
+- Forward references, **both since written**:
+  [ADR-0019](./0019-commerce-aggregates-are-one-document-each.md) (the storage document model
+  for commerce aggregates) and
+  [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md) (one deployable).
 
 ## Context
 

@@ -188,7 +188,7 @@ order of appearance in a deployment's life:
 | `EMDASH_ENCRYPTION_KEY` | Worker secret | yes | before the site's first boot |
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments | before enabling Stripe |
-| Stripe secret key | admin Settings (`settings:stripeSecretKey`) | to take **real** payments (and to refund) | with the webhook secret |
+| Stripe secret key | admin Settings (`settings:stripeSecretKey`) | **not yet consumed** — stored, but no live payment path reads it (see below) | when you want it in place ahead of that wiring |
 | x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
 | Email API key (with the `EMAIL_API_URL` / `EMAIL_FROM` build-time values) | admin Settings | optional | when wiring real email |
 
@@ -219,17 +219,26 @@ order of appearance in a deployment's life:
 > endpoint replays the 401 into Stripe's dashboard rather than swallowing it.
 
 - **Stripe** — until the webhook signing secret is set, the settle route answers
-  `NOT_CONFIGURED`. **The Stripe secret key decides whether checkout can actually be paid.**
-  With it, `createIntent` performs a real `POST /v1/payment_intents` — the buyer gets a LIVE
-  client secret, `metadata[order_id]` carries the settlement key the webhook is matched on,
-  and the checkout `Idempotency-Key` travels as Stripe's native one — and refunds become
-  available. **Without it**, `createIntent` mints an OFFLINE deterministic handle
-  (`pi_<orderId>` plus a fake client secret that no Stripe.js/Elements can ever pay). That
-  stays a warning, never a boot failure: staging and e2e run offline on purpose. A
-  live-intent failure (Stripe down or rejecting) answers **502 `PAYMENT_INTENT_FAILED`**; the
-  `pending` order is kept deliberately — retrying with the same `Idempotency-Key` re-issues
-  the *same* PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL
-  (releasing stock and any coupon use) if it never gets paid.
+  `NOT_CONFIGURED`. That secret is the one Stripe credential this build actually consumes: it
+  is read by the settle route, which constructs the gateway with the **webhook secret only**
+  (`packages/plugin/src/webhooks/stripe-settle-route.ts`).
+
+  **The Stripe secret key is latent infrastructure, not a live switch.** Settings persists it
+  to write-only `kv` and `@otta-sh/payments-stripe` knows what to do with it — given one,
+  `createIntent` performs a real `POST /v1/payment_intents` (LIVE client secret,
+  `metadata[order_id]` as the settlement key the webhook is matched on, the checkout
+  `Idempotency-Key` travelling as Stripe's native one) and `refund` becomes possible — but
+  **no call site in this tree constructs the gateway with it**, so today every deployment is
+  on the OFFLINE path regardless of what you store: `createIntent` mints a deterministic
+  handle (`pi_<orderId>` plus a client secret no Stripe.js/Elements can ever pay). Setting the
+  key is therefore harmless and forward-looking; it does not by itself make checkout payable
+  or refunds available. Wiring it into the in-process gateway composition — the way
+  `wireX402Gateway` does for x402 — is the outstanding work, and it is named as an open caveat
+  in [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2. Once that lands,
+  a live-intent failure (Stripe down or rejecting) answers **502 `PAYMENT_INTENT_FAILED`** and
+  the `pending` order is kept deliberately — retrying with the same `Idempotency-Key` re-issues
+  the *same* PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing
+  stock and any coupon use) if it never gets paid.
 
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
@@ -268,6 +277,14 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | `api.stripe.com` | always — the one constant entry |
 | the email API host | when an email API URL is configured |
 | the x402 facilitator host | when a facilitator URL is configured |
+
+One caveat on the first row: `@otta-sh/payments-stripe` defaults its transport to
+`globalThis.fetch` rather than `ctx.http.fetch`, unlike the email sender and the x402
+facilitator client — so `api.stripe.com` is allowlisted *in advance* of being perimeter-
+enforced. It costs nothing today (no call site constructs the Stripe gateway with a live
+transport — §3), but whoever wires that gateway must pass `ctx.http.fetch` or the allowlist
+will not be the perimeter for Stripe traffic. Recorded as an open caveat in
+[ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
