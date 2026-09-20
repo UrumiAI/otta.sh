@@ -24,7 +24,7 @@ Nothing else has to be running: commerce is **in-process** in this site's own Wo
 In `astro dev` the fastest path to a populated catalog is the dev-only bypass, which
 applies the full seed including the 3 sample products:
 `/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. What first boot does and does
-not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
+not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §2.2.
 
 ### Plugin settings are namespaced by plugin id
 
@@ -71,10 +71,12 @@ the key.
 ## Deploying
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
-resource creation, secrets, the build/deploy ordering, first boot + claim, and
-failed-first-boot recovery are §3 (Shape B); the workers.dev networking constraints and
-the flag⇒session-off pairing invariant are §3.5; the secrets/token checklist — including
-why `SERVICE_API_TOKEN` must stay unset for now — is §4.
+resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
+recovery are §2; the `global_fetch_strictly_public` ⇒ D1-`session`-off pairing invariant is
+§2.4; the secrets & tokens checklist is §3. There is one deployable, so the only Worker
+secrets are `EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional
+`OTTA_WH_TOKEN` webhook edge gate — every payment and email credential is provisioned in the
+admin console's **Settings** page instead.
 
 ## Notes
 
