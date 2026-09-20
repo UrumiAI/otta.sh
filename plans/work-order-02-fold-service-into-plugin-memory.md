@@ -33,6 +33,19 @@ per aggregate). ADR-0020 also records the re-derivation path: a future service w
 from the unchanged domain ports, not kept on standby, so the deletion is not mistaken for a lost
 capability.
 
+**The price paid, not just the wins.** The fold-in accepted one genuine loss, and ADR-0020 §2
+records it rather than minimising it: the Stripe API secret — previously an environment variable on
+a separate Worker, behind an HTTP boundary — now lives in the plugin's write-only `kv` and is
+readable inside the very process that renders storefront pages and the admin console, so a
+code-execution bug anywhere in the plugin reaches it. Read
+[ADR-0020 §2](../adr/0020-one-deployable-plugin-owns-commerce-truth.md) for what bounds that
+(write-only persistence, non-ambient egress gated by a build-time `allowedHosts` allowlist, an
+IO-free domain) and for its honest caveat: `@otta-sh/payments-stripe` defaults its transport to
+`globalThis.fetch` rather than `ctx.http.fetch` — unlike the x402 facilitator client and the email
+sender — so the allowlist bound does not yet apply to it; the secret is stored but no live call
+site constructs the Stripe gateway with a real transport, which makes this latent rather than
+exploited, and makes passing `ctx.http.fetch` mandatory for whoever wires it up.
+
 ---
 
 ## 2. The measured numbers (R2, R3, R6, R7)
@@ -60,17 +73,29 @@ Measured depths:
 | Single-line checkout — M=5, N=40, 8 loops | **6–7** |
 | Multi-line checkout — M=8/sku, 10 carts, 3 lines, 6 loops | **9–10** of 24 |
 | Ten partial refunds under one ceiling — N=20 callers, 100 each against 1,000, injected gateway latency | **11** |
+| Restock +10 racing 40 reserves on 5 units | **13** of 24 |
+| Restock then 40 reserves on 15 units (sequenced) | **12** of 24 |
+| 20 removals racing 20 reserves on 12 units, 15 loops | **15** of 24 (the deepest recorded shape — see the exception below) |
 | Full-ceiling refund shapes | **2** (losers are refused by arbitration before writing) |
 | Coupon counter step (`redeem`), 50 racers on a 5-use cap | **2** (asserted as a hard bound, `<= 2`) |
 
 **R2's one documented exception.** An adversarial merchant shape — 20 `removeStock` racing 20
-reserves on 12 units, 15 loops, 600 calls — is deliberately outside the budget: it reached the old
-12-attempt ceiling and raised the typed contention error, with 11–29 contention failures asserted
-at `<= 90` (15% of calls). The cause is that a refused `removeStock` still writes its ledger entry,
-so writes are not bounded by units the way reserves are. Both reviewers judged this correctly
-characterised and not a shopper-safety hole, because the contention error is typed and retryable
-and never collapses into `OUT_OF_STOCK`. Raising the ceiling to 24 took this shape two or three
-attempts deeper and its typed failures to **zero**. Two follow-ups were opened at the time: the
+reserves on 12 units, 15 loops, 600 calls — is the deepest shape the suite measures. The cause is
+that a refused `removeStock` still writes its ledger entry, so writes are not bounded by units the
+way reserves are.
+
+**Pre-raise (12-attempt ceiling).** This shape sat *at* the ceiling and raised the typed contention
+error, with **11–29** typed contention failures per run. That was the measurement that motivated
+raising the ceiling.
+
+**Current (24-attempt ceiling).** The same shape now measures **15 of 24 attempts with 0 typed
+contention failures** — two or three attempts deeper, and no caller is told "too busy" any more.
+The assertions themselves are unchanged upper bounds and held across the raise without being
+touched: depth `<= CAS_MAX_ATTEMPTS`, typed failures **`<= 90`** (15% of the 600 calls).
+
+Both reviewers judged this correctly characterised and not a shopper-safety hole, because the
+contention error is typed and retryable and never collapses into `OUT_OF_STOCK`. Two follow-ups
+were opened at the time: the
 storefront cart route must map `StorageContentionError` to a 503 plus retry, and a later adapter
 pass should stop `#applyStockClaim` writing the aggregate for a refused `INSUFFICIENT_STOCK`
 removal, which would restore the unit bound on write depth.
@@ -132,7 +157,7 @@ bundle through the package's own `tsdown.config.ts` and fails if a bare `@otta-s
 survives or a runtime `emdash` import appears (the latter being ADR-0018's "zero EmDash runtime
 dependency" rule, which depcruise enforces on source but cannot see in the emitted graph).
 
-The **measurement** half is partial. INC-A6 (PRs #251/#252) captured a genuine before/after build:
+The **measurement** half is partial. INC-A6 (PR #252) captured a genuine before/after build:
 
 | | Main chunk | Gzipped | Total dist (14 files) |
 |---|---|---|---|
@@ -142,10 +167,13 @@ The **measurement** half is partial. INC-A6 (PRs #251/#252) captured a genuine b
 
 Two caveats that stop this being the answer to R6:
 
-1. **It excludes the payment gateways.** `@otta-sh/payments-stripe` and `@otta-sh/payments-x402`
-   were admitted into the plugin's perimeter later, at INC-C1b (PR #276), and no build-size log was
-   captured there. R6's concern is the Worker gaining the domain, `store-emdash` **and both payment
-   gateways**; this measures the first two only.
+1. **It excludes the payment gateways.** Both were admitted into the plugin's perimeter later, and
+   in two separate increments: `@otta-sh/payments-stripe` at **INC-C1b (PR #276)**, which added it
+   to `tsdown.config.ts`'s `noExternal` and the workerd harness list, and `@otta-sh/payments-x402`
+   at **INC-C5 (PR #281**, commit `5f304d1`**)**, when the in-process x402 settle path made
+   `payments/x402-wiring.ts` a real runtime import. No build-size log was captured at either. R6's
+   concern is the Worker gaining the domain, `store-emdash` **and both payment gateways**; this
+   measures the first two only.
 2. **It is a `dist/` build figure, not a deployed Worker figure**, and it is not the INC-B10a
    measurement the plan called for. INC-B10a (PRs #267/#268) recorded no bundle size at all — its
    evidence notes only a generic build stat ("14 files, 3.70 MB"), which is dist output including
@@ -184,8 +212,10 @@ gate — so what is missing is specifically the **throughput figure**, not the D
 itself notes this is theoretical pre-launch; it becomes real the moment there is traffic, and it is
 the only storage ceiling left now that Postgres is gone.
 
-> **Summary of the four:** R2 and R3 have real, asserted, in-repo numbers. **R6 and R7 do not** —
-> both are recorded here as open gaps rather than filled with estimates.
+> **Summary of the four:** R2 and R3 have real, asserted, in-repo numbers. **R6 and R7 do not have
+> the figure the plan actually asked for** — R6 has a real but incomplete number (a +4.15 kB
+> gzipped delta that excludes both payment gateways and was not taken at INC-B10a), R7 has no
+> number at all. Both are recorded here as open gaps rather than filled with estimates.
 
 ---
 
@@ -264,12 +294,21 @@ that can reach that state, and it is re-seeded demo data.
 |---|---|---|
 | **INC-D3a** | [#288](https://github.com/UrumiAI/otta.sh/pull/288) — *[Plugin] Retire commerce service Worker deployment surface* | The service Worker's whole deployment surface: wrangler config, deploy scripts, service-mode identifiers, the service-token settings UI, and the DEPLOYMENT.md section covering it — including the **`commerce.mode` flag** (`__OTTA_COMMERCE_MODE__`). Removing the mode plumbing made the conditional in `makeCommerceClient`/`makeAdminClients` dead, so those collapsed to unconditional in-process here rather than in D3b. |
 | **INC-D3b** | [#290](https://github.com/UrumiAI/otta.sh/pull/290) — *[Adapters][Plugin][Test] Delete packages/service and packages/store-postgres* | **`@otta-sh/service`** and **`@otta-sh/store-postgres`** deleted entirely, plus **`HttpCommerceClient`**, the **four admin HTTP clients** — `AdminOrdersClient`, `AdminProductsClient`, `AdminRulesClient`, `ReportingSettingsClient` — and their tests, `helpers/start-live-service.ts`; `commerceClientContract` collapsed to a single in-process tier; six dead public exports dropped from `@otta-sh/plugin`'s index. |
-| **INC-D3c** | [#292](https://github.com/UrumiAI/otta.sh/pull/292) — *[CI][Docs] Trim stale service/store-postgres references from tooling and docs* | Stale references left behind by D3b, in `.dependency-cruiser.cjs`, `depcruise-boundary.test.ts`, `CLAUDE.md`, `CONTRIBUTING.md` and `DEVELOPMENT.md`. |
-| **INC-D4** | [#293](https://github.com/UrumiAI/otta.sh/pull/293) — *[Docs] One deployable: describe the current architecture* | Not a deletion: rewrote `README.md` and `DEPLOYMENT.md` for the one-deployable architecture, added **ADR-0020**, marked ADR-0002 partially superseded, updated the ADR-0018/0019 forward-references and the `adr/` index. |
+| **INC-D3c** | [#292](https://github.com/UrumiAI/otta.sh/pull/292) — *[CI][Docs] Trim stale service/store-postgres references from tooling and docs* | Stale references left behind by D3b, in `.dependency-cruiser.cjs`, `depcruise-boundary.test.ts`, `CLAUDE.md`, `CONTRIBUTING.md` and `DEVELOPMENT.md`. **The `CLAUDE.md` sweep was partial** — its lines 37, 52 and 95 still describe the service and `HttpCommerceClient` as live, as do `packages/plugin/README.md` and `packages/plugin/test/contracts/README.md`; see §4 "Verified absent" for the open follow-up. |
+| **INC-D4** | [#293](https://github.com/UrumiAI/otta.sh/pull/293) — *[Docs] One deployable: describe the current architecture in README, DEPLOYMENT.md, and a new ADR* | Not a deletion: rewrote `README.md` and `DEPLOYMENT.md` for the one-deployable architecture, added **ADR-0020**, marked ADR-0002 partially superseded, updated the ADR-0018/0019 forward-references and the `adr/` index. |
 
-What licensed the D3b deletion was the equivalence proof at **INC-B10c**: `commerceClientContract`
-— the spec, extracted from the HTTP client's own tests — ran green against both implementations
-before the HTTP tier was removed. Two deletion orders were load-bearing and were respected: the
+What licensed the D3b deletion was the equivalence proof built **across INC-B10a → INC-B10c**, not
+at any single increment: `commerceClientContract` — the spec, extracted from the HTTP client's own
+tests — ran green against both implementations before the HTTP tier was removed. It had to be built
+incrementally because INC-A7 found the premise weaker than the spec assumed: of the 165 assertions
+in the eight HTTP-client test files, only **28 were transport-agnostic**; the rest were HTTP wire
+mapping. So each increment added its own slice — INC-B10a (PRs #267/#268, the storefront slice,
+26→53 cases per tier), INC-B10b-i/ii (the admin products and orders slices), INC-B10c-i
+([#272](https://github.com/UrumiAI/otta.sh/pull/272), the admin rules slice, widening the shared
+surface from 18 to all 25 methods) and INC-B10c-ii
+([#273](https://github.com/UrumiAI/otta.sh/pull/273), reporting and settings, from a 1-method stub
+to all 6) — and only with all of them green against both tiers was the proof real. Two deletion
+orders were load-bearing and were respected: the
 `Kysely*Store` SQL guards are the semantic reference for every Phase-B adapter, so **ADR-0019
 snapshots them in prose** before D3b; and the race files were re-pointed at `store-emdash` and
 green before their `store-postgres` originals were deleted.
@@ -288,8 +327,18 @@ Checked against the branch this note was written on:
 - `packages/service` and `packages/store-postgres` — both gone. `packages/` now holds
   `admin-presentation`, `admin-react`, `domain`, `payments-stripe`, `payments-x402`, `plugin`,
   `store-emdash`.
-- `HttpCommerceClient` — no definition left; the only occurrence is a comment in
-  `packages/plugin/test/make-commerce-client.test.ts` recording that D3a retired it.
+- `HttpCommerceClient` — the **class definition** is gone; the only occurrence in live source is
+  a comment in `packages/plugin/test/make-commerce-client.test.ts` recording that D3a retired it.
+  **But stale live-doc references remain**, and they are an open follow-up, not this increment's
+  job to fix: `CLAUDE.md` still describes running the client-side contract suite against
+  `HttpCommerceClient` over a live test server as the HTTP-task verification path (line 95), still
+  says two tiers "need a backing service" (line 52), and still says the plugin "reaches the service
+  **only** via `ctx.http` + `allowedHosts`" (line 37); `packages/plugin/README.md:15` still lists
+  `HttpCommerceClient` as a current plugin export ("the commerce service over `ctx.http`.
+  Transitional."); and `packages/plugin/test/contracts/README.md:5` still refers to it in the
+  present tense. The other hits in the tree —
+  `.changeset/delete-service-and-store-postgres.md`, `adr/0002`, `adr/0007` and `plans/archive/*` —
+  are legitimately historical and should stay.
 - `__OTTA_COMMERCE_MODE__` — the only occurrence is `sites/staging/test/site-config.test.ts`, which
   now **asserts its absence**.
 
