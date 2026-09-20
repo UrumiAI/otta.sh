@@ -77,19 +77,20 @@ export function isCartPricingDegraded(pricing: CartPricingWire | null | undefine
  * radius of failing closed points the other way. `state !== "active"` here
  * would brick a LIVE cart read-only — no quantity field, no remove button, no
  * way to check out — for a shopper whose cart is perfectly fine. And it would
- * do it on a value that NOTHING validates at runtime anywhere on the wire path:
- * `CartWire.state` is typed `string`, and `HttpCommerceClient`'s `#cartResult`
- * blind-casts the response body after checking only that it carries an
- * `ok`/`reason` envelope. Whatever the service ever emits arrives here
- * unchecked.
+ * do it on a value that NOTHING narrows at runtime anywhere on the wire path:
+ * `CartWire.state` is typed `string`, deliberately wider than the domain's
+ * `CartState` union that `InProcessCommerceClient`'s `serializeCart` copies it
+ * from — so this site, one real HTTP hop downstream of the plugin, still sees
+ * a bare `string` with nothing to narrow it back.
  *
- * `CartWire.orderId` rides that same unchecked path, and it is the reason the
- * plugin normalizes ONE field and not this one: `state` fails safely under a
- * blind cast (`isCartTerminal(undefined)` is `false`, so the page draws the
+ * `CartWire.orderId` rides that same wide-open path, and it is the reason the
+ * plugin normalizes ONE field and not this one: `state` fails safely staying
+ * a bare string (`isCartTerminal(undefined)` is `false`, so the page draws the
  * live cart it draws for every unknown state), whereas `orderId` fails
  * UNSAFELY — `undefined !== null` is true, so `cart/index.astro` would offer
- * `/orders/undefined` as the panel's only action. Hence the coercion in
- * `HttpCommerceClient.getCart`, at the wire boundary, and none downstream.
+ * `/orders/undefined` as the panel's only action. Hence `CartWire.orderId` is
+ * declared REQUIRED rather than optional (see its own doc comment on
+ * `commerce-client.ts`), and none downstream.
  *
  * So this answers for the ONE state that is genuinely terminal (`checked_out`
  * is one-way — `CartState` in `packages/domain/src/ports/cart-store.ts`, and
@@ -114,10 +115,12 @@ export function isCartTerminal(state: string | undefined): boolean {
  * The companion to `isCartTerminal`'s deliberate tolerance: the page renders an
  * unrecognised state as a live cart, and logs that it did. Without this, a
  * third state would arrive as a permanent, silent mis-render. The other half of
- * that worry — a `serializeCart` that quietly stopped emitting the field — is
- * now pinned at the producer instead (#136): `carts.http.contract.test.ts`
- * asserts the wire carries `state`, so a silent drop fails CI rather than
- * reaching this log.
+ * that worry — a `serializeCart` that quietly stopped emitting the field —
+ * was meant to be pinned at the producer instead (#136), but the test that did
+ * that pinning lived in the now-deleted `@otta-sh/service`
+ * (`carts.http.contract.test.ts`). No equivalent presence guard for `state` is
+ * confirmed to exist against `InProcessCommerceClient`'s `serializeCart` today,
+ * so this log is this field's only backstop again.
  */
 export function isKnownCartState(state: string | undefined): boolean {
 	return state === "active" || state === "checked_out";

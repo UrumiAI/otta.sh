@@ -1,6 +1,6 @@
 /**
- * THE cart-layer acceptance gate, on the document adapter — the store-postgres
- * suite of the same name, re-pointed at `EmdashCartStore`. Postgres only:
+ * THE cart-layer acceptance gate, on the document adapter. `@otta-sh/store-postgres`
+ * is gone; this is the pg-tier coverage now, re-pointed at `EmdashCartStore`. Postgres only:
  * better-sqlite3 serializes writes in one process, so it verifies the shape and
  * never the contention.
  *

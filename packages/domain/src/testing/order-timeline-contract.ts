@@ -91,8 +91,9 @@ function addNote(
  * (created / notes / fulfillment / cancellation / reconciliation resolution) into
  * one chronological view; and a historical order (no events) still yields a
  * useful partial timeline. Runs against the fake first, then each SQL dialect.
- * The Postgres-required exactly-one-event-under-race cases live in the
- * store-postgres dialects test (a fake/SQLite can't race).
+ * `@otta-sh/store-postgres` is gone; its Postgres-required
+ * exactly-one-event-under-race cases (a fake/SQLite can't race) have not been
+ * re-created against `store-emdash`'s `EmdashOrderStore` yet.
  */
 export function orderTimelineContract(
 	makeHarness: () => Promise<OrderTimelineHarness>,

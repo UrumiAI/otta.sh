@@ -1,6 +1,6 @@
 /**
- * The cart-mutation fences against the document adapter — the store-postgres
- * suite of the same name, re-pointed at `EmdashCartStore`.
+ * The cart-mutation fences against the document adapter. `@otta-sh/store-postgres`
+ * is gone; this is the dialect coverage now, re-pointed at `EmdashCartStore`.
  *
  * The cases are unchanged: a cart-initiated adjust/remove on a hold that is no
  * longer the cart's is `LINE_CHECKED_OUT` with no stock moved, and any mutation on

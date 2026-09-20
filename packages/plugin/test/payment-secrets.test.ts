@@ -3,16 +3,12 @@
  * in WRITE-ONLY plugin kv, plus the Settings provisioning surface for them.
  *
  * WHERE THE NAMES COME FROM. Every key below is the in-process equivalent of an
- * environment variable `@otta-sh/service` reads TODAY — nothing is invented:
+ * environment variable the standalone `@otta-sh/service` package (now deleted,
+ * folded into the plugin) used to read — nothing is invented:
  *  - `settings:stripeSecretKey`        ← `STRIPE_SECRET_KEY`
- *                                        (`packages/service/src/stripe-wiring.ts:7`)
  *  - `settings:stripeWebhookSecret`    ← `STRIPE_WEBHOOK_SECRET`
- *                                        (`packages/service/src/stripe-wiring.ts:6`)
  *  - `settings:emailApiKey`            ← `EMAIL_API_KEY`
- *                                        (`packages/service/src/index.ts:79`,
- *                                         `packages/service/src/worker.ts:72`)
  *  - `settings:x402FacilitatorApiKey`  ← `X402_FACILITATOR_SECRET`
- *                                        (`packages/service/src/x402-wiring.ts:6`)
  *                                        RENAMED off `…FacilitatorSecret` at
  *                                        INC-C5: the value is now SENT, not
  *                                        used to verify (review round 2, A5).

@@ -113,8 +113,9 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /**
- * The `SettleResult` → status/reason table, mirrored EXACTLY from
- * `packages/service/src/routes/webhooks.ts`:
+ * The `SettleResult` → status/reason table, mirrored EXACTLY from the
+ * standalone `@otta-sh/service`'s webhook route before it was folded into
+ * the plugin:
  *
  *  - settled (or an idempotent no-op) ⇒ 200, so Stripe stops retrying;
  *  - INVALID_SIGNATURE / MALFORMED / UNKNOWN_EVENT ⇒ 400;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ProductSummaryWire } from "../src/admin/admin-products-client.js";
+import type { ProductSummaryWire } from "../src/admin/admin-products-surface.js";
 import { resolveStockContext } from "../src/admin/products-read.js";
 
 /**

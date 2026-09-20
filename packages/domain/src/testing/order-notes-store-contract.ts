@@ -19,8 +19,9 @@ export interface OrderNotesStoreContractOptions {
  * note, list notes in append order, per-order scoping, and once-only idempotent
  * replay. Append-only — no edit/delete surface exists in this slice. Runs against
  * the fake first, then each DB dialect. Money-free (a note is a plain merchant
- * annotation), so there is no concurrency/no-oversell case HERE — the pg-backed
- * concurrent-replay race lives in the store-postgres dialects test.
+ * annotation), so there is no concurrency/no-oversell case HERE.
+ * `@otta-sh/store-postgres` is gone; no pg-backed concurrent-replay race for
+ * this contract has been re-created in `store-emdash` yet.
  */
 export function orderNotesStoreContract(
 	makeHarness: () => Promise<OrderNotesStoreHarness>,

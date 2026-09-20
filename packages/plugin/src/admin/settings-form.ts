@@ -20,7 +20,10 @@ import type {
 	SettingsFieldSpec,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
-import type { OperationalSettingsWire, ReportingSettingsSurface } from "./reporting-client.js";
+import type {
+	OperationalSettingsWire,
+	ReportingSettingsSurface,
+} from "./reporting-settings-surface.js";
 import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
 
 /**
@@ -42,10 +45,11 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  * `internalToken` (`X-Internal-Token`, the token the guarded `/reports/*`
  * reads and the privileged `PUT /settings` needed) and `serviceToken`
  * (`X-Service-Token`, ADR-0007's machine write-gate the service enforced on
- * every non-GET). Both existed to authenticate THIS plugin to
- * `@otta-sh/service` as a separate deployable. Now that the commerce service
- * is folded into the plugin (ADR-0014/0015) there is nothing left on the
- * other side of that call to authenticate to, so both tokens, their kv keys,
+ * every non-GET). Both existed to authenticate THIS plugin to the standalone
+ * `@otta-sh/service` package (now deleted) as a separate deployable. Now that
+ * the commerce service is folded into the plugin (ADR-0014/0015) there is
+ * nothing left on the other side of that call to authenticate to, so both
+ * tokens, their kv keys,
  * their save-generation counters, and the group that held their forms are
  * gone outright rather than kept as dead provisioning UI. The INC-09
  * write-only, never-masked discipline they pioneered survives below in
@@ -87,8 +91,9 @@ async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
  * branches, the forms, the group label and the action-id set. One row per
  * secret, so adding a fifth cannot half-land.
  *
- * Every `kvKey` is the in-process equivalent of a `@otta-sh/service` environment
- * variable (see `payment-secrets.ts` for the env-var → kv-key table and the
+ * Every `kvKey` is the in-process equivalent of an environment variable the
+ * standalone `@otta-sh/service` used to read (see `payment-secrets.ts` for the
+ * env-var → kv-key table and the
  * source lines). `genKey` is this secret's own save generation, independent per
  * secret so saving one never blanks another's untouched field — see
  * {@link bumpSaveGen}.
@@ -885,9 +890,9 @@ function checkoutGroup(
 
 /**
  * INC-C3 — the "Payments & email" group: the provisioning surface for the four
- * credentials that used to be `wrangler secret put` entries on the commerce
- * service (`packages/service/wrangler.jsonc`). With the service folded in there
- * is no second deployable to hold them, so this screen is where they land.
+ * credentials that used to be `wrangler secret put` entries on the standalone
+ * `@otta-sh/service` package's own wrangler config. With the service folded in
+ * there is no second deployable to hold them, so this screen is where they land.
  *
  * Every field is a PLAIN, ALWAYS-EMPTY `text_input` — the INC-09 discipline
  * this screen's two now-retired connection tokens introduced (see the module

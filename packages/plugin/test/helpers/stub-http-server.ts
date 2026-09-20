@@ -9,7 +9,7 @@ export interface RecordedRequest {
 
 export type StubResponder = (req: RecordedRequest) => { status: number; body: unknown };
 
-export interface StubCommerceServer {
+export interface StubHttpServer {
 	baseUrl: string;
 	/** Hostname only (no port) — `ctx.http`'s allowedHosts check matches on
 	 *  `new URL(url).hostname`, which never includes the port. */
@@ -19,10 +19,20 @@ export interface StubCommerceServer {
 	close(): Promise<void>;
 }
 
-/** A tiny hand-rolled HTTP stub standing in for `@otta-sh/service` (plan §6
- *  step 1) — records every request it receives and replies per a
- *  test-configured responder. */
-export async function startStubCommerceServer(): Promise<StubCommerceServer> {
+/**
+ * A tiny hand-rolled, GENERIC recording HTTP server for tests — it records every
+ * request it receives and replies per a test-configured responder, and it cares
+ * nothing about what the endpoint is supposed to be.
+ *
+ * WHAT IT IS FOR NOW: standing in for an ARBITRARY external host so a sandbox
+ * test can prove the `ctx.http` egress rules. It backs the email API in the
+ * `allowedHosts` harness test, and a Settings re-render in the Stripe settle
+ * route test that asserts no secret leaks outbound. It once stood in for the
+ * separate commerce service as well; that service is gone, and these uses are
+ * not, which is why the helper is named for what it does rather than for who it
+ * used to impersonate.
+ */
+export async function startStubHttpServer(): Promise<StubHttpServer> {
 	const requests: RecordedRequest[] = [];
 	const responders = new Map<string, StubResponder>();
 

@@ -19,13 +19,10 @@ import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import type { CommerceSweepSummary, SweepLegOutcome } from "../src/cron/index.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 
 let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
+let stub: StubHttpServer | undefined;
 
 afterEach(async () => {
 	await sandbox?.close();
@@ -125,7 +122,7 @@ describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
 		// adapters lives in `in-process-egress.sandbox.test.ts`, not here.
 		const { storage } = await storageBridge();
 
-		stub = await startStubCommerceServer();
+		stub = await startStubHttpServer();
 		stub.respondWith("POST", () => ({ status: 202, body: { queued: true } }));
 
 		sandbox = await loadPluginInSandbox({

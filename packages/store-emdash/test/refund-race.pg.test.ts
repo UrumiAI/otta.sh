@@ -1,8 +1,8 @@
 /**
- * Money movement under concurrency, on the document adapter — the store-postgres
- * suite of the same name, re-pointed at `EmdashOrderStore`. Postgres only:
- * better-sqlite3 serializes writes in one process, so it verifies the shape and
- * never the contention.
+ * Money movement under concurrency, on the document adapter. `@otta-sh/store-postgres`
+ * is gone; this is the pg-tier coverage now, re-pointed at `EmdashOrderStore`.
+ * Postgres only: better-sqlite3 serializes writes in one process, so it verifies
+ * the shape and never the contention.
  *
  * The invariant is the ceiling: `Σ active refunds ≤ min(Σ captured, frozen total)`
  * under EVERY interleaving of N racing refunds. The SQL held it with a row lock on

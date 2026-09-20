@@ -547,9 +547,10 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		// whether to permit a mutation and must fail closed. This is a renderer
 		// deciding which screen to draw, and failing closed here would brick a
 		// LIVE cart read-only — no qty field, no remove, no way to check out — on
-		// a value nothing validates at runtime (`CartWire.state` is `string`, and
-		// `HttpCommerceClient`'s `#cartResult` blind-casts after an envelope-only
-		// check). An unknown state renders as the live cart it probably is.
+		// a value nothing narrows at runtime (`CartWire.state` is `string`,
+		// deliberately wider than the domain `CartState` union
+		// `InProcessCommerceClient`'s `serializeCart` copies it from). An unknown
+		// state renders as the live cart it probably is.
 		expect(isCartTerminal("frozen")).toBe(false);
 	});
 
@@ -563,14 +564,14 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 
 	test("the wire type really does carry the state this page now reads", () => {
 		// HONEST SCOPE: this pins the `CartWire` TypeScript DECLARATION, not what
-		// the service emits. `serializeCart` dropping the field would compile
-		// perfectly and arrive here as `undefined` — which the narrow fence above
-		// then renders as a live cart. That is still the failure mode this test
-		// does not cover, but it is no longer uncovered anywhere: #136 is closed,
-		// and `packages/service/test/carts.http.contract.test.ts` now asserts
-		// `toHaveProperty("state")` where the field is PRODUCED. The
-		// `console.warn` pinned below is the runtime backstop, no longer the only
-		// thing that would say so out loud.
+		// the plugin emits. `serializeCart` (`in-process-commerce-client.ts`)
+		// dropping the field would compile perfectly and arrive here as
+		// `undefined` — which the narrow fence above then renders as a live cart.
+		// #136 is closed by the `orderId` presence guard in
+		// `packages/plugin/test/cart-routes.sandbox.test.ts` (see the test below);
+		// no equivalent presence guard for `state` specifically is confirmed to
+		// exist there today. The `console.warn` pinned below is the runtime
+		// backstop either way.
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "checked_out",
@@ -670,24 +671,25 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		// guarantees:
 		//
 		//  - a MALFORMED value (`undefined`, `""`, a non-string over a skewed
-		//    wire) is the plugin's: `HttpCommerceClient.getCart` coerces it to
-		//    `null` before any consumer sees it, pinned in the plugin's own
-		//    tests, at the wire boundary where the skew lands.
-		//  - the field DISAPPEARING is not, and the coercion cannot catch it —
+		//    wire) is the plugin's: `InProcessCommerceClient`'s `serializeCart`
+		//    (`in-process-commerce-client.ts`) copies the domain `Cart.orderId`,
+		//    itself `OrderId | null` and never absent, so the declaration is
+		//    honest at runtime and not merely by assertion.
+		//  - the field DISAPPEARING is not, and that typing cannot catch it —
 		//    it tolerates absence BY DESIGN (missing ⇒ `null`). A `serializeCart`
 		//    that silently stopped emitting `orderId` would drop every
 		//    checked-out cart to case B with this whole suite green: #110 again,
-		//    in muted form. What covers it is the same thing that covers `state`
-		//    three tests above — `packages/service/test/carts.http.contract.test.ts`
-		//    asserts `toHaveProperty("orderId")` where the field is PRODUCED, so
+		//    in muted form. What covers it is
+		//    `packages/plugin/test/cart-routes.sandbox.test.ts`'s
+		//    `toHaveProperty("orderId")` assertion where the field is PRODUCED, so
 		//    a silent drop fails CI instead of reaching a shopper.
 		//
 		// So the DECLARATION half of this test is enforced by the TYPE gates, not
 		// by vitest: dropping `orderId` from `CartWire` leaves this file green and
 		// reddens both of them — root `pnpm typecheck` (`tsc -b` over `packages/*`
 		// only; the root tsconfig is `files: []` plus package references and does
-		// not reach `sites/*`) because `http-commerce-client.ts` reads and assigns
-		// the field, and `sites/staging`'s own `astro check` — CI reaches it via
+		// not reach `sites/*`) because `in-process-commerce-client.ts` reads and
+		// assigns the field, and `sites/staging`'s own `astro check` — CI reaches it via
 		// `pnpm -r --if-present typecheck` — because of this fixture. Verified by
 		// doing exactly that. The executed assertions below are vitest's share.
 		const named: CartWire = {

@@ -27,10 +27,7 @@
  */
 import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import { afterEach, describe, expect, test } from "vitest";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 import {
 	loadPluginInSandbox,
 	productionAllowedHosts,
@@ -41,7 +38,7 @@ const WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
 const EDGE_TOKEN = "otta_edge_sandbox_NEVER_LEAK";
 
 let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
+let stub: StubHttpServer | undefined;
 
 afterEach(async () => {
 	await sandbox?.close();
@@ -84,7 +81,7 @@ describe("webhooks/stripe/settle under workerd", () => {
 	test("the edge token header crosses into the isolate and gates the route end to end", async () => {
 		// The stub backs the Settings re-render only; the settle route itself makes
 		// no request, and `stub.requests` below says so.
-		stub = await startStubCommerceServer();
+		stub = await startStubHttpServer();
 		stub.respondWith("GET", () => ({
 			status: 200,
 			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
@@ -171,7 +168,7 @@ describe("webhooks/stripe/settle under workerd", () => {
 	}, 180_000);
 
 	test("with NO edge token provisioned the route passes through, and the HMAC still governs", async () => {
-		stub = await startStubCommerceServer();
+		stub = await startStubHttpServer();
 		stub.respondWith("GET", () => ({
 			status: 200,
 			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },

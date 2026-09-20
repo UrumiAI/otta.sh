@@ -2,22 +2,22 @@
  * `commerceClientContract` — the transport-agnostic client contract (work order
  * 02, INC-A7 / D6 / D7 tier T5).
  *
- * WHAT THIS IS. The behavioural spec of the commerce client surface, lifted out
- * of the HTTP client's own test files so it can be run against a SECOND
- * transport. Every case here is shaped as *arrange backend state* → *call a
- * client method* → *assert the returned value or the typed rejection*. Nothing
- * in this file knows how the call travels: no URLs, no headers, no status codes,
- * no request recording. Those assertions are real and they are kept — they live
- * in the HTTP tier's own file, which is the transport's file and dies with the
- * transport.
+ * WHAT THIS IS. The behavioural spec of the commerce client surface. Every case
+ * here is shaped as *arrange backend state* → *call a client method* → *assert
+ * the returned value or the typed rejection*. Nothing in this file knows how the
+ * call travels: no URLs, no headers, no status codes, no request recording.
  *
- * WHY IT EXISTS. The HTTP client's test body *is* the spec (D6, "Why keep a flag
- * at all"). INC-B10a/b/c build an in-process client and must prove it
- * behaviourally identical before INC-D3b deletes the HTTP one. A spec that only
- * one transport can execute cannot do that. So the spec moves here and the
- * implementation-specific residue stays behind.
+ * WHY IT EXISTS, AND WHY IT OUTLIVED ITS OCCASION. It was lifted out of the HTTP
+ * client's own test files so the in-process client could be proved behaviourally
+ * identical BEFORE the HTTP one was deleted — a spec only one transport can
+ * execute cannot do that. INC-D3b has now deleted the HTTP tier, so the
+ * in-process tier is the only one left and
+ * `commerce-client-contract.in-process.test.ts` is the only file that runs this.
+ * The spec stays separate from that runner anyway: it is the port's behavioural
+ * contract, and keeping it free of any one implementation's construction detail
+ * is what would let a second implementation be held to it again.
  *
- * THREE SLICES, one per consuming increment:
+ * THREE SLICES, one per increment that consumed it:
  *   - `storefrontCommerceClientContract`       → INC-B10a (`CommerceClient`)
  *   - `adminOrdersProductsClientContract`      → INC-B10b (orders + products)
  *   - `adminRulesReportingClientContract`      → INC-B10c (rules + reporting)
@@ -36,26 +36,27 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { AdminOrdersClient } from "../../src/admin/admin-orders-client.js";
-import type { AdminProductsClient } from "../../src/admin/admin-products-client.js";
-import type { AdminRulesClient } from "../../src/admin/admin-rules-client.js";
-import type { ReportingSettingsClient } from "../../src/admin/reporting-client.js";
+import type { AdminOrdersSurface } from "../../src/admin/admin-orders-surface.js";
+import type { AdminProductsSurface } from "../../src/admin/admin-products-surface.js";
+import type { AdminRulesSurface } from "../../src/admin/admin-rules-surface.js";
+import type { ReportingSettingsSurface } from "../../src/admin/reporting-settings-surface.js";
 import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/commerce-client.js";
 
 // ── The tier interface ────────────────────────────────────────────────────
 //
-// A "tier" is one transport plus the means to seed state behind it. The four
-// admin surfaces are named by `Pick<…>` of the classes that implement them
-// TODAY purely to borrow their method signatures — this file never constructs
-// one, and at INC-D3b the `Pick` targets swap to the in-process classes while
-// every case below stays put.
+// A "tier" is one implementation plus the means to seed state behind it. The
+// four admin surfaces are named by `Pick<…>` of the PORTS in `src/admin/*-
+// surface.ts` purely to borrow their method signatures — this file never
+// constructs one. Restating each method here rather than aliasing the port whole
+// is what keeps the cases below and the port from drifting apart silently: a
+// method added to a port is not exercised until it is named here too.
 
-/** The admin orders surface the contract exercises — the class's WHOLE public
- *  surface, named method by method, for the same reason products is: INC-B10b-ii
- *  folds all twelve in-process, and a surface that listed fewer would let one be
+/** The admin orders surface the contract exercises — the port's WHOLE surface,
+ *  named method by method, for the same reason products is: all twelve are
+ *  implemented in-process, and a surface that listed fewer would let one be
  *  forgotten silently. */
 export type OrdersClientSurface = Pick<
-	AdminOrdersClient,
+	AdminOrdersSurface,
 	| "listOrders"
 	| "getOrder"
 	| "transitionOrder"
@@ -69,19 +70,19 @@ export type OrdersClientSurface = Pick<
 	| "listNotes"
 	| "addNote"
 >;
-/** The admin products surface the contract exercises — the class's WHOLE public
- *  surface, named method by method, because INC-B10b-i folds all six in-process
+/** The admin products surface the contract exercises — the port's WHOLE
+ *  surface, named method by method, because all six are implemented in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
 export type ProductsClientSurface = Pick<
-	AdminProductsClient,
+	AdminProductsSurface,
 	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
 >;
 /** The rules surface the contract exercises (shipping, tax, coupons) — the
- *  class's WHOLE public surface, all twenty-five methods named one by one,
- *  because INC-B10c-i folds all twenty-five in-process and a surface that listed
- *  fewer would let one be forgotten silently. */
+ *  port's WHOLE surface, all twenty-five methods named one by one, because all
+ *  twenty-five are implemented in-process and a surface that listed fewer would
+ *  let one be forgotten silently. */
 export type RulesClientSurface = Pick<
-	AdminRulesClient,
+	AdminRulesSurface,
 	| "listZones"
 	| "createZone"
 	| "updateZone"
@@ -112,12 +113,13 @@ export type RulesClientSurface = Pick<
  * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
  *
  * EVERY METHOD IS LISTED, for the same reason `RulesClientSurface` lists all
- * twenty-five: adding a method to `ReportingSettingsClient` without deciding what
- * the in-process tier does about it has to be a COMPILE error here, not a gap
- * discovered when a console screen is bound to a tier that cannot serve it.
+ * twenty-five: adding a method to `ReportingSettingsSurface` without deciding
+ * what the implementation does about it has to be a COMPILE error here, not a
+ * gap discovered when a console screen is bound to a client that cannot serve
+ * it.
  */
 export type ReportingClientSurface = Pick<
-	ReportingSettingsClient,
+	ReportingSettingsSurface,
 	| "getRevenue"
 	| "getOrdersByStatus"
 	| "getTopProducts"
@@ -1790,10 +1792,10 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 
 /**
  * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
- * test file in `packages/plugin/test/` ever exercised `AdminOrdersClient` or
- * `AdminProductsClient`. There was nothing to move, so the cases below are
- * written against the tier interface from the start and run on both transports
- * for free.
+ * test file in `packages/plugin/test/` ever exercised the old HTTP admin orders
+ * or products client. There was nothing to move, so the cases below were written
+ * against the tier interface from the start — which is why they cost nothing
+ * when the HTTP tier was deleted.
  *
  * PRODUCTS IS COVERED (INC-B10b-i) — all six methods: `listProducts`,
  * `getProduct`, `updateProduct`, `restock`, `removeStock`, `getTaxClasses`.

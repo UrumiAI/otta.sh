@@ -19,8 +19,9 @@
  * cron executor does not persist it, so a leg that fails forever would otherwise be
  * indistinguishable from a leg that has nothing to do — exactly the failure mode an
  * unattended path must not have. Each leg emits one `[otta] cron sweep …` line on
- * success and one `console.error` with its own label on failure, matching
- * `packages/service/src/worker.ts`'s `scheduled()` shape. An anomaly is louder
+ * success and one `console.error` with its own label on failure, matching the
+ * format the standalone commerce service's `scheduled()` handler used before it
+ * was folded into the plugin. An anomaly is louder
  * still: it is logged AND written to the order through `flagReconciliation`.
  *
  * EVERY LEG IS IDEMPOTENT, which is what makes running them every fifteen minutes

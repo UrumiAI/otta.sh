@@ -67,9 +67,10 @@ export interface ProductListFilter {
 	 * threshold and passes the number through, exactly like every other value
 	 * on this filter.
 	 *
-	 * DOMAIN: a NON-NEGATIVE INTEGER — mirrors the HTTP boundary's own
-	 * validation (`packages/service/src/schemas.ts`'s `lowStockQuery` /
-	 * `settingsBody`: `z.number().int().nonnegative()`), and the ONLY domain
+	 * DOMAIN: a NON-NEGATIVE INTEGER — mirrors the plugin's own boundary
+	 * validation (`requireLowStockThreshold` in
+	 * `in-process-admin-products-client.ts`, and its sibling bound in
+	 * `in-process-reporting-settings-client.ts`), and the ONLY domain
 	 * every adapter agrees on. A value outside it (fractional, negative,
 	 * `NaN`, `±Infinity`) throws `InvalidLowStockThresholdError` — checked by
 	 * EVERY adapter via the shared `isValidLowStockThreshold` guard, BEFORE
@@ -81,15 +82,11 @@ export interface ProductListFilter {
 	 * different answers to one input, which is what the shared guard exists
 	 * to make unreachable. Contract-pinned so the three can never drift apart.
 	 *
-	 * NOT YET ENFORCED AT THIS FILTER'S OWN HTTP BOUNDARY: `lowStockQuery` and
-	 * `settingsBody` (above) constrain the OTHER two `lowStockThreshold`
-	 * call sites, but `productListFilterSchema` in `packages/service/src/
-	 * schemas.ts` — the schema this filter's own list/count query param would
-	 * parse through — has no `lowStockThreshold` field at all yet, so it
-	 * cannot reject a bad one before this port does. Whichever increment wires
-	 * a query param to this field MUST add the same `z.number().int()
-	 * .nonnegative()` there and map `InvalidLowStockThresholdError` to a 400,
-	 * or a bad value 500s instead of 400s.
+	 * ALSO ENFORCED AT THIS FILTER'S OWN BOUNDARY:
+	 * `in-process-admin-products-client.ts`'s list/count filter now runs
+	 * `lowStockThreshold` through the same `requireLowStockThreshold` bound
+	 * before it reaches this port, so a bad value is a typed input refusal
+	 * rather than a 500.
 	 *
 	 * A row matches iff BOTH hold:
 	 *  - its sku resolves to a KNOWN `inventory` row — the same LEFT JOIN

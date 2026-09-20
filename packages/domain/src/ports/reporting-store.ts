@@ -3,11 +3,12 @@ import type { Cents, Currency } from "../money/cents.js";
 /**
  * `ReportingStore` (Phase 7 §4/§6). A READ-ONLY port over the existing
  * orders / order_totals / order_items / inventory tables — it introduces no new
- * write invariant. The port is dialect-agnostic intent only; the SQL (including
- * the dialect-branched period-bucket expression and the revenue-counting state
- * allow-list) lives entirely in the adapter (`store-postgres`), which is what
- * buys the single dialect-parity contract suite this phase's headline test
- * requires.
+ * write invariant. The port is dialect-agnostic intent only; the aggregation
+ * logic (including the revenue-counting state allow-list) lives entirely in
+ * the adapter — `store-emdash`'s `EmdashReportingStore` today, maintaining
+ * per-period bucket documents rather than the SQL `store-postgres` (now
+ * deleted) once branched by dialect — which is what buys the single
+ * dialect-parity contract suite this phase's headline test requires.
  *
  * Money in and out is integer minor units (`Cents`): every aggregate SUMs
  * integer `*_cents` columns and returns an integer — no float ever touches a

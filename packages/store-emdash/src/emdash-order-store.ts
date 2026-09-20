@@ -318,9 +318,9 @@ const MAX_LIST_PAGES = 1000;
  * adapter that simply forwarded it would truncate a larger page silently. It does not:
  * the scan pages internally until it has `limit + 1` rows. In practice that loop is a
  * correctness guarantee rather than a hot path, because **the 100-row cap on what a
- * caller may ask for lives at the ROUTE** (`@otta-sh/service`'s admin-orders query
- * schema), not here — so a page bigger than one host page is a programmatic caller, not
- * the console.
+ * caller may ask for lives at the ROUTE** (`in-process-admin-orders-client.ts`'s
+ * `clampLimit`), not here — so a page bigger than one host page is a programmatic
+ * caller, not the console.
  */
 const LIST_PAGE_SIZE = 100;
 

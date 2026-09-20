@@ -1,10 +1,11 @@
 /**
  * Cart — PLUGIN-OWNED PUBLIC ROUTES (Phase 3 group E, plan §7 step E1, shape
  * per ADR-0003). The plugin holds no cart/stock state (plan §4 "Where cart
- * state lives"): every route here is a straight proxy over `ctx.http` to
- * `@otta-sh/service`'s `/carts` REST surface — validate input → `HttpCommerceClient`
- * call → serialize the (already-typed) result. No cart truth is duplicated
- * or cached in the plugin.
+ * state lives"): every route here validates input → calls the in-process
+ * `CommerceClient` from `makeCommerceClient` → serializes the (already-typed)
+ * result — the shape the plugin's own `/carts` handling used to reach over
+ * `ctx.http` before the commerce service was folded in. No cart truth is
+ * duplicated or cached in the plugin.
  *
  * ── Platform-verified deviation from plan §4's literal wording ────────────
  * Plan §4 says "The plugin storefront route sets [cartId] as a cookie:
@@ -305,7 +306,7 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 }
 
 /** `PATCH /carts/:cartId/lines/:lineId` proxy — target qty, not a delta (the
- *  service computes the delta; see `HttpCommerceClient.adjustCartLine`). */
+ *  client computes the delta; see `InProcessCommerceClient.adjustCartLine`). */
 export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateRouteInput> {
 	return (routeCtx, ctx): Promise<CartLineMutationRouteResult<{ line: CartLineWire }>> =>
 		renderGuard(STOREFRONT_CART_LINE_UPDATE_ROUTE, async () => {

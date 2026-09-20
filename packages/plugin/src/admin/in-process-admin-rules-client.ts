@@ -3,9 +3,9 @@
  * → methods → rates, tax classes → rates, coupons) with commerce truth held on
  * the plugin's own document store (work order 02, INC-B10c-i).
  *
- * WHAT THIS CLASS IS. The in-process twin of `AdminRulesClient`: the same
+ * WHAT THIS CLASS IS. The sole implementation of `AdminRulesSurface`: the same
  * twenty-five methods, the same argument shapes, the same RETURN VALUES — every
- * field the HTTP wire carries — with the `@otta-sh/domain` ports composed over
+ * field the `*Wire` types carry — with the `@otta-sh/domain` ports composed over
  * the `@otta-sh/store-emdash` adapters bound to `ctx.storage` instead of a
  * commerce service. Nothing here reaches for egress; `ctx.http` is never
  * touched.
@@ -128,7 +128,7 @@ import type {
 	TaxRateEdit,
 	TaxRateInput,
 	TaxRateWire,
-} from "./admin-rules-client.js";
+} from "./admin-rules-surface.js";
 
 /** The coupon-list page bounds (`couponsListQuery`: `min(1).max(100)`, default
  *  25). Mirrored, not imported — the service package goes away. */

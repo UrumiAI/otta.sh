@@ -71,10 +71,11 @@ export const VARIANT_KEY_SUBFIELD = "key";
 export const VARIANT_NAME_SUBFIELD = "name";
 
 /**
- * Mirrors `@otta-sh/service`'s `upsertProductVariantBody.title` bound
- * (`z.string().min(1).max(500)`), restated rather than imported for the reason
- * `parse-product-title.ts` restates its own: the plugin declares no dependency
- * on the service package.
+ * Mirrors the `upsertProductVariantBody.title` bound
+ * (`z.string().min(1).max(500)`) that the standalone `@otta-sh/service`
+ * enforced before it was folded into the plugin, restated rather than
+ * imported for the reason `parse-product-title.ts` restates its own: no
+ * schema package survives to import it from.
  */
 const NAME_MAX_LENGTH = 500;
 

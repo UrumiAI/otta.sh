@@ -1,6 +1,7 @@
 /**
- * THE end-to-end order flow on the document adapter — the store-postgres suite of
- * the same name, re-pointed at `EmdashOrderStore` over `EmdashCartStore` and
+ * THE end-to-end order flow on the document adapter. `@otta-sh/store-postgres` is
+ * gone; this is the dialect coverage now, re-pointed at `EmdashOrderStore` over
+ * `EmdashCartStore` and
  * `EmdashInventoryStore`. Every case is the original's, with its assertions
  * translated from SQL rows to the documents that replaced them (`payments` →
  * `orders/{id}.payments`, `payment_events` → the payment-event fake's recorded

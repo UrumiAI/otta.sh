@@ -16,7 +16,6 @@ import {
 	DEV_BYPASS_PATH,
 	E2E_BASE_URL,
 	E2E_PG_CONNECTION_STRING,
-	E2E_SERVICE_URL,
 	E2E_VIEWPORT,
 	MIGRATED_SCREENS,
 	NEVER_MIGRATED_PATHS,
@@ -97,11 +96,13 @@ test.describe("harness configuration", () => {
 	test("every resolved e2e endpoint is loopback (§0.3 — no remote host, ever)", () => {
 		// The port guard above only covers Postgres — and Postgres is the variable
 		// a deploying shell really does export, which is the whole reason for this
-		// check. The two `OTTA_E2E_*` URLs are e2e-only names, guarded anyway so
-		// that no resolved endpoint in this harness is merely trusted.
+		// check. `OTTA_E2E_BASE_URL` is an e2e-only name, guarded anyway so that no
+		// resolved endpoint in this harness is merely trusted. (There were two such
+		// names until INC-D3b: `OTTA_E2E_SERVICE_URL` pointed at the standalone
+		// commerce service, which no longer exists, so the variable was removed
+		// rather than left as a knob that configures nothing.)
 		for (const [label, url] of [
 			["OTTA_E2E_BASE_URL", E2E_BASE_URL],
-			["OTTA_E2E_SERVICE_URL", E2E_SERVICE_URL],
 			["PG_CONNECTION_STRING", E2E_PG_CONNECTION_STRING],
 		] as const) {
 			expect(() => assertLoopbackUrl(url, label), `${label} is not loopback`).not.toThrow();
