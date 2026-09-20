@@ -16,7 +16,9 @@ import {
 	settingsStoreContract,
 } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
+import { collectionOf, ORDER_NOTES_COLLECTION, type OrderNoteDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
+import { barrierCall, isClaimWrite, onId, withCollection } from "./helpers/fault-injection.js";
 import { MISC_LAYOUT } from "./misc-collections.js";
 import {
 	makeEntitlementHarness,
@@ -52,12 +54,29 @@ describeEachDialect("EmdashOrderNotesStore", (ctx) => {
 	// compare-and-set is refused, it retries, reads the committed note back and
 	// returns it with `appended: false`. `better-sqlite3` serializes writes in one
 	// process, so this is a real race only on Postgres.
+	//
+	// The COLLISION is pinned by a barrier rather than left to `Promise.all`, and
+	// that is load-bearing: `pg.Pool` opens connections lazily, so the first caller
+	// gets the warm one and its create-if-absent commits ~20 ms before any peer's
+	// pre-read even returns. Every peer then finds the committed note and takes the
+	// replay branch, so nothing ever reaches the loser path this case exists to
+	// prove — the version of this test without the barrier stayed GREEN with the
+	// loser path deleted from the store. `barrierCall` holds all N create-if-absent
+	// writes until every one has arrived (which means every one read no note), then
+	// releases them into the real repository at once. See `helpers/fault-injection.ts`.
 	test.runIf(ctx.canRace)(
 		"concurrent appends with one idempotency_key insert exactly once (no duplicates)",
 		async () => {
-			const h = makeMiscHarness(bound.storage);
 			const key = idempotencyKey("race-key");
 			const N = 8;
+			const barrier = barrierCall(
+				collectionOf<OrderNoteDoc>(bound.storage, ORDER_NOTES_COLLECTION),
+				onId(key, isClaimWrite),
+				N,
+			);
+			const h = makeMiscHarness(bound.storage, {
+				storageForStore: withCollection(bound.storage, ORDER_NOTES_COLLECTION, barrier.collection),
+			});
 			const results = await Promise.all(
 				Array.from({ length: N }, () =>
 					h.orderNotesStore.append({
@@ -68,6 +87,8 @@ describeEachDialect("EmdashOrderNotesStore", (ctx) => {
 					}),
 				),
 			);
+			// All N really did contend: each one read no note and then tried to create it.
+			expect(barrier.arrived()).toBe(N);
 			// Exactly one caller performed the insert; the rest observed the replay.
 			expect(results.filter((r) => r.appended)).toHaveLength(1);
 			// All callers agree on the one stored note id.

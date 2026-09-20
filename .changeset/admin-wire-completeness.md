@@ -52,3 +52,9 @@ packages.
   no total is available and for a screen that narrowed its own fetched page (the
   products list's "Low stock only"), and a `total` that understates the rendered
   rows, or is not a non-negative safe integer, falls back rather than lies.
+  **Note for operators** (the warning the retired REST service carried, restated
+  for the surviving in-process path — it is still true): the three admin lists
+  (orders, products, coupons) now issue the count CONCURRENTLY with the page
+  read, so each of those requests holds TWO host database connections at its peak
+  rather than one. The queries are short, but a deployment that has tuned its host
+  connection pool down should account for it.
