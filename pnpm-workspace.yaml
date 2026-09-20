@@ -2,30 +2,27 @@ packages:
   - "packages/*"
   - "sites/*"
 
-# The host is a locally built merge of upstream EmDash `main` and its open
-# conditional-write PR, packed into `vendor/` (see `vendor/README.md`).
+# There are no `emdash` overrides any more. The host used to be a locally built
+# merge of upstream `main` and its then-open conditional-write PR, vendored as
+# `file:` tarballs and held in place by four overrides. `emdash@0.38.0` ships
+# that PR, so the manifests name the release directly and the store resolves a
+# single copy on its own: the released `@emdash-cms/cloudflare@0.38.0` pins
+# `emdash` EXACTLY at `0.38.0`, which is the same version the manifests ask for,
+# and `@emdash-cms/admin@0.38.0` / `@emdash-cms/registry-client@0.6.0` now export
+# the subpaths (`./portable-text-table`, `./listing-policy`) whose absence forced
+# them to be vendored alongside the core.
 #
-# Why these are load-bearing, precisely: the vendored tarballs cross-pin each
-# other at `0.37.1-otta.1` / `0.5.1-otta.1`, versions that do not exist on the
-# registry, so dropping the `emdash` or `@emdash-cms/admin` override fails
-# loudly at install. The quiet one is `@emdash-cms/cloudflare`: the published
-# `0.37.0` of it pins `emdash` EXACTLY, so without its override a second, stock
-# `emdash` resolves from the registry and the Worker bridge binds to the copy
-# WITHOUT the conditional-write primitives — no install error, no type error.
-# `sites/staging/test/host-pin.test.ts` asserts the one-copy outcome.
+# The one-copy outcome is a coincidence of agreement, not an invariant — a future release of
+# `@emdash-cms/cloudflare` that pins a DIFFERENT exact `emdash` would put a second
+# copy in the store, binding the Worker bridge to a host without the
+# conditional-write primitives: no install error, no type error.
+# `sites/staging/test/host-pin.test.ts` is what makes that loud, and an override
+# pinning `emdash` to the version the manifests name would be the fix.
 #
-# The pins must never float — no `^`, no `~`: a stray `emdash@1.0.0` exists on
-# npm and is NOT the latest release of this host.
-#
-# pnpm 11 ignores `pnpm.overrides` in package.json without warning, so the
-# overrides have to live here.
-overrides:
-  emdash: "file:./vendor/emdash-0.37.1-otta.1.tgz"
-  "@emdash-cms/admin": "file:./vendor/emdash-cms-admin-0.37.1-otta.1.tgz"
-  "@emdash-cms/cloudflare": "file:./vendor/emdash-cms-cloudflare-0.37.1-otta.1.tgz"
-  # The core build also imports an unreleased `registry-client` export
-  # (`listing-policy`'s `isProvenFirstRelease`), so that package is vendored too.
-  "@emdash-cms/registry-client": "file:./vendor/emdash-cms-registry-client-0.5.1-otta.1.tgz"
+# If pins are ever reintroduced they must never float — no `^`, no `~`: a stray
+# `emdash@1.0.0` exists on npm and is NOT the latest release of this host. And
+# they have to live here: pnpm 11 ignores `pnpm.overrides` in package.json
+# without warning.
 
 allowBuilds:
   better-sqlite3: true
@@ -53,8 +50,8 @@ catalog:
   hono: ^4.12.29
   "@hono/node-server": ^2.0.8
   dependency-cruiser: ^18.0.0
-  # wrangler ^4.68 -> ^4.99 because the vendored `@emdash-cms/cloudflare`
-  # declares `peerDependencies.wrangler >= 4.99.0`.
+  # wrangler ^4.68 -> ^4.99 because `@emdash-cms/cloudflare` declares
+  # `peerDependencies.wrangler >= 4.99.0`.
   wrangler: ^4.99.0
   "@changesets/cli": ^2.31.0
   "@types/node": ^22.15.0
@@ -84,16 +81,20 @@ minimumReleaseAgeExclude:
   # Nothing in this repo sets `minimumReleaseAge`, so this list only has an
   # effect under external pnpm config (a user or CI `.npmrc`) that does.
   #
-  # The four vendored packages (`emdash`, `@emdash-cms/admin`,
-  # `@emdash-cms/cloudflare`, `@emdash-cms/registry-client`) come from `vendor/`
-  # as `file:` tarballs, which bypass the release-age check entirely — no
-  # exclusion needed for them. Every sibling that still resolves from the
-  # registry is listed here, because the 0.37.x train is younger than a typical
-  # threshold.
-  - "@emdash-cms/auth@0.37.0"
-  - "@emdash-cms/blocks@0.37.0"
-  - "@emdash-cms/gutenberg-to-portable-text@0.37.0"
+  # The whole EmDash train is listed now. It used to omit `emdash`,
+  # `@emdash-cms/admin`, `@emdash-cms/cloudflare` and `@emdash-cms/registry-client`
+  # because they came from `vendor/` as `file:` tarballs, which bypass the
+  # release-age check entirely; they resolve from the registry again, so they
+  # need the exclusion like every sibling. The 0.38.x train is younger than a
+  # typical threshold.
+  - "emdash@0.38.0"
+  - "@emdash-cms/admin@0.38.0"
+  - "@emdash-cms/auth@0.38.0"
+  - "@emdash-cms/blocks@0.38.0"
+  - "@emdash-cms/cloudflare@0.38.0"
+  - "@emdash-cms/gutenberg-to-portable-text@0.38.0"
   - "@emdash-cms/plugin-types@0.3.1"
-  - "@emdash-cms/registry-lexicons@0.4.0"
-  - "@emdash-cms/registry-moderation@0.1.0"
-  - "@emdash-cms/registry-verification@0.3.0"
+  - "@emdash-cms/registry-client@0.6.0"
+  - "@emdash-cms/registry-lexicons@0.5.0"
+  - "@emdash-cms/registry-moderation@0.2.0"
+  - "@emdash-cms/registry-verification@0.3.1"

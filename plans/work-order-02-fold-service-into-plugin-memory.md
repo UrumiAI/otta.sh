@@ -281,10 +281,10 @@ migrations, the fast path returns "nothing to do" and upstream's real `077` is *
 applied**. Applied rows must be compared by **name**, not by count. Staging is the only database
 that can reach that state, and it is re-seeded demo data.
 
-> **Note for INC-D6.** `vendor/README.md` holds the full detail behind this section — the tarball
-> inventory and why each is required, why each override is load-bearing, the rebuild procedure, and
-> the de-vendoring checklist. When INC-D6 deletes `vendor/`, that content moves into this note. See
-> §6, which is reserved for it.
+> **Where the detail lives now.** `vendor/README.md` held the full record behind this section — the
+> tarball inventory and why each was required, why each override was load-bearing, and the
+> de-vendoring checklist. INC-D6 deleted `vendor/`, and that content is folded into **§6**. §5 is
+> what the release swap settled, R13 included.
 
 ---
 
@@ -346,15 +346,204 @@ Checked against the branch this note was written on:
 
 ## 5. What INC-D6 had to reconcile
 
-**Not yet applicable — INC-D6 has not run.** It is the final increment, gated on an npm `emdash`
-release carrying #2980 (#2169 is already merged upstream, so any release cut after it carries
-that). This section will be completed when INC-D6 lands.
+**Nothing. That is the finding, and it is the good one.**
+
+INC-D6 ran on 2026-09-20 against `emdash@0.38.0`, published 2026-09-15, the first release cut after
+#2980 merged upstream (`570333ac`, 2026-09-14). The swap was:
+`emdash` and `@emdash-cms/cloudflare` `0.37.0` → **`0.38.0`**, `@emdash-cms/admin` → **`0.38.0`**,
+`@emdash-cms/registry-client` → **`0.6.0`**.
+
+### R13 did not materialize
+
+The released `0.38.0` numbers the conditional-write migration **`077_plugin_storage_revisions`** —
+the same name the vendored merge renumbered it to. Stronger than that: the released build's
+`src/database/migrations/runner.ts` is **byte-identical** to the vendored build's (519
+lines, `diff` silent), `runner.ts`'s migration list is identical, and both builds carry
+**76** migrations in the same order (`001`–`009`, then `011`–`077`; there is no `010` in either),
+with `077_plugin_storage_revisions` last in `MIGRATION_NAMES` in both.
+
+So the fast-path hazard below has no way to fire on this swap: a database migrated by the vendored
+build holds exactly the rows the released runner expects, by name. **No staging D1 rename was
+needed and none was performed** — no `wrangler d1 execute`, no deploy, nothing written. The read-only
+procedure, recorded because the next host bump may genuinely need it: the migrations table is
+`_emdash_migrations` (with `_emdash_migrations_lock`), the staging binding is `DB`, the real database
+name lives in the gitignored `sites/staging/wrangler.local.jsonc`, and the check is
+`wrangler d1 execute <name> --remote --command "SELECT name FROM _emdash_migrations ORDER BY name"`,
+compared against the new build's `MIGRATION_NAMES` **by name, never by count**.
+
+### The overrides went away entirely rather than moving to the release
+
+All four `file:` overrides in `pnpm-workspace.yaml` were **deleted, not repointed**, because every
+reason they existed is gone at `0.38.0`:
+
+- `@emdash-cms/admin@0.38.0` **does** export `./portable-text-table`, the subpath whose absence at
+  `0.37.0` forced the admin package to be vendored alongside the core.
+- `@emdash-cms/registry-client@0.6.0` **does** export `./listing-policy`, likewise.
+- The quiet one, `@emdash-cms/cloudflare`, still pins `emdash` **exactly** — but it now pins
+  `0.38.0`, which is the version the manifests themselves name, so the exact pin and the manifest
+  agree and a single copy resolves with no help. Verified: one `emdash@0.38.0` directory in
+  `node_modules/.pnpm`, one `emdash@0.38.0` key in the lockfile.
+
+The one-copy outcome is therefore a *coincidence of agreement* rather than something forced, which
+is exactly why `sites/staging/test/host-pin.test.ts` was **kept and updated rather than deleted**. If
+a future `@emdash-cms/cloudflare` pins an `emdash` other than the one the manifests name, a second
+copy returns and the Worker bridge silently binds to the host **without** the primitives; that test
+is what makes it loud, and the remedy is to reintroduce an exact `emdash` override.
+
+`minimumReleaseAgeExclude` grew rather than shrank: the four packages used to be absent from it
+because `file:` tarballs bypass the release-age check entirely. They resolve from the registry
+again, so the whole 0.38 train is listed now.
+
+### Results on the released build
+
+Full battery green, run from the worktree root on the released install:
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` (incl. the domain-purity dep check) | clean, 1361 modules / 2979 dependencies cruised |
+| `pnpm typecheck` | clean |
+| `pnpm -r build` | all 9 projects, staging Astro/Worker build included |
+| `pnpm test` | **224 files passed**, 17 skipped; 4348 passed, 820 skipped, 14 todo |
+| `pnpm test:pg` (Postgres, `127.0.0.1:55432`) | **60 files passed**; 1551 passed, 7 skipped |
+| `pnpm test:d1` — **T3, the production dialect** | **14 files passed**; **525 passed, 0 skipped** |
+| `pnpm test:e2e` | 13 passed, 21 skipped (the browser-driven specs, which gate on a running site) |
+
+### One pre-existing failure INC-D6 uncovered and fixed
+
+`pnpm test:e2e` was **already red on the integration branch before this increment touched
+anything** — `sites/staging/e2e/harness.spec.ts`'s ADR-0006 additive gate, which asserts the set of
+skip-shaped constructs in the sandbox suites **exactly**. It had drifted in both directions at once:
+
+- Its `ALLOWED_SKIPS` still permitted a `describe.skipIf` in `account-routes.sandbox.test.ts` and
+  `download-route.sandbox.test.ts`. The mode-collapse retrofit (`6657292`) had moved both suites
+  onto the plugin's own document store, so neither is Postgres-conditional any more — a
+  strengthening the gate did not know about.
+- It did **not** permit the 13 `test.todo` cases in `storefront-checkout.sandbox.test.ts` or the one
+  in `reports-widget.sandbox.test.ts`, all of them deliberately parked (rather than deleted or
+  inverted) when the HTTP transport was deleted, each naming its blocking work in its own title.
+
+Both were corrected, and the gate's matcher was tightened to require a trailing `(` so that *prose
+about* a parked case — these suites explain themselves at length — no longer counts as a skip. The
+gate is stricter after the fix than before it, and the parked-case count is now a number a reviewer
+can argue with. That the branch's e2e had been red for several increments without anyone noticing is
+worth recording on its own.
 
 ---
 
-## 6. Vendoring detail (reserved for INC-D6)
+## 6. Vendoring detail — the record `vendor/README.md` used to hold
 
-**Reserved.** `vendor/README.md` is still present and remains the authoritative record of the
-vendored build while `vendor/` exists. When INC-D6 deletes `vendor/`, that file's full content —
-the tarball inventory, the override rationale, the rebuild procedure, the build evidence, and the
-de-vendoring checklist — moves here so nothing is lost with the directory.
+`vendor/` and `scripts/vendor-emdash.sh` were **deleted at INC-D6**. This section is what
+`vendor/README.md` said, folded in so nothing is lost with the directory. §3 above is the short
+version of the same story; this is the detail behind it, with the temporary "how to rebuild the
+tarballs" framing replaced by what the release swap actually settled.
+
+Recoverable from git if ever needed: the tarballs, the recorded diff and the build script are all at
+`vendor/` and `scripts/vendor-emdash.sh` in the history of `feat/in-process-commerce` (INC-A0 through
+INC-D5), e.g. `git show <pre-D6-sha>:vendor/README.md`.
+
+### What was in the build
+
+| | |
+|---|---|
+| Base | upstream `main` at `ea2ccd548f7aba9883bc1c9d0cf3c6f642c10a62` (package version `0.37.0`; already carried #2169's `updateIf`) |
+| Merged onto it | #2980, the revision-based conditional writes, head `c4b441b05221d936e62a28e2c33214912a7a231a` |
+| Merge commit | `39ff8569c914853fa7fde1720632caa6ba4ac91c` |
+| Branch head the tarballs were built from | `2dc708318d358631ab0620aded3d2afc0bac6de9`, on `otta/emdash-cas` — the merge plus one post-merge fix-up |
+| Migration number used | `077_plugin_storage_revisions` — **and this is the number upstream shipped**, see §5 |
+| Tarball version | `0.37.1-otta.1` — the base version's patch bumped and suffixed, so it could never be mistaken for a published release |
+
+The tarballs were a build of upstream's own code, not a fork of it: the merge branch carried the
+merge, its conflict resolutions and one fix-up, nothing else. It was pushed to Otta's own fork and
+never force-pushed, because it was what the tarballs were built from. Nothing was proposed upstream.
+pnpm recorded a sha512 integrity hash per tarball, so a clean `--frozen-lockfile` reinstall
+reproduced them, CI included.
+
+### The four tarballs, and why each was required
+
+| Package | Size | Why it was vendored |
+|---|---|---|
+| `emdash` | 3.9 MB | the primitives themselves |
+| `@emdash-cms/admin` | 5.0 MB | **required, not optional.** The core build imports `@emdash-cms/admin/portable-text-table`, and the published `0.37.0` admin did not export that subpath at all — its exports map had only `.`, `./styles.css`, `./locales`, `./locales/*` and `./slugify`. Installing the stock admin beside the vendored core made the core fail to resolve. |
+| `@emdash-cms/cloudflare` | 245 KB | the Worker bridge, which had to be the copy that knew the conditional-write operations |
+| `@emdash-cms/registry-client` | 129 KB | **same reason as the admin.** The core imports `isProvenFirstRelease` from `listing-policy`, which the published `0.5.0` — the exact version the core asked for — did not export. Without it, importing the root `emdash` entry threw `SyntaxError: … does not provide an export named 'isProvenFirstRelease'`. |
+
+Every other sibling (`@emdash-cms/auth`, `blocks`, `gutenberg-to-portable-text`, `plugin-types`,
+`registry-lexicons`, `registry-moderation`, `registry-verification`) matched its published release
+and resolved from the registry normally.
+
+**The generalisable lesson, worth keeping past the vendoring:** the host monorepo's workspace
+packages can carry source newer than the release their `package.json` version names, and the core
+build links against the workspace copy. Any sibling whose unreleased source the core reaches has to
+be vendored alongside it. Importing the root `emdash` entry is the cheap way to find them — a missing
+one surfaces as an unresolved named import at module-instantiation time, not at install time. Both
+gaps closed at `0.38.0` / `0.6.0`, which is why the overrides could be dropped outright.
+
+### Why the overrides were load-bearing
+
+Two failed loudly, one quietly. The loud pair were `emdash` and `@emdash-cms/admin`: the tarballs
+cross-pinned each other at `0.37.1-otta.1` / `0.5.1-otta.1`, versions that do not exist on the
+registry, so dropping either left a specifier nothing could satisfy and the install stopped. The
+quiet one was `@emdash-cms/cloudflare`: the published `0.37.0` depended on an **exact** `emdash`
+version the registry *could* satisfy, so without its override a second, stock `emdash` landed in the
+store and the Worker bridge bound to the copy **without** the primitives — no install error, no type
+error, just missing methods at runtime. That is the failure mode the one-copy assertion exists for,
+and `sites/staging/test/host-pin.test.ts` still asserts it.
+
+The overrides had to live in `pnpm-workspace.yaml`: **pnpm 11 ignores `pnpm.overrides` in
+`package.json` without warning.** The pins had to never float — no `^`, no `~`: a stray `emdash@1.0.0`
+exists on npm and is **not** the latest release of this host. Package manifests kept plain `"0.37.0"`
+specifiers throughout, which is what made INC-D6 an override edit plus a three-manifest version bump
+rather than a sweep.
+
+### The conflict resolutions in the merge
+
+Both sides added methods to the same storage surfaces, so almost every conflict was "keep both".
+`vendor/otta-emdash-cas.diff` was the machine-readable record — `git diff <base> <branch head> --
+packages/` — so `git apply --check` against a future base answered "do the recorded resolutions still
+apply?" without a clone.
+
+1. **The migration-number collision — the load-bearing one.** #2980 added
+   `076_plugin_storage_revisions`; the base already ended at `076_collection_nav_group`. Renumbered
+   to **`077_plugin_storage_revisions`** — the file, its three `.ts` importers, and the runner's
+   import alias and map key. (Upstream shipped the same number. See §5.)
+2. **Type re-exports** (core's root and plugin entries, and the plugin-storage repository): keep both
+   sides' exported type names.
+3. **The sandbox bridge protocol, host implementation and in-sandbox wrapper**, for both the
+   Cloudflare and workerd runtimes: keep both sides' operations.
+4. **The migrations integration test**: take #2980's form, which slices the runner's exported
+   migration-name list instead of restating the tail by hand, so it needs no edit when a migration is
+   added.
+5. **The workerd integration test**: keep both sides' cases as **two separate tests**. A textual
+   "keep both" interleaves them into one broken block, because both sides add a case in the same
+   place with the same surrounding shape.
+6. **The base's D1 `updateIf` test** builds its storage table by hand and needed the `revision`
+   column the merged repository writes on every write — one added column, matching what #2980 did to
+   its own fixtures.
+7. **The storage documentation page**: keep both sections.
+8. **One post-merge fix-up, not a conflict resolution.** The keep-both on the Cloudflare sandbox
+   bridge's `import type … from "emdash"` list left a `NumericDelta` import neither parent uses, and
+   the host lints with `oxlint --type-aware --deny-warnings`, so the merge commit itself did not lint
+   even though both of its parents did. The fix was the one commit on top of the merge — which is why
+   the build recorded a **branch head** as well as a merge commit.
+
+### Node and wrangler
+
+`engines.node: ">=22.16"` is the host's own floor, and the rule the repo settled on is: the root
+manifest declares it, and so does every manifest that resolves the host (`sites/staging`,
+`packages/admin-react`); no other package restates it, and CI pins the major line only
+(`node-version: "22"`), which satisfies the floor without narrowing to one minor. The `wrangler`
+catalog entry moved `^4.68` → `^4.99` because `@emdash-cms/cloudflare` declares
+`peerDependencies.wrangler >= 4.99.0` — still true at `0.38.0`, so the catalog entry stays.
+
+### Build evidence, as recorded at the time
+
+On the vendored base: the host's own storage, conditional-write, no-oversell and migration suites
+passed on SQLite and Postgres, its Worker-runtime sandbox suites passed, and a throwaway consumer
+confirmed the migrations applied with `077_plugin_storage_revisions` as the tail and that all four
+primitives behaved as documented, stale-revision refusals included.
+
+One upstream test is worth naming because it is **sometimes red and should be discounted**:
+`@emdash-cms/cloudflare`'s `tests/db/d1-migration-target.test.ts` — "uses project-local Wrangler and
+preserves account inheritance for a named environment" — spawns a real `wrangler` process and times
+out against the suite's 5s default on a loaded machine. It is upstream's test, it does not touch the
+primitives, and nothing Otta ships depends on it.

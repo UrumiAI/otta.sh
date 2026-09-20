@@ -1,11 +1,12 @@
 /**
- * The host pin is an invariant, not a preference. Otta's commerce truth is
- * moving onto EmDash's conditional-write primitives, and the copy of `emdash`
- * that carries them is a vendored build (`vendor/`, see `vendor/README.md`)
- * held in place by the overrides in `pnpm-workspace.yaml`. Drop the
- * `@emdash-cms/cloudflare` override and a second, stock `emdash` resolves from
- * the registry: no install error, no type error, just a Worker bridge bound to
- * the copy WITHOUT the primitives. This suite is what makes that loud.
+ * One copy of the host is an invariant, not a preference. Otta's commerce truth
+ * rides on EmDash's conditional-write primitives, which ship in `emdash@0.38.0`.
+ * The released `@emdash-cms/cloudflare` pins `emdash` EXACTLY, so if a future
+ * release of it ever pins a version other than the one the manifests name, a
+ * second `emdash` lands in the store and the Worker bridge binds to the copy
+ * WITHOUT the primitives: no install error, no type error. This suite is what
+ * makes that loud. The fix, if it ever fires, is an exact `emdash` override in
+ * `pnpm-workspace.yaml`.
  */
 import Database from "better-sqlite3";
 import { PluginStorageRepository } from "emdash";
@@ -31,7 +32,7 @@ afterAll(async () => {
 	await db?.destroy();
 });
 
-describe("the vendored EmDash host pin", () => {
+describe("the EmDash host pin", () => {
 	it("puts exactly one emdash in the store", () => {
 		const copies = readdirSync(STORE).filter((entry) => entry.startsWith("emdash@"));
 		expect(copies).toHaveLength(1);
@@ -41,7 +42,7 @@ describe("the vendored EmDash host pin", () => {
 		expect(typeof PluginStorageRepository).toBe("function");
 	});
 
-	it("ends its migration list at the renumbered conditional-write migration", () => {
+	it("ends its migration list at the conditional-write migration", () => {
 		expect(typeof runMigrations).toBe("function");
 		expect(MIGRATION_NAMES.at(-1)).toBe("077_plugin_storage_revisions");
 	});
