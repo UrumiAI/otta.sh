@@ -73,8 +73,7 @@ Pick the tag for the area your change touches:
 | Area changed | Tag |
 |---|---|
 | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
-| `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
-| Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
+| Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
 | Shared test/contract packages | `[Test]` |
 | CI / tooling / build | `[CI]` |

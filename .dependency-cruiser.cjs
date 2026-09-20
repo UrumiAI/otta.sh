@@ -6,6 +6,8 @@ module.exports = {
 	forbidden: [
 		{
 			name: "domain-is-io-free",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment below and in the last clause of `to.path`. Tracked separately.
 			comment:
 				"@otta-sh/domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
 				"and no dependency on adapter/service/plugin packages (DEVELOPMENT.md §3).",
@@ -23,7 +25,7 @@ module.exports = {
 			comment:
 				"@otta-sh/plugin's src (loaded inside the workerd sandbox) has NO DB/" +
 				"driver, filesystem, process, socket or network-client surface, and no " +
-				"dependency on a SQL store, the service or a payment adapter. Its egress " +
+				"dependency on a SQL store or a payment adapter. Its egress " +
 				"is the injected ctx.http; its commerce truth is the injected ctx.storage " +
 				"(DEVELOPMENT.md §5, ADR-0018, sandbox-clean guard). The forbidden list is " +
 				"a superset of domain-is-io-free's, plus HTTP/WS client libs (undici, " +
@@ -58,12 +60,12 @@ module.exports = {
 				"importing an ADAPTER can, which is why every adapter except one stays " +
 				"banned. Second, that one exception: `store-[^/]+` in the packages clause " +
 				"became `(?!store-emdash/)store-[^/]+`, so packages/store-emdash is " +
-				"admitted while store-postgres — and any store-* added later — is banned " +
+				"admitted while any other store-* — including any added later — is banned " +
 				"by default rather than by anyone remembering to add it — and the same list " +
 				"is mirrored into the two SPECIFIER clauses, not only the packages " +
 				"clause, because pnpm's strict isolation leaves an UNDECLARED import as " +
 				"a bare specifier that never resolves to a packages/ path: naming only " +
-				"admin-react there meant an undeclared @otta-sh/store-postgres, service " +
+				"admin-react there meant an undeclared @otta-sh/store-* " +
 				"or payments-* import tripped nothing at all, which is the same class of " +
 				"silent miss as the `^node:`-only builtin clause. store-emdash is " +
 				"admissible because it carries no IO of its own: it is written against a " +
@@ -87,11 +89,25 @@ module.exports = {
 				"still be caught — by the driver and node-builtin clauses of this same " +
 				"rule, which the carve-out does not touch. " +
 				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: these " +
-				"two admitted, a third payments-* package still forbidden.",
+				"two admitted, a third payments-* package still forbidden.\n\n" +
+				"FOURTH CHANGE (work order 02, INC-D3c): `service` is no longer named in " +
+				"any of the three clauses, because @otta-sh/service no longer EXISTS — " +
+				"INC-D3b deleted packages/service (and packages/store-postgres with it) " +
+				"once the service was folded into the plugin. A ban on a package that " +
+				"cannot be imported is a clause no fixture can exercise, so it rots " +
+				"silently: nothing would notice if it stopped matching, which is the same " +
+				"failure mode as the `^node:`-only builtin clause above. store-postgres " +
+				"was never named literally — it was caught by the " +
+				"`(?!store-emdash(/|$))store-[^/]+` lookahead, which is untouched and " +
+				"still bans every store-* but the one, so a store-postgres reintroduced " +
+				"tomorrow is forbidden on the day it is created. A reintroduced `service` " +
+				"package would NOT be, and that is deliberate: after the fold-in " +
+				"(ADR-0018) a second deployable is a decision that needs its own ADR, not " +
+				"something a lint rule should pre-judge on a name.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|service|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{
@@ -196,6 +212,8 @@ module.exports = {
 				"the plugin rule's comment sets out. Every case this rule and " +
 				"the plugin rule turn on are executed in " +
 				"packages/plugin/test/depcruise-boundary.test.ts.",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment above and in three clauses of `to.path`. Tracked separately.
 			severity: "error",
 			from: { path: "^packages/store-emdash/src" },
 			to: {
@@ -276,7 +294,7 @@ module.exports = {
 				"static import would be a second one — compiled in, invisible to the " +
 				"empty capability set and to the empty allowedHosts that are this " +
 				"descriptor's only declared controls. It is also, for the server " +
-				"packages (domain/service/store/payments), Node and database code " +
+				"packages (domain/store/payments), Node and database code " +
 				"reached from a module that ships to a BROWSER. So: no workspace " +
 				"package, in either direction. The consequence is deliberate and has " +
 				"one known bill to pay — INC-20 owes the React tier a formatMoney, and " +

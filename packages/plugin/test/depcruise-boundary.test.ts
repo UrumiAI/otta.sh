@@ -48,7 +48,14 @@ const STUB_PACKAGES = [
 	"domain",
 	"admin-react",
 	"store-emdash",
-	"store-postgres",
+	// A hypothetical sibling SQL store, resolvable on purpose: it is how the
+	// RESOLVED half of the store ban (`^packages/…store-[^/]+/`) gets exercised,
+	// the bare-specifier half being covered by the unresolved `store-d1` cases.
+	// Deliberately not a real package name — the rule bans every store-* but
+	// store-emdash by lookahead, so the fixture must not depend on any particular
+	// adapter continuing to exist (`store-postgres`, which this stub replaced,
+	// was deleted in INC-D3b).
+	"store-sqlite",
 	"payments-stripe",
 	"payments-x402",
 	"plugin",
@@ -188,20 +195,17 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
 
-	test("an unresolved service import is forbidden, for the same reason", () => {
+	test("a RESOLVED SQL store adapter is still forbidden — the narrowing admitted one store, not every store", () => {
+		// The counterpart to the case above: this name IS linked into the fixture's
+		// node_modules, so dependency-cruiser reports it as a `packages/…` path and
+		// the third clause is what has to catch it. INC-D3c dropped the deleted
+		// `service` case that used to sit here; the store ban is a lookahead over
+		// the whole family, so it is exercised by a stand-in rather than by whichever
+		// SQL adapter happens to exist this month.
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/service";\nexport const x = stub;\n',
-			),
-		).toEqual(["plugin-is-sandbox-clean"]);
-	});
-
-	test("a SQL store adapter is still forbidden — narrowing admitted one store, not every store", () => {
-		expect(
-			rulesViolatedBy(
-				"plugin",
-				'import { stub } from "@otta-sh/store-postgres";\nexport const x = stub;\n',
+				'import { stub } from "@otta-sh/store-sqlite";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
