@@ -6,9 +6,10 @@ Operational guide for Claude working in this repo. The **why** lives in
 conventions, and the guardrails that must not be crossed.
 
 > **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
-> `@otta-sh/domain`, `@otta-sh/service`, the storefront/admin adapters, and the EmDash plugin
-> all exist under `packages/`. Treat the commands below as live, not aspirational; if one
-> genuinely doesn't exist, say so rather than inventing output.
+> `@otta-sh/domain`, the EmDash plugin (which now carries the commerce service in-process),
+> `@otta-sh/store-emdash`, the payment adapters and the React admin all exist under
+> `packages/`. Treat the commands below as live, not aspirational; if one genuinely doesn't
+> exist, say so rather than inventing output.
 
 ---
 
@@ -48,6 +49,19 @@ pnpm test         # vitest; run frequently while implementing
 pnpm format       # oxfmt, tabs — run regularly
 ```
 
+Two tiers sit outside that loop because they need a backing service, and both are CI jobs:
+
+```bash
+PG_CONNECTION_STRING=<local pg> pnpm test:pg   # T2 — the race tier; the no-oversell proof
+pnpm test:d1                                   # T3 — real D1 in workerd (miniflare); slow, minutes
+```
+
+`pnpm test:d1` runs `packages/store-emdash/vitest.d1.config.ts`, a **separate vitest project** under
+the Cloudflare workers pool — it is not part of the root `vitest run`. It needs no Cloudflare
+account, token or remote database; the D1 is the local miniflare simulator. In CI it is the `d1`
+job: nightly, on demand, and as the **release gate** on any PR into `main` and the `main` push that
+follows. Per-increment PRs into an integration branch do not run it.
+
 Before a PR: **tests pass, lint clean, formatted, changeset added** if a published package
 changed. Migrations are forward-only.
 
@@ -59,8 +73,7 @@ changed. Migrations are forward-only.
   | Area changed | Tag |
   |---|---|
   | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
-  | `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
-  | Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
+  | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
@@ -84,6 +97,10 @@ Every task is verified end-to-end before the PR is handed over (default, not opt
 - **Plugin / storefront-UI tasks** — exercise against the **workerd-on-Node sandbox** (not
   trusted in-process mode) and, once storefront e2e exists, drive it with Playwright and
   attach a screenshot to the PR.
+- **Releases (a merge into `main`)** — the full battery, green on the build being released:
+  `pnpm lint`, `pnpm typecheck`, `pnpm -r build`, `pnpm test`, `pnpm test:pg`, **`pnpm test:d1`**,
+  `pnpm test:e2e`. T3 (`test:d1`) is the release gate and runs automatically on the PR into `main`;
+  `test:e2e` needs a running target and is still a local step.
 
 ## Worktrees & multi-agent work
 

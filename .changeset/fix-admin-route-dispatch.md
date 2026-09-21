@@ -24,7 +24,7 @@ plugin previously registered per-page keys `"admin/reports"`/`"admin/settings"`
   (`/settings`, Gear icon) added to the trusted descriptor's `adminPages`
   alongside `REPORTS_PAGE`.
 - **Admin token via a write-only kv secret.** EmDash's `page_load` carries no
-  token, so the guarded `/reports/*` reads and `PUT /settings` failed auth. A
+  token, so the guarded reports reads and the settings write failed auth. A
   masked `secret_input` field (`internalToken`) on the Settings form persists
   the token write-only to `ctx.kv` under `settings:internalToken` (the
   webhook-notifier pattern): saved only on a non-empty submit (a blank submit
@@ -32,7 +32,7 @@ plugin previously registered per-page keys `"admin/reports"`/`"admin/settings"`
   and the operational save now source the token from kv, not the interaction.
 - **No raw HTTP status/URL in error banners.** The Reports and Settings
   load-tier failure banners now show a generic remediation message instead of
-  echoing the service's HTTP status/URL.
+  echoing a raw transport status or URL.
 
 Capabilities stay exactly `content:read` + `network:request`; the dispatcher is
 IO-free and adds no egress — all proven under the workerd-on-Node sandbox.

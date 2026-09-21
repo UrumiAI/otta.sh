@@ -41,6 +41,15 @@ import {
 	createAccountOrdersHandler,
 } from "./storefront/account-routes.js";
 // ── end Phase 5 account routes ─────────────────────────────────────────────
+// ── Work order 02 INC-C1b: the Stripe webhook settle route ────────────────
+import {
+	createStripeWebhookSettleHandler,
+	STRIPE_WEBHOOK_SETTLE_ROUTE,
+} from "./webhooks/stripe-settle-route.js";
+// ── Work order 02 INC-C5: the in-process x402 settle route ────────────────
+import { createX402SettleHandler, X402_SETTLE_ROUTE } from "./payments/x402-settle-route.js";
+// ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
+import { createActivateHandler, createCronHandler, withSweepBootstrap } from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -79,18 +88,42 @@ import type { SandboxedPlugin } from "./types.js";
  */
 const plugin: SandboxedPlugin = {
 	hooks: {
-		"content:afterSave": { handler: createAfterSaveHandler() },
-		"content:afterDelete": { handler: createAfterDeleteHandler() },
-		"content:afterPublish": { handler: createAfterPublishHandler() },
-		"content:afterUnpublish": { handler: createAfterUnpublishHandler() },
+		// Work order 02 INC-C4: `withSweepBootstrap` is what actually gets the sweep
+		// task REGISTERED on this deployment. Otta is hand-registered in the site's
+		// `plugins` array, so the host never fires `plugin:activate` for it (that runs
+		// only from an admin enable toggle) — but these four content hooks and the
+		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
+		// ensures the task exists, once per isolate, and can neither slow nor fail the
+		// handler it wraps. See `cron/index.ts`.
+		"content:afterSave": { handler: withSweepBootstrap(createAfterSaveHandler()) },
+		"content:afterDelete": { handler: withSweepBootstrap(createAfterDeleteHandler()) },
+		"content:afterPublish": { handler: withSweepBootstrap(createAfterPublishHandler()) },
+		"content:afterUnpublish": { handler: withSweepBootstrap(createAfterUnpublishHandler()) },
+		// `cron` carries NO capability requirement — the only gate is whether the
+		// runtime wired a cron executor — so a `format: "standard"` descriptor may
+		// declare it as it stands, and the declared capabilities stay exactly
+		// `content:read` + `network:request`. `plugin:activate` is the host's own
+		// registration moment (an admin toggle, or a marketplace install); the tick
+		// re-affirms; the wrappers above cover the configured deployment that reaches
+		// neither.
+		"plugin:activate": { handler: createActivateHandler() },
+		cron: { handler: createCronHandler() },
 	},
 	routes: {
 		// Cast to the route record's erased `unknown`-input shape — each
 		// handler validates its own input at runtime (mirrors em-dash's own
 		// plugins, e.g. `packages/plugins/forms/src/index.ts`, which cast
 		// route handlers `as never` for the same contravariance reason).
-		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
-		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
+		// The two routes every storefront page hits, and therefore the registration
+		// path a deployment with no content edits still reaches (INC-C4).
+		[STOREFRONT_PRODUCT_ROUTE]: {
+			handler: withSweepBootstrap(createPdpRouteHandler()) as never,
+			public: true,
+		},
+		[STOREFRONT_LIST_ROUTE]: {
+			handler: withSweepBootstrap(createPlpRouteHandler()) as never,
+			public: true,
+		},
 		// ── Phase 3 group E: cart (public — proxies over ctx.http only) ────
 		[STOREFRONT_CART_CREATE_ROUTE]: {
 			handler: createCartCreateRouteHandler() as never,
@@ -126,15 +159,39 @@ const plugin: SandboxedPlugin = {
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
 		// ── end Phase 4 checkout ────────────────────────────────────────────
+		// Work order 02 INC-C1b: the PUBLIC Stripe webhook SETTLE route. It
+		// supersedes the note that used to stand here, which said a webhook route
+		// was structurally impossible. Two of its three premises still hold and are
+		// now DESIGNED AROUND rather than blocking: the framework JSON-parses the
+		// body before any handler runs, so the raw bytes travel base64-encoded in
+		// the input; and it wraps the return at HTTP 200, so the status Stripe must
+		// see is returned as a FIELD the calling site replays. The third premise —
+		// that the service would receive webhooks directly — is what the fold-in
+		// removes: there is no second deployable left to post to, so the plugin
+		// verifies the HMAC itself. `public: true` is REQUIRED, not a relaxation: a
+		// webhook is always unauthenticated, and EmDash routes an anonymous request
+		// only through the PUBLIC dispatcher. Auth is cryptographic (the Stripe
+		// signature) plus a shared edge token — see the route's own module doc.
+		[STRIPE_WEBHOOK_SETTLE_ROUTE]: {
+			handler: createStripeWebhookSettleHandler() as never,
+			public: true,
+		},
+		// Work order 02 INC-C5: the PUBLIC x402 page-gate SETTLE route — the
+		// in-process replacement for the service's `POST /entitlements/grant`,
+		// which was the only caller of `settleOrder(gateway, {kind:"page_gate"})`
+		// anywhere in the repo. `public: true` for the same structural reason as
+		// the Stripe route above, and — since review round 2 — with the same TWO
+		// layers, not one: the SAME `X-Otta-Wh-Token` edge token first
+		// (pass-through when unset), then the configured facilitator
+		// unconditionally. It additionally refuses an order whose `paymentMethod`
+		// is not `"x402"`, and the domain refuses a receipt already bound to
+		// another order. See the route's own module doc for the full order.
+		[X402_SETTLE_ROUTE]: {
+			handler: createX402SettleHandler() as never,
+			public: true,
+		},
 		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
-		// the service's entitlement check over ctx.http. There is deliberately NO
-		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute
-		// JSON-parses the request body before any route runs (the raw bytes a
-		// Stripe HMAC needs are destroyed) and wraps the return `{success, data}`
-		// at HTTP 200 (Stripe's retry logic keys on status), so a byte-exact proxy
-		// is structurally impossible on the real host contract. Stripe posts
-		// directly to the SERVICE's /webhooks/stripe — the plan's preferred
-		// direct-to-service design (§9 Risk 1).
+		// the service's entitlement check over ctx.http.
 		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,

@@ -28,14 +28,21 @@ export {
 	type SettingsFormInput,
 } from "./admin/settings-form.js";
 export {
-	ReportingSettingsClient,
 	type LowStockWire,
 	type OperationalSettingsWire,
+	// The surface the Reports page, the Settings form and the Products console
+	// hold (work order 02, INC-B10c-ii). Exported from the
+	// entry point because a parameter type a consumer cannot name is not a usable
+	// signature.
+	type ReportingSettingsSurface,
 	type RevenueBucketWire,
 	type StatusCountWire,
 	type TopProductWire,
+	// WHY a settings save failed, structurally — the field a caller branches on
+	// before falling back to the HTTP tier's legacy `status`.
+	type UpdateSettingsFailureReason,
 	type UpdateSettingsResult,
-} from "./admin/reporting-client.js";
+} from "./admin/reporting-settings-surface.js";
 // The Orders WRITE path (INC-R2, ADR-0015). It replaces the Block Kit Orders
 // page handler this barrel used to export alongside `ORDERS_PAGE`: that screen
 // was retired once the React console's writes moved off it, so `/orders` is
@@ -51,7 +58,6 @@ export {
 	type OrdersActionResult,
 } from "./admin/orders-actions.js";
 export {
-	AdminOrdersClient,
 	type OrderDetailResult,
 	type OrderDetailWire,
 	type OrderLineWire,
@@ -60,7 +66,7 @@ export {
 	type OrderSummaryWire,
 	type OrderTotalsWire,
 	type TransitionOrderResult,
-} from "./admin/admin-orders-client.js";
+} from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
 // export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
 // React console's writes moved off it, so `/products` is served by the
@@ -73,13 +79,32 @@ export {
 	type ProductsActionPayload,
 	type ProductsActionResult,
 } from "./admin/products-actions.js";
+// INC-D1 — the console's two interaction types and the products resource prefix,
+// exported so an OUT-OF-BROWSER caller can drive the admin route without
+// restating its wire strings. The staging quickstart seeder is the first: with
+// commerce in-process there is no service REST API to seed through any more, so
+// the seeder posts the same `otta_console_read` / `otta_console_act` envelopes
+// the React console posts. A literal copy of "otta_console_act" in a script is a
+// string that fails by being SILENTLY UNROUTED — `admin-route.ts` dispatches on
+// exactly these values, and a stale copy produces a refusal, not an error.
+//
+// EXACTLY THE THREE THE SEEDER USES. `CONSOLE_INTERACTIONS` (the set both
+// discriminators belong to) and `ConsoleFailure` (the route's internal refusal
+// shape) were exported alongside them and have no consumer outside this package;
+// a barrel entry with no caller is API surface bought with nothing, and this
+// barrel is `@otta-sh/plugin`'s public one.
+export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
+export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
-	AdminProductsClient,
+	// The surface, and the type `dispatchProductsAction`'s third
+	// parameter now has (work order 02, INC-B10b-i). Exported from the entry point
+	// because a parameter type a consumer cannot name is not a usable signature.
+	type AdminProductsSurface,
 	type ProductDetailWire,
 	type ProductsListFilter,
 	type ProductsListResult,
 	type ProductSummaryWire,
-} from "./admin/admin-products-client.js";
+} from "./admin/admin-products-surface.js";
 export {
 	createTaxPageHandler,
 	TAX_ACTION_IDS,
@@ -104,8 +129,10 @@ export {
 } from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
 export {
-	AdminRulesClient,
-	type AdminRulesClientOptions,
+	// The surface the three rules console pages hold (work
+	// order 02, INC-B10c-i). Exported from the entry point because a parameter
+	// type a consumer cannot name is not a usable signature.
+	type AdminRulesSurface,
 	type CouponEdit,
 	type CouponInput,
 	type CouponWire,
@@ -127,16 +154,117 @@ export {
 	type TaxRateEdit,
 	type TaxRateInput,
 	type TaxRateWire,
-} from "./admin/admin-rules-client.js";
+} from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
-	COMMERCE_SERVICE_BASE_URL,
-	SERVICE_TOKEN_KEY,
-	serviceTokenFromKv,
+	IN_PROCESS_EGRESS_URLS,
+	type InProcessEgressUrls,
+	resolveAllowedHosts,
+	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
+// INC-D1 — the storage layout commerce truth lives in, exported so the DEPLOYING
+// SITE's plugin descriptor can declare it without restating a single collection
+// name or index list. `commerce-storage.ts` was written for exactly this moment
+// ("the descriptor WILL import it when the deployment flips to this transport");
+// until now its only consumers were this package's own test tiers, which reach the
+// module directly, so it never needed to be on the barrel.
+//
+// A DECLARED INDEX IS A READ CONTRACT, not a performance knob: the host refuses a
+// `where`/`orderBy` on an undeclared field at RUNTIME. A site that declared a
+// subset of this map would not run slower — it would throw. That is why the map is
+// exported whole and must be spread, never transcribed.
+export {
+	COMMERCE_STORAGE_COLLECTIONS,
+	COMMERCE_STORAGE_COLLECTION_NAMES,
+	type CommerceCollectionDeclaration,
+	type CommerceStorageLayout,
+} from "./commerce/commerce-storage.js";
+// INC-C4 — the scheduled commerce sweep. The task name and schedule are exported
+// so a deploying site can assert what the plugin registers without restating the
+// strings, and `runCommerceSweeps` so a trigger can drive one tick on demand.
+export {
+	createActivateHandler,
+	createCronHandler,
+	ensureSweepTaskScheduled,
+	runCommerceSweeps,
+	SWEEP_LEGS,
+	SWEEP_SCHEDULE,
+	SWEEP_TASK_NAME,
+	type CommerceSweepOptions,
+	type CommerceSweepSummary,
+	type SweepLeg,
+	type SweepLegOutcome,
+	type SweepScheduleOutcome,
+} from "./cron/index.js";
+// INC-C3 — the write-only payment/email secret keys and their fail-closed
+// readers. Exported so a deploying site can assert what the plugin stores, and
+// so INC-C1b's settle route can reach the Stripe webhook secret, without either
+// restating the key strings.
+export {
+	constantTimeEquals,
+	emailApiKeyFromKv,
+	EMAIL_API_KEY_KEY,
+	type PaymentSecretKey,
+	type PaymentSecrets,
+	PAYMENT_SECRET_KEYS,
+	readPaymentSecrets,
+	readWriteOnlySecret,
+	stripeSecretKeyFromKv,
+	STRIPE_SECRET_KEY_KEY,
+	stripeWebhookSecretFromKv,
+	STRIPE_WEBHOOK_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_HEADER,
+	WEBHOOK_EDGE_TOKEN_KEY,
+	webhookEdgeTokenFromKv,
+	x402FacilitatorSecretFromKv,
+	X402_FACILITATOR_API_KEY_KEY,
+} from "./payment-secrets.js";
+// INC-C5 — email dispatch and x402 settlement in-process. Both adapters are
+// exported so a deploying site can name the kv settings keys it provisions
+// (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without
+// restating the strings, and so a suite can build either adapter directly.
+export {
+	CtxHttpEmailSender,
+	DEFAULT_EMAIL_FROM,
+	EMAIL_FROM_KEY,
+	makeEmailSender,
+	type CtxHttpEmailSenderOptions,
+	type EmailSenderEgress,
+} from "./email/ctx-http-email-sender.js";
+export {
+	DEFAULT_X402_ACCEPTS,
+	wireX402Gateway,
+	X402_ACCEPTS_KEY,
+	X402_PAYTO_KEY,
+	x402GatewayFromCtx,
+	type WireX402Options,
+	type X402Egress,
+} from "./payments/x402-wiring.js";
+// INC-C1b — the PUBLIC Stripe webhook settle route. The constant and the result
+// shape are exported because the calling site has to name the route and
+// reconstruct Stripe's expected status from the response.
+export {
+	createStripeWebhookSettleHandler,
+	settleResultToResponse,
+	STRIPE_WEBHOOK_SETTLE_ROUTE,
+	type StripeWebhookSettleInput,
+	type StripeWebhookSettleReason,
+	type StripeWebhookSettleResult,
+} from "./webhooks/stripe-settle-route.js";
+// INC-C5: the in-process x402 page-gate settle surface. Exported for the same
+// reason as the Stripe one above — the calling site reconstructs the HTTP status
+// from the returned `status` field.
+export {
+	createX402SettleHandler,
+	X402_SETTLE_ROUTE,
+	x402SettleResultToResponse,
+	type X402SettleInput,
+	type X402SettleReason,
+	type X402SettleResult,
+} from "./payments/x402-settle-route.js";
 export {
 	CommerceClientError,
 	type CartFailureReason,
@@ -150,7 +278,6 @@ export {
 	type ProductCommerceBatchItem,
 	type UpsertProductCommerceInput,
 } from "./product-commerce/commerce-client.js";
-export { HttpCommerceClient } from "./product-commerce/http-commerce-client.js";
 // ── Phase 2: catalog display (plan §7 steps 4–10, route shape per ADR-0003) ──
 export {
 	CommerceBatchLoader,

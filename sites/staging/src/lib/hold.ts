@@ -12,12 +12,14 @@
  * and the no-JS answer.
  */
 
-/** The service's hold TTL, in seconds — 15 minutes.
+/** The commerce layer's hold TTL, in seconds — 15 minutes.
  *
  *  AUTHORITY: `DEFAULT_HOLD_TTL_MS` in `packages/domain/src/cart/use-cases.ts`
- *  (`15 * 60 * 1000`), which the service applies unless a deployment overrides
- *  it with `CART_HOLD_TTL_MS` (DEPLOYMENT.md §5 — default `900000`). Keep this
- *  in step with whatever the store this theme is serving actually runs.
+ *  (`15 * 60 * 1000`), which the plugin's in-process cart use-cases apply. It is
+ *  both the default and the effective value today — the admin's `holdTtlMinutes`
+ *  setting is persisted but wired to nothing (issue #127) — so there is no
+ *  deployment knob to document. Keep this in step with whatever the store this
+ *  theme is serving actually runs.
  *
  *  It is ONLY the fill's denominator. The ribbon needs a window to draw a
  *  fraction against because the wire carries the expiry INSTANT, not the length

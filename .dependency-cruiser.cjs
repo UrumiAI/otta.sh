@@ -6,6 +6,8 @@ module.exports = {
 	forbidden: [
 		{
 			name: "domain-is-io-free",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment below and in the last clause of `to.path`. Tracked separately.
 			comment:
 				"@otta-sh/domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
 				"and no dependency on adapter/service/plugin packages (DEVELOPMENT.md §3).",
@@ -22,34 +24,90 @@ module.exports = {
 			name: "plugin-is-sandbox-clean",
 			comment:
 				"@otta-sh/plugin's src (loaded inside the workerd sandbox) has NO DB/" +
-				"storage/filesystem/process/network-client surface — its only egress " +
-				"is the injected ctx.http (DEVELOPMENT.md §5, sandbox-clean guard). " +
-				"The forbidden list is a superset of domain-is-io-free's, plus " +
-				"HTTP/WS client libs (undici, node-fetch, axios, ws). It ALSO forbids " +
-				"@otta-sh/domain: the plugin defines its OWN local wire types and never " +
-				"imports the domain (the admin console's allowedTransitions come from " +
-				"the SERVICE, not a domain import), so the ports-and-adapters boundary " +
-				"stays enforced, not trusted (MOD-4). Test helpers (test/) are exempt " +
-				"— they run in Node, driving the sandbox from outside it. Complemented " +
-				"by the direct-fetch grep guard in " +
-				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
-				"see ambient globals like workerd's own fetch). The node-builtin half " +
-				"reads `^(node:)?…` because dependency-cruiser reports " +
+				"driver, filesystem, process, socket or network-client surface, and no " +
+				"dependency on a SQL store or a payment adapter. Its egress " +
+				"is the injected ctx.http; its commerce truth is the injected ctx.storage " +
+				"(DEVELOPMENT.md §5, ADR-0018, sandbox-clean guard). The forbidden list is " +
+				"a superset of domain-is-io-free's, plus HTTP/WS client libs (undici, " +
+				"node-fetch, axios, ws). Test helpers (test/) are exempt — they run in " +
+				"Node, driving the sandbox from outside it. Complemented by the " +
+				"direct-fetch grep guard in " +
+				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't see " +
+				"ambient globals like workerd's own fetch), and executed case by case in " +
+				"packages/plugin/test/depcruise-boundary.test.ts, which cruises THIS file " +
+				"over planted imports and asserts the rule name each one trips. The " +
+				"node-builtin half reads `^(node:)?…` because dependency-cruiser reports " +
 				'`import ... from "node:fs"` under the BARE module name `fs`: a ' +
 				"`^node:`-only clause matches nothing, so this rule silently permitted " +
 				"every builtin it names, from the day it was written until INC-21. " +
 				"`domain-is-io-free` above always had the correct form, which is why " +
-				"the two rules disagreed about the same import. Verified by planting a " +
-				"`node:fs` import inside the perimeter: it passes under `^node:` and " +
-				"fails under this. It ALSO forbids " +
-				"@otta-sh/admin-react: without that, the console quarantine below is " +
-				"escapable in ONE HOP — packages/plugin importing packages/admin-react " +
-				"trips no rule, and react/emdash then reach the plugin transitively, " +
-				"which is precisely what ADR-0014 Decision 1 forbids.",
+				"the two rules disagreed about the same import. It still forbids " +
+				"@otta-sh/admin-react, in all three spellings: without that, the console " +
+				"quarantine below is escapable in ONE HOP — packages/plugin importing " +
+				"packages/admin-react trips no rule, and react/emdash then reach the " +
+				"plugin transitively, which is precisely what ADR-0014 Decision 1 " +
+				"forbids.\n\n" +
+				"TWO things this rule USED to forbid and deliberately no longer does " +
+				"(ADR-0018). First, @otta-sh/domain, which was named in all three " +
+				"@otta-sh clauses. The boundary was never `the plugin must not know the " +
+				"domain`; it was `the plugin must not acquire IO`, and banning the domain " +
+				"was a cheap PROXY for that — cheap because the domain is the package " +
+				"most likely to grow an adapter import. The proxy is no longer needed and " +
+				"was blocking the thing ADR-0002 designed for: the domain has zero " +
+				"runtime dependencies and zero node: imports, and `domain-is-io-free` " +
+				"above enforces exactly that, on every commit, as this rule's premise. " +
+				"Importing the domain therefore cannot put IO inside the isolate; " +
+				"importing an ADAPTER can, which is why every adapter except one stays " +
+				"banned. Second, that one exception: `store-[^/]+` in the packages clause " +
+				"became `(?!store-emdash/)store-[^/]+`, so packages/store-emdash is " +
+				"admitted while any other store-* — including any added later — is banned " +
+				"by default rather than by anyone remembering to add it — and the same list " +
+				"is mirrored into the two SPECIFIER clauses, not only the packages " +
+				"clause, because pnpm's strict isolation leaves an UNDECLARED import as " +
+				"a bare specifier that never resolves to a packages/ path: naming only " +
+				"admin-react there meant an undeclared @otta-sh/store-* " +
+				"or payments-* import tripped nothing at all, which is the same class of " +
+				"silent miss as the `^node:`-only builtin clause. store-emdash is " +
+				"admissible because it carries no IO of its own: it is written against a " +
+				"structural StorageAccess port whose implementation arrives injected, and " +
+				"three store-emdash-* rules below hold it to the same perimeter as this " +
+				"one, type-only imports included.\n\n" +
+				"THIRD NARROWING (work order 02, INC-C1b): `payments-[^/]+` became " +
+				"`(?!payments-(stripe|x402)(/|$))payments-[^/]+`, in all three clauses, " +
+				"so @otta-sh/payments-stripe and @otta-sh/payments-x402 are admitted and " +
+				"every other payments-* package stays banned by default. The reason is " +
+				"the same shape as store-emdash's, and it is a statement about those two " +
+				"packages rather than about payment adapters generally: with the service " +
+				"folded in there is no second deployable to verify a Stripe webhook in, " +
+				"and an UNAUTHENTICATED webhook only ever reaches a plugin route " +
+				"registered `public: true` — so the HMAC verification has to happen " +
+				"inside the isolate. It can: payments-stripe's verifier is WebCrypto " +
+				"(`crypto.subtle.verify`, an ambient global in workerd), it imports " +
+				"nothing but @otta-sh/domain, and its own sandbox-clean guard " +
+				"(packages/payments-stripe/test/sandbox-clean-guard.test.ts) holds it " +
+				"there. A payments adapter that reached for `pg` or a node builtin would " +
+				"still be caught — by the driver and node-builtin clauses of this same " +
+				"rule, which the carve-out does not touch. " +
+				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: these " +
+				"two admitted, a third payments-* package still forbidden.\n\n" +
+				"FOURTH CHANGE (work order 02, INC-D3c): `service` is no longer named in " +
+				"any of the three clauses, because @otta-sh/service no longer EXISTS — " +
+				"INC-D3b deleted packages/service (and packages/store-postgres with it) " +
+				"once the service was folded into the plugin. A ban on a package that " +
+				"cannot be imported is a clause no fixture can exercise, so it rots " +
+				"silently: nothing would notice if it stopped matching, which is the same " +
+				"failure mode as the `^node:`-only builtin clause above. store-postgres " +
+				"was never named literally — it was caught by the " +
+				"`(?!store-emdash(/|$))store-[^/]+` lookahead, which is untouched and " +
+				"still bans every store-* but the one, so a store-postgres reintroduced " +
+				"tomorrow is forbidden on the day it is created. A reintroduced `service` " +
+				"package would NOT be, and that is deliberate: after the fold-in " +
+				"(ADR-0018) a second deployable is a decision that needs its own ADR, not " +
+				"something a lint rule should pre-judge on a name.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{
@@ -70,14 +128,127 @@ module.exports = {
 				"and still binds the same package; violating either fails `pnpm lint`. " +
 				"sites/staging is deliberately out of scope (it is the EmDash HOST: it " +
 				"imports `emdash` types and renders React storefront components) and " +
-				"`pnpm lint` cruises `packages` only.",
+				"`pnpm lint` cruises `packages` only. " +
+				"@otta-sh/store-emdash is the SECOND exemption, and it is a HANDOFF to " +
+				"three rules below, not a hole: that package exists to name the host's " +
+				"plugin-storage types, so the blanket ban would forbid the one import it " +
+				"is for. What replaces it, precisely, because 'nothing is lost' was " +
+				"claimed once here and was false: `store-emdash-no-console-react` bans " +
+				"react, react-dom, kumo and phosphor across the WHOLE package including " +
+				"`test/` (the first split bound `src` only, which left the tests free); " +
+				"`store-emdash-runs-no-host-code` bans `emdash` and @emdash-cms/* in " +
+				"`src` as RUNTIME imports while permitting type-only ones; and " +
+				"`store-emdash-is-sandbox-clean` adds the DB/Node/HTTP/sibling-package " +
+				"perimeter this rule says nothing about. The exemption is written on " +
+				"`from` rather than on `to` because dependency-cruiser cannot express one " +
+				"rule whose forbidden list varies by source, and a type-only carve-out " +
+				"here would have loosened the ban for admin-react and every other " +
+				"package too.",
 			severity: "error",
-			from: { path: "^packages/", pathNot: "^packages/admin-react/" },
+			from: { path: "^packages/", pathNot: "^packages/(admin-react|store-emdash)/" },
 			to: {
 				// Same both-forms shape as the rules above: a resolved node_modules
 				// path (direct or pnpm-store) or a bare specifier left unresolved by
 				// pnpm's strict isolation.
 				path: "(node_modules/(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
+			},
+		},
+		{
+			name: "store-emdash-no-console-react",
+			comment:
+				"The console quarantine, restated for the ONE package whose `from` " +
+				"`console-react-is-quarantined` exempts. That exemption exists because " +
+				"the blanket ban names `emdash`, which is the one import " +
+				"@otta-sh/store-emdash is FOR — but react has nothing to do with that, " +
+				"and losing the react ban as a side effect of the EmDash carve-out would " +
+				"be exactly the silent hole ADR-0014 Decision 1 forbids. So this rule " +
+				"binds the WHOLE package, `test/` included: unlike the IO rule below, " +
+				"there is no version of importing react here that is legitimate in a " +
+				"Node test, and the first version of this split bound `src` only and " +
+				"left `test/**` free to import react, react-dom, kumo and phosphor with " +
+				"nothing catching it. Deliberately carries NO `dependencyTypesNot`: a " +
+				"type-only react import is a signal that a component is being written " +
+				"where none belongs, and it costs nothing to refuse.",
+			severity: "error",
+			from: { path: "^packages/store-emdash/" },
+			to: {
+				// Both spellings, as in every rule here: resolved into node_modules
+				// (direct or via the pnpm store), or left a bare specifier by pnpm's
+				// strict isolation.
+				path: "(node_modules/(react|react-dom|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
+			},
+		},
+		{
+			name: "store-emdash-is-sandbox-clean",
+			comment:
+				"@otta-sh/store-emdash's src is commerce-truth code that runs INSIDE the " +
+				"workerd sandbox, bound to the `ctx.storage` the host injects. It " +
+				"therefore carries the same perimeter as `plugin-is-sandbox-clean`: no " +
+				"DB driver, no filesystem/process/socket builtin, no HTTP or WS client, " +
+				"no sibling server package. Type-only imports are NOT exempt here, and " +
+				"the exemption is not a detail: `dependencyTypesNot` on a whole `to` " +
+				'clause would have permitted `import type { Pool } from "pg"` and ' +
+				'`import type { Stats } from "node:fs"`, which are how a module starts ' +
+				"being written against a host it must never touch. Only the EmDash " +
+				"clause below gets that allowance, and it gets it precisely because it " +
+				"is the seam. Sibling store packages are matched by negative lookahead " +
+				"rather than by name, so a future store-d1 is banned on the day it is " +
+				"created instead of the day someone remembers this list. Test code is " +
+				"exempt, as it is for every rule here — `test/describe-each-dialect.ts` " +
+				"runs in NODE and constructs real `PluginStorageRepository` instances " +
+				"over better-sqlite3 and Postgres on purpose: real databases, never " +
+				"mocks. That harness is why the ban can be this strict in `src` without " +
+				"costing coverage. (`react` and friends are banned across the whole " +
+				"package by `store-emdash-no-console-react` above.) @otta-sh/plugin is " +
+				"banned here too, in all three spellings, and that half is about LAYERING " +
+				"rather than IO: the plugin is what injects ctx.storage into this " +
+				"package, so an import in this direction would make the adapter depend on " +
+				"its own caller. Nothing else caught the inversion — `plugin-is-sandbox-" +
+				"clean` admits store-emdash, this rule said nothing about the plugin, and " +
+				"the console rules bind neither package — so the cycle would have been " +
+				"a review catch rather than a build failure. Sibling adapters, the service " +
+				"and the payment packages are likewise named in all three spellings " +
+				"rather than in the packages clause alone, for the bare-specifier reason " +
+				"the plugin rule's comment sets out. Every case this rule and " +
+				"the plugin rule turn on are executed in " +
+				"packages/plugin/test/depcruise-boundary.test.ts.",
+			// TODO(#291): this rule still names the deleted `service` package, in the
+			// comment above and in three clauses of `to.path`. Tracked separately.
+			severity: "error",
+			from: { path: "^packages/store-emdash/src" },
+			to: {
+				// Both spellings, as above. The builtin half is the optional-`node:`
+				// form the plugin rule's comment explains — dependency-cruiser reports
+				// `from "node:fs"` under the bare name `fs`.
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(service|payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
+			},
+		},
+		{
+			name: "store-emdash-runs-no-host-code",
+			comment:
+				"The seam, as a rule. @otta-sh/store-emdash may NAME EmDash's storage " +
+				"types and may never EXECUTE EmDash's code: `src/storage-access.ts` is " +
+				"written in terms of the host's `StorageCollection` and its conditional-" +
+				"write result types, and the implementation arrives injected — " +
+				"`ctx.storage` in production, a real `PluginStorageRepository` in the " +
+				"harness. That is what makes replacing the host build a dependency " +
+				"change rather than an adapter rewrite. `dependencyTypesNot: " +
+				"['type-only']` is the whole rule: a type import emits no code and " +
+				"cannot put host behaviour inside the isolate, while a runtime import of " +
+				"the same module fails the build. It is a SEPARATE rule from " +
+				"`store-emdash-is-sandbox-clean` for exactly that reason — the " +
+				"allowance is specific to the host and must not leak onto the IO bans, " +
+				"which is what a single merged clause did in the first version. " +
+				"`^emdash$|^emdash/` rather than a bare prefix, so a package merely " +
+				"NAMED like the host is not swept in.",
+			severity: "error",
+			from: { path: "^packages/store-emdash/src" },
+			to: {
+				path: "(node_modules/(emdash|@emdash-cms/[^/]+)(/|$)|^emdash$|^emdash/|^@emdash-cms/)",
+				// The one allowance in this package's perimeter, and the reason the
+				// structural port can be written against the host's own types instead
+				// of a hand-mirrored copy left to drift.
+				dependencyTypesNot: ["type-only"],
 			},
 		},
 		{
@@ -123,7 +294,7 @@ module.exports = {
 				"static import would be a second one — compiled in, invisible to the " +
 				"empty capability set and to the empty allowedHosts that are this " +
 				"descriptor's only declared controls. It is also, for the server " +
-				"packages (domain/service/store/payments), Node and database code " +
+				"packages (domain/store/payments), Node and database code " +
 				"reached from a module that ships to a BROWSER. So: no workspace " +
 				"package, in either direction. The consequence is deliberate and has " +
 				"one known bill to pay — INC-20 owes the React tier a formatMoney, and " +

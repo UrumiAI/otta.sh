@@ -10,8 +10,8 @@ keeps its current value.
 **The P0-class check passed, and is now pinned.** `PM §E3` flagged an
 `initial_value`-vs-`placeholder` hazard on this leaf: a form field that renders
 a coupon's CURRENT value as a grey `placeholder` submits it back as `""`, and
-on a wire with no partial update (`PUT /admin/coupons/:id` coerces every
-omitted key to null) that is a silent unset of a value the operator could see
+against a full-replace update (the coupon edit coerces every omitted key to
+null) that is a silent unset of a value the operator could see
 on screen when they pressed Save. Probed against a coupon with cap, minimum
 spend, both window bounds and both use bounds all set: every one already rode
 as a real `initial_value`, and an untouched save round-tripped all of them
@@ -56,10 +56,10 @@ own `Valid` reading claims. Same-day windows are now expressible. Re-submitting
 the day a bound already falls on is NOT treated as an edit: an untouched save
 preserves canonically-stored bounds byte for byte, sub-day time included, so
 it cannot move a bound the screen only ever displayed to day precision. Legacy
-non-canonical bounds — writable via the service, which only length-checks —
-re-anchor to the displayed day's edge on first save instead: widening, to
-match the display. A submitted day that
-does not exist is REFUSED rather than rolled forward — `2027-02-30` parses
+non-canonical bounds — writable through the underlying update, which only
+length-checks — re-anchor to the displayed day's edge on first save instead:
+widening, to match the display. A submitted day that does not exist is REFUSED
+rather than rolled forward — `2027-02-30` parses
 happily and would otherwise be stored verbatim, then sort after every real day
 in February — and a date field arriving as a non-string is refused with a
 banner naming it, never read as a silent "unchanged".
@@ -118,7 +118,7 @@ window instants must survive `parse → toISOString` unchanged, which is a
 stricter test than "it parsed" for the same reason as above. Anything else
 reads as "no current value" rather than reaching the record. `curCap` is
 carried only for the type that renders a cap field: a `fixed_amount` coupon
-holding a stray `capCents` (reachable — the service validates each column, not
+holding a stray `capCents` (reachable — the update validates each column, not
 the pair) would otherwise have had every save refused, naming a percentage-only
 field that is not on its screen, with no way out from the console.
 

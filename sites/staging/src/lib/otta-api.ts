@@ -18,11 +18,20 @@ export async function dispatchOttaRoute<TResult>(
 	route: string,
 	input: unknown,
 	baseUrl: URL,
+	/**
+	 * Extra request headers. Storefront callers pass none — a public route
+	 * reached in-process from an SSR page has nothing to attest. The Stripe
+	 * webhook edge passes the `X-Otta-Wh-Token` shared secret, which the plugin
+	 * reads off `routeCtx.request.headers` (EmDash's `sanitizeHeadersForSandbox`
+	 * forwards everything except cookies/authorization, lower-cased; the plugin's
+	 * own lookup is case-insensitive, so the casing here is for readability).
+	 */
+	headers: Record<string, string> = {},
 ): Promise<TResult | null> {
 	if (handler === undefined) return null;
 	const request = new Request(new URL(`/_emdash/api/plugins/${OTTA_PLUGIN_ID}/${route}`, baseUrl), {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers: { "Content-Type": "application/json", ...headers },
 		body: JSON.stringify(input),
 	});
 	try {

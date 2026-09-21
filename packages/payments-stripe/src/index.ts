@@ -15,7 +15,6 @@ import {
 	type RefundInput,
 	type RefundResult,
 } from "@otta-sh/domain";
-import { createHmac, timingSafeEqual } from "node:crypto";
 
 /** Default replay-window tolerance for the signed `t` timestamp — 300s, matching
  *  Stripe's own recommended default. */
@@ -530,16 +529,31 @@ export class StripePaymentGateway implements PaymentGateway {
 		// HMAC over the EXACT raw bytes — `{t}.{rawBody}` — never a re-serialized body.
 		// ALL `v1` tags are tried (Stripe sends one per active signing secret during
 		// secret rotation); any match accepts.
-		const rawBody = Buffer.from(raw.body);
-		const signedPayload = Buffer.concat([Buffer.from(`${parts.timestamp}.`), rawBody]);
-		const expected = createHmac("sha256", this.#secret).update(signedPayload).digest("hex");
-		if (!parts.v1s.some((candidate) => safeEqualHex(candidate, expected))) {
-			return { ok: false, reason: "INVALID_SIGNATURE" };
+		//
+		// `crypto.subtle.verify` rather than sign-then-compare: the keyed HMAC verify
+		// primitive is constant-time BY CONSTRUCTION, so there is no hand-rolled
+		// comparison left to get wrong — a strictly better shape than the
+		// `timingSafeEqual(digest, candidate)` it replaces, and the reason this port
+		// does not reimplement an XOR-accumulate compare.
+		const rawBody = raw.body;
+		const signedPayload = concatBytes(new TextEncoder().encode(`${parts.timestamp}.`), rawBody);
+		const key = await importHmacKey(this.#secret, "verify");
+		let verified = false;
+		for (const candidate of parts.v1s) {
+			const candidateBytes = fromHex(candidate);
+			// Malformed hex can never be a valid tag — skip it, exactly as the old
+			// truncate-then-length-mismatch path resolved to `false`.
+			if (candidateBytes === undefined) continue;
+			if (await crypto.subtle.verify("HMAC", key, candidateBytes, signedPayload)) {
+				verified = true;
+				break;
+			}
 		}
+		if (!verified) return { ok: false, reason: "INVALID_SIGNATURE" };
 
 		let event: unknown;
 		try {
-			event = JSON.parse(rawBody.toString("utf8"));
+			event = JSON.parse(new TextDecoder().decode(rawBody));
 		} catch {
 			return { ok: false, reason: "MALFORMED" };
 		}
@@ -614,13 +628,67 @@ function headerCaseInsensitive(headers: Record<string, string>, name: string): s
 	return undefined;
 }
 
-function safeEqualHex(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	try {
-		return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
-	} catch {
-		return false;
-	}
+// -- WebCrypto HMAC primitives (sandbox-clean: no `node:crypto`) -------------
+//
+// `crypto.subtle` is an ambient global in BOTH modern Node (≥19) and workerd, so
+// these run unchanged in the Node test suites and inside the plugin's sandbox —
+// which is the whole reason this package no longer imports `node:crypto`
+// (CLAUDE.md: the plugin is sandbox-clean, `node:` imports are banned).
+//
+// Three helpers below are annotated `Uint8Array<ArrayBuffer>` rather than the
+// bare `Uint8Array`, and that is a TYPE change with no runtime half: a bare
+// `Uint8Array` means `Uint8Array<ArrayBufferLike>`, which the DOM lib's
+// `BufferSource` rejects because `ArrayBufferLike` admits `SharedArrayBuffer`.
+// Every value here is a `new Uint8Array(n)` — already backed by a plain
+// `ArrayBuffer` — so saying so costs nothing and lets `crypto.subtle.verify` and
+// `sign` accept them under a DOM-lib compile. It started mattering at work order
+// 02 INC-C1b, when the plugin began importing this adapter and so pulled it into
+// the e2e project's `lib: ["ES2023", "DOM"]` typecheck.
+
+/** Stripe signs with HMAC-SHA256 over `{t}.{rawBody}` — the one algorithm here. */
+const HMAC_SHA256 = { name: "HMAC", hash: "SHA-256" } as const;
+
+/** Import the webhook signing secret as a raw HMAC-SHA256 key. Non-extractable,
+ *  and scoped to the single usage the caller needs. */
+async function importHmacKey(secret: string, usage: "sign" | "verify") {
+	return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), HMAC_SHA256, false, [
+		usage,
+	]);
+}
+
+/** Lowercase hex, matching `createHmac(...).digest("hex")` byte for byte. */
+function toHex(bytes: ArrayBuffer): string {
+	let out = "";
+	for (const byte of new Uint8Array(bytes)) out += byte.toString(16).padStart(2, "0");
+	return out;
+}
+
+/**
+ * Decode a hex signature tag, or `undefined` when it is not well-formed hex.
+ * Deliberately STRICT (even length, hex digits only) where `Buffer.from(s, "hex")`
+ * silently truncated at the first bad pair — the observable result is identical,
+ * because a truncated buffer then failed `timingSafeEqual`'s length check and was
+ * caught as `false`. Upper-case is accepted, as `Buffer.from` accepted it.
+ */
+function fromHex(hex: string): Uint8Array<ArrayBuffer> | undefined {
+	if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/u.test(hex)) return undefined;
+	const out = new Uint8Array(hex.length / 2);
+	for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+	return out;
+}
+
+/** Byte-concat — the `Buffer.concat` this file used before, without the Node global. */
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a, 0);
+	out.set(b, a.length);
+	return out;
+}
+
+/** HMAC-SHA256 the payload with `secret`, hex-encoded (the Stripe `v1` tag form). */
+async function hmacHex(secret: string, payload: Uint8Array<ArrayBuffer>): Promise<string> {
+	const key = await importHmacKey(secret, "sign");
+	return toHex(await crypto.subtle.sign("HMAC", key, payload));
 }
 
 // -- default live Stripe transport (ADR-0008; the first real outbound calls) --
@@ -904,12 +972,17 @@ export interface SignedStripeWebhook {
  * The offline fake-Stripe driver: build a Stripe event body and a valid
  * `Stripe-Signature` header signed with `secret` — NO network. Used by the
  * contract/tamper tests and the plugin webhook-proxy byte-exact test.
+ *
+ * **Async** since the WebCrypto port: `crypto.subtle.sign` returns a Promise
+ * where `node:crypto`'s `createHmac().digest()` was synchronous. The bytes it
+ * produces are identical — only the call shape changed, so every caller gained
+ * an `await` and nothing else.
  */
-export function signStripeWebhook(
+export async function signStripeWebhook(
 	input: StripeEventInput,
 	secret: string,
 	opts: { timestamp?: number } = {},
-): SignedStripeWebhook {
+): Promise<SignedStripeWebhook> {
 	const event = {
 		id: input.eventId,
 		type: input.type,
@@ -926,7 +999,7 @@ export function signStripeWebhook(
 	// Default to NOW so the signed webhook passes the gateway's freshness window;
 	// tests exercising staleness pass an explicit past timestamp.
 	const timestamp = opts.timestamp ?? Math.floor(Date.now() / 1000);
-	const signedPayload = Buffer.concat([Buffer.from(`${timestamp}.`), Buffer.from(body)]);
-	const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
+	const signedPayload = concatBytes(new TextEncoder().encode(`${timestamp}.`), body);
+	const v1 = await hmacHex(secret, signedPayload);
 	return { body, signatureHeader: `t=${timestamp},v1=${v1}` };
 }

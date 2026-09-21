@@ -3,7 +3,6 @@
 "@otta-sh/admin-react": minor
 "@otta-sh/domain": minor
 "@otta-sh/plugin": patch
-"@otta-sh/service": patch
 ---
 
 Wire the Pricing & inventory screen's "Low stock only" filter to the server-side
@@ -12,13 +11,13 @@ before. The filter now applies to the whole catalogue rather than the rows on
 one fetched page, and pagination works correctly across a filtered scan.
 
 The two presentation packages take the larger bump: they LOSE exported surface,
-while the plugin and the service only gain an optional field.
+while the plugin only gains an optional field.
 
 - `@otta-sh/plugin`: `ProductsListFilter` gains an optional `lowStockThreshold`
   field, carried on the admin Products list request once the console has
   resolved the store's threshold and the operator has asked to filter by it.
   The count line's `total` is now shown for a genuinely filtered page (the
-  service's exact count describes the same rows on screen) and withheld only
+  exact count describes the same rows on screen) and withheld only
   when the threshold could not be resolved and the request never carried a
   predicate — the inverse of the old narrowing days. The degradation banner
   now reports the threshold-unreadable and on-hand-unreadable causes
@@ -27,22 +26,16 @@ while the plugin and the service only gain an optional field.
   rode inside the cursor, so a settings read that fails only while paging can
   no longer claim the filter was skipped over a list that really was filtered.
 - `@otta-sh/domain`: `isValidLowStockThreshold` gains an upper bound, exported
-  as `MAX_LOW_STOCK_THRESHOLD`. `inventory.on_hand` is a Postgres `integer` and
-  the threshold is bound against it, so a value above `int4` was refused by
-  Postgres and ACCEPTED by SQLite and the fake — the same three-way adapter
-  disagreement the guard exists to make unreachable, and one that surfaced as a
-  500 through the catch that turns a bad threshold into a 400. Pinned in the
-  contract suite, so every adapter refuses it identically.
-- `@otta-sh/service`: the admin Products list query and its opaque keyset
-  cursor both accept `lowStockThreshold` (a non-negative integer, mirroring
-  the existing settings/report fields), and a value outside that domain is a
-  400, not a 500. The query-string form is gated on plain digits rather than
-  coerced, so `?lowStockThreshold=` is a 400 instead of `Number("")`'s zero —
-  which would have silently narrowed the list to out-of-stock rows — and `0x10`
-  and `1e2` no longer mean 16 and 100. All three threshold schemas — the list
-  query, the cursor-embedded filter and the settings WRITE — now carry the
-  domain's `int4` ceiling; the settings write matters most, because the saved
-  value is what every later list read binds without ever appearing in a URL.
+  as `MAX_LOW_STOCK_THRESHOLD`. The threshold is bound against an on-hand count
+  an adapter may keep in a 32-bit integer column, so a value above `int4` was
+  refused by one adapter and ACCEPTED by the others — the same three-way
+  adapter disagreement the guard exists to make unreachable, and one that
+  surfaced as a crash through the catch that turns a bad threshold into a plain
+  refusal. Pinned in the contract suite, so every adapter refuses it
+  identically. The threshold is validated in all three places it travels — the
+  list filter, the cursor-embedded filter and the settings WRITE; the settings
+  write matters most, because the saved value is what every later list read
+  binds without the operator ever retyping it.
 - `@otta-sh/admin-react`: the Pricing & inventory list declares the shared
   count ladder's `service-filtered` scope unconditionally now that "Low stock
   only" is a real server-side predicate, so a filtered page that exhausts the

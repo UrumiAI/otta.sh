@@ -16,7 +16,7 @@ manual page reload. It now answers a failure in one of three ways:
 - **stale** (a first page failed under rows) — the rows, the count and
   `Load more` are cleared in state; the filter bar and the filter summary stay,
   because the operator's typed filters are input rather than answer. The card
-  carries the service's own words plus a sentence saying the rows went and why,
+  carries the failure's own words plus a sentence saying the rows went and why,
   and focus moves to Retry, which was inside a row that no longer exists;
 - **partial** (a page behind a successful one failed) — every accumulated row
   and the count stand, and the card renders where `Load more` was, titled for

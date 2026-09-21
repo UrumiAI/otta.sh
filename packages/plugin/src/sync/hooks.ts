@@ -1,13 +1,12 @@
-import { ALLOWED_HOSTS, COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
+import { ALLOWED_HOSTS } from "../manifest.js";
 import type {
 	ContentDeleteEvent,
 	ContentHookEvent,
 	ContentStateChangeEvent,
 	HookHandler,
-	PluginContext,
 } from "../types.js";
 import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import { parseProductTitle } from "./parse-product-title.js";
 import {
 	deriveDeleteIdempotencyKey,
@@ -266,18 +265,6 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
 	return { body: {}, titleProblem: parsed.problem };
 }
 
-/** Async because it awaits the write-gate token from write-only kv (ADR-0007):
- *  every sync write (upsert/activate/deactivate/soft-delete) is a non-GET the
- *  service gate blocks without `X-Service-Token`. Undefined ⇒ no header. */
-async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	return new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
-}
-
 /**
  * `content:afterSave` → LIFECYCLE + TITLE. This hook is the CMS half of the
  * product's life: it guarantees the `product_commerce` row EXISTS, keeps its
@@ -385,7 +372,7 @@ export function createAfterSaveHandler(
 		// watermark (no ordering guard) rather than failing the sync on a 400.
 		const watermark = normalizeWatermark(updatedAt);
 		try {
-			const client = await clientFor(ctx);
+			const client = await makeCommerceClient(ctx);
 			await client.upsertProductCommerce(
 				id,
 				// The title (when usable) + the ordering watermark, and nothing
@@ -451,7 +438,7 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		if (event.collection !== PRODUCTS_COLLECTION) return;
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
 		try {
-			await (await clientFor(ctx)).softDeleteProductCommerce(event.id, key);
+			await (await makeCommerceClient(ctx)).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
 			console.error(`[otta] content:afterDelete sync failed for product_id=${event.id}:`, err);
 		}
@@ -547,7 +534,7 @@ export function createAfterPublishHandler(
 			);
 		}
 		try {
-			const client = await clientFor(ctx);
+			const client = await makeCommerceClient(ctx);
 			try {
 				await client.upsertProductCommerce(
 					id,
@@ -652,7 +639,7 @@ export function createAfterUnpublishHandler(
 		}
 		const key = deriveUnpublishIdempotencyKey(event.collection, id, updatedAt);
 		try {
-			await (await clientFor(ctx)).deactivateProductCommerce(id, key, watermark);
+			await (await makeCommerceClient(ctx)).deactivateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
 				`[otta] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,

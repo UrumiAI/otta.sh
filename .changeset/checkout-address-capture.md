@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -17,8 +15,8 @@ the already-explicit zone.
 This is the **capture + snapshot + display** slice. Per ADR-0009's sequencing the
 optional snapshot lands first; the **required-for-physical enforcement flip is
 deliberately deferred** until the storefront checkout UI actually collects the
-address (enforcing "required" before the UI collects it would 400 every physical
-checkout). Capture is therefore optional this slice — a physical order with no
+address (enforcing "required" before the UI collects it would reject every
+physical checkout). Capture is therefore optional this slice — a physical order with no
 address is still accepted.
 
 - **Domain (`[Domain]`).** New `OrderAddress` model — a single immutable slot
@@ -32,20 +30,10 @@ address is still accepted.
   lengths) and rejects a malformed one with a new `INVALID_SHIPPING_ADDRESS` failure
   before minting anything. The customer-context `addresses` doc is retired from "NOT a
   per-order snapshot" to "profile book — prefill/context; the order's own ship-to
-  lives on `Order.shippingAddress`".
-- **Adapters (`[Adapters]`).** New forward-only migration `0019_order_shipping_address`
-  — a 1:1 `order_shipping_address` table (PK/FK `order_id`), mirroring `order_totals`.
-  The Kysely adapter writes it in the SAME guarded transaction as the order + totals
-  (a replay re-inserts nothing — carried exactly once) and left-joins it on load;
-  historical orders read `null`. Insert-once — no code path UPDATEs it (immutability is
-  structural). Green against the extended `orderStoreContract` on better-sqlite3 and
-  Postgres.
-- **Service (`[Service]`).** `POST /checkout/orders` accepts an optional validated
-  `shippingAddress` and forwards it (a logged-in checkout may prefill from the profile
-  book, but the order copies the SUBMITTED value). `INVALID_SHIPPING_ADDRESS` → 400.
-  `serializeOrder` (both the public order read and the admin detail) gains
-  `shippingAddress` and a display-only `totals.shippingZoneId` — the chosen zone read
-  off the totals' method snapshot, for the admin juxtaposition.
+  lives on `Order.shippingAddress`". The address is persisted in the SAME guarded
+  write as the order and its totals — carried exactly once on a replay, never
+  UPDATEd afterwards, so immutability is structural — and an order that predates
+  capture reads `null`. Green against the extended `orderStoreContract`.
 - **Plugin (`[Plugin]`).** The admin order detail gains a "Shipping address" section:
   the captured ship-to when present (with the country rendered next to the chosen
   shipping zone — display-only, no matching, so a human spots a "domestic zone /

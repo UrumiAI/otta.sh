@@ -39,7 +39,6 @@
  *     `tax-page.ts` / `shipping-page.ts` still hand-roll their own `Clear
  *     filters` button and are the next-touch consolidation onto
  *     `clearFiltersButton`.
- *   - `readAdminTokens(ctx)` — admin + service token threading (one source).
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
  *   - `shortIdsFor(...)` / `shortIdFixed(...)` — the UUID display rule (D4): an
@@ -129,4 +128,3 @@ export {
 	type NavPath,
 } from "./nav.js";
 export { shortIdFixed, shortIdsFor, SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN } from "./short-id.js";
-export { readAdminTokens, type AdminTokens } from "./tokens.js";

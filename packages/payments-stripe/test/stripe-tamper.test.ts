@@ -22,7 +22,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	}
 
 	test("verifies a correctly signed payment_intent.succeeded", async () => {
-		const s = signed(1500);
+		const s = await signed(1500);
 		const res = await gateway.verifyConfirmation({
 			kind: "webhook",
 			body: s.body,
@@ -38,7 +38,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	});
 
 	test("rejects a body whose bytes were altered after signing", async () => {
-		const s = signed(1500);
+		const s = await signed(1500);
 		// Flip the amount in the raw bytes WITHOUT re-signing: HMAC must fail.
 		const tampered = new TextEncoder().encode(
 			new TextDecoder().decode(s.body).replace('"amount":1500', '"amount":1'),
@@ -52,7 +52,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	});
 
 	test("rejects a missing signature header", async () => {
-		const s = signed(1500);
+		const s = await signed(1500);
 		const res = await gateway.verifyConfirmation({ kind: "webhook", body: s.body, headers: {} });
 		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
@@ -62,7 +62,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	test("rejects a correctly-signed webhook whose timestamp is outside the freshness window", async () => {
 		// Signed with the RIGHT secret but a stale `t` (10 min ago > the 300s
 		// default tolerance): replay hardening rejects it as INVALID_SIGNATURE.
-		const stale = signStripeWebhook(
+		const stale = await signStripeWebhook(
 			{
 				eventId: "evt_stale",
 				type: "payment_intent.succeeded",
@@ -84,7 +84,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 
 	test("accepts a stale-but-signed webhook when the tolerance window is widened (configurable)", async () => {
 		const lenient = new StripePaymentGateway({ webhookSecret: SECRET, toleranceSeconds: 3600 });
-		const stale = signStripeWebhook(
+		const stale = await signStripeWebhook(
 			{
 				eventId: "evt_stale2",
 				type: "payment_intent.succeeded",
@@ -105,7 +105,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	});
 
 	test("accepts a header carrying multiple v1 signatures when ANY matches (secret rotation)", async () => {
-		const s = signed(1500);
+		const s = await signed(1500);
 		// During rotation Stripe signs with each active secret and sends one v1
 		// per signature. Prepend a bogus v1 (the "old secret") before the real one.
 		const [tPart, realV1] = s.signatureHeader.split(",");
@@ -119,7 +119,7 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 	});
 
 	test("rejects when no v1 signature in the header matches", async () => {
-		const s = signed(1500);
+		const s = await signed(1500);
 		const [tPart] = s.signatureHeader.split(",");
 		const allWrong = `${tPart},v1=${"0".repeat(64)},v1=${"f".repeat(64)}`;
 		const res = await gateway.verifyConfirmation({

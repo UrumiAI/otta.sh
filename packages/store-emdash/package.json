@@ -1,0 +1,54 @@
+{
+	"name": "@otta-sh/store-emdash",
+	"version": "0.0.1",
+	"description": "Commerce store adapters for Otta over the EmDash plugin-storage primitives — bound to a structural StorageAccess port, never to the host at runtime. REQUIRES the conditional-write primitives (updateIf/getVersioned/compareAndSet/compareAndDelete), which no published emdash release carries yet: the `emdash` specifier here is the plain registry version, and the workspace override that redirects it to the vendored build is load-bearing until a release ships them.",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
+		"directory": "packages/store-emdash"
+	},
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./testing": "./test/describe-each-dialect.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsdown",
+		"test:d1": "vitest run --config vitest.d1.config.ts"
+	},
+	"dependencies": {
+		"@otta-sh/domain": "workspace:*"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-plugin": "^1.1.8",
+		"@emdash-cms/cloudflare": "0.38.0",
+		"@types/better-sqlite3": "catalog:",
+		"@types/pg": "catalog:",
+		"better-sqlite3": "catalog:",
+		"emdash": "0.38.0",
+		"kysely": "catalog:",
+		"pg": "catalog:",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"emdash": "0.38.0"
+	}
+}

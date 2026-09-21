@@ -41,6 +41,16 @@ violations that are the entire point of the commerce service.
   process, so it cannot exercise a real race — it verifies the _SQL is correct_, not that
   it's _race-safe_. Mark the no-oversell test to run only against Postgres (and D1 later),
   and say so in the test name.
+- **Real D1 is its own tier, and it is the release gate.** `pnpm test:d1` runs the contract
+  suites and the races against a real D1 inside `workerd`, under the Cloudflare workers
+  pool — the dialect the storefront actually ships on, and the only tier that exercises the
+  host's own Kysely wiring. It lives in a **separate vitest project**
+  (`packages/store-emdash/vitest.d1.config.ts`), deliberately not aggregated into the root
+  config: the root config turns file parallelism off whenever `PG_CONNECTION_STRING` is set,
+  and that guard belongs to the Postgres tier alone. Everything is local (miniflare's D1
+  simulator — no Cloudflare account, token or remote database), but it boots workerd and
+  re-migrates per file, so it runs as CI's `d1` job — nightly, on demand, and gating the
+  merge into `main` — rather than on every PR.
 
 Both dialects run the single-statement atomic write unchanged:
 
@@ -58,10 +68,14 @@ domain is a build-breaking bug, not a code-review nit.
 
 - Enforce the boundary with a dependency check (dependency-cruiser or an import-restriction
   lint rule) wired into `lint`, so the layering can't rot silently.
-- **HTTP mirrors the port 1:1.** The REST API in `@otta-sh/service` is a serialization of the
-  domain use-cases — no endpoint has semantics the port lacks, no status-code-as-logic. The
-  same client-side contract suite runs against `HttpCommerceClient` (over a live test
-  server) so the wire format can't drift from the port.
+- **There is no wire to keep in step.** Commerce runs in-process: the plugin builds
+  `InProcessCommerceClient` through its single composition root, `makeCommerceClient`, which
+  binds the `@otta-sh/domain` use-cases to the `@otta-sh/store-emdash` stores over
+  `ctx.storage` (ADR-0018). No REST API, no `@otta-sh/service`, no serialization layer that
+  could drift from the port. The behavioral contract suite that used to run twice — once
+  over HTTP against a live test server, once in-process — still runs every one of those
+  cases, now against that single tier, over a real document store, with `ctx.http` bound to
+  a rejecting stub so an accidental egress fails the suite.
 - **Add an adapter only when a second real implementation exists.** No speculative
   `EmdashStore` / `InProcessCommerceClient` before the EmDash primitive ships.
 

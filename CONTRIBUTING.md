@@ -7,7 +7,7 @@ full depth; this file only summarizes what you need to open a PR.
 
 ## Prereqs
 
-- Node 22
+- Node 22.16 or newer (the EmDash host declares `engines.node >= 22.16`)
 - pnpm — the workspace pins `packageManager: pnpm@11.10.0` in the root `package.json`; use
   that version (via Corepack) rather than whatever `pnpm` you have globally.
 
@@ -27,6 +27,19 @@ pnpm typecheck
 pnpm test         # vitest
 pnpm format       # oxfmt, tabs
 ```
+
+Two heavier tiers need a backing store and stay out of that loop:
+
+```bash
+PG_CONNECTION_STRING=<local pg> pnpm test:pg   # the race tier (no-oversell and friends)
+pnpm test:d1                                   # real D1 inside workerd, via the workers pool
+```
+
+`pnpm test:d1` runs a separate vitest project (`packages/store-emdash/vitest.d1.config.ts`), so the
+root `pnpm test` does not include it. It is entirely local — the D1 is miniflare's simulator, and
+no Cloudflare account, API token or remote database is involved — but it boots workerd and
+re-migrates a fresh database per test file, so expect minutes rather than seconds. In CI it is the
+`d1` job: nightly, on demand, and as the release gate on pull requests into `main`.
 
 ## TDD, contract-first
 
@@ -60,8 +73,7 @@ Pick the tag for the area your change touches:
 | Area changed | Tag |
 |---|---|
 | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
-| `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
-| Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
+| Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
 | Shared test/contract packages | `[Test]` |
 | CI / tooling / build | `[CI]` |

@@ -1,6 +1,7 @@
-/** Mirrors `@otta-sh/service`'s `upsertProductCommerceBody.title` bound
- *  (`z.string().min(1).max(500)`) — the plugin declares no dependency on the
- *  service package, so the bound is restated here, not imported. */
+/** Mirrors the `upsertProductCommerceBody.title` bound
+ *  (`z.string().min(1).max(500)`) that the standalone `@otta-sh/service`
+ *  enforced before it was folded into the plugin; restated as a constant here
+ *  since no schema package survives to import it from. */
 const TITLE_MAX_LENGTH = 500;
 
 /** The outcome of validating a product title: a value fit to send, or a

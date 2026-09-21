@@ -8,6 +8,10 @@ build/
 *.tsbuildinfo
 .wrangler/
 
+# Host build artifacts — the EmDash CLI writes the applied-migration manifest
+# next to the site on build; it is derived from the installed host, not source.
+sites/*/.emdash/
+
 # Local dev data
 *.db
 *.db-shm

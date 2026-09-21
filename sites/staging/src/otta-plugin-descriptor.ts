@@ -13,8 +13,11 @@
  */
 import type { PluginDescriptor } from "emdash";
 import {
+	COMMERCE_STORAGE_COLLECTIONS,
 	COUPONS_PAGE,
+	type InProcessEgressUrls,
 	REPORTS_PAGE,
+	resolveAllowedHosts,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
 	TAX_PAGE,
@@ -23,7 +26,46 @@ import {
 	OTTA_PLUGIN_VERSION,
 } from "@otta-sh/plugin";
 
-export function ottaPluginDescriptor(serviceUrl: string): PluginDescriptor {
+/** The descriptor's own storage shape, so the widening below is expressed once. */
+type DescriptorStorage = NonNullable<PluginDescriptor["storage"]>;
+
+/**
+ * The commerce storage layout, as the descriptor field wants it.
+ *
+ * THE CAST IS A TYPE WIDENING, NOT A LIE, and it is worth the paragraph. em-dash
+ * types `StorageCollectionDeclaration.indexes` as `string[]`
+ * (`astro/integration/runtime.ts`), but every layer BENEATH that field takes
+ * `Array<string | string[]>` and treats a nested array as a COMPOSITE index: the
+ * manifest wire shape in `@emdash-cms/plugin-types` declares it that way, and
+ * `normalizeIndexes` (`plugins/storage-indexes.ts`) is written as
+ * `indexes.map((i) => Array.isArray(i) ? i : [i])`. The descriptor field is simply
+ * the narrowest type on the path, and Otta's `orders` and `order_sku_index`
+ * collections declare composites the adapters genuinely read by.
+ *
+ * So the alternative to widening is not "safer types" — it is either dropping the
+ * composite entries (the list queries then fail at RUNTIME, against a full
+ * sequential scan, with no build-time signal) or flattening them into single-field
+ * indexes, which is a different index that does not serve the same query. The cast
+ * keeps the value that works and is pinned from the other side by
+ * site-config.test.ts, which asserts the composites survive as arrays.
+ *
+ * COLLECTIONS WITH NO INDEXES stay `{}` and are NOT padded with `indexes: []`
+ * here: `adaptSandboxEntry` normalizes exactly that (`indexes: config.indexes ??
+ * []`) before the config reaches the host, and padding here would make this module
+ * restate a shape it does not own — the thing `commerce-storage.ts` exists to stop.
+ */
+function commerceStorage(): DescriptorStorage {
+	return COMMERCE_STORAGE_COLLECTIONS as unknown as DescriptorStorage;
+}
+
+/** INC-C3 — what the egress allowlist depends on. */
+export interface OttaPluginDescriptorOptions {
+	/** Deployment-supplied in-process egress URLs (email provider, x402
+	 *  facilitator). Absent ⇒ no host granted for that provider. */
+	egress?: InProcessEgressUrls;
+}
+
+export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}): PluginDescriptor {
 	return {
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
@@ -32,8 +74,28 @@ export function ottaPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// EXACTLY the manifest's two capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
-		// The egress allowlist: only the commerce service's host.
-		allowedHosts: [new URL(serviceUrl).hostname],
+		// The egress allowlist — resolved by the plugin's own `resolveAllowedHosts`
+		// so this descriptor and the bundle's `ALLOWED_HOSTS` can never drift into
+		// two different answers.
+		//
+		// The commerce service is gone (INC-D3a), so the calls it used to make are
+		// the plugin's own: the list is Stripe's API host plus whichever of the
+		// email/facilitator hosts the deployment supplied, and no service host
+		// appears at all. The CREDENTIALS for those calls are never baked in here:
+		// they live in write-only plugin kv (`settings:stripe*`,
+		// `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
+		// through the admin Settings form.
+		allowedHosts: resolveAllowedHosts(options.egress),
+		// THIS DECLARATION IS THE SCHEMA. `ctx.storage.collectionOf(name)` throws
+		// "storage collection '<name>' is not declared" for anything missing from
+		// it, so an omission here is not a degraded query, it is a dead commerce
+		// path at runtime.
+		//
+		// The list is not restated here — `COMMERCE_STORAGE_COLLECTIONS` is exported
+		// by @otta-sh/plugin precisely so the deploying site declares the layout the
+		// adapters actually read, and site-config.test.ts asserts equality with it
+		// (names AND per-collection index lists) rather than a hand-copied snapshot.
+		storage: commerceStorage(),
 		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
 		// Commercial fields have exactly one home, `product_commerce`, edited
 		// only from the admin's Pricing & inventory page ("one home per field",

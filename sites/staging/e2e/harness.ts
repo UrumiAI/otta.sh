@@ -29,9 +29,14 @@
  * import the migrated-screen registry from THIS file — never RUN by vitest, but
  * very much LOADED by it — which dragged in `@playwright/test` (undeclared in
  * `sites/staging`, resolving only by walking up to the root) and, worse, the
- * module-load env guards below. `COMMERCE_SERVICE_URL` is the staging site's
- * ordinary BUILD-time variable, so merely having it set to a real URL made the
- * whole unit suite throw on an e2e loopback check it was never subject to.
+ * module-load env guards below. Those guards then read `COMMERCE_SERVICE_URL`,
+ * which was at the time the staging site's ordinary BUILD-time variable, so
+ * merely having it set to a real URL made the whole unit suite throw on an e2e
+ * loopback check it was never subject to. (INC-D3a retired that variable, its
+ * successor `OTTA_E2E_SERVICE_URL` went with the service package in INC-D3b,
+ * and no commerce endpoint is guarded here any more — but the split below is
+ * what made the collision impossible rather than merely unlikely, so it
+ * stands.)
  *
  * The registry now lives in `./registry.js` — no imports, no environment, no
  * code at load — and this file re-exports it. Anything else the unit tier ever
@@ -51,12 +56,15 @@ export const E2E_VIEWPORT = { width: 1440, height: 2200 } as const;
 /**
  * Loopback hostnames, and the guard that keeps every e2e endpoint on one.
  *
- * `COMMERCE_SERVICE_URL` and `PG_CONNECTION_STRING` are ordinary deployment
- * variables: a shell that has been used to deploy or to tunnel exports them
- * pointing at real infrastructure, and this harness reads both. Nothing about
- * "it is only a test run" stops an inherited export from aiming the stack boot,
- * or a dev-bypass POST, at production. So the values are guarded rather than
- * trusted, at module load, where the failure is loud and precedes any request.
+ * `PG_CONNECTION_STRING` is an ordinary deployment variable: a shell that has
+ * been used to deploy or to tunnel exports it pointing at real infrastructure,
+ * and this harness reads it. Nothing about "it is only a test run" stops an
+ * inherited export from aiming the stack boot, or a dev-bypass POST, at
+ * production. So the values are guarded rather than trusted, at module load,
+ * where the failure is loud and precedes any request. `OTTA_E2E_BASE_URL` gets
+ * the same treatment even though nothing but an e2e run sets it — the guard is
+ * one line and a harness that trusts *some* of its endpoints is the one that
+ * eventually trusts the wrong one.
  */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -97,11 +105,17 @@ export const E2E_BASE_URL = assertLoopbackUrl(
 	"OTTA_E2E_BASE_URL",
 );
 
-/** The commerce service the site is built against, per §0.2. */
-export const E2E_SERVICE_URL = assertLoopbackUrl(
-	process.env["COMMERCE_SERVICE_URL"] ?? "http://127.0.0.1:3500",
-	"COMMERCE_SERVICE_URL",
-);
+/*
+ * There is NO second endpoint here any more. The §0.2 stack used to boot a
+ * standalone commerce service alongside the site, and this module exported an
+ * `E2E_SERVICE_URL` (read from `OTTA_E2E_SERVICE_URL`, default port 3500)
+ * naming the port Playwright booted it on. INC-D3a stopped the site from
+ * reading a commerce address at all; INC-D3b deleted the service package
+ * outright. The stack is one process now — the site, running commerce
+ * in-process against its own store — so the knob is REMOVED rather than left
+ * dangling: an environment variable that configures nothing is a trap for the
+ * next reader, and the loopback guard below has one less endpoint to police.
+ */
 
 /**
  * The LOCAL TEST database — container `urumi-pg-test`, port **55432**.
@@ -116,7 +130,7 @@ export const E2E_PG_CONNECTION_STRING = assertLoopbackUrl(
 );
 
 /** Opt in to having Playwright boot the §0.2 stack itself (off by default: a
- *  bare `pnpm test:e2e` must not try to start a database-backed service). */
+ *  bare `pnpm test:e2e` must not try to start a dev server). */
 export const E2E_STARTS_STACK = process.env["OTTA_E2E_START_STACK"] === "1";
 
 /** Turn "no site running" from a skip into a failure. */

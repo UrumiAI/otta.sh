@@ -1,9 +1,7 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
 "@otta-sh/admin-presentation": patch
 "@otta-sh/admin-react": patch
-"@otta-sh/service": patch
 ---
 
 Orders search gains a third axis: the SKU frozen onto an order's lines at purchase time.
@@ -20,10 +18,9 @@ the order, a partial SKU finds nothing. That is the same principle behind the pr
 `Search (SKU exact, or title contains)`, and both labels are now pinned side by side, plus a
 mounted check that the sentence actually reaches the control an operator types into.
 
-`@otta-sh/service` is bumped because its `GET /admin/orders` answers differently for the same
-query, though no service source changed — only its test coverage. `@otta-sh/admin-presentation`
-and `@otta-sh/admin-react` are bumped for the label. `@otta-sh/plugin` is NOT bumped: it forwards
-`search` verbatim, and the Orders list it renders is the React one.
+`@otta-sh/admin-presentation` and `@otta-sh/admin-react` are bumped for the label.
+`@otta-sh/plugin` is NOT bumped: it forwards `search` verbatim, and the Orders list it renders is
+the React one.
 
 - **The purchase-time snapshot, not the live catalogue.** The sku compared is the one on the
   order's own lines — the insert-once snapshot the detail screen renders. Renaming a product's sku

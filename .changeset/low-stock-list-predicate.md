@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
 ---
 
 Add a low-stock filter to the admin Products list port, so the "Low stock only"
@@ -16,19 +15,17 @@ existing caller keeps seeing exactly what it saw before, and a caller that
 cannot resolve a threshold should simply omit the field rather than filter to
 nothing.
 
-The field's domain is a non-negative integer (mirroring the HTTP boundary's own
-`z.number().int().nonnegative()` validation). A value outside it throws the new
+The field's domain is a non-negative integer. A value outside it throws the new
 `InvalidLowStockThresholdError`, exported alongside its `isValidLowStockThreshold`
 guard, on every adapter alike — checked before any comparison or query runs, so
-a fractional or non-finite threshold can never get three different answers from
-the fake, SQLite, and Postgres.
+a fractional or non-finite threshold can never get one answer from the in-memory
+fake and a different one from a store that has to resolve the stock count.
 
-`store-postgres` reuses `listProducts`'s existing `inventory` LEFT JOIN (no new
-join, no new index — the join already carries `on_hand`) and adds the SAME join
-to `countProducts`, but only when this filter is set, so every other predicate
-keeps its join-free plan. The in-memory fake mirrors both dialects byte-for-byte,
-pinned by the shared contract suite across every case: the boundary (inclusive),
-zero-on-hand, the two "unknown" shapes, the empty-match shape, out-of-domain
-rejection, filter composition, and pagination.
+Resolving the count is the adapter's own business, and an adapter that already
+reads `on_hand` for the list's `onHand` projection pays nothing new for the
+filter. Every implementation is held to the same answers by the shared contract
+suite, across every case: the boundary (inclusive), zero-on-hand, the two
+"unknown" shapes, the empty-match shape, out-of-domain rejection, filter
+composition, and pagination.
 
 Port-level only — no consumer wires this filter up yet.

@@ -10,6 +10,11 @@
 - Amends: **ADR-0006 Decision 2 only** — the trusted-only-API fence, insofar as it forbids
   React admin components. ADR-0006 **Decision 1 is reaffirmed unchanged**: the workerd
   sandbox suite remains the contract gate for `@otta-sh/plugin`.
+- Amended: 2026-09-13 — **Decision 5 only** (the stock, pinned-exact dependency floor), and only
+  for the duration of the vendored host build carrying the conditional-write storage primitives,
+  by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md). Decision 5's intent — that a
+  host upgrade cannot quietly break the plugin — is unchanged, and Decision 1's zero-EmDash-
+  dependency property for `@otta-sh/plugin` is untouched.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 

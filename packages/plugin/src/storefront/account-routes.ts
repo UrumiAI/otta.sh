@@ -1,8 +1,9 @@
 /**
  * Storefront customer account — PLUGIN-OWNED PUBLIC ROUTES (Phase 5 §9, shape
- * per ADR-0003 and the cart-routes precedent). Thin, HTTP-only: each route
- * validates input → `HttpCommerceClient` call over `ctx.http` → serialize the
- * (already-typed) result. The plugin holds NO customer/session state.
+ * per ADR-0003 and the cart-routes precedent). Thin: each route validates
+ * input → calls the in-process `CommerceClient` from `makeCommerceClient` →
+ * serializes the (already-typed) result. The plugin holds NO customer/session
+ * state.
  *
  * ── Platform-verified deviation from plan §4's session-cookie wording ──────
  * Plan §4 has the plugin route set/read the session cookie directly. That is
@@ -21,10 +22,9 @@
  * The service remains the sole authority on identity — it derives `customerId`
  * from the bearer token (§4); this layer only transports it.
  */
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import type { PluginContext, RouteHandler } from "../types.js";
+import type { RouteHandler } from "../types.js";
 import { renderGuard } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -66,20 +66,6 @@ function sessionCookieDescriptor(token: string, expiresAt: string): SessionCooki
 		path: "/",
 		expiresAt,
 	};
-}
-
-/** Async because it awaits the write-gate token from write-only kv (ADR-0007).
- *  The login pre-auth calls (`/auth/login/request`, `/auth/login/verify`) and
- *  `logout` are POSTs the service gate blocks without `X-Service-Token`; the
- *  `/me/*` reads carry it harmlessly alongside the session Bearer. Undefined ⇒
- *  no header ⇒ byte-identical to the pre-gate wire. */
-async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceClient> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	return new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
 }
 
 /** Exported for reuse (e.g. `entitlements/download-route.ts`) rather than each
@@ -139,7 +125,7 @@ export function createAccountLoginRequestHandler(): RouteHandler<AccountLoginReq
 		renderGuard(ACCOUNT_LOGIN_REQUEST_ROUTE, async () => {
 			const email = routeCtx.input.email;
 			if (!isNonEmptyString(email)) return { ok: false, error: "INVALID_INPUT" } as const;
-			await (await createCommerceClient(ctx)).requestLoginLink(email);
+			await (await makeCommerceClient(ctx)).requestLoginLink(email);
 			return { ok: true as const };
 		});
 }
@@ -153,7 +139,7 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 			if (!isNonEmptyString(challengeId) || !isNonEmptyString(token)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const result = await (await createCommerceClient(ctx)).verifyLogin(challengeId, token);
+			const result = await (await makeCommerceClient(ctx)).verifyLogin(challengeId, token);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			return {
 				ok: true as const,
@@ -171,7 +157,7 @@ export function createAccountOrdersHandler(): RouteHandler<AccountSessionInput> 
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			const result = await (await createCommerceClient(ctx)).listMyOrders(sessionToken);
+			const result = await (await makeCommerceClient(ctx)).listMyOrders(sessionToken);
 			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			return { ok: true as const, orders: result.orders };
 		});
@@ -187,7 +173,7 @@ export function createAccountOrderHandler(): RouteHandler<AccountOrderInput> {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
 			if (!isNonEmptyString(orderId)) return { ok: false as const, error: "NOT_FOUND" };
-			const result = await (await createCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
+			const result = await (await makeCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
 			if (result.ok) return { ok: true as const, order: result.order };
 			if (result.reason === "NOT_FOUND") return { ok: false as const, error: "NOT_FOUND" };
 			return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
@@ -202,7 +188,7 @@ export function createAccountAddressesHandler(): RouteHandler<AccountSessionInpu
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			const result = await (await createCommerceClient(ctx)).listMyAddresses(sessionToken);
+			const result = await (await makeCommerceClient(ctx)).listMyAddresses(sessionToken);
 			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			return { ok: true as const, addresses: result.addresses };
 		});

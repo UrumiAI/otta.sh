@@ -11,9 +11,22 @@
  *
  * `manifest.ts` is never mutated in `src/` — this harness copies the whole
  * `src/` tree into a scratch dir and overwrites ONLY the copy's
- * `manifest.ts` with the test's `allowedHosts`/`commerceServiceBaseUrl`
- * before bundling (plan §6 step 1 / §8 Risk 5), so `pnpm build`'s real
- * package output is never test-specific.
+ * `manifest.ts` with the test's `allowedHosts` (and the in-process
+ * `emailApiUrl`/`facilitatorUrl` egress) before bundling (plan §6 step 1 /
+ * §8 Risk 5), so `pnpm build`'s real package output is never test-specific.
+ *
+ * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
+ * asks for storage (`storage: true`). The isolate cannot build a document store (it
+ * is a database, and the isolate has no driver and must never acquire one), so the
+ * store lives in this process and the copy's collections proxy to it over loopback.
+ *
+ * THAT IS OPT-IN, and the reason is a claim several suites make: with a single
+ * baked `allowedHost`, the stub server's recorded requests ARE the plugin's entire
+ * egress. The bridge's proxy calls `fetch` directly — it is the host's side of a
+ * bridge, not plugin egress, so it is not subject to `allowedHosts` — and binding
+ * it into every boot would quietly make that claim false. A suite that does not ask
+ * for a document store therefore does not get one, and keeps a context byte-identical
+ * to the one it always had.
  */
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -23,13 +36,46 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
+import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
+import {
+	type InProcessEgressUrls,
+	resolveAllowedHosts,
+	resolveInProcessEgress,
+	STRIPE_API_HOST,
+} from "../../src/manifest.js";
+import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "../..");
 const PLUGIN_SRC = path.join(PLUGIN_ROOT, "src");
-/** The one workspace package `src/` imports at runtime (INC-20) — see
- *  {@link materializePresentationPackage}. */
-const PRESENTATION_SRC = path.resolve(PLUGIN_ROOT, "..", "admin-presentation", "src");
+/**
+ * The workspace packages `src/` imports AT RUNTIME — see
+ * {@link materializeWorkspacePackages}. `admin-presentation` is the console's
+ * shared formatting; `domain` and `store-emdash` are what in-process commerce is
+ * MADE of, so they arrived the moment the plugin stopped talking to a service.
+ *
+ * Each entry names the package's own `exports` map as its package.json declares
+ * it at dev time, so the scratch copy resolves the identical files a plain test
+ * run does.
+ */
+const WORKSPACE_PACKAGES: ReadonlyArray<{
+	readonly name: string;
+	readonly exports: Record<string, string>;
+}> = [
+	{ name: "admin-presentation", exports: { ".": "./src/index.ts" } },
+	{ name: "domain", exports: { ".": "./src/index.ts", "./testing": "./src/testing/index.ts" } },
+	// INC-C1b: the `webhooks/stripe/settle` route verifies the webhook HMAC INSIDE
+	// the isolate, so the Stripe adapter became a runtime import like the two
+	// beside it — and it is bundled into the deployed artifact for the same reason
+	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
+	// boot at all with `No such module "@otta-sh/payments-stripe"`.
+	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
+	// INC-C5: x402 settlement is wired inside the isolate now (the gateway plus
+	// `createHttpFacilitator` over `ctx.http`), so the x402 adapter is a runtime
+	// import for exactly the same reason the Stripe one above is.
+	{ name: "payments-x402", exports: { ".": "./src/index.ts" } },
+	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
+];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
  *  resolves via this package's own `node_modules/workerd` (a direct
  *  devDependency). */
@@ -42,16 +88,79 @@ const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
 // binary path directly instead.
 const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
 
+/**
+ * The allowlist a REAL deployment boots with, plus whatever extra hosts (a stub
+ * server, usually) the suite needs — for a boot that must NOT run under a gate
+ * narrower than production's.
+ *
+ * WHY THIS EXISTS (review round 3, item 1). {@link SandboxOptions.allowedHosts}
+ * is taken verbatim, which is right for the many suites whose whole claim is a
+ * DELIBERATELY narrow gate (`allowedHosts: []` — "this screen reaches the
+ * network never"; a single stub host — "the stub's recorded requests are the
+ * plugin's entire egress"). Those are strictly stronger than production, so they
+ * cannot produce a false green. The reverse case can: a suite that exercises a
+ * path production reaches Stripe from, booted WITHOUT `STRIPE_API_HOST`, is
+ * running under a gate no deployment has — and a Stripe grant lost from
+ * `resolveAllowedHosts` would leave it green.
+ *
+ * So such a boot derives its list from production's OWN resolver rather than
+ * restating it, and the assertion below is the central guard the review asked
+ * for: drop `STRIPE_API_HOST` from `resolveAllowedHosts` and every suite that
+ * boots this way fails, loudly, naming the reason.
+ */
+export function productionAllowedHosts(
+	extraHosts: readonly string[] = [],
+	egress: InProcessEgressUrls = {},
+): string[] {
+	const hosts = resolveAllowedHosts(egress);
+	if (!hosts.includes(STRIPE_API_HOST)) {
+		throw new Error(
+			`resolveAllowedHosts no longer grants ${STRIPE_API_HOST}: a sandbox boot that ` +
+				"exercises the Stripe path would run under a gate no real deployment has. " +
+				`Resolved: ${JSON.stringify(hosts)}`,
+		);
+	}
+	return [...new Set([...hosts, ...extraHosts])];
+}
+
 export interface SandboxOptions {
-	/** Hosts `ctx.http.fetch` is allowed to reach (plan §5). */
+	/**
+	 * Hosts `ctx.http.fetch` is allowed to reach (plan §5).
+	 *
+	 * TAKEN VERBATIM, deliberately — production derives its list from the egress
+	 * defines, this takes what the suite hands it, because most suites' claim IS
+	 * the narrow list (`[]` = no egress at all; one stub host = the stub's
+	 * recorded requests are the whole of it). A boot that must match production's
+	 * real gate — anything exercising a Stripe path — passes
+	 * {@link productionAllowedHosts} here instead of restating the hosts.
+	 */
 	allowedHosts: string[];
-	/** Baked into the bundled plugin as `COMMERCE_SERVICE_BASE_URL`. */
-	commerceServiceBaseUrl: string;
+	/**
+	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process
+	 * email-provider and x402-facilitator endpoints (INC-C5). Both default to
+	 * absent, which is the fail-closed "this provider is not configured" state:
+	 * the email sweep reports `skipped` and no x402 gateway is wired.
+	 *
+	 * A suite that sets one of these is responsible for putting the matching host
+	 * in `allowedHosts` too — production derives the allowlist from these values,
+	 * this harness takes the allowlist verbatim.
+	 */
+	emailApiUrl?: string;
+	facilitatorUrl?: string;
 	/** Worker entry module, relative to `src/` (default the production
 	 *  `sandbox-entry.ts`). Test fixtures under `src/**\/testing/` (e.g. the
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
 	 *  the same `createSandboxWorker` bridge by pointing here. */
 	entry?: string;
+	/**
+	 * Bind a REAL document store to `ctx.storage` for this boot (default: no).
+	 *
+	 * OPT-IN on purpose — see this module's doc: the bridge that carries it calls
+	 * `fetch` directly, so binding it unconditionally would falsify the "the stub's
+	 * recorded requests are the plugin's entire egress" claim every proxy suite
+	 * makes. Ask for it only in a suite that exercises storage.
+	 */
+	storage?: boolean;
 }
 
 export type InvocationOutcome = { result: unknown } | { error: string };
@@ -158,23 +267,32 @@ async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void
 
 function manifestSource(options: SandboxOptions): string {
 	// Mirrors the real `src/manifest.ts` exported surface (the rest of src imports
-	// from here). Includes the ADR-0007 write-gate token key + fail-closed kv
-	// reader so the sandbox bundle resolves them exactly as production does.
+	// from here). INC-D3a retired the http/in-process mode branch AND the
+	// commerce-service deployment along with it — there is no more
+	// `COMMERCE_SERVICE_BASE_URL` and no more write-gate service/internal token to
+	// mirror, so this is now just the egress surface production actually has.
 	return [
 		'export const OTTA_PLUGIN_ID = "otta";',
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
-		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
-		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
-		"export async function serviceTokenFromKv(ctx) {",
-		"\ttry {",
-		"\t\tconst token = await ctx.kv.get(SERVICE_TOKEN_KEY);",
-		"\t\treturn token !== null && token !== undefined && token.length > 0 ? token : undefined;",
-		"\t} catch {",
-		"\t\treturn undefined;",
-		"\t}",
-		"}",
+		// INC-C5: the email sender and the x402 wiring read their endpoints from
+		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
+		// production. Absent ⇒ that provider is unconfigured (fail-closed).
+		//
+		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
+		// Baking the raw options made the sandbox tier the ONE tier where the gate
+		// `resolveInProcessEgress` applies was never exercised: a suite could hand
+		// the isolate a URL no `allowedHosts` entry covers and every assertion would
+		// still pass. INC-D3a dropped the resolver's mode argument along with the
+		// http arm it used to select — the unparseable-define behavior stays
+		// unit-pinned in `manifest-override.test.ts`.
+		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
+			resolveInProcessEgress({
+				emailApiUrl: options.emailApiUrl,
+				facilitatorUrl: options.facilitatorUrl,
+			}),
+		)};`,
 		"",
 	].join("\n");
 }
@@ -208,60 +326,58 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 }
 
 /**
- * Put `@otta-sh/admin-presentation` where the scratch copy of `src/` can resolve
- * it — the one workspace package the plugin imports at runtime (INC-20).
+ * Put every workspace package the plugin imports at runtime where the scratch copy
+ * of `src/` can resolve it.
  *
  * WHY ANYTHING IS NEEDED. The copy lives under the OS temp directory, so Node's
  * resolution walks the scratch directory's own `node_modules`, then
  * `/tmp/node_modules`, then `/node_modules`, and finds nothing: a bare
- * `@otta-sh/admin-presentation`
- * specifier would be left external by the bundler and workerd would fail to load
- * a module that imports a package it has no way to fetch. That is exactly the
- * constraint `presentation/money.ts` has documented since Phase 2, and it is why
- * INC-20's shared package could not simply be added as an ordinary dependency
- * and left there.
+ * `@otta-sh/…` specifier would be left external by the bundler and workerd would
+ * fail to load a module that imports a package it has no way to fetch.
  *
- * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED
- * BUNDLE IS SELF-CONTAINED. Materialising the package here makes the specifier
- * resolvable, and `noExternal` at the `build()` call makes tsdown INLINE it
- * into the single `.mjs` workerd loads — so the bundle stays exactly as
- * self-contained as before, and the suites still prove it by running.
+ * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED BUNDLE
+ * IS SELF-CONTAINED. Materialising the packages here makes the specifiers
+ * resolvable, and `noExternal` at the `build()` call makes tsdown INLINE them into
+ * the single `.mjs` workerd loads — so the bundle stays exactly as self-contained
+ * as before, and the suites still prove it by running.
  *
- * THE INLINING IS DECLARED, NOT INHERITED, and the first cut of this comment
- * got that wrong. It claimed the scratch tree "has no package.json declaring
- * externals, so tsdown inlines it" — but tsdown resolves its externals from the
- * package.json nearest the CWD, not the entry, and the CWD is the process's.
- * From the repo root (`pnpm test`) that is a manifest with no `dependencies`
- * and the inlining happened by accident; from
- * `pnpm --filter @otta-sh/plugin exec vitest` it is THIS package's manifest,
- * where `@otta-sh/admin-presentation` is a real dependency, so tsdown left it
- * external and all 98 workerd tests failed to boot. Measured, both ways. The
- * `noExternal` below states the requirement instead of inheriting it, so the
- * suites pass from any working directory.
+ * THE INLINING IS DECLARED, NOT INHERITED, and the first cut of this comment got
+ * that wrong. It claimed the scratch tree "has no package.json declaring externals,
+ * so tsdown inlines it" — but tsdown resolves its externals from the package.json
+ * nearest the CWD, not the entry, and the CWD is the process's. From the repo root
+ * that is a manifest with no `dependencies` and the inlining happened by accident;
+ * from this package's own directory it is THIS manifest, where the workspace
+ * packages are real dependencies, so tsdown left them external and every workerd
+ * test failed to boot. Measured, both ways. The `noExternal` below states the
+ * requirement instead of inheriting it, so the suites pass from any working
+ * directory.
  *
- * ONLY `src/` IS COPIED, never the package's own `node_modules` (symlinks into
- * the pnpm store for tsdown/vitest/typescript, none of which belong in a worker
+ * ONLY `src/` IS COPIED, never a package's own `node_modules` (symlinks into the
+ * pnpm store for tsdown/vitest/typescript, none of which belong in a worker
  * bundle's resolution graph), and the generated manifest points `exports` at the
- * TypeScript source — the same dev-time `exports` the real package.json
- * declares, so this resolves the identical files a `pnpm test` run does.
+ * TypeScript source — the same dev-time `exports` the real package.json declares.
  */
-async function materializePresentationPackage(workDir: string): Promise<void> {
-	const packageDir = path.join(workDir, "node_modules", "@otta-sh", "admin-presentation");
-	await cp(PRESENTATION_SRC, path.join(packageDir, "src"), { recursive: true });
-	await writeFile(
-		path.join(packageDir, "package.json"),
-		JSON.stringify(
-			{
-				name: "@otta-sh/admin-presentation",
-				version: "0.0.0-sandbox",
-				type: "module",
-				exports: { ".": "./src/index.ts" },
-			},
-			null,
-			2,
-		),
-		"utf8",
-	);
+async function materializeWorkspacePackages(workDir: string): Promise<void> {
+	for (const pkg of WORKSPACE_PACKAGES) {
+		const packageDir = path.join(workDir, "node_modules", "@otta-sh", pkg.name);
+		await cp(path.resolve(PLUGIN_ROOT, "..", pkg.name, "src"), path.join(packageDir, "src"), {
+			recursive: true,
+		});
+		await writeFile(
+			path.join(packageDir, "package.json"),
+			JSON.stringify(
+				{
+					name: `@otta-sh/${pkg.name}`,
+					version: "0.0.0-sandbox",
+					type: "module",
+					exports: pkg.exports,
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+	}
 }
 
 export async function loadPluginInSandbox(options: SandboxOptions): Promise<SandboxHandle> {
@@ -269,7 +385,21 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	const srcDir = path.join(workDir, "src");
 	await cp(PLUGIN_SRC, srcDir, { recursive: true });
 	await writeFile(path.join(srcDir, "manifest.ts"), manifestSource(options), "utf8");
-	await materializePresentationPackage(workDir);
+	await materializeWorkspacePackages(workDir);
+
+	// The worker side of the document-store bridge, written over the scratch copy
+	// exactly as `manifest.ts` is — and ONLY for a boot that asked for storage, so
+	// a proxy suite's egress claim stays true. `src/` stays free of it either way,
+	// which is what keeps the egress guard's "one sanctioned fetch call site" claim
+	// about the real sources honest.
+	if (options.storage === true) {
+		const bridge = await storageBridge();
+		await writeFile(
+			path.join(srcDir, "sandbox-storage.ts"),
+			sandboxStorageSource(bridge.baseUrl, COMMERCE_STORAGE_COLLECTION_NAMES),
+			"utf8",
+		);
+	}
 
 	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");
@@ -280,7 +410,7 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		dts: false,
 		logLevel: "silent",
 		// EVERY workspace package the plugin imports is INLINED, always, from any
-		// working directory. See `materializePresentationPackage` — tsdown reads
+		// working directory. See `materializeWorkspacePackages` — tsdown reads
 		// externals from the package.json nearest the CWD, so without this the
 		// bundle is self-contained under `pnpm test` and broken under
 		// `pnpm --filter @otta-sh/plugin exec vitest`. The pattern is the SCOPE

@@ -1,4 +1,3 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type {
 	AccordionBlock,
 	ActionsBlock,
@@ -11,8 +10,9 @@ import type {
 	SelectOption,
 	TableBlock,
 } from "../types.js";
+import { makeAdminClients } from "./make-admin-clients.js";
 import {
-	AdminRulesClient,
+	type AdminRulesSurface,
 	type RulesCasUpdateResult,
 	type RulesCreateResult,
 	type RulesDeleteResult,
@@ -21,7 +21,7 @@ import {
 	type TaxClassDeleteResult,
 	type TaxClassWire,
 	type TaxRateWire,
-} from "./admin-rules-client.js";
+} from "./admin-rules-surface.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -39,7 +39,6 @@ import {
 	listLevel,
 	noticeBanner,
 	PATH_FIELD,
-	readAdminTokens,
 	readBoolean,
 	readCarrier,
 	readString,
@@ -188,13 +187,18 @@ const REGISTRY_ACCORDION_LIMIT = 25;
 export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 	return createListDetailHandler<TaxRenderState>({
 		actions: TAX_ACTIONS,
+		// THE TIER IS THE FACTORY'S DECISION, not this screen's (work order 02,
+		// INC-B10c-i): `makeAdminClients` hands back either the `ctx.http` client
+		// this line used to construct or the in-process one over the plugin's own
+		// document store, and the page cannot tell which — everything below is
+		// typed against `AdminRulesSurface`, the structural surface both answer to.
+		//
+		// NO TOKENS: `X-Internal-Token` / `X-Service-Token` were transport
+		// credentials for the commerce service, and there is no service to
+		// authenticate to (ADR-0014 D3, INC-D3a).
 		async createClient(ctx) {
-			const tokens = await readAdminTokens(ctx);
-			return new AdminRulesClient({
-				fetch: ctx.http.fetch,
-				baseUrl: COMMERCE_SERVICE_BASE_URL,
-				...tokens,
-			});
+			const clients = await makeAdminClients(ctx);
+			return clients.rules;
 		},
 		// Every drill-in on this screen is a BUTTON or an L-7 `combobox` carrying
 		// the FULL target path (§12.7) — never a bare id, which would be silently
@@ -232,7 +236,7 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 // -- level 0: the tax classes registry ----------------------------------------
 
 function taxClassesLevel() {
-	return listLevel<AdminRulesClient, Record<string, never>, TaxClassWire, TaxRenderState>({
+	return listLevel<AdminRulesSurface, Record<string, never>, TaxClassWire, TaxRenderState>({
 		// The registry has no service-side pagination (`GET /admin/tax/classes`
 		// returns the full list) — `limit` is unused by `fetchPage` (kept for the
 		// level's shape) and `nextCursor` is always `null`. Deliberately above
@@ -508,7 +512,7 @@ function classesFailClosed() {
 		header: "Tax classes",
 		title: "Tax classes are unavailable",
 		description:
-			"Tax classes could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax classes could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load tax classes",
 	});
 }
@@ -516,7 +520,7 @@ function classesFailClosed() {
 // -- level 1: a class's tax rates ----------------------------------------------
 
 function taxRatesLevel() {
-	return listLevel<AdminRulesClient, RatesFilterForm, RatesPageBundle, TaxRenderState>({
+	return listLevel<AdminRulesSurface, RatesFilterForm, RatesPageBundle, TaxRenderState>({
 		limit: 500,
 		filterFromValues(values) {
 			const zoneId = readString(values.zoneId);
@@ -556,7 +560,7 @@ function taxRatesLevel() {
  * caller's `onError` fails closed instead of rendering a misleading empty list.
  */
 async function fetchRatesForClass(
-	client: AdminRulesClient,
+	client: AdminRulesSurface,
 	classId: string,
 	zoneId: string | undefined,
 	zones: ShippingZoneWire[],
@@ -927,7 +931,7 @@ function ratesFailClosed() {
 		header: "Tax rates",
 		title: "Tax rates are unavailable",
 		description:
-			"Tax rates could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax rates could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load tax rates",
 	});
 }
@@ -943,7 +947,7 @@ function ratesFailClosed() {
  * so the two never drift.
  */
 function taxRateDetailLevel() {
-	return leafLevel<AdminRulesClient, TaxRateRow>({
+	return leafLevel<AdminRulesSurface, TaxRateRow>({
 		async load(client, path, id) {
 			const classId = path[0];
 			if (classId === undefined) return null;
@@ -1004,7 +1008,7 @@ function rateDetailFailClosed() {
 		header: "Tax rate",
 		title: "Tax rate is unavailable",
 		description:
-			"Tax rate could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+			"Tax rate could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 		toast: "Could not load this tax rate",
 	});
 }
@@ -1017,7 +1021,7 @@ function rateDetailFailClosed() {
 // -- custom action: create a tax class ----------------------------------------
 
 function createClassAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const values = input.values ?? {};
 		const id = (readString(values.id) ?? "").trim();
 		const name = (readString(values.name) ?? "").trim();
@@ -1074,7 +1078,7 @@ function createClassNotice(
 /** INC-14's promoted button, and E-2's empty-state button — one verb, because
  *  they are one act. No draft: nothing has been typed yet. */
 function showNewClassAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ showList }) =>
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ showList }) =>
 		showList(undefined, undefined, { kind: "new-class" }),
 	);
 }
@@ -1083,7 +1087,7 @@ function showNewClassAction() {
  *  `value` names (the root registry when it carries none). Whatever was typed
  *  is dropped, and only ever by this explicit click. */
 function cancelNewAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ carriedPath, showList }) =>
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ carriedPath, showList }) =>
 		showList(carriedPath),
 	);
 }
@@ -1091,7 +1095,7 @@ function cancelNewAction() {
 // -- custom action: rename a tax class (LWW) -----------------------------------
 
 function saveClassAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const classId = readCarrier(input)?.classId;
 		if (classId === undefined) return showList();
 		const values = input.values ?? {};
@@ -1122,15 +1126,14 @@ function saveClassNotice(result: RulesUpdateResult<TaxClassWire>): Notice {
 	return {
 		variant: "error",
 		title: "Class not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
 // -- custom action: delete a tax class (forbid-if-in-use, honest count) -------
 
 function deleteClassAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const payload = asRecord(input.value);
 		const classId = readString(payload?.classId);
 		if (classId === undefined) return showList();
@@ -1173,15 +1176,14 @@ function deleteClassNotice(result: TaxClassDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Class not deleted",
-		description:
-			"The class could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The class could not be deleted — retry in a moment.",
 	};
 }
 
 // -- custom action: create a tax rate ------------------------------------------
 
 function createRateAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const classId = readCarrier(input)?.classId;
 		if (classId === undefined) return showList();
 		const values = input.values ?? {};
@@ -1244,7 +1246,7 @@ function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): N
  *  class path in `value` (L-6): without it the create screen would open at the
  *  root registry, which is the one failure this level's depth makes possible. */
 function showNewRateAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, showList }) => {
 		const payload = asRecord(input.value);
 		const encoded = readString(payload?.[PATH_FIELD]);
 		const path = encoded !== undefined ? decodePath(encoded) : null;
@@ -1256,7 +1258,7 @@ function showNewRateAction() {
 // -- custom action: edit a tax rate (CAS on rateBps) ---------------------------
 
 function saveRateAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const carried = readCarrier(input);
 		const classId = carried?.classId;
 		const rateId = carried?.rateId;
@@ -1306,15 +1308,14 @@ function saveRateNotice(result: RulesCasUpdateResult<TaxRateWire>): Notice {
 	return {
 		variant: "error",
 		title: "Rate not saved",
-		description:
-			"The change could not be saved — check the service connection and the admin token in Settings.",
+		description: "The change could not be saved — retry in a moment.",
 	};
 }
 
 // -- custom action: delete a tax rate ------------------------------------------
 
 function deleteRateAction() {
-	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const payload = asRecord(input.value);
 		const classId = readString(payload?.classId);
 		const rateId = readString(payload?.rateId);
@@ -1340,7 +1341,6 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 	return {
 		variant: "error",
 		title: "Rate not deleted",
-		description:
-			"The rate could not be deleted — check the service connection and the admin token in Settings.",
+		description: "The rate could not be deleted — retry in a moment.",
 	};
 }

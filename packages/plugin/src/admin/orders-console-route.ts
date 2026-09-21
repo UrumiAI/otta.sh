@@ -30,8 +30,9 @@
  * So the console asks the SAME ROUTE for the SAME DATA in a different shape.
  * No new route, no new capability, no `allowedHosts` change, no service change:
  * the interaction `type` is new, the transport, the authorization, the CSRF
- * header and the egress are identical, and every byte still comes from
- * `AdminOrdersClient` over `ctx.http`.
+ * header and the egress are identical, and every byte still comes from the ONE
+ * admin orders surface `makeAdminClients` hands this route — the `ctx.http`
+ * client, or the in-process one over the plugin's own document store.
  *
  * WRITES ARE STRUCTURED ACTIONS NOW (INC-R2, ADR-0015). They used to be
  * forwarded through the Block Kit Orders page handler as a synthesized
@@ -46,16 +47,16 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import {
-	AdminOrdersClient,
+	type AdminOrdersSurface,
 	type CustomerContextWire,
 	type OrderDetailWire,
 	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrderTimelineWire,
 	type RefundsSummaryWire,
-} from "./admin-orders-client.js";
+} from "./admin-orders-surface.js";
+import { makeAdminClients } from "./make-admin-clients.js";
 import {
 	CANCELLATION_REASONS,
 	ONE_CLICK_CANCEL_REASONS,
@@ -84,7 +85,7 @@ import {
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
-import { asRecord, readAdminTokens, readString } from "./scaffold/index.js";
+import { asRecord, readString } from "./scaffold/index.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
 import type { PluginContext, RouteHandler } from "../types.js";
 
@@ -185,7 +186,7 @@ export interface ConsoleListPayload {
 	 * WHY IT IS ON THE SUCCESS PAYLOAD RATHER THAN A FAILURE. The request WAS
 	 * answered: the cursor disagreed with the filters beside it, or would not
 	 * decode, and the service's own remedy for that code is "drop the cursor and
-	 * re-issue page one" — which `AdminOrdersClient` performs before this route
+	 * re-issue page one" — which the orders client performs before this route
 	 * ever sees a result. So there is a list to render and nothing to apologise
 	 * for; what the console still needs is the FACT, because an address that names
 	 * that page must be corrected and an operator who followed a link to it is
@@ -226,7 +227,7 @@ const UNAVAILABLE: ConsoleFailure = {
 	ok: false,
 	title: "Orders are unavailable",
 	description:
-		"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		"Orders could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 };
 
 const NOT_FOUND: ConsoleFailure = {
@@ -281,13 +282,20 @@ function readFilter(raw: unknown): OrdersFilterForm {
 	};
 }
 
-async function createClient(ctx: PluginContext): Promise<AdminOrdersClient> {
-	const tokens = await readAdminTokens(ctx);
-	return new AdminOrdersClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...tokens,
-	});
+/**
+ * WHICH ORDERS CLIENT THIS ROUTE GETS — the `ctx.http` one or the in-process one
+ * composed over the plugin's own document store — is `makeAdminClients`'s single
+ * decision rather than this route's (work order 02, INC-B10b-ii). In http mode it
+ * constructs exactly the client this function used to build here, write-gate
+ * token included.
+ *
+ * NO TOKENS: the `X-Internal-Token` / `X-Service-Token` pair authenticated a
+ * caller to the commerce service, and there is no service to authenticate to
+ * (INC-D3a).
+ */
+async function createClient(ctx: PluginContext): Promise<AdminOrdersSurface> {
+	const clients = await makeAdminClients(ctx);
+	return clients.orders;
 }
 
 async function consoleList(

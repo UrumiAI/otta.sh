@@ -46,15 +46,14 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
-	AdminProductsClient,
+	type AdminProductsSurface,
 	type ProductDetailWire,
 	type ProductsListResult,
 	type ProductSummaryWire,
 	type TaxClassWire,
-} from "./admin-products-client.js";
+} from "./admin-products-surface.js";
 import {
 	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	PRODUCTS_UNAVAILABLE_TITLE,
@@ -83,8 +82,9 @@ import {
 	resolveStockContext,
 	toClientFilter,
 } from "./products-read.js";
-import { ReportingSettingsClient } from "./reporting-client.js";
-import { readAdminTokens, readString } from "./scaffold/index.js";
+import { makeAdminClients } from "./make-admin-clients.js";
+import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
+import { readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
  *  per service endpoint: the detail fans out to three reads in PARALLEL, because
@@ -153,8 +153,8 @@ export interface ProductsConsoleListPayload {
 	/**
 	 * THE PAGE THE REQUEST ASKED FOR WAS REFUSED, and these are the first page's
 	 * rows instead — the cursor disagreed with the filters beside it, or would not
-	 * decode, and `AdminProductsClient` performed the service's own prescribed
-	 * remedy (drop the token, re-issue page one) before this route saw a result.
+	 * decode, and `listProducts` performed the prescribed remedy (drop the token,
+	 * re-issue page one) before this route saw a result.
 	 * On the SUCCESS payload because the request was answered; forwarded because
 	 * an address naming that page must be corrected and the merchant is owed a
 	 * sentence. Same contract as the Orders route's.
@@ -212,31 +212,30 @@ export interface ProductsConsoleInput {
 }
 
 interface ProductsConsoleClient {
-	products: AdminProductsClient;
-	settings: ReportingSettingsClient;
+	products: AdminProductsSurface;
+	settings: ReportingSettingsSurface;
 }
 
 /**
- * Both service surfaces this screen reads — the products client carrying the
- * write-gate service token (the edit PATCH and the stock-movement POSTs are
- * non-GETs the gate blocks without it) and the settings client carrying the
- * admin token alone, because a GET-only surface has no business holding the
- * token that writes.
+ * Both surfaces this screen reads.
+ *
+ * The PRODUCTS surface now comes from the admin composition root, so which tier
+ * answers it — the commerce service over `ctx.http`, or the plugin's own
+ * document store — is that factory's single decision rather than this route's
+ * (work order 02, INC-B10b-i). In http mode it constructs exactly the client
+ * this function used to build here, write-gate token included.
+ *
+ * The SETTINGS surface now comes from the same factory (work order 02,
+ * INC-B10c-ii). It used to be constructed inline here because the reporting
+ * client had no in-process tier; it has one now, so nothing on this screen picks
+ * a transport any more.
+ *
+ * NO TOKENS AT ALL: neither client is built here, and the write-only-kv pair
+ * the factory used to read went with the commerce service (INC-D3a).
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
-	const tokens = await readAdminTokens(ctx);
-	const transport = {
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-	};
-	return {
-		products: new AdminProductsClient({
-			...transport,
-			...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
-		}),
-		settings: new ReportingSettingsClient(transport),
-	};
+	const clients = await makeAdminClients(ctx);
+	return { products: clients.products, settings: clients.reporting };
 }
 
 /**

@@ -37,7 +37,6 @@ beforeAll(async () => {
 		// The geo fixture's fake client performs NO egress; hosts/base-url are
 		// inert placeholders the bridge still requires.
 		allowedHosts: ["127.0.0.1"],
-		commerceServiceBaseUrl: "http://127.0.0.1:1",
 		entry: "admin/scaffold/testing/geo-entry.ts",
 	});
 }, 60_000);

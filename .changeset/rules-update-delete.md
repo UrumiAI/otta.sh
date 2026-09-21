@@ -1,14 +1,12 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
 Rules UPDATE/DELETE capabilities + a typed plugin rules-client (admin-UX
 Increment 3, slice 1). Closes the capability gap the admin audit flagged:
 tax/shipping/coupon config was create/read-only, blocking every tax & shipping
-admin screen. This slice adds the missing domain/service mutations plus one
+admin screen. This slice adds the missing domain mutations plus one
 sandbox-clean plugin client; the drill-down UIs consume it in later slices (no
 UI here).
 
@@ -28,19 +26,18 @@ Per-entity design (decision table, with rationale):
   edit); DELETE forbid-if-redeemed (`in_use_by_redemptions`), preserving the FK
   + reconciliation trail.
 
-Referential deletes are ATOMIC (`DELETE ... WHERE NOT EXISTS child`, FK-backed
-for methods/rates/redemptions) so a concurrent child insert can never orphan.
-The CAS money edits are once-only under replay (a blind retry is reported
-`stale`, never double-applied) and verified by a Postgres N-way race
+Referential deletes are ATOMIC — the child check and the delete are one
+operation for methods/rates/redemptions — so a concurrent child insert can
+never orphan. The CAS money edits are once-only under replay (a blind retry is
+reported `stale`, never double-applied) and verified by an N-way race
 (exactly-one-winner, the no-oversell analogue for admin edits). Deletes are
 idempotent (`not_found` no-op).
 
 Snapshot invariant: an order snapshots its totals at creation, so deleting a
 rate/coupon never rewrites an existing order; an in-flight cart recomputes on its
 next quote/checkout and sees the deletion (a deleted rate resolves to 0 bps /
-unavailable). No schema change (forward-only migrations untouched) — the CAS
-tokens are existing readable columns.
+unavailable). No schema change — the CAS tokens are fields that were already
+readable.
 
-Service adds PATCH/PUT + DELETE routes mirroring the ports 1:1 under the write
-gate; the plugin gains `AdminRulesClient` (discriminated results, admin +
-service token threading, 404/409 mapping) covering the full rules surface.
+The plugin gains a typed admin rules client with discriminated results (a
+refusal is a named reason, never an exception) covering the full rules surface.

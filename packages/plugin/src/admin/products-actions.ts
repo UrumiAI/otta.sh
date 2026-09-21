@@ -78,11 +78,11 @@ import {
 	unitWord,
 } from "@otta-sh/admin-presentation";
 import {
-	AdminProductsClient,
+	type AdminProductsSurface,
 	type ProductEditWire,
 	type RestockResult,
 	type StockRemovalResult,
-} from "./admin-products-client.js";
+} from "./admin-products-surface.js";
 import { parseMinorUnitsInput } from "./money-input.js";
 import { readString, screenActions, type Notice } from "./scaffold/index.js";
 
@@ -137,7 +137,7 @@ export interface ProductsActionResult {
 export type ProductsActionPayload = Readonly<Record<string, string>>;
 
 type ProductsAction = (
-	client: AdminProductsClient,
+	client: AdminProductsSurface,
 	payload: ProductsActionPayload,
 ) => Promise<ProductsActionResult>;
 
@@ -404,7 +404,7 @@ function namedSku(value: string | null, fallback: string): string {
  * no way to tell which of the two they were reading.
  */
 function editOutcome(
-	result: Awaited<ReturnType<AdminProductsClient["updateProduct"]>>,
+	result: Awaited<ReturnType<AdminProductsSurface["updateProduct"]>>,
 ): ProductsActionResult {
 	if (result.ok) {
 		return applied({
@@ -492,8 +492,7 @@ function editOutcome(
 			return applied({
 				variant: "error",
 				title: "Save failed",
-				description:
-					"The change could not be saved — check the service connection and the admin token in Settings.",
+				description: "The change could not be saved — retry in a moment.",
 			});
 	}
 }
@@ -676,8 +675,7 @@ function stockFailureNotice(
 			return {
 				variant: "error",
 				title: "Stock change failed",
-				description:
-					"The change could not be saved — check the service connection and the admin token in Settings.",
+				description: "The change could not be saved — retry in a moment.",
 			};
 	}
 }
@@ -723,7 +721,7 @@ export const PRODUCTS_ACTION_IDS: ReadonlySet<string> = new Set(
 export async function dispatchProductsAction(
 	actionId: string,
 	payload: ProductsActionPayload,
-	client: AdminProductsClient,
+	client: AdminProductsSurface,
 ): Promise<ProductsActionResult | undefined> {
 	const action = PRODUCTS_ACTIONS_BY_ID[actionId];
 	if (action === undefined) return undefined;

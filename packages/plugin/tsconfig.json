@@ -9,8 +9,8 @@
 	"references": [
 		{ "path": "../admin-presentation" },
 		{ "path": "../domain" },
-		{ "path": "../service" },
-		{ "path": "../store-postgres" },
-		{ "path": "../payments-stripe" }
+		{ "path": "../store-emdash" },
+		{ "path": "../payments-stripe" },
+		{ "path": "../payments-x402" }
 	]
 }

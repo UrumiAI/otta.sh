@@ -15,69 +15,21 @@ one at POST time, so a double-submit replays instead of duplicating.
 ## Local development
 
 ```bash
-# 1. Start the commerce service (repo root; point PG_CONNECTION_STRING at your
-#    own local test Postgres). tsx, not the built dist bin: the unpublished
-#    workspace exports point at TS sources (#44).
-#    Always use the test container on port 55432. Never point this
-#    project's tooling at the unprefixed default port: in the maintainer
-#    environment it is an SSH tunnel to the production database, and
-#    nothing in this repo ever needs it. The local test database is
-#    `otta` on 127.0.0.1:55432.
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta \
-  pnpm dlx tsx@4 packages/service/src/index.ts
-
-# 2. Run the site against it:
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
+pnpm --filter @otta-sh/site-staging dev
 ```
+
+Nothing else has to be running: commerce is **in-process** in this site's own Worker
+(ADR-0006), so there is no second process to start and no service URL to point at.
 
 In `astro dev` the fastest path to a populated catalog is the dev-only bypass, which
 applies the full seed including the 3 sample products:
 `/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. What first boot does and does
-not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
+not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §2.2.
 
-### Step 3 — set the admin token, or every admin screen fails closed
+### Plugin settings are namespaced by plugin id
 
-**This is not optional, and skipping it looks like an outage rather than a missing step.**
-Three separate QA passes lost time to it.
-
-The commerce service gates its whole operational surface — `/internal/*`, `/admin/*`,
-`/reports/*`, `/settings` — behind `X-Internal-Token` ([ADR-0010](../../adr/0010-admin-read-surface-requires-internal-token.md)).
-Two independent things have to line up, and **neither has a default**:
-
-1. **The service** must boot with `INTERNAL_API_TOKEN` set. Unset, the gate answers **503** to
-   every request including reads — never silently open
-   (`packages/service/src/routes/internal-auth.ts`). So step 1's command becomes:
-
-   ```bash
-   INTERNAL_API_TOKEN=dev-admin-token \
-   PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta \
-     pnpm dlx tsx@4 packages/service/src/index.ts
-   ```
-
-2. **The plugin** must hold the *same* value. It is not an env var on the site — it is a
-   plugin setting the operator saves through the admin: **Otta → Settings →
-   "Service connection" → "Admin token (X-Internal-Token)" → Save admin token**. The field is
-   always empty by design and a blank submit keeps the current token, so a *set* token shows up
-   as the group's own label reading `Service connection — token set …`, never as a value in the
-   box.
-
-**What you see when it is missing.** Every admin screen **except Settings** renders its fail-closed
-banner — *"&lt;Screen&gt; could not be loaded. Check the service connection and the admin token in
-Settings; if both look right, this is a fault in the console itself — not your data."* The copy is
-deliberately written not to blame the network, precisely because this configuration gap and a
-genuine outage are indistinguishable from inside the plugin. If every screen fails at once and
-the storefront is fine, suspect this step first.
-
-**Settings is the exception BY DESIGN, and the exception is the remedy path.** Its two token forms
-need no service read to render, so Settings keeps working when nothing else does — otherwise the one
-screen that can fix the problem would be locked behind the problem (a bootstrap lockout). Only its
-operational-settings group degrades, to a single line: *"Operational settings could not be loaded
-right now. Store display name and connection tokens are unaffected — check the service connection
-and the admin token below."* Both token forms render underneath it, ready to take the value. So when
-every screen is failing at once, **go to Settings** — it will be there.
-
-Note that plugin settings are namespaced by **plugin id**, so a token saved under one id is not
-visible to another. The Block Kit screens and the React console both read `otta`'s.
+A setting saved under one plugin id is not visible to another. The Block Kit screens and the
+React console both read `otta`'s.
 
 ### Running the stack from a non-interactive shell (agents, CI sandboxes)
 
@@ -86,23 +38,15 @@ terminal and never returns. In an automated or agent-driven environment, start i
 and wait until it reports its URL before driving it — a request issued before the server is
 listening fails in a way that looks like an application error.
 
-Both of the environment variables above are read by the process that starts, not per request:
-`COMMERCE_SERVICE_URL` is resolved in `astro.config.ts` (see the section below) and
-`STRIPE_PUBLIC_KEY` is baked as a Vite `define`. **Changing either means restarting the dev
-server** — there is no runtime override, in dev any more than in production. Setting them in a
-later shell has no effect on a server that is already up.
-
-## The COMMERCE_SERVICE_URL build-time contract
-
-`COMMERCE_SERVICE_URL` is read **at build time** in `astro.config.ts` and baked into the
-plugin bundle and the plugin descriptor's `allowedHosts` (the `ctx.http` egress gate).
-**Changing the service URL means rebuild + redeploy** — there is no runtime override. The
-full contract lives in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
+`STRIPE_PUBLIC_KEY` is read by the process that starts, not per request: it is baked as a
+Vite `define`. **Changing it means restarting the dev server** — there is no runtime
+override, in dev any more than in production. Setting it in a later shell has no effect on a
+server that is already up.
 
 ## The STRIPE_PUBLIC_KEY build-time contract
 
-The checkout's Payment Element needs a Stripe **publishable** key, and it is baked the same
-way (`astro.config.ts` → a Vite `define`): shell env → `sites/staging/.env` → absent.
+The checkout's Payment Element needs a Stripe **publishable** key, baked in
+`astro.config.ts` as a Vite `define`: shell env → `sites/staging/.env` → absent.
 **Changing it means rebuild + redeploy.** The variable is **`STRIPE_PUBLIC_KEY`** — the name
 matters, see below. It is not put in wrangler `vars` because the guard test forbids any
 `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`, and that guard is worth keeping.
@@ -127,10 +71,12 @@ the key.
 ## Deploying
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
-resource creation, secrets, the build/deploy ordering, first boot + claim, and
-failed-first-boot recovery are §3 (Shape B); the workers.dev networking constraints and
-the flag⇒session-off pairing invariant are §3.5; the secrets/token checklist — including
-why `SERVICE_API_TOKEN` must stay unset for now — is §4.
+resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
+recovery are §2; the `global_fetch_strictly_public` ⇒ D1-`session`-off pairing invariant is
+§2.4; the secrets & tokens checklist is §3. There is one deployable, so the only Worker
+secrets are `EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional
+`OTTA_WH_TOKEN` webhook edge gate — every payment and email credential is provisioned in the
+admin console's **Settings** page instead.
 
 ## Notes
 

@@ -441,6 +441,59 @@ describe("settleOrder", () => {
 		expect(h.entitlementStore.all()).toHaveLength(1);
 	});
 
+	test("ONE receipt settles ONE order: the same dedupe key aimed at a second order is refused", async () => {
+		// The cross-order replay. For x402 the dedupe key IS the on-chain
+		// `transaction` and `proof.orderId` is never attestable, so the amount
+		// equality alone would let a receipt already spent on order A settle a
+		// second, same-priced order B off one payment — and `recordPayment`'s
+		// globally-unique `provider_ref` would swallow the second ledger row, so it
+		// would not even show up as a double-spend.
+		const first = await pendingDigital("kd-a");
+		const second = await pendingDigital("kd-b");
+		const receipt = (order: Order) =>
+			h.x402Gw.webhook({
+				outcome: "succeeded" as const,
+				orderId: order.id,
+				providerRef: "0xtx-shared",
+				amount: order.totals.total,
+				currency: "USD",
+				dedupeKey: "0xtx-shared",
+			});
+
+		expect((await settleOrder(h.settleDeps, h.x402Gw, receipt(first))).ok).toBe(true);
+		expect((await h.orderStore.getById(first.id))?.state).toBe("paid");
+
+		const replay = await settleOrder(h.settleDeps, h.x402Gw, receipt(second));
+		expect(replay).toEqual({ ok: false, reason: "RECEIPT_REBOUND" });
+		// NOTHING moved on the second order — not the state, not the entitlement.
+		expect((await h.orderStore.getById(second.id))?.state).toBe("pending");
+		expect(await h.entitlementStore.check({ orderId: second.id, sku: brandSku("DIG-1") })).toBe(
+			false,
+		);
+		// The ATTEMPT is recorded against the order it was aimed at.
+		const anomaly = h.paymentEventStore.anomalies().find((a) => a.kind === "RECEIPT_REBOUND");
+		expect(anomaly?.orderId).toBe(second.id);
+		expect(anomaly?.detail).toContain(first.id);
+	});
+
+	test("a REDELIVERY of the same receipt to the SAME order still re-drives (not a rebind)", async () => {
+		// The refusal above must not catch the legitimate replay the whole
+		// claim/resume idiom depends on.
+		const order = await pendingDigital();
+		const raw = h.x402Gw.webhook({
+			outcome: "succeeded" as const,
+			orderId: order.id,
+			providerRef: "0xtx-same",
+			amount: order.totals.total,
+			currency: "USD",
+			dedupeKey: "0xtx-same",
+		});
+		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
+		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
+		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+		expect(h.entitlementStore.all()).toHaveLength(1);
+	});
+
 	test("a retry after a crash between markFailed and release completes the release", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;

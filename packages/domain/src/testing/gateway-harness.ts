@@ -29,19 +29,34 @@ export interface GatewayConfirmInput {
 	providerRef: string;
 }
 
+/**
+ * A minted raw confirmation, or a promise of one.
+ *
+ * The promise half exists because signing is ASYNC for any adapter that signs
+ * with WebCrypto: `crypto.subtle.sign` returns a Promise where `node:crypto`'s
+ * `createHmac().digest()` was synchronous, and the payment adapters moved to
+ * WebCrypto so they carry no `node:` import into the workerd sandbox. Widening
+ * the MINTER — rather than making the adapters keep a Node-only signer — is what
+ * let the contract's own CASES stay byte-identical through that port: every
+ * `expect` in `payment-gateway-contract.ts` is unchanged, and only an `await`
+ * was added at each mint call. A synchronous minter still satisfies this type
+ * exactly as before, so no existing harness had to change.
+ */
+export type MintedConfirmation = RawConfirmation | Promise<RawConfirmation>;
+
 export interface GatewayHarnessConfig {
 	gateway: PaymentGateway;
 	/** Mint a VALID raw confirmation for the gateway under test. */
-	confirm(input: GatewayConfirmInput): RawConfirmation;
+	confirm(input: GatewayConfirmInput): MintedConfirmation;
 	/** Mint a raw confirmation whose signature is invalid. */
-	confirmBadSignature(input: GatewayConfirmInput): RawConfirmation;
+	confirmBadSignature(input: GatewayConfirmInput): MintedConfirmation;
 }
 
 export interface PaymentGatewayHarness {
 	gateway: PaymentGateway;
 	settleDeps: SettleDeps;
-	confirm(input: GatewayConfirmInput): RawConfirmation;
-	confirmBadSignature(input: GatewayConfirmInput): RawConfirmation;
+	confirm(input: GatewayConfirmInput): MintedConfirmation;
+	confirmBadSignature(input: GatewayConfirmInput): MintedConfirmation;
 	/** Seed a pending PHYSICAL order with an adopted reservation. */
 	seedPhysicalOrder(
 		amountCents: number,

@@ -14,7 +14,7 @@
  * these functions renders a block, and none of them reads one.
  */
 import {
-	AdminOrdersClient,
+	type AdminOrdersSurface,
 	type CustomerContextWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
@@ -22,7 +22,7 @@ import {
 	type OrdersListFilter,
 	type OrderTimelineWire,
 	type RefundsSummaryWire,
-} from "./admin-orders-client.js";
+} from "./admin-orders-surface.js";
 import { DAY_MS, dayOf, endOfDay, startOfDay } from "./scaffold/index.js";
 import { ORDER_STATE_SET } from "@otta-sh/admin-presentation";
 
@@ -129,7 +129,7 @@ function periodWindow(form: OrdersFilterForm, now: Date): { from?: string; to?: 
  * screen closed (E-1). Fetched in parallel.
  */
 export async function loadDetailSurfaces(
-	client: AdminOrdersClient,
+	client: AdminOrdersSurface,
 	id: string,
 ): Promise<{
 	notes: OrderNoteWire[];

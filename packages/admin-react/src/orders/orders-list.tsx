@@ -1574,7 +1574,8 @@ export function OrdersList({
 										// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
 										// director ruling). `buyerRef` is caller-supplied free text up
 										// to 320 characters with no format check
-										// (`packages/service/src/schemas.ts`), and this column has no
+										// (`plugin/src/storefront/checkout-route-input.ts`), and this
+										// column has no
 										// bound of its own under the table's `table-layout: auto`: one
 										// unbroken long token would otherwise widen this column and
 										// push every column to its right — Status, Order #, Total — off

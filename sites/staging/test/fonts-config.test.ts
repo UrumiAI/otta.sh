@@ -13,8 +13,10 @@
  */
 import { describe, expect, test } from "vitest";
 
-// Match site-config.test.ts: pin the env before astro.config is imported.
-process.env["COMMERCE_SERVICE_URL"] ??= "https://svc.example.com";
+// (INC-D3a: this file used to pin `COMMERCE_SERVICE_URL` before importing
+// astro.config, because the config resolved it at module load. The config
+// reads no commerce address any more — like site-config.test.ts, this suite
+// now imports it with no env pinned at all.)
 
 interface ConfiguredFont {
 	name: string;

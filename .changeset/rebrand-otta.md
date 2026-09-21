@@ -3,8 +3,6 @@
 "@otta-sh/payments-stripe": patch
 "@otta-sh/payments-x402": patch
 "@otta-sh/plugin": patch
-"@otta-sh/service": patch
-"@otta-sh/store-postgres": patch
 ---
 
 Rebrand Urumi to Otta. The npm scope is now `@otta-sh/*` (was `@urumi/*`).

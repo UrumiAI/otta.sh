@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The D1 tier is nightly AND the release gate, but still not per-PR: it boots
+  # workerd, runs every migration against a fresh D1 database per test file, and
+  # drives 250 reserves through the race shape, which costs several minutes of
+  # runner time for evidence that changes only when the adapter or the host
+  # build changes. The `d1` job below spells out exactly which events run it.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
 
 # Cancel a PR's superseded runs when new commits land; never cancel an
 # in-flight main-branch validation (each merge should finish its own check).
@@ -13,13 +21,16 @@ concurrency:
 
 jobs:
   unit:
+    # The nightly schedule exists for the `d1` job alone; the per-commit jobs
+    # already ran on the commit that is being re-tested.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Domain purity is a CI gate (dependency-cruiser domain-is-io-free).
@@ -57,9 +68,50 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Scoped to the files that actually touch Postgres (scripts/pg-test-files.sh) —
       # the sqlite/fake-only suite already ran in `unit`, no need to redo it here.
       - run: pnpm test:pg
+
+  # Tier T3: the contract suites and the race over REAL D1, inside workerd, via
+  # the workers pool. This is the dialect the storefront ships on and the only
+  # tier that exercises the host's own Kysely wiring (`createDialect` reading the
+  # `DB` binding). Everything is local — the miniflare D1 simulator — so no
+  # Cloudflare account, token or remote database is involved.
+  #
+  # This job is the RELEASE GATE. A release is a merge into `main`, so the job
+  # runs on any pull request whose base is `main` — in practice the integration
+  # branch's own PR — and again on the `main` push that merge produces. It does
+  # NOT run on the per-increment PRs into the integration branch: those gate on
+  # the targeted local run, and paying several minutes of workerd per increment
+  # buys nothing the release run doesn't. The nightly `schedule` and manual
+  # `workflow_dispatch` paths are unchanged.
+  #
+  # To make it a REQUIRED check, add the status named `d1` to the branch
+  # protection rule for `main` (repo Settings → Branches). GitHub reports a
+  # job skipped by its `if:` as successful, so requiring it does not block the
+  # per-increment PRs where it deliberately does not run.
+  #
+  # No `needs:` on purpose: `unit` is skipped on the nightly schedule, and a
+  # skipped dependency would skip this job with it.
+  d1:
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || github.event_name == 'push'
+      || (github.event_name == 'pull_request' && github.base_ref == 'main')
+    runs-on: ubuntu-latest
+    # The tier takes a couple of minutes; anything near this ceiling is a hang,
+    # not a slow run.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:d1

@@ -15,6 +15,20 @@
 //
 // Secrets are NEVER committed here. Post-merge:
 //   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
+//
+// OPTIONAL, for the Stripe webhook edge (`src/pages/webhooks/stripe.ts`):
+//   wrangler secret put OTTA_WH_TOKEN
+// A shared secret this Worker attaches as `X-Otta-Wh-Token` when it forwards a
+// delivery to the plugin's `webhooks/stripe/settle` route. Set the SAME value
+// in Otta's admin settings, where the plugin keeps its half as a write-only kv
+// secret (`otta-wh-token`, under the plugin's own settings prefix — it is NOT
+// provisioned here, and `test/site-config.test.ts` pins that it never is).
+// Provisioning the PLUGIN side alone 401s every delivery. It is a
+// `secret` and not a `vars` entry both because it is one and because
+// `test/wrangler-config.test.ts` forbids any `vars` key matching
+// /SECRET|KEY|TOKEN|PASSWORD/i. Leaving BOTH sides unset is a supported
+// degraded state: the plugin's gate passes through, and the Stripe HMAC — the
+// real trust anchor, never skippable — still rejects a forgery.
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// PLACEHOLDER — your Worker name (pick one that cannot collide with any

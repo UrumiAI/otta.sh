@@ -15,7 +15,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__OTTA_COMMERCE_SERVICE_URL__"]
+						"allow": ["__OTTA_EMAIL_API_URL__", "__OTTA_X402_FACILITATOR_URL__"]
 					}
 				]
 			}

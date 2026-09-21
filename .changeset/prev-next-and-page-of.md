@@ -11,7 +11,7 @@ console keeps the cursors it has already been handed and replays one to go back,
 so there is no new query, no reverse keyset read, and nothing new on the wire.
 
 `Previous` re-requests the page rather than restoring the rows it had in hand.
-The stack holds cursors, not pages: a request under a token the service already
+The stack holds cursors, not pages: a request under a token the plugin already
 issued answers with the collection as it stands now, agrees with a reload of the
 same address, and does not grow without bound down a long scan.
 
@@ -25,13 +25,13 @@ screen the position states the window it describes (`Pages 2–3 of 6`), because
 "Page 3" over fifty rows beginning at page two tells whoever is reading the top
 of that list the wrong number.
 
-**The page count is derived from what the list already holds.** The service
-counts the filtered set alongside the page it returns and the plugin states the
+**The page count is derived from what the list already holds.** The plugin
+counts the filtered set alongside the page it returns and states the
 page size it pages by, so the count is arithmetic over two values already on
 screen — never a second request. It consumes the figure the count line actually
 stated rather than the raw payload number, so a total the caption withheld
 cannot reappear underneath it; the two lines can still drift if the store
-changes between the count and the page, but only for that reason. A service that
+changes between the count and the page, but only for that reason. A read that
 reports no total leaves an em dash rather than a guess — absent is not one, and
 it is not zero. A render standing on the last page states that page as the
 count; where the arithmetic insists there are more pages than the one being
@@ -70,7 +70,7 @@ Paging forward from such a page still comes back to it, and a link to the LAST
 page keeps its pager rather than vanishing at the moment it is the only thing
 that could say where the operator is.
 
-Where paging has stopped — a page that failed, or a continuation the service
+Where paging has stopped — a page that failed, or a continuation the plugin
 refused mid-scan — the whole pager is withdrawn along with `Load more`, and the
 rows stay exactly where they are. A failed page never clears the rows now,
 whichever direction it was asked for; the refusal is drawn beside them, and its

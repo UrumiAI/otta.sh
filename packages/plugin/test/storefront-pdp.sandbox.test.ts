@@ -1,24 +1,49 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
-	startStubCommerceServer,
-	type RecordedRequest,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
+	cents,
+	currency,
+	idempotencyKey,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
+import {
+	EmdashInventoryStore,
+	EmdashProductCommerceStore,
+	systemClock,
+	uuidIdGen,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 /**
  * Phase 2 §7 step 9 — PDP wiring, as a PLUGIN-OWNED PUBLIC ROUTE per
  * ADR-0003 (the platform spike showed `page:fragments` is trusted-only, so
  * fragment injection is unavailable to this sandboxed plugin; the theme's
  * thin Astro page invokes this route and renders the returned view model +
- * JSON-LD). Exercised under the REAL workerd sandbox against a stub
- * commerce service and route-input CMS content (the "fake CMS content
- * read": per ADR-0003 the tier-① CMS query runs outside the plugin and its
- * result arrives on the route input).
+ * JSON-LD). Exercised under the REAL workerd sandbox against route-input CMS
+ * content (the "fake CMS content read": per ADR-0003 the tier-① CMS query runs
+ * outside the plugin and its result arrives on the route input).
+ *
+ * WHAT INC-D3a CHANGED HERE. The commercial half of the join used to arrive over
+ * `ctx.http` from a commerce service, and this suite's fixtures were a stub
+ * server's batch replies. There is no service and no such call any more: the
+ * route reads `product_commerce` in-process through the adapters over
+ * `ctx.storage`, so the fixtures below are REAL ROWS, written through the real
+ * store into the real (SQLite-backed) document store the isolate bridges to.
+ * Assertions that were about the WIRE — the batch url, its request body, its
+ * call count — described a transport that no longer exists and are gone; what
+ * they were protecting (one lookup per render, absence is not an error) is
+ * proven by `storefront-plp.sandbox.test.ts`'s batching case and by the
+ * no-commerce-record case below.
+ *
+ * IDS ARE NAMESPACED (`pdp-…`) because the document store is process-scoped and
+ * shared across boots — the same discipline every storage-backed sandbox suite
+ * follows.
  */
 
 const CONTENT = {
-	id: "prod-1",
+	id: "pdp-prod-1",
 	title: "Bamboo Water Bottle",
 	slug: "bamboo-water-bottle",
 	description: "A reusable bottle.",
@@ -26,78 +51,98 @@ const CONTENT = {
 	url: "https://shop.example.com/products/bamboo-water-bottle",
 };
 
-let stubServer: StubCommerceServer;
-let sandboxHandle: SandboxHandle;
+/** Any ISO instant works as the publish watermark: it is only ever compared
+ *  against a LATER lifecycle event, and these fixtures have none. */
+const PUBLISHED_AT = "2026-01-01T00:00:00.000Z";
 
-/** Answer the batch endpoint from a per-test map of known commerce items. */
-function respondFromCatalog(
-	known: Record<
-		string,
-		{ amount: number; currency: string; sku: string; inStock: boolean; active?: boolean }
-	>,
-): void {
-	stubServer.respondWith("POST", (req: RecordedRequest) => {
-		const productIds = (req.body as { productIds?: string[] }).productIds ?? [];
-		const items = productIds
-			.filter((id) => id in known)
-			.map((id) => {
-				const item = known[id]!;
-				return {
-					productId: id,
-					sku: item.sku,
-					price: { amount: item.amount, currency: item.currency },
-					inStock: item.inStock,
-					// Tests default to published (active) so purchasable paths
-					// are exercisable; the deferred afterPublish wiring is what
-					// will make this true in production.
-					active: item.active ?? true,
-				};
-			});
-		return { status: 200, body: { items } };
-	});
+let sandboxHandle: SandboxHandle;
+/** A SECOND boot with no document store at all — see the RENDER_FAILED case. */
+let storagelessHandle: SandboxHandle;
+let storage: StorageAccess;
+
+interface SeedProduct {
+	readonly id: string;
+	readonly sku: string;
+	readonly amount: number;
+	readonly currency: string;
+	readonly onHand: number;
+	/** New rows are born behind the publish gate, so a purchasable fixture must
+	 *  be activated — exactly as `content:afterPublish` does in a deploy. */
+	readonly active?: boolean;
+}
+
+/**
+ * One commerce row, written the way the sync hook writes it: `upsert` for the
+ * commercial fields, `seedOnHand` for the stock the store joins in, and
+ * `activate` for the publish gate. Nothing is inserted behind the store's back —
+ * a hand-built document would not carry the revision a guarded write compares.
+ */
+async function seedProduct(product: SeedProduct): Promise<void> {
+	const commerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
+	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	await commerce.upsert(
+		{
+			productId: toProductId(product.id),
+			sku: toSku(product.sku),
+			price: { amount: cents(product.amount), currency: currency(product.currency) },
+			title: "Bamboo Water Bottle",
+		},
+		idempotencyKey(`seed-${product.id}`),
+	);
+	await inventory.seedOnHand(toSku(product.sku), product.onHand);
+	if (product.active !== false) {
+		await commerce.activate(
+			toProductId(product.id),
+			idempotencyKey(`pub-${product.id}`),
+			PUBLISHED_AT,
+		);
+	}
 }
 
 beforeAll(async () => {
-	stubServer = await startStubCommerceServer();
-	sandboxHandle = await loadPluginInSandbox({
-		allowedHosts: [stubServer.host],
-		commerceServiceBaseUrl: stubServer.baseUrl,
-	});
-}, 60_000);
+	({ storage } = await storageBridge());
+	[sandboxHandle, storagelessHandle] = await Promise.all([
+		// NO allowed hosts: in-process commerce reaches the network for nothing, so
+		// an empty allowlist is both the honest production shape and a guard — any
+		// stray `ctx.http` call would throw rather than quietly succeed.
+		loadPluginInSandbox({ allowedHosts: [], storage: true }),
+		loadPluginInSandbox({ allowedHosts: [] }),
+	]);
+}, 120_000);
 
 afterAll(async () => {
 	await sandboxHandle?.close();
-	await stubServer?.close();
+	await storagelessHandle?.close();
 });
 
-beforeEach(() => {
-	stubServer.requests.length = 0;
-});
+async function renderProduct(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+	const outcome = await sandboxHandle.invokeRoute("storefront/product", input);
+	expect(outcome).toHaveProperty("result");
+	return (outcome as { result: Record<string, unknown> }).result;
+}
 
 describe("storefront PDP route (workerd sandbox)", () => {
 	test("rendering the PDP for a product with a commerce record joins content+commerce and emits Product+Offer JSON-LD", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true },
+		await seedProduct({
+			id: CONTENT.id,
+			sku: "SKU-PDP-1",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
-			locale: "en-US",
-		});
-
-		expect(outcome).toHaveProperty("result");
-		const result = (outcome as { result: Record<string, unknown> }).result;
+		const result = await renderProduct({ content: CONTENT, locale: "en-US" });
 		expect(result["ok"]).toBe(true);
 
 		// The join: CMS fields AND commercial fields, one view model (§1 case 1).
 		const product = result["product"] as Record<string, unknown>;
 		expect(product).toMatchObject({
-			id: "prod-1",
+			id: CONTENT.id,
 			title: "Bamboo Water Bottle",
 			slug: "bamboo-water-bottle",
 			description: "A reusable bottle.",
 			purchasable: true,
-			sku: "SKU-1",
+			sku: "SKU-PDP-1",
 			price: { amount: 1999, currency: "USD", formatted: "$19.99" },
 			availability: "in_stock",
 		});
@@ -115,28 +160,22 @@ describe("storefront PDP route (workerd sandbox)", () => {
 				availability: "https://schema.org/InStock",
 			},
 		});
-
-		// Sourced from the commerce service over ctx.http, via the batch shape.
-		expect(stubServer.requests).toHaveLength(1);
-		expect(stubServer.requests[0]?.url).toBe("/catalog/commerce/batch");
-		expect(stubServer.requests[0]?.body).toEqual({ productIds: ["prod-1"] });
 	});
 
 	test("rendering the PDP for a product with no commerce record renders not-purchasable: no price, Product-only JSON-LD", async () => {
-		respondFromCatalog({}); // the batch omits the id — absence, not an error
-
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: { ...CONTENT, id: "prod-unsynced" },
+		// Nothing seeded for this id — the in-process batch read simply omits it,
+		// which is absence and not an error (§4.2), exactly as a batch response
+		// omitting it used to be.
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-unsynced" },
 			locale: "en-US",
 		});
-
-		const result = (outcome as { result: Record<string, unknown> }).result;
 		// Renders successfully — no throw, no 500, no silent omission (§1 case 2).
 		expect(result["ok"]).toBe(true);
 
 		const product = result["product"] as Record<string, unknown>;
 		expect(product).toMatchObject({
-			id: "prod-unsynced",
+			id: "pdp-prod-unsynced",
 			title: "Bamboo Water Bottle",
 			purchasable: false,
 			sku: null,
@@ -154,14 +193,15 @@ describe("storefront PDP route (workerd sandbox)", () => {
 	});
 
 	test("the P3-group-E seam is now FILLED: a purchasable product carries a Block Kit add-to-cart slot riding the purchasable flag", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true },
+		await seedProduct({
+			id: "pdp-prod-slot",
+			sku: "SKU-PDP-SLOT",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
-		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
+		const result = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-slot" } });
 		const product = result["product"] as Record<string, unknown>;
 
 		// Phase 3 fills the seam Phase 2 always rendered `null`: a purchasable
@@ -173,10 +213,10 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect(slots.addToCart).not.toBeNull();
 		const slot = slots.addToCart!;
 		expect(slot["route"]).toBe("storefront/cart/lines/add");
-		expect(slot["sku"]).toBe("SKU-1");
+		expect(slot["sku"]).toBe("SKU-PDP-SLOT");
 		// issue #80: the slot carries the CMS content id as productId — the join
 		// key the add-to-cart path must thread so the line can be priced/quoted.
-		expect(slot["productId"]).toBe("prod-1");
+		expect(slot["productId"]).toBe("pdp-prod-slot");
 		expect(typeof slot["idempotencyKey"]).toBe("string");
 		expect((slot["idempotencyKey"] as string).length).toBeGreaterThan(0);
 
@@ -189,35 +229,35 @@ describe("storefront PDP route (workerd sandbox)", () => {
 			// it forwards the payload the add-line route needs (plan §8 Risk 5).
 			value: {
 				route: "storefront/cart/lines/add",
-				sku: "SKU-1",
-				productId: "prod-1",
+				sku: "SKU-PDP-SLOT",
+				productId: "pdp-prod-slot",
 				idempotencyKey: slot["idempotencyKey"],
 			},
 		});
 	});
 
 	test("the add-to-cart slot is null for a NON-purchasable product (no sku to add) — it rides the purchasable flag", async () => {
-		respondFromCatalog({}); // no commerce record ⇒ not purchasable
-
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: { ...CONTENT, id: "prod-unsynced" },
-		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
+		const result = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-unsynced" } });
 		const product = result["product"] as Record<string, unknown>;
 		expect(product["purchasable"]).toBe(false);
 		expect(product["slots"]).toEqual({ addToCart: null });
 	});
 
 	test("out-of-stock is a coarse display state: price still renders, availability flips, JSON-LD says OutOfStock", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: false },
+		// A real inventory row holding zero — `inStock` is the store's own join
+		// over that row now, not a boolean a service put on the wire.
+		await seedProduct({
+			id: "pdp-prod-oos",
+			sku: "SKU-PDP-OOS",
+			amount: 1999,
+			currency: "USD",
+			onHand: 0,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-oos" },
 			locale: "en-US",
 		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
 		const product = result["product"] as Record<string, unknown>;
 		expect(product["purchasable"]).toBe(true);
 		expect(product["availability"]).toBe("out_of_stock");
@@ -230,32 +270,41 @@ describe("storefront PDP route (workerd sandbox)", () => {
 	});
 
 	test("the price string localizes by the requested locale (Intl under workerd, not hand-built strings)", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 123456, currency: "EUR", sku: "SKU-1", inStock: true },
+		await seedProduct({
+			id: "pdp-prod-eur",
+			sku: "SKU-PDP-EUR",
+			amount: 123456,
+			currency: "EUR",
+			onHand: 5,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-eur" },
 			locale: "de-DE",
 		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
 		const product = result["product"] as Record<string, unknown>;
 		const formatted = (product["price"] as Record<string, unknown>)["formatted"] as string;
 		// ICU builds differ on WHICH space precedes the symbol (NBSP vs
 		// narrow NBSP) — normalize the space, pin everything else exactly.
-		expect(formatted.replace(/[\u00A0\u202F]/g, " ")).toBe("1.234,56 €");
+		expect(formatted.replace(/[  ]/g, " ")).toBe("1.234,56 €");
 	});
 
 	test("a commerce-complete but INACTIVE (unpublished) product renders not-purchasable: no price, Product-only JSON-LD (§4.2's inactive arm)", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true, active: false },
+		// Seeded but never activated: a row is born behind the publish gate, so
+		// this is the state a product sits in until `content:afterPublish` runs.
+		await seedProduct({
+			id: "pdp-prod-inactive",
+			sku: "SKU-PDP-INACTIVE",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
+			active: false,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-inactive" },
 			locale: "en-US",
 		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
 		expect(result["ok"]).toBe(true);
 
 		// Behaves exactly like the no-commerce case: flagged, no price, no sku.
@@ -272,26 +321,17 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect("offers" in jsonLd).toBe(false);
 	});
 
-	test("an unexpected render failure (malformed upstream amount) returns a structured, message-free RENDER_FAILED — no internal leak through the public envelope", async () => {
-		// A float amount off the wire makes the branded cents() parse throw a
-		// RangeError mid-render — exactly the class of internal error that
-		// must NOT surface its message to an anonymous caller.
-		stubServer.respondWith("POST", () => ({
-			status: 200,
-			body: {
-				items: [
-					{
-						productId: "prod-1",
-						sku: "SKU-1",
-						price: { amount: 19.99, currency: "USD" },
-						inStock: true,
-						active: true,
-					},
-				],
-			},
-		}));
-
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
+	test("an unexpected render failure (no document store on the context) returns a structured, message-free RENDER_FAILED — no internal leak through the public envelope", async () => {
+		// THE TRIGGER CHANGED, THE PROPERTY DID NOT. This case used to feed the
+		// route a float `amount` off the commerce service's wire so the branded
+		// `cents()` parse threw mid-render. There is no wire left to malform — the
+		// price is read as branded money from a row that could only be written as
+		// branded money — so the failure is provoked at the one seam a deployment
+		// can genuinely get wrong instead: a plugin booted with NO document store,
+		// where the in-process commerce composition throws
+		// `MISSING_STORAGE_MESSAGE` at construction. That message names internals
+		// (collections, the descriptor) and an anonymous caller must not see it.
+		const outcome = await storagelessHandle.invokeRoute("storefront/product", {
 			content: CONTENT,
 			locale: "en-US",
 		});
@@ -299,30 +339,30 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect(outcome).toEqual({ result: { ok: false, error: "RENDER_FAILED" } });
 		// Nothing about the internal failure leaks through the envelope.
 		const wire = JSON.stringify(outcome);
-		expect(wire).not.toMatch(/RangeError|safe integer|cents\(/i);
+		expect(wire).not.toMatch(/storage|collections|descriptor/i);
 	});
 
-	test("invalid content (missing CMS id) is a structured rejection before any commerce call", async () => {
-		respondFromCatalog({});
-
+	test("invalid content (missing CMS id) is a structured rejection before any commerce read", async () => {
 		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
 			content: { title: "No id" },
 		});
 
 		expect(outcome).toEqual({ result: { ok: false, error: "INVALID_CONTENT" } });
-		expect(stubServer.requests).toHaveLength(0);
 	});
 
 	test("a garbage locale falls back safely instead of failing the render", async () => {
-		respondFromCatalog({
-			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true },
+		await seedProduct({
+			id: "pdp-prod-locale",
+			sku: "SKU-PDP-LOCALE",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
 		});
 
-		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
-			content: CONTENT,
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-locale" },
 			locale: "not a locale!!",
 		});
-		const result = (outcome as { result: Record<string, unknown> }).result;
 		expect(result["ok"]).toBe(true);
 		const product = result["product"] as Record<string, unknown>;
 		expect((product["price"] as Record<string, unknown>)["formatted"]).toBeTruthy();

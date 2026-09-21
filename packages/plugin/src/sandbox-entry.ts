@@ -12,8 +12,14 @@
  *    (`context.ts:619-671`): reject any host not in `ALLOWED_HOSTS`
  *    (`isHostAllowed`, `context.ts:601-611` — exact-match or `*`/`*.sub`
  *    wildcard) BEFORE ever calling the real `fetch`.
- *  - no `content`/`media`/`users`/`email`/`storage` on `ctx` at all — this
- *    plugin never declares those capabilities (sandbox-clean guard).
+ *  - bind `ctx.storage` to the document store `sandbox-storage.ts` hands over,
+ *    when there is one. That module is the injection seam the harness replaces
+ *    (see its own doc): a store cannot be built inside the isolate, so the
+ *    suites inject one from outside. `storage` is capability-free — the host
+ *    builds it on an always-available path and there is no capability string
+ *    for it (ADR-0018) — so nothing about the declared two changes here.
+ *  - no `content`/`media`/`users`/`email` on `ctx` at all — this plugin never
+ *    declares those capabilities (sandbox-clean guard).
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
@@ -23,7 +29,16 @@
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
-import type { HttpAccess, KvAccess, PluginContext, RouteEntry, SandboxedPlugin } from "./types.js";
+import { sandboxStorage } from "./sandbox-storage.js";
+import type {
+	CronAccess,
+	CronTaskInfo,
+	HttpAccess,
+	KvAccess,
+	PluginContext,
+	RouteEntry,
+	SandboxedPlugin,
+} from "./types.js";
 
 function isHostAllowed(hostname: string, allowedHosts: readonly string[]): boolean {
 	for (const pattern of allowedHosts) {
@@ -88,6 +103,39 @@ function createKvAccess(store: Map<string, unknown>): KvAccess {
 	};
 }
 
+/**
+ * The host's `ctx.cron` bridge, mirrored the exact way `ctx.kv` is.
+ *
+ * In a deploy this upserts a row in the host's own `_emdash_cron_tasks` table and
+ * the host's executor fires the `cron` hook for each due task; there is no
+ * executor inside a standalone isolate, so here it is a module-scoped registry
+ * with the SAME upsert-on-name semantics — which is the only property the
+ * plugin's own code depends on (`ensureSweepTaskScheduled` calls it on every
+ * activation and on every tick). The sandbox suites drive the `cron` hook
+ * directly, exactly as the executor would.
+ */
+function createCronAccess(tasks: Map<string, CronTaskInfo>): CronAccess {
+	return {
+		async schedule(name, opts): Promise<void> {
+			// UPSERT on the name, like the host's `INSERT … ON CONFLICT (plugin_id,
+			// task_name) DO UPDATE` — a second call re-states the schedule, it does
+			// not create a second task.
+			tasks.set(name, {
+				name,
+				schedule: opts.schedule,
+				nextRunAt: new Date().toISOString(),
+				lastRunAt: tasks.get(name)?.lastRunAt ?? null,
+			});
+		},
+		async cancel(name): Promise<void> {
+			tasks.delete(name);
+		},
+		async list(): Promise<CronTaskInfo[]> {
+			return [...tasks.values()];
+		},
+	};
+}
+
 function jsonResponse(body: unknown, status: number): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -114,6 +162,12 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 	// invocation is readable by the next within the same worker — matching the
 	// host's persistence contract.
 	const kvStore = new Map<string, unknown>();
+	// Boot-scoped for the same reason kv is: a task registered by one invocation is
+	// still registered for the next within this worker.
+	const cronTasks = new Map<string, CronTaskInfo>();
+	// Resolved ONCE per worker boot, like kv: the store outlives a request in a
+	// real deploy, and a per-request resolution would say otherwise.
+	const storage = sandboxStorage();
 
 	return {
 		async fetch(request: Request): Promise<Response> {
@@ -121,6 +175,10 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 			const ctx: PluginContext = {
 				http: createHttpAccess(ALLOWED_HOSTS),
 				kv: createKvAccess(kvStore),
+				cron: createCronAccess(cronTasks),
+				// Omitted rather than set to `undefined` when there is no store, so a
+				// bundle without one has the exact context shape it had before.
+				...(storage === undefined ? {} : { storage }),
 			};
 
 			try {
@@ -154,6 +212,17 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 						ctx,
 					);
 					return jsonResponse({ result }, 200);
+				}
+
+				// A READ-ONLY window onto the cron registry, and the only thing in this
+				// dispatcher that is not a host-shaped invocation. It exists because the
+				// registration path this plugin depends on — a route or content hook
+				// bootstrapping the sweep task — can only be asserted by observing the
+				// registry WITHOUT writing to it, and every handler that would report the
+				// registry also re-affirms it. It reads `ctx.cron.list()` and nothing
+				// else, so it cannot mask a missing registration.
+				if (request.method === "GET" && url.pathname === "/cron/tasks") {
+					return jsonResponse({ result: (await ctx.cron?.list()) ?? [] }, 200);
 				}
 
 				return jsonResponse({ error: "not found" }, 404);

@@ -2,7 +2,8 @@
  * Domain error for the "create then price" invariant (Phase 1 §1 case 3 / §5).
  * A commercial upsert with a missing/empty `product_id` is rejected before any
  * row is minted — enforced at every `ProductCommerceStore` adapter (fake,
- * Kysely) and mapped to HTTP 400 by `@otta-sh/service`.
+ * store-emdash) and surfaced as a typed input refusal by the plugin's route
+ * layer.
  */
 export class MissingProductIdError extends Error {
 	constructor() {
@@ -37,10 +38,9 @@ export class MissingVariantKeyError extends Error {
  * Domain error for a live-SKU uniqueness conflict (review F2): a merchant
  * assigning a SKU another LIVE (non-deleted) product already holds — the
  * most likely real merchant input error. Raised by every
- * `ProductCommerceStore` adapter (the fake's live-sku check; the Kysely
- * store's narrowly-scoped catch of the `product_commerce_live_sku_unique`
- * partial-index violation) and mapped to a structured HTTP 409 `SKU_TAKEN`
- * by `@otta-sh/service` — never an opaque 500.
+ * `ProductCommerceStore` adapter (the fake's live-sku check; the store-emdash
+ * adapter's own live-sku conflict check) and surfaced as a structured
+ * `SKU_TAKEN` refusal by the plugin's route layer — never an opaque 500.
  *
  * ALSO ARBITRATES VARIANT GRAIN, unchanged: a sku names exactly ONE live
  * sellable unit, and "live sellable unit" spans live `product_commerce` rows AND
@@ -170,9 +170,9 @@ export class SkuHeldStockError extends Error {
  * Domain validation error for a standalone product EDIT (admin-UX Increment 2,
  * slice 2): a field the merchant supplied is out of the domain's bounds — a
  * price that is not strictly positive, or a negative weight/dimension. Thrown
- * by `updateProductCommerceFields` BEFORE the guarded store write, mapped to
- * HTTP 400 by `@otta-sh/service`. Defense-in-depth alongside the service's zod
- * layer and the plugin's per-field validation; branded `Cents` already rejects
+ * by `updateProductCommerceFields` BEFORE the guarded store write, surfaced as
+ * a typed input refusal by the plugin's route layer. Defense-in-depth
+ * alongside the plugin's per-field validation; branded `Cents` already rejects
  * a float/negative/non-safe-integer price at the type + `cents()` boundary, so
  * this guard's job is the domain rule those layers cannot express: price > 0.
  * `field` names the offending input so the boundary can render it per-field.
@@ -191,9 +191,9 @@ export class InvalidProductFieldError extends Error {
  * Domain validation error for `ProductListFilter.lowStockThreshold` (the
  * admin Products list/count low-stock predicate). The port's declared domain
  * is a NON-NEGATIVE INTEGER — the only domain every adapter agrees on, and
- * the same domain the HTTP boundary already validates to
- * (`packages/service/src/schemas.ts`'s `lowStockQuery`/`settingsBody`:
- * `z.number().int().nonnegative()`). Outside that domain the raw adapters
+ * the same domain the plugin's own boundary validation already enforces
+ * (`z.number().int().nonnegative()`, restated there since no schema package
+ * survives to import it from). Outside that domain the raw adapters
  * silently DISAGREE, which is exactly what this error exists to prevent:
  * measured, a fractional threshold (e.g. `2.5`) filters cleanly in the fake
  * and SQLite but Postgres rejects it binding an `integer` column

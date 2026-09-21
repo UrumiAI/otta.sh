@@ -75,17 +75,233 @@ export interface KvAccess {
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 }
 
+// -- the document store (ADR-0018) ------------------------------------------
+//
+// HAND-MIRRORED, LIKE EVERYTHING ELSE IN THIS FILE, and here the mirroring is
+// load-bearing rather than stylistic. These shapes are the PUBLIC type of the
+// plugin's context, so they end up in this package's emitted declarations — and
+// naming the host's types (directly, or through the adapter package that
+// `import type`s them) would put `import … from "emdash"` in the published types
+// of a package whose manifest declares the host nowhere and must not
+// (ADR-0018: zero EmDash dependency for the plugin package, in either manifest
+// section). A consumer would then need a dependency we deliberately do not have.
+//
+// The mirror is checked rather than trusted: the composition root assigns
+// `ctx.storage` to the adapter package's own `StorageAccess`, so if these shapes
+// drift from the ones the adapters bind, `pnpm typecheck` fails there. Nothing
+// here executes anything — they are types, and the implementation arrives
+// injected.
+
+/** A range predicate on one field. */
+export interface StorageRangeFilter {
+	gt?: number | string;
+	gte?: number | string;
+	lt?: number | string;
+	lte?: number | string;
+}
+
+/** A set-membership predicate. */
+export interface StorageInFilter {
+	in: Array<string | number>;
+}
+
+/** A prefix predicate. */
+export interface StorageStartsWithFilter {
+	startsWith: string;
+}
+
+/** One `where` predicate: a scalar, a range, a set or a prefix. */
+export type StorageWhereValue =
+	| string
+	| number
+	| boolean
+	| null
+	| StorageRangeFilter
+	| StorageInFilter
+	| StorageStartsWithFilter;
+
+/**
+ * A filter, field by field. Only fields the collection DECLARED as indexes may
+ * appear: a declared index is a read contract, and an undeclared field is a
+ * runtime error rather than a slow query.
+ */
+export type StorageWhereClause = Record<string, StorageWhereValue>;
+
+/** `query`'s options. `limit` is clamped by the host, so a caller that needs more
+ *  than one page asks for the next one with `cursor`. */
+export interface StorageQueryOptions {
+	where?: StorageWhereClause;
+	orderBy?: Record<string, "asc" | "desc">;
+	limit?: number;
+	cursor?: string;
+}
+
+/** One page of documents. */
+export interface StorageQueryPage<T> {
+	items: Array<{ id: string; data: T }>;
+	cursor?: string;
+	hasMore: boolean;
+}
+
+/** `{ value, revision }`. The revision is opaque and valid only for the id it
+ *  was read from. */
+export interface StorageVersionedValue<T = unknown> {
+	value: T;
+	revision: string;
+}
+
+/** A compare-and-set outcome. A rejected write reports no revision — the caller
+ *  re-reads rather than guessing which one won. */
+export type StorageConditionalWriteResult =
+	| { applied: true; revision: string }
+	| { applied: false };
+
+export interface StorageConditionalDeleteResult {
+	applied: boolean;
+}
+
+/** One per-field integer delta. Never clamped: pair a `dec: k` with a `gte: k`
+ *  guard, or the value can go negative. */
+export type StorageNumericDelta = { inc: number } | { dec: number };
+
+/** A guarded update's arguments. An empty `where` matches unconditionally, which
+ *  is a footgun in exactly the case this primitive exists for. */
+export interface StorageUpdateIfArgs<T> {
+	where: StorageWhereClause;
+	set?: Partial<T>;
+	delta?: { [K in keyof T]?: StorageNumericDelta };
+}
+
+/** A guarded update's outcome. `applied: false` conflates "row absent" and
+ *  "guard failed", deliberately: one statement cannot tell them apart. */
+export type StorageUpdateIfResult<T> = { applied: true; data: T } | { applied: false };
+
+/**
+ * One document collection — the methods commerce truth is built on. Every one is
+ * a single statement against one row or one index: there is no transaction here,
+ * which is why the conditional-write trio is the only atomicity primitive.
+ */
+export interface StorageCollection<T = unknown> {
+	get(id: string): Promise<T | null>;
+	put(id: string, data: T): Promise<void>;
+	delete(id: string): Promise<boolean>;
+	query(options?: StorageQueryOptions): Promise<StorageQueryPage<T>>;
+	count(where?: StorageWhereClause): Promise<number>;
+	updateIf(id: string, args: StorageUpdateIfArgs<T>): Promise<StorageUpdateIfResult<T>>;
+	getVersioned(id: string): Promise<StorageVersionedValue<T> | null>;
+	compareAndSet(
+		id: string,
+		expectedRevision: string | null,
+		data: T,
+	): Promise<StorageConditionalWriteResult>;
+	compareAndDelete(id: string, expectedRevision: string): Promise<StorageConditionalDeleteResult>;
+}
+
+/** The collections the host built from the descriptor's declaration, keyed by
+ *  collection name — the shape of `ctx.storage`. */
+export type StorageAccess = Record<string, StorageCollection>;
+
+// -- cron ---------------------------------------------------------------------
+
+/**
+ * Scheduled-task registration, scoped to this plugin — the shape of `ctx.cron`.
+ *
+ * This file's OWN structural mirror of the host's `CronAccess`, on the same rule
+ * the storage mirror above follows: this package is published API and must not
+ * make a consumer resolve the host's types.
+ *
+ * `schedule` is an UPSERT on `(plugin, name)`, which is what makes calling it on
+ * every activation — and on every tick — safe rather than duplicative.
+ *
+ * NO DRIFT PIN HERE, and that is a gap rather than an oversight — it is recorded
+ * because it cannot be closed from inside this package. The storage mirror is
+ * pinned against the host's real shape in `commerce/in-process-commerce-stores.ts`
+ * by two type-only assignments, and that works only because
+ * `@otta-sh/store-emdash` is a runtime dependency that re-exports the host's
+ * `StorageAccess`. There is no equivalent for cron: the host does NOT export
+ * `CronAccess` or `CronTaskInfo` from `emdash` or from `emdash/plugin` (they are
+ * declared in its type chunk but left out of every export list), and this package
+ * does not depend on `emdash` at all, so no host cron type is nameable here.
+ *
+ * ONE LINE CLOSES IT, in `@otta-sh/store-emdash` — the package that already owns
+ * this exact job for storage. Adding to
+ * `packages/store-emdash/src/storage-access.ts` (and its `src/index.ts` export
+ * list):
+ *
+ *     export type HostCronAccess = NonNullable<import("emdash").PluginContext["cron"]>;
+ *
+ * — deriving the shape from the exported `PluginContext` the same way that file
+ * already derives `WhereClause` from the exported `StorageCollection` — would make
+ * the mutual-assignability pair below writable in `cron/index.ts`. That is an
+ * edit outside this increment's scope and is reported rather than made.
+ */
+export interface CronAccess {
+	schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }): Promise<void>;
+	cancel(name: string): Promise<void>;
+	list(): Promise<CronTaskInfo[]>;
+}
+
+/** One registered task, as `CronAccess.list` reports it. */
+export interface CronTaskInfo {
+	name: string;
+	schedule: string;
+	nextRunAt: string;
+	lastRunAt: string | null;
+}
+
+/** The event the `cron` hook receives — one per DUE TASK, not one per tick, so
+ *  `name` is what a multi-task plugin dispatches on. */
+export interface CronEvent {
+	name: string;
+	data?: Record<string, unknown>;
+	scheduledAt: string;
+}
+
+/** The event a lifecycle hook (`plugin:activate`) receives. Empty by contract;
+ *  everything the handler needs is on `ctx`. */
+export type PluginLifecycleEvent = Record<string, never>;
+
 /**
  * The context passed to every hook/route handler. Otta's plugin declares
  * only `content:read` + `network:request` (manifest.ts) — so `http` is the
- * only capability-gated surface it ever receives. `kv` is available WITHOUT a
- * capability (verified above) and holds only non-secret display prefs. No
- * `content`/`media`/`users`/`email`/`storage`/`db` — declaring any of those
- * would fail the sandbox-clean guard (DEVELOPMENT.md §5).
+ * only capability-gated surface it ever receives. `kv` and `storage` are both
+ * available WITHOUT a capability: the host builds each on an always-available
+ * path, and there is no `storage` capability string in its vocabulary to declare
+ * (ADR-0018 decision 4). No `content`/`media`/`users`/`email`/`db` — declaring
+ * any of those would fail the sandbox-clean guard (DEVELOPMENT.md §5).
  */
 export interface PluginContext {
 	http: HttpAccess;
 	kv: KvAccess;
+	/**
+	 * The per-plugin DOCUMENT store commerce truth lives in (ADR-0018/0019):
+	 * collection name → that collection, built by the host from the descriptor's
+	 * declared `storage` collections and injected on every invocation.
+	 *
+	 * The type is this file's OWN structural mirror (above), naming nothing from
+	 * the host — because this is public API and the published declarations must not
+	 * make a consumer resolve a package this one does not depend on. The mirror is
+	 * checked where it matters: the composition root assigns this to the adapter
+	 * package's `StorageAccess`, so a drift fails the typecheck there.
+	 *
+	 * OPTIONAL, and that is a statement about the TRANSPORT rather than about the
+	 * host. A deploy always has it. The HTTP transport never reads it, and every
+	 * unit suite that hand-builds a `ctx` around a fake `http`/`kv` pair has no
+	 * document store to offer — so the in-process composition demands it by name
+	 * and fails loudly when a caller has none, which is a better failure than a
+	 * required field no existing caller could satisfy.
+	 */
+	storage?: StorageAccess;
+	/**
+	 * Scheduled-task registration — the OTHER capability-free surface (plan §D5,
+	 * the fifteen-minute cron row). There is no `cron` capability string in the host's
+	 * vocabulary any more than there is a `storage` one; the only gate is whether
+	 * the runtime wired a cron executor at all.
+	 *
+	 * OPTIONAL for exactly the reason `storage` is: a runtime with no cron executor
+	 * hands over no `cron`, and a caller that needs one says so by name.
+	 */
+	cron?: CronAccess;
 }
 
 // -- routes -------------------------------------------------------------------
@@ -119,6 +335,16 @@ export interface SandboxedPluginHooks {
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
 	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };
 	"content:afterUnpublish"?: { handler: HookHandler<ContentStateChangeEvent> };
+	/**
+	 * The scheduled sweep (INC-C4). Not capability-gated — the host validates a
+	 * declared hook name against its own list, on which `cron` carries no required
+	 * capability, so a `format: "standard"` plugin may declare it as it stands.
+	 */
+	cron?: { handler: HookHandler<CronEvent> };
+	/** Where the sweep task is REGISTERED (`ctx.cron.schedule`), mirroring the
+	 *  host's own bundled plugins. See `cron/index.ts` for why the tick re-affirms
+	 *  it too. */
+	"plugin:activate"?: { handler: HookHandler<PluginLifecycleEvent> };
 }
 
 /** The shape a sandboxed plugin's entry module default-exports (em-dash:

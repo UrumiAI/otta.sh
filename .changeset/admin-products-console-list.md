@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -29,23 +27,13 @@ VIEW-ONLY product list + read-only detail (admin-UX Increment 2, "product enumer
   `InMemoryInventoryStore` fakes and the contract suites pin both specs (empty,
   filters, pagination no-overlap/no-gap, identical-`created_at` tie-break, limit
   boundary, tombstone exclusion).
-- `@otta-sh/store-postgres`: implements `listProducts` as a single
-  `product_commerce` SELECT (no join) with a keyset predicate dialect-identical on
-  better-sqlite3 and Postgres; the substring title search escapes SQL LIKE
-  metacharacters (`%`, `_`, `\`) so a literal search (e.g. "50% off") never
-  misfires as a wildcard. Implements `InventoryStore.getOnHand` as a bare
-  single-row `SELECT on_hand`.
-- `@otta-sh/service`: adds the internal-token-guarded `GET /admin/products` (filters
-  + an OPAQUE base64url keyset cursor embedding the active filter, mirroring
-  `GET /admin/orders`'s cursor discipline — a malformed/tampered cursor fails
-  CLOSED to 400 and the decoded limit is re-clamped) and
-  `GET /admin/products/:id` (the full product detail plus the single-sku `onHand`
-  read; 404 for an unknown OR soft-deleted product — there is no admin surface for
-  browsing/restoring a tombstone yet).
 - `@otta-sh/plugin`: adds the Products admin page (list with an active/kind/search
   filter form, keyset "Load more", columns title/SKU/price/status/kind — stock
   deliberately OMITTED from the list; open-product → read-only detail showing the
-  full product fields incl. stock). A new `AdminProductsClient` reaches the
-  service only via `ctx.http` + `allowedHosts` with the write-only kv admin token;
-  the plugin defines its own local wire types and never imports `@otta-sh/domain`
+  full product fields incl. stock, via the single-sku `onHand` read). The list
+  cursor is OPAQUE and embeds the active filter, mirroring the Orders console's
+  cursor discipline — a malformed or tampered cursor fails CLOSED and the decoded
+  limit is re-clamped. An unknown OR soft-deleted product reads as not-found;
+  there is no admin surface for browsing or restoring a tombstone yet. The plugin
+  defines its own local wire types and never imports `@otta-sh/domain`
   (sandbox-clean). The staging trusted descriptor registers the new page.

@@ -6,8 +6,8 @@ const SECRET = "x402_facilitator_test_secret";
 
 type ConfirmInput = Parameters<ReturnType<typeof buildGatewayHarness>["confirm"]>[0];
 
-function mint(input: ConfirmInput, secret: string) {
-	const proof = signX402Proof(
+async function mint(input: ConfirmInput, secret: string) {
+	const proof = await signX402Proof(
 		{
 			orderId: toOrderId(input.orderId),
 			transaction: input.dedupeKey,

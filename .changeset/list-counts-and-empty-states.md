@@ -19,7 +19,7 @@ same count reads `25 orders on this page`, which is the smaller claim and the
 true one. Page 3 of 3 knows nothing about pages 1 and 2 (keyset paging carries
 no running offset, and the scaffold deliberately does not accumulate one across
 stateless interactions), so it stays page-scoped too. A whole-store total needs
-the service to return one alongside `nextCursor`; until it does, a number an
+the port to return one alongside `nextCursor`; until it does, a number an
 operator would reconcile against must not be invented here.
 
 **Zero renders no count at all.** Never `0 orders` — at zero the state below

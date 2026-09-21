@@ -25,7 +25,7 @@ removing it is a rewrite and not a deletion.
   moves, and refuses on a mismatch, with an absent watermark refused fail-closed
   and with no re-read); the **edit watermark** (`expectedUpdatedAt` is mandatory,
   and a save without one — or with a blank one — refuses rather than clobbering,
-  guarded at the same tier as the stock watermark rather than left to the service
+  guarded at the same tier as the stock watermark rather than left to the store
   to reject); **money as integer
   minor units** (an exact decimal parse, a positive amount, a required ISO-4217
   currency, and a blank compare-at as an explicit clear rather than a zero); and
@@ -51,7 +51,7 @@ removing it is a rewrite and not a deletion.
   ran for any shipped surface: the **DA-3c bound check** of the requested
   quantity against the on-hand just re-read, the **`REMOVE_STOCK_INVALID_QTY`**
   field-level refusal, and the **`remove-draft`/`remove-staged` render state**.
-  What protects the reachable path instead is the service's guarded decrement,
+  What protects the reachable path instead is the inventory store's guarded decrement,
   which refuses an over-removal with the real on-hand and is surfaced as a named
   refusal quoting that count (asserted by the new suite), plus the inventory-store
   contract suite pinning that an over-removal removes nothing and never goes
@@ -63,14 +63,11 @@ existed to tell this screen apart from the Block Kit screen at the same path;
 with that screen gone, a single entry marked new against nothing is the
 misleading thing (ADR-0015 Decision 1).
 
-**Three read-path assertions were rescued from the deleted suite rather than
-written off as render-only**, because each is a claim about what the SERVICE is
-asked for and outlives the renderer: the internal admin token travelling on the
-list and detail GETs (every surviving header assertion was on a write); the
-absent-token → 401 fail-closed trigger (the anti-leak contract was otherwise
-exercised only through a 500, and an unconfigured token is the failure an
-operator actually meets); and the three filter axes — `active`, `productKind`
-and `search` — travelling together in ONE query rather than only one at a time.
+**Read-path assertions were rescued from the deleted suite rather than written
+off as render-only**, because each is a claim about what the READ is asked for
+and outlives the renderer: chiefly that the three filter axes — `active`,
+`productKind` and `search` — travel together in ONE request rather than only one
+at a time.
 
 **The block-tree half of `console-transport.ts` now has no callers** —
 `firstNotice`, `forwardConsoleAct`, `forwardedFormSubmit` and `nothingApplied`,
