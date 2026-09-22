@@ -115,14 +115,25 @@ export interface CollectionIndexDeclaration {
  * `EmdashProductCommerceStore.listProducts`.
  *
  * `sku_owners` declares its natural key, which IS its document id — a lookup
- * plan, never the enforcement (ADR-0019 §4's `uniqueIndexes` rule). The store
- * reaches it by id alone.
+ * plan, never the enforcement. The store reaches it by id alone.
+ *
+ * Declared as a plain (non-unique) `indexes` entry, NOT `uniqueIndexes`: the
+ * host materializes a declared unique index as ONE PHYSICAL SQLITE INDEX per
+ * plugin, keyed on `(plugin_id, collection, <field>)` with no `WHERE`
+ * clause — it is not scoped to this collection alone. Any OTHER collection
+ * under this plugin that also carries a top-level `sku` field (`inventory`'s
+ * `reservation_keys` and `reservation_index` both do, one row per reserve
+ * attempt, many rows legitimately sharing one sku) collides on that same
+ * physical index the moment a second such row exists — a production
+ * incident (2026-09-22), not a hypothetical. The create-if-absent CAS
+ * against the sku-as-id is the real enforcement; the index is a lookup plan
+ * only and must stay non-unique.
  */
 export const PRODUCT_COMMERCE_COLLECTIONS: Readonly<Record<string, CollectionIndexDeclaration>> = {
 	[PRODUCT_COMMERCE_COLLECTION]: {
 		indexes: ["productId", "lifecycle", "publishKey", "productKind", "taxClass", "createdAt"],
 	},
-	[SKU_OWNERS_COLLECTION]: { uniqueIndexes: ["sku"] },
+	[SKU_OWNERS_COLLECTION]: { indexes: ["sku"] },
 };
 
 /**

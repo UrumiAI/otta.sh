@@ -86,9 +86,14 @@ export interface IdentityCollectionIndexDeclaration {
  *   cross-cutting rule (b)). Nothing filters on the embedded addresses — every
  *   address method is given its owning customer id, so the document is reached by
  *   id and the address is found inside it.
- * - `customer_emails` declares its own doc id as a unique index, exactly as
- *   `sku_owners` does. It enforces nothing (no physical index exists in any tier);
- *   the claim document and its create-if-absent write are the enforcement.
+ * - `customer_emails` declares its own doc id as a lookup index, exactly as
+ *   `sku_owners` does — see that collection's declaration
+ *   (`product-commerce-documents.ts`) for why it is a plain `indexes` entry,
+ *   never `uniqueIndexes`: the host materializes a unique index as one
+ *   physical, plugin-wide index with no per-collection `WHERE` clause, so a
+ *   `uniqueIndexes` entry here would equally risk colliding with `customers`'
+ *   own declared `emailLower` index above. The claim document and its
+ *   create-if-absent write are the real enforcement.
  * - `sessions` declares `customerId` alone — the only filter the port asks for.
  *   The history's `createdAt DESC, id DESC` ordering is applied **in code** after a
  *   bounded paged read, so no ordering index is declared: a session's `id` is a
@@ -106,7 +111,7 @@ export interface IdentityCollectionIndexDeclaration {
  */
 export const IDENTITY_COLLECTIONS: Readonly<Record<string, IdentityCollectionIndexDeclaration>> = {
 	[CUSTOMERS_COLLECTION]: { indexes: ["emailLower"] },
-	[CUSTOMER_EMAILS_COLLECTION]: { uniqueIndexes: ["emailLower"] },
+	[CUSTOMER_EMAILS_COLLECTION]: { indexes: ["emailLower"] },
 	[SESSIONS_COLLECTION]: { indexes: ["customerId"] },
 	[LOGIN_CHALLENGES_COLLECTION]: { indexes: ["consumed", "expiresAt"] },
 	[LOGIN_CHALLENGE_CLAIMS_COLLECTION]: {},
