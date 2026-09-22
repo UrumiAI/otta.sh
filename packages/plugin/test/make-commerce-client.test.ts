@@ -87,22 +87,26 @@ function makeCtx(seed: Record<string, string> = {}): {
 }
 
 describe("makeCommerceClient", () => {
-	test("returns the in-process client, and reads NO credential from kv", async () => {
+	test("returns the in-process client, reading only the credentials Stripe always needs", async () => {
 		// SEEDED, so a read would be a read of something real: if the composition
-		// root ever starts reaching for a payment credential merely to build a
-		// client, the recorded key names it.
+		// root ever starts reaching for a credential it should not, the recorded
+		// key names it.
 		const { ctx, kvReads } = makeCtx({
-			[STRIPE_SECRET_KEY_KEY]: "sk_test_NEVER_READ",
-			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_NEVER_READ",
+			[STRIPE_SECRET_KEY_KEY]: "sk_test_READ",
+			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_READ",
 			[EMAIL_API_KEY_KEY]: "email_NEVER_READ",
 			[X402_FACILITATOR_API_KEY_KEY]: "x402_NEVER_READ",
 		});
 		const client = await makeCommerceClient(ctx);
 		expect(client).toBeInstanceOf(InProcessCommerceClient);
-		// There is no service left to authenticate to, and the x402 wiring
-		// short-circuits on an unconfigured facilitator URL BEFORE it touches kv —
-		// so construction is credential-free, and an eager read fails here.
-		expect(kvReads).toEqual([]);
+		// Stripe (`stripe-wiring.ts`) has no build-time gate the way x402's
+		// facilitator URL does, so resolving whether it is configured means
+		// reading BOTH its kv keys on every construction — that is the two reads
+		// below, in the order `stripeGatewayFromCtx` issues them. The x402 wiring
+		// still short-circuits on an unconfigured facilitator URL BEFORE it
+		// touches kv, so neither `EMAIL_API_KEY_KEY` nor
+		// `X402_FACILITATOR_API_KEY_KEY` is read here.
+		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 
 	test("the client spans the whole port — 25 methods, none of them a stub's", async () => {

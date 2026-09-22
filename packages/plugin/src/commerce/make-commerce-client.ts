@@ -17,6 +17,7 @@
  */
 
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
+import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
@@ -39,13 +40,19 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	// The payment gateways the service used to wire from env are wired HERE,
 	// because resolving them is asynchronous (kv) and the client's constructor is
 	// not. INC-C5 wires x402, whose facilitator call goes over `ctx.http` to the
-	// host `allowedHosts` already grants; an unconfigured deployment gets
-	// `undefined` and therefore an EMPTY map, which the domain refuses loudly
-	// rather than minting an unpayable order.
-	const x402 = await x402GatewayFromCtx(ctx, {
-		facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl,
-	});
+	// host `allowedHosts` already grants; `stripe-wiring.ts` wires the other half
+	// storefront checkout actually uses (`PAYMENT_METHOD` in
+	// `checkout-routes.ts`). Each resolves independently to `undefined` on an
+	// unconfigured deployment and is simply omitted from the map, which the
+	// domain refuses loudly rather than minting an unpayable order.
+	const [x402, stripe] = await Promise.all([
+		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
+		stripeGatewayFromCtx(ctx),
+	]);
 	return new InProcessCommerceClient(ctx, {
-		gateways: x402 === undefined ? {} : { x402 },
+		gateways: {
+			...(x402 === undefined ? {} : { x402 }),
+			...(stripe === undefined ? {} : { stripe }),
+		},
 	});
 }
