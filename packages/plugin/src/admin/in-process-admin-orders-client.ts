@@ -167,6 +167,10 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
+export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+}
+
 export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	readonly #stores: InProcessCommerceStores;
 
@@ -178,15 +182,16 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * it with the route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than
 	 * pretending money could move.
 	 */
-	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
+	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console route already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
+	constructor(ctx: PluginContext, options: InProcessAdminOrdersClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#gateways = options.gateways ?? {};
 	}
 
 	/**
