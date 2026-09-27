@@ -695,17 +695,20 @@ async function hmacHex(secret: string, payload: Uint8Array<ArrayBuffer>): Promis
 
 const STRIPE_API_BASE = "https://api.stripe.com";
 
-/** Wall-clock bound on the live create-intent call — a hung Stripe must never
- *  hang a Worker checkout. */
+/** Wall-clock bound on every live Stripe call (create-intent and both refund
+ *  calls) — a hung Stripe must never hang a Worker checkout or an operator's
+ *  refund. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface StripeHttpTransportOptions {
 	fetch: typeof fetch;
 	/** Override the API base (tests point it at a recorder; defaults to Stripe). */
 	baseUrl?: string;
-	/** Per-request timeout for `createPaymentIntent`, via `AbortSignal.timeout`.
-	 *  Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. (Extending it to the two
-	 *  refund calls — today unbounded — is a tracked follow-up, not this change.) */
+	/** Per-request timeout, via `AbortSignal.timeout`, applied to all three calls:
+	 *  `createPaymentIntent`, the refund pre-flight `readRefundedAmount` and
+	 *  `createRefund`. Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. A timeout
+	 *  classifies exactly like a network error on the same call — `retryable` on
+	 *  the intent create and the read, `ambiguous` on the refund create. */
 	requestTimeoutMs?: number;
 }
 
@@ -816,9 +819,15 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 				: `${base}/v1/payment_intents/${encodeURIComponent(providerRef)}?expand[]=latest_charge`;
 			let res: Response;
 			try {
-				res = await doFetch(url, { method: "GET", headers: stripeAuthHeaders(secretKey) });
+				res = await doFetch(url, {
+					method: "GET",
+					headers: stripeAuthHeaders(secretKey),
+					// A hung Stripe must never hang the operator's refund.
+					signal: AbortSignal.timeout(timeoutMs),
+				});
 			} catch {
-				return { ok: false, class: "retryable" }; // network error — read issued nothing
+				// Network error / abort-timeout — the read issued nothing.
+				return { ok: false, class: "retryable" };
 			}
 			if (!res.ok) {
 				// 429 (rate-limited) is a transient throttle that issued nothing — RETRYABLE,
@@ -861,9 +870,13 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 						"idempotency-key": idempotencyKey,
 					},
 					body: form.toString(),
+					// Bounded like the other calls — but see the catch: a timed-out
+					// refund POST is NOT a clean failure.
+					signal: AbortSignal.timeout(timeoutMs),
 				});
 			} catch {
-				// Network error / timeout — the refund's fate is UNKNOWN. Never retry blind.
+				// Network error / abort-timeout — the POST may have reached Stripe before
+				// the abort, so the refund's fate is UNKNOWN. Never retry blind.
 				return { ok: false, class: "ambiguous" };
 			}
 			if (!res.ok) {
