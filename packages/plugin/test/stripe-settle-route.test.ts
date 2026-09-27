@@ -41,6 +41,7 @@ import {
 	type StripeWebhookSettleResult,
 } from "../src/webhooks/stripe-settle-route.js";
 import type { PluginContext } from "../src/types.js";
+import { chargeRefundedEvent, signedStripeEvent } from "./helpers/signed-stripe-event.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -174,7 +175,7 @@ describe("the route's identity", () => {
 		expect(STRIPE_WEBHOOK_SETTLE_ROUTE).toBe("webhooks/stripe/settle");
 	});
 
-	test("the status table is byte-for-byte the service's own (webhooks.ts)", () => {
+	test("the status table is the service's own (webhooks.ts), except UNKNOWN_EVENT is acknowledged", () => {
 		// A drift here silently changes STRIPE'S RETRY BEHAVIOUR, which is the one
 		// thing the fold-in must not change while swapping the transport.
 		expect(settleResultToResponse({ ok: true, order: null, noop: false })).toEqual({
@@ -189,8 +190,14 @@ describe("the route's identity", () => {
 		expect(settleResultToResponse({ ok: false, reason: "MALFORMED" })).toMatchObject({
 			status: 400,
 		});
-		expect(settleResultToResponse({ ok: false, reason: "UNKNOWN_EVENT" })).toMatchObject({
-			status: 400,
+		// 200, not 400 (#300): UNKNOWN_EVENT is only ever produced AFTER the
+		// signature verified, so it is a genuine Stripe delivery of a type Otta does
+		// not act on. A 4xx makes Stripe retry it and, eventually, disable the
+		// endpoint — taking `payment_intent.succeeded` down with it.
+		expect(settleResultToResponse({ ok: false, reason: "UNKNOWN_EVENT" })).toEqual({
+			ok: false,
+			status: 200,
+			reason: "UNKNOWN_EVENT",
 		});
 		expect(settleResultToResponse({ ok: false, reason: "ORDER_NOT_FOUND" })).toMatchObject({
 			status: 404,
@@ -515,5 +522,57 @@ describe("(vii) the new secret is fail-closed and leaks nothing", () => {
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		const res = await invoke(await signedDelivery("ord-absent"));
 		expect(res).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+	});
+});
+
+describe("(viii) a VERIFIED event Otta does not handle is acknowledged, and touches nothing (#300)", () => {
+	test("a correctly signed `charge.refunded` is 200 and leaves the order exactly as it was", async () => {
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-refunded");
+		const before = await harness.stores.orderStore.getById(toOrderId("ord-refunded"));
+		const { settle, calls } = recordingSettle();
+
+		const res = await invoke(
+			signedStripeEvent(
+				chargeRefundedEvent("ord-refunded", AMOUNT),
+				WEBHOOK_SECRET,
+				"wh-refund-ord-refunded",
+			),
+			{ [WEBHOOK_EDGE_TOKEN_HEADER]: EDGE_TOKEN },
+			{ settle },
+		);
+
+		// 200 so Stripe stops retrying — a 4xx here is what gets an endpoint
+		// disabled, and with it every `payment_intent.succeeded` after.
+		expect(res).toEqual({ ok: false, status: 200, reason: "UNKNOWN_EVENT" });
+		// The DOMAIN's verdict: the signature verified and the type was refused
+		// there, so this is not the route guessing.
+		expect(calls).toEqual([{ ok: false, reason: "UNKNOWN_EVENT" }]);
+		// Nothing done: the order is byte-for-byte what it was...
+		expect(await harness.stores.orderStore.getById(toOrderId("ord-refunded"))).toEqual(before);
+		// ...and no delivery was recorded against it — proven by claiming it now.
+		await expect(
+			harness.stores.paymentEventStore.dedupe(
+				"evt_refund_ord-refunded",
+				toOrderId("ord-refunded"),
+				"stripe",
+				new Date().toISOString(),
+			),
+		).resolves.toBe(true);
+	});
+
+	test("the same event type under a BAD signature is still a 400 — the 200 needs a verified body", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-refunded-forged");
+		const res = await invoke(
+			signedStripeEvent(
+				chargeRefundedEvent("ord-refunded-forged", AMOUNT),
+				"whsec_attacker",
+				"wh-refund-forged",
+			),
+		);
+		expect(res).toEqual({ ok: false, status: 400, reason: "INVALID_SIGNATURE" });
+		expect(await orderState("ord-refunded-forged")).toBe("pending");
 	});
 });
