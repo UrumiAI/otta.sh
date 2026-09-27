@@ -12,7 +12,7 @@ import {
 } from "@otta-sh/domain";
 import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
-import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
+import { makeOrderHarness, type OrderHarness, SEED_PUBLISHED_AT } from "./fake-harness.js";
 
 const SHIP_TO: OrderAddressInput = {
 	name: "Ada Lovelace",
@@ -194,6 +194,11 @@ describe("createOrderFromCart", () => {
 				productKind: "digital",
 			},
 			idempotencyKey("seed-eur"),
+		);
+		await h.productCommerce.activate(
+			brandProductId("d-eur"),
+			idempotencyKey("publish-eur"),
+			SEED_PUBLISHED_AT,
 		);
 		const cartId = await h.cartWith([
 			{ sku: "DIG-EUR", productId: "d-eur", qty: 1, kind: "digital" },
@@ -499,5 +504,106 @@ describe("createOrderFromCart", () => {
 		expect(replay.order.id).toBe(first.order.id);
 		expect(replay.order.shippingAddress).toEqual(first.order.shippingAddress);
 		expect(replay.order.shippingAddress?.name).toBe("Ada Lovelace");
+	});
+});
+
+/**
+ * The publish gate is a CHECKOUT rule, not only a listing one. A product the
+ * merchant unpublished (`active=false`) or deleted (`deletedAt` set, which also
+ * closes the gate) must not be sold — including from a cart that already held it
+ * before the lifecycle event landed. The refusal is the existing
+ * `PRODUCT_NOT_PRICED` token ("this line cannot be ordered"), raised BEFORE any
+ * order row, coupon redemption or adoption, so the line's hold is left exactly
+ * as it was: still `held`, releasable by the shopper's remove or the TTL sweep.
+ */
+describe("createOrderFromCart sells only live products (publish gate + tombstone)", () => {
+	let h: OrderHarness;
+	beforeEach(() => {
+		h = makeOrderHarness();
+	});
+
+	async function heldCart(): Promise<{ cartId: string; reservationId: string }> {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1400,
+			title: "Widget",
+			onHand: 5,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const reservationId = (await h.cartStore.get(cartId))!.lines[0]!.reservationId!;
+		return { cartId, reservationId };
+	}
+
+	async function expectRefusedAndUntouched(cartId: string, reservationId: string): Promise<void> {
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		// Nothing minted, nothing adopted, the cart still the shopper's to edit.
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+		expect(h.inventory.reservationState(reservationId)).toBe("held");
+		expect(h.inventory.onHand("SKU-1")).toBe(4);
+		const cart = (await h.cartStore.get(cartId))!;
+		expect(cart.state).toBe("active");
+		expect(cart.orderId).toBeNull();
+	}
+
+	test("a live, published, priced product still checks out (the gate is not over-eager)", async () => {
+		const { cartId } = await heldCart();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res.ok).toBe(true);
+	});
+
+	test("a cart line whose product was UNPUBLISHED after the add is refused PRODUCT_NOT_PRICED, leaving its hold held", async () => {
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.deactivate(
+			brandProductId("p1"),
+			idempotencyKey("unpublish-p1"),
+			"2026-07-09T00:00:00.000Z",
+		);
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
+	test("a cart line whose product was DELETED after the add is refused PRODUCT_NOT_PRICED, leaving its hold held", async () => {
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.softDelete(brandProductId("p1"), idempotencyKey("delete-p1"));
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
+	test("a priced product that was NEVER published cannot be ordered", async () => {
+		await h.productCommerce.upsert(
+			{
+				productId: brandProductId("d-draft"),
+				sku: brandSku("DIG-DRAFT"),
+				price: money(cents(900), currency("USD")),
+				title: "Draft ebook",
+				productKind: "digital",
+			},
+			idempotencyKey("seed-draft"),
+		);
+		const cartId = await h.cartWith([
+			{ sku: "DIG-DRAFT", productId: "d-draft", qty: 1, kind: "digital" },
+		]);
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+	});
+
+	test("republishing restores the sale: the same cart then checks out", async () => {
+		const { cartId } = await heldCart();
+		await h.productCommerce.deactivate(
+			brandProductId("p1"),
+			idempotencyKey("unpublish-p1"),
+			"2026-07-09T00:00:00.000Z",
+		);
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId, "k-1"))).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
+		});
+		await h.productCommerce.activate(
+			brandProductId("p1"),
+			idempotencyKey("republish-p1"),
+			"2026-07-09T01:00:00.000Z",
+		);
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "k-2"));
+		expect(res.ok).toBe(true);
 	});
 });

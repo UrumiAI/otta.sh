@@ -303,6 +303,32 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(cart.lines).toEqual([]);
 	});
 
+	test("add-to-cart REFUSES an UNPUBLISHED product with the typed PRODUCT_NOT_PRICED — no line, no stock held", async () => {
+		const id = `prod-unpub-${SUFFIX}`;
+		const sku = `SKU-UNPUB-${SUFFIX}`;
+		await seedProduct({ id, sku, amount: 1400, onHand: 5 });
+		// The merchant unpublishes: `content:afterUnpublish` closes the gate. The row
+		// keeps its sku, price and stock, so only the gate can stop the sale.
+		await commerceStore().deactivate(
+			toProductId(id),
+			idempotencyKey(`unpub-${id}`),
+			"2026-02-01T00:00:00.000Z",
+		);
+		const cartId = await createCart();
+
+		const result = await addLine({
+			cartId,
+			sku,
+			productId: id,
+			qty: 1,
+			idempotencyKey: `idem-unpub-${SUFFIX}`,
+		});
+		expect(result).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		const cart = (await readCart(cartId))["cart"] as CartWire;
+		expect(cart.lines).toEqual([]);
+		expect(await inventoryStore().getOnHand(toSku(sku))).toBe(5);
+	});
+
 	test("add-to-cart WITHOUT productId (legacy caller) persists the line with productId null — absent, never a fabricated value", async () => {
 		await seedStock(`SKU-BARE-${SUFFIX}`);
 		const cartId = await createCart();

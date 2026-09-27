@@ -29,6 +29,7 @@ import {
 	idempotencyKey,
 	type Order,
 	type OrderStore,
+	productId as brandProductId,
 	removeLine,
 	settleOrder,
 	sku as brandSku,
@@ -360,6 +361,59 @@ describeEachDialect("order flow", (ctx) => {
 		const rm = await removeLine(h.cartDeps, cartId, lineId, idempotencyKey("rm-2"));
 		expect(rm).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 	});
+
+	test.each([
+		["UNPUBLISHED", "unpublish"],
+		["DELETED", "delete"],
+	] as const)(
+		"a cart line whose product was %s after the add cannot check out — no order, the hold stays held, and removing the line returns the unit",
+		async (_label, lifecycle) => {
+			const h = harness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1400,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			expect(await h.onHand("SKU-1")).toBe(4);
+			const reservationId = (await getCart(h.cartDeps, cartId))?.lines[0]?.reservationId;
+			if (reservationId === null || reservationId === undefined) {
+				throw new Error("the physical line must hold a reservation");
+			}
+
+			const pid = brandProductId("p1");
+			if (lifecycle === "unpublish") {
+				await h.shared.productCommerce.deactivate(
+					pid,
+					idempotencyKey("unpublish-p1"),
+					"2026-07-09T00:00:00.000Z",
+				);
+			} else {
+				await h.shared.productCommerce.softDelete(pid, idempotencyKey("delete-p1"));
+			}
+
+			const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+			expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			expect(await h.store.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+			// The refusal moved no stock: the hold is still the cart's, on-hand unchanged.
+			expect(await h.reservationState(reservationId)).toBe("held");
+			expect(await h.onHand("SKU-1")).toBe(4);
+			const cart = await getCart(h.cartDeps, cartId);
+			expect(cart?.state).toBe("active");
+			const lineId = cart?.lines[0]?.lineId;
+			if (lineId === undefined) throw new Error("the refused cart must still carry its line");
+
+			// The shopper's recovery — remove the line — releases the hold exactly once.
+			expect(await removeLine(h.cartDeps, cartId, lineId, idempotencyKey("rm-dead"))).toEqual({
+				ok: true,
+			});
+			expect(await h.onHand("SKU-1")).toBe(5);
+		},
+	);
 
 	test("Stripe webhook → paid + inventory commit exactly once; a replay settles once", async () => {
 		const h = harness();
