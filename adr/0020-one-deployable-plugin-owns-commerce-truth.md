@@ -116,6 +116,11 @@ gateway with a live transport, so this is latent rather than exploited — but w
 Stripe gateway into the in-process composition must pass `ctx.http.fetch`, or the allowlist
 bound above does not apply to Stripe.
 
+> **Note, 2026-09-27.** The caveat above is superseded by commit `f95288d`: the in-process
+> composition now builds the live Stripe gateway (`packages/plugin/src/payments/stripe-wiring.ts`)
+> with `ctx.http.fetch` as its transport, only when both the secret key and the webhook secret
+> are set, so the allowlist bound above applies to Stripe too. The decision is unchanged.
+
 ### 3. The settle route is public, and the site-owned webhook endpoint is permanent
 
 **The requirement, as actually built and enforced.** Earlier planning called for a
