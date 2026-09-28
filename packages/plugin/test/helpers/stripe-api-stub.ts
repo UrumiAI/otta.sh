@@ -19,7 +19,8 @@ export interface StripeApiStub {
 	requests: StripeRecordedRequest[];
 	/**
 	 * Every request this proxy REFUSED to forward (a host that is neither
-	 * `api.stripe.com` nor one of the `forwardTo` origins). Inside the isolate a refusal is just a 502 the plugin may swallow as
+	 * `api.stripe.com` nor one of the `forwardTo` origins, or a target other than
+	 * "/"). Inside the isolate a refusal is just a 502 the plugin may swallow as
 	 * an ordinary provider failure, so a suite asserts this is empty rather than
 	 * trusting a route's answer to surface it.
 	 */
@@ -102,17 +103,20 @@ export function stripeLikeResponder(): StripeResponder {
  * does not grant `api.stripe.com` is still refused inside the isolate.
  *
  * Requests addressed to `api.stripe.com` are recorded and answered. The only
- * other traffic that is forwarded is to the origins the suite names in
- * `forwardTo` — in practice the harness's storage bridge — and the destination
- * is taken from THAT list, never built from the request: an open proxy keyed on
- * a request's `Host` header is a server-side request forgery, even on loopback
- * (any local port; a crafted path turning the host into userinfo). Anything else
- * is refused, never forwarded, and recorded in {@link StripeApiStub.refused} so
- * the suite can fail on it.
+ * other traffic that is forwarded is a request for the ROOT of one of the
+ * origins the suite names in `forwardTo` — in practice the harness's storage
+ * bridge, whose client only ever POSTs to its base URL — and the outbound URL is
+ * that listed origin plus "/", with nothing taken from the request: an open
+ * proxy keyed on a request's `Host` header is a server-side request forgery,
+ * even on loopback (any local port; a crafted target reaching another
+ * authority). Anything else is refused, never forwarded, and recorded in
+ * {@link StripeApiStub.refused} so the suite can fail on it.
  */
 export async function startStripeApiStub(options: {
-	/** Absolute origins (e.g. the storage bridge's `baseUrl`) the isolate may
-	 *  reach through this proxy, matched exactly on `host:port`. */
+	/** Absolute origins (e.g. the storage bridge's `baseUrl`) whose root the
+	 *  isolate may reach through this proxy. Matched on `URL#host` exactly as the
+	 *  `Host` header spells it — a default port is dropped and matching is
+	 *  case-sensitive, so anything unusual fails closed (refused). */
 	forwardTo: readonly string[];
 }): Promise<StripeApiStub> {
 	const forwardOrigins = new Map<string, string>();
@@ -160,13 +164,13 @@ export async function startStripeApiStub(options: {
 			}
 
 			const origin = forwardOrigins.get(host);
-			if (origin === undefined || !path.startsWith("/")) {
+			if (origin === undefined || path !== "/") {
 				refused.push(`${method} ${host}${path}`);
 				fail(new Error(`refusing to forward a sandbox request to "${host}${path}"`));
 				return;
 			}
 
-			void forward(origin, method, path, req.headers, raw).then((forwarded) => {
+			void forward(origin, method, req.headers, raw).then((forwarded) => {
 				res.writeHead(forwarded.status, forwarded.headers);
 				res.end(forwarded.body);
 			}, fail);
@@ -221,15 +225,12 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * `origin` comes from the suite's `forwardTo` list and `path` is the request's
- * own origin-form target (checked to start with "/"). The URL is the fixed
- * origin plus a trailing "/" followed by the rest of the path, so nothing from
- * the request can reach the authority part.
+ * `origin` comes from the suite's `forwardTo` list, and the URL is that origin's
+ * root: no part of it — scheme, host, port or path — is read from the request.
  */
 async function forward(
 	origin: string,
 	method: string,
-	path: string,
 	headers: IncomingHttpHeaders,
 	body: Buffer,
 ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
@@ -238,7 +239,7 @@ async function forward(
 		if (value === undefined || HOP_BY_HOP.has(name)) continue;
 		outHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
 	}
-	const res = await fetch(`${origin}/${path.slice(1)}`, {
+	const res = await fetch(`${origin}/`, {
 		method,
 		headers: outHeaders,
 		...(method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(body) }),
