@@ -1,6 +1,6 @@
 /**
  * One copy of the host is an invariant, not a preference. Otta's commerce truth
- * rides on EmDash's conditional-write primitives, which ship in `emdash@0.38.0`.
+ * rides on EmDash's conditional-write primitives, which first shipped in `emdash@0.38.0`.
  * The released `@emdash-cms/cloudflare` pins `emdash` EXACTLY, so if a future
  * release of it ever pins a version other than the one the manifests name, a
  * second `emdash` lands in the store and the Worker bridge binds to the copy
@@ -42,9 +42,9 @@ describe("the EmDash host pin", () => {
 		expect(typeof PluginStorageRepository).toBe("function");
 	});
 
-	it("ends its migration list at the conditional-write migration", () => {
+	it("includes the conditional-write migration", () => {
 		expect(typeof runMigrations).toBe("function");
-		expect(MIGRATION_NAMES.at(-1)).toBe("077_plugin_storage_revisions");
+		expect(MIGRATION_NAMES).toContain("077_plugin_storage_revisions");
 	});
 
 	it("exposes the four conditional-write primitives on a migrated database", () => {
