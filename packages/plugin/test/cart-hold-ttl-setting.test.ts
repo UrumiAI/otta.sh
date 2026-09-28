@@ -16,6 +16,8 @@
 import { DEFAULT_OPERATIONAL_SETTINGS, idempotencyKey } from "@otta-sh/domain";
 import { FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { SWEEP_TASK_NAME } from "../src/cron/index.js";
+import { runCommerceSweeps } from "../src/cron/sweeps.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -122,6 +124,23 @@ describe("the cart hold follows the admin's holdTtlMinutes setting", () => {
 		const adjusted = await h.client.adjustCartLine(cartId, added.line.lineId, 2, "adjust-1");
 		if (!adjusted.ok) throw new Error(adjusted.reason);
 		expect(adjusted.line.expiresAt).toBe(inMinutes(45));
+	});
+
+	test("#18: the cron's expire-holds sweep reaps on the SAVED window, not the default", async () => {
+		await setHoldTtl(30);
+		const { cartId, productId, sku } = await arrange();
+		const added = await h.client.addCartLine(cartId, sku, productId, 1, "add-sweep");
+		if (!added.ok) throw new Error(added.reason);
+
+		const sweepAt = async (minutes: number): Promise<number | undefined> => {
+			const at = new Date(clock.now().getTime() + minutes * MINUTE);
+			const summary = await runCommerceSweeps(h.ctx, SWEEP_TASK_NAME, { now: at });
+			return summary.legs.find((l) => l.leg === "expire-holds")?.count;
+		};
+		// Past the old fifteen-minute default: nothing to reap.
+		expect(await sweepAt(20)).toBe(0);
+		// Past the configured thirty: the hold is reaped.
+		expect(await sweepAt(31)).toBe(1);
 	});
 
 	test("the client reports the effective window, following the setting live", async () => {
