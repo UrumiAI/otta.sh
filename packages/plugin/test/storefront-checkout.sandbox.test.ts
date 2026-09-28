@@ -470,7 +470,9 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	let stripe: StripeApiStub;
 
 	beforeAll(async () => {
-		stripe = await startStripeApiStub();
+		// The storage bridge is the ONLY non-Stripe destination this isolate may
+		// reach through the stub (see its doc).
+		stripe = await startStripeApiStub({ forwardTo: [(await storageBridge()).baseUrl] });
 		stripeBoot = await loadPluginInSandbox({
 			allowedHosts: productionAllowedHosts(),
 			storage: true,

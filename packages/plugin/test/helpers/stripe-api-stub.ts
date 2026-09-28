@@ -18,8 +18,8 @@ export interface StripeApiStub {
 	/** Every request that was addressed to `api.stripe.com`, in arrival order. */
 	requests: StripeRecordedRequest[];
 	/**
-	 * Every request this proxy REFUSED to forward (a non-Stripe, non-loopback
-	 * host). Inside the isolate a refusal is just a 502 the plugin may swallow as
+	 * Every request this proxy REFUSED to forward (a host that is neither
+	 * `api.stripe.com` nor one of the `forwardTo` origins). Inside the isolate a refusal is just a 502 the plugin may swallow as
 	 * an ordinary provider failure, so a suite asserts this is empty rather than
 	 * trusting a route's answer to surface it.
 	 */
@@ -101,13 +101,28 @@ export function stripeLikeResponder(): StripeResponder {
  * allowlist check still runs first, against the real hostname, so a boot that
  * does not grant `api.stripe.com` is still refused inside the isolate.
  *
- * Requests addressed to `api.stripe.com` are recorded and answered. Everything
- * else — in practice the harness's storage bridge — is forwarded to its own
- * address, which must be loopback. Anything else is refused, never forwarded, and
- * recorded in {@link StripeApiStub.refused} so the suite can fail on it: a
- * sandbox test must never reach the real internet through this proxy.
+ * Requests addressed to `api.stripe.com` are recorded and answered. The only
+ * other traffic that is forwarded is to the origins the suite names in
+ * `forwardTo` — in practice the harness's storage bridge — and the destination
+ * is taken from THAT list, never built from the request: an open proxy keyed on
+ * a request's `Host` header is a server-side request forgery, even on loopback
+ * (any local port; a crafted path turning the host into userinfo). Anything else
+ * is refused, never forwarded, and recorded in {@link StripeApiStub.refused} so
+ * the suite can fail on it.
  */
-export async function startStripeApiStub(): Promise<StripeApiStub> {
+export async function startStripeApiStub(options: {
+	/** Absolute origins (e.g. the storage bridge's `baseUrl`) the isolate may
+	 *  reach through this proxy, matched exactly on `host:port`. */
+	forwardTo: readonly string[];
+}): Promise<StripeApiStub> {
+	const forwardOrigins = new Map<string, string>();
+	for (const target of options.forwardTo) {
+		const url = new URL(target);
+		if (url.protocol !== "http:" || !isLoopback(url.hostname)) {
+			throw new Error(`stripe-api-stub forwards to loopback http origins only, got "${target}"`);
+		}
+		forwardOrigins.set(url.host, url.origin);
+	}
 	const requests: StripeRecordedRequest[] = [];
 	const refused: string[] = [];
 	let responder: StripeResponder = stripeLikeResponder();
@@ -144,13 +159,14 @@ export async function startStripeApiStub(): Promise<StripeApiStub> {
 				return;
 			}
 
-			if (!isLoopback(host)) {
+			const origin = forwardOrigins.get(host);
+			if (origin === undefined || !path.startsWith("/")) {
 				refused.push(`${method} ${host}${path}`);
-				fail(new Error(`refusing to forward a sandbox request to non-loopback host "${host}"`));
+				fail(new Error(`refusing to forward a sandbox request to "${host}${path}"`));
 				return;
 			}
 
-			void forward(host, method, path, req.headers, raw).then((forwarded) => {
+			void forward(origin, method, path, req.headers, raw).then((forwarded) => {
 				res.writeHead(forwarded.status, forwarded.headers);
 				res.end(forwarded.body);
 			}, fail);
@@ -181,8 +197,7 @@ export async function startStripeApiStub(): Promise<StripeApiStub> {
 	};
 }
 
-function isLoopback(host: string): boolean {
-	const hostname = host.replace(/:\d+$/, "");
+function isLoopback(hostname: string): boolean {
 	return hostname === "127.0.0.1" || hostname === "localhost";
 }
 
@@ -205,8 +220,14 @@ const HOP_BY_HOP = new Set([
 	"upgrade",
 ]);
 
+/**
+ * `origin` comes from the suite's `forwardTo` list and `path` is the request's
+ * own origin-form target (checked to start with "/"). The URL is the fixed
+ * origin plus a trailing "/" followed by the rest of the path, so nothing from
+ * the request can reach the authority part.
+ */
 async function forward(
-	host: string,
+	origin: string,
 	method: string,
 	path: string,
 	headers: IncomingHttpHeaders,
@@ -217,7 +238,7 @@ async function forward(
 		if (value === undefined || HOP_BY_HOP.has(name)) continue;
 		outHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
 	}
-	const res = await fetch(`http://${host}${path}`, {
+	const res = await fetch(`${origin}/${path.slice(1)}`, {
 		method,
 		headers: outHeaders,
 		...(method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(body) }),
