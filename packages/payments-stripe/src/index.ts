@@ -700,6 +700,23 @@ const STRIPE_API_BASE = "https://api.stripe.com";
  *  refund. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * The Stripe API version pinned on every live call via the `Stripe-Version`
+ * header, so a change to the account's default version can never move a response
+ * shape under the parsers below. `2024-06-20` is the last date-only (pre-named
+ * release train) version; it is past `2022-11-15`, which introduced the
+ * PaymentIntent `latest_charge` field the refund pre-flight expands, and every
+ * other field read here (`id`, `client_secret`, the charge's `amount_refunded` /
+ * `amount_captured` / `currency`, the refund's `id` / `amount` / `currency`) is
+ * stable across it. Bumping it is a deliberate change: re-check those parsers.
+ *
+ * It does NOT govern webhooks — an event payload is rendered in the webhook
+ * endpoint's own API version, set in the Stripe dashboard. `normalizeEvent` reads
+ * only version-stable fields (`id`, `type`, `data.object.id` / `amount` /
+ * `currency` / `metadata.order_id`), so it does not depend on either.
+ */
+export const STRIPE_API_VERSION = "2024-06-20";
+
 export interface StripeHttpTransportOptions {
 	fetch: typeof fetch;
 	/** Override the API base (tests point it at a recorder; defaults to Stripe). */
@@ -769,7 +786,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 				res = await doFetch(`${base}/v1/payment_intents`, {
 					method: "POST",
 					headers: {
-						...stripeAuthHeaders(secretKey),
+						...stripeHeaders(secretKey),
 						"content-type": "application/x-www-form-urlencoded",
 						// Stripe's NATIVE idempotency: a same-key retry returns the SAME intent.
 						"idempotency-key": idempotencyKey,
@@ -821,7 +838,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			try {
 				res = await doFetch(url, {
 					method: "GET",
-					headers: stripeAuthHeaders(secretKey),
+					headers: stripeHeaders(secretKey),
 					// A hung Stripe must never hang the operator's refund.
 					signal: AbortSignal.timeout(timeoutMs),
 				});
@@ -864,7 +881,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 				res = await doFetch(`${base}/v1/refunds`, {
 					method: "POST",
 					headers: {
-						...stripeAuthHeaders(secretKey),
+						...stripeHeaders(secretKey),
 						"content-type": "application/x-www-form-urlencoded",
 						// Stripe's NATIVE idempotency — a replay re-calls nothing provider-side.
 						"idempotency-key": idempotencyKey,
@@ -905,9 +922,11 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 	};
 }
 
-/** Bearer auth header for the live Stripe REST calls (secret stays adapter-side). */
-function stripeAuthHeaders(secretKey: string): Record<string, string> {
-	return { authorization: `Bearer ${secretKey}` };
+/** The headers EVERY live Stripe REST call carries: Bearer auth (secret stays
+ *  adapter-side) and the pinned {@link STRIPE_API_VERSION}. One helper, used by all
+ *  three calls, so the pin cannot drift between them. */
+function stripeHeaders(secretKey: string): Record<string, string> {
+	return { authorization: `Bearer ${secretKey}`, "stripe-version": STRIPE_API_VERSION };
 }
 
 /** Parse a Stripe charge object into the refunded view, or null if malformed. */
