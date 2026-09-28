@@ -389,15 +389,17 @@ describe("lockedCheckoutPhase — what a cart that already became an order may o
 	const EXPECTED: Record<OrderState, LockedCheckoutPhase> = {
 		// Still inside the checkout window: the same-key place replays it to payment.
 		pending: "payable",
-		// Over and NEVER charged — only these two. `expireOrders` does not reopen
-		// the cart, so the only way on is a new cart; a pay button would pay for
-		// nothing.
+		// NO LONGER PAYABLE — only these two. `expireOrders` does not reopen the
+		// cart, so the only way on is a new cart; a pay button would lead nowhere.
+		// NOT "never charged": a declined attempt fails the order while its intent
+		// stays confirmable, and a payment can land just after the TTL sweep — so
+		// nothing built on `ended` may claim anything about money.
 		expired: "ended",
 		failed: "ended",
 		// CANCELLED IS NOT "ended": the domain allows paid → cancelled and
 		// processing → cancelled, so a cancelled order may have been charged. The
 		// confirmation page states what actually happened ("This order was
-		// cancelled."); "nothing has been charged" would be a false money statement.
+		// cancelled."), which the checkout page cannot.
 		cancelled: "placed",
 		// Paid or beyond: the confirmation page is the truth.
 		paid: "placed",

@@ -186,22 +186,32 @@ async function seedShippingRules(): Promise<void> {
 	});
 }
 
+/** A delete that removed the row, or found it already gone. */
+function gone(result: { ok: boolean; reason?: string }): boolean {
+	return result.ok || result.reason === "not_found";
+}
+
 /** Undo `seedShippingRules`, children first (the store forbids deleting a zone
- *  that still has methods, or a method that still has rates). */
+ *  that still has methods, or a method that still has rates). TOLERANT of a
+ *  partial seed — it deletes what exists — so a seed failure is reported once,
+ *  at its source; the store-wide "no zone left" check below is what must hold. */
 async function removeShippingRules(): Promise<void> {
 	const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
 	for (const methodId of [METHOD_ID, FREE_METHOD_ID]) {
-		expect(await rules.deleteRate(methodId, currency("USD"))).toEqual({ ok: true });
+		expect(gone(await rules.deleteRate(methodId, currency("USD")))).toBe(true);
 	}
 	for (const methodId of [METHOD_ID, FREE_METHOD_ID, NORATE_METHOD_ID]) {
-		expect(await rules.deleteMethod(methodId)).toEqual({ ok: true });
+		expect(gone(await rules.deleteMethod(methodId))).toBe(true);
 	}
-	expect(await rules.deleteZone(ZONE_ID)).toEqual({ ok: true });
+	expect(gone(await rules.deleteZone(ZONE_ID))).toBe(true);
 	expect(
-		await new EmdashTaxRulesStore({ storage, clock: systemClock }).deleteRate(
-			`${NS}-zone-standard`,
+		gone(
+			await new EmdashTaxRulesStore({ storage, clock: systemClock }).deleteRate(
+				`${NS}-zone-standard`,
+			),
 		),
-	).toEqual({ ok: true });
+	).toBe(true);
+	expect(await rules.listZones()).toEqual([]);
 }
 
 /** true only while a `useShippingRules` describe is running. */
