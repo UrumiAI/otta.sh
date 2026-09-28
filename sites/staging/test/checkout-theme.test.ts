@@ -100,6 +100,57 @@ describe("the /checkout form contract", () => {
 	});
 });
 
+/**
+ * #305 part 1 — the coupon on the review page. The form is a zero-JS
+ * `GET /checkout?coupon=` (decision D2), a SIBLING of the place form: nested, its
+ * submit would post the place form's fields instead.
+ */
+describe("/checkout — the coupon", () => {
+	const TEMPLATE = templateOf(REVIEW);
+	const COUPON_FORM =
+		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ??
+		"";
+
+	test("the coupon form is GET /checkout with name=coupon maxlength=200", () => {
+		expect(COUPON_FORM, "no GET /checkout form").not.toBe("");
+		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON_FORM)?.[0] ?? "";
+		expect(field).toContain('maxlength="200"');
+		expect(field).toContain('autocomplete="off"');
+	});
+
+	test("the coupon form is NOT nested in the place form", () => {
+		const place =
+			/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
+		expect(place).not.toBe("");
+		expect(place).not.toContain('name="coupon"');
+		expect(TEMPLATE.indexOf(COUPON_FORM)).toBeLessThan(TEMPLATE.indexOf(place));
+	});
+
+	test("the place form carries a hidden couponCode bound to summary.selection.couponCode", () => {
+		expect(REVIEW).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="couponCode"[^>]*value=\{summary\.selection\.couponCode\}/,
+		);
+	});
+
+	test("the page passes the coupon into the summary dispatch", () => {
+		expect(REVIEW).toContain("readCouponParam(Astro.url)");
+		expect(REVIEW).toMatch(/\{\s*cartId,\s*\.\.\.\(coupon\.couponCode !== undefined/);
+	});
+
+	test("the coupon form is hidden once the cart has become an order", () => {
+		expect(REVIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
+	});
+
+	test("an ENDED checkout offers no pay button — only the way to a new cart", () => {
+		expect(REVIEW).toContain('phase === "ended"');
+		expect(REVIEW).toMatch(/!ended && \(\s*<form[^>]*action="\/checkout\/place"/);
+	});
+
+	test("the coupon in the URL never leaks through a Referer", () => {
+		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+	});
+});
+
 describe("/checkout/pay — the money path is wired before the decoration", () => {
 	/** The line the script draws between "this takes payment" and "this makes it
 	 *  look right". Everything below it is expendable; nothing below it may run
