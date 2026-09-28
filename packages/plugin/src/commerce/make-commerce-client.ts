@@ -16,6 +16,7 @@
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
+import { ctxLoginLinkMailer } from "../email/login-link-mailer.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
@@ -54,5 +55,7 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 			...(x402 === undefined ? {} : { x402 }),
 			...(stripe === undefined ? {} : { stripe }),
 		},
+		// Resolved lazily, at send time: only `requestLoginLink` pays its kv reads.
+		loginLinkMailer: ctxLoginLinkMailer(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
 	});
 }

@@ -15,9 +15,17 @@ export interface RenderedEmail {
 export function renderEmail(template: EmailTemplate, data: Record<string, unknown>): RenderedEmail {
 	if (template === "customer-login-link") {
 		const link = str(data["loginUrl"]) ?? str(data["challengeId"]) ?? "";
-		const subject = "Your sign-in link";
-		const text = `Click to sign in: ${link}\n\nThis link is single-use and expires shortly. If you didn't request it, you can ignore this email.`;
-		return { subject, text, html: paragraph(`Click to sign in: ${escapeHtml(link)}`) };
+		const copy = LOGIN_LINK_COPY[loginLocale(data["locale"])];
+		const text = `${copy.lead}: ${link}\n\n${copy.footer}`;
+		// The link is an ANCHOR when there is one — a bare URL in a paragraph is not
+		// clickable in every client — and the href is escaped exactly like the text:
+		// the URL is built from operator config, and config is still not markup.
+		const anchor = link.length > 0 ? `<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>` : "";
+		return {
+			subject: copy.subject,
+			text,
+			html: paragraph(`${escapeHtml(copy.lead)}: ${anchor}`) + paragraph(escapeHtml(copy.footer)),
+		};
 	}
 
 	const orderId = str(data["orderId"]) ?? "";
@@ -118,6 +126,35 @@ function trackingLines(fulfillment: unknown): { text: string; html: string } | n
 		htmlParts.push(`Track your package: ${escapeHtml(trackingUrl)}`);
 	}
 	return { text: textParts.join("\n"), html: htmlParts.join("<br>") };
+}
+
+/**
+ * The locales the sign-in email is written in. English is the default and the
+ * fallback: an unknown or absent locale renders English rather than nothing,
+ * because a sign-in email that fails to render is a customer locked out.
+ */
+export type LoginEmailLocale = "en" | "fr";
+
+const LOGIN_LINK_COPY: Record<LoginEmailLocale, { subject: string; lead: string; footer: string }> =
+	{
+		en: {
+			subject: "Your sign-in link",
+			lead: "Click to sign in",
+			footer:
+				"This link is single-use and expires shortly. If you didn't request it, you can ignore this email.",
+		},
+		fr: {
+			subject: "Votre lien de connexion",
+			lead: "Cliquez sur ce lien pour vous connecter",
+			footer:
+				"Ce lien ne sert qu'une fois et expire rapidement. Si vous n'avez rien demandé, ignorez ce courriel.",
+		},
+	};
+
+/** A BCP 47 tag folded to a supported locale by its primary subtag (`fr-FR` → `fr`). */
+function loginLocale(value: unknown): LoginEmailLocale {
+	const primary = typeof value === "string" ? value.toLowerCase().split(/[-_]/)[0] : undefined;
+	return primary === "fr" ? "fr" : "en";
 }
 
 const ORDER_COPY: Record<

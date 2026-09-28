@@ -201,3 +201,43 @@ describe("renderEmail formats the total from integer minor units", () => {
 		},
 	);
 });
+
+describe("renderEmail customer-login-link", () => {
+	const loginUrl = "https://shop.example/account/verify?challengeId=ch-1&token=t%3Dk";
+
+	test("defaults to English and carries the link in text and as an HTML anchor", () => {
+		const rendered = renderEmail("customer-login-link", { loginUrl });
+		expect(rendered.subject).toBe("Your sign-in link");
+		expect(rendered.text).toContain(loginUrl);
+		// `&` is entity-escaped inside the attribute, which every client decodes back.
+		expect(rendered.html).toContain(`<a href="${loginUrl.replaceAll("&", "&amp;")}">`);
+	});
+
+	test("renders French copy when the locale is fr (a regional tag is folded)", () => {
+		for (const locale of ["fr", "fr-FR", "FR"]) {
+			const rendered = renderEmail("customer-login-link", { loginUrl, locale });
+			expect(rendered.subject).toBe("Votre lien de connexion");
+			expect(rendered.text).toContain("Cliquez sur ce lien pour vous connecter");
+			expect(rendered.text).toContain(loginUrl);
+		}
+	});
+
+	test("an unknown locale falls back to English rather than rendering nothing", () => {
+		expect(renderEmail("customer-login-link", { loginUrl, locale: "xx" }).subject).toBe(
+			"Your sign-in link",
+		);
+	});
+
+	test("escapes the link inside the anchor, so a hostile URL cannot break out of the attribute", () => {
+		const rendered = renderEmail("customer-login-link", {
+			loginUrl: 'https://shop.example/"><script>x</script>',
+		});
+		expect(rendered.html).not.toContain("<script>");
+		expect(rendered.html).toContain("&quot;&gt;&lt;script&gt;");
+	});
+
+	test("with no link it renders no anchor at all", () => {
+		const rendered = renderEmail("customer-login-link", {});
+		expect(rendered.html).not.toContain("<a ");
+	});
+});

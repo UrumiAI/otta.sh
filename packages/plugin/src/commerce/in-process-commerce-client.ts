@@ -124,6 +124,7 @@ import type {
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
+import type { LoginLinkMailer } from "../email/login-link-mailer.js";
 import type { PluginContext } from "../types.js";
 import {
 	looksLikeEmail,
@@ -165,6 +166,12 @@ const DEFAULT_CURRENCY = "USD";
  */
 export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/**
+	 * Sends the sign-in link for an issued challenge (#306). Passed in for the same
+	 * reason as the gateways: the composition root owns egress. Omitted ⇒ no mail
+	 * is sent, and `requestLoginLink` still answers the same generic success.
+	 */
+	loginLinkMailer?: LoginLinkMailer;
 }
 
 export class InProcessCommerceClient implements CommerceClient {
@@ -173,6 +180,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  measure a deadline. Everything that does goes through {@link #liveCartDeps}. */
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
+	readonly #loginLinkMailer: LoginLinkMailer | undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -186,6 +194,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#loginLinkMailer = options.loginLinkMailer;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -605,10 +614,11 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * exactly what this surface must not be — so a malformed address is the same
 	 * generic success rather than a distinguishable refusal.
 	 *
-	 * The emailed link is not dispatched from here yet: mail delivery moves
-	 * in-process with the rest of the outbound topology, and until it does this
-	 * records the challenge and nothing more. A storage failure still rejects —
-	 * that is infrastructure, not an answer about an account.
+	 * An issued challenge is mailed through the injected {@link LoginLinkMailer};
+	 * a THROTTLED one is not (the cap exists to stop a flood of emails to one
+	 * inbox) and still gets the same answer. A storage or transport failure
+	 * rejects — that is infrastructure, it happens for every address alike, and
+	 * it is not an answer about an account.
 	 */
 	async requestLoginLink(email: string): Promise<{ ok: true }> {
 		// CHECKED BUT NEVER REPORTED: a bound that fails here ends the call in the
@@ -622,7 +632,17 @@ export class InProcessCommerceClient implements CommerceClient {
 		} catch {
 			return { ok: true };
 		}
-		await requestLogin({ credentialVerifier: this.#stores.credentialVerifier }, { email: address });
+		const issued = await requestLogin(
+			{ credentialVerifier: this.#stores.credentialVerifier },
+			{ email: address },
+		);
+		if (issued.ok && this.#loginLinkMailer !== undefined) {
+			await this.#loginLinkMailer.send({
+				to: address,
+				challengeId: issued.challengeId,
+				token: issued.token,
+			});
+		}
 		return { ok: true };
 	}
 

@@ -603,6 +603,45 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
 	});
 
+	test("#306: the sign-in link page and email language are SET, READ BACK, and validated", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "https://boutique.example/compte/verifier", emailLocale: "fr" },
+		});
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const form = formFor(loaded, "save-payment-settings");
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/compte/verifier",
+		);
+		expect(field(form, "emailLocale")?.["initial_value"]).toBe("fr");
+
+		// A relative path or an unknown language is refused whole, like a bad payTo.
+		for (const values of [
+			{ loginLinkUrl: "/compte/verifier", emailLocale: "fr" },
+			{ loginLinkUrl: "https://boutique.example/v", emailLocale: "klingon" },
+		]) {
+			const refused = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values,
+			});
+			expect(JSON.stringify(refused)).toContain("Nothing was saved");
+		}
+		const after = formFor(
+			blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+			"save-payment-settings",
+		);
+		expect(field(after, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/compte/verifier",
+		);
+		expect(field(after, "emailLocale")?.["initial_value"]).toBe("fr");
+	});
+
 	test("INC-09: a successful secret save remounts its own form BLANK with a DIFFERENT block_id, and does not remount an unrelated secret's form", async () => {
 		// The old two-token version of this case is deleted along with the
 		// tokens; the underlying mechanism (`secretForm` carries a `gen` in its

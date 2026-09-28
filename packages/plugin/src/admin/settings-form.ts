@@ -1,4 +1,9 @@
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import {
+	EMAIL_LOCALE_KEY,
+	isValidLoginLinkUrl,
+	LOGIN_LINK_URL_KEY,
+} from "../email/login-link-mailer.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
 	EMAIL_API_KEY_KEY,
@@ -222,6 +227,20 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		label: "Order email from-address",
 		placeholder: "no-reply@otta.local",
 	},
+	// #306 — where the emailed sign-in link points, and the language customer
+	// emails are written in. Read back for the same reason as the from-address.
+	{
+		fieldId: "loginLinkUrl",
+		kvKey: LOGIN_LINK_URL_KEY,
+		label: "Sign-in link page (absolute URL of the storefront verify page)",
+		placeholder: "https://shop.example/account/verify",
+	},
+	{
+		fieldId: "emailLocale",
+		kvKey: EMAIL_LOCALE_KEY,
+		label: "Customer email language (en or fr)",
+		placeholder: "en",
+	},
 	{
 		fieldId: "x402PayTo",
 		kvKey: X402_PAYTO_KEY,
@@ -235,6 +254,9 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		placeholder: "eip155:8453",
 	},
 ];
+
+/** The languages customer emails are written in (`renderEmail`'s login copy). */
+const SUPPORTED_EMAIL_LOCALES: ReadonlySet<string> = new Set(["en", "fr"]);
 
 /** The payment/email secret action ids — a subset of {@link SETTINGS_ACTION_IDS},
  *  exported so a dispatcher (or a test) can name this group without restating
@@ -534,11 +556,27 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						"The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed). Nothing was saved.",
 				});
 			}
+			// #306: the sign-in link page must be absolute — it is the only origin the
+			// emailed link may carry (never the request's `Host`) — and the language
+			// one the templates are written in. Same all-or-nothing refusal.
+			const loginLinkUrl = submitted.get(LOGIN_LINK_URL_KEY) ?? "";
+			const emailLocale = submitted.get(EMAIL_LOCALE_KEY) ?? "";
+			if (
+				(loginLinkUrl.length > 0 && !isValidLoginLinkUrl(loginLinkUrl)) ||
+				(emailLocale.length > 0 && !SUPPORTED_EMAIL_LOCALES.has(emailLocale))
+			) {
+				return renderPage(ctx, client, {
+					variant: "error",
+					title: "Payment settings not saved",
+					description:
+						"The sign-in link page must be an absolute http(s) URL, and the email language en or fr. Nothing was saved.",
+				});
+			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "Email from-address and x402 destination were updated.",
+				description: "Email and x402 settings were updated.",
 			});
 			return {
 				...page,

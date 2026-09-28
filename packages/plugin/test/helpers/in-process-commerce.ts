@@ -19,6 +19,7 @@
 import type { Clock } from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
+import type { LoginLinkMailer } from "../../src/email/login-link-mailer.js";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -80,6 +81,9 @@ export interface MakeInProcessCommerceOptions {
 	/** A clock the caller keeps a handle on, for a suite whose subject is an
 	 *  elapsed deadline. Omitted ⇒ real time, which is what a deployment gets. */
 	clock?: Clock;
+	/** A recording mailer, for a suite whose subject is the sign-in email. Omitted
+	 *  ⇒ no mailer, which is the client's own default. */
+	loginLinkMailer?: LoginLinkMailer;
 }
 
 export async function makeInProcessCommerce(
@@ -104,7 +108,12 @@ export async function makeInProcessCommerce(
 	const shared = options.clock !== undefined ? { clock: options.clock } : {};
 	const stores = createInProcessCommerceStores(ctx, shared);
 	return {
-		client: new InProcessCommerceClient(ctx, shared),
+		client: new InProcessCommerceClient(ctx, {
+			...shared,
+			...(options.loginLinkMailer !== undefined
+				? { loginLinkMailer: options.loginLinkMailer }
+				: {}),
+		}),
 		stores,
 		ctx,
 		clock: stores.clock,

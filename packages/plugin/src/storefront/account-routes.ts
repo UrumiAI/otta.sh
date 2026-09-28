@@ -33,6 +33,7 @@ export const ACCOUNT_LOGIN_VERIFY_ROUTE = "storefront/account/login/verify";
 export const ACCOUNT_ORDERS_ROUTE = "storefront/account/orders";
 export const ACCOUNT_ORDER_ROUTE = "storefront/account/order";
 export const ACCOUNT_ADDRESSES_ROUTE = "storefront/account/addresses";
+export const ACCOUNT_LOGOUT_ROUTE = "storefront/account/logout";
 
 /** Where an unauthenticated account request is redirected. */
 export const ACCOUNT_LOGIN_PATH = "/account/login";
@@ -68,6 +69,13 @@ function sessionCookieDescriptor(token: string, expiresAt: string): SessionCooki
 	};
 }
 
+/** The descriptor that CLEARS the session cookie: same name, path and flags, an
+ *  empty value, and an expiry in the past — which is how every browser deletes
+ *  a cookie. */
+function clearedSessionCookieDescriptor(): SessionCookieDescriptor {
+	return sessionCookieDescriptor("", new Date(0).toISOString());
+}
+
 /** Exported for reuse (e.g. `entitlements/download-route.ts`) rather than each
  *  route re-inlining the same `typeof value === "string" && value.length > 0`
  *  guard. `cart-routes.ts` keeps its own copy (pre-existing, out of scope here). */
@@ -93,6 +101,10 @@ export type AccountLoginVerifyResult =
 	| { ok: true; cookie: SessionCookieDescriptor; redirectTo: string }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "EXPIRED" | "INVALID" | "CONSUMED" }
+	| { ok: false; error: "RENDER_FAILED" };
+
+export type AccountLogoutResult =
+	| { ok: true; cookie: SessionCookieDescriptor }
 	| { ok: false; error: "RENDER_FAILED" };
 
 export interface AccountSessionInput {
@@ -191,5 +203,20 @@ export function createAccountAddressesHandler(): RouteHandler<AccountSessionInpu
 			const result = await (await makeCommerceClient(ctx)).listMyAddresses(sessionToken);
 			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			return { ok: true as const, addresses: result.addresses };
+		});
+}
+
+/** Logout (#306): revokes the session and returns the descriptor that clears
+ *  the cookie. Idempotent — an unknown, already-revoked or absent token still
+ *  answers `ok` with the clearing descriptor, so a stale cookie can always be
+ *  removed and the answer says nothing about whether the session existed. */
+export function createAccountLogoutHandler(): RouteHandler<AccountSessionInput> {
+	return (routeCtx, ctx): Promise<AccountLogoutResult> =>
+		renderGuard(ACCOUNT_LOGOUT_ROUTE, async () => {
+			const sessionToken = routeCtx.input.sessionToken;
+			if (isNonEmptyString(sessionToken)) {
+				await (await makeCommerceClient(ctx)).logout(sessionToken);
+			}
+			return { ok: true as const, cookie: clearedSessionCookieDescriptor() };
 		});
 }

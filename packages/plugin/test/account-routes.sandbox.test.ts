@@ -17,9 +17,9 @@
  * WHAT IS STILL DRIVEN THROUGH THE SANDBOX, unchanged: the login is redeemed by
  * the PLUGIN's own `storefront/account/login/verify` route, so the session every
  * case below carries was minted by the path a shopper actually takes. Only the
- * challenge is issued host-side — this transport dispatches no mail yet (see
- * `commerce-client-contract.in-process.test.ts`), so there is no message to
- * capture and the verifier is the only place a shopper's token can come from.
+ * challenge is issued host-side: the sandbox is booted with no allowed hosts and
+ * no email API URL, so no mail is sent here (the mailed path is pinned in
+ * `login-link-mail.test.ts`) and the verifier is where the token comes from.
  *
  * EGRESS IS ASSERTED BY CONSTRUCTION: the boot declares NO allowed hosts, so any
  * `ctx.http` call from these routes throws. An account page that renders here
@@ -121,7 +121,7 @@ async function createGuestOrder(input: { email: string; slug: string }): Promise
 }
 
 /** Drive the magic-link login THROUGH the plugin sandbox: issue the challenge on
- *  the verifier (nothing emails it yet), then redeem it via the plugin route,
+ *  the verifier (no mail in this boot), then redeem it via the plugin route,
  *  which returns the session-cookie descriptor. Returns the bearer token. */
 async function loginThroughSandbox(email: string): Promise<string> {
 	const issued = await credentialVerifier.issueChallenge(toEmail(email));
@@ -169,6 +169,53 @@ describe("storefront account pages (workerd sandbox)", () => {
 			sessionToken: "not-a-real-session",
 		});
 		expect(badToken).toEqual({ result: { ok: false, redirectTo: "/account/login" } });
+	});
+
+	test("#306: the session cookie descriptor is HttpOnly, Secure, SameSite=Lax, path /", async () => {
+		const issued = await credentialVerifier.issueChallenge(toEmail(`${NS}-flags@example.test`));
+		if (!issued.ok) throw new Error("challenge not issued");
+		const verify = await sandbox.invokeRoute("storefront/account/login/verify", {
+			challengeId: issued.challengeId,
+			token: issued.token,
+		});
+		const result = (verify as { result: { ok: true; cookie: Record<string, unknown> } }).result;
+		expect(result.cookie).toMatchObject({
+			name: "otta_session",
+			httpOnly: true,
+			secure: true,
+			sameSite: "lax",
+			path: "/",
+		});
+		expect(Date.parse(String(result.cookie["expiresAt"]))).toBeGreaterThan(Date.now());
+	});
+
+	test("#306: logout revokes the session and returns a cookie descriptor that clears it", async () => {
+		const token = await loginThroughSandbox(`${NS}-out@example.test`);
+		const before = await sandbox.invokeRoute("storefront/account/orders", { sessionToken: token });
+		expect((before as { result: { ok: boolean } }).result.ok).toBe(true);
+
+		const out = await sandbox.invokeRoute("storefront/account/logout", { sessionToken: token });
+		const result = (out as { result: { ok: true; cookie: Record<string, unknown> } }).result;
+		expect(result.ok).toBe(true);
+		expect(result.cookie).toMatchObject({
+			name: "otta_session",
+			value: "",
+			httpOnly: true,
+			secure: true,
+			sameSite: "lax",
+			path: "/",
+			expiresAt: "1970-01-01T00:00:00.000Z",
+		});
+
+		// The revoked token no longer opens the account.
+		const after = await sandbox.invokeRoute("storefront/account/orders", { sessionToken: token });
+		expect(after).toEqual({ result: { ok: false, redirectTo: "/account/login" } });
+
+		// Idempotent: again, or with no token at all, it still clears the cookie.
+		for (const input of [{ sessionToken: token }, {}]) {
+			const again = await sandbox.invokeRoute("storefront/account/logout", input);
+			expect((again as { result: { ok: boolean } }).result.ok).toBe(true);
+		}
 	});
 
 	test("the account pages add no new capability beyond network:request/allowedHosts", () => {

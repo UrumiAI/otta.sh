@@ -403,10 +403,9 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		});
 	});
 
-	// NOT SHAREABLE for the mirror-image reason: the HTTP transport DID dispatch the
-	// login mail — the shared identity cases minted their sessions by capturing it —
-	// so "no mail left the process" was true here and false there, by design on both.
-	test("a login link records ONE challenge and dispatches NO mail", async () => {
+	// With no mailer injected — the client's own default — a challenge is recorded
+	// and nothing leaves the process. The mailed half is `login-link-mail.test.ts`.
+	test("a login link with no mailer records ONE challenge and makes no egress", async () => {
 		const challenges = harness.ctx.storage?.["login_challenges"];
 		if (challenges === undefined)
 			throw new Error("the login_challenges collection is not declared");
@@ -414,11 +413,7 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 
 		expect(await client.requestLoginLink("shopper@example.test")).toEqual({ ok: true });
 
-		// The challenge is recorded — counted in the store rather than inferred by
-		// issuing a second one, which would have proven only that the verifier works.
 		expect(await challenges.count()).toBe(before.rows + 1);
-		// And no mail left the process, because there is nowhere for it to go yet: the
-		// only outbound surface this transport has is `ctx.http`, and it was untouched.
 		expect(harness.egressAttempts()).toBe(before.egress);
 	});
 });
