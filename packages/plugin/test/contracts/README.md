@@ -1,10 +1,11 @@
 # `commerceClientContract`
 
 The behavioural spec of the commerce client surface, expressed so **more than one transport can run
-it**. Extracted from the HTTP client's own test files (INC-A7); it survives the deletion of
-`HttpCommerceClient`, the four admin HTTP clients and both harnesses at the service-removal
-increment — `commerce-client-contract.http.test.ts` is the tier that dies then, this directory is
-not. Three slices: `storefrontCommerceClientContract` (the 25-method `CommerceClient`),
+it**. Extracted from the HTTP client's own test files (INC-A7); it survived the deletion of the
+HTTP commerce client, the four admin HTTP clients and both harnesses at the service-removal
+increment (INC-D3b) — `commerce-client-contract.http.test.ts` was the tier that died then, this
+directory was not, and today the in-process client is the one tier that runs it. Three slices:
+`storefrontCommerceClientContract` (the 25-method `CommerceClient`),
 `adminOrdersProductsClientContract`, `adminRulesReportingClientContract` — one per INC-B10a/b/c.
 
 ## The tier interface

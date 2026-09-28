@@ -1,7 +1,7 @@
 // Otta storefront Worker — TEMPLATE (plan D5). This tracked file carries
 // PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
 // — or edit this file in place — and fill in YOUR Worker name, D1 database
-// name/id, and R2 bucket (see the root DEPLOYMENT.md §3.2 runbook).
+// name/id, and R2 bucket (see the root DEPLOYMENT.md §2.1 runbook).
 // When `wrangler.local.jsonc` exists, astro.config.ts points the Cloudflare
 // adapter at it (`configPath`) at BUILD time; plain `wrangler deploy` then
 // deploys those values via the adapter-generated dist config — do NOT use
@@ -36,23 +36,22 @@
 	"name": "my-otta-store",
 	"main": "./src/worker.ts",
 	"compatibility_date": "2026-02-24",
-	// `global_fetch_strictly_public` is REQUIRED here (deploy-verified):
-	// Cloudflare blocks Worker→*.workers.dev subrequests and stubs them 404
-	// — without the flag the site's ctx.http calls to a commerce-service
-	// Worker on workers.dev never left Cloudflare (parallel wrangler tails
-	// proved the request never arrived; direct curl worked). PAIRING
-	// INVARIANT: the flag is incompatible with D1 read-replica sessions
-	// (every SSR request hangs, silently — em-dash docs
-	// deployment/cloudflare.mdx:121-130, emdash issue #1273), so d1() in
-	// astro.config must keep `session` OFF while this flag is present. Both
-	// halves are pinned by test/{wrangler,site}-config tests. A custom
-	// domain on the service would lift the subrequest block and allow
-	// removing the flag.
+	// `global_fetch_strictly_public` is pinned PRESENT by
+	// test/wrangler-config.test.ts. It was added (deploy-verified) for the
+	// site's ctx.http calls to a commerce-service Worker on workers.dev,
+	// which Cloudflare otherwise blocks and stubs 404; that service and the
+	// call are gone (ADR-0020), so the original reason no longer applies —
+	// removing the flag is a config + test change, not a comment edit.
+	// PAIRING INVARIANT (DEPLOYMENT.md §2.4): the flag is incompatible with
+	// D1 read-replica sessions (every SSR request hangs, silently — em-dash
+	// docs deployment/cloudflare.mdx:121-130, emdash issue #1273), so d1()
+	// in astro.config must keep `session` OFF while this flag is present.
+	// Both halves are pinned by test/{wrangler,site}-config tests.
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"d1_databases": [
 		{
 			"binding": "DB",
-			// PLACEHOLDERS — from `wrangler d1 create <name>` (DEPLOYMENT.md §3.2).
+			// PLACEHOLDERS — from `wrangler d1 create <name>` (DEPLOYMENT.md §2.1).
 			// The id is a syntactically-valid dummy, not a real database.
 			"database_name": "YOUR-D1-DATABASE-NAME",
 			"database_id": "00000000-0000-0000-0000-000000000000",

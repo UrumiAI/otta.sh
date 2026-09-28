@@ -30,7 +30,8 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
    registered, so there's something to actually run. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
-   wiring Otta into your own site — it covers **catalog + cart only** today (see
+   wiring Otta into your own site — it covers catalog, cart and card checkout today; the
+   x402 gate, download delivery and customer account pages are not built yet (see
    [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
@@ -72,7 +73,9 @@ SITE_URL=http://localhost:4321 \
 that page is the only place commercial fields are edited; the CMS owns the title,
 description and images.
 
-One thing to know: this storefront covers **catalog + cart only** — see [Status](#status).
+One thing to know: card checkout needs Stripe configured (both secrets in admin Settings, plus
+the build-time publishable key), and the storefront has no account or download pages yet —
+see [Status](#status).
 
 To deploy this for free on Cloudflare Workers, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
@@ -141,12 +144,14 @@ The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inven
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
 shipping, discounts, entitlements, reporting, and settings.
 
-The reference **storefront** (`sites/staging`) deliberately covers **catalog + cart
-only**. The checkout / payment / download pages
+The reference **storefront** (`sites/staging`) covers catalog, cart and **card
+checkout**: `/checkout`, the Stripe pay page and the order confirmation page are built
+([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)), so a
+Stripe-configured deployment completes a card purchase end-to-end
+([`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). The x402 gate and the download delivery page
 ([#27](https://github.com/UrumiAI/otta.sh/issues/27)) and the customer account pages are
-not built yet — so today you get a browsable catalog and carts with real inventory
-holds, but completing a purchase end-to-end means building those pages or driving the
-plugin's own commerce routes directly.
+not built yet — for those, build the pages or drive the plugin's own commerce routes
+directly.
 
 ## License
 

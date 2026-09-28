@@ -4,7 +4,7 @@
  *
  * ADR-0014 permits a second EmDash descriptor (`otta-console`,
  * `format: "native"`) to render React admin pages. ADR-0006 Decision 1 is
- * REAFFIRMED by it: the 18 `packages/plugin/test/*.sandbox.test.ts` suites stay
+ * REAFFIRMED by it: the 24 `packages/plugin/test/*.sandbox.test.ts` suites stay
  * the contract gate for `@otta-sh/plugin`. Those suites are browser-blind, so
  * they cannot cover React — hence this config. It is **additive**. Nothing here
  * weakens, replaces or conditions the sandbox gate, and

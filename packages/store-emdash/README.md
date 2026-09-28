@@ -5,12 +5,11 @@ Commerce store adapters over EmDash's plugin-storage primitives.
 ## The host this needs
 
 The port is written against the **conditional-write primitives** — `updateIf`,
-`getVersioned`, `compareAndSet`, `compareAndDelete`. No published `emdash`
-release carries them yet. The manifest's `emdash` specifier is the plain
-registry version so that adopting a release is a one-line change, and until then
-the workspace override redirecting it to the vendored build is **load-bearing**:
-without it the package resolves a host that lacks the primitives, and the failure
-is a type error against a real installed package rather than a missing dependency.
+`getVersioned`, `compareAndSet`, `compareAndDelete`. `emdash@0.38.0` is the first
+published release that carries them, and the manifest names it exactly; there is
+no vendored build and no workspace override any more (see `pnpm-workspace.yaml`).
+A host older than `0.38.0` lacks the primitives, and the failure is a type error
+against a real installed package rather than a missing dependency.
 
 ## The seam
 
@@ -530,15 +529,14 @@ cases (the crashed-dispatcher and failed-send ones) are still the list increment
 **The port is delivered across three increments, and the SHAPE was complete in the
 first.** Creation, the guarded transitions, the audit spine, expiry and the hold
 intents came first; refunds, the reconciliation resolution, fulfillment and
-cancellation are described below. What remains is the lists, the search and the
-customer view. Their FIELDS and their INDEXES were declared from the start —
-`refunds`, `fulfillment`, `cancellation`, `reconciliationResolution`, `searchKey`,
-`emailDueAt`, `customerKey` and the `[state, createdAt]` compound — so no increment
-reshapes a collection that already holds live orders. Every method the last one owns
-throws a typed `NotImplementedInIncrementError` naming it, and every contract case
-that needs one is registered as a matching `test.todo` (see
-`test/order-contract-b2.ts`, which is down to 39): a loud refusal and a visible
-count, never a plausible empty answer.
+cancellation are described below, and the last increment delivered the lists, the
+search and the customer view. Their FIELDS and their INDEXES were declared from the
+start — `refunds`, `fulfillment`, `cancellation`, `reconciliationResolution`,
+`searchKey`, `emailDueAt`, `customerKey` and the `[state, createdAt]` compound — so no
+increment reshaped a collection that already held live orders. While an increment was
+outstanding, each method it owned threw a typed `NotImplementedInIncrementError` naming
+it — a loud refusal, never a plausible empty answer; none is left now, and the list
+cases run in `test/order-lists.dialects.test.ts`.
 
 **Six SQL features disappear into the shape.** `orders.idempotency_key` UNIQUE
 becomes the `order_keys` claim document. `order_items` as a child table becomes the

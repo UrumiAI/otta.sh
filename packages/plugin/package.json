@@ -1,7 +1,7 @@
 {
 	"name": "@otta-sh/plugin",
 	"version": "0.0.1",
-	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
+	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). Runs commerce in-process on the host-injected ctx.storage; no React, no DB driver.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"

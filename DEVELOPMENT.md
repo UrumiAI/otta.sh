@@ -4,7 +4,7 @@ _How we build Otta. Read this before writing code._
 
 Otta is a standalone repo (its own git history, its own pnpm workspace) that
 **mirrors [EmDash]'s conventions** without inheriting its config. Where EmDash has a
-practice that fits a commerce service, we copy it. Where commerce needs more (money,
+practice that fits a commerce plugin, we copy it. Where commerce needs more (money,
 concurrency, idempotency), we add rules EmDash doesn't have.
 
 [EmDash]: https://github.com/emdash-cms/emdash
@@ -31,7 +31,7 @@ as done.
 ## 2. Real databases, never mocks
 
 No DB mocks, ever — same as EmDash. A mocked store can't catch the races and constraint
-violations that are the entire point of the commerce service.
+violations that are the entire point of the commerce layer.
 
 - **SQLite (better-sqlite3) is the fast default.** Every contract test runs on it locally;
   no setup, sub-second.
@@ -39,8 +39,8 @@ violations that are the entire point of the commerce service.
   `pg` connection).
 - **The concurrency test is Postgres-required.** `better-sqlite3` serializes writes in one
   process, so it cannot exercise a real race — it verifies the _SQL is correct_, not that
-  it's _race-safe_. Mark the no-oversell test to run only against Postgres (and D1 later),
-  and say so in the test name.
+  it's _race-safe_. Mark the no-oversell test to run only against Postgres (and D1, its own
+  tier below), and say so in the test name.
 - **Real D1 is its own tier, and it is the release gate.** `pnpm test:d1` runs the contract
   suites and the races against a real D1 inside `workerd`, under the Cloudflare workers
   pool — the dialect the storefront actually ships on, and the only tier that exercises the
@@ -76,8 +76,9 @@ domain is a build-breaking bug, not a code-review nit.
   over HTTP against a live test server, once in-process — still runs every one of those
   cases, now against that single tier, over a real document store, with `ctx.http` bound to
   a rejecting stub so an accidental egress fails the suite.
-- **Add an adapter only when a second real implementation exists.** No speculative
-  `EmdashStore` / `InProcessCommerceClient` before the EmDash primitive ships.
+- **Add an adapter only when a second real implementation exists.** No speculative adapter
+  ahead of the host primitive it needs — the EmDash stores waited for the conditional-write
+  primitives (ADR-0018).
 
 ## 4. Commerce invariants (rules EmDash doesn't need)
 
@@ -103,9 +104,10 @@ in-process leniency.
   (`emdash/src/astro/integration/index.ts:335-351`). `@otta-sh/plugin` registers `format:
   "standard"` (ADR-0006) and stays Block Kit — the admin console — Pricing & inventory, Orders,
   Reports, Settings — is Block Kit `elements` throughout.
-- **Every capability is declared explicitly.** The plugin reaches the service _only_ via
-  `ctx.http` + `allowedHosts` — nothing else. A test/CI check guards that the plugin has no
-  other network or DB surface.
+- **Every capability is declared explicitly.** The plugin's only egress is `ctx.http` +
+  `allowedHosts`, and its state lives only in what the host injects — `ctx.storage` for
+  commerce truth (ADR-0018), `ctx.kv` for settings — nothing else. A test/CI check guards
+  that the plugin has no other network or DB surface.
 - Any storefront/admin UI string is localized and RTL-safe (logical Tailwind classes),
   same as EmDash.
 
