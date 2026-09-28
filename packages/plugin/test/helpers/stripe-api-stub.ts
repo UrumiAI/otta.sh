@@ -17,22 +17,76 @@ export interface StripeApiStub {
 	address: string;
 	/** Every request that was addressed to `api.stripe.com`, in arrival order. */
 	requests: StripeRecordedRequest[];
-	/** Replace the responder (default: a successful PaymentIntent create). */
+	/**
+	 * Every request this proxy REFUSED to forward (a non-Stripe, non-loopback
+	 * host). Inside the isolate a refusal is just a 502 the plugin may swallow as
+	 * an ordinary provider failure, so a suite asserts this is empty rather than
+	 * trusting a route's answer to surface it.
+	 */
+	refused: string[];
+	/** Replace the responder for the rest of the case. */
 	respondWith(responder: StripeResponder): void;
+	/** Clear `requests`, `refused` and the idempotency memory, and restore
+	 *  {@link stripeLikeResponder}. */
+	reset(): void;
 	close(): Promise<void>;
 }
 
+/** Stripe's error envelope for a request it rejects before doing anything. */
+function invalidRequest(code: string, message: string): { status: number; body: unknown } {
+	return { status: 400, body: { error: { type: "invalid_request_error", code, message } } };
+}
+
 /**
- * The default reply to `POST /v1/payment_intents`: a PaymentIntent with an id and
- * a client secret, numbered by arrival so two creates are distinguishable.
+ * The default responder: `POST /v1/payment_intents` answered the way Stripe
+ * answers it, including the refusals — so a case cannot pass on a reply real
+ * Stripe would never give.
+ *
+ *  - `amount` must be a positive integer string and `currency` a lowercase
+ *    three-letter code; anything else is a 400 `invalid_request_error`.
+ *  - Stripe's native idempotency: a repeated `Idempotency-Key` with the SAME
+ *    parameters returns the SAME PaymentIntent, and with DIFFERENT parameters is
+ *    a 400 `idempotency_error`.
+ *
+ * `n` numbers new intents so two distinct creates are distinguishable.
  */
-export function createdIntent(
-	req: StripeRecordedRequest,
-	n: number,
-): { status: number; body: unknown } {
-	const orderId = req.form.get("metadata[order_id]") ?? "unknown";
-	const id = `pi_stub_${String(n)}_${orderId}`;
-	return { status: 200, body: { id, client_secret: `${id}_secret_stub` } };
+export function stripeLikeResponder(): StripeResponder {
+	const byKey = new Map<string, { params: string; reply: { status: number; body: unknown } }>();
+	let n = 0;
+	return (req) => {
+		const amount = req.form.get("amount") ?? "";
+		const currency = req.form.get("currency") ?? "";
+		if (!/^[1-9]\d*$/.test(amount)) {
+			return invalidRequest("parameter_invalid_integer", `Invalid integer: ${amount}`);
+		}
+		if (!/^[a-z]{3}$/.test(currency)) {
+			return invalidRequest("parameter_invalid_string", `Invalid currency: ${currency}`);
+		}
+
+		const key = req.headers["idempotency-key"];
+		const params = req.form.toString();
+		const previous = typeof key === "string" ? byKey.get(key) : undefined;
+		if (previous !== undefined) {
+			return previous.params === params
+				? previous.reply
+				: {
+						status: 400,
+						body: {
+							error: {
+								type: "idempotency_error",
+								message: "Keys for idempotent requests can only be used with the same parameters",
+							},
+						},
+					};
+		}
+
+		n += 1;
+		const orderId = req.form.get("metadata[order_id]") ?? "unknown";
+		const id = `pi_stub_${String(n)}_${orderId}`;
+		const reply = { status: 200, body: { id, client_secret: `${id}_secret_stub` } };
+		if (typeof key === "string") byKey.set(key, { params, reply });
+		return reply;
+	};
 }
 
 /**
@@ -49,14 +103,25 @@ export function createdIntent(
  *
  * Requests addressed to `api.stripe.com` are recorded and answered. Everything
  * else — in practice the harness's storage bridge — is forwarded to its own
- * address, which must be loopback: a sandbox test that reaches the real
- * internet through this proxy is a bug, and it fails loudly instead.
+ * address, which must be loopback. Anything else is refused, never forwarded, and
+ * recorded in {@link StripeApiStub.refused} so the suite can fail on it: a
+ * sandbox test must never reach the real internet through this proxy.
  */
 export async function startStripeApiStub(): Promise<StripeApiStub> {
 	const requests: StripeRecordedRequest[] = [];
-	let responder: StripeResponder = (req) => createdIntent(req, requests.length);
+	const refused: string[] = [];
+	let responder: StripeResponder = stripeLikeResponder();
 
 	const server: Server = createServer((req, res) => {
+		const fail = (err: unknown) => {
+			if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+			res.end(`stripe-api-stub: ${String(err)}`);
+		};
+		req.on("error", fail);
+		res.on("error", () => {
+			// The isolate hung up; there is no one left to answer.
+		});
+
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
@@ -79,16 +144,16 @@ export async function startStripeApiStub(): Promise<StripeApiStub> {
 				return;
 			}
 
-			void forward(host, method, path, req.headers, raw).then(
-				(forwarded) => {
-					res.writeHead(forwarded.status, forwarded.headers);
-					res.end(forwarded.body);
-				},
-				(err: unknown) => {
-					res.writeHead(502, { "content-type": "text/plain" });
-					res.end(`stripe-api-stub could not forward to ${host}: ${String(err)}`);
-				},
-			);
+			if (!isLoopback(host)) {
+				refused.push(`${method} ${host}${path}`);
+				fail(new Error(`refusing to forward a sandbox request to non-loopback host "${host}"`));
+				return;
+			}
+
+			void forward(host, method, path, req.headers, raw).then((forwarded) => {
+				res.writeHead(forwarded.status, forwarded.headers);
+				res.end(forwarded.body);
+			}, fail);
 		});
 	});
 
@@ -99,8 +164,14 @@ export async function startStripeApiStub(): Promise<StripeApiStub> {
 	return {
 		address: `127.0.0.1:${String(port)}`,
 		requests,
+		refused,
 		respondWith(next) {
 			responder = next;
+		},
+		reset() {
+			requests.length = 0;
+			refused.length = 0;
+			responder = stripeLikeResponder();
 		},
 		async close() {
 			await new Promise<void>((resolve, reject) => {
@@ -110,6 +181,30 @@ export async function startStripeApiStub(): Promise<StripeApiStub> {
 	};
 }
 
+function isLoopback(host: string): boolean {
+	const hostname = host.replace(/:\d+$/, "");
+	return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+/**
+ * Hop-by-hop headers (RFC 9110 §7.6.1) describe one connection, not the
+ * request, so a proxy must not forward them — and undici's `fetch` rejects
+ * several outright. `content-length` goes too: the body is re-sent whole.
+ */
+const HOP_BY_HOP = new Set([
+	"connection",
+	"content-length",
+	"host",
+	"keep-alive",
+	"proxy-authenticate",
+	"proxy-authorization",
+	"proxy-connection",
+	"te",
+	"trailer",
+	"transfer-encoding",
+	"upgrade",
+]);
+
 async function forward(
 	host: string,
 	method: string,
@@ -117,13 +212,9 @@ async function forward(
 	headers: IncomingHttpHeaders,
 	body: Buffer,
 ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
-	const hostname = host.replace(/:\d+$/, "");
-	if (hostname !== "127.0.0.1" && hostname !== "localhost") {
-		throw new Error(`refusing to forward a sandbox request to non-loopback host "${host}"`);
-	}
 	const outHeaders: Record<string, string> = {};
 	for (const [name, value] of Object.entries(headers)) {
-		if (value === undefined || name === "host" || name === "connection") continue;
+		if (value === undefined || HOP_BY_HOP.has(name)) continue;
 		outHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
 	}
 	const res = await fetch(`http://${host}${path}`, {
@@ -133,9 +224,7 @@ async function forward(
 	});
 	const resHeaders: Record<string, string> = {};
 	res.headers.forEach((value, name) => {
-		if (name !== "content-encoding" && name !== "content-length" && name !== "transfer-encoding") {
-			resHeaders[name] = value;
-		}
+		if (!HOP_BY_HOP.has(name) && name !== "content-encoding") resHeaders[name] = value;
 	});
 	return { status: res.status, headers: resHeaders, body: Buffer.from(await res.arrayBuffer()) };
 }

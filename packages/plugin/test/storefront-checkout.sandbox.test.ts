@@ -8,9 +8,10 @@
  * stub's replies: a quote could be made to answer `CART_EMPTY`, a create could
  * be made to answer a 502, an order could be made to carry a fractional total.
  * The transport is gone — the routes run the cart/quote/order use-cases in
- * process over `ctx.storage` — so a scripted reply can no longer be injected
- * anywhere, and every reason this suite asserts now has to be PRODUCED by real
- * data. Each case below therefore arranges the condition (an empty cart, a line
+ * process over `ctx.storage` — so a scripted commerce reply can no longer be
+ * injected anywhere, and every reason this suite asserts now has to be PRODUCED
+ * by real data. (The one remaining outside party is Stripe, stubbed on the
+ * second boot below.) Each case below therefore arranges the condition (an empty cart, a line
  * with no product reference, a product priced in another currency) instead of
  * declaring the answer, which is a stronger test of the same contract.
  *
@@ -23,9 +24,9 @@
  * guard's `RENDER_FAILED` with no internals attached, and it leaves the cart and
  * its stock hold exactly as it found them.
  *
- * EGRESS IS STILL ASSERTED, more strictly than before. The boot declares NO
- * allowed hosts, so any `ctx.http` call from these routes throws — a checkout
- * that completes on this boot reached the network for nothing. That replaces
+ * EGRESS IS STILL ASSERTED, more strictly than before. The MAIN boot declares
+ * NO allowed hosts, so any `ctx.http` call from these routes throws — a checkout
+ * that completes on that boot reached the network for nothing. That replaces
  * the old "the stub recorded every request" argument, and it also replaces the
  * `X-Internal-Token` case: there is no request to inspect for a header, so what
  * that header guarded (a guest-readable page must never see the operator's
@@ -38,7 +39,10 @@
  *    reaches the caller as that reason — never `RENDER_FAILED`, never a partial
  *    `ok: true` view with a payable-looking button on it;
  *  - `storefront/order` renders the PUBLIC projection of a real order and
- *    nothing else.
+ *    nothing else;
+ *  - `checkout/place` creates the order and its PaymentIntent under the form's
+ *    idempotency key, hands back only the public fields, and maps every failure
+ *    to its typed reason — with the real Stripe gateway armed from kv.
  */
 import {
 	cents,
@@ -58,12 +62,8 @@ import {
 	uuidIdGen,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import {
-	createdIntent,
-	startStripeApiStub,
-	type StripeApiStub,
-} from "./helpers/stripe-api-stub.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { startStripeApiStub, type StripeApiStub } from "./helpers/stripe-api-stub.js";
 import {
 	loadPluginInSandbox,
 	productionAllowedHosts,
@@ -356,9 +356,10 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	/**
 	 * UNCONFIGURED, CONTAINED. This boot provisions no Stripe secrets, so no
 	 * `stripe` gateway is armed (module doc); the domain refuses the method by
-	 * throwing and `renderGuard` collapses that to RENDER_FAILED. Two things matter about that and are asserted here: the caller
-	 * is told nothing about the plugin's insides, and — far more importantly — the
-	 * buyer's cart is not damaged on the way out. A refusal that consumed the cart
+	 * throwing and `renderGuard` collapses that to RENDER_FAILED. Two things
+	 * matter about that and are asserted here: the caller is told nothing about
+	 * the plugin's insides, and — far more importantly — the buyer's cart is not
+	 * damaged on the way out. A refusal that consumed the cart
 	 * or dropped its stock hold would be worse than the missing gateway.
 	 */
 	test("with no payment gateway wired, place refuses cleanly and leaves the cart and its hold intact", async () => {
@@ -423,10 +424,13 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  * to `api.stripe.com` over `ctx.http`. This boot grants production's own
  * allowlist and sets workerd's global outbound to a local stub, so that request
  * passes the plugin's real allowlist check and then lands on the stub instead of
- * the internet (`helpers/stripe-api-stub.ts`). Nothing about the reply is
- * scripted beyond what Stripe itself would say: every other condition — a
- * replayed key, a paid order, a lost hold, a checked-out cart — is arranged
- * against the real document store.
+ * the internet (`helpers/stripe-api-stub.ts`). By default the stub answers the
+ * way Stripe does — including its refusals of a non-integer amount, a malformed
+ * currency and a reused key with different parameters — so no case can pass on
+ * a reply real Stripe would never give. Two cases script the reply outright and
+ * say so (an unusual client secret, a 502). Every other condition — a replayed
+ * key, a paid order, a lost hold, a checked-out cart — is arranged against the
+ * real document store.
  *
  * A SEPARATE BOOT, on purpose. The suites above boot with NO allowed hosts and
  * make the stronger claim that summary and order reads reach the network for
@@ -437,11 +441,13 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  *
  * TWO PARKED NAMES DID NOT COME BACK, because neither property exists in process:
  *  - "a reply with NO totals block still places the order — total simply absent".
- *    A service REPLY could omit its totals; an in-process `Order` cannot, since
- *    the domain reads `order.totals` to build the PaymentIntent before the route
- *    ever formats anything. (Arranged by deleting the block from a stored order:
- *    the domain throws first and the route answers RENDER_FAILED.) The route's
- *    containment is still pinned — by the unformattable-total cases below.
+ *    A service REPLY could omit its totals; an in-process `Order` cannot. On a
+ *    pending replay the domain reads `order.totals` to build the PaymentIntent
+ *    (`intentInputFor` in `create-order-from-cart.ts`), and on a paid replay the
+ *    client's serializer reads it (`serializeOrderSummary` in
+ *    `in-process-commerce-client.ts`) — both before the route formats anything,
+ *    so a missing block throws first and the route answers RENDER_FAILED. The
+ *    route's own containment is still pinned, by the unformattable-total cases.
  *  - "a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason". The route's
  *    parser applies the domain's own address rules (the same required fields,
  *    trimming and caps), so no ship-to the domain would refuse gets past it.
@@ -489,8 +495,13 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	});
 
 	beforeEach(() => {
-		stripe.requests.length = 0;
-		stripe.respondWith((req) => createdIntent(req, stripe.requests.length));
+		stripe.reset();
+	});
+
+	afterEach(() => {
+		// A refused forward is a 502 INSIDE the isolate, which a route may report as
+		// an ordinary provider failure — so it is asserted here, not left to the case.
+		expect(stripe.refused).toEqual([]);
 	});
 
 	async function place(input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -526,6 +537,8 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(create.path).toBe("/v1/payment_intents");
 		// The key the form carried is the key Stripe sees — not re-derived, not wrapped.
 		expect(create.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+		// ...and the gateway is the one the Settings form armed, not some other key.
+		expect(create.headers.authorization).toBe(`Bearer ${STRIPE_SECRET_KEY}`);
 		expect(create.form.get("metadata[order_id]")).toBe(first["orderId"]);
 		expect(create.form.get("amount")).toBe(String(SUBTOTAL_CENTS));
 		expect(create.form.get("currency")).toBe("usd");
@@ -535,10 +548,13 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 		const replay = await placeCart(cartId);
 		expect(replay).toMatchObject({ ok: true, orderId: first["orderId"], alreadyPlaced: false });
-		// The replay re-issues the intent under the SAME key — Stripe's own
-		// idempotency answers it — and mints no second order.
+		// The replay re-issues the create under the SAME key with the SAME parameters,
+		// so Stripe's own idempotency hands back the SAME intent (a changed parameter
+		// would be a 400 `idempotency_error` from the stub, as from Stripe).
 		expect(stripe.requests).toHaveLength(2);
 		expect(stripe.requests[1]!.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+		expect(stripe.requests[1]!.form.toString()).toBe(create.form.toString());
+		expect(replay["clientAction"]).toEqual(first["clientAction"]);
 	});
 
 	test("passes clientAction through UNMODIFIED — the client secret is data in transit", async () => {
@@ -629,9 +645,11 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 	test("the total honours the requested locale, and falls back rather than failing", async () => {
 		const german = await placeCart(await seedThreeLineCart(), { locale: "de-DE" });
-		expect((german["total"] as { formatted: string }).formatted).toBe(
-			new Intl.NumberFormat("de-DE", { style: "currency", currency: "USD" }).format(49.98),
-		);
+		const formatted = (german["total"] as { formatted: string }).formatted;
+		// Decimal comma, not the en-US fallback. Matched rather than pinned whole:
+		// the space before the symbol differs between ICU versions (NBSP vs NNBSP).
+		expect(formatted).toMatch(/^49,98\s\$$/u);
+		expect(formatted).not.toBe("$49.98");
 
 		const garbage = await placeCart(await seedThreeLineCart(), { locale: "not a locale!!" });
 		expect(garbage["ok"]).toBe(true);
@@ -653,10 +671,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 	/**
 	 * THE CONTAINMENT. Formatting the total runs `cents()`/`currency()`, which
-	 * throw, and it runs AFTER the order exists and its stock is held. The domain
-	 * never mints an order whose totals would fail them, so the condition is
-	 * arranged the only way it can arise — a stored order that is not what the
-	 * current build writes — by rewriting the document, then replaying the place.
+	 * throw, and it runs AFTER the order exists. The domain never mints an order
+	 * whose totals would fail them, so the condition is arranged the only way it
+	 * can arise — a stored order that is not what the current build writes — by
+	 * rewriting the document of a PAID order and replaying the place.
+	 *
+	 * PAID, not pending, on purpose. A pending replay re-sends the totals to Stripe,
+	 * which refuses every one of these but the lowercase currency — so on that path
+	 * the answer is PAYMENT_INTENT_FAILED and the formatter is never reached. A paid
+	 * replay makes no provider call at all, which is the one path where a stored
+	 * total reaches the formatter untouched: the place must still succeed, as
+	 * `alreadyPlaced`, and only the label is lost.
 	 */
 	test.each([
 		["a lowercase currency", { currency: "usd" }],
@@ -669,19 +694,23 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			const cartId = await seedThreeLineCart();
 			const first = await placeCart(cartId);
 			const orderId = first["orderId"] as string;
+			expect(await orderStore.markPaid(toOrderId(orderId))).toBe(true);
 			const orders = storage[ORDERS_COLLECTION]!;
 			const doc = (await orders.get(orderId)) as { totals: Record<string, unknown> };
 			await orders.put(orderId, { ...doc, totals: { ...doc.totals, ...corruption } });
+			stripe.requests.length = 0;
 
 			const replay = await placeCart(cartId);
 
-			expect(replay, JSON.stringify(replay)).toMatchObject({
+			expect(replay, JSON.stringify(replay)).toEqual({
 				ok: true,
 				orderId,
-				alreadyPlaced: false,
+				state: "paid",
+				alreadyPlaced: true,
+				clientAction: { kind: "none" },
 			});
 			expect(replay).not.toHaveProperty("total");
-			expect(replay["clientAction"]).toMatchObject({ kind: "stripe_client_secret" });
+			expect(stripe.requests).toHaveLength(0);
 		},
 	);
 
