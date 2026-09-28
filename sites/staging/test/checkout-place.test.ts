@@ -609,6 +609,7 @@ describe("6f — every place-time failure becomes ?error=<TOKEN> on /checkout", 
 		["PRODUCT_NOT_PRICED"],
 		["CURRENCY_MISMATCH"],
 		["PAYMENT_INTENT_FAILED"],
+		["IDEMPOTENCY_KEY_REUSED"],
 		["INVALID_SHIPPING_ADDRESS"],
 	])("%s", async (reason) => {
 		const { handler } = makeHandler({ ok: false, reason });

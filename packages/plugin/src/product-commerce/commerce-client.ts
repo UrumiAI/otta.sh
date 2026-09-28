@@ -302,6 +302,10 @@ export interface CommerceClient {
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
 	createCart(currency?: string): Promise<{ cartId: string }>;
+	/** The effective cart-hold window in whole minutes — the admin's saved
+	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
+	 *  read measures against (issue #127). For shopper-facing copy. */
+	getCartHoldTtlMinutes(): Promise<number>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
 	addCartLine(
 		cartId: string,
@@ -494,6 +498,9 @@ export type CheckoutFailureReason =
 	| "CURRENCY_MISMATCH"
 	| "INVALID_SHIPPING_ADDRESS"
 	| "PAYMENT_INTENT_FAILED"
+	/** The idempotency key already names an order of ANOTHER cart (issue #133):
+	 *  a stale/second checkout tab. Nothing was placed; the cart is untouched. */
+	| "IDEMPOTENCY_KEY_REUSED"
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
 	| "COUPON_NOT_FOUND"

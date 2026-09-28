@@ -1095,6 +1095,23 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 	});
 
+	test("the OLD cart's key submitted against a NEW cart (a stale tab) is the typed IDEMPOTENCY_KEY_REUSED — no intent, and the new cart still places under its own key (issue #133)", async () => {
+		const oldCart = await seedThreeLineCart();
+		expect((await placeCart(oldCart))["ok"]).toBe(true);
+		const newCart = await seedThreeLineCart();
+		stripe.reset();
+
+		const stale = await place({
+			cartId: newCart,
+			buyerRef: BUYER_REF,
+			idempotencyKey: `checkout:${oldCart}`,
+		});
+
+		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(stripe.requests).toHaveLength(0);
+		expect(await placeCart(newCart)).toMatchObject({ ok: true, alreadyPlaced: false });
+	});
+
 	test("a line whose hold was released before checkout is the typed RESERVATION_LOST", async () => {
 		const cartId = await seedThreeLineCart();
 		const read = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));

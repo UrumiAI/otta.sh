@@ -724,6 +724,13 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				description:
 					"The refund request timed out and its outcome is unknown. Do NOT retry — check your provider dashboard first, then reconcile.",
 			};
+		case "IDEMPOTENCY_KEY_REUSED":
+			return {
+				variant: "error",
+				title: "Not refunded",
+				description:
+					"This request's key was already used for a different refund, so nothing was refunded. Reload to see the current ledger, then try again.",
+			};
 		case "CURRENCY_MISMATCH":
 			return {
 				variant: "error",

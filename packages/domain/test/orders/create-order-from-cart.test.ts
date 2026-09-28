@@ -233,6 +233,135 @@ describe("createOrderFromCart", () => {
 		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
 	});
 
+	// -- issue #133: a replayed key must belong to THIS cart ----------------------
+
+	test("a key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED — never ok:true for an order this cart has nothing to do with", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// A stale tab submits the OLD cart's key while the cookie names a NEW cart.
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const newReservation = (await h.cartStore.get(newCart))!.lines[0]!.reservationId!;
+		const res = await createOrderFromCart(h.createDeps, cmd(newCart, "checkout:old"));
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// The new cart is untouched: still active, no order stamped, its hold still held.
+		const cart = await h.cartStore.get(newCart);
+		expect({ state: cart?.state, orderId: cart?.orderId }).toEqual({
+			state: "active",
+			orderId: null,
+		});
+		expect(h.inventory.reservationState(newReservation)).toBe("held");
+		// And the key's own cart can still replay it.
+		const replay = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		expect(replay.ok && replay.order.id).toBe(first.order.id);
+	});
+
+	test("the mismatch is refused even once the key's order has left pending (a PAID order is still not this cart's)", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const oldCart = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+		await h.orderStore.markPaid(first.order.id);
+
+		const newCart = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const res = await createOrderFromCart(h.createDeps, cmd(newCart, "checkout:old"));
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.cartStore.get(newCart))?.state).toBe("active");
+	});
+
+	test("a same-key call for another cart that RACES past the short-circuit is refused after the deduped insert — the foreign order's id is never stamped on this cart", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// The race window: this caller's I1 read ran before the winner's insert
+		// landed, so it saw no order — then its own insert is deduped on the key.
+		const racing = new Proxy(h.orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const newReservation = (await h.cartStore.get(newCart))!.lines[0]!.reservationId!;
+		const res = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			cmd(newCart, "checkout:old"),
+		);
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		const cart = await h.cartStore.get(newCart);
+		expect({ state: cart?.state, orderId: cart?.orderId }).toEqual({
+			state: "active",
+			orderId: null,
+		});
+		expect(h.inventory.reservationState(newReservation)).toBe("held");
+		// The winner's order and its adopted hold are untouched.
+		expect(h.inventory.reservationState(first.order.lines[0]!.reservationId!)).toBe("adopted");
+		expect((await h.cartStore.get(oldCart))?.orderId).toBe(first.order.id);
+	});
+
+	test("the racing foreign-cart call releases a coupon use IT redeemed — the orphan names an order that was never inserted", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await h.couponStore.create({
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 100,
+			maxUsesPerCustomer: null,
+		});
+		// The key's winning order used NO coupon.
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		const racing = new Proxy(h.orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			{ ...cmd(newCart, "checkout:old"), couponCode: "SAVE5" },
+		);
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
+	});
+
 	test("anti-N+1: an N-line cart reads product snapshots via ONE getManyByProductId, never per-line getByProductId", async () => {
 		await h.seedPhysical({
 			productId: "p1",

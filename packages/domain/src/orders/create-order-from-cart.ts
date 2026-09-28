@@ -105,7 +105,10 @@ function ttl(deps: CreateOrderDeps): number {
  * of an order (`orders.cart_id` is the complete answer). Idempotent under
  * `idempotencyKey`: a replay returns the same order, re-snapshots nothing,
  * re-adopts nothing (the guarded flips see the reservations already `adopted`
- * for this order).
+ * for this order). A replay is the same key for the SAME cart: the key reused
+ * for a different cart is refused `IDEMPOTENCY_KEY_REUSED` (issue #133), both at
+ * the short-circuit and — for a call that raced past it — after the deduped
+ * insert, before anything is adopted or stamped.
  */
 export async function createOrderFromCart(
 	deps: CreateOrderDeps,
@@ -124,6 +127,12 @@ export async function createOrderFromCart(
 	// expired). Re-issuing the payment intent is idempotent under the same key.
 	const already = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
 	if (already !== null) {
+		// Issue #133: a key is a replay only of the request it first carried. The
+		// same key aimed at ANOTHER cart (a stale/second tab whose form still holds
+		// the old cart's key) is not a replay — returning `already` would report
+		// success for an order this cart has nothing to do with. Checked before the
+		// state branch: a paid order is no more this cart's than a pending one.
+		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		if (already.state !== "pending") {
 			// The order has already left the checkout window — paid, failed, expired or
 			// cancelled. There is nothing left to begin paying for, so re-issuing an
@@ -276,6 +285,9 @@ export async function createOrderFromCart(
 	// link (order_totals.applied_coupon_code stays null when discount is 0). Only a
 	// discount-bearing coupon is redeemed and stamped.
 	let redemptionId: string | null = null;
+	// Whether THIS call's redeem wrote the redemption (vs. replaying an existing
+	// same-key one, which belongs to whichever call wrote it first).
+	let redemptionFresh = false;
 	if (quote.couponRecord !== null && breakdown.discountCents > 0) {
 		const redeemed = await deps.couponStore.redeem({
 			couponId: quote.couponRecord.id,
@@ -286,6 +298,7 @@ export async function createOrderFromCart(
 		});
 		if (!redeemed.ok) return { ok: false, reason: redeemed.reason };
 		redemptionId = redeemed.redemptionId;
+		redemptionFresh = !redeemed.replayed;
 	}
 
 	// From here on, a failure after a fresh redemption releases the coupon — but
@@ -314,6 +327,14 @@ export async function createOrderFromCart(
 			},
 			onOrderMinted: () => {
 				orderMinted = true;
+			},
+			onForeignOrder: async () => {
+				// Only a redemption THIS call wrote is orphaned (it names
+				// `freshOrderId`, which was never inserted). A replayed same-key
+				// redemption is the winning call's, and its order owns it.
+				if (redemptionId !== null && redemptionFresh) {
+					await deps.couponStore.release(redemptionId);
+				}
 			},
 		});
 	} catch (err) {
@@ -372,6 +393,12 @@ interface FinalizeContext {
 	 * catch must stop releasing it.
 	 */
 	onOrderMinted: () => void;
+	/**
+	 * The guarded insert deduped onto an order minted from ANOTHER cart under the
+	 * same key (the race twin of the I1 cart check, issue #133). Nothing of this
+	 * call's was persisted, so it releases only what this call itself wrote.
+	 */
+	onForeignOrder: () => Promise<void>;
 }
 
 async function finalizeOrder(
@@ -413,6 +440,15 @@ async function finalizeOrder(
 			},
 		},
 	});
+	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart
+	// that read I1 before the winner's insert landed is deduped HERE onto the
+	// winner's order. That order is not this cart's — adopting its holds is
+	// harmless but stamping it on THIS cart (step 3) would check out a cart that
+	// was never ordered. Refuse before anything moves; the winner owns its order.
+	if (order.cartId !== command.cartId) {
+		await ctx.onForeignOrder();
+		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+	}
 	// The order row is now durable and carries the discounted total: it, not this
 	// call frame, owns the coupon redemption from here on.
 	ctx.onOrderMinted();
