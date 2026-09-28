@@ -29,6 +29,16 @@ export type CreateOrderFailure =
 	 * dedupes. The service maps this to 502 (a bad upstream, not a bad request).
 	 */
 	| "PAYMENT_INTENT_FAILED"
+	/**
+	 * The `idempotencyKey` already names an order minted from a DIFFERENT cart
+	 * (issue #133) — e.g. a stale or second tab submitting the old cart's
+	 * `checkout:<cartId>` key while the cart cookie now names a new cart. A key
+	 * is bound to the request it first carried: replaying it for another cart is
+	 * not a replay, so it must never report that other order as this cart's
+	 * success. Nothing is minted, adopted or flipped; the submitted cart stays
+	 * `active`. The recovery is to reload checkout, which derives the key afresh.
+	 */
+	| "IDEMPOTENCY_KEY_REUSED"
 	// Phase 6 checkout-pipeline failures (shipping / tax / coupon):
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"

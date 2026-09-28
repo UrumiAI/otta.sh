@@ -1607,6 +1607,69 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
+		test.skipIf(tier.payments === undefined)(
+			"a checkout key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED and leaves this cart open (issue #133; SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-reuse",
+					sku: "SKU-CO-REUSE",
+					title: "Reuse Product",
+					price: { amount: 2500, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-reuse-seed",
+				});
+				const oldCart = await tier.arrange.cart("USD");
+				const addedOld = await client.addCartLine(
+					oldCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-old",
+				);
+				if (!addedOld.ok) throw new Error(`arrange failed: ${addedOld.reason}`);
+				const first = await client.createOrder(
+					{ cartId: oldCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+					`checkout:${oldCart}`,
+				);
+				if (!first.ok) throw new Error(`checkout failed: ${first.reason}`);
+
+				// A stale tab: the OLD cart's key, submitted against a NEW cart.
+				const newCart = await tier.arrange.cart("USD");
+				const addedNew = await client.addCartLine(
+					newCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-new",
+				);
+				if (!addedNew.ok) throw new Error(`arrange failed: ${addedNew.reason}`);
+				expect(
+					await client.createOrder(
+						{ cartId: newCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+						`checkout:${oldCart}`,
+					),
+				).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+
+				// The new cart was never checked out: it still takes a line, and it
+				// places under its own key as a DIFFERENT order.
+				const stillOpen = await client.addCartLine(
+					newCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-again",
+				);
+				expect(stillOpen.ok).toBe(true);
+				const own = await client.createOrder(
+					{ cartId: newCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+					`checkout:${newCart}`,
+				);
+				if (!own.ok) throw new Error(`checkout failed: ${own.reason}`);
+				expect(own.order.id).not.toBe(first.order.id);
+			},
+		);
+
 		test.skipIf(tier.clock === undefined)(
 			"once a cart's hold lapses the cart holds nothing, cannot be quoted, and its units are free again (SKIPPED where the tier cannot move its own clock)",
 			async () => {

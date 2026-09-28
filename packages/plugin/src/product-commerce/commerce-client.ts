@@ -494,6 +494,9 @@ export type CheckoutFailureReason =
 	| "CURRENCY_MISMATCH"
 	| "INVALID_SHIPPING_ADDRESS"
 	| "PAYMENT_INTENT_FAILED"
+	/** The idempotency key already names an order of ANOTHER cart (issue #133):
+	 *  a stale/second checkout tab. Nothing was placed; the cart is untouched. */
+	| "IDEMPOTENCY_KEY_REUSED"
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
 	| "COUPON_NOT_FOUND"
