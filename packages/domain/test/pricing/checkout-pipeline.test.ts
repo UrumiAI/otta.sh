@@ -372,3 +372,61 @@ describe("checkout pipeline (Phase 6): totals reflect coupon/shipping/tax", () =
 		expect(res).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
 	});
 });
+
+// Issue #305: a storefront that picks a shipping method but sends no separate tax
+// zone must not get a silently tax-free order. With no zone given, tax follows the
+// zone the chosen method belongs to; an explicit zone still wins.
+describe("checkout pipeline: the tax zone follows the shipping method's zone when none is sent (#305)", () => {
+	let h: OrderHarness;
+	beforeEach(() => {
+		h = makeOrderHarness();
+	});
+
+	async function seedCart(): Promise<string> {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		return h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+	}
+
+	test("method only ⇒ the method's zone rates apply", async () => {
+		await seedRules(h, { shippingCents: 599, taxBps: 850 });
+		const cartId = await seedCart();
+
+		const res = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { shippingZoneId: undefined }),
+		);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		// 2000 × 8.5 % = 170, on top of 599 shipping.
+		expect(res.order.totals.shipping).toBe(599);
+		expect(res.order.totals.tax).toBe(170);
+		expect(res.order.totals.total).toBe(2000 + 599 + 170);
+	});
+
+	test("an explicit zone still wins over the method's", async () => {
+		await seedRules(h, { shippingCents: 599, taxBps: 850 });
+		await h.shippingRules.createZone({ id: "z-other", name: "Other", regions: null });
+		await h.taxRules.createRate({
+			id: "t-other",
+			taxClassId: "standard",
+			zoneId: "z-other",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		const cartId = await seedCart();
+
+		const res = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { shippingZoneId: "z-other" }),
+		);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.totals.tax).toBe(400);
+	});
+});

@@ -17,7 +17,8 @@ export interface QuoteDeps {
 export interface QuoteCommand {
 	currency: Currency;
 	lines: ReadonlyArray<TotalsLineInput>;
-	/** The buyer's tax zone; absent ⇒ no tax rates apply (all classes 0 bps). */
+	/** The buyer's tax zone. Absent ⇒ the selected shipping method's zone (#305);
+	 *  absent with no method either ⇒ no tax rates apply (all classes 0 bps). */
 	zoneId?: string;
 	/** The selected shipping method; absent ⇒ zero shipping (no method chosen). */
 	methodId?: string;
@@ -71,11 +72,16 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 	}
 
 	// Tax: all rates in the zone → the per-class map + the shipping-tax class.
+	// No zone sent ⇒ the zone the chosen method ships to (#305): a storefront that
+	// picked a delivery method must never get a silently tax-free order because it
+	// did not repeat the zone. An explicit zone still wins.
+	const taxZoneId =
+		command.zoneId !== undefined && command.zoneId !== "" ? command.zoneId : shippingMethod.zoneId;
 	const taxRatesByClass: Record<string, number> = {};
 	let shippingTaxable = false;
 	let shippingTaxClassId = "standard";
-	if (command.zoneId !== undefined && command.zoneId !== "") {
-		const zoneRates = await deps.taxRules.listRatesForZone(command.zoneId);
+	if (taxZoneId !== "") {
+		const zoneRates = await deps.taxRules.listRatesForZone(taxZoneId);
 		for (const r of zoneRates) {
 			taxRatesByClass[r.taxClassId] = r.rateBps;
 			if (r.appliesToShipping) {

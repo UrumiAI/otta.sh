@@ -207,3 +207,45 @@ describe("parseOrderRouteInput", () => {
 		expect(parseOrderRouteInput({ orderId })).toBeNull();
 	});
 });
+
+// Issue #305: the storefront's shipping and coupon choices reach the quote.
+describe.each([
+	[
+		"parseCheckoutSummaryInput",
+		(extra: Record<string, unknown>) => parseCheckoutSummaryInput({ cartId: "cart-1", ...extra }),
+	],
+	[
+		"parseCheckoutPlaceInput",
+		(extra: Record<string, unknown>) =>
+			parseCheckoutPlaceInput({
+				cartId: "cart-1",
+				buyerRef: "b@x.io",
+				idempotencyKey: "k-1",
+				...extra,
+			}),
+	],
+] as const)("%s — shipping zone, method and coupon (#305)", (_name, parse) => {
+	test("passes all three through, trimmed", () => {
+		expect(
+			parse({ shippingZoneId: " z-re ", shippingMethodId: "m-flat", couponCode: " VOLUME10 " }),
+		).toMatchObject({ shippingZoneId: "z-re", shippingMethodId: "m-flat", couponCode: "VOLUME10" });
+	});
+
+	test("absent, null or blank means not chosen — the key is left off", () => {
+		const parsed = parse({ shippingZoneId: "", shippingMethodId: null, couponCode: "   " });
+		expect(parsed).not.toBeNull();
+		expect(parsed).not.toHaveProperty("shippingZoneId");
+		expect(parsed).not.toHaveProperty("shippingMethodId");
+		expect(parsed).not.toHaveProperty("couponCode");
+	});
+
+	test.each([
+		[{ shippingZoneId: 7 }],
+		[{ shippingMethodId: "has space" }],
+		[{ shippingMethodId: "x".repeat(201) }],
+		[{ couponCode: "x".repeat(201) }],
+		[{ couponCode: ["VOLUME10"] }],
+	])("rejects %p before any store work", (extra) => {
+		expect(parse(extra)).toBeNull();
+	});
+});
