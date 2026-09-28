@@ -371,26 +371,18 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(/Product not found\.[\s\S]{0,600}href="\/products"/);
 	});
 
-	test("the hold note states the service's DEFAULT TTL, and says so", () => {
-		// @otta-sh/domain's DEFAULT_HOLD_TTL_MS is 15 minutes, and the mockup's
-		// "10 minutes" was a draft figure. §10 keeps the hold visible to the
-		// shopper — the duration is the useful part — so the number has to be
-		// the true one.
-		expect(PDP).toContain("holds one in stock for 15 minutes");
-		// It is a DEFAULT, not a read of the effective value, and the comment
-		// beside it has to keep saying that. The service's only working override
-		// is the CART_HOLD_TTL_MS env var; the admin's `holdTtlMinutes` setting
-		// is persisted but wired to nothing (issue #127, which names this very
-		// line). A comment claiming an operator can change it in the settings
-		// panel would be the page documenting a knob that does not turn.
-		expect(PDP).toContain("DEFAULT_HOLD_TTL_MS");
-		expect(PDP).toContain("#127");
-		expect(PDP).not.toMatch(/raise it in the settings panel/);
-		//
-		// KNOWN DISAGREEMENT, reported with this increment: src/lib/hold.ts
-		// pins `HOLD_WINDOW_SECONDS = 600` for the cart's hold ribbon, which
-		// assumes ten. That file belongs to the cart increment; when it is
-		// corrected to 900 this copy and that constant agree again.
+	test("the hold note states the EFFECTIVE hold window the route reports, not a hard-coded figure (issue #127)", () => {
+		// The admin's `holdTtlMinutes` IS the cart hold now: an add stamps its deadline
+		// with it, and the PDP route reports it as `cartHoldMinutes`. §10 keeps the
+		// duration visible because it is the useful part, so the number has to be the
+		// one the store runs — a hard-coded "15 minutes" would be false on any store
+		// whose operator changed the setting.
+		expect(PDP).toMatch(
+			/const cartHoldMinutes = result !== null && result\.ok \? result\.cartHoldMinutes/,
+		);
+		expect(PDP).toMatch(/<p class="hold-note">\s*\{holdNote\(cartHoldMinutes\)\}/);
+		expect(PDP).not.toContain("holds one in stock for 15 minutes");
+		expect(PDP).not.toContain("CART_HOLD_TTL_MS");
 	});
 });
 

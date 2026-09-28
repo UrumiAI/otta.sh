@@ -27,6 +27,7 @@ import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
 import { joinProduct } from "../catalog/join-product.js";
 import { buildProductJsonLd } from "../catalog/product-json-ld.js";
+import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
@@ -43,7 +44,16 @@ export interface PdpRouteInput {
 }
 
 export type PdpRouteResult =
-	| { ok: true; product: ProductViewModel; jsonLd: Record<string, unknown> }
+	| {
+			ok: true;
+			product: ProductViewModel;
+			jsonLd: Record<string, unknown>;
+			/** The EFFECTIVE cart-hold window in whole minutes — the admin's saved
+			 *  `holdTtlMinutes` (or its default), the same value an add from this page
+			 *  stamps its deadline with (issue #127). The hold note states THIS rather
+			 *  than a hard-coded default. */
+			cartHoldMinutes: number;
+	  }
 	| { ok: false; error: "INVALID_CONTENT" }
 	| { ok: false; error: "RENDER_FAILED" };
 
@@ -75,7 +85,10 @@ export async function renderGuard<T>(
  *  `X-Service-Token` — so PDP/PLP genuinely depend on kv provisioning when the
  *  service secret is set. Undefined ⇒ no header ⇒ pre-gate wire. */
 export async function createCommerceLoader(ctx: PluginContext): Promise<CommerceBatchLoader> {
-	const client = await makeCommerceClient(ctx);
+	return commerceLoaderFor(await makeCommerceClient(ctx));
+}
+
+function commerceLoaderFor(client: CommerceClient): CommerceBatchLoader {
 	return new CommerceBatchLoader(async (ids) =>
 		(await client.getCommerceBatch(ids)).map(parseCommerceBatchItem),
 	);
@@ -95,8 +108,11 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			}
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
-			const loader = await createCommerceLoader(ctx);
-			const commerce = await loader.load(content.id);
+			const client = await makeCommerceClient(ctx);
+			const [commerce, cartHoldMinutes] = await Promise.all([
+				commerceLoaderFor(client).load(content.id),
+				client.getCartHoldTtlMinutes(),
+			]);
 			// null covers unsynced / soft-deleted / batch-omitted identically
 			// (§4.2): the page renders not-purchasable instead of 500ing.
 			const joined = joinProduct(content, commerce);
@@ -105,6 +121,7 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 				ok: true as const,
 				product: buildProductViewModel(joined, locale),
 				jsonLd: buildProductJsonLd(joined),
+				cartHoldMinutes,
 			};
 		});
 }

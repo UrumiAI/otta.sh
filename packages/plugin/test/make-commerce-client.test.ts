@@ -109,7 +109,7 @@ describe("makeCommerceClient", () => {
 		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 
-	test("the client spans the whole port — 25 methods, none of them a stub's", async () => {
+	test("the client spans the whole port — 26 methods, none of them a stub's", async () => {
 		const { ctx } = makeCtx();
 		const client = await makeCommerceClient(ctx);
 		const methods = [...Object.getOwnPropertyNames(Object.getPrototypeOf(client))].filter(
@@ -117,7 +117,7 @@ describe("makeCommerceClient", () => {
 		);
 		// `typecheck` fails first if the port grows and the client does not, but the
 		// count is asserted here too so a silently-dropped method cannot pass.
-		expect(methods.length).toBe(25);
+		expect(methods.length).toBe(26);
 		for (const name of methods) {
 			expect(typeof (client as unknown as Record<string, unknown>)[name], name).toBe("function");
 		}

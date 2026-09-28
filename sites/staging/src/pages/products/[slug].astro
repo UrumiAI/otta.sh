@@ -41,6 +41,7 @@ import QtyField from "../../components/QtyField.astro";
 import StockRule from "../../components/StockRule.astro";
 import Base from "../../layouts/Base.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { holdNote } from "../../lib/hold.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
@@ -131,6 +132,8 @@ const result =
 const product: ProductViewModel | null = result !== null && result.ok ? result.product : null;
 const jsonLd = result !== null && result.ok ? result.jsonLd : null;
 const addToCart = product?.slots.addToCart ?? null;
+/** The store's effective cart-hold window (issue #127) — what the hold note states. */
+const cartHoldMinutes = result !== null && result.ok ? result.cartHoldMinutes : undefined;
 const degraded = content !== null && product === null;
 const error = Astro.url.searchParams.get("error");
 
@@ -304,23 +307,14 @@ const soldOut = product?.availability === "out_of_stock";
 										</form>
 										{/* The hold is worth telling a shopper about, and §10
 										    keeps the duration visible because it is the
-										    useful part.
-
-										    The figure states the shipped DEFAULT:
-										    `DEFAULT_HOLD_TTL_MS` in @otta-sh/domain is 15
-										    minutes, and the service's only override is the
-										    `CART_HOLD_TTL_MS` env var — the admin's
-										    `holdTtlMinutes` setting is persisted but not
-										    wired to anything (issue #127, which names this
-										    very line). So the number is true of every
-										    deployment that has not set that variable, and
-										    is kept for that reason rather than softened to
-										    "for a few minutes", which tells a shopper
-										    nothing they can plan around. When #127 lands,
-										    this copy has to read the effective TTL instead
-										    of hard-coding the default. */}
+										    useful part. The figure is the store's EFFECTIVE
+										    window — the admin's `holdTtlMinutes`, which an add
+										    from this form stamps its deadline with — as the
+										    product route reports it (issue #127). Never a
+										    hard-coded default: that was false on any store
+										    whose operator changed the setting. */}
 										<p class="hold-note">
-											Adding this holds one in stock for 15 minutes.
+											{holdNote(cartHoldMinutes)}
 										</p>
 									</div>
 								)}

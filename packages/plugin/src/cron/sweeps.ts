@@ -78,11 +78,10 @@
  *     §7.13 says an anomaly must always be RECORDABLE and a return value nothing
  *     reads is not a record.
  *
- * THE HOLD-TTL PARITY GAP CLOSES HERE. `in-process-commerce-stores.ts` records it
- * as a MUST-CLOSE item and says where it closes: "with the settings and scheduled-sweep
- * wiring, where the value is loaded once and the sweeps that expire holds run". This
- * is that place — one settings read per tick, feeding `expireHolds`' `ttlMs`, rather
- * than a read on every cart request for a value that changes almost never.
+ * THE HOLD TTL IS THE ADMIN'S SETTING. One settings read per tick feeds
+ * `expireHolds`' `ttlMs` — the same `holdTtlMinutes` the in-process client reads
+ * on every cart call that stamps or measures a deadline (issue #127), so a hold's
+ * deadline, its lazy expiry and this sweep all agree on one window.
  */
 import {
 	DEFAULT_COUPON_GRACE_MS,
