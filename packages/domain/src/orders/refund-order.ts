@@ -81,7 +81,14 @@ export type RefundOrderFailure =
 	 *  anomaly + a reconciliation flag — never silently dropped — and this
 	 *  DISTINCT reason (its own 409 at the service) is returned so it can never
 	 *  be mistaken for a clean pre-issuance rejection. */
-	| "REFUND_ISSUED_UNRECORDED";
+	| "REFUND_ISSUED_UNRECORDED"
+	/** The idempotency key was already used for a refund with DIFFERENT
+	 *  money-bearing content (another order, amount or currency). A key names one
+	 *  refund: nothing was reserved, issued or recorded for this request, and the
+	 *  earlier refund is untouched. Mirrors Stripe's `idempotency_error` ("keys
+	 *  can only be used with the same parameters") and the inventory ledgers'
+	 *  `StockMovementMismatchError` — a mis-keyed caller never receives `ok`. */
+	| "IDEMPOTENCY_KEY_REUSED";
 
 export type RefundOrderOutcome =
 	| {
@@ -97,6 +104,21 @@ export type RefundOrderOutcome =
 			order: Order;
 	  }
 	| { ok: false; reason: RefundOrderFailure };
+
+/** True iff a refund already stored under the command's key describes the SAME
+ *  refund — the money-bearing fields `orderId`, `amount`, `currency`. `reason`
+ *  and `refundedBy` are annotations, not content: a retry that re-types them is
+ *  still the same refund (the stored values win). */
+function refundMatchesCommand(
+	stored: RefundRecord,
+	cmd: Pick<RefundOrderCommand, "orderId" | "amount" | "currency">,
+): boolean {
+	return (
+		stored.orderId === cmd.orderId &&
+		stored.amount === cmd.amount &&
+		stored.currency === cmd.currency
+	);
+}
 
 /** `Σ captured` — the succeeded `payments` amounts (ADR-0008). */
 export function sumCapturedPayments(payments: CapturedPayment[]): Cents {
@@ -182,7 +204,11 @@ export async function refundOrder(
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 	if (cmd.currency !== order.totals.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
 
-	// Idempotent replay: disambiguate on the existing row's status. `recorded` ⇒
+	// Idempotent replay. A key names ONE refund (the lookup is global, not
+	// per-order), so first confirm the stored row IS this request — same order,
+	// amount and currency — before trusting any status below; a mis-keyed caller
+	// gets IDEMPOTENCY_KEY_REUSED, never another refund's success or failure.
+	// Then disambiguate on the existing row's status. `recorded` ⇒
 	// the benign duplicate (no second gateway call). `unverified` ⇒ the prior
 	// attempt's fate is still unknown — re-check before anything retries (the
 	// capacity is held; NEVER re-issue blind). `voided` ⇒ the key was consumed by
@@ -190,6 +216,9 @@ export async function refundOrder(
 	// window — RESUME it below (same key re-issues; Stripe's native idempotency
 	// dedupes provider-side).
 	const existing = await deps.orderStore.getRefundByIdempotencyKey(cmd.idempotencyKey);
+	if (existing !== null && !refundMatchesCommand(existing, cmd)) {
+		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+	}
 	if (existing !== null && existing.status === "recorded") {
 		return {
 			ok: true,
@@ -206,7 +235,11 @@ export async function refundOrder(
 	if (existing !== null && existing.status === "voided") {
 		return { ok: false, reason: "GATEWAY_TERMINAL" };
 	}
-	const resuming = existing !== null; // status === "reserved"
+	// A resume re-issues the STORED reservation (status === "reserved"), not the
+	// command — the match check above makes them equal today, but the ledger row
+	// is what holds the capacity, so it is what the provider is asked to refund.
+	const target = existing ?? { orderId: cmd.orderId, amount: cmd.amount, currency: cmd.currency };
+	const resuming = existing !== null;
 
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = await deps.orderStore.getCapturedPayments(cmd.orderId);
@@ -225,7 +258,7 @@ export async function refundOrder(
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
 		});
-		return settleRecordOutcome(res);
+		return settleRecordOutcome(res, cmd);
 	}
 
 	// -- gateway path: reserve → issue → finalize/void/unverify -----------------
@@ -257,18 +290,27 @@ export async function refundOrder(
 			return { ok: false, reason: exceedsReason(reserved.capturedTotal, reserved.frozenTotal) };
 		}
 		// `duplicate` here means a concurrent same-key call inserted between our
-		// replay check and the reserve — both now hold the SAME single reservation;
-		// proceed to issue (the provider-side native key dedupes the issue too).
+		// replay check and the reserve. If it reserved a DIFFERENT refund, this is
+		// a mis-keyed caller — reject before any provider call. Otherwise both hold
+		// the SAME single reservation; proceed to issue (the provider-side native
+		// key dedupes the issue too).
+		if (
+			reserved.outcome === "duplicate" &&
+			reserved.refund !== null &&
+			!refundMatchesCommand(reserved.refund, cmd)
+		) {
+			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+		}
 	}
 
 	// 2. ISSUE — only ever reached with a committed reservation holding the
 	// capacity. The ledger can no longer refuse this money.
 	const gwRes = await gateway.refund({
-		orderId: cmd.orderId,
+		orderId: target.orderId,
 		providerRef: captured.providerRef,
-		amount: cmd.amount,
-		currency: cmd.currency,
-		priorRefunded: cents(sumFinalizedRefunds(await deps.orderStore.listRefunds(cmd.orderId))),
+		amount: target.amount,
+		currency: target.currency,
+		priorRefunded: cents(sumFinalizedRefunds(await deps.orderStore.listRefunds(target.orderId))),
 		idempotencyKey: cmd.idempotencyKey,
 	});
 
@@ -340,6 +382,7 @@ export async function refundOrder(
 /** Map a one-shot `recordRefund` result (the manual path) to the outcome. */
 function settleRecordOutcome(
 	res: Awaited<ReturnType<OrderStore["recordRefund"]>>,
+	cmd: RefundOrderCommand,
 ): RefundOrderOutcome {
 	if (res.outcome === "order_not_found") return { ok: false, reason: "ORDER_NOT_FOUND" };
 	if (res.outcome === "exceeds_ceiling") {
@@ -347,6 +390,11 @@ function settleRecordOutcome(
 	}
 	if (res.refund === null || res.order === null) {
 		return { ok: false, reason: "ORDER_NOT_FOUND" }; // defensive
+	}
+	// A concurrent insert under the key between the replay read and this write:
+	// the store's `duplicate` is the first sight of it — same content rule.
+	if (res.outcome === "duplicate" && !refundMatchesCommand(res.refund, cmd)) {
+		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 	}
 	return {
 		ok: true,

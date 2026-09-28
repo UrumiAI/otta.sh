@@ -228,6 +228,156 @@ export function refundOrderContract(
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
 		});
 
+		test("a reused key with a DIFFERENT amount is rejected (IDEMPOTENCY_KEY_REUSED), never a false duplicate success", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-idem-amt", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const key = idempotencyKey("rf-idem-amt");
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(first.ok && first.recorded).toBe(true);
+			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(800),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(reused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+			expect(gw.refundCalls).toHaveLength(1); // nothing issued for the reuse
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger).toHaveLength(1);
+			expect(ledger[0]?.amount).toBe(500);
+		});
+
+		test("a reused key on a DIFFERENT order is rejected (IDEMPOTENCY_KEY_REUSED); the other order is untouched", async () => {
+			const h = await makeHarness();
+			const a = await h.seedPaidOrder({ id: "ord-idem-a", totalCents: 1000 });
+			const b = await h.seedPaidOrder({ id: "ord-idem-b", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const key = idempotencyKey("rf-idem-cross");
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: a,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(first.ok && first.recorded).toBe(true);
+			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: b,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(reused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+			expect(gw.refundCalls).toHaveLength(1);
+			expect(await h.orderStore.listRefunds(b)).toHaveLength(0);
+		});
+
+		test("a reused key with a different amount on the MANUAL path is rejected too", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-idem-x402", totalCents: 1000, gateway: "x402" });
+			const gw = new FakePaymentGateway({ id: "x402" });
+			const key = idempotencyKey("rf-idem-x402");
+			const cmd = {
+				orderId: id,
+				amount: cents(300),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			};
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(first.ok && first.recorded).toBe(true);
+			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+				...cmd,
+				amount: cents(400),
+			});
+			expect(reused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger).toHaveLength(1);
+			expect(ledger[0]?.amount).toBe(300);
+		});
+
+		test("a reused key with a different amount cannot hijack a held reservation; the genuine retry resumes with the STORED values", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-idem-resume", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			const key = idempotencyKey("rf-idem-resume");
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(first).toEqual({ ok: false, reason: "GATEWAY_RETRYABLE" });
+			expect(gw.refundCalls).toHaveLength(1);
+
+			gw.setRefundResult({ ok: true, refundRef: "re_resume", amount: cents(400), currency: USD });
+			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(900),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(reused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+			expect(gw.refundCalls, "a mismatched reuse never reaches the provider").toHaveLength(1);
+			const held = await h.orderStore.listRefunds(id);
+			expect(held).toHaveLength(1);
+			expect(held[0]?.status).toBe("reserved");
+			expect(held[0]?.amount).toBe(400);
+
+			const resumed = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(resumed.ok && resumed.recorded).toBe(true);
+			expect(gw.refundCalls).toHaveLength(2);
+			expect(gw.refundCalls[1]?.orderId).toBe(id);
+			expect(gw.refundCalls[1]?.amount).toBe(400);
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger).toHaveLength(1);
+			expect(ledger[0]?.status).toBe("recorded");
+			expect(ledger[0]?.amount).toBe(400);
+		});
+
+		test("a reused key with a different amount on an UNVERIFIED refund reports the reuse, not the other refund's status", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-idem-unver", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "UNVERIFIED" });
+			const key = idempotencyKey("rf-idem-unver");
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(first).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });
+			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(100),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect(reused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+			expect(gw.refundCalls).toHaveLength(1);
+		});
+
 		test("an x402 (refundable:false) order records a MANUAL refund with no gateway call", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-x402", totalCents: 1000, gateway: "x402" });

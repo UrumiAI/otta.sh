@@ -807,6 +807,9 @@ function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 
 		// issued but its reserved ledger row could not be finalized. A DISTINCT 409
 		// so it is never conflated with a clean pre-issuance rejection.
 		case "REFUND_ISSUED_UNRECORDED":
+		// The key already names a DIFFERENT refund (#152) — a conflict with the
+		// recorded request, never a duplicate success.
+		case "IDEMPOTENCY_KEY_REUSED":
 			return 409;
 		case "GATEWAY_TERMINAL":
 			return 502;
