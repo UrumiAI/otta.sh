@@ -26,8 +26,9 @@ All additive.
   that order and never re-prices it, so the summary of such a cart no longer re-quotes
   the cart: it states the ORDER — its totals, its line snapshot, its coupon — with
   `orderCreated: true` and `order: { id, state, phase }`. `phase` is `payable`
-  (pending), `ended` (expired / cancelled / failed — the cart is not reopened) or
-  `placed` (paid or later, or a state this build does not know). A cart whose order
+  (pending), `ended` (expired / failed — never charged, and the cart is not
+  reopened) or `placed` (every other state, including `cancelled`, which may follow a
+  payment, and any state this build does not know). A cart whose order
   cannot be read answers the typed `CART_CHECKED_OUT`.
 - **`PublicOrderWire.totals.shippingMethodId`**, beside `shippingZoneId`. The
   confirmation page's shipping row now follows the method and its tax row the zone, so

@@ -47,6 +47,8 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 	// Shipping: resolve the selected method + its rate; absent ⇒ zero-shipping
 	// synthetic method (no method chosen — the pipeline still runs, never the
 	// naive Phase-4 stub sum).
+	// ORDER MATTERS: shipping is checked before the coupon, and the plugin's
+	// checkout summary bounds its re-quote on that (plugin storefront/checkout-routes.ts).
 	let shippingMethod: RulesSnapshot["shippingMethod"];
 	if (command.methodId !== undefined && command.methodId !== "") {
 		const method = await deps.shippingRules.getMethod(command.methodId);
@@ -93,6 +95,7 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 	};
 
 	// Coupon: load + validate (dates, min-subtotal, currency, soft-exhaustion).
+	// Checked AFTER shipping — see the ORDER MATTERS note above.
 	let couponRecord: CouponRecord | null = null;
 	let coupon: Coupon | undefined;
 	if (command.couponCode !== undefined && command.couponCode !== "") {

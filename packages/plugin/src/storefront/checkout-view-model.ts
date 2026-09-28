@@ -323,16 +323,20 @@ export function isShippingSelectionReason(
  *  - `payable` — the order is `pending`: the same-key place replays it into
  *    the same PaymentIntent, so the page offers the pay step at the ORDER's
  *    totals, with the selection locked;
- *  - `ended` — expired / cancelled / failed: nothing can be paid, and
+ *  - `ended` — expired / failed ONLY: states an order reaches straight from
+ *    `pending`, so it was never charged. Nothing can be paid, and
  *    `expireOrders` does not reopen the cart, so the only way on is a new
  *    cart. A pay button here would lead nowhere;
- *  - `placed` — paid or any later state, AND any state this build does not
- *    know: the confirmation page reads the order's real state, so it is the
- *    one safe place to send a buyer whose order may have been paid.
+ *  - `placed` — every other state, including `cancelled` (the domain allows
+ *    paid → cancelled and processing → cancelled, so a cancelled order MAY have
+ *    been charged) and any state this build does not know: the confirmation
+ *    page reads the order's real state, so it is the one safe place to send a
+ *    buyer whose order may have been paid.
  */
 export type LockedCheckoutPhase = "payable" | "ended" | "placed";
 
-const ENDED_STATES: ReadonlySet<string> = new Set(["expired", "cancelled", "failed"]);
+/** Never-charged terminal states. Deliberately NOT `cancelled` — see above. */
+const ENDED_STATES: ReadonlySet<string> = new Set(["expired", "failed"]);
 
 export function lockedCheckoutPhase(state: string): LockedCheckoutPhase {
 	if (state === "pending") return "payable";

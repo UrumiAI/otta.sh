@@ -15,6 +15,7 @@
  *     deterministic — a fresh key per render would mint a second order that
  *     the `CART_CHECKED_OUT` fence then rejects, stranding the buyer.
  */
+import type { OrderState } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import type { CartPricingWire } from "../src/storefront/cart-pricing.js";
 import {
@@ -383,27 +384,35 @@ describe("selectionFieldFor — which selection a quote refusal blames", () => {
 });
 
 describe("lockedCheckoutPhase — what a cart that already became an order may offer", () => {
-	const EXPECTED: ReadonlyArray<readonly [string, LockedCheckoutPhase]> = [
+	/** EVERY domain order state, typed as a Record so a state added to the model
+	 *  without a decision here fails the type check. */
+	const EXPECTED: Record<OrderState, LockedCheckoutPhase> = {
 		// Still inside the checkout window: the same-key place replays it to payment.
-		["pending", "payable"],
-		// Over, unpaid. `expireOrders` does not reopen the cart, so the only way on
-		// is a new cart — and a pay button here would pay for nothing.
-		["expired", "ended"],
-		["cancelled", "ended"],
-		["failed", "ended"],
+		pending: "payable",
+		// Over and NEVER charged — only these two. `expireOrders` does not reopen
+		// the cart, so the only way on is a new cart; a pay button would pay for
+		// nothing.
+		expired: "ended",
+		failed: "ended",
+		// CANCELLED IS NOT "ended": the domain allows paid → cancelled and
+		// processing → cancelled, so a cancelled order may have been charged. The
+		// confirmation page states what actually happened ("This order was
+		// cancelled."); "nothing has been charged" would be a false money statement.
+		cancelled: "placed",
 		// Paid or beyond: the confirmation page is the truth.
-		["paid", "placed"],
-		["processing", "placed"],
-		["shipped", "placed"],
-		["delivered", "placed"],
-		["completed", "placed"],
-		["refunded", "placed"],
-		// A state this build does not know: never a pay button, never "start
-		// again" over an order that may be paid — the order page reads the truth.
-		["some_future_state", "placed"],
-	];
+		paid: "placed",
+		processing: "placed",
+		shipped: "placed",
+		delivered: "placed",
+		completed: "placed",
+		refunded: "placed",
+	};
 
-	test.each(EXPECTED)("%s → %s", (state, phase) => {
+	test.each(Object.entries(EXPECTED))("%s → %s", (state, phase) => {
 		expect(lockedCheckoutPhase(state)).toBe(phase);
+	});
+
+	test("a state this build does not know is 'placed' — never a pay button, never \"start again\" over an order that may be paid", () => {
+		expect(lockedCheckoutPhase("some_future_state")).toBe("placed");
 	});
 });
