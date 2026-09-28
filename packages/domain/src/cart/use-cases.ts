@@ -106,6 +106,13 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
  * incomplete; a replay resumes and re-reads reserve's recorded `failed` state).
  * The pre-reserve claim marks the hold cart-originated so a crash between
  * reserve and the line write leaves a hold the sweep can identify and reap.
+ *
+ * **Re-adding a sku already in the cart adds to that line** (one line per sku,
+ * one reservation per physical line — phase-3 plan §4): the add becomes an
+ * {@link updateLine} of the existing line to `line.qty + qty`, keyed by this
+ * add's `idempotencyKey`, so stock moves by delta on the line's OWN hold. A
+ * fresh `reserve` here would be attached over the line's current reservation
+ * and orphan it until the TTL sweep — locking stock no cart line accounts for.
  */
 export async function addLine(
 	deps: CartDeps,
@@ -121,6 +128,15 @@ export async function addLine(
 
 	const guard = await guardActiveCart(deps, cartId);
 	if (!guard.ok) return guard;
+
+	// The sku already has a line: add to it through the line's own hold. The one
+	// exception is RESUMING this key's own incomplete `add` claim — that attempt
+	// may already have reserved under the key, so it must finish the reserve
+	// choreography it started (its hold is ledger-scoped, so the sweep can reap it).
+	const existing = guard.cart.lines.find((l) => l.sku === sku);
+	if (existing !== undefined && recorded?.kind !== "add") {
+		return updateLine(deps, cartId, existing.lineId, existing.qty + qty, key);
+	}
 
 	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "add" });
 	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);

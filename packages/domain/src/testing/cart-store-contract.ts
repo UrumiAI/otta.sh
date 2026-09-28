@@ -77,6 +77,112 @@ export function cartStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 		});
 
+		// ── re-adding a sku that is already in the cart ─────────────────────
+		// One line per sku, one reservation per physical line (phase-3 plan §4):
+		// a second add of the same sku ADDS its qty to that line, moving stock by
+		// delta on the line's own hold. It must never mint a second reservation
+		// and orphan the first one (which only came back at TTL, via the sweep).
+
+		test("re-adding a sku already in the cart adds to its line on the same hold — no orphan reservation", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			expect(again.ok).toBe(true);
+			if (!again.ok) return;
+			expect(again.line.qty).toBe(3);
+			expect(again.line.lineId).toBe(first.line.lineId);
+			expect(again.line.reservationId).toBe(first.line.reservationId);
+			// Held stock equals the one line's qty: 10 - 3.
+			expect(await h.onHand("SKU-1")).toBe(7);
+
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(3);
+
+			// Removing the line returns EVERYTHING the cart held — an orphaned first
+			// hold would leave a unit stranded here until the sweep.
+			const rm = await removeLine(h.deps, cartId, again.line.lineId, idempotencyKey("k3"));
+			expect(rm.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		test("a replayed re-add returns its recorded line and moves no further stock", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again.ok && replay.ok).toBe(true);
+			if (!again.ok || !replay.ok) return;
+			expect(replay.line.lineId).toBe(first.line.lineId);
+			expect(replay.line.qty).toBe(2);
+			expect(await h.onHand("SKU-1")).toBe(8); // 1 + 1 held, once each
+
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(2);
+
+			// The lapsed hold returns exactly the line's qty — no second hold remains.
+			h.advance(PAST_TTL_MS);
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			expect(await expireHolds(h.deps)).toBe(0);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		test("a re-add beyond stock reports OUT_OF_STOCK and leaves the line and its hold untouched", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 3);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			expect(again).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(1);
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(2);
+			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
+		});
+
+		test("re-adding a digital sku adds to its line and reserves nothing", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(
+				h.deps,
+				cartId,
+				sku("EBOOK-1"),
+				null,
+				1,
+				idempotencyKey("k1"),
+				"digital",
+			);
+			if (!first.ok) throw new Error("seed add must succeed");
+			const again = await addLine(
+				h.deps,
+				cartId,
+				sku("EBOOK-1"),
+				null,
+				2,
+				idempotencyKey("k2"),
+				"digital",
+			);
+			expect(again.ok).toBe(true);
+			if (!again.ok) return;
+			expect(again.line.lineId).toBe(first.line.lineId);
+			expect(again.line.qty).toBe(3);
+			expect(again.line.reservationId).toBeNull();
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(3);
+		});
+
 		test("increase delta-reserves the difference", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);
