@@ -132,6 +132,8 @@ const sumRows = [
 
 	{error !== null && <div class="notice-slot"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
+	{/* Kept on purpose, though unreachable until #305 part 2: nothing on this
+	    site sends a shipping method yet, so the summary cannot refuse one. */}
 	{
 		shippingError !== null && (
 			<div class="notice-slot">
@@ -144,13 +146,16 @@ const sumRows = [
 		locked !== null && (
 			<div class="notice-slot">
 				{ended ? (
+					/* True ONLY for the `ended` phase — expired / failed, both reached
+					   straight from pending, so never charged. A cancelled order may
+					   follow a payment; it is `placed` and never reaches this copy. */
 					<Notice lead="This checkout has ended.">
 						The order it created can no longer be paid, and nothing has been charged. Start a new
 						cart to order again.
 					</Notice>
 				) : (
 					<Notice lead="Your order has already been created.">
-						Its coupon can no longer be changed. To change it, start a new cart.
+						Its coupon and delivery address can no longer be changed. To change them, start a new cart.
 					</Notice>
 				)}
 			</div>
@@ -252,46 +257,53 @@ const sumRows = [
 							</span>
 						</div>
 
-						<fieldset class="group">
-							<legend class="u-label head-label">Delivery address</legend>
-							<p class="note group-note">
-								Optional — fill it in completely, or leave it entirely blank.
-							</p>
-							<div class="fields">
-								<label class="field span2">
-									<span class="u-label">Full name</span>
-									<input type="text" name="name" autocomplete="name" />
-								</label>
-								<label class="field span2">
-									<span class="u-label">Address line 1</span>
-									<input type="text" name="line1" autocomplete="address-line1" />
-								</label>
-								<label class="field span2">
-									<span class="u-label">Address line 2</span>
-									<input type="text" name="line2" autocomplete="address-line2" />
-								</label>
-								<label class="field">
-									<span class="u-label">City</span>
-									<input type="text" name="city" autocomplete="address-level2" />
-								</label>
-								<label class="field">
-									<span class="u-label">Region / state</span>
-									<input type="text" name="region" autocomplete="address-level1" />
-								</label>
-								<label class="field">
-									<span class="u-label">Postal code</span>
-									<input type="text" name="postalCode" autocomplete="postal-code" />
-								</label>
-								<label class="field">
-									<span class="u-label">Country</span>
-									<input type="text" name="country" autocomplete="country-name" />
-								</label>
-								<label class="field span2">
-									<span class="u-label">Phone</span>
-									<input type="tel" name="phone" autocomplete="tel" />
-								</label>
-							</div>
-						</fieldset>
+						{/* LOCKED: the order's ship-to is fixed — a same-key place replays the
+						    order and would silently drop an address typed here. The email above
+						    stays: place.ts requires it. */}
+						{
+							locked === null && (
+								<fieldset class="group">
+									<legend class="u-label head-label">Delivery address</legend>
+									<p class="note group-note">
+										Optional — fill it in completely, or leave it entirely blank.
+									</p>
+									<div class="fields">
+										<label class="field span2">
+											<span class="u-label">Full name</span>
+											<input type="text" name="name" autocomplete="name" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Address line 1</span>
+											<input type="text" name="line1" autocomplete="address-line1" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Address line 2</span>
+											<input type="text" name="line2" autocomplete="address-line2" />
+										</label>
+										<label class="field">
+											<span class="u-label">City</span>
+											<input type="text" name="city" autocomplete="address-level2" />
+										</label>
+										<label class="field">
+											<span class="u-label">Region / state</span>
+											<input type="text" name="region" autocomplete="address-level1" />
+										</label>
+										<label class="field">
+											<span class="u-label">Postal code</span>
+											<input type="text" name="postalCode" autocomplete="postal-code" />
+										</label>
+										<label class="field">
+											<span class="u-label">Country</span>
+											<input type="text" name="country" autocomplete="country-name" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Phone</span>
+											<input type="tel" name="phone" autocomplete="tel" />
+										</label>
+									</div>
+								</fieldset>
+							)
+						}
 
 						{
 							paymentConfigured ? (

@@ -694,6 +694,19 @@ describe("the coupon at place", () => {
 		expect(JSON.stringify(calls[0]!.body)).not.toContain("zone-1");
 	});
 
+	test("the LOCKED review's form (email, key, coupon — no address block) places with NO shippingAddress", async () => {
+		// What `/checkout` posts once the cart has become an order: the address
+		// fieldset is not rendered, so no address field is in the body at all.
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-LOCK" }, handler);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+		expect(calls[0]!.body["couponCode"]).toBe("CK-LOCK");
+	});
+
 	test("a coupon failure at place redirects to /checkout?error=<TOKEN> WITHOUT the coupon", async () => {
 		const { handler } = makeHandler({ ok: false, reason: "COUPON_EXHAUSTED" });
 		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-LAST" }, handler);

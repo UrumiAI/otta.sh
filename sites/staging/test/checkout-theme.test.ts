@@ -146,6 +146,26 @@ describe("/checkout — the coupon", () => {
 		expect(REVIEW).toMatch(/!ended && \(\s*<form[^>]*action="\/checkout\/place"/);
 	});
 
+	test("the LOCKED review hides the delivery-address block — the order's ship-to is fixed", () => {
+		// The same-key place replays the existing order and re-prices nothing, so an
+		// address typed here would be silently dropped. The email stays: place.ts
+		// requires it.
+		expect(REVIEW).toMatch(/locked === null && \(\s*<fieldset class="group">/);
+		expect(REVIEW).not.toMatch(
+			/locked === null && \(\s*<div class="field">\s*<label class="u-label" for="email">/,
+		);
+	});
+
+	test("the lock notice says the coupon AND the delivery address can no longer be changed", () => {
+		expect(REVIEW).toContain(
+			"Its coupon and delivery address can no longer be changed. To change them, start a new cart.",
+		);
+	});
+
+	test("the shipping-method notice is kept, and says why it is not dead code", () => {
+		expect(REVIEW).toMatch(/unreachable until #305 part 2[\s\S]{0,200}shippingError !== null/);
+	});
+
 	test("the coupon in the URL never leaks through a Referer", () => {
 		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
 	});
