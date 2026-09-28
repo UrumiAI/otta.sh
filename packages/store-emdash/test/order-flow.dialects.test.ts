@@ -244,6 +244,65 @@ describeEachDialect("order flow", (ctx) => {
 		if (replay.ok) expect(replay.order.id).toBe(first.order.id);
 	});
 
+	test("issue #133: a key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED, and the other cart stays active and unstamped", async () => {
+		const h = harness();
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "W",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "stripe", "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const stale = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:old"));
+		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.store.getById(first.order.id))?.cartId).toBe(oldCart);
+		// The new cart can still be checked out under its OWN key.
+		const own = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:new"));
+		if (!own.ok) throw new Error(own.reason);
+		expect(own.order.cartId).toBe(newCart);
+		expect(own.order.id).not.toBe(first.order.id);
+	});
+
+	test("issue #133: a same-key call for ANOTHER cart that raced past the short-circuit is refused after the store dedupes its insert", async () => {
+		const h = harness();
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "W",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "stripe", "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// The race window: I1 read before the winner's insert landed.
+		const orderStore = h.createDeps.orderStore;
+		const racing = new Proxy(orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const stale = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			cmd(newCart, "stripe", "checkout:old"),
+		);
+		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// The new cart was NOT checked out under the foreign order: its own key works.
+		const own = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:new"));
+		if (!own.ok) throw new Error(own.reason);
+		expect(own.order.cartId).toBe(newCart);
+		expect(await h.reservationState(mustReservation(first.order))).toBe("adopted");
+	});
+
 	test("expireOrders' release is order-scoped: a stale order pointing at a foreign adopted (or committed) reservation never frees it and never crashes the sweep", async () => {
 		const h = harness();
 		await h.seedPhysical({

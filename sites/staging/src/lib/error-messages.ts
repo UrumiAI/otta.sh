@@ -51,6 +51,11 @@ const MESSAGES: Record<string, string> = {
 	// purpose and expire-orders sweeps it at TTL.
 	PAYMENT_INTENT_FAILED:
 		"We couldn't start a payment for this order. No charge was made — please try again in a moment.",
+	// Issue #133: a stale/second tab placed with the key of a cart that was
+	// already ordered. The redirect back to /checkout re-renders the form with
+	// the CURRENT cart's key, so placing again simply works.
+	IDEMPOTENCY_KEY_REUSED:
+		"This checkout page was out of date — please review your order and place it again.",
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
