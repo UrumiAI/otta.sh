@@ -13,6 +13,7 @@ import {
 	HOLD_WINDOW_SECONDS,
 	absoluteExpiry,
 	holdClock,
+	holdNote,
 	holdView,
 } from "../src/lib/hold.js";
 
@@ -138,5 +139,30 @@ describe("absoluteExpiry — the value a browser with no JavaScript is left hold
 
 	test("an unparseable timestamp yields nothing rather than `Invalid Date`", () => {
 		expect(absoluteExpiry("nope")).toBeNull();
+	});
+});
+
+describe("holdNote — the PDP states the EFFECTIVE hold window (issue #127)", () => {
+	test("states the minutes the store is actually configured with", () => {
+		expect(holdNote(15)).toBe("Adding this holds one in stock for 15 minutes.");
+		expect(holdNote(30)).toBe("Adding this holds one in stock for 30 minutes.");
+	});
+
+	test("one minute is singular", () => {
+		expect(holdNote(1)).toBe("Adding this holds one in stock for 1 minute.");
+	});
+
+	test("a whole number of hours reads as hours, the way a shopper plans", () => {
+		expect(holdNote(60)).toBe("Adding this holds one in stock for 1 hour.");
+		expect(holdNote(120)).toBe("Adding this holds one in stock for 2 hours.");
+		expect(holdNote(90)).toBe("Adding this holds one in stock for 90 minutes.");
+	});
+
+	test("an unusable value falls back to NOT naming a figure rather than inventing one", () => {
+		// The route always reports a positive integer; a malformed one must not render
+		// "for NaN minutes" or "for 0 minutes".
+		for (const bad of [0, -5, 1.5, Number.NaN, undefined]) {
+			expect(holdNote(bad)).toBe("Adding this holds one in stock for you while you check out.");
+		}
 	});
 });

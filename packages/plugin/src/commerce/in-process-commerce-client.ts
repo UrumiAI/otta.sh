@@ -169,6 +169,8 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 
 export class InProcessCommerceClient implements CommerceClient {
 	readonly #stores: InProcessCommerceStores;
+	/** The cart deps WITHOUT a hold TTL — for the calls that neither stamp nor
+	 *  measure a deadline. Everything that does goes through {@link #liveCartDeps}. */
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
 
@@ -446,6 +448,33 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	// ── cart ────────────────────────────────────────────────────────────────
 
+	/**
+	 * The cart deps with the hold TTL the operator has SAVED — the admin's
+	 * `holdTtlMinutes`, read from the settings store (issue #127).
+	 *
+	 * READ PER CALL, deliberately, not once per client and not cached. A client is
+	 * request-scoped in a deployment, but a suite (or a long-lived composition) may
+	 * hold one across a settings change, and a cached value there would reintroduce
+	 * exactly the bug this closes: a setting that is saved and shown back but does
+	 * not change the hold. It is one document read on a path that already makes
+	 * several, and it is the SAME read the cron's `expire-holds` leg makes per tick,
+	 * so the deadline a cart stamps, the cutoff its lazy read measures against and
+	 * the sweep that reaps stragglers all agree on one window.
+	 *
+	 * The settings store defaults an unsaved value (`DEFAULT_OPERATIONAL_SETTINGS`,
+	 * 15 minutes — the same figure as the domain's `DEFAULT_HOLD_TTL_MS`), so a
+	 * fresh store behaves exactly as before.
+	 */
+	async #liveCartDeps(): Promise<CartDeps> {
+		return { ...this.#cartDeps, ttlMs: (await this.getCartHoldTtlMinutes()) * 60_000 };
+	}
+
+	/** The effective cart-hold window, in whole minutes — what a shopper-facing
+	 *  "we'll hold this for N minutes" must say. */
+	async getCartHoldTtlMinutes(): Promise<number> {
+		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
+	}
+
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
@@ -456,7 +485,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  the typed token, never a rejection. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
 		requireIdToken("cartId", cartId);
-		const cart = await getCart(this.#cartDeps, cartId);
+		const cart = await getCart(await this.#liveCartDeps(), cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		return { ok: true, cart: serializeCart(cart) };
 	}
@@ -512,7 +541,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			kind = resolved.productKind;
 		}
 		const result = await addLine(
-			this.#cartDeps,
+			await this.#liveCartDeps(),
 			cartId,
 			toSku(sku),
 			productId,
@@ -536,7 +565,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireQty(qty);
 		requireIdempotencyKey(idempotencyKey);
 		const result = await updateLine(
-			this.#cartDeps,
+			await this.#liveCartDeps(),
 			cartId,
 			lineId,
 			qty,

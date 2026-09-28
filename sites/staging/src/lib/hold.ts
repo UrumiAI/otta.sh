@@ -12,14 +12,14 @@
  * and the no-JS answer.
  */
 
-/** The commerce layer's hold TTL, in seconds — 15 minutes.
+/** The commerce layer's DEFAULT hold TTL, in seconds — 15 minutes.
  *
- *  AUTHORITY: `DEFAULT_HOLD_TTL_MS` in `packages/domain/src/cart/use-cases.ts`
- *  (`15 * 60 * 1000`), which the plugin's in-process cart use-cases apply. It is
- *  both the default and the effective value today — the admin's `holdTtlMinutes`
- *  setting is persisted but wired to nothing (issue #127) — so there is no
- *  deployment knob to document. Keep this in step with whatever the store this
- *  theme is serving actually runs.
+ *  AUTHORITY: the admin's `holdTtlMinutes` setting, whose unsaved default
+ *  (`DEFAULT_OPERATIONAL_SETTINGS` in @otta-sh/domain) is 15 minutes. Since
+ *  issue #127 the setting IS the cart hold — the plugin's cart use-cases stamp
+ *  every deadline with it — so a store whose operator changed it runs a
+ *  different window from this one. The PDP's hold note reads the effective value
+ *  off the route (see {@link holdNote}); this constant is the ribbon's only.
  *
  *  It is ONLY the fill's denominator. The ribbon needs a window to draw a
  *  fraction against because the wire carries the expiry INSTANT, not the length
@@ -31,6 +31,27 @@
  *  A store on a longer TTL is clamped, never overflowed; `holdView` takes an
  *  explicit `windowSeconds` for that case. */
 export const HOLD_WINDOW_SECONDS = 900;
+
+/**
+ * The PDP's hold note, stating the window the store ACTUALLY runs — the value the
+ * product route reports as `cartHoldMinutes` (issue #127), never a hard-coded
+ * default. §10 keeps the duration visible because it is the useful part.
+ *
+ * A value that is not a positive whole number (the route never sends one, but
+ * this renders on a public page) states no figure at all rather than "for NaN
+ * minutes" — a sentence a shopper can plan around, or none.
+ */
+export function holdNote(minutes: number | undefined): string {
+	const lead = "Adding this holds one in stock";
+	if (minutes === undefined || !Number.isInteger(minutes) || minutes <= 0) {
+		return `${lead} for you while you check out.`;
+	}
+	if (minutes % 60 === 0) {
+		const hours = minutes / 60;
+		return `${lead} for ${String(hours)} ${hours === 1 ? "hour" : "hours"}.`;
+	}
+	return `${lead} for ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`;
+}
 
 /** Under a minute, the ribbon turns bronze and changes what it calls itself. */
 export const HOLD_EXPIRING_SECONDS = 60;

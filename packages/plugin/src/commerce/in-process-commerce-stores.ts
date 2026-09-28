@@ -23,21 +23,13 @@
  * Everything else shares state through the collections rather than through an
  * object, which is why it takes no sibling store.
  *
- * TWO TTLs TAKE THE DOMAIN'S DEFAULTS HERE, AND THAT IS A PARITY GAP, not a
- * design choice — say so plainly, because the knob exists in both places this
- * composition replaces. The deployment documentation carries one environment
- * variable that drives BOTH the cart hold and the checkout hold, and the settings
- * aggregate this function builds a store for carries a hold-TTL setting of its
- * own. Neither is read here: nothing in the plugin reads a TTL yet, so a
- * deployment that had moved its hold window would silently get fifteen minutes
- * back.
- *
- * Reading it belongs with the settings and scheduled-sweep wiring, where the
- * value is loaded once and the sweeps that expire holds run — a TTL read
- * per-request off a store is a read on the hot path for a value that changes
- * almost never. It is a MUST-CLOSE item before a deployment flips to this
- * transport, and it is recorded as one rather than left for someone to discover
- * from a shorter hold.
+ * NO TTL IS READ HERE, and neither is missing. The cart-hold window is the
+ * admin's `holdTtlMinutes`, read from the settings store this function builds —
+ * by the client on every cart call that stamps or measures a deadline, and by the
+ * cron's `expire-holds` leg once per tick — so the cart, its lazy expiry and the
+ * sweep all measure one window (issue #127). The checkout hold (an order's own
+ * reservation window) keeps the domain's `DEFAULT_CHECKOUT_TTL_MS`: no setting
+ * governs it.
  *
  * SANDBOX-CLEAN. Nothing here opens a connection, reads an environment or
  * imports host code: the storage arrives injected on `ctx`, the clock is `Date`
