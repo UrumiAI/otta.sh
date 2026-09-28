@@ -220,17 +220,19 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 	 * suites onto the plugin's own document store, so neither is conditional any
 	 * more and every sandbox suite runs unconditionally now — a strengthening.
 	 *
-	 * What replaces them is the cost of deleting the HTTP transport. Thirteen
-	 * `place` cases in `storefront-checkout` and one settings-degradation case in
-	 * `reports-widget` were PARKED rather than deleted or inverted, each naming
-	 * the blocking work in its own title, so the coverage they represent stays
-	 * visible instead of vanishing with the client that used to carry it. They
-	 * are listed here rather than waved through by a laxer regex: the count is
-	 * the thing to argue with, and it should only ever go down.
+	 * What replaces them is the cost of deleting the HTTP transport. One
+	 * settings-degradation case in `reports-widget` is PARKED rather than deleted
+	 * or inverted, naming the blocking work in its own title, so the coverage it
+	 * represents stays visible instead of vanishing with the client that used to
+	 * carry it. It is listed here rather than waved through by a laxer regex: the
+	 * count is the thing to argue with, and it should only ever go down.
+	 *
+	 * It has gone down once. Thirteen `place` cases in `storefront-checkout` were
+	 * parked the same way until issue #286 restored the checkout success path
+	 * against a stubbed Stripe API; that suite now carries no allowance at all.
 	 */
 	const ALLOWED_SKIPS: Readonly<Record<string, readonly string[]>> = {
 		"reports-widget.sandbox.test.ts": ["test.todo"],
-		"storefront-checkout.sandbox.test.ts": Array.from({ length: 13 }, () => "test.todo"),
 	};
 
 	/**
