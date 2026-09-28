@@ -2004,6 +2004,36 @@ export function productCommerceStoreContract(
 			expect(un?.price).toBeNull();
 		});
 
+		test("getManyByProductId reports the LIVE publish gate: published → active, unpublished → inactive, deleted → inactive + tombstoned (checkout's liveness rule reads exactly this)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-gm-6");
+			const gone = productId("prod-gm-6-del");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-GM-6"), price: money(cents(1400), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert(
+				{ productId: gone, sku: sku("SKU-GM-6D"), price: money(cents(1400), currency("USD")) },
+				idempotencyKey("k2"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), "2026-01-01T00:00:00.000Z");
+			await h.store.activate(gone, idempotencyKey("pub-2"), "2026-01-01T00:00:00.000Z");
+
+			const published = await h.store.getManyByProductId([pid]);
+			expect(published.get(pid)).toMatchObject({ active: true, deletedAt: null });
+
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), "2026-01-02T00:00:00.000Z");
+			await h.store.softDelete(gone, idempotencyKey("del-2"));
+			const after = await h.store.getManyByProductId([pid, gone]);
+			// The price survives both lifecycle events — which is exactly why the
+			// sell paths must read `active`/`deletedAt`, not just "is it priced".
+			expect(after.get(pid)).toMatchObject({ active: false, deletedAt: null });
+			expect(after.get(pid)?.price).toEqual({ amount: 1400, currency: "USD" });
+			expect(after.get(gone)?.active).toBe(false);
+			expect(after.get(gone)?.deletedAt).not.toBeNull();
+			expect(after.get(gone)?.price).toEqual({ amount: 1400, currency: "USD" });
+		});
+
 		// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
 
 		test("listProducts on an empty store returns no rows and a null cursor", async () => {

@@ -61,6 +61,7 @@ import {
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
+	isProductLive,
 	listProductCommerceByIds,
 	listProductVariants,
 	money,
@@ -502,9 +503,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
 			if (resolved.status === "unknown") return { ok: false, reason: "SKU_MISMATCH" };
 			if (resolved.status === "unpriced") {
-				// Live, correctly named, and nobody has priced it. Refused HERE and by
-				// name so a shopper is told at the Add button rather than at the last
-				// step, and so no stock is held for a line that could never be bought.
+				// Correctly named, and not for sale — nobody has priced it, or it is
+				// unpublished. Refused HERE and by name so a shopper is told at the Add
+				// button rather than at the last step, and so no stock is held for a
+				// line that could never be bought.
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			kind = resolved.productKind;
@@ -728,7 +730,11 @@ export class InProcessCommerceClient implements CommerceClient {
 		for (const line of cart.lines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
-			if (row === null || row.price === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			// An unpublished or deleted product is no longer for sale, even from a cart
+			// that held it first — the same liveness rule `createOrderFromCart` applies.
+			if (row === null || !isProductLive(row) || row.price === null) {
+				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
 			lines.push({
 				unitPriceCents: row.price.amount,
@@ -850,7 +856,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		const product = await this.#stores.productCommerce.getByProductId(productId);
 		if (product === null || product.deletedAt !== null) return { status: "unknown" };
 		if (product.sku !== null && String(product.sku) === submittedSku) {
-			return product.price === null
+			// Unpublished is refused with the unpriced token: either way the unit is
+			// not for sale, and the storefront already tells the shopper so.
+			return product.price === null || !isProductLive(product)
 				? { status: "unpriced" }
 				: { status: "ok", productKind: product.productKind };
 		}

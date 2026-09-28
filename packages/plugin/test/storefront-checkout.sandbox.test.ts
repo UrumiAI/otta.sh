@@ -324,6 +324,30 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 		expect(await summary({ cartId })).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 	});
 
+	test.each([["UNPUBLISHED"], ["DELETED"]] as const)(
+		"a line whose product was %s after the add surfaces PRODUCT_NOT_PRICED — the old price is never quoted",
+		async (lifecycle) => {
+			const id = `prod-${NS}-${lifecycle.toLowerCase()}`;
+			const sku = `SKU-${NS}-${lifecycle}`;
+			await seedProduct({ id, sku, amount: 1400 });
+			const cartId = await createCart();
+			await addLine(cartId, sku, id, 1);
+			expect((await summary({ cartId }))["ok"]).toBe(true);
+
+			if (lifecycle === "UNPUBLISHED") {
+				await commerceStore().deactivate(
+					toProductId(id),
+					idempotencyKey(`unpub-${id}`),
+					"2026-02-01T00:00:00.000Z",
+				);
+			} else {
+				await commerceStore().softDelete(toProductId(id), idempotencyKey(`del-${id}`));
+			}
+
+			expect(await summary({ cartId })).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		},
+	);
+
 	test("a line priced in another currency surfaces CURRENCY_MISMATCH", async () => {
 		// The cart is minted in the default USD; this product is priced in EUR, so
 		// the two disagree at the quote — the one place that comparison can be made.

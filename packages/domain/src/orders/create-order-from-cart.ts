@@ -21,6 +21,7 @@ import {
 	type PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
@@ -201,7 +202,10 @@ export async function createOrderFromCart(
 	for (const line of cart.lines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		const pc = pcById.get(brandProductId(line.productId)) ?? null;
-		if (pc === null || pc.price === null || pc.title === null) {
+		// An unpublished or deleted product is not for sale, even from a cart that
+		// held it before the lifecycle event landed. Refused before anything is
+		// minted, so the line's hold stays `held` for a remove or the TTL sweep.
+		if (pc === null || !isProductLive(pc) || pc.price === null || pc.title === null) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
 		if (pc.price.currency !== currency) {

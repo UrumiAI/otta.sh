@@ -168,6 +168,11 @@ export interface ArrangedProduct {
 	price?: CommerceMoney;
 	title?: string;
 	onHand?: number;
+	/** Whether the seeded product is PUBLISHED (its publish gate open), the state
+	 *  `content:afterPublish` leaves it in. Defaults to `true`: a seeded product is a
+	 *  sellable one, because every sell path refuses an unpublished row. A case about
+	 *  the gate itself passes `false` and drives the flips it asserts on. */
+	published?: boolean;
 	idempotencyKey: string;
 }
 
@@ -793,6 +798,101 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// ── the publish gate is a SELL rule, not only a listing one ────────
+		// An unpublished (`active=false`) or deleted product keeps its sku, price and
+		// stock row, so nothing but the gate stops it being bought: the add refuses
+		// it up front and the quote refuses a cart that held it before the lifecycle
+		// event landed. Both answer with a token the storefront already renders.
+
+		test("an UNPUBLISHED product is refused PRODUCT_NOT_PRICED at the ADD — nothing held, nothing persisted", async () => {
+			const productId = await tier.arrange.product({
+				productId: "prod-draft",
+				sku: "SKU-DRAFT",
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				published: false,
+				idempotencyKey: "seed-draft",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-DRAFT", productId, 1, "draft-add-1");
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a product UNPUBLISHED after being sold is refused at the add — and publishing it again restores the add", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-UNPUB",
+				onHand: 5,
+				price: { amount: 1400, currency: "USD" },
+			});
+			await client.deactivateProductCommerce(productId, "unpub-1", "2026-08-01T00:00:00.000Z");
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-UNPUB", productId, 1, "unpub-add-1")).toEqual({
+				ok: false,
+				reason: "PRODUCT_NOT_PRICED",
+			});
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+
+			await client.activateProductCommerce(productId, "repub-1", "2026-08-02T00:00:00.000Z");
+			const again = await client.addCartLine(cartId, "SKU-UNPUB", productId, 1, "unpub-add-2");
+			expect(again.ok).toBe(true);
+		});
+
+		test("a DELETED product is refused at the add (SKU_MISMATCH — it names no live sellable unit)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-DELETED",
+				onHand: 5,
+				price: { amount: 1400, currency: "USD" },
+			});
+			await client.softDeleteProductCommerce(productId, "del-1");
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-DELETED", productId, 1, "del-add-1")).toEqual({
+				ok: false,
+				reason: "SKU_MISMATCH",
+			});
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test.each([["UNPUBLISHED"], ["DELETED"]] as const)(
+			"a cart holding a line whose product was %s after the add no longer QUOTES (PRODUCT_NOT_PRICED), and its hold is left intact",
+			async (lifecycle) => {
+				const tag = lifecycle === "UNPUBLISHED" ? "UNPUBQ" : "DELQ";
+				const productId = await seedProduct({
+					sku: `SKU-${tag}`,
+					onHand: 5,
+					price: { amount: 1400, currency: "USD" },
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(cartId, `SKU-${tag}`, productId, 1, `${tag}-add`);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
+
+				if (lifecycle === "UNPUBLISHED") {
+					await client.deactivateProductCommerce(
+						productId,
+						`${tag}-flip`,
+						"2026-08-01T00:00:00.000Z",
+					);
+				} else {
+					await client.softDeleteProductCommerce(productId, `${tag}-flip`);
+				}
+
+				expect(await client.quoteCheckout({ cartId })).toEqual({
+					ok: false,
+					reason: "PRODUCT_NOT_PRICED",
+				});
+				// The refusal is read-only: the line and its reservation are still there
+				// for the shopper to remove (which releases the unit) or the sweep to reap.
+				expect(await client.getCart(cartId)).toMatchObject({
+					ok: true,
+					cart: {
+						state: "active",
+						lines: [{ sku: `SKU-${tag}`, reservationId: added.line.reservationId }],
+					},
+				});
+			},
+		);
+
 		test("a legacy add with NO productId (absent) is preserved as null and still quotes PRODUCT_NOT_PRICED", async () => {
 			await seedProduct({
 				sku: "SKU-LEGACY",
@@ -1183,6 +1283,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-wmgate",
 				sku: "SKU-WMGATE",
 				price: { amount: 1000, currency: "USD" },
+				published: false,
 				idempotencyKey: "wmgate-seed",
 			});
 			async function active(): Promise<boolean | undefined> {
@@ -1645,6 +1746,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-bnd-wm2",
 				sku: "SKU-BND-WM2",
 				price: { amount: 100, currency: "USD" },
+				published: false,
 				idempotencyKey: "bnd-wm2-seed",
 			});
 			await expectRejectedInput(

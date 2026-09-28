@@ -85,6 +85,10 @@ import {
 /** The epoch every order suite starts from, so deadlines read identically. */
 export const ORDER_EPOCH = new Date("2026-07-10T00:00:00.000Z");
 
+/** The publish watermark every seeded product carries — older than any lifecycle
+ *  event a case applies afterwards, so a later unpublish is never "stale". */
+export const SEED_PUBLISHED_AT = "2026-01-01T00:00:00.000Z";
+
 const USD = currency("USD");
 
 export interface OrderHarnessOptions {
@@ -291,6 +295,16 @@ export function makeOrderHarness(
 	const inventoryDocs = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
 	const reservationIndex = collectionOf<ReservationIndexDoc>(storage, RESERVATION_INDEX_COLLECTION);
 
+	/** A seeded product is a SELLABLE one: published through the same publish-gate
+	 *  flip `content:afterPublish` drives, since checkout refuses an unpublished row. */
+	async function publish(id: string): Promise<void> {
+		await shared.productCommerce.activate(
+			brandProductId(id),
+			idempotencyKey(`publish-${String(seq++)}`),
+			SEED_PUBLISHED_AT,
+		);
+	}
+
 	return {
 		shared,
 		clock,
@@ -322,6 +336,7 @@ export function makeOrderHarness(
 				},
 				idempotencyKey(`seed-${String(seq++)}`),
 			);
+			await publish(input.productId);
 			await inventory.seedOnHand(input.sku, input.onHand);
 		},
 		async seedDigital(input) {
@@ -335,6 +350,7 @@ export function makeOrderHarness(
 				},
 				idempotencyKey(`seed-${String(seq++)}`),
 			);
+			await publish(input.productId);
 		},
 		async editProduct(input) {
 			await productCommerce.upsert(

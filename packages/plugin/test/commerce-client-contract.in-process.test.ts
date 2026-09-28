@@ -201,6 +201,15 @@ function inProcessTier(): CommerceClientTier {
 					},
 					spec.idempotencyKey,
 				);
+				if (spec.published !== false) {
+					// Published the way `content:afterPublish` publishes, at a watermark older
+					// than any lifecycle flip a case applies afterwards.
+					await clientOrThrow().activateProductCommerce(
+						spec.productId,
+						`${spec.idempotencyKey}-publish`,
+						"2026-01-01T00:00:00.000Z",
+					);
+				}
 				return spec.productId;
 			},
 			async cart(currency) {
@@ -362,6 +371,7 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 			{ sku: "SKU-NOGW", price: { amount: 2500, currency: "USD" }, initialOnHand: 3 },
 			"nogw-seed",
 		);
+		await client.activateProductCommerce("prod-nogw", "nogw-publish", "2026-01-01T00:00:00.000Z");
 		const { cartId } = await client.createCart("USD");
 		const added = await client.addCartLine(cartId, "SKU-NOGW", "prod-nogw", 2, "nogw-add");
 		if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
