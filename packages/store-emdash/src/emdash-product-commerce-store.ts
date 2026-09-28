@@ -457,6 +457,28 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		return docs;
 	}
 
+	/**
+	 * The sell path's variant read: the variants embedded in each product
+	 * document, from the same one-statement batch `getManyByProductId` uses — no
+	 * inventory read, orphans included (the caller's resolution skips them).
+	 */
+	async getManyVariantsByProductId(
+		productIds: ProductId[],
+	): Promise<Map<ProductId, ProductVariant[]>> {
+		const result = new Map<ProductId, ProductVariant[]>();
+		if (productIds.length === 0) return result;
+		for (const doc of await this.#readBatch(productIds)) {
+			if (!hasProductRow(doc)) continue;
+			result.set(
+				doc.productId,
+				Object.values(doc.variants)
+					.toSorted((a, b) => codeUnitAsc(a.variantKey, b.variantKey))
+					.map((variant) => toProductVariant(doc.productId, variant)),
+			);
+		}
+		return result;
+	}
+
 	async listVariants(productId: ProductId): Promise<ProductVariantSummary[]> {
 		const doc = await this.#products.get(productId);
 		if (doc === null) return [];

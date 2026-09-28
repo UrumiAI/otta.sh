@@ -51,6 +51,8 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
+	updateProductVariantFields,
+	upsertProductVariant,
 } from "@otta-sh/domain";
 import {
 	EmdashCouponStore,
@@ -490,6 +492,79 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		// ...and no order was minted on the way to refusing, which is the half the
 		// old `stubServer.requests` count carried.
 		expect(orderOps).toEqual([]);
+	});
+});
+
+describe("storefront/checkout/summary and cart/read for a cart selling SIZES", () => {
+	const PRODUCT = `prod-${NS}-sized`;
+	const SIZES = [
+		{ key: "m", sku: `SKU-${NS}-sized-m`, amount: 2500 },
+		{ key: "l", sku: `SKU-${NS}-sized-l`, amount: 3000 },
+	];
+
+	beforeAll(async () => {
+		await seedProduct({ id: PRODUCT, sku: `SKU-${NS}-sized`, amount: 2000 });
+		const deps = { productCommerce: commerceStore(), inventory: inventoryStore() };
+		for (const size of SIZES) {
+			// Stock first: a variant's sku ADOPTS the inventory row standing under it.
+			await inventoryStore().seedOnHand(toSku(size.sku), 500);
+			const declared = await upsertProductVariant(
+				deps.productCommerce,
+				{ productId: toProductId(PRODUCT), variantKey: size.key, title: size.key.toUpperCase() },
+				idempotencyKey(`declare-${size.key}`),
+			);
+			const priced = await updateProductVariantFields(
+				deps,
+				{
+					productId: toProductId(PRODUCT),
+					variantKey: size.key,
+					sku: toSku(size.sku),
+					price: { amount: cents(size.amount), currency: currency("USD") },
+				},
+				idempotencyKey(`price-${size.key}`),
+				declared.updatedAt.toISOString(),
+			);
+			expect(priced.ok).toBe(true);
+		}
+	});
+
+	test("each line is priced at ITS unit — two sizes and the product's own sku — and the quote agrees", async () => {
+		const cartId = await createCart();
+		await addLine(cartId, SIZES[0]!.sku, PRODUCT, 2);
+		await addLine(cartId, SIZES[1]!.sku, PRODUCT, 1);
+		await addLine(cartId, `SKU-${NS}-sized`, PRODUCT, 1);
+
+		const view = await summary({ cartId });
+		expect(view["ok"]).toBe(true);
+		const lines = view["lines"] as {
+			sku: string;
+			unitPrice: { amount: number } | null;
+			lineTotal: { amount: number } | null;
+		}[];
+		const bySku = new Map(lines.map((l) => [l.sku, l]));
+		expect(bySku.get(SIZES[0]!.sku)).toMatchObject({
+			unitPrice: { amount: 2500 },
+			lineTotal: { amount: 5000 },
+		});
+		expect(bySku.get(SIZES[1]!.sku)).toMatchObject({
+			unitPrice: { amount: 3000 },
+			lineTotal: { amount: 3000 },
+		});
+		expect(bySku.get(`SKU-${NS}-sized`)).toMatchObject({
+			unitPrice: { amount: 2000 },
+			lineTotal: { amount: 2000 },
+		});
+		expect(view["hasUnpricedLines"]).toBe(false);
+		expect(view["totals"]).toMatchObject({
+			subtotal: { money: { amount: 10000 } },
+			total: { money: { amount: 10000 } },
+		});
+
+		const read = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+		expect(read).toMatchObject({
+			ok: true,
+			pricing: { total: { amount: 10000 }, allLinesPriced: true },
+		});
 	});
 });
 

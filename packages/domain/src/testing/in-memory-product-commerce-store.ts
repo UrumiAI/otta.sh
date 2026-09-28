@@ -770,6 +770,22 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	/** Every variant of one product, `variant_key ASC`, orphans included and
 	 *  flagged, each carrying the same three-state `onHand` the adapters' LEFT
 	 *  JOIN produces (port doc). */
+	async getManyVariantsByProductId(
+		productIds: ProductId[],
+	): Promise<Map<ProductId, ProductVariant[]>> {
+		const result = new Map<ProductId, ProductVariant[]>();
+		for (const id of productIds) {
+			if (result.has(id) || !this.#rows.has(id)) continue;
+			result.set(
+				id,
+				[...this.#variants.values()]
+					.filter((v) => v.productId === id)
+					.toSorted((a, b) => codeUnitAsc(a.variantKey, b.variantKey)),
+			);
+		}
+		return result;
+	}
+
 	async listVariants(productId: ProductId): Promise<ProductVariantSummary[]> {
 		return [...this.#variants.values()]
 			.filter((v) => v.productId === productId)

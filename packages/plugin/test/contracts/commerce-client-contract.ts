@@ -1038,57 +1038,76 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(result).toEqual({ ok: false, reason: "LINE_NOT_FOUND" });
 		});
 
-		// The add endpoint's SKU guard. A size is a row of its own and resolves
-		// against its product — and is REFUSED anyway, with the same typed token a
-		// spoof gets, because order pricing still reads the snapshot price and
-		// title from the product row and cannot reach a variant.
+		// ── selling a size ────────────────────────────────────────────────
 		//
-		// THIS TEST FLIPS when order pricing resolves the sellable unit rather than
-		// the product row: the first expectation becomes the accepted line the
-		// comment below spells out. The orphaned half does not flip — a
-		// discontinued size stays unaddable either way — so it is asserted here
-		// against a distinct sku, keeping the two halves independent.
-		test("a LIVE variant's sku is REFUSED at the add for now, and an ORPHANED one is refused permanently", async () => {
-			const productId = await seedProduct({
-				sku: "SKU-CART-VAR",
-				onHand: 5,
+		// A size is a row of its own and resolves against its product: a LIVE,
+		// priced variant sells at ITS price under ITS name, on every sell path —
+		// the add, the quote and the order. An orphaned size, a size of another
+		// product and an unpriced size are refused, with the tokens a product
+		// row would get.
+
+		/**
+		 * A titled product with one priced size per entry of `sizes`, each stocked.
+		 * A variant's first sku ADOPTS whatever inventory row already stands under
+		 * it (units and all), so stocking one means creating that row and then
+		 * freeing the sku: a soft-deleted product is no longer a LIVE sellable
+		 * unit, so its sku is available again while its stock stays where it is.
+		 */
+		async function sizedProduct(
+			prefix: string,
+			sizes: { key: string; title: string | null; amount: number | null }[],
+		): Promise<string> {
+			const productId = await tier.arrange.product({
+				productId: `prod-${prefix}`,
+				sku: `SKU-${prefix}`,
+				title: `Tee ${prefix}`,
 				price: { amount: 2000, currency: "USD" },
+				onHand: 5,
+				idempotencyKey: `seed-${prefix}`,
 			});
-			// The size's units. A variant's first sku ADOPTS whatever inventory row
-			// already stands under it (units and all), so stocking one means
-			// creating that row and then freeing the sku: a soft-deleted product is
-			// no longer a LIVE sellable unit, so its sku is available again while
-			// its stock stays exactly where it is.
-			const donor = await seedProduct({
-				sku: "SKU-CART-VAR-L",
-				onHand: 4,
-				price: { amount: 2500, currency: "USD" },
-			});
-			await client.softDeleteProductCommerce(donor, "cartvar-free-sku");
+			for (const size of sizes) {
+				const sku = `SKU-${prefix}-${size.key}`;
+				const donor = await tier.arrange.product({
+					productId: `donor-${prefix}-${size.key}`,
+					sku,
+					price: { amount: 1, currency: "USD" },
+					onHand: 4,
+					idempotencyKey: `seed-donor-${prefix}-${size.key}`,
+				});
+				await client.softDeleteProductCommerce(donor, `free-${prefix}-${size.key}`);
+				const declared = await client.upsertProductVariant(
+					productId,
+					size.key,
+					{ title: size.title, contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
+					`declare-${prefix}-${size.key}`,
+				);
+				const fields =
+					size.amount === null ? { sku } : { sku, price: { amount: size.amount, currency: "USD" } };
+				const priced = await client.updateProductVariantFields(
+					productId,
+					size.key,
+					fields,
+					declared.updatedAt,
+					`price-${prefix}-${size.key}`,
+				);
+				if (!priced.ok) throw new Error(`arrange failed: ${priced.reason}`);
+			}
+			return productId;
+		}
 
-			const declared = await client.upsertProductVariant(
-				productId,
-				"large",
-				{ title: "Large", contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
-				"cartvar-declare",
-			);
-			const priced = await client.updateProductVariantFields(
-				productId,
-				"large",
-				{ sku: "SKU-CART-VAR-L", price: { amount: 2500, currency: "USD" } },
-				declared.updatedAt,
-				"cartvar-price",
-			);
-			if (!priced.ok) throw new Error("unreachable");
-
+		test("a LIVE, priced variant's sku is ADDED, and an ORPHANED one is refused SKU_MISMATCH", async () => {
+			const productId = await sizedProduct("CART-VAR", [
+				{ key: "large", title: "Large", amount: 2500 },
+			]);
 			const cartId = await tier.arrange.cart("USD");
-			const added = await client.addCartLine(cartId, "SKU-CART-VAR-L", productId, 1, "cartvar-add");
-			expect(added).toEqual({ ok: false, reason: "SKU_MISMATCH" });
-			// Nothing held: the size still has every unit it adopted.
-			const read = await client.getCart(cartId);
-			expect(read).toMatchObject({ ok: true, cart: { lines: [] } });
-			// On the flip, this is the assertion:
-			//   expect(added).toMatchObject({ ok: true, line: { sku: "SKU-CART-VAR-L", productId } });
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-CART-VAR-large",
+				productId,
+				1,
+				"cartvar-add",
+			);
+			expect(added).toMatchObject({ ok: true, line: { sku: "SKU-CART-VAR-large", productId } });
 
 			await client.deactivateProductVariant(
 				productId,
@@ -1099,13 +1118,101 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const secondCart = await tier.arrange.cart("USD");
 			const afterDrop = await client.addCartLine(
 				secondCart,
-				"SKU-CART-VAR-L",
+				"SKU-CART-VAR-large",
 				productId,
 				1,
 				"cartvar-add-2",
 			);
 			expect(afterDrop).toEqual({ ok: false, reason: "SKU_MISMATCH" });
 		});
+
+		test("a variant's sku named under ANOTHER product is refused SKU_MISMATCH, holding nothing", async () => {
+			await sizedProduct("VAR-OWN", [{ key: "m", title: "M", amount: 2500 }]);
+			const other = await seedProduct({
+				sku: "SKU-VAR-OTHER",
+				onHand: 5,
+				price: { amount: 900, currency: "USD" },
+			});
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-VAR-OWN-m", other, 1, "varown-add")).toEqual({
+				ok: false,
+				reason: "SKU_MISMATCH",
+			});
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a variant with a sku but NO price is refused PRODUCT_NOT_PRICED at the add", async () => {
+			const productId = await sizedProduct("VAR-UNPRICED", [
+				{ key: "s", title: "S", amount: null },
+			]);
+			const cartId = await tier.arrange.cart("USD");
+			expect(
+				await client.addCartLine(cartId, "SKU-VAR-UNPRICED-s", productId, 1, "varunpriced-add"),
+			).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		});
+
+		test("the quote prices each line at ITS unit: two sizes at different prices, beside the product's own sku", async () => {
+			const productId = await sizedProduct("VAR-QUOTE", [
+				{ key: "m", title: "M", amount: 2500 },
+				{ key: "l", title: "L", amount: 3000 },
+			]);
+			const cartId = await tier.arrange.cart("USD");
+			for (const [sku, qty] of [
+				["SKU-VAR-QUOTE-m", 2],
+				["SKU-VAR-QUOTE-l", 1],
+				["SKU-VAR-QUOTE", 1],
+			] as const) {
+				const added = await client.addCartLine(cartId, sku, productId, qty, `varquote-${sku}`);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+			}
+			const quoted = await client.quoteCheckout({ cartId });
+			// 2 × 25.00 + 1 × 30.00 + 1 × 20.00 (the product itself, unchanged).
+			expect(quoted).toMatchObject({
+				ok: true,
+				breakdown: { currency: "USD", subtotalCents: 10000, totalCents: 10000 },
+			});
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"the order snapshots each size's price and its `<product> — <size>` title (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await sizedProduct("VAR-ORDER", [
+					{ key: "m", title: "Medium", amount: 2500 },
+					{ key: "xl", title: null, amount: 3500 },
+				]);
+				const cartId = await tier.arrange.cart("USD");
+				for (const [sku, qty] of [
+					["SKU-VAR-ORDER-m", 2],
+					["SKU-VAR-ORDER-xl", 1],
+				] as const) {
+					const added = await client.addCartLine(cartId, sku, productId, qty, `varorder-${sku}`);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				}
+				const placed = await client.createOrder(
+					{ cartId, paymentMethod, buyerRef: "var-order@example.test" },
+					"var-order-key",
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				expect(placed.order.totals).toMatchObject({ subtotalCents: 8500, totalCents: 8500 });
+				const lines = [...placed.order.lines].toSorted((a, b) => a.sku.localeCompare(b.sku));
+				expect(lines).toEqual([
+					expect.objectContaining({
+						sku: "SKU-VAR-ORDER-m",
+						title: "Tee VAR-ORDER — Medium",
+						unitPriceCents: 2500,
+						quantity: 2,
+					}),
+					// A size the CMS gave no name is titled by its key.
+					expect.objectContaining({
+						sku: "SKU-VAR-ORDER-xl",
+						title: "Tee VAR-ORDER — xl",
+						unitPriceCents: 3500,
+						quantity: 1,
+					}),
+				]);
+			},
+		);
 
 		// ── the gap cases ─────────────────────────────────────────────────
 		//

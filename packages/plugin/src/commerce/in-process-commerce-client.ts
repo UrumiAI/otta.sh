@@ -62,6 +62,8 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
 	isProductLive,
+	productsSellingVariants,
+	resolveSellableUnit,
 	listProductCommerceByIds,
 	listProductVariants,
 	money,
@@ -114,6 +116,7 @@ import type {
 	ProductCommerce,
 	ProductCommerceBatchItem,
 	ProductVariantSummaryWire,
+	SellableVariantPriceWire,
 	ProductVariantWire,
 	PublicOrderResult,
 	PublicOrderWire,
@@ -323,6 +326,26 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * name and last price are not storefront data, so the filter is here rather
 	 * than optional.
 	 */
+	async getSellableVariantPrices(productIds: string[]): Promise<SellableVariantPriceWire[]> {
+		for (const id of productIds) requireProductId(id);
+		if (productIds.length === 0) return [];
+		const byId = await this.#stores.productCommerce.getManyVariantsByProductId(
+			productIds.map((id) => toProductId(id)),
+		);
+		const out: SellableVariantPriceWire[] = [];
+		for (const [productId, variants] of byId) {
+			for (const v of variants) {
+				if (v.orphanedAt !== null || v.sku === null || v.price === null) continue;
+				out.push({
+					productId,
+					sku: v.sku,
+					price: { amount: v.price.amount, currency: v.price.currency },
+				});
+			}
+		}
+		return out;
+	}
+
 	async listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]> {
 		requireProductId(productId);
 		const rows = await listProductVariants(this.#stores.productCommerce, toProductId(productId));
@@ -749,11 +772,15 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
 
-		const byId = await this.#stores.productCommerce.getManyByProductId(
-			cart.lines
-				.map((line) => line.productId)
-				.filter((id): id is string => id !== null)
-				.map((id) => toProductId(id)),
+		const productIds = cart.lines
+			.map((line) => line.productId)
+			.filter((id): id is string => id !== null)
+			.map((id) => toProductId(id));
+		const byId = await this.#stores.productCommerce.getManyByProductId(productIds);
+		// Variants only for the products a line sells a size of — none for a cart
+		// of product skus.
+		const variantsById = await this.#stores.productCommerce.getManyVariantsByProductId(
+			productsSellingVariants(cart.lines, byId),
 		);
 		const lines: TotalsLineInput[] = [];
 		for (const line of cart.lines) {
@@ -761,12 +788,13 @@ export class InProcessCommerceClient implements CommerceClient {
 			const row = byId.get(toProductId(line.productId)) ?? null;
 			// An unpublished or deleted product is no longer for sale, even from a cart
 			// that held it first — the same liveness rule `createOrderFromCart` applies.
-			if (row === null || !isProductLive(row) || row.price === null) {
-				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-			}
-			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
+			if (row === null || !isProductLive(row)) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			// The line's unit — the product or one of its variants — and ITS price.
+			const unit = resolveSellableUnit(row, variantsById.get(row.productId) ?? [], line.sku);
+			if (unit === null || unit.price === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			if (unit.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
 			lines.push({
-				unitPriceCents: row.price.amount,
+				unitPriceCents: unit.price.amount,
 				qty: line.qty,
 				taxClassId: row.taxClass ?? "standard",
 			});
@@ -865,16 +893,16 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * PRICED is part of sellable: a unit nobody has priced cannot be sold, and one
 	 * priced at a row that is not its own is worse than unsold.
 	 *
-	 * A live, priced VARIANT is resolved and then REFUSED, and that is the whole of
-	 * the variant branch today: order pricing reads the snapshot price AND title
-	 * from the product row and has no way to reach a variant, so letting a size into
-	 * a cart would sell the parent's price under the parent's name, immutably. The
-	 * refusal is the same token a spoof gets, so nothing is published about which
-	 * sizes exist. The branch opens when order pricing resolves the sellable unit
-	 * rather than the product row — one return statement, in this one place.
+	 * A live VARIANT of the product sells too: every pricing path (the quote, the
+	 * order, the summary, the cart read) resolves the same unit through
+	 * `resolveSellableUnit`, so a size sells at its own price under its own name.
+	 * An unpriced variant — or a live product that is unpublished — answers
+	 * `unpriced`, like the product itself; a sku the product does not sell answers
+	 * `unknown`, the token a spoof gets, so nothing is published about which sizes
+	 * exist.
 	 *
-	 * Cost: one keyed read on the hot path (the product's own sku matches), a second
-	 * only when it does not. Per REQUEST, never per line; an add carries one line.
+	 * Cost: one batch read of the product document, which carries its variants.
+	 * Per REQUEST, never per line; an add carries one line.
 	 */
 	async #resolveSellableUnit(
 		productId: ProductId,
@@ -884,24 +912,20 @@ export class InProcessCommerceClient implements CommerceClient {
 	> {
 		const product = await this.#stores.productCommerce.getByProductId(productId);
 		if (product === null || product.deletedAt !== null) return { status: "unknown" };
-		if (product.sku !== null && String(product.sku) === submittedSku) {
-			// Unpublished is refused with the unpriced token: either way the unit is
-			// not for sale, and the storefront already tells the shopper so.
-			return product.price === null || !isProductLive(product)
-				? { status: "unpriced" }
-				: { status: "ok", productKind: product.productKind };
-		}
-		// Either this product sells through variants, or the sku belongs to somebody
-		// else entirely. Both arms answer `unknown` today, so the lookup below is
-		// SCAFFOLDING — held here, unobserved, because it keeps the flip to a single
-		// return in the one place that already knows which rows are live and which
-		// sku was asked for.
-		const variants = await this.#stores.productCommerce.listVariants(productId);
-		const variant = variants.find(
-			(row) => row.orphanedAt === null && row.sku !== null && String(row.sku) === submittedSku,
-		);
-		if (variant === undefined) return { status: "unknown" };
-		return { status: "unknown" };
+		// The product's own sku needs no second read; a size reads the variants.
+		const variants =
+			product.sku !== null && String(product.sku) === submittedSku
+				? []
+				: ((await this.#stores.productCommerce.getManyVariantsByProductId([productId])).get(
+						productId,
+					) ?? []);
+		const unit = resolveSellableUnit(product, variants, submittedSku);
+		if (unit === null) return { status: "unknown" };
+		// Unpublished is refused with the unpriced token: either way the unit is
+		// not for sale, and the storefront already tells the shopper so.
+		return unit.price === null || !isProductLive(product)
+			? { status: "unpriced" }
+			: { status: "ok", productKind: product.productKind };
 	}
 }
 

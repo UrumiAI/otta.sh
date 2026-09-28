@@ -23,10 +23,13 @@
  * `allLinesPriced` tells the theme whether to caveat the total.
  */
 import { formatMoney } from "../presentation/format-money.js";
-import { cents } from "../presentation/money.js";
+import { cents, currency } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
-import type { CartLineWire } from "../product-commerce/commerce-client.js";
+import type {
+	CartLineWire,
+	SellableVariantPriceWire,
+} from "../product-commerce/commerce-client.js";
 
 export interface CartMoneyWire {
 	amount: number;
@@ -75,28 +78,39 @@ export function buildCartPricing(
 	commerceById: Map<string, CatalogProductCommerce | null>,
 	cartCurrency: string,
 	locale: string,
+	/** The live, priced variants of the lines' products — a line selling a size
+	 *  is priced at ITS price (the unit `resolveSellableUnit` sells), never the
+	 *  parent's. Omitted ⇒ none: every non-product sku line is unpriced. */
+	variantPrices: readonly SellableVariantPriceWire[] = [],
 ): CartPricingWire {
+	const variantPrice = new Map(variantPrices.map((v) => [`${v.productId}\u0000${v.sku}`, v.price]));
 	let allLinesPriced = true;
 	let totalAmount = 0;
 	let totalCurrency: Currency | null = null;
 
 	const linePricing: CartLinePricing[] = lines.map((line) => {
 		const commerce = line.productId !== null ? (commerceById.get(line.productId) ?? null) : null;
-		const priced =
-			commerce !== null && commerce.active && (commerce.price.currency as string) === cartCurrency;
-		if (!priced || commerce === null) {
+		// The unit's price: the product's for its own sku, a variant's for a size.
+		const unitPrice =
+			commerce === null || !commerce.active
+				? null
+				: line.sku === commerce.sku
+					? commerce.price
+					: (variantPrice.get(`${commerce.productId}\u0000${line.sku}`) ?? null);
+		if (unitPrice === null || unitPrice.currency !== cartCurrency) {
 			allLinesPriced = false;
 			return { lineId: line.lineId, unitPrice: null, lineTotal: null };
 		}
+		const unitCurrency = currency(unitPrice.currency);
 
-		const lineAmount = commerce.price.amount * line.qty;
+		const lineAmount = unitPrice.amount * line.qty;
 		totalAmount += lineAmount;
-		totalCurrency = commerce.price.currency;
+		totalCurrency = unitCurrency;
 
 		return {
 			lineId: line.lineId,
-			unitPrice: money(commerce.price.amount, commerce.price.currency, locale),
-			lineTotal: money(lineAmount, commerce.price.currency, locale),
+			unitPrice: money(unitPrice.amount, unitCurrency, locale),
+			lineTotal: money(lineAmount, unitCurrency, locale),
 		};
 	});
 

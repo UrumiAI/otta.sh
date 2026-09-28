@@ -997,6 +997,16 @@ export interface ProductCommerceStore {
 	listVariants(productId: ProductId): Promise<ProductVariantSummary[]>;
 
 	/**
+	 * The SELL PATH's variant read: every stored variant (orphans included — the
+	 * caller's resolution skips them) of each product, keyed by product id, in ONE
+	 * batch. No stock join: pricing a line needs the row, not the count, and a
+	 * quote over a 40-size product must not pay 40 inventory reads.
+	 *
+	 * A product with no variants maps to `[]`; an unknown id is ABSENT.
+	 */
+	getManyVariantsByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductVariant[]>>;
+
+	/**
 	 * The guarded ADMIN edit of a variant's commerce-owned fields — the exact
 	 * mirror of `updateCommerceFields`, one level down, including its guard ORDER
 	 * (contract-pinned on every adapter):
