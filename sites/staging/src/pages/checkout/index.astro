@@ -146,11 +146,15 @@ const sumRows = [
 		locked !== null && (
 			<div class="notice-slot">
 				{ended ? (
-					/* True ONLY for the `ended` phase — expired / failed, both reached
-					   straight from pending, so never charged. A cancelled order may
-					   follow a payment; it is `placed` and never reaches this copy. */
+					/* The `ended` phase — expired / failed — means NO LONGER PAYABLE,
+					   not "never charged": a declined attempt fails the order while its
+					   PaymentIntent stays confirmable, and a payment can land just after
+					   the TTL sweep. The public order carries no reconciliation flag, so
+					   this copy makes no claim about money either way. */
 					<Notice lead="This checkout has ended.">
-						The order it created can no longer be paid, and nothing has been charged. Start a new
+						Its order can no longer be paid. If a payment did go through, the store will refund
+						it — contact them with your order number, shown on
+						<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a>. Start a new
 						cart to order again.
 					</Notice>
 				) : (

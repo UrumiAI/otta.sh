@@ -166,6 +166,23 @@ describe("/checkout — the coupon", () => {
 		expect(REVIEW).toMatch(/unreachable until #305 part 2[\s\S]{0,200}shippingError !== null/);
 	});
 
+	/**
+	 * `ended` means NO LONGER PAYABLE, not "never charged": a declined attempt
+	 * flips the order to `failed` while the same PaymentIntent stays confirmable,
+	 * and a payment can land just after the TTL sweep expired the order. The
+	 * public order carries no reconciliation flag, so this page cannot know —
+	 * and must make no claim about money either way.
+	 */
+	test("the ENDED notice makes NO claim about a charge, and links to the order", () => {
+		const notice =
+			/<Notice lead="This checkout has ended\.">[\s\S]*?<\/Notice>/.exec(templateOf(REVIEW))?.[0] ??
+			"";
+		expect(notice, "no ended notice").not.toBe("");
+		expect(notice).not.toMatch(/charged|no charge/i);
+		expect(notice).toMatch(/refund/i);
+		expect(notice).toContain("href={`/orders/${encodeURIComponent(locked.id)}`}");
+	});
+
 	test("the coupon in the URL never leaks through a Referer", () => {
 		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
 	});
