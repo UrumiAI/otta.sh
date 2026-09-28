@@ -161,6 +161,16 @@ export interface SandboxOptions {
 	 * makes. Ask for it only in a suite that exercises storage.
 	 */
 	storage?: boolean;
+	/**
+	 * `host:port` of a plain-HTTP server that receives EVERY outbound request the
+	 * isolate makes, with its original `Host` header — workerd's `globalOutbound`
+	 * (default: none, the real network). This is how a suite reaches a stub
+	 * standing in for a host whose URL the plugin hard-codes, `api.stripe.com`
+	 * above all (see `helpers/stripe-api-stub.ts`). It sits BEHIND `ctx.http`'s
+	 * allowlist check, not instead of it: `allowedHosts` still decides what the
+	 * plugin may ask for.
+	 */
+	globalOutbound?: string;
 }
 
 export type InvocationOutcome = { result: unknown } | { error: string };
@@ -297,7 +307,11 @@ function manifestSource(options: SandboxOptions): string {
 	].join("\n");
 }
 
-function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string {
+function capnpConfig(
+	port: number,
+	bundlePathRelativeToWorkDir: string,
+	globalOutbound: string | undefined,
+): string {
 	return [
 		'using Workerd = import "/workerd/workerd.capnp";',
 		"",
@@ -309,6 +323,9 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 		// boundary this plan cares about is the JS-level allowedHosts check in
 		// sandbox-entry.ts's ctx.http, exercised regardless of this policy.
 		'    (name = "internet", network = (allow = ["public", "private"])),',
+		...(globalOutbound === undefined
+			? []
+			: [`    (name = "outbound", external = (address = "${globalOutbound}", http = ())),`]),
 		"  ],",
 		"  sockets = [",
 		`    (name = "http", address = "127.0.0.1:${port}", http = (), service = "main"),`,
@@ -320,6 +337,7 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 		`    (name = "worker.js", esModule = embed "${bundlePathRelativeToWorkDir}"),`,
 		"  ],",
 		'  compatibilityDate = "2024-01-01",',
+		...(globalOutbound === undefined ? [] : ['  globalOutbound = "outbound",']),
 		");",
 		"",
 	].join("\n");
@@ -427,7 +445,11 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	// bootWithPortRetry above) — wrap the whole spawn-and-wait sequence so a
 	// lost bind race gets a fresh port on retry, not the same doomed one.
 	const { child, baseUrl } = await bootWithPortRetry(async (port) => {
-		await writeFile(configPath, capnpConfig(port, path.relative(workDir, bundlePath)), "utf8");
+		await writeFile(
+			configPath,
+			capnpConfig(port, path.relative(workDir, bundlePath), options.globalOutbound),
+			"utf8",
+		);
 
 		const bootChild: ChildProcessByStdio<null, Readable, Readable> = spawn(
 			WORKERD_BIN,

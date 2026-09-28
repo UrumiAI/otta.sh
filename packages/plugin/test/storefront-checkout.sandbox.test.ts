@@ -14,25 +14,14 @@
  * with no product reference, a product priced in another currency) instead of
  * declaring the answer, which is a stronger test of the same contract.
  *
- * WHAT IS NOT ASSERTABLE THIS INCREMENT, AND WHY IT IS NOT QUIETLY DROPPED.
- * `checkout/place` asks the domain for the `stripe` gateway, and the in-process
- * composition root wires NONE yet (`make-commerce-client.ts` fills the `x402`
- * slot only; `createOrderFromCart` refuses a method it has no gateway for, by
- * throwing). So there is no reachable success path through `place` at all in
- * this build, and the cases that pinned its successful shape — the idempotency-key
- * forwarding, the buyerRef and client-secret passthrough, the ship-to forward, the
- * private-field stripping, the replay's `alreadyPlaced`, the formatted order total
- * with its locale and its degradation, and the typed error-code mapping — assert
- * nothing that can happen and are PARKED rather than mocked back into existence:
- * each is a `test.todo` at the foot of the `place` describe, naming the blocking
- * issue `#286`, so every run reports them as outstanding
- * instead of leaving the gap visible only in a commit message. What CAN be
- * asserted, and is
- * below, is that the refusal is contained: it reaches the caller as the guard's
- * `RENDER_FAILED` with no internals attached, and it leaves the cart and its
- * stock hold exactly as it found them. `commerce-client-contract.in-process.test.ts`
- * pins the same gap one layer down; both cases come back to life, unchanged,
- * when the stripe gateway is wired.
+ * THE `place` SUCCESS PATH (issue #286). `checkout/place` asks the domain for
+ * the `stripe` gateway, which `payments/stripe-wiring.ts` arms only when both
+ * Stripe secrets are in kv. The success cases therefore run on a SECOND boot that
+ * provisions them and reaches a stubbed Stripe API — see the doc on that
+ * describe. On this file's main boot no secret is set, so the gateway is absent
+ * and the unconfigured refusal is pinned there: it reaches the caller as the
+ * guard's `RENDER_FAILED` with no internals attached, and it leaves the cart and
+ * its stock hold exactly as it found them.
  *
  * EGRESS IS STILL ASSERTED, more strictly than before. The boot declares NO
  * allowed hosts, so any `ctx.http` call from these routes throws — a checkout
@@ -70,7 +59,16 @@ import {
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import {
+	createdIntent,
+	startStripeApiStub,
+	type StripeApiStub,
+} from "./helpers/stripe-api-stub.js";
+import {
+	loadPluginInSandbox,
+	productionAllowedHosts,
+	type SandboxHandle,
+} from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
 /** A namespace no other suite writes under — the document store is
@@ -356,9 +354,9 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 
 describe("storefront/checkout/place (workerd sandbox)", () => {
 	/**
-	 * THE GAP, CONTAINED. No `stripe` gateway is wired in process (module doc), so
-	 * the domain refuses the method by throwing and `renderGuard` collapses that to
-	 * RENDER_FAILED. Two things matter about that and are asserted here: the caller
+	 * UNCONFIGURED, CONTAINED. This boot provisions no Stripe secrets, so no
+	 * `stripe` gateway is armed (module doc); the domain refuses the method by
+	 * throwing and `renderGuard` collapses that to RENDER_FAILED. Two things matter about that and are asserted here: the caller
 	 * is told nothing about the plugin's insides, and — far more importantly — the
 	 * buyer's cart is not damaged on the way out. A refusal that consumed the cart
 	 * or dropped its stock hold would be worse than the missing gateway.
@@ -411,65 +409,344 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		// old `stubServer.requests` count carried.
 		expect(orderOps).toEqual([]);
 	});
+});
+
+/**
+ * The `place` SUCCESS PATH — issue #286.
+ *
+ * These cases were parked as `test.todo` while no `stripe` gateway was wired in
+ * process. It is now (`payments/stripe-wiring.ts`), and it arms only when BOTH
+ * Stripe secrets are in kv, so this boot provisions them the way an operator does:
+ * through the Settings form's own save actions.
+ *
+ * WHERE STRIPE IS. A configured gateway makes a LIVE `POST /v1/payment_intents`
+ * to `api.stripe.com` over `ctx.http`. This boot grants production's own
+ * allowlist and sets workerd's global outbound to a local stub, so that request
+ * passes the plugin's real allowlist check and then lands on the stub instead of
+ * the internet (`helpers/stripe-api-stub.ts`). Nothing about the reply is
+ * scripted beyond what Stripe itself would say: every other condition — a
+ * replayed key, a paid order, a lost hold, a checked-out cart — is arranged
+ * against the real document store.
+ *
+ * A SEPARATE BOOT, on purpose. The suites above boot with NO allowed hosts and
+ * make the stronger claim that summary and order reads reach the network for
+ * nothing. `place` cannot make that claim — creating a PaymentIntent IS egress —
+ * so it gets its own isolate rather than widening theirs. Both isolates share the
+ * process-scoped document store, which is why carts made through the first boot
+ * can be placed through this one.
+ *
+ * TWO PARKED NAMES DID NOT COME BACK, because neither property exists in process:
+ *  - "a reply with NO totals block still places the order — total simply absent".
+ *    A service REPLY could omit its totals; an in-process `Order` cannot, since
+ *    the domain reads `order.totals` to build the PaymentIntent before the route
+ *    ever formats anything. (Arranged by deleting the block from a stored order:
+ *    the domain throws first and the route answers RENDER_FAILED.) The route's
+ *    containment is still pinned — by the unformattable-total cases below.
+ *  - "a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason". The route's
+ *    parser applies the domain's own address rules (the same required fields,
+ *    trimming and caps), so no ship-to the domain would refuse gets past it.
+ *    What IS true is pinned instead: such an address is refused as INVALID_INPUT
+ *    before an order, a hold adoption or a PaymentIntent exists.
+ */
+describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbed)", () => {
+	const STRIPE_SECRET_KEY = "sk_test_sandbox_NEVER_LEAK";
+	const STRIPE_WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
+	const BUYER_REF = "Buyer@Example.com";
+	const SHIP_TO = {
+		name: "A Buyer",
+		line1: "1 Test St",
+		city: "Testville",
+		postalCode: "12345",
+		country: "US",
+	};
+
+	let stripeBoot: SandboxHandle;
+	let stripe: StripeApiStub;
+
+	beforeAll(async () => {
+		stripe = await startStripeApiStub();
+		stripeBoot = await loadPluginInSandbox({
+			allowedHosts: productionAllowedHosts(),
+			storage: true,
+			globalOutbound: stripe.address,
+		});
+		for (const [action, field, value] of [
+			["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY],
+			["save-stripe-webhook-secret", "stripeWebhookSecret", STRIPE_WEBHOOK_SECRET],
+		] as const) {
+			const saved = await stripeBoot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: action,
+				values: { [field]: value },
+			});
+			expect(saved).toHaveProperty("result");
+		}
+	}, 300_000);
+
+	afterAll(async () => {
+		await stripeBoot?.close();
+		await stripe?.close();
+	});
+
+	beforeEach(() => {
+		stripe.requests.length = 0;
+		stripe.respondWith((req) => createdIntent(req, stripe.requests.length));
+	});
+
+	async function place(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+		return resultOf(await stripeBoot.invokeRoute("storefront/checkout/place", input));
+	}
+
+	async function placeCart(
+		cartId: string,
+		extra: Record<string, unknown> = {},
+	): Promise<Record<string, unknown>> {
+		return place({ cartId, buyerRef: BUYER_REF, idempotencyKey: `checkout:${cartId}`, ...extra });
+	}
+
+	async function storedOrder(orderId: string) {
+		const order = await orderStore.getById(toOrderId(orderId));
+		expect(order).not.toBeNull();
+		return order!;
+	}
+
+	test("forwards the idempotency key verbatim — one PaymentIntent create per place, a same-key replay returns the SAME order — and stores buyerRef un-rewritten", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const first = await placeCart(cartId);
+
+		expect(first, JSON.stringify(first)).toMatchObject({
+			ok: true,
+			state: "pending",
+			alreadyPlaced: false,
+		});
+		expect(stripe.requests).toHaveLength(1);
+		const create = stripe.requests[0]!;
+		expect(create.method).toBe("POST");
+		expect(create.path).toBe("/v1/payment_intents");
+		// The key the form carried is the key Stripe sees — not re-derived, not wrapped.
+		expect(create.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+		expect(create.form.get("metadata[order_id]")).toBe(first["orderId"]);
+		expect(create.form.get("amount")).toBe(String(SUBTOTAL_CENTS));
+		expect(create.form.get("currency")).toBe("usd");
+
+		// Case preserved: ADR-0004's guest-order claiming matches on the stored value.
+		expect((await storedOrder(first["orderId"] as string)).buyerRef).toBe(BUYER_REF);
+
+		const replay = await placeCart(cartId);
+		expect(replay).toMatchObject({ ok: true, orderId: first["orderId"], alreadyPlaced: false });
+		// The replay re-issues the intent under the SAME key — Stripe's own
+		// idempotency answers it — and mints no second order.
+		expect(stripe.requests).toHaveLength(2);
+		expect(stripe.requests[1]!.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+	});
+
+	test("passes clientAction through UNMODIFIED — the client secret is data in transit", async () => {
+		const cartId = await seedThreeLineCart();
+		stripe.respondWith(() => ({
+			status: 200,
+			body: { id: "pi_passthrough", client_secret: "pi_passthrough_secret_AbC+/=" },
+		}));
+
+		const result = await placeCart(cartId);
+
+		expect(result["clientAction"]).toEqual({
+			kind: "stripe_client_secret",
+			clientSecret: "pi_passthrough_secret_AbC+/=",
+		});
+	});
+
+	test("NEVER echoes the order's private fields (buyerRef / shippingAddress) back to the caller", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await placeCart(cartId, { shippingAddress: SHIP_TO });
+
+		expect(result["ok"]).toBe(true);
+		expect(Object.keys(result).toSorted()).toEqual(
+			["alreadyPlaced", "clientAction", "ok", "orderId", "state", "total"].toSorted(),
+		);
+		const wire = JSON.stringify(result);
+		expect(wire).not.toContain(BUYER_REF);
+		expect(wire).not.toContain(SHIP_TO.line1);
+		// Nor any Stripe credential, which now lives in the same process.
+		expect(wire).not.toContain(STRIPE_SECRET_KEY);
+		expect(wire).not.toContain(STRIPE_WEBHOOK_SECRET);
+	});
+
+	test("forwards the optional ship-to snapshot (ADR-0009 slice c) — onto the order and onto the PaymentIntent", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await placeCart(cartId, { shippingAddress: { ...SHIP_TO, line2: "  " } });
+
+		const order = await storedOrder(result["orderId"] as string);
+		expect(order.shippingAddress).toEqual({
+			...SHIP_TO,
+			// A blank optional is simply absent, never a stored "  ".
+			line2: null,
+			region: null,
+			email: null,
+			phone: null,
+		});
+		const create = stripe.requests[0]!;
+		expect(create.form.get("shipping[name]")).toBe(SHIP_TO.name);
+		expect(create.form.get("shipping[address][line1]")).toBe(SHIP_TO.line1);
+		expect(create.form.get("shipping[address][postal_code]")).toBe(SHIP_TO.postalCode);
+		expect(create.form.get("shipping[address][country]")).toBe(SHIP_TO.country);
+	});
+
+	test("a REPLAY of an order that has left pending (clientAction none) is alreadyPlaced — not an error, and no new intent", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		const orderId = first["orderId"] as string;
+		expect(await orderStore.markPaid(toOrderId(orderId))).toBe(true);
+		stripe.requests.length = 0;
+
+		const replay = await placeCart(cartId);
+
+		expect(replay).toMatchObject({
+			ok: true,
+			orderId,
+			state: "paid",
+			alreadyPlaced: true,
+			clientAction: { kind: "none" },
+		});
+		// A paid order has nothing left to pay for: no live provider call is made,
+		// so a Stripe outage can never turn this replay into a failure.
+		expect(stripe.requests).toHaveLength(0);
+	});
+
+	test("returns the ORDER's own total, formatted — the figure the pay button states", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await placeCart(cartId);
+
+		expect(result["total"]).toEqual({
+			amount: SUBTOTAL_CENTS,
+			currency: "USD",
+			formatted: "$49.98",
+		});
+	});
+
+	test("the total honours the requested locale, and falls back rather than failing", async () => {
+		const german = await placeCart(await seedThreeLineCart(), { locale: "de-DE" });
+		expect((german["total"] as { formatted: string }).formatted).toBe(
+			new Intl.NumberFormat("de-DE", { style: "currency", currency: "USD" }).format(49.98),
+		);
+
+		const garbage = await placeCart(await seedThreeLineCart(), { locale: "not a locale!!" });
+		expect(garbage["ok"]).toBe(true);
+		expect((garbage["total"] as { formatted: string }).formatted).toBe("$49.98");
+	});
+
+	test("a REPLAY still carries the total — an order always has one", async () => {
+		const cartId = await seedThreeLineCart();
+		await placeCart(cartId);
+
+		const replay = await placeCart(cartId);
+
+		expect(replay["total"]).toEqual({
+			amount: SUBTOTAL_CENTS,
+			currency: "USD",
+			formatted: "$49.98",
+		});
+	});
 
 	/**
-	 * PARKED, NOT DELETED — the `place` SUCCESS PATH.
-	 *
-	 * Every case below asserted the shape of a SUCCESSFUL place, and there is no
-	 * reachable success path through `place` in this build: the domain asks for the
-	 * `stripe` gateway and the in-process composition root wires none
-	 * (`make-commerce-client.ts` fills the `x402` slot only), so `createOrderFromCart`
-	 * throws before any of these properties can exist. They are recorded as
-	 * `test.todo` rather than deleted so the coverage they represent is visible in
-	 * every run's output instead of living only in a commit message — a deleted test
-	 * is indistinguishable from a property nobody ever cared about.
-	 *
-	 * BLOCKED ON: the stripe gateway is not wired in process —
-	 * issue #286. Each one comes back by ARRANGING the
-	 * condition against real data (a placed order, a replayed key, a ship-to on the
-	 * cart) rather than by scripting a reply; the names are kept verbatim as they
-	 * were deleted so the restoration is greppable against this file's history, and
-	 * the transport wording in a few of them ("issues EXACTLY one call", "a 502")
-	 * is what should be reworded at that point, not the property.
+	 * THE CONTAINMENT. Formatting the total runs `cents()`/`currency()`, which
+	 * throw, and it runs AFTER the order exists and its stock is held. The domain
+	 * never mints an order whose totals would fail them, so the condition is
+	 * arranged the only way it can arise — a stored order that is not what the
+	 * current build writes — by rewriting the document, then replaying the place.
 	 */
-	test.todo("issues EXACTLY one call — POST /checkout/orders — forwarding Idempotency-Key verbatim and buyerRef un-rewritten", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
+	test.each([
+		["a lowercase currency", { currency: "usd" }],
+		["a symbol for a currency", { currency: "$" }],
+		["a fractional total", { total: 4998.5 }],
+		["a null total", { total: null }],
+	])(
+		"an unformattable total (%s) drops the total and keeps the order",
+		async (_label, corruption) => {
+			const cartId = await seedThreeLineCart();
+			const first = await placeCart(cartId);
+			const orderId = first["orderId"] as string;
+			const orders = storage[ORDERS_COLLECTION]!;
+			const doc = (await orders.get(orderId)) as { totals: Record<string, unknown> };
+			await orders.put(orderId, { ...doc, totals: { ...doc.totals, ...corruption } });
+
+			const replay = await placeCart(cartId);
+
+			expect(replay, JSON.stringify(replay)).toMatchObject({
+				ok: true,
+				orderId,
+				alreadyPlaced: false,
+			});
+			expect(replay).not.toHaveProperty("total");
+			expect(replay["clientAction"]).toMatchObject({ kind: "stripe_client_secret" });
+		},
+	);
+
+	test("a Stripe 502 becomes the typed PAYMENT_INTENT_FAILED, never RENDER_FAILED — and leaks no secret", async () => {
+		const cartId = await seedThreeLineCart();
+		stripe.respondWith(() => ({ status: 502, body: { error: { code: "api_error" } } }));
+
+		const result = await placeCart(cartId);
+
+		expect(result).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		// Stripe really was asked, and really said 502: the failure is the provider's
+		// answer, not an egress refusal that would produce the same reason.
+		expect(stripe.requests).toHaveLength(1);
+		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
 	});
-	test.todo("passes clientAction through UNMODIFIED — the client secret is data in transit", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
+
+	test("a second checkout of a placed cart under a NEW key is the typed CART_CHECKED_OUT", async () => {
+		const cartId = await seedThreeLineCart();
+		expect((await placeCart(cartId))["ok"]).toBe(true);
+
+		const second = await place({
+			cartId,
+			buyerRef: BUYER_REF,
+			idempotencyKey: `checkout:${cartId}:again`,
+		});
+
+		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 	});
-	test.todo("NEVER echoes the order's private fields (buyerRef / shippingAddress) back to the caller", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
+
+	test("a line whose hold was released before checkout is the typed RESERVATION_LOST", async () => {
+		const cartId = await seedThreeLineCart();
+		const read = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
+		const lines = (read["cart"] as { lines: { reservationId: string | null }[] }).lines;
+		// The hold goes away the way the expiry sweep takes it: released at the store.
+		await inventoryStore().release(lines[0]!.reservationId!);
+
+		expect(await placeCart(cartId)).toEqual({ ok: false, reason: "RESERVATION_LOST" });
+		expect(stripe.requests).toHaveLength(0);
 	});
-	test.todo("forwards the optional ship-to snapshot (ADR-0009 slice c)", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a REPLAY of an order that has left pending (clientAction none, intentId '') is alreadyPlaced — not an error", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("returns the ORDER's own total, formatted — the figure the pay button states", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("the total honours the requested locale, and falls back rather than failing", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a REPLAY still carries the total — an order always has one", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a reply with NO totals block still places the order — total simply absent", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("an unformattable total drops the total and keeps the order (a lowercase currency, a symbol for a currency, a fractional total, a null total)", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a 502 becomes the typed PAYMENT_INTENT_FAILED, never RENDER_FAILED", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a 409 CART_CHECKED_OUT / RESERVATION_LOST / PRODUCT_NOT_PRICED becomes the typed reason", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
-	});
-	test.todo("a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason", () => {
-		/* blocked on: stripe gateway not wired in-process — see issue #286 */
+
+	test.each([
+		["a whitespace-only required field", { ...SHIP_TO, name: "   " }],
+		["a field over the domain's cap", { ...SHIP_TO, country: "X".repeat(101) }],
+	])(
+		"a ship-to the domain would refuse (%s) is refused as INVALID_INPUT before any order or intent exists",
+		async (_label, shippingAddress) => {
+			const cartId = await seedThreeLineCart();
+			orderOps.length = 0;
+
+			expect(await placeCart(cartId, { shippingAddress })).toEqual({
+				ok: false,
+				error: "INVALID_INPUT",
+			});
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+		},
+	);
+
+	test("a line with no product reference is the typed PRODUCT_NOT_PRICED — with a gateway armed, not just without one", async () => {
+		await inventoryStore().seedOnHand(toSku(`SKU-${NS}-BARE-PLACE`), 5);
+		const cartId = await createCart();
+		await addLine(cartId, `SKU-${NS}-BARE-PLACE`, null, 1);
+
+		expect(await placeCart(cartId)).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		expect(stripe.requests).toHaveLength(0);
 	});
 });
 
