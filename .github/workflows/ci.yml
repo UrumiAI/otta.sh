@@ -35,6 +35,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Domain purity is a CI gate (dependency-cruiser domain-is-io-free).
       - run: pnpm lint
+      # Formatting is a CI gate (oxfmt --check), not just a pre-PR habit.
+      - run: pnpm format:check
       # The branded-money negative type-test is enforced here.
       - run: pnpm typecheck
       # Per-package typecheck for workspaces outside root tsc -b (the
