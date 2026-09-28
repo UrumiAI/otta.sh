@@ -18,6 +18,7 @@
  * outright rather than leaving a check that could not fail.
  */
 
+import { resolvePaymentGateways } from "../commerce/make-commerce-client.js";
 import type { PluginContext } from "../types.js";
 import type { AdminOrdersSurface } from "./admin-orders-surface.js";
 import type { AdminProductsSurface } from "./admin-products-surface.js";
@@ -49,18 +50,28 @@ export interface AdminClients {
  * routes already had: a client is cheap and its adapters are request-scoped
  * over `ctx`.
  *
- * Still `Promise`-shaped, so the call sites did not have to change again when
- * the http branch (which awaited tokens from write-only kv) was deleted.
+ * `Promise`-shaped because the orders client needs the payment gateways, and
+ * resolving them reads kv — the same {@link resolvePaymentGateways} the
+ * storefront's `makeCommerceClient` awaits, so a refund goes through exactly the
+ * gateway the checkout charged through (issue #303: the orders client used to be
+ * handed none, and every refund — a manual one included — answered 409).
  *
  * The clients construct every commerce adapter over `ctx.storage`, so a context
  * with no document store fails HERE, at construction, naming what is missing —
  * never several frames later inside a console render.
  */
 export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
-	return Promise.resolve({
-		products: new InProcessAdminProductsClient(ctx),
-		orders: new InProcessAdminOrdersClient(ctx),
-		rules: new InProcessAdminRulesClient(ctx),
-		reporting: new InProcessReportingSettingsClient(ctx),
-	});
+	// NOT `async`, deliberately: the three clients that need no gateway are built
+	// SYNCHRONOUSLY, so a context with no document store still throws at the call
+	// itself — before any kv read — exactly as it did before the gateways were
+	// resolved here (`reports-page-construction-failure.test.ts` pins that shape).
+	const products = new InProcessAdminProductsClient(ctx);
+	const rules = new InProcessAdminRulesClient(ctx);
+	const reporting = new InProcessReportingSettingsClient(ctx);
+	return resolvePaymentGateways(ctx).then((gateways) => ({
+		products,
+		orders: new InProcessAdminOrdersClient(ctx, { gateways }),
+		rules,
+		reporting,
+	}));
 }

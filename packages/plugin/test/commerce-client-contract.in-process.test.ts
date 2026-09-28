@@ -31,20 +31,18 @@
  * Rows ARE cleared per case here, which is what makes `reset()` a real reset in
  * this tier rather than the documented no-op the HTTP tier implemented.
  *
- * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE; the HTTP tier
- * declared the reverse, and the two gaps were real and opposite rather than a
- * tier excusing itself. Each is still pinned by a case that names its own gate,
- * so a test report says what skipped and why. The clock is offerable HERE
- * because this backend is rebuilt per case, so winding it forward costs nothing
- * `reset()` cannot put back. The gateways are not offerable here YET, because the
- * payment adapters have not moved in-process; with the HTTP tier gone the gated
- * checkout and refund-ceiling cases therefore skip everywhere, and their
- * invariants are held at the DOMAIN layer meanwhile (see the note on
- * `CommerceClientTier.payments`). When the adapters land, the payments hook
- * appears here and those cases start running with no edit to any case.
+ * THIS TIER DECLARES BOTH HOOKS. The clock is offerable here because this
+ * backend is rebuilt per case, so winding it forward costs nothing `reset()`
+ * cannot put back. The payments hook arrived with #303: the payment adapters
+ * are in-process now, and the tier composes an OFFLINE Stripe gateway (below)
+ * into both the storefront client and the admin orders client, so the gated
+ * checkout and refund-ceiling cases run here. The only case still skipped is the
+ * no-gateway half of the refund pair, which `admin-refund-gateways.test.ts` pins
+ * against `makeAdminClients` itself.
  */
 import { email as toEmail } from "@otta-sh/domain";
 import { FixedClock } from "@otta-sh/domain/testing";
+import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
@@ -81,6 +79,18 @@ function inProcessTier(): CommerceClientTier {
 	 * decides at COLLECTION time which cases this tier's hooks let it run.
 	 */
 	const clock = new FixedClock(new Date());
+	/**
+	 * An OFFLINE Stripe gateway — a webhook secret and no secret key — the same
+	 * composition the retired HTTP tier carried. `createIntent` answers a
+	 * deterministic handle without touching the network (so `ctx.http` still
+	 * rejects, and a checkout can SUCCEED), and `refundable` is false, so the admin
+	 * refund takes the manual path: that is the "a Stripe gateway with no secret"
+	 * reason the refunds summary case names. The storefront client and the admin
+	 * orders client share it, as `resolvePaymentGateways` makes them in production.
+	 */
+	const gateways = {
+		stripe: new StripePaymentGateway({ webhookSecret: "whsec_in_process_tier" }),
+	};
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
@@ -96,7 +106,7 @@ function inProcessTier(): CommerceClientTier {
 		name: "in-process, plugin storage, sqlite",
 		async setup() {
 			if (harness !== undefined) return; // one database per tier, however many slices ask
-			harness = await makeInProcessCommerce({ clock });
+			harness = await makeInProcessCommerce({ clock, gateways });
 			client = harness.client;
 		},
 		async teardown() {
@@ -130,7 +140,7 @@ function inProcessTier(): CommerceClientTier {
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
 			const ctx = harnessOrThrow().ctx;
 			return {
-				orders: new InProcessAdminOrdersClient(ctx, { clock }),
+				orders: new InProcessAdminOrdersClient(ctx, { clock, gateways }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
 				rules: new InProcessAdminRulesClient(ctx, { clock }),
 				reporting: new InProcessReportingSettingsClient(ctx, { clock }),
@@ -145,6 +155,9 @@ function inProcessTier(): CommerceClientTier {
 				clock.advance(ms);
 			},
 		},
+		// THE PAYMENTS HOOK (#286, #303): the offline Stripe gateway above, so the
+		// minted-order checkout cases and the refund-ceiling case run on this tier.
+		payments: { method: "stripe" },
 		arrange: {
 			...sharedTierSeeders({
 				get orderStore() {
@@ -358,11 +371,9 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		await harness.close();
 	});
 
-	// THE HEADLINE DIFFERENCE between the tiers, seen from this side: the HTTP one
-	// composed a gateway and checked out successfully, which is why the shared
-	// checkout-replay case ran there and skips here — and, now that it is gone,
-	// skips everywhere. What this case adds — and the shared one cannot — is that
-	// the refusal damages nothing.
+	// A HARNESS WITH NO GATEWAY, unlike the tier above (which composes an offline
+	// Stripe one): an unconfigured deployment. What this case adds — and the shared
+	// ones cannot — is that the refusal damages nothing.
 	test("checkout has NO payment gateway: a real cart with a held line survives the refusal intact", async () => {
 		// A genuine cart, priced, with stock held for its line — so the refusal is
 		// asserted against the state it must not damage rather than against nothing.

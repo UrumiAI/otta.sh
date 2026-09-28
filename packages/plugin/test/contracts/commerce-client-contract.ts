@@ -1733,22 +1733,23 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
-		// BOTH HOOKS, so it runs on NEITHER tier today — and it is written anyway,
-		// because the gap it names is real and otherwise invisible. Checkout resolves
-		// its gateway BEFORE it reads the cart, so on a tier with no gateway every
-		// cart-level checkout refusal is unreachable, and on a tier with a gateway there
-		// is no way to reach the deadline. The refusal a lapsed hold must produce at the
-		// checkout itself is therefore unasserted on both transports right now; this is
-		// where it gets asserted the moment either tier grows the hook it lacks.
+		// BOTH HOOKS. Checkout resolves its gateway BEFORE it reads the cart, so on a
+		// tier with no gateway every cart-level checkout refusal is unreachable, and
+		// on a tier with no movable clock there is no way to reach the deadline. The
+		// in-process tier has had the clock all along and gained the gateway with
+		// #303, which is what finally runs this case.
 		test.skipIf(tier.clock === undefined || tier.payments === undefined)(
 			"a checkout against a lapsed hold is refused RESERVATION_LOST (SKIPPED until one tier has both a movable clock and a payment gateway)",
 			async () => {
 				const clock = tier.clock;
 				const paymentMethod = tier.payments?.method;
 				if (clock === undefined || paymentMethod === undefined) throw new Error("unreachable");
+				// TITLED, like every case that mints an order (see the replay case): an
+				// untitled row is refused PRODUCT_NOT_PRICED before the hold is looked at.
 				const productId = await tier.arrange.product({
 					productId: "prod-co-lost",
 					sku: "SKU-CO-LOST",
+					title: "Lost Hold Product",
 					price: { amount: 2500, currency: "USD" },
 					onHand: 3,
 					idempotencyKey: "co-lost-seed",
@@ -2001,12 +2002,12 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * that much is shared — but the REASON differs because the composition does: a
  * tier with gateways composed is refused by the ceiling
  * (`REFUND_EXCEEDS_CAPTURED`), and a tier with none is refused for want of a
- * gateway (`REFUND_GATEWAY_UNAVAILABLE`, until INC-C1/C3 moves the payment
- * adapters in-process). Rather than soften the shared case into accepting
- * either, the shared case asserts what both owe and a GATED PAIR — keyed off the
- * existing `payments` hook, each naming its gate in its own name — pins the
- * reason on each side. The pair collapses into one case the day gateways are
- * composed on both tiers.
+ * gateway (`REFUND_GATEWAY_UNAVAILABLE`). Rather than soften the shared case
+ * into accepting either, the shared case asserts what both owe and a GATED PAIR
+ * — keyed off the existing `payments` hook, each naming its gate in its own
+ * name — pins the reason on each side. The in-process tier composes an offline
+ * Stripe gateway (#303), so the ceiling half runs there; the no-gateway half is
+ * pinned against `makeAdminClients` itself in `admin-refund-gateways.test.ts`.
  *
  * WHAT THE SHARED ARRANGE SURFACE CANNOT REACH, recorded so it is not mistaken
  * for a decision: `arrange.product` goes through `upsertProductCommerce`, which
@@ -2681,9 +2682,9 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				remainingCents: 0,
 				paymentMethod: "stripe",
 				// The gateway's HONEST capability: false ⇒ the panel offers "record a
-				// manual refund", never a provider button that silently no-ops. Both
-				// tiers answer false today, for different reasons (no gateway composed /
-				// a Stripe gateway with no secret), and neither softens it.
+				// manual refund", never a provider button that silently no-ops. A tier
+				// answers false for one of two reasons (no gateway composed / a Stripe
+				// gateway with no secret key), and neither softens it.
 				refundable: false,
 			});
 

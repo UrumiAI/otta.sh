@@ -16,6 +16,7 @@
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
+import type { PaymentGateway, PaymentMethod } from "@otta-sh/domain";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
@@ -28,7 +29,8 @@ import { InProcessCommerceClient } from "./in-process-commerce-client.js";
  * storefront routes already had: a client is cheap, and its adapters are
  * request-scoped over `ctx`.
  *
- * Async because resolving the payment gateways reads kv; the signature stayed
+ * Async because resolving the payment gateways ({@link resolvePaymentGateways})
+ * reads kv; the signature stayed
  * `Promise`-shaped across the mode collapse so the nineteen call sites did not
  * have to change again.
  *
@@ -37,22 +39,34 @@ import { InProcessCommerceClient } from "./in-process-commerce-client.js";
  * never several frames later inside a storefront route.
  */
 export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceClient> {
-	// The payment gateways the service used to wire from env are wired HERE,
-	// because resolving them is asynchronous (kv) and the client's constructor is
-	// not. INC-C5 wires x402, whose facilitator call goes over `ctx.http` to the
-	// host `allowedHosts` already grants; `stripe-wiring.ts` wires the other half
-	// storefront checkout actually uses (`PAYMENT_METHOD` in
-	// `checkout-routes.ts`). Each resolves independently to `undefined` on an
-	// unconfigured deployment and is simply omitted from the map, which the
-	// domain refuses loudly rather than minting an unpayable order.
+	return new InProcessCommerceClient(ctx, { gateways: await resolvePaymentGateways(ctx) });
+}
+
+/**
+ * The payment gateways configured on this deployment, keyed by method — the ONE
+ * resolution both composition roots share: this file's storefront client, and
+ * `makeAdminClients`, whose orders client refunds through the same gateways
+ * (issue #303: it used to be handed none, so every refund answered 409).
+ *
+ * They are wired HERE, because resolving them is asynchronous (kv) and the
+ * clients' constructors are not. INC-C5 wires x402, whose facilitator call goes
+ * over `ctx.http` to the host `allowedHosts` already grants; `stripe-wiring.ts`
+ * wires the other half storefront checkout actually uses (`PAYMENT_METHOD` in
+ * `checkout-routes.ts`). Each resolves independently to `undefined` on an
+ * unconfigured deployment and is simply omitted from the map, which the domain
+ * refuses loudly rather than minting an unpayable order — and which a refund
+ * answers with `409 REFUND_GATEWAY_UNAVAILABLE` rather than pretending money
+ * could move.
+ */
+export async function resolvePaymentGateways(
+	ctx: PluginContext,
+): Promise<Partial<Record<PaymentMethod, PaymentGateway>>> {
 	const [x402, stripe] = await Promise.all([
 		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
 		stripeGatewayFromCtx(ctx),
 	]);
-	return new InProcessCommerceClient(ctx, {
-		gateways: {
-			...(x402 === undefined ? {} : { x402 }),
-			...(stripe === undefined ? {} : { stripe }),
-		},
-	});
+	return {
+		...(x402 === undefined ? {} : { x402 }),
+		...(stripe === undefined ? {} : { stripe }),
+	};
 }
