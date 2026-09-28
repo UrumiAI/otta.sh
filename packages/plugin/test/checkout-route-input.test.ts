@@ -26,6 +26,7 @@ describe("parseCheckoutSummaryInput", () => {
 		expect(parseCheckoutSummaryInput({ cartId: "cart-1", locale: "en-GB" })).toEqual({
 			cartId: "cart-1",
 			locale: "en-GB",
+			selection: {},
 		});
 	});
 
@@ -55,6 +56,7 @@ describe("parseCheckoutPlaceInput", () => {
 			buyerRef: "Buyer@Example.com",
 			idempotencyKey: "checkout:cart-1",
 			locale: "en",
+			selection: {},
 		});
 	});
 
@@ -193,6 +195,79 @@ describe("parseCheckoutPlaceInput", () => {
 			).toBeNull();
 		},
 	);
+});
+
+/**
+ * #305 part 1 — the buyer's SELECTION (coupon, shipping method), carried by both
+ * the summary and the place route so the two cannot price a cart differently.
+ *
+ * The zone is deliberately NOT part of it: the plugin must never accept a
+ * client-chosen tax zone (PR 2 derives it from the address).
+ */
+describe.each([
+	[
+		"parseCheckoutSummaryInput",
+		(extra: Record<string, unknown>) => parseCheckoutSummaryInput({ cartId: "cart-1", ...extra }),
+	],
+	[
+		"parseCheckoutPlaceInput",
+		(extra: Record<string, unknown>) =>
+			parseCheckoutPlaceInput({
+				cartId: "cart-1",
+				buyerRef: "a@b.co",
+				idempotencyKey: "k",
+				...extra,
+			}),
+	],
+] as const)("%s — the checkout selection", (_name, parse) => {
+	test("carries couponCode trimmed and case-preserved (coupon lookup is case-sensitive)", () => {
+		expect(parse({ couponCode: "  Ck-Save5 " })?.selection).toEqual({ couponCode: "Ck-Save5" });
+	});
+
+	test.each([[undefined], [null], [""], ["   "]])(
+		'a blank couponCode (%p) is "no coupon", not a rejection',
+		(couponCode) => {
+			const parsed = parse({ couponCode });
+			expect(parsed).not.toBeNull();
+			expect(parsed?.selection).toEqual({});
+		},
+	);
+
+	test.each([[42], [{}], [[]], [true], ["X".repeat(201)]])(
+		"rejects a couponCode of %p",
+		(couponCode) => {
+			expect(parse({ couponCode })).toBeNull();
+		},
+	);
+
+	test("a couponCode of exactly 200 characters is accepted", () => {
+		expect(parse({ couponCode: "X".repeat(200) })?.selection.couponCode).toHaveLength(200);
+	});
+
+	test("shippingMethodId is accepted when printable ASCII of at most 200 characters; blank is absent", () => {
+		expect(parse({ shippingMethodId: " ck-method-1 " })?.selection).toEqual({
+			shippingMethodId: "ck-method-1",
+		});
+		expect(parse({ shippingMethodId: "m".repeat(200) })?.selection.shippingMethodId).toHaveLength(
+			200,
+		);
+		expect(parse({ shippingMethodId: "  " })?.selection).toEqual({});
+		expect(parse({ shippingMethodId: null })?.selection).toEqual({});
+	});
+
+	test.each([["a b"], ["é"], ["m".repeat(201)], [42], [{}]])(
+		"rejects a shippingMethodId of %p",
+		(shippingMethodId) => {
+			expect(parse({ shippingMethodId })).toBeNull();
+		},
+	);
+
+	test("a supplied shippingZoneId never appears in the parsed input", () => {
+		const parsed = parse({ shippingZoneId: "zone-1", couponCode: "C", shippingMethodId: "m" });
+		expect(parsed).not.toBeNull();
+		expect(JSON.stringify(parsed)).not.toContain("zone-1");
+		expect(parsed?.selection).toEqual({ couponCode: "C", shippingMethodId: "m" });
+	});
 });
 
 describe("parseOrderRouteInput", () => {

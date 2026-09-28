@@ -92,7 +92,14 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 						reservationId: null,
 					},
 				],
-				totals: { subtotal: total, total, currency: lineCurrency },
+				totals: {
+					subtotal: total,
+					total,
+					currency: lineCurrency,
+					...(spec.shippingMethod !== undefined
+						? { shippingMethodSnapshot: { ...spec.shippingMethod } }
+						: {}),
+				},
 			});
 			return spec.orderId;
 		},
@@ -133,6 +140,15 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 					currency: toCurrency(spec.rate.currency),
 					amountCents: cents(spec.rate.amount),
 					minSubtotalCents: null,
+				});
+			}
+			if (spec.taxRateBps !== undefined) {
+				await ports.taxRules.createRate({
+					id: `${spec.zoneId}-standard`,
+					taxClassId: "standard",
+					zoneId: spec.zoneId,
+					rateBps: spec.taxRateBps,
+					appliesToShipping: true,
 				});
 			}
 		},

@@ -126,6 +126,7 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
 import {
+	COUPON_CODE_MAX,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
@@ -715,7 +716,8 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		const cart = await this.#stores.cartStore.get(input.cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -796,7 +798,8 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
@@ -1036,6 +1039,7 @@ function serializePublicOrder(order: Order): PublicOrderWire {
 			totalCents: order.totals.total,
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment:
@@ -1060,6 +1064,15 @@ function shippingZoneIdOf(snapshot: unknown): string | null {
 	if (snapshot === null || typeof snapshot !== "object") return null;
 	const zoneId = (snapshot as { zoneId?: unknown }).zoneId;
 	return typeof zoneId === "string" ? zoneId : null;
+}
+
+/** The shipping method the order was priced with, read off the same snapshot.
+ *  Display-only, like the zone: it decides whether the confirmation page may
+ *  state the shipping charge as money. */
+function shippingMethodIdOf(snapshot: unknown): string | null {
+	if (snapshot === null || typeof snapshot !== "object") return null;
+	const methodId = (snapshot as { methodId?: unknown }).methodId;
+	return typeof methodId === "string" && methodId.length > 0 ? methodId : null;
 }
 
 function serializeAddress(address: Address): AddressWire {

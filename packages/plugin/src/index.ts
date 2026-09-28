@@ -353,9 +353,13 @@ export {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
 	type CheckoutPlaceRouteInput,
+	type CheckoutLockedOrderView,
 	type CheckoutPlaceRouteResult,
+	type CheckoutSelectionErrors,
+	type CheckoutSelectionView,
 	type CheckoutSummaryRouteInput,
 	type CheckoutSummaryRouteResult,
+	type CheckoutSummaryView,
 	type OrderRouteInput,
 	type OrderRouteResult,
 } from "./storefront/checkout-routes.js";
@@ -371,8 +375,11 @@ export {
 	type CheckoutAmountView,
 	type CheckoutLineView,
 	type CheckoutTotalsView,
+	type CouponSelectionReason,
+	type LockedCheckoutPhase,
 	type OrderLineView,
 	type PublicOrderView,
+	type ShippingSelectionReason,
 } from "./storefront/checkout-view-model.js";
 export {
 	type CheckoutFailureReason,

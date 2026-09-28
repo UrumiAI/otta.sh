@@ -53,9 +53,12 @@ import {
 	sku as toSku,
 } from "@otta-sh/domain";
 import {
+	EmdashCouponStore,
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	EmdashProductCommerceStore,
+	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	systemClock,
@@ -63,7 +66,11 @@ import {
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { startStripeApiStub, type StripeApiStub } from "./helpers/stripe-api-stub.js";
+import {
+	startStripeApiStub,
+	stripeLikeResponder,
+	type StripeApiStub,
+} from "./helpers/stripe-api-stub.js";
 import {
 	loadPluginInSandbox,
 	productionAllowedHosts,
@@ -93,6 +100,90 @@ function commerceStore(): EmdashProductCommerceStore {
 
 function inventoryStore(): EmdashInventoryStore {
 	return new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+}
+
+function couponStore(): EmdashCouponStore {
+	return new EmdashCouponStore({ storage, idGen: uuidIdGen, clock: systemClock });
+}
+
+/** One fixed-amount coupon, seeded through the real store (the admin's own write
+ *  path), under a `ck-` id and code so nothing collides with another suite. */
+async function seedCoupon(spec: {
+	id: string;
+	code: string;
+	amount: number;
+	currency?: string;
+	minSubtotalCents?: number;
+	expiresAt?: string;
+	maxUses?: number;
+}): Promise<void> {
+	await couponStore().create({
+		id: spec.id,
+		code: spec.code,
+		type: "fixed_amount",
+		amountCents: cents(spec.amount),
+		rateBps: null,
+		capCents: null,
+		currency: currency(spec.currency ?? "USD"),
+		minSubtotalCents: spec.minSubtotalCents === undefined ? null : cents(spec.minSubtotalCents),
+		startsAt: null,
+		expiresAt: spec.expiresAt ?? null,
+		maxUses: spec.maxUses ?? null,
+		maxUsesPerCustomer: null,
+	});
+}
+
+async function usesOf(code: string): Promise<number> {
+	const record = await couponStore().findByCode(code);
+	expect(record).not.toBeNull();
+	return record!.usesCount;
+}
+
+/** The shipping fixtures every selection case prices against. The zone carries a
+ *  10% `standard` tax rate that applies to shipping — which is what lets a case
+ *  prove a client-supplied zone is IGNORED (it would otherwise add tax). */
+const ZONE_ID = `${NS}-zone`;
+const METHOD_ID = `${NS}-ship`;
+const FREE_METHOD_ID = `${NS}-ship-free`;
+const NORATE_METHOD_ID = `${NS}-ship-norate`;
+const SHIPPING_CENTS = 599;
+
+async function seedShippingRules(): Promise<void> {
+	const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	await rules.createZone({ id: ZONE_ID, name: "CK zone", regions: null });
+	await rules.createMethod({ id: METHOD_ID, zoneId: ZONE_ID, name: "Flat", type: "flat_rate" });
+	await rules.createRate({
+		methodId: METHOD_ID,
+		currency: currency("USD"),
+		amountCents: cents(SHIPPING_CENTS),
+		minSubtotalCents: null,
+	});
+	await rules.createMethod({
+		id: FREE_METHOD_ID,
+		zoneId: ZONE_ID,
+		name: "Free over $10",
+		type: "free_shipping",
+	});
+	await rules.createRate({
+		methodId: FREE_METHOD_ID,
+		currency: currency("USD"),
+		amountCents: cents(SHIPPING_CENTS),
+		minSubtotalCents: cents(1000),
+	});
+	// Declared and never priced: the rate-missing refusal.
+	await rules.createMethod({
+		id: NORATE_METHOD_ID,
+		zoneId: ZONE_ID,
+		name: "Unpriced",
+		type: "flat_rate",
+	});
+	await new EmdashTaxRulesStore({ storage, clock: systemClock }).createRate({
+		id: `${NS}-zone-standard`,
+		taxClassId: "standard",
+		zoneId: ZONE_ID,
+		rateBps: 1000,
+		appliesToShipping: true,
+	});
 }
 
 /**
@@ -229,6 +320,16 @@ beforeAll(async () => {
 	await seedProduct({ id: LINE_PRODUCT_IDS[0]!, sku: LINE_SKUS[0]!, amount: 1999 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[1]!, sku: LINE_SKUS[1]!, amount: 1000 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[2]!, sku: LINE_SKUS[2]!, amount: 333 });
+	await seedShippingRules();
+	await seedCoupon({ id: `${NS}-save5`, code: "CK-SAVE5", amount: 500 });
+	await seedCoupon({
+		id: `${NS}-expired`,
+		code: "CK-EXPIRED",
+		amount: 500,
+		expiresAt: "2020-01-01T00:00:00.000Z",
+	});
+	await seedCoupon({ id: `${NS}-min`, code: "CK-MIN", amount: 500, minSubtotalCents: 100_000 });
+	await seedCoupon({ id: `${NS}-eur`, code: "CK-EUR", amount: 500, currency: "EUR" });
 }, 300_000);
 
 afterAll(async () => {
@@ -372,6 +473,172 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 	test("a blank cartId is rejected BEFORE any store work", async () => {
 		const result = await summary({});
 		expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+		expect(productQueries).toHaveLength(0);
+	});
+});
+
+/**
+ * #305 part 1 — the buyer's SELECTION (coupon, shipping method) through the
+ * summary. A rejected selection must NOT bounce the buyer to `/cart` (every
+ * `ok: false` summary does — `sites/staging/src/lib/checkout-redirect.ts`), so
+ * the route reports it beside totals computed WITHOUT it, and still renders.
+ */
+describe("storefront/checkout/summary — the buyer's selection (workerd sandbox)", () => {
+	type Totals = Record<string, { money: { amount: number } | null; label: string }> & {
+		appliedCouponCode: string | null;
+		totalExcludesUncalculated: boolean;
+	};
+	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
+
+	test("a valid couponCode discounts the quote — and still costs exactly 2 product queries", async () => {
+		const cartId = await seedThreeLineCart();
+		productQueries.length = 0;
+
+		const result = await summary({ cartId, couponCode: "CK-SAVE5" });
+
+		expect(result["ok"]).toBe(true);
+		const totals = totalsOf(result);
+		expect(totals["discount"]!.label).toBe("$5.00");
+		expect(totals["total"]!.label).toBe("$44.98");
+		expect(totals.appliedCouponCode).toBe("CK-SAVE5");
+		expect(result["selection"]).toEqual({ couponCode: "CK-SAVE5", shippingMethodId: null });
+		expect(result["selectionErrors"]).toEqual({});
+		expect(result["orderCreated"]).toBe(false);
+		expect(productQueries).toHaveLength(2);
+	});
+
+	test("coupon codes are matched case-SENSITIVELY and the typed code is echoed back verbatim", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, couponCode: " ck-save5 " });
+
+		expect(result["ok"]).toBe(true);
+		expect(result["selectionErrors"]).toEqual({
+			coupon: { code: "ck-save5", reason: "COUPON_NOT_FOUND" },
+		});
+		expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+	});
+
+	// COUPON_EXHAUSTED is proven by a REAL redemption on the Stripe boot below —
+	// never by seeding a cap of zero.
+	test.each([
+		["COUPON_NOT_FOUND", "CK-NO-SUCH-CODE"],
+		["COUPON_NOT_ACTIVE", "CK-EXPIRED"],
+		["COUPON_MIN_SUBTOTAL", "CK-MIN"],
+		["COUPON_CURRENCY_MISMATCH", "CK-EUR"],
+	])(
+		"a %s coupon is reported beside the UNDISCOUNTED totals — ok:true, never a bounce to /cart",
+		async (reason, code) => {
+			const cartId = await seedThreeLineCart();
+			const bare = await summary({ cartId });
+
+			const result = await summary({ cartId, couponCode: code });
+
+			expect(result["ok"]).toBe(true);
+			expect(result["selectionErrors"]).toEqual({ coupon: { code, reason } });
+			expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+			expect(result["totals"]).toEqual(bare["totals"]);
+		},
+	);
+
+	test('a shippingMethodId adds its rate as real money; tax stays "Not calculated" (transitional — replaced by #305 part 2)', async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, shippingMethodId: METHOD_ID });
+
+		expect(result["ok"]).toBe(true);
+		const totals = totalsOf(result);
+		expect(totals["shipping"]!.label).toBe("$5.99");
+		expect(totals["total"]!.label).toBe("$55.97");
+		// TRANSITIONAL: no zone is derived until PR 2, so no tax was calculated.
+		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totals.totalExcludesUncalculated).toBe(true);
+		expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: METHOD_ID });
+	});
+
+	test('a method whose free-shipping threshold the cart meets is a COMPUTED $0.00, never "Not calculated"', async () => {
+		const cartId = await seedThreeLineCart();
+
+		const totals = totalsOf(await summary({ cartId, shippingMethodId: FREE_METHOD_ID }));
+
+		expect(totals["shipping"]!.money).toMatchObject({ amount: 0 });
+		expect(totals["shipping"]!.label).toBe("$0.00");
+		expect(totals["total"]!.label).toBe("$49.98");
+	});
+
+	test.each([
+		["SHIPPING_METHOD_NOT_FOUND", `${NS}-ship-never-declared`],
+		["SHIPPING_RATE_NOT_FOUND", NORATE_METHOD_ID],
+	])(
+		'a %s method is reported, and shipping reads "Not calculated" — ok:true',
+		async (reason, shippingMethodId) => {
+			const cartId = await seedThreeLineCart();
+
+			const result = await summary({ cartId, shippingMethodId });
+
+			expect(result["ok"]).toBe(true);
+			expect(result["selectionErrors"]).toEqual({ shippingMethod: { reason } });
+			expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+			expect(totalsOf(result)["shipping"]).toEqual({ money: null, label: "Not calculated" });
+		},
+	);
+
+	test("a bad method does not discard a good coupon", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({
+			cartId,
+			couponCode: "CK-SAVE5",
+			shippingMethodId: `${NS}-ship-never-declared`,
+		});
+
+		expect(result["selectionErrors"]).toEqual({
+			shippingMethod: { reason: "SHIPPING_METHOD_NOT_FOUND" },
+		});
+		expect(result["selection"]).toEqual({ couponCode: "CK-SAVE5", shippingMethodId: null });
+		expect(totalsOf(result)["total"]!.label).toBe("$44.98");
+	});
+
+	test("both selections bad ⇒ both reported, bare totals, and the retry is BOUNDED (1 display read + 3 quotes)", async () => {
+		const cartId = await seedThreeLineCart();
+		const bare = await summary({ cartId });
+		productQueries.length = 0;
+
+		const result = await summary({
+			cartId,
+			couponCode: "CK-NO-SUCH-CODE",
+			shippingMethodId: `${NS}-ship-never-declared`,
+		});
+
+		expect(result["selectionErrors"]).toEqual({
+			coupon: { code: "CK-NO-SUCH-CODE", reason: "COUPON_NOT_FOUND" },
+			shippingMethod: { reason: "SHIPPING_METHOD_NOT_FOUND" },
+		});
+		expect(result["totals"]).toEqual(bare["totals"]);
+		expect(productQueries).toHaveLength(4);
+	});
+
+	test('a client-supplied shippingZoneId is IGNORED — a zone with a 10% rate still yields tax "Not calculated" and total = subtotal', async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, shippingZoneId: ZONE_ID });
+
+		expect(result["ok"]).toBe(true);
+		const totals = totalsOf(result);
+		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totals["total"]!.label).toBe("$49.98");
+		expect(JSON.stringify(result)).not.toContain(ZONE_ID);
+	});
+
+	test.each([
+		["an over-long couponCode", { couponCode: "X".repeat(201) }],
+		["a non-string couponCode", { couponCode: 42 }],
+		["a shippingMethodId with whitespace", { shippingMethodId: "a b" }],
+	])("%s is INVALID_INPUT before any store work", async (_label, extra) => {
+		const cartId = await seedThreeLineCart();
+		productQueries.length = 0;
+
+		expect(await summary({ cartId, ...extra })).toEqual({ ok: false, error: "INVALID_INPUT" });
 		expect(productQueries).toHaveLength(0);
 	});
 });
@@ -802,6 +1069,281 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 		expect(await placeCart(cartId)).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 		expect(stripe.requests).toHaveLength(0);
+	});
+
+	// ── #305 part 1: the selection at place, and the locked review ──────────
+
+	/** The order a place minted, read back from the real store. */
+	async function totalsSnapshot(orderId: string) {
+		return (await storedOrder(orderId)).totals;
+	}
+
+	test("a coupon is redeemed WITH the order: summary total, place total, order total and Stripe amount are the SAME discounted figure", async () => {
+		await seedCoupon({ id: `${NS}-place-once`, code: "CK-PLACE-ONCE", amount: 500 });
+		const cartId = await seedThreeLineCart();
+		const review = await summary({ cartId, couponCode: "CK-PLACE-ONCE" });
+		const reviewed = (review["totals"] as { total: { money: { amount: number } } }).total.money;
+
+		const placed = await placeCart(cartId, { couponCode: "CK-PLACE-ONCE" });
+
+		expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
+		const expected = SUBTOTAL_CENTS - 500;
+		expect(reviewed.amount).toBe(expected);
+		expect((placed["total"] as { amount: number }).amount).toBe(expected);
+		const totals = await totalsSnapshot(placed["orderId"] as string);
+		expect(totals.total).toBe(expected);
+		expect(totals.appliedCouponCode).toBe("CK-PLACE-ONCE");
+		expect(stripe.requests[0]!.form.get("amount")).toBe(String(expected));
+		expect(await usesOf("CK-PLACE-ONCE")).toBe(1);
+	});
+
+	test("a same-key replay of a coupon checkout neither redeems twice nor fails a maxUses=1 coupon", async () => {
+		await seedCoupon({ id: `${NS}-replay-one`, code: "CK-REPLAY-ONE", amount: 500, maxUses: 1 });
+		const cartId = await seedThreeLineCart();
+
+		const first = await placeCart(cartId, { couponCode: "CK-REPLAY-ONE" });
+		const replay = await placeCart(cartId, { couponCode: "CK-REPLAY-ONE" });
+
+		expect(first["ok"]).toBe(true);
+		expect(replay).toMatchObject({ ok: true, orderId: first["orderId"] });
+		expect(await usesOf("CK-REPLAY-ONE")).toBe(1);
+	});
+
+	test("COUPON_EXHAUSTED by a REAL redemption: once another cart has used the last use, the summary reports it and the place refuses it — no order, no intent, the cart and its hold intact", async () => {
+		await seedCoupon({ id: `${NS}-last-use`, code: "CK-LAST-USE", amount: 500, maxUses: 1 });
+		const spent = await placeCart(await seedThreeLineCart(), { couponCode: "CK-LAST-USE" });
+		expect(spent["ok"]).toBe(true);
+		expect(await usesOf("CK-LAST-USE")).toBe(1);
+		stripe.requests.length = 0;
+
+		const cartId = await seedThreeLineCart();
+		const review = await summary({ cartId, couponCode: "CK-LAST-USE" });
+		expect(review["ok"]).toBe(true);
+		expect(review["selectionErrors"]).toEqual({
+			coupon: { code: "CK-LAST-USE", reason: "COUPON_EXHAUSTED" },
+		});
+
+		await expectRefusedAtPlace(cartId, { couponCode: "CK-LAST-USE" }, "COUPON_EXHAUSTED");
+	});
+
+	test("an unknown coupon at place is the typed COUPON_NOT_FOUND — no order, no intent, the cart and its hold intact", async () => {
+		await expectRefusedAtPlace(
+			await seedThreeLineCart(),
+			{ couponCode: "CK-NEVER-ISSUED" },
+			"COUPON_NOT_FOUND",
+		);
+	});
+
+	test("an undeclared shippingMethodId at place is the typed SHIPPING_METHOD_NOT_FOUND — no order, no intent", async () => {
+		await expectRefusedAtPlace(
+			await seedThreeLineCart(),
+			{ shippingMethodId: `${NS}-ship-never-declared` },
+			"SHIPPING_METHOD_NOT_FOUND",
+		);
+	});
+
+	async function expectRefusedAtPlace(
+		cartId: string,
+		extra: Record<string, unknown>,
+		reason: string,
+	): Promise<void> {
+		const before = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
+		const heldBefore = (before["cart"] as { lines: { reservationId: string | null }[] }).lines;
+
+		expect(await placeCart(cartId, extra)).toEqual({ ok: false, reason });
+
+		// Refused BEFORE anything was minted: no order under the checkout key, and
+		// no PaymentIntent asked for.
+		expect(await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`))).toBeNull();
+		expect(stripe.requests).toHaveLength(0);
+		const after = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
+		const cart = after["cart"] as {
+			state: string;
+			orderId: string | null;
+			lines: { reservationId: string | null }[];
+		};
+		expect(cart.state).toBe("active");
+		expect(cart.orderId).toBeNull();
+		expect(cart.lines.map((l) => l.reservationId)).toEqual(heldBefore.map((l) => l.reservationId));
+	}
+
+	test("a shippingMethodId's rate reaches the order and the PaymentIntent", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const placed = await placeCart(cartId, { shippingMethodId: METHOD_ID });
+
+		expect(placed["ok"]).toBe(true);
+		const expected = SUBTOTAL_CENTS + SHIPPING_CENTS;
+		const totals = await totalsSnapshot(placed["orderId"] as string);
+		expect(totals.shipping).toBe(SHIPPING_CENTS);
+		expect(totals.total).toBe(expected);
+		expect(stripe.requests[0]!.form.get("amount")).toBe(String(expected));
+		// TRANSITIONAL — replaced by #305 part 2 (which derives the zone from the
+		// address): the snapshot records the method and NO zone, and no tax.
+		expect(totals.shippingMethodSnapshot).toEqual({ zoneId: null, methodId: METHOD_ID });
+		expect(totals.tax).toBe(0);
+	});
+
+	test("a supplied shippingZoneId is never forwarded: the client's zone reaches neither the order nor its tax", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const placed = await placeCart(cartId, {
+			shippingMethodId: METHOD_ID,
+			shippingZoneId: ZONE_ID,
+		});
+
+		expect(placed["ok"]).toBe(true);
+		const totals = await totalsSnapshot(placed["orderId"] as string);
+		// The zone carries a 10% rate that applies to shipping; had it been
+		// forwarded, tax would be non-zero here.
+		expect(totals.tax).toBe(0);
+		expect((totals.shippingMethodSnapshot as { zoneId: unknown }).zoneId).not.toBe(ZONE_ID);
+	});
+
+	test("after PAYMENT_INTENT_FAILED with coupon A, a same-key place with coupon B returns the ORIGINAL order at A's total, and Stripe sees A's identical form", async () => {
+		await seedCoupon({ id: `${NS}-a`, code: "CK-A", amount: 500 });
+		await seedCoupon({ id: `${NS}-b`, code: "CK-B", amount: 900 });
+		const cartId = await seedThreeLineCart();
+		const fallback = stripeLikeResponder();
+		let first = true;
+		stripe.respondWith((req) => {
+			if (first) {
+				first = false;
+				return { status: 502, body: { error: { code: "api_error" } } };
+			}
+			return fallback(req);
+		});
+
+		expect(await placeCart(cartId, { couponCode: "CK-A" })).toEqual({
+			ok: false,
+			reason: "PAYMENT_INTENT_FAILED",
+		});
+		const retry = await placeCart(cartId, { couponCode: "CK-B" });
+
+		expect(retry["ok"]).toBe(true);
+		expect((retry["total"] as { amount: number }).amount).toBe(SUBTOTAL_CENTS - 500);
+		expect(stripe.requests).toHaveLength(2);
+		expect(stripe.requests[1]!.form.toString()).toBe(stripe.requests[0]!.form.toString());
+		expect(await usesOf("CK-B")).toBe(0);
+	});
+
+	/**
+	 * THE LOCKED REVIEW. Once the cart has become an order, the review page states
+	 * the ORDER — the same-key place replays it and ignores any new selection, so
+	 * a review re-quoted from the cart would show a figure nobody will charge.
+	 */
+	test("the summary of a cart that became a PENDING order is LOCKED to the order: its totals, its coupon, a different input coupon ignored", async () => {
+		await seedCoupon({ id: `${NS}-lock`, code: "CK-LOCK", amount: 500 });
+		const cartId = await seedThreeLineCart();
+		const placed = await placeCart(cartId, { couponCode: "CK-LOCK" });
+		productQueries.length = 0;
+
+		const locked = await summary({ cartId, couponCode: "CK-SAVE5", shippingMethodId: METHOD_ID });
+
+		expect(locked, JSON.stringify(locked)).toMatchObject({
+			ok: true,
+			orderCreated: true,
+			order: { id: placed["orderId"], state: "pending", phase: "payable" },
+			selection: { couponCode: "CK-LOCK", shippingMethodId: null },
+			selectionErrors: {},
+			idempotencyKey: `checkout:${cartId}`,
+			hasUnpricedLines: false,
+		});
+		const totals = locked["totals"] as Record<string, { label: string }>;
+		expect(totals["total"]!.label).toBe("$44.98");
+		expect(totals["discount"]!.label).toBe("$5.00");
+		// The lines are the ORDER's snapshot, not a live re-join.
+		const lines = locked["lines"] as {
+			sku: string;
+			qty: number;
+			lineTotal: { formatted: string };
+		}[];
+		// (The store's line order, not the cart's — so compared as a set.)
+		expect(lines.map((l) => `${l.sku}×${String(l.qty)}`).toSorted()).toEqual([
+			`${LINE_SKUS[0]!}×1`,
+			`${LINE_SKUS[1]!}×2`,
+			`${LINE_SKUS[2]!}×3`,
+		]);
+		expect(lines.find((l) => l.sku === LINE_SKUS[1])!.lineTotal.formatted).toBe("$20.00");
+		// Nothing was priced from the live catalogue at all.
+		expect(productQueries).toHaveLength(0);
+	});
+
+	test("a locked summary survives the product being unpublished AFTER the order — it renders the order, not PRODUCT_NOT_PRICED", async () => {
+		const id = `prod-${NS}-locked-unpub`;
+		const sku = `SKU-${NS}-LOCKED-UNPUB`;
+		await seedProduct({ id, sku, amount: 1400 });
+		const cartId = await createCart();
+		await addLine(cartId, sku, id, 1);
+		expect((await placeCart(cartId))["ok"]).toBe(true);
+		await commerceStore().deactivate(
+			toProductId(id),
+			idempotencyKey(`unpub-${id}`),
+			"2026-02-01T00:00:00.000Z",
+		);
+
+		const locked = await summary({ cartId });
+
+		expect(locked).toMatchObject({ ok: true, orderCreated: true, order: { phase: "payable" } });
+		expect((locked["totals"] as Record<string, { label: string }>)["total"]!.label).toBe("$14.00");
+	});
+
+	test("a locked summary whose order was PAID answers phase 'placed' — the site sends the buyer to the confirmation", async () => {
+		const cartId = await seedThreeLineCart();
+		const placed = await placeCart(cartId);
+		expect(await orderStore.markPaid(toOrderId(placed["orderId"] as string))).toBe(true);
+
+		expect(await summary({ cartId })).toMatchObject({
+			ok: true,
+			orderCreated: true,
+			order: { id: placed["orderId"], state: "paid", phase: "placed" },
+		});
+	});
+
+	test("a locked summary whose order EXPIRED answers phase 'ended' — the cart is not reopened, so the only way on is a new cart", async () => {
+		const cartId = await seedThreeLineCart();
+		const placed = await placeCart(cartId);
+		// Expired through the store's own guarded flip — a `now` past the hold.
+		expect(
+			await orderStore.expire(toOrderId(placed["orderId"] as string), "2999-01-01T00:00:00.000Z"),
+		).toBe(true);
+
+		const locked = await summary({ cartId });
+
+		expect(locked).toMatchObject({
+			ok: true,
+			orderCreated: true,
+			order: { id: placed["orderId"], state: "expired", phase: "ended" },
+		});
+		// `expireOrders` does not reopen the cart.
+		const read = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+		expect((read["cart"] as { state: string }).state).not.toBe("active");
+	});
+
+	test("a checked-out cart whose order cannot be read degrades to the typed CART_CHECKED_OUT — never RENDER_FAILED", async () => {
+		const cartId = await seedThreeLineCart();
+		const placed = await placeCart(cartId);
+		// The order row is gone (a purge, a restore from an older backup): the cart
+		// still names it, and it can never be paid.
+		await storage[ORDERS_COLLECTION]!.delete(placed["orderId"] as string);
+
+		expect(await summary({ cartId })).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+	});
+
+	test('storefront/order for an order placed with a method states shipping as money and tax "Not calculated" (transitional — replaced by #305 part 2)', async () => {
+		const cartId = await seedThreeLineCart();
+		const placed = await placeCart(cartId, { shippingMethodId: METHOD_ID });
+
+		const read = resultOf(
+			await sandboxHandle.invokeRoute("storefront/order", { orderId: placed["orderId"] }),
+		);
+
+		expect(read["ok"]).toBe(true);
+		const totals = (read["order"] as { totals: Record<string, { money: unknown; label: string }> })
+			.totals;
+		expect(totals["shipping"]!.label).toBe("$5.99");
+		expect(totals["total"]!.label).toBe("$55.97");
+		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
 	});
 });
 

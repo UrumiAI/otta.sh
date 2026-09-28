@@ -29,6 +29,7 @@ import type {
 	PaymentIntentWire,
 	PublicOrderWire,
 	QuoteBreakdownWire,
+	QuoteFailureReason,
 } from "../product-commerce/commerce-client.js";
 import type { CartMoneyWire, CartPricingWire } from "./cart-pricing.js";
 
@@ -145,6 +146,26 @@ export function buildCheckoutLines(
 }
 
 /**
+ * An order's line SNAPSHOT → the review table's rows, for the locked review of a
+ * cart that has already become that order. Priced from the order, never the
+ * live catalogue: these are the prices being charged. An order line has no id
+ * of its own, so one is derived from its position — stable, since the snapshot
+ * never changes.
+ */
+export function buildOrderLines(order: PublicOrderWire, locale: string): CheckoutLineView[] {
+	return order.lines.map((line, index) => {
+		const code = currency(line.currency);
+		return {
+			lineId: `${order.id}:${String(index)}`,
+			sku: line.sku,
+			qty: line.quantity,
+			unitPrice: money(line.unitPriceCents, code, locale),
+			lineTotal: money(line.unitPriceCents * line.quantity, code, locale),
+		};
+	});
+}
+
+/**
  * The order's OWN total, as of the moment it was created — the figure the
  * PaymentIntent was minted for.
  *
@@ -196,18 +217,34 @@ export interface PublicOrderView {
 }
 
 /**
- * Public order wire → confirmation view model.
+ * Which components of an ORDER's totals were actually calculated.
  *
- * The same honest-zero rule as the checkout page applies to the ORDER's own
- * totals, and for the same reason: an order placed with no shipping zone
- * carries `shippingCents: 0` / `taxCents: 0` from the identical synthetic-zero
- * pipeline. `totals.shippingZoneId` is the only evidence on the wire that a
- * zone was ever chosen, so it drives both flags — no zone ⇒ neither component
- * was calculated, and the page says so rather than promising free delivery on
- * an order that has not been priced for delivery.
+ * The same honest-zero rule as the checkout page applies to the order's own
+ * totals, and for the same reason: an order placed with no shipping method or
+ * no zone carries `shippingCents: 0` / `taxCents: 0` from the identical
+ * synthetic-zero pipeline. The snapshot ids on the wire are the only evidence
+ * of what the order was priced WITH, and each decides its own component:
+ * SHIPPING follows the method (a method was priced, even to a computed zero),
+ * TAX follows the zone (rates are only ever looked up for a zone).
+ *
+ * Backward-compatible: a snapshot is only ever written together with a method,
+ * so every older order that carries a zone also carries a method.
+ */
+export function orderTotalsFlags(
+	totals: PublicOrderWire["totals"],
+): Pick<CheckoutTotalsOptions, "shippingSelected" | "taxZoneSelected"> {
+	return {
+		shippingSelected: totals.shippingMethodId !== null,
+		taxZoneSelected: totals.shippingZoneId !== null,
+	};
+}
+
+/**
+ * Public order wire → confirmation view model. Totals follow
+ * {@link orderTotalsFlags}: a component that was not calculated says so rather
+ * than promising free delivery on an order that was never priced for delivery.
  */
 export function buildOrderView(order: PublicOrderWire, locale: string): PublicOrderView {
-	const zoneSelected = order.totals.shippingZoneId !== null;
 	return {
 		id: order.id,
 		state: order.state,
@@ -215,11 +252,7 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
-		totals: buildCheckoutTotals(order.totals, {
-			locale,
-			shippingSelected: zoneSelected,
-			taxZoneSelected: zoneSelected,
-		}),
+		totals: buildCheckoutTotals(order.totals, { locale, ...orderTotalsFlags(order.totals) }),
 		lines: order.lines.map((l) => {
 			const lineCode = currency(l.currency);
 			return {
@@ -234,6 +267,77 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		fulfillment: order.fulfillment,
 		cancellation: order.cancellation,
 	};
+}
+
+// ── the buyer's selection (#305) ──────────────────────────────────────────
+
+/** The quote refusals that blame the COUPON the buyer typed. Derived from the
+ *  wire union, so it cannot drift from it. */
+export type CouponSelectionReason = Extract<QuoteFailureReason, `COUPON_${string}`>;
+
+/** The quote refusals that blame the SHIPPING METHOD the buyer chose. */
+export type ShippingSelectionReason = Extract<QuoteFailureReason, `SHIPPING_${string}`>;
+
+/** Which part of the selection a refusal blames. */
+export type SelectionField = "coupon" | "shippingMethod";
+
+/**
+ * EXHAUSTIVE over the wire union: a quote reason added later without a row
+ * here fails the type check, rather than silently bouncing a buyer to `/cart`
+ * (a refusal that blames no selection is a cart-level one, and the summary
+ * route returns it as `ok: false`).
+ */
+const SELECTION_FIELD: Record<QuoteFailureReason, SelectionField | null> = {
+	COUPON_NOT_FOUND: "coupon",
+	COUPON_NOT_ACTIVE: "coupon",
+	COUPON_MIN_SUBTOTAL: "coupon",
+	COUPON_EXHAUSTED: "coupon",
+	COUPON_CURRENCY_MISMATCH: "coupon",
+	SHIPPING_METHOD_NOT_FOUND: "shippingMethod",
+	SHIPPING_RATE_NOT_FOUND: "shippingMethod",
+	CART_NOT_FOUND: null,
+	CART_EMPTY: null,
+	PRODUCT_NOT_PRICED: null,
+	CURRENCY_MISMATCH: null,
+};
+
+export function selectionFieldFor(reason: QuoteFailureReason): SelectionField | null {
+	return SELECTION_FIELD[reason];
+}
+
+export function isCouponSelectionReason(
+	reason: QuoteFailureReason,
+): reason is CouponSelectionReason {
+	return SELECTION_FIELD[reason] === "coupon";
+}
+
+export function isShippingSelectionReason(
+	reason: QuoteFailureReason,
+): reason is ShippingSelectionReason {
+	return SELECTION_FIELD[reason] === "shippingMethod";
+}
+
+/**
+ * What `/checkout` may offer for a cart that has ALREADY become an order.
+ *
+ *  - `payable` — the order is `pending`: the same-key place replays it into
+ *    the same PaymentIntent, so the page offers the pay step at the ORDER's
+ *    totals, with the selection locked;
+ *  - `ended` — expired / cancelled / failed: nothing can be paid, and
+ *    `expireOrders` does not reopen the cart, so the only way on is a new
+ *    cart. A pay button here would lead nowhere;
+ *  - `placed` — paid or any later state, AND any state this build does not
+ *    know: the confirmation page reads the order's real state, so it is the
+ *    one safe place to send a buyer whose order may have been paid.
+ */
+export type LockedCheckoutPhase = "payable" | "ended" | "placed";
+
+const ENDED_STATES: ReadonlySet<string> = new Set(["expired", "cancelled", "failed"]);
+
+export function lockedCheckoutPhase(state: string): LockedCheckoutPhase {
+	if (state === "pending") return "payable";
+	if (ENDED_STATES.has(state)) return "ended";
+	return "placed";
 }
 
 /**

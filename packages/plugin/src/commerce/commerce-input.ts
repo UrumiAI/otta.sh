@@ -77,6 +77,17 @@ const ID_CHARSET = /^[\x21-\x7e]+$/;
 /** An opaque id's ceiling — long enough for any id the system mints. */
 const ID_MAX = 200;
 
+/** A coupon code's ceiling. Exported so a boundary parser in front of this
+ *  client (the storefront checkout routes) rejects exactly what this refuses. */
+export const COUPON_CODE_MAX = 200;
+
+/** `requireIdToken`'s rule as a predicate, for a boundary parser that must turn
+ *  a malformed id into its own INVALID_INPUT rather than let this client throw.
+ *  One definition, so the two cannot drift. */
+export function isIdToken(value: string): boolean {
+	return value.length > 0 && value.length <= ID_MAX && ID_CHARSET.test(value);
+}
+
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
 export const CART_LINE_MAX_QTY = 10_000;

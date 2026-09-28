@@ -469,7 +469,11 @@ export interface PublicOrderWire {
 	paymentMethod: string | null;
 	holdExpiresAt: string;
 	createdAt: string;
-	totals: QuoteBreakdownWire & { shippingZoneId: string | null };
+	/** `shippingZoneId` / `shippingMethodId` are read off the order's shipping
+	 *  snapshot: opaque merchant config ids, never buyer data. They are the only
+	 *  evidence on the wire of WHAT the totals were priced with — the method
+	 *  decides whether shipping was calculated, the zone whether tax was. */
+	totals: QuoteBreakdownWire & { shippingZoneId: string | null; shippingMethodId: string | null };
 	lines: OrderLineWire[];
 	fulfillment: {
 		carrier: string;

@@ -28,9 +28,13 @@ import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
 	CartFailureReason,
+	CartWire,
 	CheckoutFailureReason,
 	ClientActionWire,
+	PublicOrderWire,
+	QuoteBreakdownWire,
 	QuoteFailureReason,
+	QuoteRequestWire,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -43,17 +47,26 @@ import {
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
+	type CheckoutSelection,
 } from "./checkout-route-input.js";
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
+	isCouponSelectionReason,
+	isShippingSelectionReason,
+	lockedCheckoutPhase,
+	orderTotalsFlags,
 	type CheckoutLineView,
 	type CheckoutTotalsView,
+	type CouponSelectionReason,
+	type LockedCheckoutPhase,
 	type PublicOrderView,
+	type ShippingSelectionReason,
 } from "./checkout-view-model.js";
 import { createCommerceLoader, renderGuard } from "./pdp-route.js";
 
@@ -71,6 +84,11 @@ const PAYMENT_METHOD = "stripe" as const;
 export interface CheckoutSummaryRouteInput {
 	cartId?: unknown;
 	locale?: unknown;
+	/** Trimmed, case kept (lookup is case-sensitive); blank ⇒ no coupon. */
+	couponCode?: unknown;
+	shippingMethodId?: unknown;
+	// There is deliberately NO `shippingZoneId`: the tax zone is never the
+	// client's to choose. A body that carries one is read for nothing.
 }
 
 export interface CheckoutPlaceRouteInput {
@@ -80,6 +98,9 @@ export interface CheckoutPlaceRouteInput {
 	 *  (`checkoutIdempotencyKey` is how the summary derives it). */
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
+	couponCode?: unknown;
+	shippingMethodId?: unknown;
 	/** For `total.formatted` only — the same `sanitizeLocale` default the other
 	 *  two routes take, so the amount on the pay button reads exactly like the
 	 *  total the buyer just approved on the review page. */
@@ -91,20 +112,58 @@ export interface OrderRouteInput {
 	locale?: unknown;
 }
 
+/** What the totals were computed WITH — the form echoes it, so the place
+ *  prices exactly what the buyer reviewed. `null` ⇒ not applied. */
+export interface CheckoutSelectionView {
+	couponCode: string | null;
+	shippingMethodId: string | null;
+}
+
+/**
+ * A selection the quote REFUSED. Reported beside totals computed without it, so
+ * a mistyped coupon costs the buyer a notice, never a bounce to `/cart`. The
+ * reasons are derived from the wire union (`Extract<>`), so they cannot drift.
+ */
+export interface CheckoutSelectionErrors {
+	/** `code` is the code AS TYPED, so the page can put it back for correcting. */
+	coupon?: { code: string; reason: CouponSelectionReason };
+	shippingMethod?: { reason: ShippingSelectionReason };
+}
+
+/** The order a cart already became — see `lockedCheckoutPhase`. */
+export interface CheckoutLockedOrderView {
+	id: string;
+	state: string;
+	phase: LockedCheckoutPhase;
+}
+
+interface CheckoutSummaryViewBase {
+	ok: true;
+	cartId: string;
+	currency: string;
+	lines: CheckoutLineView[];
+	totals: CheckoutTotalsView;
+	/** `checkout:<cartId>` — STABLE per cart; the form embeds it. */
+	idempotencyKey: string;
+	/** true when at least one line has no live price. Such a cart cannot be
+	 *  ordered at all (`PRODUCT_NOT_PRICED`), so the page must not offer a
+	 *  payable-looking button on the strength of the totals alone. */
+	hasUnpricedLines: boolean;
+	selection: CheckoutSelectionView;
+	selectionErrors: CheckoutSelectionErrors;
+}
+
+export type CheckoutSummaryView = CheckoutSummaryViewBase &
+	(
+		| { orderCreated: false; order: null }
+		/** LOCKED: the cart has already become this order. Totals, lines and
+		 *  selection are the ORDER's, and any selection in the input is ignored —
+		 *  the same-key place replays the order and re-prices nothing. */
+		| { orderCreated: true; order: CheckoutLockedOrderView }
+	);
+
 export type CheckoutSummaryRouteResult =
-	| {
-			ok: true;
-			cartId: string;
-			currency: string;
-			lines: CheckoutLineView[];
-			totals: CheckoutTotalsView;
-			/** `checkout:<cartId>` — STABLE per cart; the form embeds it. */
-			idempotencyKey: string;
-			/** true when at least one line has no live price. Such a cart cannot be
-			 *  ordered at all (`PRODUCT_NOT_PRICED`), so the page must not offer a
-			 *  payable-looking button on the strength of the totals alone. */
-			hasUnpricedLines: boolean;
-	  }
+	| CheckoutSummaryView
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason | QuoteFailureReason }
 	| { ok: false; error: "RENDER_FAILED" };
@@ -149,9 +208,31 @@ export type OrderRouteResult =
 	| { ok: false; error: "RENDER_FAILED" };
 
 /**
+ * The selection → the quote/checkout request's pricing fields. ONE function used
+ * by both the summary and the place route, so the review and the order can never
+ * be priced from different selections — and PR 2 (#305) adds the zone derived
+ * from the ship-to address here, in one place. A client-supplied zone never
+ * reaches it: the parsers do not read one.
+ */
+function quoteSelection(
+	selection: CheckoutSelection,
+): Pick<QuoteRequestWire, "couponCode" | "shippingMethodId"> {
+	return {
+		...(selection.couponCode !== undefined ? { couponCode: selection.couponCode } : {}),
+		...(selection.shippingMethodId !== undefined
+			? { shippingMethodId: selection.shippingMethodId }
+			: {}),
+	};
+}
+
+/**
  * `GET /carts/:id` + `POST /catalog/commerce/batch` + `POST /checkout/quote` →
  * one review view model. Three calls, in that order, one batch regardless of
- * line count.
+ * line count — plus, when the buyer's selection is refused, a bounded re-quote
+ * without the refused part (at most three quotes in all).
+ *
+ * A cart that has ALREADY become an order is not quoted at all: the review is
+ * LOCKED to that order (see `lockedSummary`).
  */
 export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummaryRouteInput> {
 	return (routeCtx, ctx): Promise<CheckoutSummaryRouteResult> =>
@@ -163,6 +244,17 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			const cartResult = await client.getCart(input.cartId);
 			if (!cartResult.ok) return { ok: false as const, reason: cartResult.reason };
 			const cart = cartResult.cart;
+
+			if (cart.orderId !== null) {
+				const order = await client.getPublicOrder(cart.orderId);
+				// DEGRADED, and defined: the cart names an order that cannot be read
+				// (purged, or restored from an older backup). It can never be paid —
+				// a same-key place finds no order and the cart is no longer active —
+				// so the buyer is told what IS true: the cart has been checked out.
+				// `/cart` renders that state and offers the way on.
+				if (!order.ok) return { ok: false as const, reason: "CART_CHECKED_OUT" as const };
+				return lockedSummary(cart, order.order, input.locale);
+			}
 
 			const productIds = [
 				...new Set(
@@ -191,8 +283,38 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			// can be ordered at all: CART_EMPTY / PRODUCT_NOT_PRICED /
 			// CURRENCY_MISMATCH arrive here as TYPED reasons the theme turns into a
 			// redirect or honest copy, never a half-rendered payable page.
-			const quote = await client.quoteCheckout({ cartId: input.cartId });
-			if (!quote.ok) return { ok: false as const, reason: quote.reason };
+			//
+			// A refusal that blames the buyer's SELECTION is different: it is
+			// recorded, and the cart is quoted again WITHOUT that part, so a typo in
+			// a coupon costs a notice rather than the checkout. Each round drops one
+			// field, so this ends. BOUNDED at three quotes because `computeQuote`
+			// (domain pricing/quote.ts) checks the shipping method BEFORE the coupon:
+			// "both bad" is refused on shipping, then on the coupon, then priced —
+			// reordering those checks there would change this bound.
+			let selection = input.selection;
+			const selectionErrors: CheckoutSelectionErrors = {};
+			let quote = await client.quoteCheckout({
+				cartId: input.cartId,
+				...quoteSelection(selection),
+			});
+			while (!quote.ok) {
+				const reason = quote.reason;
+				if (isCouponSelectionReason(reason) && selection.couponCode !== undefined) {
+					selectionErrors.coupon = { code: selection.couponCode, reason };
+					const { couponCode: _refused, ...rest } = selection;
+					selection = rest;
+				} else if (isShippingSelectionReason(reason) && selection.shippingMethodId !== undefined) {
+					selectionErrors.shippingMethod = { reason };
+					const { shippingMethodId: _refused, ...rest } = selection;
+					selection = rest;
+				} else {
+					return { ok: false as const, reason };
+				}
+				quote = await client.quoteCheckout({
+					cartId: input.cartId,
+					...quoteSelection(selection),
+				});
+			}
 
 			return {
 				ok: true as const,
@@ -201,17 +323,58 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				lines: buildCheckoutLines(cart.lines, pricing),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
-					// No coupon or shipping-method selection is offered this slice
-					// (plan §7.2), so nothing was passed to the quote and neither
-					// component was computed — say so, rather than rendering the
-					// pipeline's synthetic zeros as "Free" / "$0.00".
-					shippingSelected: false,
+					// Shipping was calculated iff a method was priced (a free-threshold
+					// method is a COMPUTED zero). No tax zone is ever passed yet —
+					// TRANSITIONAL: #305 part 2 derives it from the ship-to address, and
+					// replaces this `false` with that.
+					shippingSelected: selection.shippingMethodId !== undefined,
 					taxZoneSelected: false,
 				}),
 				idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 				hasUnpricedLines: !pricing.allLinesPriced,
+				selection: {
+					couponCode: selection.couponCode ?? null,
+					shippingMethodId: selection.shippingMethodId ?? null,
+				},
+				selectionErrors,
+				orderCreated: false as const,
+				order: null,
 			};
 		});
+}
+
+/**
+ * The review of a cart that has ALREADY become an order — locked to it.
+ *
+ * A same-key place replays that order and never re-prices it
+ * (`createOrderFromCart`'s idempotency short-circuit), so a review re-quoted
+ * from the cart with a new coupon would show a figure nobody will charge. The
+ * page states the ORDER instead: its totals, its line snapshot (so a product
+ * unpublished since still renders), its coupon. The order's state decides what
+ * the page may offer (`lockedCheckoutPhase`).
+ */
+function lockedSummary(
+	cart: CartWire,
+	order: PublicOrderWire,
+	locale: string,
+): CheckoutSummaryView {
+	const totals: QuoteBreakdownWire = order.totals;
+	return {
+		ok: true,
+		cartId: cart.cartId,
+		currency: order.currency,
+		lines: buildOrderLines(order, locale),
+		totals: buildCheckoutTotals(totals, { locale, ...orderTotalsFlags(order.totals) }),
+		idempotencyKey: checkoutIdempotencyKey(cart.cartId),
+		hasUnpricedLines: false,
+		selection: {
+			couponCode: order.totals.appliedCouponCode,
+			shippingMethodId: order.totals.shippingMethodId,
+		},
+		selectionErrors: {},
+		orderCreated: true,
+		order: { id: order.id, state: order.state, phase: lockedCheckoutPhase(order.state) },
+	};
 }
 
 /**
@@ -230,6 +393,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 					cartId: input.cartId,
 					paymentMethod: PAYMENT_METHOD,
 					buyerRef: input.buyerRef,
+					...quoteSelection(input.selection),
 					...(input.shippingAddress !== undefined
 						? { shippingAddress: input.shippingAddress }
 						: {}),
