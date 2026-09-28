@@ -376,7 +376,12 @@ export {
 	upsertProductVariant,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
-export { isProductLive } from "./product-commerce/sellable.js";
+export {
+	isProductLive,
+	productsSellingVariants,
+	resolveSellableUnit,
+	type SellableUnit,
+} from "./product-commerce/sellable.js";
 export {
 	HoldExpiredError,
 	type AdjustLineInput,

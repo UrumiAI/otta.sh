@@ -153,6 +153,13 @@ export interface ProductVariantWire {
  *  unpublished or soft-deleted product. Offer a size only when its PARENT's
  *  `active` says the product is — the same join the product level already
  *  makes (`purchasable ⟺ commerce !== null && commerce.active`). */
+/** One sellable variant's price, for pricing a cart line that sells it. */
+export interface SellableVariantPriceWire {
+	productId: string;
+	sku: string;
+	price: CommerceMoney;
+}
+
 export interface ProductVariantSummaryWire extends ProductVariantWire {
 	inStock: boolean;
 }
@@ -269,6 +276,10 @@ export interface CommerceClient {
 	 *  tombstone (a discontinued size's name and last price are not public data).
 	 *  A console that needs tombstones asks for the operator's projection. */
 	listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]>;
+	/** The SELL-PATH price of every live, priced variant of each product, in one
+	 *  batch — what a cart or checkout line selling a size is priced at. Orphaned
+	 *  and unpriced variants are absent (neither can be sold); no stock read. */
+	getSellableVariantPrices(productIds: string[]): Promise<SellableVariantPriceWire[]>;
 	/** The CMS-sync DECLARE. Brings a variant into existence, refreshes its
 	 *  name cache, and RESURRECTS an orphan — it never refuses presence, so
 	 *  there is no typed-failure envelope to normalize. */

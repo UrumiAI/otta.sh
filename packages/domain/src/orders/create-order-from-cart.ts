@@ -21,7 +21,11 @@ import {
 	type PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
-import { isProductLive } from "../product-commerce/sellable.js";
+import {
+	isProductLive,
+	productsSellingVariants,
+	resolveSellableUnit,
+} from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
@@ -202,11 +206,16 @@ export async function createOrderFromCart(
 	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
 	// line is never branded here, and each surviving line is re-branded lazily at
 	// its own map lookup below, AFTER its own null guard.
-	const pcById = await deps.productCommerce.getManyByProductId(
-		cart.lines
-			.map((line) => line.productId)
-			.filter((id): id is string => id !== null)
-			.map((id) => brandProductId(id)),
+	const lineProductIds = cart.lines
+		.map((line) => line.productId)
+		.filter((id): id is string => id !== null)
+		.map((id) => brandProductId(id));
+	const pcById = await deps.productCommerce.getManyByProductId(lineProductIds);
+	// A line may sell a VARIANT of its product (`resolveSellableUnit`): the
+	// variants of the products whose line names another sku than their own, in the
+	// same one-batch shape — and no read at all for a cart of product skus.
+	const variantsById = await deps.productCommerce.getManyVariantsByProductId(
+		productsSellingVariants(cart.lines, pcById),
 	);
 	for (const line of cart.lines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
@@ -214,10 +223,16 @@ export async function createOrderFromCart(
 		// An unpublished or deleted product is not for sale, even from a cart that
 		// held it before the lifecycle event landed. Refused before anything is
 		// minted, so the line's hold stays `held` for a remove or the TTL sweep.
-		if (pc === null || !isProductLive(pc) || pc.price === null || pc.title === null) {
+		if (pc === null || !isProductLive(pc)) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+		// The unit this line sells — the product, or one of its live variants — and
+		// ITS price and title. A sku the product no longer sells (an orphaned size)
+		// is not for sale either.
+		const unit = resolveSellableUnit(pc, variantsById.get(pc.productId) ?? [], line.sku);
+		if (unit === null || unit.price === null || unit.title === null) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
-		if (pc.price.currency !== currency) {
+		const price = unit.price;
+		if (price.currency !== currency) {
 			// Review G5: order.currency (and the order_totals row) is stamped from
 			// the cart; a line priced in another currency must never be summed into
 			// that total — reject, never mix monies.
@@ -236,9 +251,9 @@ export async function createOrderFromCart(
 		lines.push({
 			productId: pc.productId,
 			sku: brandSku(line.sku),
-			title: pc.title,
-			unitPrice: pc.price.amount,
-			currency: pc.price.currency,
+			title: unit.title,
+			unitPrice: price.amount,
+			currency: price.currency,
 			quantity: line.qty,
 			fulfillmentKind: pc.productKind,
 			// Physical lines adopt their cart reservation; digital carry none (§6).
@@ -246,7 +261,7 @@ export async function createOrderFromCart(
 		});
 		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
 		totalsLines.push({
-			unitPriceCents: pc.price.amount,
+			unitPriceCents: price.amount,
 			qty: line.qty,
 			taxClassId: pc.taxClass ?? "standard",
 		});

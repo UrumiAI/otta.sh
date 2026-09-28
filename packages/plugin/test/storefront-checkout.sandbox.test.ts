@@ -51,10 +51,15 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
+	updateProductVariantFields,
+	upsertProductVariant,
 } from "@otta-sh/domain";
 import {
+	EmdashCouponStore,
 	EmdashInventoryStore,
 	EmdashOrderStore,
+	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
 	EmdashProductCommerceStore,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
@@ -202,6 +207,59 @@ async function seedThreeLineCart(): Promise<string> {
 	return cartId;
 }
 
+// ── Issue #305: the pricing rules a storefront's choices resolve against ──
+const ZONE_ID = `z-${NS}`;
+const METHOD_ID = `m-${NS}-flat`;
+const SHIPPING_CENTS = 599;
+const TAX_BPS = 850;
+/** 10 % off from $10.00 — the percentage kind a volume tier uses. */
+const COUPON_OK = `${NS.toUpperCase()}10`;
+const COUPON_EXPIRED = `${NS.toUpperCase()}OLD`;
+const COUPON_TOO_BIG = `${NS.toUpperCase()}BIG`;
+/** 4998 × 10 % = 499.8, rounded half-up. */
+const DISCOUNT_CENTS = 500;
+const PRICING_CHOICES = { shippingMethodId: METHOD_ID, couponCode: COUPON_OK };
+
+async function seedPricingRules(): Promise<void> {
+	const shipping = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	await shipping.createZone({ id: ZONE_ID, name: "Test zone", regions: null });
+	await shipping.createMethod({ id: METHOD_ID, zoneId: ZONE_ID, name: "Flat", type: "flat_rate" });
+	await shipping.createRate({
+		methodId: METHOD_ID,
+		currency: currency("USD"),
+		amountCents: cents(SHIPPING_CENTS),
+		minSubtotalCents: null,
+	});
+	const tax = new EmdashTaxRulesStore({ storage, clock: systemClock });
+	await tax.createRate({
+		id: `t-${NS}-std`,
+		taxClassId: "standard",
+		zoneId: ZONE_ID,
+		rateBps: TAX_BPS,
+		appliesToShipping: false,
+	});
+	const coupons = new EmdashCouponStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	const percent = (id: string, code: string, over: Record<string, unknown>) =>
+		coupons.create({
+			id,
+			code,
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: null,
+			minSubtotalCents: cents(1000),
+			startsAt: null,
+			expiresAt: null,
+			maxUses: null,
+			maxUsesPerCustomer: null,
+			...over,
+		});
+	await percent(`cpn-${NS}-ok`, COUPON_OK, {});
+	await percent(`cpn-${NS}-old`, COUPON_EXPIRED, { expiresAt: "2020-01-01T00:00:00.000Z" });
+	await percent(`cpn-${NS}-big`, COUPON_TOO_BIG, { minSubtotalCents: cents(1_000_000) });
+}
+
 async function summary(input: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return resultOf(await sandboxHandle.invokeRoute("storefront/checkout/summary", input));
 }
@@ -229,6 +287,7 @@ beforeAll(async () => {
 	await seedProduct({ id: LINE_PRODUCT_IDS[0]!, sku: LINE_SKUS[0]!, amount: 1999 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[1]!, sku: LINE_SKUS[1]!, amount: 1000 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[2]!, sku: LINE_SKUS[2]!, amount: 333 });
+	await seedPricingRules();
 }, 300_000);
 
 afterAll(async () => {
@@ -432,6 +491,153 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		expect(productQueries).toHaveLength(0);
 		// ...and no order was minted on the way to refusing, which is the half the
 		// old `stubServer.requests` count carried.
+		expect(orderOps).toEqual([]);
+	});
+});
+
+describe("storefront/checkout/summary and cart/read for a cart selling SIZES", () => {
+	const PRODUCT = `prod-${NS}-sized`;
+	const SIZES = [
+		{ key: "m", sku: `SKU-${NS}-sized-m`, amount: 2500 },
+		{ key: "l", sku: `SKU-${NS}-sized-l`, amount: 3000 },
+	];
+
+	beforeAll(async () => {
+		await seedProduct({ id: PRODUCT, sku: `SKU-${NS}-sized`, amount: 2000 });
+		const deps = { productCommerce: commerceStore(), inventory: inventoryStore() };
+		for (const size of SIZES) {
+			// Stock first: a variant's sku ADOPTS the inventory row standing under it.
+			await inventoryStore().seedOnHand(toSku(size.sku), 500);
+			const declared = await upsertProductVariant(
+				deps.productCommerce,
+				{ productId: toProductId(PRODUCT), variantKey: size.key, title: size.key.toUpperCase() },
+				idempotencyKey(`declare-${size.key}`),
+			);
+			const priced = await updateProductVariantFields(
+				deps,
+				{
+					productId: toProductId(PRODUCT),
+					variantKey: size.key,
+					sku: toSku(size.sku),
+					price: { amount: cents(size.amount), currency: currency("USD") },
+				},
+				idempotencyKey(`price-${size.key}`),
+				declared.updatedAt.toISOString(),
+			);
+			expect(priced.ok).toBe(true);
+		}
+	});
+
+	test("each line is priced at ITS unit — two sizes and the product's own sku — and the quote agrees", async () => {
+		const cartId = await createCart();
+		await addLine(cartId, SIZES[0]!.sku, PRODUCT, 2);
+		await addLine(cartId, SIZES[1]!.sku, PRODUCT, 1);
+		await addLine(cartId, `SKU-${NS}-sized`, PRODUCT, 1);
+
+		const view = await summary({ cartId });
+		expect(view["ok"]).toBe(true);
+		const lines = view["lines"] as {
+			sku: string;
+			unitPrice: { amount: number } | null;
+			lineTotal: { amount: number } | null;
+		}[];
+		const bySku = new Map(lines.map((l) => [l.sku, l]));
+		expect(bySku.get(SIZES[0]!.sku)).toMatchObject({
+			unitPrice: { amount: 2500 },
+			lineTotal: { amount: 5000 },
+		});
+		expect(bySku.get(SIZES[1]!.sku)).toMatchObject({
+			unitPrice: { amount: 3000 },
+			lineTotal: { amount: 3000 },
+		});
+		expect(bySku.get(`SKU-${NS}-sized`)).toMatchObject({
+			unitPrice: { amount: 2000 },
+			lineTotal: { amount: 2000 },
+		});
+		expect(view["hasUnpricedLines"]).toBe(false);
+		expect(view["totals"]).toMatchObject({
+			subtotal: { money: { amount: 10000 } },
+			total: { money: { amount: 10000 } },
+		});
+
+		const read = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+		expect(read).toMatchObject({
+			ok: true,
+			pricing: { total: { amount: 10000 }, allLinesPriced: true },
+		});
+	});
+});
+
+describe("storefront/checkout/summary with shipping, tax and a coupon (#305)", () => {
+	test("a method and a coupon are priced: discount, shipping, and tax from the METHOD's zone", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, ...PRICING_CHOICES });
+
+		expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+		const totals = result["totals"] as Record<
+			"subtotal" | "discount" | "shipping" | "tax" | "total",
+			{ money: { amount: number } | null }
+		> & {
+			appliedCouponCode: string | null;
+			totalExcludesUncalculated: boolean;
+		};
+		expect(totals.subtotal.money!.amount).toBe(SUBTOTAL_CENTS);
+		expect(totals.discount.money!.amount).toBe(DISCOUNT_CENTS);
+		expect(totals.shipping.money!.amount).toBe(SHIPPING_CENTS);
+		// Per-line tax on the pro-rata discounted lines, each rounded: within a cent
+		// or two of 8.5 % of the discounted subtotal, and never the synthetic zero.
+		const tax = totals.tax.money!.amount;
+		expect(Math.abs(tax - ((SUBTOTAL_CENTS - DISCOUNT_CENTS) * TAX_BPS) / 10_000)).toBeLessThan(2);
+		expect(totals.total.money!.amount).toBe(SUBTOTAL_CENTS - DISCOUNT_CENTS + SHIPPING_CENTS + tax);
+		expect(totals.appliedCouponCode).toBe(COUPON_OK);
+		expect(totals.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("an explicit zone with no method prices tax only — shipping stays 'Not calculated'", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, shippingZoneId: ZONE_ID });
+
+		const totals = result["totals"] as Record<
+			string,
+			{ money: { amount: number } | null; label: string }
+		>;
+		expect(totals["shipping"]!.money).toBeNull();
+		expect(totals["shipping"]!.label).toBe("Not calculated");
+		expect(totals["tax"]!.money!.amount).toBeGreaterThan(0);
+	});
+
+	test.each([
+		["an unknown code", "NOPE", "COUPON_NOT_FOUND"],
+		["an expired code", COUPON_EXPIRED, "COUPON_NOT_ACTIVE"],
+		["a code under its minimum", COUPON_TOO_BIG, "COUPON_MIN_SUBTOTAL"],
+	] as const)(
+		"%s (%s) is its typed reason — never a total without the discount",
+		async (_label, code, reason) => {
+			const cartId = await seedThreeLineCart();
+			expect(await summary({ cartId, shippingMethodId: METHOD_ID, couponCode: code })).toEqual({
+				ok: false,
+				reason,
+			});
+		},
+	);
+
+	test("an unknown shipping method is the typed SHIPPING_METHOD_NOT_FOUND", async () => {
+		const cartId = await seedThreeLineCart();
+		expect(await summary({ cartId, shippingMethodId: "m-nope" })).toEqual({
+			ok: false,
+			reason: "SHIPPING_METHOD_NOT_FOUND",
+		});
+	});
+
+	test("a malformed choice is INVALID_INPUT before any store work", async () => {
+		const cartId = await seedThreeLineCart();
+		orderOps.length = 0;
+		expect(await summary({ cartId, shippingMethodId: "has space" })).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
 		expect(orderOps).toEqual([]);
 	});
 });
@@ -655,6 +861,28 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		// A paid order has nothing left to pay for: no live provider call is made,
 		// so a Stripe outage can never turn this replay into a failure.
 		expect(stripe.requests).toHaveLength(0);
+	});
+
+	test("places with the SAME shipping, tax and coupon the summary quoted — order, PaymentIntent and review page agree (#305)", async () => {
+		const cartId = await seedThreeLineCart();
+		const quoted = await summary({ cartId, ...PRICING_CHOICES });
+		expect(quoted, JSON.stringify(quoted)).toMatchObject({ ok: true });
+		const quotedTotal = (quoted["totals"] as { total: { money: { amount: number } } }).total.money
+			.amount;
+
+		const placed = await placeCart(cartId, PRICING_CHOICES);
+
+		expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true, state: "pending" });
+		expect((placed["total"] as { amount: number }).amount).toBe(quotedTotal);
+		expect(stripe.requests[0]!.form.get("amount")).toBe(String(quotedTotal));
+		const order = await storedOrder(placed["orderId"] as string);
+		expect(order.totals).toMatchObject({
+			subtotal: SUBTOTAL_CENTS,
+			discount: DISCOUNT_CENTS,
+			shipping: SHIPPING_CENTS,
+			total: quotedTotal,
+			appliedCouponCode: COUPON_OK,
+		});
 	});
 
 	test("returns the ORDER's own total, formatted — the figure the pay button states", async () => {

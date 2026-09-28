@@ -63,12 +63,12 @@
  *    now lives here too.
  *
  * TWO RECORDED DIVERGENCES, neither of them accidental:
- *  - NO GATEWAYS ARE COMPOSED YET (INC-C1/C3 move the payment adapters). The
- *    refund POST therefore reaches the route's own "no gateway wired for this
- *    order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`. The whole
- *    path in front of it — input bounds, the REQUIRED idempotency key, the order
- *    lookup — is ported faithfully, so when a gateway map arrives the one line
- *    that changes is where it comes from.
+ *  - the GATEWAYS come from the composition root (`makeAdminClients`, which
+ *    resolves them with the storefront's own `resolvePaymentGateways`) rather
+ *    than from service env. An order whose method has no configured gateway
+ *    answers `409 REFUND_GATEWAY_UNAVAILABLE`; the whole path in front of it —
+ *    input bounds, the REQUIRED idempotency key, the order lookup — is ported
+ *    faithfully. Issue #303: this map was once hard-coded empty.
  *  - a refund ROW here carries no `status`. The service's `serializeRefund` emits
  *    one; the plugin's `RefundWire` has never declared it and no console reads
  *    it, so this tier matches the PLUGIN's wire type rather than adding a field
@@ -167,26 +167,35 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
+/** The stores' own options plus the payment gateways refunds go through. */
+export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+}
+
 export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	readonly #stores: InProcessCommerceStores;
 
 	/**
-	 * The payment gateways keyed by method (ADR-0008), exactly as
-	 * `AdminRoutesDeps.gateways` carries them — EMPTY until the payment adapters
-	 * move in-process (INC-C1/C3). An empty map is not a stub: it is the honest
-	 * "no gateway is wired for this order's method", and the refund POST answers
-	 * it with the route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than
-	 * pretending money could move.
+	 * The payment gateways keyed by method (ADR-0008), as `makeAdminClients`
+	 * resolves them — the same map the storefront's checkout charges through
+	 * (issue #303). A method absent from it is the honest "no gateway is wired for
+	 * this order's method", and the refund POST answers it with `409
+	 * REFUND_GATEWAY_UNAVAILABLE` rather than pretending money could move.
 	 */
-	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
+	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console route already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
+	 *
+	 * The gateways are PASSED IN, like `InProcessCommerceClient`'s, because
+	 * resolving them reads kv and this constructor is synchronous. Omitted ⇒ none,
+	 * which is fail-closed: every refund answers 409.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
+	constructor(ctx: PluginContext, options: InProcessAdminOrdersClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#gateways = options.gateways ?? {};
 	}
 
 	/**
@@ -449,8 +458,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const remaining = Math.max(0, ceiling - refundedTotal);
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
-		// Never a button that silently no-ops — and with no gateway composed on this
-		// tier yet, false is the truth rather than a placeholder.
+		// Never a button that silently no-ops — and with no gateway composed for the
+		// order's method, false is the truth rather than a placeholder.
 		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
 		return {
 			refunds: refunds.map(toRefundWire),
@@ -469,12 +478,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
-	 * (mirrors restock). The order lookup comes next, then the gateway: with no
-	 * gateway map composed on this tier yet (INC-C1/C3), every well-formed call
-	 * against a real order lands on the route's own
-	 * `409 REFUND_GATEWAY_UNAVAILABLE`. The use-case call below is the path that
-	 * lights up the moment a gateway is wired — it is written now so the contract
-	 * around it is the same one the HTTP tier answers.
+	 * (mirrors restock). The order lookup comes next, then the gateway for the
+	 * order's payment method: none configured ⇒ `409 REFUND_GATEWAY_UNAVAILABLE`,
+	 * fail-closed. A refundable gateway (Stripe with its secret key) moves money
+	 * through the provider; a non-refundable one (x402) records a manual,
+	 * off-platform refund — both through the domain's `refundOrder` use-case.
 	 */
 	async refundOrder(
 		orderId: string,

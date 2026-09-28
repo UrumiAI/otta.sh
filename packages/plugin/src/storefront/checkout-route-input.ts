@@ -20,6 +20,12 @@
 import type { ShippingAddressWire } from "../product-commerce/commerce-client.js";
 import { sanitizeLocale } from "./route-input.js";
 
+/** The id-token bound the commerce client re-applies (`requireIdToken`):
+ *  printable ASCII, no whitespace, at most 200 characters. */
+const ID_TOKEN = /^[\x21-\x7e]{1,200}$/;
+/** `requireBoundedText("couponCode", …, 1, 200)` in the commerce client. */
+const COUPON_CODE_MAX = 200;
+
 /** `checkoutBody.buyerRef` — `z.string().min(1).max(320)`. */
 const BUYER_REF_MAX = 320;
 
@@ -36,12 +42,24 @@ const ADDRESS_FIELDS = {
 	phone: { max: 64, required: false },
 } as const satisfies Record<keyof ShippingAddressWire, { max: number; required: boolean }>;
 
-export interface CheckoutSummaryParsedInput {
+/**
+ * The storefront's pricing choices (issue #305). All optional: a storefront that
+ * offers no shipping picker or coupon field sends none, and the quote computes
+ * exactly what it did before. When a method is sent and a zone is not, the domain
+ * takes the tax zone from the method (`computeQuote`).
+ */
+export interface CheckoutPricingChoices {
+	shippingZoneId?: string;
+	shippingMethodId?: string;
+	couponCode?: string;
+}
+
+export interface CheckoutSummaryParsedInput extends CheckoutPricingChoices {
 	cartId: string;
 	locale: string;
 }
 
-export interface CheckoutPlaceParsedInput {
+export interface CheckoutPlaceParsedInput extends CheckoutPricingChoices {
 	cartId: string;
 	buyerRef: string;
 	idempotencyKey: string;
@@ -63,13 +81,46 @@ function nonEmptyString(value: unknown, max = 200): string | null {
 	return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
 }
 
+/** Absent, null or blank ⇒ not chosen (`undefined`); present-but-malformed ⇒
+ *  `null`, a reject — a choice the buyer made is never silently dropped, or the
+ *  order would be charged without the coupon or the delivery they picked. */
+function optionalChoice(value: unknown, valid: (v: string) => boolean): string | undefined | null {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	return valid(trimmed) ? trimmed : null;
+}
+
+function parsePricingChoices(input: {
+	shippingZoneId?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
+}): CheckoutPricingChoices | null {
+	const isIdToken = (v: string) => ID_TOKEN.test(v);
+	const shippingZoneId = optionalChoice(input.shippingZoneId, isIdToken);
+	const shippingMethodId = optionalChoice(input.shippingMethodId, isIdToken);
+	const couponCode = optionalChoice(input.couponCode, (v) => v.length <= COUPON_CODE_MAX);
+	if (shippingZoneId === null || shippingMethodId === null || couponCode === null) return null;
+	return {
+		...(shippingZoneId !== undefined ? { shippingZoneId } : {}),
+		...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
+		...(couponCode !== undefined ? { couponCode } : {}),
+	};
+}
+
 export function parseCheckoutSummaryInput(input: {
 	cartId?: unknown;
 	locale?: unknown;
+	shippingZoneId?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
 }): CheckoutSummaryParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	if (cartId === null) return null;
-	return { cartId, locale: sanitizeLocale(input.locale) };
+	const choices = parsePricingChoices(input);
+	if (choices === null) return null;
+	return { cartId, locale: sanitizeLocale(input.locale), ...choices };
 }
 
 export function parseOrderRouteInput(input: {
@@ -87,6 +138,9 @@ export function parseCheckoutPlaceInput(input: {
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
 	locale?: unknown;
+	shippingZoneId?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -98,12 +152,15 @@ export function parseCheckoutPlaceInput(input: {
 	// NEVER invents one (a fresh key per attempt mints a second order).
 	const idempotencyKey = nonEmptyString(input.idempotencyKey);
 	if (cartId === null || buyerRef === null || idempotencyKey === null) return null;
+	const choices = parsePricingChoices(input);
+	if (choices === null) return null;
 
 	const parsed: CheckoutPlaceParsedInput = {
 		cartId,
 		buyerRef,
 		idempotencyKey,
 		locale: sanitizeLocale(input.locale),
+		...choices,
 	};
 
 	if (input.shippingAddress !== undefined) {

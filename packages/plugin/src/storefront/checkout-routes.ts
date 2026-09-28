@@ -31,6 +31,7 @@ import type {
 	CheckoutFailureReason,
 	ClientActionWire,
 	QuoteFailureReason,
+	SellableVariantPriceWire,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -40,6 +41,7 @@ import {
 	type CartPricingWire,
 } from "./cart-pricing.js";
 import {
+	type CheckoutPricingChoices,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -68,12 +70,20 @@ export const STOREFRONT_ORDER_ROUTE = "storefront/order";
  *  action is a second flow, out of scope (plan §7.2). */
 const PAYMENT_METHOD = "stripe" as const;
 
-export interface CheckoutSummaryRouteInput {
+/** The storefront's pricing choices (issue #305), forwarded to the quote and to
+ *  the order verbatim. All optional; blank means not chosen. */
+export interface CheckoutPricingRouteInput {
+	shippingZoneId?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
+}
+
+export interface CheckoutSummaryRouteInput extends CheckoutPricingRouteInput {
 	cartId?: unknown;
 	locale?: unknown;
 }
 
-export interface CheckoutPlaceRouteInput {
+export interface CheckoutPlaceRouteInput extends CheckoutPricingRouteInput {
 	cartId?: unknown;
 	buyerRef?: unknown;
 	/** From the rendered form, forwarded verbatim — the route never invents one
@@ -148,6 +158,15 @@ export type OrderRouteResult =
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
 	| { ok: false; error: "RENDER_FAILED" };
 
+/** Only the choices that were made — an absent one is left off, never sent blank. */
+function pricingChoicesOf(input: CheckoutPricingChoices): CheckoutPricingChoices {
+	return {
+		...(input.shippingZoneId !== undefined ? { shippingZoneId: input.shippingZoneId } : {}),
+		...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
+		...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
+	};
+}
+
 /**
  * `GET /carts/:id` + `POST /catalog/commerce/batch` + `POST /checkout/quote` →
  * one review view model. Three calls, in that order, one batch regardless of
@@ -177,11 +196,27 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			let pricing: CartPricingWire;
 			try {
 				let commerceById = new Map<string, CatalogProductCommerce | null>();
+				let variantPrices: SellableVariantPriceWire[] = [];
 				if (productIds.length > 0) {
 					const loader = await createCommerceLoader(ctx);
 					commerceById = await loader.loadMany(productIds);
+					// A line selling a size is priced at the size's price: one more
+					// batch, and only for the products a line sells a size of.
+					const sizes = new Set<string>();
+					for (const line of cart.lines) {
+						if (line.productId === null) continue;
+						const product = commerceById.get(line.productId) ?? null;
+						if (product !== null && product.sku !== line.sku) sizes.add(line.productId);
+					}
+					if (sizes.size > 0) variantPrices = await client.getSellableVariantPrices([...sizes]);
 				}
-				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, input.locale);
+				pricing = buildCartPricing(
+					cart.lines,
+					commerceById,
+					cart.currency,
+					input.locale,
+					variantPrices,
+				);
 			} catch (err) {
 				console.error(`[otta] ${STOREFRONT_CHECKOUT_SUMMARY_ROUTE} pricing join failed:`, err);
 				pricing = DEGRADED_CART_PRICING;
@@ -191,7 +226,15 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			// can be ordered at all: CART_EMPTY / PRODUCT_NOT_PRICED /
 			// CURRENCY_MISMATCH arrive here as TYPED reasons the theme turns into a
 			// redirect or honest copy, never a half-rendered payable page.
-			const quote = await client.quoteCheckout({ cartId: input.cartId });
+			// The buyer's choices go to the quote exactly as they will go to the
+			// order (#305), so the review page states what `place` will charge. A
+			// coupon that does not apply (COUPON_NOT_FOUND / _NOT_ACTIVE /
+			// _MIN_SUBTOTAL / …) or a method that does not exist comes back as its
+			// typed reason for the theme to show — never a total without it.
+			const quote = await client.quoteCheckout({
+				cartId: input.cartId,
+				...pricingChoicesOf(input),
+			});
 			if (!quote.ok) return { ok: false as const, reason: quote.reason };
 
 			return {
@@ -201,12 +244,13 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				lines: buildCheckoutLines(cart.lines, pricing),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
-					// No coupon or shipping-method selection is offered this slice
-					// (plan §7.2), so nothing was passed to the quote and neither
-					// component was computed — say so, rather than rendering the
-					// pipeline's synthetic zeros as "Free" / "$0.00".
-					shippingSelected: false,
-					taxZoneSelected: false,
+					// Computed only when chosen: with no method the pipeline's
+					// shipping is a synthetic zero, and with neither a zone nor a
+					// method (whose zone tax follows) so is the tax — say so, rather
+					// than rendering those zeros as "Free" / "$0.00".
+					shippingSelected: input.shippingMethodId !== undefined,
+					taxZoneSelected:
+						input.shippingZoneId !== undefined || input.shippingMethodId !== undefined,
 				}),
 				idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 				hasUnpricedLines: !pricing.allLinesPriced,
@@ -230,6 +274,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 					cartId: input.cartId,
 					paymentMethod: PAYMENT_METHOD,
 					buyerRef: input.buyerRef,
+					...pricingChoicesOf(input),
 					...(input.shippingAddress !== undefined
 						? { shippingAddress: input.shippingAddress }
 						: {}),

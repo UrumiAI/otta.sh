@@ -40,8 +40,8 @@
  * note reads `Already added` (below), which is the dedupe the key performs.
  *
  * REFUNDS CANNOT COMPLETE ON THIS TIER, and that is recorded, not worked around.
- * `InProcessAdminOrdersClient` composes NO payment gateways yet (INC-C1/C3 move
- * the payment adapters), so every well-formed refund reaches its "no gateway is
+ * This sandbox configures no Stripe secret, so `makeAdminClients` resolves no
+ * payment gateway for it, and every well-formed refund reaches its "no gateway is
  * wired for this order's method" arm and answers `409
  * REFUND_GATEWAY_UNAVAILABLE`. The refund cases below therefore cover everything
  * IN FRONT of that arm — which is where DA-3a and DA-3b live and where the money
@@ -660,8 +660,10 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// THE ARM BEHIND THE GATE. Everything the console checks has passed — the
 		// amount parses as integer minor units, the currency is named, the watermark
 		// matches the live ledger — so the refund genuinely reaches
-		// `InProcessAdminOrdersClient.refundOrder`, which composes no payment
-		// gateways yet (INC-C1/C3) and answers `409 REFUND_GATEWAY_UNAVAILABLE`.
+		// `InProcessAdminOrdersClient.refundOrder`, which has no gateway for the
+		// order's method on this unconfigured sandbox and answers `409
+		// REFUND_GATEWAY_UNAVAILABLE`. The gateway path itself is pinned in
+		// `admin-refund-gateways.test.ts`.
 		// That lands on `refundFailureNotice`'s default arm.
 		//
 		// This is the case the deleted success/duplicate/fully-refunded tests become

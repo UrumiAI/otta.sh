@@ -408,6 +408,7 @@ describe("createOrderFromCart", () => {
 			countByTaxClass: (taxClassId) => base.countByTaxClass(taxClassId),
 			upsertVariant: (input, key) => base.upsertVariant(input, key),
 			listVariants: (id) => base.listVariants(id),
+			getManyVariantsByProductId: (ids) => base.getManyVariantsByProductId(ids),
 			updateVariantFields: (input, key, expected) => base.updateVariantFields(input, key, expected),
 			deactivateVariant: (id, variantKey, key, t) => base.deactivateVariant(id, variantKey, key, t),
 		};
