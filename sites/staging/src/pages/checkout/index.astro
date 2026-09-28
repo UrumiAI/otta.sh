@@ -150,12 +150,13 @@ const sumRows = [
 					   not "never charged": a declined attempt fails the order while its
 					   PaymentIntent stays confirmable, and a payment can land just after
 					   the TTL sweep. The public order carries no reconciliation flag, so
-					   this copy makes no claim about money either way. */
+					   this copy makes no claim about money either way — and promises no
+					   particular outcome: reconciliation may refund OR fulfil the order. */
 					<Notice lead="This checkout has ended.">
-						Its order can no longer be paid. If a payment did go through, the store will refund
-						it — contact them with your order number, shown on
-						<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a>. Start a new
-						cart to order again.
+						Its order can no longer be paid. If a payment did go through, contact the store with
+						your order number — shown on
+						<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a> — and they
+						will refund it or complete your order. Start a new cart to order again.
 					</Notice>
 				) : (
 					<Notice lead="Your order has already been created.">
@@ -316,6 +317,13 @@ const sumRows = [
 										Continue to payment
 									</button>
 								</div>
+							) : locked !== null ? (
+								/* LOCKED: an order exists and the cart is checked out, so the
+								   unlocked copy's "nothing has been charged" and "your cart is
+								   unchanged" would both be wrong here. */
+								<Notice>
+									Card payment isn't set up on this store, so this order can't be paid right now.
+								</Notice>
 							) : (
 								/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
 								   rather than restated here (§10). */

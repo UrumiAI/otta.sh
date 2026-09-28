@@ -28,6 +28,13 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src")
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
 
 const REVIEW = read("pages/checkout/index.astro");
+
+/** What the buyer reads of a template slice: JS comments inside expressions
+ *  removed (`templateOf` strips markup comments only) and whitespace folded, so
+ *  copy wrapped across lines still matches. */
+function shown(source: string): string {
+	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+}
 const PAY = read("pages/checkout/pay.astro");
 const ORDER = read("pages/orders/[orderId].astro");
 const POLL_RIBBON = read("components/PollRibbon.astro");
@@ -179,8 +186,39 @@ describe("/checkout — the coupon", () => {
 			"";
 		expect(notice, "no ended notice").not.toBe("");
 		expect(notice).not.toMatch(/charged|no charge/i);
-		expect(notice).toMatch(/refund/i);
+		// A charge on a failed/expired order goes to manual reconciliation, where
+		// the merchant may refund it OR complete the order — so the page promises
+		// neither; it tells the buyer who to contact and with what.
+		const text = notice.replace(/\s+/g, " ");
+		expect(text).not.toMatch(/the store will refund/i);
+		expect(text).toMatch(/contact the store with your order number/i);
+		expect(text).toMatch(/refund it or complete your order/i);
 		expect(notice).toContain("href={`/orders/${encodeURIComponent(locked.id)}`}");
+	});
+
+	/**
+	 * A LOCKED review with no publishable key: an order exists and the cart is
+	 * checked out, so the unlocked copy ("Nothing has been charged and your cart is
+	 * unchanged") would be wrong on both counts there.
+	 */
+	test("locked + payment not configured renders the LOCKED variant, with no money or cart claim", () => {
+		const template = templateOf(REVIEW);
+		const payment = template.indexOf("paymentConfigured ?");
+		const fork = template.indexOf(") : locked !== null ? (", payment);
+		expect(payment, "no paymentConfigured branch").toBeGreaterThan(-1);
+		expect(fork, "no locked branch under paymentConfigured").toBeGreaterThan(payment);
+		const lockedEnd = template.indexOf("</Notice>", fork) + "</Notice>".length;
+		const unlockedEnd = template.indexOf("</Notice>", lockedEnd) + "</Notice>".length;
+		const lockedVariant = shown(template.slice(fork, lockedEnd));
+		const unlockedVariant = shown(template.slice(lockedEnd, unlockedEnd));
+		expect(lockedVariant).toContain(
+			"Card payment isn't set up on this store, so this order can't be paid right now.",
+		);
+		expect(lockedVariant).not.toMatch(/charged|cart is unchanged/i);
+		// The unlocked variant is unchanged.
+		expect(unlockedVariant).toContain(
+			"This order can't be placed. Nothing has been charged and your cart is unchanged.",
+		);
 	});
 
 	test("the coupon in the URL never leaks through a Referer", () => {
