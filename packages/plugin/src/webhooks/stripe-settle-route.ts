@@ -113,12 +113,20 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /**
- * The `SettleResult` → status/reason table, mirrored EXACTLY from the
- * standalone `@otta-sh/service`'s webhook route before it was folded into
- * the plugin:
+ * The `SettleResult` → status/reason table. It began as a mirror of the
+ * standalone `@otta-sh/service`'s webhook route; the one deliberate departure is
+ * UNKNOWN_EVENT (#300):
  *
  *  - settled (or an idempotent no-op) ⇒ 200, so Stripe stops retrying;
- *  - INVALID_SIGNATURE / MALFORMED / UNKNOWN_EVENT ⇒ 400;
+ *  - INVALID_SIGNATURE / MALFORMED ⇒ 400;
+ *  - UNKNOWN_EVENT ⇒ 200 — acknowledged, nothing done, no order touched. The
+ *    gateway only reports it AFTER the signature verified (the type check sits
+ *    past the HMAC in `StripePaymentGateway.verifyConfirmation`), so this is a
+ *    genuine Stripe delivery of a type Otta does not act on (`charge.refunded`,
+ *    `charge.dispute.created`, … on an endpoint subscribed to more than the two
+ *    settle events). A 4xx would make Stripe retry it and, after enough
+ *    failures, disable the endpoint — `payment_intent.succeeded` included — and
+ *    a 200 to a verified body tells a forger nothing;
  *  - ORDER_NOT_FOUND ⇒ 404;
  *  - AMOUNT_MISMATCH ⇒ 200, because it is a recorded anomaly that retrying will
  *    never fix.
@@ -128,8 +136,9 @@ export function settleResultToResponse(res: SettleResult): StripeWebhookSettleRe
 	switch (res.reason) {
 		case "INVALID_SIGNATURE":
 		case "MALFORMED":
-		case "UNKNOWN_EVENT":
 			return { ok: false, status: 400, reason: res.reason };
+		case "UNKNOWN_EVENT":
+			return { ok: false, status: 200, reason: res.reason };
 		case "ORDER_NOT_FOUND":
 			return { ok: false, status: 404, reason: res.reason };
 		case "AMOUNT_MISMATCH":
