@@ -77,11 +77,12 @@ export interface CartStore {
 	 * call did not record its order id**.
 	 *
 	 * **The converse does NOT hold**: `orderId === null` does not mean no order
-	 * exists for this cart. The stamp lives only in `finalizeOrder`, and the I1
-	 * idempotency short-circuit returns before it. A crash between
-	 * `orderStore.createFromCart` and this flip, or a `RESERVATION_LOST` abort,
-	 * leaves a real `pending` order behind a permanently `active`, NULL cart —
-	 * and every same-key replay thereafter returns at I1 without ever flipping.
+	 * exists for this cart. The stamp is written only after every hold is
+	 * adopted. A crash between `orderStore.createFromCart` and this flip leaves a
+	 * real `pending` order behind an `active`, NULL cart until the same key is
+	 * replayed (the replay of a `pending` order re-runs adoption and this flip);
+	 * a `RESERVATION_LOST` abort leaves it that way permanently — no replay of
+	 * that key ever flips it.
 	 * The column answers "which order did this cart *successfully* hand off to",
 	 * never "does an order exist for this cart". `orders.cart_id` remains the
 	 * only complete answer to the latter and is not maintained here.

@@ -229,7 +229,6 @@ export function createStripeWebhookSettleHandler(
 			entitlementStore: stores.entitlementStore,
 			paymentEventStore: stores.paymentEventStore,
 			inventoryStore: stores.inventory,
-			couponStore: stores.couponStore,
 			clock: stores.clock,
 		};
 		return settleResultToResponse(await settleOnce(deps, gateway, body, stripeSignature, settle));

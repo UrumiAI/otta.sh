@@ -353,12 +353,41 @@ export {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
 	type CheckoutPlaceRouteInput,
+	type CheckoutLockedOrderView,
 	type CheckoutPlaceRouteResult,
+	type CheckoutSelectionErrors,
+	type CheckoutSelectionView,
+	type CheckoutShippingView,
 	type CheckoutSummaryRouteInput,
 	type CheckoutSummaryRouteResult,
+	type CheckoutSummaryView,
 	type OrderRouteInput,
 	type OrderRouteResult,
 } from "./storefront/checkout-routes.js";
+// ── Phase 5: storefront customer account (ADR-0004, issue #306) ─────────────
+export {
+	ACCOUNT_ADDRESSES_ROUTE,
+	ACCOUNT_LOGIN_PATH,
+	ACCOUNT_LOGIN_REQUEST_ROUTE,
+	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
+	ACCOUNT_ORDER_ROUTE,
+	ACCOUNT_ORDERS_PATH,
+	ACCOUNT_ORDERS_ROUTE,
+	SESSION_COOKIE_NAME,
+	type AccountAddressesResult,
+	type AccountLoginRequestResult,
+	type AccountLoginVerifyResult,
+	type AccountLogoutResult,
+	type AccountOrderResult,
+	type AccountOrdersResult,
+	type SessionCookieDescriptor,
+} from "./storefront/account-routes.js";
+export {
+	ACCOUNT_VERIFY_PATH,
+	isValidLoginLinkUrl,
+	LOGIN_LINK_URL_KEY,
+} from "./storefront/login-link.js";
 export {
 	buildCheckoutLines,
 	buildCheckoutTotals,
@@ -371,9 +400,19 @@ export {
 	type CheckoutAmountView,
 	type CheckoutLineView,
 	type CheckoutTotalsView,
+	type CouponSelectionReason,
+	type DestinationSelectionReason,
+	type LockedCheckoutPhase,
 	type OrderLineView,
 	type PublicOrderView,
+	type ShippingOptionView,
+	type ShippingSelectionReason,
+	type UncalculatedReason,
 } from "./storefront/checkout-view-model.js";
+// ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
+// site that builds the country picker and pre-checks a typed region code the
+// way the routes do. Membership is still the domain's call.
+export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
 export {
 	type CheckoutFailureReason,
 	type CheckoutResult,
@@ -382,6 +421,7 @@ export {
 	type PublicOrderResult,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
+	type QuoteDestinationWire,
 	type QuoteFailureReason,
 	type QuoteRequestWire,
 	type QuoteResult,

@@ -30,11 +30,13 @@ import {
 // ── Phase 5: storefront customer account routes (plan §9) ─────────────────
 import {
 	ACCOUNT_ADDRESSES_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
 	ACCOUNT_LOGIN_REQUEST_ROUTE,
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
 	createAccountAddressesHandler,
+	createAccountLogoutHandler,
 	createAccountLoginRequestHandler,
 	createAccountLoginVerifyHandler,
 	createAccountOrderHandler,
@@ -196,11 +198,11 @@ const plugin: SandboxedPlugin = {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,
 		},
-		// Phase 5 (§9): PUBLIC storefront account routes — thin HTTP-only proxies
-		// over ctx.http to the service's /auth + /me surface. No new capability
-		// beyond network:request/allowedHosts; the plugin holds no session state
-		// (the bearer token is threaded in as route input from the theme's
-		// first-party cookie layer — see account-routes.ts's platform note).
+		// Phase 5 (§9): PUBLIC storefront account routes over the in-process
+		// commerce client. The login request emails its link over ctx.http (the
+		// email host in allowedHosts) — no new capability; the plugin holds no
+		// session state (the bearer token is threaded in as route input from the
+		// theme's first-party cookie layer — see account-routes.ts's platform note).
 		[ACCOUNT_LOGIN_REQUEST_ROUTE]: {
 			handler: createAccountLoginRequestHandler() as never,
 			public: true,
@@ -212,6 +214,7 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ORDERS_ROUTE]: { handler: createAccountOrdersHandler() as never, public: true },
 		[ACCOUNT_ORDER_ROUTE]: { handler: createAccountOrderHandler() as never, public: true },
 		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
+		[ACCOUNT_LOGOUT_ROUTE]: { handler: createAccountLogoutHandler() as never, public: true },
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
 		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
 		// fans out on `type` + `page`/`action_id` to the Reports page and the

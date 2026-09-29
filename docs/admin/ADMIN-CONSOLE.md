@@ -3083,6 +3083,8 @@ accordion   block_id settings:payments
                         checkout stays unavailable until it is set."
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
                      text_input "Order email from-address"   placeholder "no-reply@otta.local"
+                     text_input "Sign-in link page (absolute URL of the storefront's /account/verify page)"
+                                                     placeholder "https://shop.example/account/verify"
                      text_input "x402 destination wallet"
                      text_input "x402 accepted networks (comma-separated CAIP-2)"
                      submit "Save payment settings"          → save-payment-settings

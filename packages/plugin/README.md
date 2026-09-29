@@ -56,13 +56,12 @@ as the retryable error it is — a caller has to be able to see that.
 
 ### Not yet wired
 
-Two gaps in the in-process transport are still open, and stay listed here until they
-close:
-
-- **`requestLoginLink` dispatches no mail.** It records the challenge — the login
-  itself works if you hold the token — and sends nothing, because the outbound mail
-  path moves in-process with the rest of the outbound topology. The reply is the same
-  generic success either way, so the surface is still no account oracle.
+One gap in the in-process transport is still open, and stays listed here until it closes.
+(The other, "`requestLoginLink` dispatches no mail", closed with issue #306: the magic link
+is emailed through `CtxHttpEmailSender` over `ctx.http`, pointing at the sign-in page the
+operator saves in Settings (`settings:loginLinkUrl`, required; never the request's origin).
+With no email API URL in the build, or no sign-in link URL, it still answers the same
+generic success, issues nothing, and logs once server-side.)
 
 - **The checkout hold ignores the hold TTL setting.** The Settings page's "Cart hold
   TTL (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no

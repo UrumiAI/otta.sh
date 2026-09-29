@@ -26,8 +26,8 @@ staging-only.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
 > checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
-> discounts, entitlements, reporting, and settings — except that the login-link email is not
-> dispatched in-process yet (§3, Email). The reference **storefront** covers
+> discounts, entitlements, reporting, and settings (the magic-link email needs the email API
+> and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012). Three page surfaces
 > are not built yet: the x402 payment gate and the download delivery page (both still under
@@ -243,9 +243,9 @@ order of appearance in a deployment's life:
   With both secrets set, `createIntent` performs a real `POST /v1/payment_intents` over
   `ctx.http.fetch` (LIVE client secret, `metadata[order_id]` as the settlement key the
   webhook is matched on, the checkout `Idempotency-Key` travelling as Stripe's native one).
-  Refunds from the admin console are not wired to the gateway yet: the admin orders client
-  still composes an empty gateway map, so a refund there is refused with
-  `REFUND_GATEWAY_UNAVAILABLE` rather than sent to Stripe. A live-intent failure (Stripe
+  Refunds from the admin console go to the same gateway (`POST /v1/refunds` over
+  `ctx.http.fetch`, carrying the refund's idempotency key); with no gateway configured a
+  refund is refused `REFUND_GATEWAY_UNAVAILABLE`. A live-intent failure (Stripe
   down or rejecting) refuses the checkout with `PAYMENT_INTENT_FAILED` and the `pending`
   order is kept deliberately — retrying with the same `Idempotency-Key` re-issues the *same*
   PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing stock
@@ -276,9 +276,12 @@ order of appearance in a deployment's life:
   Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
   API key is a write-only Settings credential, and the from-address ("Order email
   from-address", `settings:emailFrom`, default `no-reply@otta.local`) is a readable Settings
-  field. **Magic-link login mail is not sent yet:** `requestLoginLink` records the challenge
-  and dispatches nothing in-process, whatever is configured — see "Not yet wired" in
-  [`packages/plugin/README.md`](./packages/plugin/README.md).
+  field. **Magic-link login mail** goes out through the same sender, and only once Settings
+  → "Sign-in link page" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
+  `/account/verify` page — the emailed link points there and never at the request's origin.
+  With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
+  success, issues nothing, and logs once server-side. The reference site has no account pages
+  yet, so a deployment of it has nowhere to point this.
 
 ## 4. Egress and `allowedHosts`
 

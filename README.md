@@ -157,9 +157,10 @@ breaking changes before 1.0.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
-shipping, discounts, entitlements, reporting, and settings. One gap in that: the login-link
-email is not dispatched in-process yet — `requestLoginLink` records the challenge but sends
-no mail ([`packages/plugin/README.md`](./packages/plugin/README.md#not-yet-wired)).
+shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
+an email API is configured and the Settings "Sign-in link page" (`settings:loginLinkUrl`)
+points at the storefront's verify page; the reference site does not have account pages yet
+(see below).
 
 The reference **storefront** (`sites/staging`) covers catalog, cart and **card
 checkout**: `/checkout`, the Stripe pay page and the order confirmation page are built

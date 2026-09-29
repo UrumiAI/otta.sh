@@ -1,6 +1,5 @@
 import { idempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { CouponStore } from "../ports/coupon-store.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
@@ -15,9 +14,6 @@ export interface SettleDeps {
 	entitlementStore: EntitlementStore;
 	paymentEventStore: PaymentEventStore;
 	inventoryStore: InventoryStore;
-	/** Phase 6 (review I2): release the failed order's coupon, symmetric with the
-	 *  inventory-hold release on the payment-failure path. */
-	couponStore: CouponStore;
 	clock: Clock;
 }
 
@@ -59,14 +55,19 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
  *    the side-effects idempotently and no-ops.
- * 5. **Losing the `pending → paid` flip mid-flight** (an expiry/failure raced the
+ * 5. **Losing the `pending → paid` flip mid-flight** (an expiry/cancellation raced the
  *    settle between load and flip) is exactly as LOUD as finding the order
  *    already terminal: `PAID_FLIP_LOST` anomaly + manual-reconciliation flag —
  *    money was captured while stock was released; never a silent no-op.
  *
- * A verified `failed` event (`payment_intent.payment_failed`) instead drives
- * `pending → failed` + `release` (§5), re-driving the release on a retry after a
- * crash between the flip and the release.
+ * A verified `failed` event (`payment_intent.payment_failed`) is INFORMATIONAL
+ * (ADR-0022): it is recorded by step 2 — deduped, bound to its order, auditable —
+ * and changes nothing else. The order stays `pending` with its stock held and its
+ * coupon consumed, because the PaymentIntent is still payable after a decline and
+ * the pay page retries on it; failing the order here is what turned a decline
+ * followed by a successful retry into `PAID_FLIP_LOST`. If the buyer pays, the
+ * `succeeded` event settles it normally; if nobody does, the order-expiry sweep
+ * (`expireOrders`) releases the stock and the coupon when the hold lapses.
  */
 export async function settleOrder(
 	deps: SettleDeps,
@@ -117,21 +118,13 @@ export async function settleOrder(
 	const order = await deps.orderStore.getById(conf.orderId);
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 
-	// A verified FAILURE event: guarded pending → failed, then release. The
-	// release runs whenever the order IS failed (fresh flip or a retry resuming a
-	// crash between flip and release) — `release` is state-guarded/idempotent, so
-	// stock returns exactly once.
+	// A verified FAILURE event (a declined attempt) is recorded above and moves
+	// nothing: no state flip, no stock or coupon release, whatever state the order
+	// is in (ADR-0022). A pending order stays payable on the same PaymentIntent; a
+	// late decline on a paid or expired order is equally inert. Checked BEFORE the
+	// terminal short-circuits below, so a decline can never raise an anomaly.
 	if (conf.outcome === "failed") {
-		const won = await deps.orderStore.markFailed(order.id);
-		const fresh = (await deps.orderStore.getById(order.id)) ?? order;
-		if (fresh.state === "failed") {
-			await releaseAll(deps, fresh);
-			// Review I2: free the coupon on payment failure, symmetric with the
-			// inventory release. Order-scoped + idempotent (re-driven failed events
-			// release exactly once).
-			await deps.couponStore.releaseByOrder(fresh.id);
-		}
-		return { ok: true, order: fresh, noop: !won };
+		return { ok: true, order, noop: true };
 	}
 
 	// Already paid (webhook-before-redirect, duplicate delivery, or a retry after
@@ -196,7 +189,7 @@ export async function settleOrder(
 			return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
 		}
 		// F1: a verified, amount-checked success LOST the flip to a mid-flight
-		// expiry/failure — the customer was charged while the stock was released.
+		// expiry/cancellation — the customer was charged while the stock was released.
 		// Exactly as loud as the already-terminal-at-load case above.
 		const lostTo = fresh?.state ?? "missing";
 		if (fresh === null || fresh.reconciliationFlag === null) {
@@ -284,16 +277,6 @@ async function applyPaidSideEffects(
 				// Deterministic grant-once key per (order, sku): replay grants nothing.
 				grantIdempotencyKey: idempotencyKey(`ent:${order.id}:${line.sku}`),
 			});
-		}
-	}
-}
-
-/** Release every reservation THIS order adopted (order-scoped, review G2;
- *  idempotent per reservation — a foreign/committed hold is a silent skip). */
-async function releaseAll(deps: SettleDeps, order: Order): Promise<void> {
-	for (const line of order.lines) {
-		if (line.reservationId !== null) {
-			await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
 		}
 	}
 }

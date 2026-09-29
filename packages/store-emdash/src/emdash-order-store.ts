@@ -431,17 +431,6 @@ export class EmdashOrderStore implements OrderStore {
 		return won;
 	}
 
-	async markFailed(orderId: OrderId): Promise<boolean> {
-		// pending → failed has no template, so no outbox entry is enqueued.
-		const { won } = await this.#flip({
-			orderId,
-			fromState: "pending",
-			toState: "failed",
-			enqueueEmail: false,
-		});
-		return won;
-	}
-
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
 		const { won } = await this.#flip({
 			orderId,

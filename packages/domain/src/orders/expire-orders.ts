@@ -27,7 +27,7 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 	let expired = 0;
 	for (const id of ids) {
 		const won = await deps.orderStore.expire(id, now);
-		if (!won) continue; // someone else won the transition (paid/failed/expired)
+		if (!won) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const order = await deps.orderStore.getById(id);
 		if (order === null) continue;
@@ -41,7 +41,9 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 			}
 		}
 		// Review I2: free the coupon too — symmetric with the inventory release.
-		// Order-scoped + idempotent (a double-sweep releases exactly once).
+		// Order-scoped + idempotent (a double-sweep releases exactly once). The flip
+		// above is already durable, so a crash HERE would strand the use: the plugin's
+		// coupon sweeper releases any redemption whose order is `expired` as the retry.
 		await deps.couponStore.releaseByOrder(order.id);
 	}
 	return expired;
