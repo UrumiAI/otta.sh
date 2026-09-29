@@ -378,7 +378,11 @@ export {
 	type AccountOrdersResult,
 	type SessionCookieDescriptor,
 } from "./storefront/account-routes.js";
-export { ACCOUNT_VERIFY_PATH, STOREFRONT_BASE_URL_KEY } from "./storefront/login-link.js";
+export {
+	ACCOUNT_VERIFY_PATH,
+	isValidLoginLinkUrl,
+	LOGIN_LINK_URL_KEY,
+} from "./storefront/login-link.js";
 export {
 	buildCheckoutLines,
 	buildCheckoutTotals,

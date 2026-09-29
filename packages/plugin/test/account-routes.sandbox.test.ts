@@ -56,11 +56,14 @@ const NS = "acct";
 
 /** The provider endpoint the bundle's email URL is baked to. */
 const EMAIL_PATH = "/email/send";
-/** The site the shopper is on — the request URL the theme's in-process dispatch
- *  builds on its own `Astro.url`, and so the origin the emailed link must use. */
+/** The operator's configured sign-in page (`settings:loginLinkUrl`) — the ONLY
+ *  place the emailed link may point. */
 const SITE = "https://shop.example.test";
+const VERIFY_PAGE = `${SITE}/account/verify`;
+/** The request the route is invoked with names a DIFFERENT host, as a spoofed
+ *  `Host` would: the link must ignore it entirely. */
 const SITE_REQUEST = {
-	url: `${SITE}/_emdash/api/plugins/otta/storefront/account/login/request`,
+	url: "https://attacker.example/_emdash/api/plugins/otta/storefront/account/login/request",
 };
 
 let sandbox: SandboxHandle;
@@ -202,7 +205,26 @@ async function loginThroughSandbox(email: string): Promise<string> {
 	return result.cookie!.value;
 }
 
+describe("with NO sign-in link URL configured (workerd sandbox)", () => {
+	test("a request answers the same generic success and sends NOTHING", async () => {
+		const email = `${NS}-unconfigured@example.test`;
+		expect(await requestLink(email)).toEqual({ result: { ok: true } });
+		expect(mailsTo(email)).toHaveLength(0);
+	}, 120_000);
+});
+
 describe("the magic-link login, end to end (workerd sandbox)", () => {
+	beforeAll(async () => {
+		// Configured through the Settings form, as an operator does — the same kv
+		// the route reads, inside this isolate.
+		const saved = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: VERIFY_PAGE },
+		});
+		if ("error" in saved) throw new Error(saved.error);
+	}, 120_000);
+
 	test("request → ONE mail with the link → verify once succeeds, a second use fails", async () => {
 		const email = `${NS}-link@example.test`;
 		const reply = await requestLink(email);
@@ -214,8 +236,9 @@ describe("the magic-link login, end to end (workerd sandbox)", () => {
 		const mail = mails[0];
 		expect(mail?.template).toBe("customer-login-link");
 		const { url, challengeId, token } = linkIn(mail);
-		// The link lands on the storefront verify page of the site that asked.
-		expect(`${url.origin}${url.pathname}`).toBe(`${SITE}/account/verify`);
+		// The link is the CONFIGURED page — not the (spoofed) host the request named.
+		expect(`${url.origin}${url.pathname}`).toBe(VERIFY_PAGE);
+		expect(mail?.text).not.toContain("attacker.example");
 		expect(mail?.idempotencyKey).toBe(`login:${challengeId}`);
 
 		const first = await verify(challengeId, token);

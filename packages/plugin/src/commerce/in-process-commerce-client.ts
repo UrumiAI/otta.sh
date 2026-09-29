@@ -633,8 +633,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *    answer `{ ok: true }`;
 	 *  - a THROTTLED issue sends nothing (ADR-0004: past the per-address cap the
 	 *    request no-ops);
-	 *  - a deployment with no email configured, or no storefront origin to point
-	 *    the link at, issues nothing — a challenge nobody can receive would only
+	 *  - a deployment with no email configured, or no sign-in link URL
+	 *    (`settings:loginLinkUrl`) to point the link at, issues nothing — a challenge nobody can receive would only
 	 *    burn a throttle slot — and says so ONCE in the server log;
 	 *  - a provider that refuses or times out is logged and swallowed, because
 	 *    the rejection would reach the caller only on the non-throttled arm.
@@ -646,7 +646,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	async requestLoginLink(
 		email: string,
-		options: { linkBaseUrl?: string } = {},
+		options: { verifyPageUrl?: string } = {},
 	): Promise<{ ok: true }> {
 		// CHECKED BUT NEVER REPORTED: a bound that fails here ends the call in the
 		// same generic success a valid address gets.
@@ -666,11 +666,12 @@ export class InProcessCommerceClient implements CommerceClient {
 			);
 			return { ok: true };
 		}
-		const baseUrl = options.linkBaseUrl;
-		if (baseUrl === undefined || baseUrl.length === 0) {
+		const verifyPageUrl = options.verifyPageUrl;
+		if (verifyPageUrl === undefined || verifyPageUrl.length === 0) {
 			warnOnce(
-				"login-link-no-origin",
-				"[otta] login link has no storefront origin to point at: set settings:storefrontBaseUrl",
+				"login-link-url-unconfigured",
+				"[otta] login email needs the sign-in link URL configured (settings:loginLinkUrl, " +
+					"the storefront's /account/verify page): login links are not being sent",
 			);
 			return { ok: true };
 		}
@@ -686,7 +687,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				template: "customer-login-link",
 				// The link ONLY: the token travels nowhere a template or a provider
 				// log could print it on its own.
-				data: { loginUrl: loginLinkUrl(baseUrl, issued.challengeId, issued.token) },
+				data: { loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token) },
 				// The challenge, not the token: one challenge is one email, so a
 				// retried send dedupes provider-side.
 				idempotencyKey: `login:${issued.challengeId}`,

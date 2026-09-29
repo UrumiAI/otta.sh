@@ -201,3 +201,28 @@ describe("renderEmail formats the total from integer minor units", () => {
 		},
 	);
 });
+
+// The sign-in email (issue #306). The link is a clickable ANCHOR — a bare URL in
+// a paragraph is not clickable in every client — and both the href and the text
+// are HTML-escaped: the URL is built from operator config and a token, and
+// neither is markup. (Anchor + escaping adapted from #325 by @stephanedemotte.)
+describe("renderEmail customer-login-link", () => {
+	const loginUrl = 'https://shop.example/account/verify?challenge=c1&token=a"b<c>';
+
+	test("the HTML carries the link as an escaped <a href>", () => {
+		const rendered = renderEmail("customer-login-link", { loginUrl });
+		const escaped = "https://shop.example/account/verify?challenge=c1&amp;token=a&quot;b&lt;c&gt;";
+		expect(rendered.html).toContain(`<a href="${escaped}">${escaped}</a>`);
+		// Nothing from the URL survives unescaped into the markup.
+		expect(rendered.html).not.toContain('a"b');
+		expect(rendered.html).not.toContain("<c>");
+	});
+
+	test("the plain-text body carries the link verbatim", () => {
+		expect(renderEmail("customer-login-link", { loginUrl }).text).toContain(loginUrl);
+	});
+
+	test("with no link it renders no anchor at all", () => {
+		expect(renderEmail("customer-login-link", {}).html).not.toContain("<a ");
+	});
+});

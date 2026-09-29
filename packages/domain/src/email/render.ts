@@ -14,10 +14,25 @@ export interface RenderedEmail {
  */
 export function renderEmail(template: EmailTemplate, data: Record<string, unknown>): RenderedEmail {
 	if (template === "customer-login-link") {
-		const link = str(data["loginUrl"]) ?? str(data["challengeId"]) ?? "";
+		const loginUrl = str(data["loginUrl"]);
+		const link = loginUrl ?? str(data["challengeId"]) ?? "";
 		const subject = "Your sign-in link";
-		const text = `Click to sign in: ${link}\n\nThis link is single-use and expires shortly. If you didn't request it, you can ignore this email.`;
-		return { subject, text, html: paragraph(`Click to sign in: ${escapeHtml(link)}`) };
+		const footer =
+			"This link is single-use and expires shortly. If you didn't request it, you can ignore this email.";
+		const text = `Click to sign in: ${link}\n\n${footer}`;
+		// The link is an ANCHOR — a bare URL in a paragraph is not clickable in every
+		// client — and the href is escaped exactly like the text: the URL is built
+		// from operator config and a token, and neither is markup. (Adapted from #325
+		// by @stephanedemotte.)
+		const shown =
+			loginUrl !== undefined
+				? `<a href="${escapeHtml(loginUrl)}">${escapeHtml(loginUrl)}</a>`
+				: escapeHtml(link);
+		return {
+			subject,
+			text,
+			html: paragraph(`Click to sign in: ${shown}`) + paragraph(escapeHtml(footer)),
+		};
 	}
 
 	const orderId = str(data["orderId"]) ?? "";

@@ -25,7 +25,7 @@
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
-import { resolveLoginLinkBase } from "./login-link.js";
+import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -133,18 +133,18 @@ export type AccountAddressesResult =
 	| { ok: false; error: "RENDER_FAILED" };
 
 /** Issue a challenge and email the magic link — generic success regardless of
- *  account existence or throttling (§9 Risk 4). The link's base is the
- *  deployment's configured storefront URL or this request's own origin, never
- *  anything in the input (see `login-link.ts`). */
+ *  account existence or throttling (§9 Risk 4). The link is the operator's
+ *  configured sign-in page and nothing request-derived — not the input, not the
+ *  request's origin (see `login-link.ts`). */
 export function createAccountLoginRequestHandler(): RouteHandler<AccountLoginRequestInput> {
 	return (routeCtx, ctx): Promise<AccountLoginRequestResult> =>
 		renderGuard(ACCOUNT_LOGIN_REQUEST_ROUTE, async () => {
 			const email = routeCtx.input.email;
 			if (!isNonEmptyString(email)) return { ok: false, error: "INVALID_INPUT" } as const;
-			const linkBaseUrl = await resolveLoginLinkBase(ctx, routeCtx.request);
+			const verifyPageUrl = await resolveLoginLinkUrl(ctx);
 			await (
 				await makeCommerceClient(ctx)
-			).requestLoginLink(email, linkBaseUrl === undefined ? {} : { linkBaseUrl });
+			).requestLoginLink(email, verifyPageUrl === undefined ? {} : { verifyPageUrl });
 			return { ok: true as const };
 		});
 }
