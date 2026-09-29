@@ -49,7 +49,7 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
-import { createCommerceLoader, renderGuard } from "./pdp-route.js";
+import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { sanitizeLocale } from "./route-input.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -145,19 +145,19 @@ export interface CartLineRemoveRouteInput {
 export type CartCreateRouteResult =
 	| { ok: true; cartId: string; cookie: CartCookieDescriptor }
 	| { ok: false; error: "INVALID_CURRENCY" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export type CartReadRouteResult =
 	| { ok: true; cart: CartWire; pricing: CartPricingWire }
 	| { ok: false; error: "INVALID_CART_ID" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export type CartLineMutationRouteResult<T> =
 	| ({ ok: true } & T)
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 /** Not `CartLineMutationRouteResult<Record<string, never>>` — intersecting
  *  `{ok:true}` with an index-signature "empty object" type rejects `ok`'s
@@ -167,7 +167,7 @@ export type CartLineRemoveRouteResult =
 	| { ok: true }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;

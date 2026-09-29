@@ -61,11 +61,13 @@ import {
 } from "@otta-sh/admin-presentation";
 import {
 	CONSOLE_ACT_INTERACTION,
+	STORE_BUSY,
 	UNKNOWN_ACTION,
 	UNREADABLE_REQUEST,
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import {
 	PRODUCTS_ACTION_IDS,
 	dispatchProductsAction,
@@ -401,7 +403,9 @@ export function createProductsConsoleHandler(): RouteHandler<ProductsConsoleInpu
 			if (resource === "products.list") return await consoleList(input, ctx);
 			if (resource === "products.detail") return await consoleDetail(input, ctx);
 			return UNREADABLE_REQUEST;
-		} catch {
+		} catch (err) {
+			// Storage pressure is its own answer — retryable, and not an outage.
+			if (isRetryableStorageBusy(err)) return STORE_BUSY;
 			// G5's reasoning, one tier up: the console renders a refusal, never a
 			// blank pane, and a non-2xx would be indistinguishable from the transport
 			// failing. Everything lands here — an unreachable service, a 401 on a

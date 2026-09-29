@@ -48,7 +48,7 @@ import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 
 const { orderId } = Astro.params;
 
@@ -68,6 +68,10 @@ const result =
 
 const order = result !== null && result.ok ? result.order : null;
 if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+/* BUSY is not "no such order": the read was refused under load (already retried
+   once). 503 + short Retry-After, and the busy copy below — never a 404. */
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 
 /** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
  *  copy — the value is never rendered, forwarded, or trusted. */
@@ -200,9 +204,11 @@ const sumRows =
 				<h1 class="title">Order</h1>
 				<div class="alert">
 					<Notice>
-						{result !== null && !result.ok && "reason" in result
-							? cartErrorMessage(result.reason)
-							: cartErrorMessage("SERVICE_UNAVAILABLE")}
+						{busy
+							? cartErrorMessage(BUSY)
+							: result !== null && !result.ok && "reason" in result
+								? cartErrorMessage(result.reason)
+								: cartErrorMessage("SERVICE_UNAVAILABLE")}
 					</Notice>
 				</div>
 				<p class="back">

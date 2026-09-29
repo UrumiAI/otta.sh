@@ -31,9 +31,11 @@ import {
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
+	busyResponse,
 	dispatchOttaRoute,
 	formPositiveInt,
 	formString,
+	isBusyResult,
 	safeReturnPath,
 } from "../../lib/otta-api.js";
 
@@ -134,6 +136,9 @@ export const POST: APIRoute = async (context) => {
 			{ content },
 			context.url,
 		);
+		// The pre-check READ was busy (already retried once): the shopper's add is
+		// fine, the store is momentarily busy — say so, not SERVICE_UNAVAILABLE.
+		if (isBusyResult(productResult)) return busyResponse(returnTo);
 		if (productResult === null || !productResult.ok) {
 			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 		}
@@ -142,10 +147,14 @@ export const POST: APIRoute = async (context) => {
 		}
 	}
 
-	const cartId = await ensureCartId(context, handler);
-	if (cartId === undefined) {
+	const cart = await ensureCartId(context, handler);
+	if (!cart.ok) {
+		// A busy `cart/create` (key-less, so never auto-retried) is the busy 503;
+		// any other failure is the ordinary SERVICE_UNAVAILABLE turn.
+		if (cart.reason === "busy") return busyResponse(returnTo);
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 	}
+	const { cartId } = cart;
 
 	const result = await dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
 		handler,
@@ -154,6 +163,9 @@ export const POST: APIRoute = async (context) => {
 		context.url,
 	);
 
+	// Still busy after dispatch's one retry (same idempotency key): 503, not a
+	// generic "went wrong" — a reload re-posts the same key, which is replay-safe.
+	if (isBusyResult(result)) return busyResponse(returnTo);
 	if (result === null || !result.ok) {
 		const token = failureToken(result);
 		// A stale cookie pointing at a vanished cart: drop it so the next

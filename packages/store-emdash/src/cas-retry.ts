@@ -81,10 +81,9 @@ export const CAS_MAX_DELAY_MS = 50;
  * **It must never be collapsed into `{ ok: false, reason: "OUT_OF_STOCK" }`.**
  * `ReserveResult` has no member for "too busy", and a shopper who could have
  * bought must not be told the item is gone — that is a lost sale reported as a
- * fact about the product. At the HTTP/route boundary this maps to **503** with a
- * retry (for the cart route, a retry of the whole call); wiring that mapping is a
- * later increment, and until it exists the error propagating uncaught is the
- * correct behaviour, because it is loud.
+ * fact about the product. At the route boundary it maps to a retryable "busy"
+ * answer — the storefront's `BUSY` envelope (a 503 + `Retry-After` at the site),
+ * and a 503 on the webhook/settle routes — through {@link isRetryableStorageBusy}.
  */
 export class StorageContentionError extends Error {
 	override readonly name = "StorageContentionError";
@@ -118,6 +117,27 @@ export function isStorageContentionError(err: unknown): err is StorageContention
 		err !== null &&
 		(err as { code?: unknown }).code === "STORAGE_CONTENTION"
 	);
+}
+
+/**
+ * "The store is too busy right now; try again" — the ONE predicate every route
+ * boundary uses to map storage pressure to a retryable 503-class answer instead
+ * of a generic failure or a host 500.
+ *
+ * It covers exactly two structural shapes, both of which promise that the
+ * refused step wrote nothing:
+ *  - {@link StorageContentionError} — a compare-and-set budget ran out;
+ *  - a host `StorageSerializationError` (`40001`/`40P01`) the host marked
+ *    `retryable` — one that escaped a code path with no CAS loop around it.
+ *
+ * Structural, never `instanceof`: an error that crosses the sandbox bridge is a
+ * plain object carrying `code`/`retryable`. Deliberately NOT recursive into
+ * `cause`: an outer error that merely WRAPS a busy one may have written before it
+ * failed, and "safe to retry" is a claim only the refused step can make.
+ */
+export function isRetryableStorageBusy(err: unknown): boolean {
+	if (isStorageContentionError(err)) return true;
+	return isStorageSerializationError(err) && err.retryable === true;
 }
 
 /**

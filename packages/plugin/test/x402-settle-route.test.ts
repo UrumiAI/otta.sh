@@ -23,7 +23,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 } from "@otta-sh/domain";
-import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
@@ -36,6 +36,7 @@ import {
 	type X402SettleResult,
 } from "../src/payments/x402-settle-route.js";
 import type { PluginContext } from "../src/types.js";
+import { busyStorage } from "./helpers/busy-storage.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -53,6 +54,10 @@ beforeEach(async () => {
 	for (const { key } of await harness.ctx.kv.list()) await harness.ctx.kv.delete(key);
 	await harness.ctx.kv.set(X402_PAYTO_KEY, PAY_TO);
 	await harness.ctx.kv.set(X402_FACILITATOR_API_KEY_KEY, "fac_key_NEVER_LEAK");
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -420,5 +425,51 @@ describe("refusals, continued: configuration and shape", () => {
 			const res = await invoke(proofFor(ORDER_A), ctx);
 			expect(JSON.stringify(res)).not.toContain("fac_key_NEVER_LEAK");
 		}
+	});
+});
+
+describe("storage pressure is a retryable 503, never a thrown host 500", () => {
+	test("an exhausted compare-and-set budget anywhere in the settle is 503 BUSY", async () => {
+		await seedPendingOrder(ORDER_A);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { ctx } = ctxWithFacilitator(() => jsonResponse({ isValid: true }));
+		const loaded: PluginContext = { ...ctx, storage: busyStorage(ctx.storage!) };
+
+		expect(await invoke(proofFor(ORDER_A), loaded)).toEqual({
+			ok: false,
+			status: 503,
+			reason: "BUSY",
+			retryable: true,
+		});
+		expect(await orderState(ORDER_A)).toBe("pending");
+	});
+
+	test("a retryable serialization abort as a plain (bridged) object is 503 BUSY too", async () => {
+		await seedPendingOrder(ORDER_A);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { ctx } = ctxWithFacilitator(() => jsonResponse({ isValid: true }));
+		const loaded: PluginContext = {
+			...ctx,
+			storage: busyStorage(ctx.storage!, () => ({
+				code: "STORAGE_SERIALIZATION_FAILURE",
+				retryable: true,
+			})),
+		};
+
+		expect(await invoke(proofFor(ORDER_A), loaded)).toMatchObject({
+			status: 503,
+			reason: "BUSY",
+			retryable: true,
+		});
+	});
+
+	test("a non-busy storage fault still propagates — busy is not a blanket catch", async () => {
+		const { ctx } = ctxWithFacilitator(() => jsonResponse({ isValid: true }));
+		const broken: PluginContext = {
+			...ctx,
+			storage: busyStorage(ctx.storage!, () => new Error("disk on fire")),
+		};
+
+		await expect(invoke(proofFor(ORDER_A), broken)).rejects.toThrow("disk on fire");
 	});
 });

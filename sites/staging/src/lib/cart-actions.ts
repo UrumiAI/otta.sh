@@ -19,7 +19,7 @@ import type { APIContext } from "astro";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { applyCartCookie } from "./cart-cookie.js";
-import { dispatchOttaRoute } from "./otta-api.js";
+import { dispatchOttaRoute, isBusyResult, sameSitePath } from "./otta-api.js";
 
 /** Semantic error tokens this shim adds on top of the plugin's own
  *  (`RENDER_FAILED`, `OUT_OF_STOCK`, ...). */
@@ -32,9 +32,11 @@ export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
-/** 303 See Other — the POST-redirect-GET turn. */
+/** 303 See Other — the POST-redirect-GET turn. The target is normalized to a
+ *  same-site path first ({@link sameSitePath}; `/` if it is not one), so a
+ *  dot-segment path that resolves to `//host` can never become the Location. */
 export function seeOther(context: APIContext, path: string, error?: string): Response {
-	const url = new URL(path, context.url);
+	const url = new URL(sameSitePath(path), context.url);
 	if (error !== undefined) url.searchParams.set("error", error);
 	return context.redirect(url.pathname + url.search, 303);
 }
@@ -52,17 +54,25 @@ export function clearCartCookie(context: APIContext): void {
 	context.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
 }
 
+/** {@link ensureCartId}'s answer: a cart id, or WHY there is none — `busy`
+ *  (storage contention: the caller answers the busy 503) vs `unavailable`
+ *  (anything else: the caller answers SERVICE_UNAVAILABLE). */
+export type EnsureCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "busy" | "unavailable" };
+
 /**
  * Ensure a cart exists: reuse the cookie's id, else mint one via the
  * plugin's `storefront/cart/create` and apply its cookie DESCRIPTOR to this
  * response (the plugin cannot set headers — the shim owns Set-Cookie).
+ * `cart/create` carries no key, so a BUSY here is never auto-retried.
  */
 export async function ensureCartId(
 	context: APIContext,
 	handler: PublicPluginApiRouteHandler | undefined,
-): Promise<string | undefined> {
+): Promise<EnsureCartResult> {
 	const existing = currentCartId(context);
-	if (existing !== undefined) return existing;
+	if (existing !== undefined) return { ok: true, cartId: existing };
 
 	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
@@ -70,9 +80,10 @@ export async function ensureCartId(
 		{},
 		context.url,
 	);
-	if (created === null || !created.ok) return undefined;
+	if (isBusyResult(created)) return { ok: false, reason: "busy" };
+	if (created === null || !created.ok) return { ok: false, reason: "unavailable" };
 	applyCartCookie(context.cookies, created.cookie);
-	return created.cartId;
+	return { ok: true, cartId: created.cartId };
 }
 
 /** Uniform failure → error token mapping for the line-mutation results. */

@@ -43,7 +43,7 @@ import Base from "../../layouts/Base.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { holdNote } from "../../lib/hold.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 
 const { slug } = Astro.params;
 if (slug === undefined) return Astro.redirect("/products");
@@ -135,6 +135,11 @@ const addToCart = product?.slots.addToCart ?? null;
 /** The store's effective cart-hold window (issue #127) — what the hold note states. */
 const cartHoldMinutes = result !== null && result.ok ? result.cartHoldMinutes : undefined;
 const degraded = content !== null && product === null;
+/* Storage contention (the plugin's BUSY, already retried once by the dispatch):
+   the page still renders its content, but answers 503 + a short Retry-After so a
+   crawler comes back rather than indexing a page with no price on it. */
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 const error = Astro.url.searchParams.get("error");
 
 /* The coil keys off the product's OWN identity, not the path the visitor
@@ -217,7 +222,7 @@ const soldOut = product?.availability === "out_of_stock";
 				    see the note on the media panel below. */}
 				{degraded && (
 					<div class="notice-slot">
-						<Notice lead="Prices and stock are unavailable right now.">
+						<Notice lead={busy ? cartErrorMessage(BUSY) : "Prices and stock are unavailable right now."}>
 							Check back in a moment — everything else on this page is up to date.
 						</Notice>
 					</div>

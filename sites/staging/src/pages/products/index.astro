@@ -37,7 +37,8 @@ import ProductCard from "../../components/ProductCard.astro";
 import Base from "../../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { exactCount, itemCountLabel } from "../../lib/tape.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { cartErrorMessage } from "../../lib/error-messages.js";
+import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 
 const {
 	entries,
@@ -64,6 +65,10 @@ const result = await dispatchOttaRoute<PlpRouteResult>(
 	Astro.url,
 );
 const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+/* BUSY (storage contention, already retried once): same degraded cards, but a
+   503 + short Retry-After so a crawler comes back for the priced page. */
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 
 /** With commerce unreachable the cards still render — content only, and every
  *  commercial field explicitly absent so no card can show a figure. */
@@ -103,7 +108,7 @@ const countLabel = itemCountLabel(count);
 		   can never match. */
 		view === null && items.length > 0 && (
 			<div class="notice-slot">
-				<Notice lead="Prices and stock are unavailable right now.">
+				<Notice lead={busy ? cartErrorMessage(BUSY) : "Prices and stock are unavailable right now."}>
 					The catalog below is complete — check back in a moment for live figures.
 				</Notice>
 			</div>

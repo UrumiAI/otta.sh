@@ -77,7 +77,7 @@ import {
 	type ShippingSelectionReason,
 	type UncalculatedReason,
 } from "./checkout-view-model.js";
-import { createCommerceLoader, renderGuard } from "./pdp-route.js";
+import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -210,7 +210,7 @@ export type CheckoutSummaryRouteResult =
 	| CheckoutSummaryView
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason | QuoteFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export type CheckoutPlaceRouteResult =
 	| {
@@ -243,13 +243,13 @@ export type CheckoutPlaceRouteResult =
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export type OrderRouteResult =
 	| { ok: true; order: PublicOrderView }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 /**
  * The selection → the quote/checkout request's pricing fields. ONE function used
