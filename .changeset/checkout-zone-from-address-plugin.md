@@ -20,6 +20,12 @@ delivery options, and the Shipping admin keeps zone regions to ISO codes.
   a real code reaches the domain's typed refusal. Every new order needs an ISO country.
 - The rules client refuses zone regions that are not ISO codes, and stores them
   uppercased.
+- **Zones whose regions are blank (`null` or `[]`) — normal before this change — match no
+  address**, so a store whose zones all have blank regions refuses every physical
+  checkout until ISO codes are added. The Shipping console warns about such zones on its
+  landing page and on the zone's methods screen.
+- The delivery country list is the officially assigned ISO 3166-1 codes plus XK: the
+  exceptionally reserved AC, CP, CQ, DG, EA, IC and TA are no longer accepted.
 
 **Added / changed:**
 
@@ -34,7 +40,8 @@ delivery options, and the Shipping admin keeps zone regions to ISO codes.
   preselected. The locked review is `readyToPlace` exactly while its order is pending.
 - The Shipping console validates regions (naming each bad token with a hint), refuses
   a code another zone already lists, labels legacy tokens "never matches", and warns
-  about such zones on the landing page and the zone's methods screen.
+  about zones holding such text, and about zones that match no address, on the landing
+  page and the zone's methods screen.
 - Exports `COUNTRY_CODES` and `isCodeShapedRegion` for a storefront's country picker.
 - The published package includes `THIRD_PARTY_NOTICES` (Unicode licence for the bundled
   CLDR data).

@@ -26,9 +26,16 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
    public storefront routes never read such a key, and the in-process client refuses a cast one
    as a programmer error (`CommerceInputError`) no buyer can reach. Tax follows the matched zone.
    A chosen method must belong to it (`SHIPPING_METHOD_NOT_IN_ZONE`).
-2. **Codes from CLDR, pinned.** Countries are ISO 3166-1 alpha-2 codes with CLDR status
-   `regular` — which includes **XK** and excludes EU, UN, ZZ (and the reserved/private-use
-   ranges). Subdivisions are ISO 3166-2 codes with status `regular`. Both are generated from
+2. **Codes from CLDR, pinned.** Countries are **CLDR's `regular` regions restricted to the ISO
+   3166-1 officially assigned alpha-2 codes, plus XK** — 250 codes. CLDR `regular` is wider
+   than "officially assigned": it also lists the ISO 3166-1 **exceptionally reserved** codes
+   AC, CP, CQ, DG, EA, IC and TA, which a payment provider need not accept as a shipping
+   country (an order to one could be minted and then fail at payment). The generator excludes
+   exactly those, through an explicit `EXCEPTIONALLY_RESERVED` list, and a test pins them
+   absent. **XK** (user-assigned, Kosovo) is kept (D11); the officially assigned uninhabited
+   territories (AQ, BV, HM, UM) are kept too — they are ISO countries. EU, UN, ZZ and the
+   reserved/private-use ranges are not `regular` and never appear. Subdivisions are ISO 3166-2
+   codes with status `regular`, minus any of an excluded country. Both are generated from
    **CLDR 48.2** (`unicode-org/cldr` tag `release-48-2`, `common/validity/{region,subdivision}.xml`)
    into `packages/domain/src/pricing/iso-3166.generated.ts` by the committed
    `packages/domain/scripts/generate-iso-3166.ts`, over the vendored XML (dev-only, D14). A test
@@ -107,6 +114,12 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
 - Merchants whose zones hold legacy text get every physical checkout to those destinations refused
   until they fix them; the Shipping landing page and the zone's methods screen warn, and each zone
   row labels the tokens that never match. The staging seed has no zones.
+- **Zones with no regions (`null` or `[]`) now match no address.** Before this ADR a blank
+  regions list was normal — nothing read it — and a method can only live in a zone. A store whose
+  zones all have blank regions therefore refuses **every** physical checkout until codes are added
+  (`SHIPPING_ZONE_NOT_MATCHED`); a store with a mix refuses the destinations no zone lists. The
+  Shipping landing page and the affected zone's methods screen warn ("Some zones match no
+  address … add codes such as US, US-CA"), and each zone row says "Matches no address".
 - No "rest of world" zone, no wildcards, no postcode matching yet.
 - The CLDR data is refreshed per release by a generator run (vendor the XML, bump the version,
   regenerate, update `THIRD_PARTY_NOTICES`). About 20 KB of generated source ships in the plugin

@@ -12,7 +12,8 @@ chosen shipping method must belong to the zone the address matched.
   takes `destination?: { country, region? }` and a required `requiresShipping`; the
   order derives both from its lines and its `shippingAddress`.
 - **Every new order's address carries ISO codes.** The country must be an ISO 3166-1
-  alpha-2 code (CLDR "regular", XK included) — `"United States"` is now
+  alpha-2 code (CLDR's regular regions restricted to the officially assigned codes —
+  the exceptionally reserved AC, CP, CQ, DG, EA, IC and TA are excluded — plus XK) — `"United States"` is now
   `INVALID_SHIPPING_ADDRESS` — and a non-blank region a real ISO 3166-2 subdivision of it
   (`CA` or `US-CA`, stored as `CA`), else `SHIPPING_REGION_CODE_REQUIRED`. This holds in
   stores with no zones and for digital-only orders too. Existing orders are unchanged.
@@ -23,10 +24,14 @@ chosen shipping method must belong to the zone the address matched.
   (`SHIPPING_METHOD_NOT_APPLICABLE`). All six are new `CreateOrderFailure` /
   `QuoteFailure` members, refused before anything is redeemed or minted. A same-key
   replay still returns the original order first.
+- **A zone with no regions (`null` or `[]`) — normal before this change — now matches no
+  address.** A store whose zones all have blank regions refuses every physical checkout
+  (`SHIPPING_ZONE_NOT_MATCHED`) until ISO codes are added to them.
 - `NormalizeOrderAddressResult`'s failure now carries `reason: "INVALID" | "REGION_NOT_A_CODE"`.
 
-**Added:** the ISO 3166 lists generated from CLDR 48.2 (`COUNTRY_CODES`,
-`SUBDIVISIONS`; generator and vendored XML are dev-only, and the Unicode licence ships
+**Added:** the ISO 3166 lists generated from CLDR 48.2 (`COUNTRY_CODES` — the 249
+officially assigned alpha-2 codes plus XK, with the exceptionally reserved AC, CP, CQ, DG,
+EA, IC and TA excluded — and `SUBDIVISIONS`; generator and vendored XML are dev-only, and the Unicode licence ships
 in `THIRD_PARTY_NOTICES`), `normalizeCountryCode` / `normalizeSubdivision` /
 `isCodeShapedRegion` / `parseZoneRegions` / `validateZoneRegionsInput`,
 `resolveShippingZone` (exact codes, most specific wins, lowest id on a tie), and
