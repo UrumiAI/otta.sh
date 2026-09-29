@@ -141,15 +141,16 @@ describe("settleOrder", () => {
 		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
 	});
 
-	test("payment_failed → failed → releases the reservation", async () => {
+	test("payment_failed keeps the order pending and its reservation adopted (ADR-0022)", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;
 		expect(h.inventory.onHand("SKU-1")).toBe(4); // 5 - 1 reserved
 		const res = await settleOrder(h.settleDeps, h.stripeGw, evt(order, { outcome: "failed" }));
-		expect(res.ok).toBe(true);
-		expect((await h.orderStore.getById(order.id))?.state).toBe("failed");
-		expect(h.inventory.reservationState(reservationId)).toBe("released");
-		expect(h.inventory.onHand("SKU-1")).toBe(5); // stock returned
+		expect(res).toMatchObject({ ok: true, noop: true });
+		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
+		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
+		expect(h.inventory.onHand("SKU-1")).toBe(4); // still held for the retry
+		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
 	});
 
 	test("order-expiry guarded transition (pending→expired) releases the adopted reservation exactly once", async () => {
@@ -314,7 +315,6 @@ describe("settleOrder", () => {
 				await expireOrders(h.expireDeps);
 				return h.orderStore.markPaid(id);
 			},
-			markFailed: (id) => h.orderStore.markFailed(id),
 			expire: (id, at) => h.orderStore.expire(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
@@ -492,28 +492,5 @@ describe("settleOrder", () => {
 		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
 		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
 		expect(h.entitlementStore.all()).toHaveLength(1);
-	});
-
-	test("a retry after a crash between markFailed and release completes the release", async () => {
-		const order = await pendingPhysical();
-		const reservationId = order.lines[0]!.reservationId!;
-		// Simulate the crash: dedupe + failed flip landed; the release did not.
-		await h.paymentEventStore.dedupe(
-			"evt-fail-crash",
-			order.id,
-			"stripe",
-			h.clock.now().toISOString(),
-		);
-		await h.orderStore.markFailed(order.id);
-		expect(h.inventory.reservationState(reservationId)).toBe("adopted"); // stock still gone
-
-		const res = await settleOrder(
-			h.settleDeps,
-			h.stripeGw,
-			evt(order, { outcome: "failed", dedupeKey: "evt-fail-crash" }),
-		);
-		expect(res.ok).toBe(true);
-		expect(h.inventory.reservationState(reservationId)).toBe("released");
-		expect(h.inventory.onHand("SKU-1")).toBe(5); // stock returned exactly once
 	});
 });

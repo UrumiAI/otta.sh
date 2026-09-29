@@ -593,7 +593,6 @@ describeEachDialect("order flow", (ctx) => {
 				await expireOrders(h.expireDeps);
 				return h.store.markPaid(id);
 			},
-			markFailed: (id) => h.store.markFailed(id),
 			expire: (id, at) => h.store.expire(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),

@@ -3,8 +3,9 @@
  * ported from the SQL adapter's suite of the same name, case for case.
  *
  * Nothing here calls `redeem` or `release` directly: the coupon is consumed by
- * `createOrderFromCart` and freed by `expireOrders` or by the payment-failure half of
- * `settleOrder`, over the real cart, inventory and order documents. That is the point
+ * `createOrderFromCart` and freed by `expireOrders` — and deliberately NOT by a
+ * declined payment, which keeps the order payable (ADR-0022) — over the real cart,
+ * inventory and order documents. That is the point
  * of the file — the symmetry with inventory is a property of the USE-CASES, and it has
  * to survive the coupon's counter living in a different document from the order that
  * consumed it.
@@ -61,7 +62,7 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 			orders,
 			coupons,
 			createDeps: { ...orders.createDeps, couponStore: coupons.store },
-			settleDeps: { ...orders.settleDeps, couponStore: coupons.store },
+			settleDeps: orders.settleDeps,
 			expireDeps: { ...orders.expireDeps, couponStore: coupons.store },
 		};
 	}
@@ -110,7 +111,7 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		expect(await fx.coupons.redemptions.count({ couponId: "cpn", holdsUse: "yes" })).toBe(0);
 	});
 
-	test("after a durable order's payment FAILS, usesCount returns to its pre-redemption value", async () => {
+	test("a declined payment does NOT free the coupon — the order stays payable until it expires", async () => {
 		const fx = fixture();
 		const order = await checkout(fx);
 		const raw = fx.orders.stripeGateway.webhook({
@@ -123,7 +124,11 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		});
 		const settled = await settleOrder(fx.settleDeps, fx.orders.stripeGateway, raw);
 		expect(settled.ok).toBe(true);
-		expect((await fx.orders.store.getById(order.id))?.state).toBe("failed");
+		expect((await fx.orders.store.getById(order.id))?.state).toBe("pending");
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+		// Nobody retries: the expiry sweep is what frees it.
+		fx.orders.advance(16 * 60 * 1000);
+		expect(await expireOrders(fx.expireDeps)).toBe(1);
 		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(0);
 	});
 

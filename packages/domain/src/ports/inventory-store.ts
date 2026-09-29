@@ -74,7 +74,7 @@ export interface InventoryStore {
 	commitMany(reservationIds: string[]): Promise<CommitManyResult>;
 
 	// Additive (review G2): the ORDER-SCOPED release used by every order-driven
-	// release path (`expireOrders`, settle's failed release). A single guarded
+	// release path (`expireOrders`, the cancel release). A single guarded
 	// flip `adopted → released` scoped `WHERE order_id = :orderId`, then the
 	// stock return — an order can only ever release a hold IT adopted. 0 rows is
 	// ALWAYS a silent no-op: already released/committed (benign replay), or

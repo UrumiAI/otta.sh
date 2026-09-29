@@ -7,7 +7,7 @@ export type PaymentAnomalyKind =
 	| "COMMIT_LOST"
 	| "SETTLE_ON_NON_PENDING"
 	/** A verified, amount-checked success LOST the guarded `pending→paid` flip to
-	 *  a mid-flight expiry/failure: money captured, stock already released. The
+	 *  a mid-flight expiry/cancellation: money captured, stock already released. The
 	 *  mid-flight loser must be exactly as loud as the already-terminal-at-load
 	 *  case — never a silent no-op. */
 	| "PAID_FLIP_LOST"
