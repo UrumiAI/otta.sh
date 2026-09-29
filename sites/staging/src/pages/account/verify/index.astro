@@ -8,8 +8,12 @@
  * scanners pre-fetch the links in a message; if the GET redeemed, the scanner
  * would spend the single-use token and the customer's own click would fail.
  *
- * The token is in this page's URL, so the page sends no Referer (the same
- * policy the order page uses for Stripe's client secret), and nothing from the
+ * The token is in this page's URL, so the page's referrer policy is
+ * `same-origin`: no Referer ever leaves for another host. It is deliberately NOT
+ * `no-referrer`, the policy the order page uses. Under `no-referrer` a browser
+ * sends `Origin: null` on this page's own form POST, the origin guard rejects
+ * that as cross-site, and every login would 403 at /account/verify/confirm
+ * (caught in a real browser by `e2e/account-login.spec.ts`). Nothing from the
  * query is rendered except into the two hidden inputs the form needs.
  */
 import Notice from "../../../components/Notice.astro";
@@ -25,7 +29,7 @@ const usable = challenge.length > 0 && token.length > 0;
 ---
 
 <Base title="Sign in">
-	<meta name="referrer" content="no-referrer" slot="head" />
+	<meta name="referrer" content="same-origin" slot="head" />
 	<h1 class="title">Sign in</h1>
 
 	{

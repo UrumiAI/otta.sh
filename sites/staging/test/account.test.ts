@@ -214,6 +214,45 @@ describe("POST /account/verify/confirm", () => {
 		]);
 	});
 
+	test("a session this browser already held is revoked before the new one is set", async () => {
+		const { handler, calls } = makeHandler({
+			[ACCOUNT_LOGIN_VERIFY_ROUTE]: { ok: true, cookie: COOKIE, redirectTo: "/account/orders" },
+			[ACCOUNT_LOGOUT_ROUTE]: {
+				ok: true,
+				clearCookie: { name: SESSION_COOKIE_NAME, path: "/" },
+				redirectTo: "/",
+			},
+		});
+		const { context, cookieOps } = makeContext(
+			"/account/verify/confirm",
+			{ challenge: "c", token: "t" },
+			handler,
+			{ session: "sess-old" },
+		);
+		expect(location(await VERIFY_CONFIRM_POST(context))).toBe("/account/orders");
+		expect(calls.map((call) => call.route)).toEqual([
+			ACCOUNT_LOGIN_VERIFY_ROUTE,
+			ACCOUNT_LOGOUT_ROUTE,
+		]);
+		expect(calls[1]?.body).toEqual({ sessionToken: "sess-old" });
+		expect(cookieOps.map((op) => [op.op, op.value])).toEqual([["set", "sess-123"]]);
+	});
+
+	test("a FAILED verify leaves the session this browser already held alone", async () => {
+		const { handler, calls } = makeHandler({
+			[ACCOUNT_LOGIN_VERIFY_ROUTE]: { ok: false, reason: "CONSUMED" },
+		});
+		const { context, cookieOps } = makeContext(
+			"/account/verify/confirm",
+			{ challenge: "c", token: "t" },
+			handler,
+			{ session: "sess-old" },
+		);
+		await VERIFY_CONFIRM_POST(context);
+		expect(calls.map((call) => call.route)).toEqual([ACCOUNT_LOGIN_VERIFY_ROUTE]);
+		expect(cookieOps).toHaveLength(0);
+	});
+
 	test("a redirect target that is not a same-site path is ignored", async () => {
 		const { handler } = makeHandler({
 			[ACCOUNT_LOGIN_VERIFY_ROUTE]: { ok: true, cookie: COOKIE, redirectTo: "//evil.example/" },
@@ -353,7 +392,14 @@ describe("account pages — source-level guarantees", () => {
 		expect(frontmatter).not.toContain("dispatchOttaRoute");
 		const template = templateOf(source);
 		expect(template).toMatch(/<form[^>]*method="POST"[^>]*action="\/account\/verify\/confirm"/);
-		expect(template).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+		// `same-origin`, NOT `no-referrer`: under `no-referrer` a browser sends
+		// `Origin: null` on this page's own form POST, the origin guard reads that
+		// as cross-site, and every login 403s at /account/verify/confirm. That was
+		// caught by `e2e/account-login.spec.ts` in a real browser, not here.
+		// `same-origin` keeps the token-bearing URL out of every cross-origin
+		// Referer and still sends the real Origin on the same-origin POST.
+		expect(template).toContain('<meta name="referrer" content="same-origin" slot="head" />');
+		expect(template).not.toContain('content="no-referrer"');
 	});
 
 	test.each(["account/orders/index.astro", "account/orders/[id].astro"])(

@@ -11,9 +11,19 @@
  * Secure, SameSite=Lax, path `/`. Verifying also claims the customer's earlier
  * guest orders (ADR-0004), which is why the landing page is the order list.
  */
-import { ACCOUNT_LOGIN_VERIFY_ROUTE, type AccountLoginVerifyResult } from "@otta-sh/plugin";
+import {
+	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
+	type AccountLoginVerifyResult,
+	type AccountLogoutResult,
+} from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
-import { ACCOUNT_HOME_PATH, applySessionCookie, verifyFailureToken } from "../../../lib/account.js";
+import {
+	ACCOUNT_HOME_PATH,
+	applySessionCookie,
+	currentSessionToken,
+	verifyFailureToken,
+} from "../../../lib/account.js";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
 import { dispatchOttaRoute, formString } from "../../../lib/otta-api.js";
@@ -56,6 +66,19 @@ export const POST: APIRoute = async (context) => {
 		);
 	}
 
+	// The browser may already hold a session, perhaps another account's. The new
+	// cookie overwrites it here, so revoke the old one server-side too, rather
+	// than leave a live bearer token nobody will ever sign out of. This happens
+	// only AFTER a successful verify: a failed link must not sign anyone out.
+	const previous = currentSessionToken(context.cookies);
+	if (previous !== undefined && previous !== result.cookie.value) {
+		await dispatchOttaRoute<AccountLogoutResult>(
+			routeDispatcher(context),
+			ACCOUNT_LOGOUT_ROUTE,
+			{ sessionToken: previous },
+			context.url,
+		);
+	}
 	applySessionCookie(context.cookies, result.cookie);
 	return context.redirect(sameSitePath(result.redirectTo), 303);
 };
