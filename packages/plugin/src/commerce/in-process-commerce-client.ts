@@ -66,6 +66,7 @@ import {
 	listProductVariants,
 	money,
 	orderId as toOrderId,
+	previewCheckout,
 	productId as toProductId,
 	removeLine,
 	requestLogin,
@@ -103,6 +104,8 @@ import type {
 	CartLineWire,
 	CartResult,
 	CartWire,
+	CheckoutPreviewRequestWire,
+	CheckoutPreviewResult,
 	CheckoutRequestWire,
 	CheckoutResult,
 	CommerceClient,
@@ -745,32 +748,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
 		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
-		const cart = await this.#stores.cartStore.get(input.cartId);
-		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
-		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
-
-		const byId = await this.#stores.productCommerce.getManyByProductId(
-			cart.lines
-				.map((line) => line.productId)
-				.filter((id): id is string => id !== null)
-				.map((id) => toProductId(id)),
-		);
-		const lines: TotalsLineInput[] = [];
-		for (const line of cart.lines) {
-			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-			const row = byId.get(toProductId(line.productId)) ?? null;
-			// An unpublished or deleted product is no longer for sale, even from a cart
-			// that held it first — the same liveness rule `createOrderFromCart` applies.
-			if (row === null || !isProductLive(row) || row.price === null) {
-				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-			}
-			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
-			lines.push({
-				unitPriceCents: row.price.amount,
-				qty: line.qty,
-				taxClassId: row.taxClass ?? "standard",
-			});
-		}
+		const priced = await this.#priceCartLines(input.cartId);
+		if (!priced.ok) return priced;
+		const { cart, lines } = priced;
 
 		const quote = await computeQuote(
 			{
@@ -801,6 +781,135 @@ export class InProcessCommerceClient implements CommerceClient {
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			},
 		};
+	}
+
+	/**
+	 * The storefront checkout preview (issue #305) — `previewCheckout` in the
+	 * domain over this cart's priced lines. The zone is derived there, from the
+	 * destination, and never taken from the caller: the request has no zone
+	 * field to take it from. `requiresShipping` is read off the same product rows
+	 * the lines are priced from (a physical line ships; a digital one does not).
+	 */
+	async previewCheckout(input: CheckoutPreviewRequestWire): Promise<CheckoutPreviewResult> {
+		requireIdToken("cartId", input.cartId);
+		if (input.destination !== undefined) {
+			requireBoundedText("destination.country", input.destination.country, 1, 100);
+			if (input.destination.region !== undefined) {
+				requireBoundedText("destination.region", input.destination.region, 1, 120);
+			}
+		}
+		if (input.shippingMethodId !== undefined) {
+			requireIdToken("shippingMethodId", input.shippingMethodId);
+		}
+		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		const priced = await this.#priceCartLines(input.cartId);
+		if (!priced.ok) return priced;
+
+		const preview = await previewCheckout(
+			{
+				shippingRules: this.#stores.shippingRules,
+				taxRules: this.#stores.taxRules,
+				couponStore: this.#stores.couponStore,
+				clock: this.#stores.clock,
+			},
+			{
+				currency: priced.cart.currency,
+				lines: priced.lines,
+				requiresShipping: priced.requiresShipping,
+				...(input.destination !== undefined
+					? {
+							destination: {
+								country: input.destination.country,
+								...(input.destination.region !== undefined
+									? { region: input.destination.region }
+									: {}),
+							},
+						}
+					: {}),
+				...(input.shippingMethodId !== undefined
+					? { shippingMethodId: input.shippingMethodId }
+					: {}),
+				...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
+			},
+		);
+		if (!preview.ok) return { ok: false, reason: preview.reason };
+		const b = preview.breakdown;
+		const shipping = preview.shipping;
+		return {
+			ok: true,
+			shipping:
+				shipping.status === "resolved"
+					? {
+							status: "resolved",
+							zone: shipping.zone,
+							methods: shipping.methods.map((m) => ({
+								id: m.id,
+								name: m.name,
+								type: m.type,
+								priceCents: m.priceCents,
+							})),
+							selectedMethodId: shipping.selectedMethodId,
+							selectionError: shipping.selectionError,
+						}
+					: shipping,
+			coupon: preview.coupon,
+			breakdown: {
+				currency: b.currency,
+				subtotalCents: b.subtotalCents,
+				discountCents: b.discountCents,
+				shippingCents: b.shippingCents,
+				taxCents: b.taxCents,
+				totalCents: b.totalCents,
+				appliedCouponCode: b.appliedCouponCode ?? null,
+			},
+			selection: preview.selection,
+		};
+	}
+
+	/**
+	 * A cart's lines priced off their live product rows — the per-line price
+	 * resolution the quote and the preview share, including its precedence: a
+	 * line with no product reference cannot be priced and answers
+	 * PRODUCT_NOT_PRICED before any currency comparison happens. Every line's
+	 * projection is fetched in ONE store round trip — a per-line read would be an
+	 * N+1 on the hottest path in checkout.
+	 */
+	async #priceCartLines(cartId: string): Promise<
+		| { ok: true; cart: Cart; lines: TotalsLineInput[]; requiresShipping: boolean }
+		| {
+				ok: false;
+				reason: "CART_NOT_FOUND" | "CART_EMPTY" | "PRODUCT_NOT_PRICED" | "CURRENCY_MISMATCH";
+		  }
+	> {
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
+		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
+
+		const byId = await this.#stores.productCommerce.getManyByProductId(
+			cart.lines
+				.map((line) => line.productId)
+				.filter((id): id is string => id !== null)
+				.map((id) => toProductId(id)),
+		);
+		const lines: TotalsLineInput[] = [];
+		let requiresShipping = false;
+		for (const line of cart.lines) {
+			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			const row = byId.get(toProductId(line.productId)) ?? null;
+			// An unpublished or deleted product is no longer for sale, even from a cart
+			// that held it first — the same liveness rule `createOrderFromCart` applies.
+			if (row === null || !isProductLive(row) || row.price === null) {
+				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			}
+			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
+			if (row.productKind === "physical") requiresShipping = true;
+			lines.push({
+				unitPriceCents: row.price.amount,
+				qty: line.qty,
+				taxClassId: row.taxClass ?? "standard",
+			});
+		}
+		return { ok: true, cart, lines, requiresShipping };
 	}
 
 	/**

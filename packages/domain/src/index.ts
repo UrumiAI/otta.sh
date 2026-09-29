@@ -23,6 +23,26 @@ export {
 	type QuoteResult,
 } from "./pricing/quote.js";
 export {
+	parseShippingRegion,
+	parseShippingRegions,
+	resolveShippingZone,
+	type ParseShippingRegionsResult,
+	type ResolveShippingZoneResult,
+	type ShippingDestination,
+	type ShippingRegion,
+} from "./pricing/shipping-zones.js";
+export {
+	previewCheckout,
+	type CheckoutCouponOutcome,
+	type CheckoutSelection,
+	type CheckoutShipping,
+	type CouponInvalidReason,
+	type OfferedShippingMethod,
+	type PreviewCheckoutCommand,
+	type PreviewCheckoutResult,
+	type ShippingUnavailableReason,
+} from "./pricing/checkout-preview.js";
+export {
 	deleteTaxClass,
 	type DeleteTaxClassDeps,
 	type DeleteTaxClassResult,

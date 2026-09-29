@@ -25,8 +25,15 @@ import {
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	buildCouponView,
+	buildShippingView,
+	totalsOptionsFor,
 } from "../src/storefront/checkout-view-model.js";
-import type { CartLineWire, PublicOrderWire } from "../src/product-commerce/commerce-client.js";
+import type {
+	CartLineWire,
+	CheckoutShippingWire,
+	PublicOrderWire,
+} from "../src/product-commerce/commerce-client.js";
 
 const LOCALE = "en-US";
 
@@ -289,5 +296,70 @@ describe("buildOrderTotal", () => {
 		// Deliberately NOT a CheckoutAmountView: the honest-zero rule is about
 		// components a store never configured, and an order's total is never one.
 		expect(buildOrderTotal(order({ totalCents: 0 }), LOCALE).formatted).toBe("$0.00");
+	});
+});
+
+describe("issue #305 — which totals the preview computed, and the shipping/coupon views", () => {
+	const cases: Array<[CheckoutShippingWire, boolean, boolean]> = [
+		[{ status: "not_required" }, false, false],
+		[{ status: "not_configured" }, false, false],
+		[{ status: "address_required" }, false, false],
+		[{ status: "unavailable", reason: "NO_ZONE_FOR_ADDRESS" }, false, false],
+		[
+			{
+				status: "resolved",
+				zone: { id: "z", name: "Z" },
+				methods: [],
+				selectedMethodId: null,
+				selectionError: null,
+			},
+			false,
+			true,
+		],
+		[
+			{
+				status: "resolved",
+				zone: { id: "z", name: "Z" },
+				methods: [],
+				selectedMethodId: "m",
+				selectionError: null,
+			},
+			true,
+			true,
+		],
+	];
+	test.each(cases)("%j ⇒ shipping %s, tax %s", (shipping, shippingSelected, taxZoneSelected) => {
+		expect(totalsOptionsFor(shipping, "en-US")).toEqual({
+			locale: "en-US",
+			shippingSelected,
+			taxZoneSelected,
+		});
+	});
+
+	test("a resolved zone's method prices and an applied discount are formatted money, never floats", () => {
+		const view = buildShippingView(
+			{
+				status: "resolved",
+				zone: { id: "z-us", name: "US" },
+				methods: [{ id: "m", name: "Standard", type: "flat_rate", priceCents: 599 }],
+				selectedMethodId: "m",
+				selectionError: null,
+			},
+			"USD",
+			"en-US",
+		);
+		expect(view).toMatchObject({
+			methods: [{ id: "m", price: { amount: 599, currency: "USD", formatted: "$5.99" } }],
+		});
+		expect(
+			buildCouponView({ status: "applied", code: "S5", discountCents: 500 }, "USD", "en-US"),
+		).toEqual({
+			status: "applied",
+			code: "S5",
+			discount: { amount: 500, currency: "USD", formatted: "$5.00" },
+		});
+		expect(
+			buildCouponView({ status: "invalid", code: "X", reason: "COUPON_NOT_FOUND" }, "USD", "en-US"),
+		).toEqual({ status: "invalid", code: "X", reason: "COUPON_NOT_FOUND" });
 	});
 });

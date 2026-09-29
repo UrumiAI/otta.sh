@@ -42,6 +42,8 @@ export type CreateOrderFailure =
 	// Phase 6 checkout-pipeline failures (shipping / tax / coupon):
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
+	/** The selected method belongs to another zone than `shippingZoneId`. */
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
 	| "COUPON_NOT_FOUND"
 	| "COUPON_NOT_ACTIVE"
 	| "COUPON_MIN_SUBTOTAL"

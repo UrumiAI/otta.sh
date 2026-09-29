@@ -27,6 +27,10 @@ export interface QuoteCommand {
 export type QuoteFailure =
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
+	/** Both a zone and a method were given and the method belongs to ANOTHER
+	 *  zone (issue #305): shipping priced in one zone and taxed in another would
+	 *  let a buyer pair a cheap method with a different zone's tax. */
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
 	| "COUPON_NOT_FOUND"
 	| CouponValidationFailure;
 
@@ -51,6 +55,9 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 	if (command.methodId !== undefined && command.methodId !== "") {
 		const method = await deps.shippingRules.getMethod(command.methodId);
 		if (method === null) return { ok: false, reason: "SHIPPING_METHOD_NOT_FOUND" };
+		if (command.zoneId !== undefined && command.zoneId !== "" && method.zoneId !== command.zoneId) {
+			return { ok: false, reason: "SHIPPING_METHOD_NOT_IN_ZONE" };
+		}
 		const rate = await deps.shippingRules.getRate(command.methodId, command.currency);
 		if (rate === null) return { ok: false, reason: "SHIPPING_RATE_NOT_FOUND" };
 		shippingMethod = {

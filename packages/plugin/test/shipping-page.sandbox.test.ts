@@ -455,10 +455,47 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		// The page-level context stays terse (≤140) and says nothing about regions.
 		const pageContext = String(findBlocks(blocks, "context")[0]?.text);
 		expect(pageContext.length).toBeLessThanOrEqual(140);
-		expect(pageContext).not.toMatch(/auto-match/i);
+		expect(pageContext).not.toMatch(/matches a buyer's address/i);
 		// The F-8 line moved WITH the form it qualifies, onto the create screen.
 		const screen = await openNewZoneScreen(blocks);
-		expect(contextTexts(screen).some((t) => /auto-match/i.test(t))).toBe(true);
+		expect(contextTexts(screen).some((t) => /matches a buyer's address/i.test(t))).toBe(true);
+	});
+
+	test("issue #305: region codes are validated on create — a country NAME is refused, nothing is written, the draft comes back", async () => {
+		await seedShipping();
+		const before = await shippingRules.listZones();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "uk",
+			name: "United Kingdom",
+			regions: "GB, United Kingdom",
+		});
+		expect(await shippingRules.listZones()).toEqual(before);
+		const banner = bannerOf(blocks);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toContain("United Kingdom");
+		expect(formFor(blocks, "shipping:create-zone")).toBeDefined();
+	});
+
+	test("issue #305: region codes are stored upper-cased, subdivision codes included", async () => {
+		await seedShipping();
+		await submitForm("shipping:create-zone", { id: "west", name: "West", regions: "us-ca, us-or" });
+		expect((await shippingRules.getZone("west"))?.regions).toEqual(["US-CA", "US-OR"]);
+	});
+
+	test("issue #305: a malformed code on edit is refused and the zone is left as it was", async () => {
+		await seedShipping();
+		const usForm = formFor(groupBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "USA", regions: "US, *" },
+			usForm?.block_id,
+		);
+		expect(bannerOf(blocks)?.variant).toBe("error");
+		expect(await shippingRules.getZone("us")).toEqual({
+			id: "us",
+			name: "United States",
+			regions: ["US"],
+		});
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------

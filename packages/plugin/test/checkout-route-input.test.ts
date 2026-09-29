@@ -207,3 +207,77 @@ describe("parseOrderRouteInput", () => {
 		expect(parseOrderRouteInput({ orderId })).toBeNull();
 	});
 });
+
+describe("issue #305 — the address, method and coupon the checkout routes accept", () => {
+	test("summary: the destination is the address's country + region; the other address fields are ignored", () => {
+		expect(
+			parseCheckoutSummaryInput({
+				cartId: "cart-1",
+				shippingAddress: { ...ADDRESS, country: " US ", region: "CA" },
+				shippingMethodId: "m-flat",
+				couponCode: " SAVE5 ",
+			}),
+		).toEqual({
+			cartId: "cart-1",
+			locale: "en",
+			destination: { country: "US", region: "CA" },
+			shippingMethodId: "m-flat",
+			couponCode: "SAVE5",
+		});
+	});
+
+	test("summary: a blank country is 'not entered yet', and blank selections are absent", () => {
+		expect(
+			parseCheckoutSummaryInput({
+				cartId: "cart-1",
+				shippingAddress: { country: "", region: "" },
+				shippingMethodId: "",
+				couponCode: "   ",
+			}),
+		).toEqual({ cartId: "cart-1", locale: "en" });
+	});
+
+	test("summary: a client-sent zone is never part of the parsed input", () => {
+		const parsed = parseCheckoutSummaryInput({
+			cartId: "cart-1",
+			shippingZoneId: "z-cheap",
+		} as Record<string, unknown>);
+		expect(parsed).toEqual({ cartId: "cart-1", locale: "en" });
+	});
+
+	test.each([
+		["a non-object address", { shippingAddress: "US" }],
+		["a non-string country", { shippingAddress: { country: 1 } }],
+		["an over-long region", { shippingAddress: { country: "US", region: "x".repeat(121) } }],
+		["a method id with whitespace", { shippingMethodId: "m flat" }],
+		["a non-string method id", { shippingMethodId: 7 }],
+		["an over-long coupon", { couponCode: "C".repeat(201) }],
+	])("summary rejects %s", (_label, extra) => {
+		expect(parseCheckoutSummaryInput({ cartId: "cart-1", ...extra })).toBeNull();
+	});
+
+	test("place: carries the method and coupon alongside the full ship-to, and never a zone", () => {
+		const parsed = parseCheckoutPlaceInput({
+			cartId: "cart-1",
+			buyerRef: "a@b.co",
+			idempotencyKey: "checkout:cart-1",
+			shippingAddress: ADDRESS,
+			shippingMethodId: "m-flat",
+			couponCode: "SAVE5",
+			shippingZoneId: "z-cheap",
+		} as Record<string, unknown>);
+		expect(parsed).toMatchObject({ shippingMethodId: "m-flat", couponCode: "SAVE5" });
+		expect(parsed).not.toHaveProperty("shippingZoneId");
+	});
+
+	test("place: a malformed method id is a reject, never a silent drop", () => {
+		expect(
+			parseCheckoutPlaceInput({
+				cartId: "cart-1",
+				buyerRef: "a@b.co",
+				idempotencyKey: "checkout:cart-1",
+				shippingMethodId: "m\nflat",
+			}),
+		).toBeNull();
+	});
+});

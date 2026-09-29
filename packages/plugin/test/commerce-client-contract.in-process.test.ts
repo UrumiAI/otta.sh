@@ -198,6 +198,7 @@ function inProcessTier(): CommerceClientTier {
 						...(spec.price !== undefined ? { price: spec.price } : {}),
 						...(spec.title !== undefined ? { title: spec.title } : {}),
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
+						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},
 					spec.idempotencyKey,
 				);

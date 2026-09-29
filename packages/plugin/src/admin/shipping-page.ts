@@ -1,3 +1,4 @@
+import { parseShippingRegion } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -71,13 +72,15 @@ import {
  * accordion wrapping one row would cost a click and save nothing. It keeps
  * its existing inline `fields` + edit-or-create form shape.
  *
- * REGIONS, presented honestly: `ShippingZone.regions` is opaque config the
- * pricing engine never reads (`@otta-sh/domain`'s `ShippingRulesStore` doc:
- * "opaque config the engine never reads") — checkout/quote takes an explicit
- * `shippingZoneId`, not an address-to-zone match. That fact does not fit the
- * zones level's ≤140-char page context, so it lives as one `context` line on
- * the "New shipping zone" create screen instead (F-8) — the one place an
- * operator is about to type into the field it explains.
+ * REGIONS ARE LIVE CONFIG (issue #305): storefront checkout derives a buyer's
+ * zone from their address by matching these codes — ISO country (`US`) or ISO
+ * 3166-2 subdivision (`US-CA`), a subdivision beating its country; the format
+ * and rule live in `@otta-sh/domain`'s `pricing/shipping-zones.ts`. So a
+ * malformed code is refused on save (it would never match), and codes are
+ * stored upper-cased. The explanation does not fit the zones level's
+ * ≤140-char page context, so it lives as one `context` line on the "New
+ * shipping zone" create screen instead (F-8) — the one place an operator is
+ * about to type into the field it explains.
  *
  * NO METHOD/RATE COUNT ON A ZONE OR METHOD LABEL (D-6): `ShippingZoneWire` is
  * `{id, name, regions}` and `ShippingMethodWire` carries no rate count either
@@ -517,7 +520,7 @@ function newZoneScreen(draft: ZoneDraft | undefined, notice: Notice | undefined)
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({
 		type: "context",
-		text: "Regions are a reference list only — checkout does not yet auto-match a buyer's address to a zone.",
+		text: "Checkout matches a buyer's address to a zone by these codes: countries (US) or states (US-CA). A state code beats its country.",
 	});
 	blocks.push(createZoneForm(draft));
 	return blocks;
@@ -550,7 +553,7 @@ function createZoneForm(draft?: ZoneDraft): FormBlock {
 					type: "text_input",
 					action_id: "regions",
 					label: "Regions (comma-separated, blank = none)",
-					placeholder: "e.g. US",
+					placeholder: "e.g. US, US-CA",
 					...prefill(draft?.regions),
 				},
 			],
@@ -1296,7 +1299,15 @@ function createZoneAction() {
 					{ kind: "new-zone", draft },
 				);
 			}
-			const regions = parseRegionsInput(readString(values.regions) ?? "");
+			const parsedRegions = parseRegionsInput(readString(values.regions) ?? "");
+			if (!parsedRegions.ok) {
+				return showList(
+					undefined,
+					invalidRegionsNotice("Zone not created", parsedRegions.invalid),
+					{ kind: "new-zone", draft },
+				);
+			}
+			const regions = parsedRegions.regions;
 			const result = await client.createZone({ id, name, regions });
 			const notice = createZoneNotice(result, id, name);
 			// A SERVICE refusal keeps the draft too (a duplicate id is one edit
@@ -1343,8 +1354,11 @@ function saveZoneAction() {
 				description: "Name cannot be blank.",
 			});
 		}
-		const regions = parseRegionsInput(readString(values.regions) ?? "");
-		const result = await client.updateZone(zoneId, { name, regions });
+		const parsedRegions = parseRegionsInput(readString(values.regions) ?? "");
+		if (!parsedRegions.ok) {
+			return showList(undefined, invalidRegionsNotice("Zone not saved", parsedRegions.invalid));
+		}
+		const result = await client.updateZone(zoneId, { name, regions: parsedRegions.regions });
 		return showList(undefined, saveZoneNotice(result));
 	});
 }
@@ -1744,17 +1758,34 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 	};
 }
 
-// -- regions (opaque, string[]-or-null) helpers ---------------------------------
+// -- regions (string[]-or-null) helpers ------------------------------------------
+// Checkout DERIVES a buyer's zone from these codes (issue #305; the format and
+// matching rule are `@otta-sh/domain`'s `shipping-zones.ts`): an ISO country
+// code (`US`) or an ISO 3166-2 subdivision (`US-CA`). A malformed entry would
+// silently never match, so it is refused here, on save, where it can be fixed.
 
 /** Parse the comma-separated regions text input into the wire's `string[] |
  *  null` — blank ⇒ `null` (an explicit clear on edit; simply "no regions" on
- *  create). Never throws: any token that trims to empty is dropped. */
-function parseRegionsInput(raw: string): string[] | null {
+ *  create). Tokens are trimmed, blanks dropped and codes upper-cased; any token
+ *  that is not a country or subdivision code is returned in `invalid`. */
+function parseRegionsInput(
+	raw: string,
+): { ok: true; regions: string[] | null } | { ok: false; invalid: string[] } {
 	const parts = raw
 		.split(",")
 		.map((p) => p.trim())
 		.filter((p) => p.length > 0);
-	return parts.length > 0 ? parts : null;
+	const invalid = parts.filter((p) => parseShippingRegion(p) === null);
+	if (invalid.length > 0) return { ok: false, invalid };
+	return { ok: true, regions: parts.length > 0 ? parts.map((p) => p.toUpperCase()) : null };
+}
+
+function invalidRegionsNotice(title: string, invalid: string[]): Notice {
+	return {
+		variant: "error",
+		title,
+		description: `Not a region code: ${invalid.join(", ")}. Use country codes like US or GB, or state codes like US-CA.`,
+	};
 }
 
 /** Pre-fill the regions text input from whatever the wire returned — only a

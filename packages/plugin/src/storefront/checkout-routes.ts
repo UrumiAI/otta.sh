@@ -29,6 +29,7 @@ import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
 	CartFailureReason,
 	CheckoutFailureReason,
+	CheckoutPreviewResult,
 	ClientActionWire,
 	QuoteFailureReason,
 } from "../product-commerce/commerce-client.js";
@@ -47,11 +48,16 @@ import {
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	buildCouponView,
 	buildOrderTotal,
 	buildOrderView,
+	buildShippingView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
+	totalsOptionsFor,
+	type CheckoutCouponView,
 	type CheckoutLineView,
+	type CheckoutShippingView,
 	type CheckoutTotalsView,
 	type PublicOrderView,
 } from "./checkout-view-model.js";
@@ -71,6 +77,14 @@ const PAYMENT_METHOD = "stripe" as const;
 export interface CheckoutSummaryRouteInput {
 	cartId?: unknown;
 	locale?: unknown;
+	/** The ship-to as far as the buyer has filled it in; only `country` and
+	 *  `region` are read (they derive the zone). */
+	shippingAddress?: unknown;
+	/** A method from the DERIVED zone's offered list. */
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
+	// NO zone field, deliberately (issue #305): a body that carries one has it
+	// ignored — the zone is derived from `shippingAddress`, server-side.
 }
 
 export interface CheckoutPlaceRouteInput {
@@ -80,6 +94,10 @@ export interface CheckoutPlaceRouteInput {
 	 *  (`checkoutIdempotencyKey` is how the summary derives it). */
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	/** The method the buyer chose on the review page. It must be one the zone
+	 *  DERIVED from `shippingAddress` offers; there is no zone field to send. */
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
 	/** For `total.formatted` only — the same `sanitizeLocale` default the other
 	 *  two routes take, so the amount on the pay button reads exactly like the
 	 *  total the buyer just approved on the review page. */
@@ -104,6 +122,9 @@ export type CheckoutSummaryRouteResult =
 			 *  ordered at all (`PRODUCT_NOT_PRICED`), so the page must not offer a
 			 *  payable-looking button on the strength of the totals alone. */
 			hasUnpricedLines: boolean;
+			/** The derived zone, its methods priced for this cart, and the choice. */
+			shipping: CheckoutShippingView;
+			coupon: CheckoutCouponView;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason | QuoteFailureReason }
@@ -139,8 +160,25 @@ export type CheckoutPlaceRouteResult =
 			total?: CartMoneyWire;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
-	| { ok: false; reason: CheckoutFailureReason }
+	| { ok: false; reason: CheckoutFailureReason | QuoteFailureReason | CheckoutShippingRefusal }
 	| { ok: false; error: "RENDER_FAILED" };
+
+/**
+ * Why `place` refused before any order existed, on shipping grounds (issue
+ * #305). Each is checked against the zone DERIVED from the submitted address:
+ *  - `SHIPPING_ADDRESS_REQUIRED` — a cart that ships, in a store that has
+ *    shipping zones, sent no address;
+ *  - `SHIPPING_UNAVAILABLE_FOR_ADDRESS` — no zone lists that address (or its
+ *    zone has no method priced in the cart's currency);
+ *  - `SHIPPING_METHOD_REQUIRED` — the zone offers methods and none was chosen;
+ *  - `SHIPPING_METHOD_NOT_AVAILABLE` — the chosen method is not one this
+ *    address's zone offers.
+ */
+export type CheckoutShippingRefusal =
+	| "SHIPPING_ADDRESS_REQUIRED"
+	| "SHIPPING_UNAVAILABLE_FOR_ADDRESS"
+	| "SHIPPING_METHOD_REQUIRED"
+	| "SHIPPING_METHOD_NOT_AVAILABLE";
 
 export type OrderRouteResult =
 	| { ok: true; order: PublicOrderView }
@@ -187,29 +225,38 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				pricing = DEGRADED_CART_PRICING;
 			}
 
-			// The quote is the authority on every total — and on whether this cart
+			// The preview is the authority on every total — and on whether this cart
 			// can be ordered at all: CART_EMPTY / PRODUCT_NOT_PRICED /
 			// CURRENCY_MISMATCH arrive here as TYPED reasons the theme turns into a
-			// redirect or honest copy, never a half-rendered payable page.
-			const quote = await client.quoteCheckout({ cartId: input.cartId });
-			if (!quote.ok) return { ok: false as const, reason: quote.reason };
+			// redirect or honest copy, never a half-rendered payable page. It
+			// derives the shipping zone from the address (issue #305) — never from
+			// the request — and prices tax in that same zone.
+			const preview = await client.previewCheckout({
+				cartId: input.cartId,
+				...(input.destination !== undefined ? { destination: input.destination } : {}),
+				...(input.shippingMethodId !== undefined
+					? { shippingMethodId: input.shippingMethodId }
+					: {}),
+				...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
+			});
+			if (!preview.ok) return { ok: false as const, reason: preview.reason };
 
 			return {
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
 				lines: buildCheckoutLines(cart.lines, pricing),
-				totals: buildCheckoutTotals(quote.breakdown, {
-					locale: input.locale,
-					// No coupon or shipping-method selection is offered this slice
-					// (plan §7.2), so nothing was passed to the quote and neither
-					// component was computed — say so, rather than rendering the
-					// pipeline's synthetic zeros as "Free" / "$0.00".
-					shippingSelected: false,
-					taxZoneSelected: false,
-				}),
+				// A component the preview did not compute (no method chosen, no zone
+				// derived, nothing configured) is reported as uncomputed rather than
+				// rendering the pipeline's synthetic zeros as "Free" / "$0.00".
+				totals: buildCheckoutTotals(
+					preview.breakdown,
+					totalsOptionsFor(preview.shipping, input.locale),
+				),
 				idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 				hasUnpricedLines: !pricing.allLinesPriced,
+				shipping: buildShippingView(preview.shipping, preview.breakdown.currency, input.locale),
+				coupon: buildCouponView(preview.coupon, preview.breakdown.currency, input.locale),
 			};
 		});
 }
@@ -225,14 +272,43 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 
 			const client = await makeCommerceClient(ctx);
+
+			// Issue #305: derive the zone from the SUBMITTED address, server-side —
+			// the body has no zone field and a spoofed one is never read — and check
+			// the chosen method against that zone before anything is minted. The
+			// coupon is deliberately NOT previewed here: `createOrder` validates and
+			// redeems it itself, AFTER its idempotency short-circuit, so a replay of
+			// a checkout that used a coupon's last redemption still returns its
+			// order instead of COUPON_EXHAUSTED.
+			const address = input.shippingAddress;
+			const preview = await client.previewCheckout({
+				cartId: input.cartId,
+				...(address !== undefined
+					? {
+							destination: {
+								country: address.country,
+								...(address.region !== undefined ? { region: address.region } : {}),
+							},
+						}
+					: {}),
+				...(input.shippingMethodId !== undefined
+					? { shippingMethodId: input.shippingMethodId }
+					: {}),
+			});
+			if (!preview.ok) return { ok: false as const, reason: preview.reason };
+			const refusal = shippingRefusal(preview.shipping);
+			if (refusal !== null) return { ok: false as const, reason: refusal };
+			const { shippingZoneId, shippingMethodId } = preview.selection;
+
 			const result = await client.createOrder(
 				{
 					cartId: input.cartId,
 					paymentMethod: PAYMENT_METHOD,
 					buyerRef: input.buyerRef,
-					...(input.shippingAddress !== undefined
-						? { shippingAddress: input.shippingAddress }
-						: {}),
+					...(address !== undefined ? { shippingAddress: address } : {}),
+					...(shippingZoneId !== null ? { shippingZoneId } : {}),
+					...(shippingMethodId !== null ? { shippingMethodId } : {}),
+					...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 				},
 				input.idempotencyKey,
 			);
@@ -265,6 +341,29 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				...(total !== undefined ? { total } : {}),
 			};
 		});
+}
+
+/**
+ * The shipping precondition `place` enforces, or null when the order may be
+ * minted. Only a `resolved` zone with an offered method chosen ships; a
+ * digital-only cart (`not_required`) and a store with no zones at all
+ * (`not_configured`) keep today's behaviour and need neither.
+ */
+function shippingRefusal(
+	shipping: Extract<CheckoutPreviewResult, { ok: true }>["shipping"],
+): CheckoutShippingRefusal | null {
+	switch (shipping.status) {
+		case "not_required":
+		case "not_configured":
+			return null;
+		case "address_required":
+			return "SHIPPING_ADDRESS_REQUIRED";
+		case "unavailable":
+			return "SHIPPING_UNAVAILABLE_FOR_ADDRESS";
+		case "resolved":
+			if (shipping.selectionError !== null) return "SHIPPING_METHOD_NOT_AVAILABLE";
+			return shipping.selectedMethodId === null ? "SHIPPING_METHOD_REQUIRED" : null;
+	}
 }
 
 /**

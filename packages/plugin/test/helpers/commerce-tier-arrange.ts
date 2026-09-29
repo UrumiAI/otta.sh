@@ -51,7 +51,7 @@ export interface CommerceTierSeedPorts {
  *  the tier. */
 export type SharedTierSeeders = Pick<
 	CommerceClientTierArrange,
-	"order" | "address" | "shippingMethod" | "coupon" | "taxClass"
+	"order" | "address" | "shippingMethod" | "coupon" | "taxClass" | "taxRate"
 >;
 
 /**
@@ -118,7 +118,11 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 		},
 
 		async shippingMethod(spec) {
-			await ports.shippingRules.createZone({ id: spec.zoneId, name: spec.zoneId, regions: null });
+			await ports.shippingRules.createZone({
+				id: spec.zoneId,
+				name: spec.zoneId,
+				regions: spec.regions ?? null,
+			});
 			await ports.shippingRules.createMethod({
 				id: spec.methodId,
 				zoneId: spec.zoneId,
@@ -144,6 +148,16 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 		// surface that is not folded in yet.
 		async taxClass(spec) {
 			await ports.taxRules.createClass({ id: spec.id, name: spec.name });
+		},
+
+		async taxRate(spec) {
+			await ports.taxRules.createRate({
+				id: spec.id,
+				taxClassId: spec.taxClassId,
+				zoneId: spec.zoneId,
+				rateBps: spec.rateBps,
+				appliesToShipping: spec.appliesToShipping ?? false,
+			});
 		},
 
 		async coupon(spec) {

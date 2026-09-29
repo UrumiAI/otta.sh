@@ -26,6 +26,8 @@ import { cents, currency } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
 import type {
 	CartLineWire,
+	CheckoutCouponWire,
+	CheckoutShippingWire,
 	PaymentIntentWire,
 	PublicOrderWire,
 	QuoteBreakdownWire,
@@ -121,6 +123,95 @@ export function buildCheckoutTotals(
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
 		totalExcludesUncalculated: !options.shippingSelected || !options.taxZoneSelected,
+	};
+}
+
+/** One shipping method the derived zone offers, with its price for this cart. */
+export interface ShippingMethodView {
+	id: string;
+	name: string;
+	type: "flat_rate" | "free_shipping";
+	price: CartMoneyWire;
+}
+
+/**
+ * The shipping block of the review page (issue #305). The zone is DERIVED from
+ * the address and shown for information; the buyer chooses only among
+ * `methods`. Every non-`resolved` status is a distinct, honest state the theme
+ * words on its own — never a silent zero.
+ */
+export type CheckoutShippingView =
+	| { status: "not_required" }
+	| { status: "not_configured" }
+	| { status: "address_required" }
+	| { status: "unavailable"; reason: "NO_ZONE_FOR_ADDRESS" | "NO_METHOD_FOR_ZONE" }
+	| {
+			status: "resolved";
+			zone: { id: string; name: string };
+			methods: ShippingMethodView[];
+			selectedMethodId: string | null;
+			selectionError: "SHIPPING_METHOD_NOT_AVAILABLE" | null;
+	  };
+
+/** The coupon outcome, with an applied discount formatted for display. */
+export type CheckoutCouponView =
+	| { status: "none" }
+	| { status: "applied"; code: string; discount: CartMoneyWire }
+	| {
+			status: "invalid";
+			code: string;
+			reason: Extract<CheckoutCouponWire, { status: "invalid" }>["reason"];
+	  };
+
+export function buildShippingView(
+	shipping: CheckoutShippingWire,
+	currencyCode: string,
+	locale: string,
+): CheckoutShippingView {
+	if (shipping.status !== "resolved") return shipping;
+	const code = currency(currencyCode);
+	return {
+		status: "resolved",
+		zone: shipping.zone,
+		methods: shipping.methods.map((m) => ({
+			id: m.id,
+			name: m.name,
+			type: m.type,
+			price: money(m.priceCents, code, locale),
+		})),
+		selectedMethodId: shipping.selectedMethodId,
+		selectionError: shipping.selectionError,
+	};
+}
+
+export function buildCouponView(
+	coupon: CheckoutCouponWire,
+	currencyCode: string,
+	locale: string,
+): CheckoutCouponView {
+	if (coupon.status !== "applied") return coupon;
+	return {
+		status: "applied",
+		code: coupon.code,
+		discount: money(coupon.discountCents, currency(currencyCode), locale),
+	};
+}
+
+/**
+ * Which totals components the preview actually computed: shipping once a
+ * method in the derived zone is chosen, tax once a zone was derived at all.
+ * Every other state (digital-only, nothing configured, no address yet, no zone
+ * for the address) computed neither, and says so.
+ */
+export function totalsOptionsFor(
+	shipping: CheckoutShippingWire,
+	locale: string,
+): CheckoutTotalsOptions {
+	const resolved = shipping.status === "resolved";
+	return {
+		locale,
+		shippingSelected: resolved && shipping.selectedMethodId !== null,
+		taxZoneSelected: resolved,
 	};
 }
 

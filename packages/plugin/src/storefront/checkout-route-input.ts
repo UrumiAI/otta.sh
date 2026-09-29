@@ -17,7 +17,10 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
-import type { ShippingAddressWire } from "../product-commerce/commerce-client.js";
+import type {
+	ShippingAddressWire,
+	ShippingDestinationWire,
+} from "../product-commerce/commerce-client.js";
 import { sanitizeLocale } from "./route-input.js";
 
 /** `checkoutBody.buyerRef` — `z.string().min(1).max(320)`. */
@@ -36,12 +39,30 @@ const ADDRESS_FIELDS = {
 	phone: { max: 64, required: false },
 } as const satisfies Record<keyof ShippingAddressWire, { max: number; required: boolean }>;
 
-export interface CheckoutSummaryParsedInput {
-	cartId: string;
-	locale: string;
+/** A shipping-method id: the commerce client's id-token rule (printable ASCII,
+ *  no whitespace, ≤200), checked here so a bad one is INVALID_INPUT and never a
+ *  RENDER_FAILED from deeper in. */
+const METHOD_ID = /^[\x21-\x7e]{1,200}$/;
+
+/** `couponCode` — the quote's own `1..200` bound, after trimming. */
+const COUPON_CODE_MAX = 200;
+
+/** The optional checkout selections both routes take (issue #305). There is
+ *  deliberately NO zone field: the zone is derived from the address. */
+export interface CheckoutSelectionInput {
+	shippingMethodId?: string;
+	couponCode?: string;
 }
 
-export interface CheckoutPlaceParsedInput {
+export interface CheckoutSummaryParsedInput extends CheckoutSelectionInput {
+	cartId: string;
+	locale: string;
+	/** Only the fields zone derivation reads — the summary is shown before the
+	 *  buyer has typed a full address. */
+	destination?: ShippingDestinationWire;
+}
+
+export interface CheckoutPlaceParsedInput extends CheckoutSelectionInput {
 	cartId: string;
 	buyerRef: string;
 	idempotencyKey: string;
@@ -63,13 +84,86 @@ function nonEmptyString(value: unknown, max = 200): string | null {
 	return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
 }
 
+/**
+ * The two optional selections. Blank (what an untouched form field submits) is
+ * ABSENT; a present value that breaks its bound is a reject, never a drop — a
+ * silently dropped coupon would price an order the buyer did not ask for.
+ */
+function parseSelection(input: {
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
+}): CheckoutSelectionInput | null {
+	const out: CheckoutSelectionInput = {};
+	const method = optionalString(input.shippingMethodId);
+	if (method === null) return null;
+	if (method !== undefined) {
+		if (!METHOD_ID.test(method)) return null;
+		out.shippingMethodId = method;
+	}
+	const coupon = optionalString(input.couponCode);
+	if (coupon === null) return null;
+	if (coupon !== undefined) {
+		if (coupon.length > COUPON_CODE_MAX) return null;
+		out.couponCode = coupon;
+	}
+	return out;
+}
+
+/** undefined ⇒ absent (missing, null or blank); null ⇒ a non-string (reject). */
+function optionalString(value: unknown): string | undefined | null {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * The summary's destination: the address's `country` (required when an address
+ * is sent at all) and optional `region`, with the ship-to's own bounds. Other
+ * address fields may ride along (the page posts the whole form) and are ignored
+ * here — the summary prices, it does not capture. A BLANK country is "not
+ * entered yet" (`undefined`), not a reject: the review page renders before the
+ * buyer has picked one.
+ */
+export function parseShippingDestination(
+	value: unknown,
+): ShippingDestinationWire | undefined | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const raw = value as Record<string, unknown>;
+	const country = optionalString(raw.country);
+	if (country === null || (country !== undefined && country.length > ADDRESS_FIELDS.country.max)) {
+		return null;
+	}
+	if (country === undefined) return undefined;
+	const region = optionalString(raw.region);
+	if (region === null || (region !== undefined && region.length > ADDRESS_FIELDS.region.max)) {
+		return null;
+	}
+	return region === undefined ? { country } : { country, region };
+}
+
 export function parseCheckoutSummaryInput(input: {
 	cartId?: unknown;
 	locale?: unknown;
+	shippingAddress?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
 }): CheckoutSummaryParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	if (cartId === null) return null;
-	return { cartId, locale: sanitizeLocale(input.locale) };
+	const selection = parseSelection(input);
+	if (selection === null) return null;
+	const parsed: CheckoutSummaryParsedInput = {
+		cartId,
+		locale: sanitizeLocale(input.locale),
+		...selection,
+	};
+	if (input.shippingAddress !== undefined && input.shippingAddress !== null) {
+		const destination = parseShippingDestination(input.shippingAddress);
+		if (destination === null) return null;
+		if (destination !== undefined) parsed.destination = destination;
+	}
+	return parsed;
 }
 
 export function parseOrderRouteInput(input: {
@@ -86,6 +180,8 @@ export function parseCheckoutPlaceInput(input: {
 	buyerRef?: unknown;
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	shippingMethodId?: unknown;
+	couponCode?: unknown;
 	locale?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
@@ -99,11 +195,15 @@ export function parseCheckoutPlaceInput(input: {
 	const idempotencyKey = nonEmptyString(input.idempotencyKey);
 	if (cartId === null || buyerRef === null || idempotencyKey === null) return null;
 
+	const selection = parseSelection(input);
+	if (selection === null) return null;
+
 	const parsed: CheckoutPlaceParsedInput = {
 		cartId,
 		buyerRef,
 		idempotencyKey,
 		locale: sanitizeLocale(input.locale),
+		...selection,
 	};
 
 	if (input.shippingAddress !== undefined) {

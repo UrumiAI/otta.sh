@@ -148,7 +148,13 @@ export type DeleteShippingRateResult = { ok: true } | { ok: false; reason: "not_
 export interface ShippingZone {
 	id: string;
 	name: string;
-	/** Country/state/postal match list — opaque config the engine never reads. */
+	/**
+	 * The zone's match list: a `string[]` of ISO 3166-1 alpha-2 country codes
+	 * (`US`) and ISO 3166-2 subdivision codes (`US-CA`), or null for none. Typed
+	 * `unknown` because stored rows predate validation; checkout reads it only
+	 * through `resolveShippingZone` (`pricing/shipping-zones.ts`), which derives
+	 * the buyer's zone from their address and ignores malformed entries.
+	 */
 	regions: unknown;
 }
 

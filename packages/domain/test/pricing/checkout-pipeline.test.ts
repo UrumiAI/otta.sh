@@ -1,4 +1,10 @@
-import { cents, createOrderFromCart, currency, idempotencyKey } from "@otta-sh/domain";
+import {
+	cents,
+	createOrderFromCart,
+	currency,
+	idempotencyKey,
+	previewCheckout,
+} from "@otta-sh/domain";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "../orders/fake-harness.js";
 
@@ -370,5 +376,119 @@ describe("checkout pipeline (Phase 6): totals reflect coupon/shipping/tax", () =
 			checkoutCmd(cartId, { couponCode: "ONCE" }),
 		);
 		expect(res).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+	});
+
+	test("issue #305: a method outside the order's zone is refused SHIPPING_METHOD_NOT_IN_ZONE — a buyer cannot pair a cheap method with another zone's tax", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await seedRules(h);
+		await h.shippingRules.createZone({ id: "z-ca", name: "Canada", regions: ["CA"] });
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { shippingZoneId: "z-ca", shippingMethodId: "m-flat" }),
+		);
+		expect(res).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_IN_ZONE" });
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey("k-checkout"))).toBeNull();
+	});
+
+	test("issue #305: the order placed with a preview's selection carries EXACTLY the preview's totals", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await h.shippingRules.createZone({ id: "z-us", name: "US", regions: ["US"] });
+		await h.shippingRules.createMethod({
+			id: "m-flat",
+			zoneId: "z-us",
+			name: "Flat",
+			type: "flat_rate",
+		});
+		await h.shippingRules.createRate({
+			methodId: "m-flat",
+			currency: USD,
+			amountCents: cents(599),
+			minSubtotalCents: null,
+		});
+		await h.taxRules.createRate({
+			id: "t-std",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 825,
+			appliesToShipping: true,
+		});
+		await h.couponStore.create({
+			id: "cpn",
+			code: "SAVE3",
+			type: "fixed_amount",
+			amountCents: cents(300),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 10,
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 3, kind: "physical" }]);
+
+		const preview = await previewCheckout(
+			{
+				shippingRules: h.shippingRules,
+				taxRules: h.taxRules,
+				couponStore: h.couponStore,
+				clock: h.clock,
+			},
+			{
+				currency: USD,
+				lines: [{ unitPriceCents: cents(1000), qty: 3, taxClassId: "standard" }],
+				requiresShipping: true,
+				destination: { country: "US", region: "TX" },
+				shippingMethodId: "m-flat",
+				couponCode: "SAVE3",
+			},
+		);
+		expect(preview.ok).toBe(true);
+		if (!preview.ok) return;
+		const { selection } = preview;
+		expect(selection).toEqual({
+			shippingZoneId: "z-us",
+			shippingMethodId: "m-flat",
+			couponCode: "SAVE3",
+		});
+
+		const res = await createOrderFromCart(h.createDeps, {
+			...checkoutCmd(cartId),
+			shippingZoneId: selection.shippingZoneId ?? undefined,
+			shippingMethodId: selection.shippingMethodId ?? undefined,
+			couponCode: selection.couponCode ?? undefined,
+		});
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const t = res.order.totals;
+		expect({
+			subtotal: t.subtotal,
+			discount: t.discount,
+			shipping: t.shipping,
+			tax: t.tax,
+			total: t.total,
+		}).toEqual({
+			subtotal: preview.breakdown.subtotalCents,
+			discount: preview.breakdown.discountCents,
+			shipping: preview.breakdown.shippingCents,
+			tax: preview.breakdown.taxCents,
+			total: preview.breakdown.totalCents,
+		});
+		// 3000 − 300 = 2700; +599; tax 8.25% of 2700 (223, half-up of 222.75) + of 599 (49).
+		expect(t.total).toBe(2700 + 599 + 223 + 49);
 	});
 });

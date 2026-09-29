@@ -125,6 +125,11 @@ export {
 	type CouponStoreHarness,
 	type CouponStoreContractOptions,
 } from "./coupon-store-contract.js";
+export {
+	checkoutPreviewContract,
+	type CheckoutPreviewHarness,
+	type CheckoutPreviewContractOptions,
+} from "./checkout-preview-contract.js";
 // Phase 7: reporting + settings fakes, contract suites, and the shared fixture.
 export {
 	InMemoryReportingStore,

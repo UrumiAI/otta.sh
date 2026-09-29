@@ -736,6 +736,8 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
 				hasUnpricedLines: false,
+				shipping: { status: "not_configured" },
+				coupon: { status: "none" },
 			}),
 		).toBeNull();
 	});

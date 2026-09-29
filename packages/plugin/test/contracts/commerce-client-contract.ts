@@ -173,6 +173,9 @@ export interface ArrangedProduct {
 	 *  sellable one, because every sell path refuses an unpublished row. A case about
 	 *  the gate itself passes `false` and drives the flips it asserts on. */
 	published?: boolean;
+	/** Defaults to the port's own default (physical). A digital line ships
+	 *  nothing, which is what the checkout preview's `not_required` turns on. */
+	productKind?: "physical" | "digital";
 	idempotencyKey: string;
 }
 
@@ -212,6 +215,17 @@ export interface ArrangedShippingMethod {
 	zoneId: string;
 	methodId: string;
 	rate?: CommerceMoney;
+	/** The zone's `regions` (the admin Shipping page's format); default none. */
+	regions?: string[];
+}
+
+/** One tax rate for a (class, zone). */
+export interface ArrangedTaxRate {
+	id: string;
+	taxClassId: string;
+	zoneId: string;
+	rateBps: number;
+	appliesToShipping?: boolean;
 }
 
 /**
@@ -253,6 +267,8 @@ export interface CommerceClientTierArrange {
 	shippingMethod(spec: ArrangedShippingMethod): Promise<void>;
 	/** Seed one coupon. */
 	coupon(spec: ArrangedCoupon): Promise<void>;
+	/** Seed one tax rate. */
+	taxRate(spec: ArrangedTaxRate): Promise<void>;
 	/** Seed one tax-class registry entry. Seeded through the port on both tiers —
 	 *  the admin rules client that would otherwise create one is a surface the
 	 *  products slice must not depend on. */
@@ -1492,6 +1508,194 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				ok: false,
 				reason: "COUPON_CURRENCY_MISMATCH",
 			});
+		});
+
+		// ── the checkout preview (issue #305): zone derived from the address ──
+
+		/** A zone per region list, one flat method in it, and a standard tax rate. */
+		async function zoneWithTax(spec: {
+			tag: string;
+			regions: string[];
+			shipping: number;
+			taxBps: number;
+			taxesShipping?: boolean;
+		}): Promise<void> {
+			await tier.arrange.shippingMethod({
+				zoneId: `zone-p-${spec.tag}`,
+				methodId: `method-p-${spec.tag}`,
+				rate: { amount: spec.shipping, currency: "USD" },
+				regions: spec.regions,
+			});
+			await tier.arrange.taxRate({
+				id: `tax-p-${spec.tag}`,
+				taxClassId: "standard",
+				zoneId: `zone-p-${spec.tag}`,
+				rateBps: spec.taxBps,
+				appliesToShipping: spec.taxesShipping ?? false,
+			});
+		}
+
+		test("previewCheckout derives the zone from the address and offers ITS methods, priced for the cart", async () => {
+			await zoneWithTax({ tag: "us", regions: ["US"], shipping: 599, taxBps: 1000 });
+			await zoneWithTax({ tag: "ca", regions: ["CA"], shipping: 1299, taxBps: 500 });
+			const cartId = await pricedCart("pv-offer");
+
+			const preview = await client.previewCheckout({ cartId, destination: { country: "US" } });
+
+			expect(preview.ok).toBe(true);
+			if (!preview.ok) throw new Error("unreachable");
+			expect(preview.shipping).toEqual({
+				status: "resolved",
+				zone: { id: "zone-p-us", name: "zone-p-us" },
+				methods: [{ id: "method-p-us", name: "method-p-us", type: "flat_rate", priceCents: 599 }],
+				selectedMethodId: null,
+				selectionError: null,
+			});
+			// No method chosen yet: no shipping charged, the line tax already priced.
+			expect(preview.breakdown).toMatchObject({
+				shippingCents: 0,
+				taxCents: 300,
+				totalCents: 3300,
+			});
+		});
+
+		test("previewCheckout with a method chosen charges shipping, and taxes it in the SAME derived zone", async () => {
+			await zoneWithTax({
+				tag: "gb",
+				regions: ["GB"],
+				shipping: 500,
+				taxBps: 2000,
+				taxesShipping: true,
+			});
+			const cartId = await pricedCart("pv-chosen");
+
+			const preview = await client.previewCheckout({
+				cartId,
+				destination: { country: "gb" },
+				shippingMethodId: "method-p-gb",
+			});
+
+			expect(preview.ok).toBe(true);
+			if (!preview.ok) throw new Error("unreachable");
+			// 3000 + 500 shipping + 20% of 3000 (600) + 20% of 500 (100).
+			expect(preview.breakdown).toMatchObject({
+				subtotalCents: 3000,
+				shippingCents: 500,
+				taxCents: 700,
+				totalCents: 4200,
+			});
+			expect(preview.selection).toEqual({
+				shippingZoneId: "zone-p-gb",
+				shippingMethodId: "method-p-gb",
+				couponCode: null,
+			});
+		});
+
+		test("previewCheckout refuses another zone's method for this address — the tax zone cannot be picked by picking a method", async () => {
+			await zoneWithTax({ tag: "de", regions: ["DE"], shipping: 700, taxBps: 1900 });
+			await zoneWithTax({ tag: "ch", regions: ["CH"], shipping: 100, taxBps: 0 });
+			const cartId = await pricedCart("pv-spoof");
+
+			const preview = await client.previewCheckout({
+				cartId,
+				destination: { country: "DE" },
+				shippingMethodId: "method-p-ch",
+			});
+
+			expect(preview.ok).toBe(true);
+			if (!preview.ok) throw new Error("unreachable");
+			expect(preview.shipping).toMatchObject({
+				status: "resolved",
+				zone: { id: "zone-p-de" },
+				selectedMethodId: null,
+				selectionError: "SHIPPING_METHOD_NOT_AVAILABLE",
+			});
+			expect(preview.breakdown).toMatchObject({ shippingCents: 0, taxCents: 570 });
+		});
+
+		test("previewCheckout for an address no zone lists is the typed NO_ZONE_FOR_ADDRESS", async () => {
+			await zoneWithTax({ tag: "fr", regions: ["FR"], shipping: 800, taxBps: 2000 });
+			const cartId = await pricedCart("pv-nozone");
+
+			const preview = await client.previewCheckout({ cartId, destination: { country: "JP" } });
+
+			expect(preview.ok).toBe(true);
+			if (!preview.ok) throw new Error("unreachable");
+			expect(preview.shipping).toEqual({ status: "unavailable", reason: "NO_ZONE_FOR_ADDRESS" });
+			expect(preview.selection.shippingZoneId).toBeNull();
+			expect(preview.breakdown).toMatchObject({ shippingCents: 0, taxCents: 0 });
+		});
+
+		test("previewCheckout of a digital-only cart needs no zone — shipping is not_required", async () => {
+			await zoneWithTax({ tag: "dig", regions: ["US"], shipping: 599, taxBps: 1000 });
+			const productId = await tier.arrange.product({
+				productId: "prod-pv-digital",
+				sku: "SKU-PV-DIGITAL",
+				price: { amount: 1500, currency: "USD" },
+				productKind: "digital",
+				idempotencyKey: "pv-seed-digital",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-PV-DIGITAL", productId, 1, "pv-add-dig");
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+			const preview = await client.previewCheckout({ cartId });
+
+			expect(preview).toMatchObject({
+				ok: true,
+				shipping: { status: "not_required" },
+				breakdown: { shippingCents: 0, taxCents: 0, totalCents: 1500 },
+			});
+		});
+
+		test("previewCheckout reports a valid coupon applied and an invalid or expired one with its reason", async () => {
+			await zoneWithTax({ tag: "cpn", regions: ["NL"], shipping: 400, taxBps: 0 });
+			await tier.arrange.coupon({
+				id: "cpn-pv-ok",
+				code: "PV-OK",
+				amount: { amount: 500, currency: "USD" },
+			});
+			await tier.arrange.coupon({
+				id: "cpn-pv-old",
+				code: "PV-OLD",
+				amount: { amount: 500, currency: "USD" },
+				expiresAt: "2000-01-01T00:00:00.000Z",
+			});
+			const cartId = await pricedCart("pv-cpn");
+			const base = { cartId, destination: { country: "NL" }, shippingMethodId: "method-p-cpn" };
+
+			const ok = await client.previewCheckout({ ...base, couponCode: "PV-OK" });
+			expect(ok).toMatchObject({
+				ok: true,
+				coupon: { status: "applied", code: "PV-OK", discountCents: 500 },
+				breakdown: { discountCents: 500, shippingCents: 400, totalCents: 2900 },
+				selection: { couponCode: "PV-OK" },
+			});
+			for (const [code, reason] of [
+				["PV-NOPE", "COUPON_NOT_FOUND"],
+				["PV-OLD", "COUPON_NOT_ACTIVE"],
+			] as const) {
+				const bad = await client.previewCheckout({ ...base, couponCode: code });
+				expect(bad).toMatchObject({
+					ok: true,
+					coupon: { status: "invalid", code, reason },
+					breakdown: { discountCents: 0, totalCents: 3400 },
+					selection: { couponCode: null },
+				});
+			}
+		});
+
+		test("a quote pairing a zone with ANOTHER zone's method refuses SHIPPING_METHOD_NOT_IN_ZONE", async () => {
+			await zoneWithTax({ tag: "it", regions: ["IT"], shipping: 900, taxBps: 2200 });
+			await zoneWithTax({ tag: "es", regions: ["ES"], shipping: 100, taxBps: 2100 });
+			const cartId = await pricedCart("q-notinzone");
+			expect(
+				await client.quoteCheckout({
+					cartId,
+					shippingZoneId: "zone-p-it",
+					shippingMethodId: "method-p-es",
+				}),
+			).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_IN_ZONE" });
 		});
 
 		// ── the public order read ──────────────────────────────────────────

@@ -372,6 +372,14 @@ export interface CommerceClient {
 	// (adapter rule #2, "no status-code-as-logic"), so callers branch on
 	// the token and never on an HTTP code.
 	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
+	/**
+	 * The storefront checkout preview (issue #305): the shipping zone DERIVED
+	 * from the buyer's address — there is deliberately no zone field on the
+	 * request — its methods priced for this cart, the coupon's outcome, and the
+	 * totals with shipping and tax priced in that zone. `selection` is exactly
+	 * what to pass to `createOrder` so the order's totals equal the preview's.
+	 */
+	previewCheckout(input: CheckoutPreviewRequestWire): Promise<CheckoutPreviewResult>;
 	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
 	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
 	 *  it must be stable per cart, or a reload mints a second order). */
@@ -416,6 +424,7 @@ export type QuoteFailureReason =
 	| "COUPON_NOT_FOUND"
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
 	| "COUPON_NOT_ACTIVE"
 	| "COUPON_MIN_SUBTOTAL"
 	| "COUPON_EXHAUSTED"
@@ -423,6 +432,76 @@ export type QuoteFailureReason =
 
 export type QuoteResult =
 	| { ok: true; breakdown: QuoteBreakdownWire }
+	| { ok: false; reason: QuoteFailureReason };
+
+/** Where the cart ships — the only address fields zone derivation reads. */
+export interface ShippingDestinationWire {
+	/** ISO 3166-1 alpha-2, e.g. `US`. */
+	country: string;
+	/** State / province: `CA` or ISO 3166-2 `US-CA`. */
+	region?: string;
+}
+
+export interface CheckoutPreviewRequestWire {
+	cartId: string;
+	/** Absent ⇒ the buyer has not entered an address yet. */
+	destination?: ShippingDestinationWire;
+	shippingMethodId?: string;
+	couponCode?: string;
+}
+
+/** A method the derived zone offers, priced for this cart (integer minor units). */
+export interface OfferedShippingMethodWire {
+	id: string;
+	name: string;
+	type: "flat_rate" | "free_shipping";
+	priceCents: number;
+}
+
+export type CheckoutShippingWire =
+	/** Digital-only cart: no address, zone or shipping needed. */
+	| { status: "not_required" }
+	/** The store has no shipping zones at all: nothing is charged, and the page
+	 *  says shipping and tax are not set up rather than implying they are free. */
+	| { status: "not_configured" }
+	| { status: "address_required" }
+	| { status: "unavailable"; reason: "NO_ZONE_FOR_ADDRESS" | "NO_METHOD_FOR_ZONE" }
+	| {
+			status: "resolved";
+			zone: { id: string; name: string };
+			methods: OfferedShippingMethodWire[];
+			selectedMethodId: string | null;
+			selectionError: "SHIPPING_METHOD_NOT_AVAILABLE" | null;
+	  };
+
+export type CheckoutCouponWire =
+	| { status: "none" }
+	| { status: "applied"; code: string; discountCents: number }
+	| {
+			status: "invalid";
+			code: string;
+			reason:
+				| "COUPON_NOT_FOUND"
+				| "COUPON_NOT_ACTIVE"
+				| "COUPON_MIN_SUBTOTAL"
+				| "COUPON_EXHAUSTED"
+				| "COUPON_CURRENCY_MISMATCH";
+	  };
+
+export interface CheckoutSelectionWire {
+	shippingZoneId: string | null;
+	shippingMethodId: string | null;
+	couponCode: string | null;
+}
+
+export type CheckoutPreviewResult =
+	| {
+			ok: true;
+			shipping: CheckoutShippingWire;
+			coupon: CheckoutCouponWire;
+			breakdown: QuoteBreakdownWire;
+			selection: CheckoutSelectionWire;
+	  }
 	| { ok: false; reason: QuoteFailureReason };
 
 /** ADR-0009's optional ship-to snapshot — bounds mirror `shippingAddressBody`. */
@@ -499,6 +578,7 @@ export type CheckoutFailureReason =
 	| "IDEMPOTENCY_KEY_REUSED"
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
 	| "COUPON_NOT_FOUND"
 	| "COUPON_NOT_ACTIVE"
 	| "COUPON_MIN_SUBTOTAL"
