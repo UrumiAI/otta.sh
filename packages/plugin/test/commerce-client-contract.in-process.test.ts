@@ -194,12 +194,11 @@ function inProcessTier(): CommerceClientTier {
 			 * redeem it THROUGH THE CLIENT, keep the session token.
 			 *
 			 * The challenge is issued through the verifier rather than through
-			 * `requestLoginLink` for one reason — this transport dispatches no mail yet,
-			 * and the emitted token is part of no reply, so there is no message to
-			 * capture and this is the only way to hold a token a shopper would have
-			 * received. The HTTP tier, which did dispatch, captured the mail instead.
-			 * The redemption was the client's own on both, which is the half the cases
-			 * are actually about.
+			 * `requestLoginLink` because this tier wires no email egress, and the token
+			 * is part of no reply — so the verifier is the only place to hold one. The
+			 * emailed path is proven in `login-link-email.in-process.test.ts` and the
+			 * account-routes sandbox suite. The redemption is the client's own, which
+			 * is the half these cases are actually about.
 			 */
 			async session(email) {
 				const open = harnessOrThrow();
@@ -369,6 +368,10 @@ describe("in-process commerce refuses malformed shopper input before any store c
  * the two places the transports genuinely differed, recorded here rather than only
  * in prose so the difference has a test standing over it. Each fails the day the
  * missing piece lands, which is exactly when someone should come back and delete it.
+ *
+ * The login-mail gap has closed (issue #306): the link is emailed through the
+ * injected email egress. Its case below now pins the arm this harness still
+ * has — no egress wired — rather than the gap.
  */
 describe("in-process commerce: what is deliberately not wired yet", () => {
 	let harness: InProcessCommerceHarness;
@@ -427,22 +430,30 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		});
 	});
 
-	// NOT SHAREABLE for the mirror-image reason: the HTTP transport DID dispatch the
-	// login mail — the shared identity cases minted their sessions by capturing it —
-	// so "no mail left the process" was true here and false there, by design on both.
-	test("a login link records ONE challenge and dispatches NO mail", async () => {
+	// The login mail IS sent now (issue #306) — through the email egress the
+	// composition root injects, and on THIS harness there is none. What stays
+	// pinned here is the unconfigured arm: the same answer, nothing issued, and no
+	// egress attempted. The sending arm has its own file,
+	// `login-link-email.in-process.test.ts`, with a recording sender.
+	test("with NO email egress wired, a login request answers the same, issues nothing and sends nothing", async () => {
 		const challenges = harness.ctx.storage?.["login_challenges"];
 		if (challenges === undefined)
 			throw new Error("the login_challenges collection is not declared");
 		const before = { rows: await challenges.count(), egress: harness.egressAttempts() };
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				await client.requestLoginLink("shopper@example.test", {
+					verifyPageUrl: "https://shop.example.test/account/verify",
+				}),
+			).toEqual({ ok: true });
+		} finally {
+			warn.mockRestore();
+		}
 
-		expect(await client.requestLoginLink("shopper@example.test")).toEqual({ ok: true });
-
-		// The challenge is recorded — counted in the store rather than inferred by
-		// issuing a second one, which would have proven only that the verifier works.
-		expect(await challenges.count()).toBe(before.rows + 1);
-		// And no mail left the process, because there is nowhere for it to go yet: the
-		// only outbound surface this transport has is `ctx.http`, and it was untouched.
+		// No challenge nobody could receive: it would only burn a throttle slot.
+		expect(await challenges.count()).toBe(before.rows);
+		// And nothing reached for egress — there is no sender to reach with.
 		expect(harness.egressAttempts()).toBe(before.egress);
 	});
 });

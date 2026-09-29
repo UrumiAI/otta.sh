@@ -24,8 +24,11 @@ import { renderEmail } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	CtxHttpEmailSender,
+	DEFAULT_EMAIL_TIMEOUT_MS,
 	EMAIL_FROM_KEY,
+	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
+	makeLoginEmailSender,
 } from "../src/email/ctx-http-email-sender.js";
 import { EMAIL_API_KEY_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
@@ -227,5 +230,48 @@ describe("makeEmailSender — the composition root's fail-closed wiring", () => 
 		});
 		await expect(sender.send(input)).rejects.toThrow();
 		expect(seen[0]).toBeInstanceOf(AbortSignal);
+	});
+});
+
+/**
+ * The LOGIN send (issue #306 review). It is awaited inline on the login-request
+ * route, and a throttled request skips it entirely — so a slow provider would
+ * make a sent request seconds slower than a throttled one, and the latency
+ * would say which it was. The login sender therefore carries a SHORT ceiling,
+ * not the 30 s the cron-driven order emails can afford.
+ */
+describe("makeLoginEmailSender — the short ceiling on the inline login send", () => {
+	function hangingCtx(): PluginContext {
+		const { ctx } = makeCtx();
+		return {
+			...ctx,
+			http: {
+				fetch: (_url: string, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+					}),
+			},
+		};
+	}
+
+	test("is well under the order-email ceiling", () => {
+		expect(LOGIN_EMAIL_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
+		expect(LOGIN_EMAIL_TIMEOUT_MS).toBeLessThan(DEFAULT_EMAIL_TIMEOUT_MS);
+	});
+
+	test("a hung provider is abandoned after LOGIN_EMAIL_TIMEOUT_MS, not the 30 s default", async () => {
+		const sender = await makeLoginEmailSender(hangingCtx(), { apiUrl: API_URL });
+		if (sender === undefined) throw new Error("no sender built");
+		const started = Date.now();
+		await expect(
+			sender.send({ ...input, template: "customer-login-link", data: { loginUrl: "x" } }),
+		).rejects.toThrow();
+		const elapsed = Date.now() - started;
+		expect(elapsed).toBeGreaterThanOrEqual(LOGIN_EMAIL_TIMEOUT_MS - 50);
+		expect(elapsed).toBeLessThan(LOGIN_EMAIL_TIMEOUT_MS + 5_000);
+	}, 20_000);
+
+	test("still fails closed with no email API URL", async () => {
+		expect(await makeLoginEmailSender(hangingCtx(), {})).toBeUndefined();
 	});
 });

@@ -16,6 +16,8 @@
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
+import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
+import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
@@ -42,5 +44,12 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	// from the map, which the domain refuses loudly rather than minting an
 	// unpayable order. `resolvePaymentGateways` is shared with `makeAdminClients`,
 	// so console refunds reach the same gateways checkout charged through.
-	return new InProcessCommerceClient(ctx, { gateways: await resolvePaymentGateways(ctx) });
+	return new InProcessCommerceClient(ctx, {
+		gateways: await resolvePaymentGateways(ctx),
+		// Lazy: only the login request sends mail, and building the sender reads kv.
+		// `undefined` on a bundle with no email API URL — the unconfigured arm. The
+		// LOGIN sender, with its short ceiling: the send is awaited inline.
+		resolveEmailSender: () =>
+			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+	});
 }

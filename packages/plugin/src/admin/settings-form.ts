@@ -1,5 +1,6 @@
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
+import { isValidLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../storefront/login-link.js";
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
@@ -221,6 +222,15 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		kvKey: EMAIL_FROM_KEY,
 		label: "Order email from-address",
 		placeholder: "no-reply@otta.local",
+	},
+	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
+	// point: required for customer login (unset ⇒ no link is sent). Read back for
+	// the same reason as the from-address. Adapted from #325 by @stephanedemotte.
+	{
+		fieldId: "loginLinkUrl",
+		kvKey: LOGIN_LINK_URL_KEY,
+		label: "Sign-in link page (absolute URL of the storefront's /account/verify page)",
+		placeholder: "https://shop.example/account/verify",
 	},
 	{
 		fieldId: "x402PayTo",
@@ -534,11 +544,23 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						"The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed). Nothing was saved.",
 				});
 			}
+			// Issue #306: the sign-in link page must be an absolute http(s) URL with no
+			// credentials — the emailed token rides on it. Same all-or-nothing
+			// refusal, and the same rule the send path re-checks (`login-link.ts`).
+			const loginLinkUrl = submitted.get(LOGIN_LINK_URL_KEY) ?? "";
+			if (loginLinkUrl.length > 0 && !isValidLoginLinkUrl(loginLinkUrl)) {
+				return renderPage(ctx, client, {
+					variant: "error",
+					title: "Payment settings not saved",
+					description:
+						"The sign-in link page must be an absolute http(s) URL with no username or password. Nothing was saved.",
+				});
+			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "Email from-address and x402 destination were updated.",
+				description: "Email, sign-in link and x402 settings were updated.",
 			});
 			return {
 				...page,
