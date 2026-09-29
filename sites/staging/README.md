@@ -105,6 +105,12 @@ admin console's **Settings** page instead.
   are `private, no-store`. The header carries a theme-owned "Account" link unless the
   CMS menu already links into `/account`. Saved addresses
   (`storefront/account/addresses`) have no page yet.
+  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in link
+  page** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
+  `https://shop.example/account/verify`. The emailed link points there and nowhere else.
+  The request's origin is never used, because a spoofed `Host` could otherwise aim a
+  victim's link at another domain. While the setting is unset, the login form still
+  shows its generic notice but no link is sent, and the plugin logs that once.
 - No secrets anywhere in this package: `.env` is gitignored, `.env.example` holds
   placeholders, `wrangler.jsonc` `vars` must never grow a secret-shaped key (pinned by
   `test/wrangler-config.test.ts`).
