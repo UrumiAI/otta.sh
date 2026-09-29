@@ -1,0 +1,102 @@
+---
+/**
+ * GET /account/login — ask for a sign-in link (issue #306, ADR-0004).
+ *
+ * Magic link only: one email field, POSTed to `/account/login/request`, which
+ * 303s back here with `?sent=1` or `?error=<TOKEN>`. The `sent` notice is the
+ * SAME sentence for every address — a new one, a known one, a throttled one —
+ * so this page is not an account oracle. Zero client JS, like every page but the
+ * payment step (ADR-0012).
+ */
+import Notice from "../../../components/Notice.astro";
+import Base from "../../../layouts/Base.astro";
+import { ACCOUNT_NO_STORE, LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+
+Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+
+const sent = Astro.url.searchParams.get("sent") === "1";
+const error = Astro.url.searchParams.get("error");
+---
+
+<Base title="Sign in">
+	<h1 class="title">Sign in</h1>
+	<p class="lede">
+		We'll email you a link that signs you in — no password. Orders you placed as a guest with the
+		same address appear in your account once you sign in.
+	</p>
+
+	{
+		sent && (
+			<div class="notice-slot" role="status">
+				<Notice lead="Check your inbox.">{LOGIN_LINK_SENT_COPY}</Notice>
+			</div>
+		)
+	}
+	{
+		error !== null && (
+			<div class="notice-slot" role="alert">
+				<Notice>{cartErrorMessage(error)}</Notice>
+			</div>
+		)
+	}
+
+	<form method="POST" action="/account/login/request" class="form">
+		<div class="field">
+			<label class="u-label" for="email">Email</label>
+			<input type="email" id="email" name="email" required autocomplete="email" />
+		</div>
+		<div>
+			<button type="submit" class="u-btn">Email me a sign-in link</button>
+		</div>
+	</form>
+</Base>
+
+<style>
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 1rem;
+	}
+
+	.lede {
+		margin: 0 0 1.5rem;
+		max-width: 34rem;
+		font-size: 0.875rem;
+		line-height: 1.6;
+		color: var(--u-mute);
+	}
+
+	.notice-slot {
+		margin-bottom: 1.5rem;
+		max-width: 34rem;
+	}
+
+	.form {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		max-width: 26rem;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	.field input {
+		width: 100%;
+		padding: 0.625rem 0.75rem;
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		background: var(--u-surface);
+		color: var(--u-ink);
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+	}
+</style>
