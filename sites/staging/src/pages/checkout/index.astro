@@ -54,6 +54,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryOptions } from "../../lib/countries.js";
+import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -77,6 +78,7 @@ const result =
 				STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 				{
 					cartId,
+					locale: SITE_LOCALE,
 					...(coupon.couponCode !== undefined ? { couponCode: coupon.couponCode } : {}),
 					...(destinationRead.destination !== undefined
 						? { destination: destinationRead.destination }
@@ -133,7 +135,8 @@ const showDelivery = locked === null && summary.requiresShipping && summary.ship
  *  it also asks for the country; otherwise the country/region are the hidden
  *  destination above. */
 const showAddress = locked === null && summary.requiresShipping;
-const countries = countryOptions("en");
+/** Named in the same language the summary formatted the money in. */
+const countries = countryOptions(SITE_LOCALE);
 const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
 
 /** The option the totals were priced with — stated beside the submit, so the

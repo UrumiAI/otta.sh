@@ -158,7 +158,9 @@ describe("/checkout — the coupon", () => {
 
 	test("the page passes the coupon into the summary dispatch", () => {
 		expect(REVIEW).toContain("readCouponParam(Astro.url)");
-		expect(REVIEW).toMatch(/\{\s*cartId,\s*\.\.\.\(coupon\.couponCode !== undefined/);
+		expect(REVIEW).toMatch(
+			/\{\s*cartId,\s*locale: SITE_LOCALE,\s*\.\.\.\(coupon\.couponCode !== undefined/,
+		);
 	});
 
 	test("the coupon form is hidden once the cart has become an order", () => {
@@ -352,6 +354,14 @@ describe("/checkout — delivery (ADR-0021)", () => {
 		expect(REVIEW).toContain("readDestinationParams(Astro.url)");
 		expect(REVIEW).toContain("readMethodParam(Astro.url)");
 		expect(REVIEW).toMatch(/destinationRead\.methodDropped \? undefined/);
+	});
+
+	// Country names and money must read in the SAME language: one site locale,
+	// passed to the summary (which formats the money) and to the country labels.
+	test("the country labels use the site locale the summary formats money in — never a hard-coded one", () => {
+		expect(REVIEW).toContain("countryOptions(SITE_LOCALE)");
+		expect(REVIEW).not.toMatch(/countryOptions\("[a-z]/);
+		expect(REVIEW).toMatch(/cartId,\s*locale: SITE_LOCALE,/);
 	});
 
 	test("the totals footnote says WHY the total is incomplete (uncalculatedReason)", () => {
