@@ -2279,7 +2279,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				},
 				// DERIVED, never re-listed: exactly the domain state machine's row for
 				// `pending`.
-				allowedTransitions: ["paid", "failed", "expired", "cancelled"],
+				allowedTransitions: ["paid", "expired", "cancelled"],
 			});
 
 			// An id that never existed is a "not found" state, not an error banner.

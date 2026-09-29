@@ -11,12 +11,16 @@
  * `COUPON_LIFECYCLE_LAYOUT` adds the order, cart and inventory collections, because
  * the lifecycle suite drives a real checkout end to end: the coupon is redeemed and
  * released by the order use-cases, not by direct store calls.
+ *
+ * `PAYMENT_DECLINE_LAYOUT` adds the payment-event collections on top, for the
+ * decline contract (ADR-0021), which settles through the real payment-event store.
  */
 import {
 	CART_COLLECTIONS,
 	COUPON_COLLECTIONS,
 	INVENTORY_COLLECTIONS,
 	ORDER_COLLECTIONS,
+	PAYMENT_EVENT_COLLECTIONS,
 } from "../src/index.js";
 import type { StorageLayout } from "./describe-each-dialect.js";
 
@@ -56,4 +60,11 @@ export const COUPON_LIFECYCLE_LAYOUT: StorageLayout = {
 	...toLayout(CART_COLLECTIONS),
 	...toLayout(ORDER_COLLECTIONS),
 	...COUPON_LAYOUT,
+};
+
+/** The lifecycle layout plus the payment-event collections — what the decline
+ *  contract needs, since it settles through the REAL payment-event store too. */
+export const PAYMENT_DECLINE_LAYOUT: StorageLayout = {
+	...COUPON_LIFECYCLE_LAYOUT,
+	...toLayout(PAYMENT_EVENT_COLLECTIONS),
 };

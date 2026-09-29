@@ -52,6 +52,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 } from "@otta-sh/domain";
+import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
@@ -819,6 +820,68 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 		expect(await placeCart(cartId)).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 		expect(stripe.requests).toHaveLength(0);
+	});
+	/**
+	 * ISSUE #304 / ADR-0021, end to end: a DECLINE followed by a successful retry on
+	 * the SAME PaymentIntent. Stripe leaves the intent payable after a decline and the
+	 * pay page confirms it again, so the webhook route sees `payment_failed` and then
+	 * `succeeded` for one order. Both deliveries are correctly signed with the
+	 * webhook secret this boot armed and verified inside the isolate; the order must
+	 * end `paid` with its stock committed once and no reconciliation flag — not the
+	 * `PAID_FLIP_LOST` a fail-and-release decline used to produce.
+	 */
+	test("a declined card then a successful retry on the same PaymentIntent ends PAID, stock committed once", async () => {
+		const sku = `SKU-${NS}-DECLINE`;
+		await seedProduct({ id: `prod-${NS}-decline`, sku, amount: 1200 });
+		const cartId = await createCart();
+		await addLine(cartId, sku, `prod-${NS}-decline`, 2);
+		const onHandAtCheckout = await inventoryStore().getOnHand(sku);
+
+		const placed = await placeCart(cartId);
+		expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true, state: "pending" });
+		const orderId = placed["orderId"] as string;
+		const intentId = `pi_${orderId}`;
+
+		async function deliver(
+			type: "payment_intent.payment_failed" | "payment_intent.succeeded",
+			eventId: string,
+		) {
+			const signed = await signStripeWebhook(
+				{ eventId, type, paymentIntentId: intentId, orderId, amountCents: 2400, currency: "usd" },
+				STRIPE_WEBHOOK_SECRET,
+			);
+			return resultOf(
+				await stripeBoot.invokeRoute("webhooks/stripe/settle", {
+					rawBodyBase64: Buffer.from(signed.body).toString("base64"),
+					stripeSignature: signed.signatureHeader,
+					idempotencyKey: `wh-${eventId}`,
+				}),
+			);
+		}
+
+		// 1. The decline (4000 0000 0000 0002): acknowledged, and the order is still
+		// payable — pending, its units still held, no flag.
+		expect(await deliver("payment_intent.payment_failed", `evt_decline_${orderId}`)).toMatchObject({
+			ok: true,
+		});
+		const declined = await storedOrder(orderId);
+		expect(declined.state).toBe("pending");
+		expect(declined.reconciliationFlag).toBeNull();
+		expect(await inventoryStore().getOnHand(sku)).toBe(onHandAtCheckout);
+
+		// 2. The retry with a good card succeeds on the same intent: a clean settle.
+		expect(await deliver("payment_intent.succeeded", `evt_success_${orderId}`)).toMatchObject({
+			ok: true,
+		});
+		const paid = await storedOrder(orderId);
+		expect(paid.state).toBe("paid");
+		expect(paid.reconciliationFlag).toBeNull();
+		// The two units the cart held are the two units sold: none came back at the
+		// decline, and none were taken twice at the settle.
+		expect(await inventoryStore().getOnHand(sku)).toBe(onHandAtCheckout);
+		expect(await orderStore.getCapturedPayments(toOrderId(orderId))).toHaveLength(1);
+		// The settle route made no Stripe API call of its own — only the place did.
+		expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
 	});
 });
 

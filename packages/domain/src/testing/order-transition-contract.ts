@@ -71,7 +71,7 @@ function pendingInput(overrides: Partial<CreateOrderInput> = {}): CreateOrderInp
  * PLUS the full transition table — every legal transition succeeds once and
  * every illegal one (including `pending → shipped` and any hop back into a
  * Phase-4 state) is rejected. The Phase-4-authoritative rows (`pending →
- * paid|failed|expired`) are pinned here so a regression that drops them again is
+ * paid|expired`) are pinned here so a regression that drops them again is
  * caught, not just re-reviewed. Runs against the fake first, then each dialect;
  * the atomicity case additionally runs on the DB adapters.
  */
