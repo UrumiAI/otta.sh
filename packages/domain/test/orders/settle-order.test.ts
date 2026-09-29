@@ -141,7 +141,7 @@ describe("settleOrder", () => {
 		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
 	});
 
-	test("payment_failed keeps the order pending and its reservation adopted (ADR-0021)", async () => {
+	test("payment_failed keeps the order pending and its reservation adopted (ADR-0022)", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;
 		expect(h.inventory.onHand("SKU-1")).toBe(4); // 5 - 1 reserved

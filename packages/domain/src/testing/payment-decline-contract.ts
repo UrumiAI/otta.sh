@@ -148,7 +148,7 @@ async function onHand(h: PaymentDeclineHarness, s: string): Promise<number> {
 }
 
 /**
- * THE DECLINE SPEC (ADR-0021, issue #304). A verified `payment_failed` is
+ * THE DECLINE SPEC (ADR-0022, issue #304). A verified `payment_failed` is
  * INFORMATIONAL: Stripe leaves the PaymentIntent payable after a decline and the
  * pay page retries on the same client secret, so the order stays `pending` with its
  * stock held and its coupon consumed. Whether the buyer then pays or walks away is

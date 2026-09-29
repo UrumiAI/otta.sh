@@ -76,7 +76,7 @@ export interface CouponStore {
 	 * `InventoryStore.releaseAdopted`): delete the order's redemption(s) and
 	 * decrement `uses_count`, guarded + idempotent (0 rows ⇒ silent no-op, never
 	 * a double-release). Called by `expireOrders` so a coupon consumed by an abandoned-then-expired checkout — including
-	 * one whose payment was declined and never retried (ADR-0021) — is freed
+	 * one whose payment was declined and never retried (ADR-0022) — is freed
 	 * exactly like its inventory hold. Returns the number of redemptions released.
 	 * A paid/completed order never calls this, so its coupon stays consumed.
 	 */

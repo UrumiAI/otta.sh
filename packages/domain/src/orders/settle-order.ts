@@ -61,7 +61,7 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    money was captured while stock was released; never a silent no-op.
  *
  * A verified `failed` event (`payment_intent.payment_failed`) is INFORMATIONAL
- * (ADR-0021): it is recorded by step 2 — deduped, bound to its order, auditable —
+ * (ADR-0022): it is recorded by step 2 — deduped, bound to its order, auditable —
  * and changes nothing else. The order stays `pending` with its stock held and its
  * coupon consumed, because the PaymentIntent is still payable after a decline and
  * the pay page retries on it; failing the order here is what turned a decline
@@ -120,7 +120,7 @@ export async function settleOrder(
 
 	// A verified FAILURE event (a declined attempt) is recorded above and moves
 	// nothing: no state flip, no stock or coupon release, whatever state the order
-	// is in (ADR-0021). A pending order stays payable on the same PaymentIntent; a
+	// is in (ADR-0022). A pending order stays payable on the same PaymentIntent; a
 	// late decline on a paid or expired order is equally inert. Checked BEFORE the
 	// terminal short-circuits below, so a decline can never raise an anomaly.
 	if (conf.outcome === "failed") {

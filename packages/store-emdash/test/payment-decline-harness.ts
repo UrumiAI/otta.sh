@@ -1,5 +1,5 @@
 /**
- * The `paymentDeclineContract` harness (ADR-0021) over the document store, factored
+ * The `paymentDeclineContract` harness (ADR-0022) over the document store, factored
  * out so all three dialects run it — the two Node ones through
  * `payment-decline-contract.dialects.test.ts` and D1 through its own spec, which
  * cannot import a `.dialects.test.ts` (that file pulls in `better-sqlite3` and `pg`

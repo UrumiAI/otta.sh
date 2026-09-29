@@ -13,7 +13,7 @@
  * released by the order use-cases, not by direct store calls.
  *
  * `PAYMENT_DECLINE_LAYOUT` adds the payment-event collections on top, for the
- * decline contract (ADR-0021), which settles through the real payment-event store.
+ * decline contract (ADR-0022), which settles through the real payment-event store.
  */
 import {
 	CART_COLLECTIONS,

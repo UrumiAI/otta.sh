@@ -10,7 +10,7 @@ import {
 	paymentDeclineContract,
 } from "@otta-sh/domain/testing";
 
-// The decline spec (ADR-0021) against the in-memory fakes — the first adapter
+// The decline spec (ADR-0022) against the in-memory fakes — the first adapter
 // family to pass it, before the document store on sqlite, Postgres and D1.
 paymentDeclineContract(
 	() => {

@@ -276,7 +276,7 @@ export type ConfirmationResult =
 			/**
 			 * A cryptographically verified event. `succeeded` drives `pending → paid`
 			 * + commit/grant; `failed` (e.g. Stripe `payment_intent.payment_failed`)
-			 * is recorded and moves nothing — the order stays payable (ADR-0021).
+			 * is recorded and moves nothing — the order stays payable (ADR-0022).
 			 * Both dedupe identically.
 			 */
 			outcome: "succeeded" | "failed";

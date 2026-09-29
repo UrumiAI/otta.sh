@@ -4,7 +4,7 @@
  *
  * Nothing here calls `redeem` or `release` directly: the coupon is consumed by
  * `createOrderFromCart` and freed by `expireOrders` — and deliberately NOT by a
- * declined payment, which keeps the order payable (ADR-0021) — over the real cart,
+ * declined payment, which keeps the order payable (ADR-0022) — over the real cart,
  * inventory and order documents. That is the point
  * of the file — the symmetry with inventory is a property of the USE-CASES, and it has
  * to survive the coupon's counter living in a different document from the order that

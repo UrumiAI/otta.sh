@@ -1,4 +1,4 @@
-# 0021. A declined payment keeps the order pending
+# 0022. A declined payment keeps the order pending
 
 - Status: accepted
 - Date: 2026-09-29

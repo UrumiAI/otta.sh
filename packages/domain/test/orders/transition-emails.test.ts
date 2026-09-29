@@ -116,7 +116,7 @@ describe("outbox-backed transition emails (5.3)", () => {
 		expect(emailSender.countByTemplate("order-confirmation", "ord-1")).toBe(1);
 	});
 
-	test("pending → failed is not a transition any more (ADR-0021): refused, and no email", async () => {
+	test("pending → failed is not a transition any more (ADR-0022): refused, and no email", async () => {
 		const { store, clock, emailSender } = harness();
 		await store.createFromCart(pending());
 		expect(await drive(store, "ord-1", "failed")).toEqual({

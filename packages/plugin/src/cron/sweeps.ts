@@ -760,7 +760,7 @@ function addDays(day: string, delta: number): string {
  * orphan. An expired order owes its coupon back by policy (expiry releases it), so
  * releasing here is completing owed work, and `release` is idempotent, so the
  * normal case (already released by `expireOrders`) finds no redemption holding a use.
- * A declined-and-abandoned order ends on exactly this path (ADR-0021).
+ * A declined-and-abandoned order ends on exactly this path (ADR-0022).
  *
  * It relies on ORDER within a tick: this leg runs after `expire-orders`, and the
  * grace window (`DEFAULT_COUPON_GRACE_MS`) is not shorter than the order hold

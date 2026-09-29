@@ -8,12 +8,12 @@ import type { OrderState } from "./model.js";
  * "reject anything not listed" enforcement can never strand them again (the
  * dropped-`expired` regression, §11). Every other row is a Phase 5 addition.
  *
- * `pending → failed` is GONE (ADR-0021): a declined payment keeps the order
+ * `pending → failed` is GONE (ADR-0022): a declined payment keeps the order
  * `pending` — the PaymentIntent is still payable — and an unpaid order leaves
  * `pending` only by expiring or being cancelled. Both release its stock. Only
  * expiry releases its coupon (`expireOrders`, with the coupon sweeper's `expired`
  * arm as the retry); `cancelOrder` deliberately releases no coupon. `failed` stays a STATE, terminal and unreachable, because orders
- * failed before ADR-0021 still carry it and every reader must keep rendering them.
+ * failed before ADR-0022 still carry it and every reader must keep rendering them.
  */
 export const ORDER_STATE_MACHINE = {
 	// Phase 4: pending → paid|expired. Phase 5 adds pending → cancelled.
@@ -24,7 +24,7 @@ export const ORDER_STATE_MACHINE = {
 	delivered: ["completed", "refunded"],
 	completed: ["refunded"],
 	// Terminal states — no legal outbound transition. `failed` has no inbound one
-	// either: it survives only on orders written before ADR-0021.
+	// either: it survives only on orders written before ADR-0022.
 	failed: [],
 	expired: [],
 	cancelled: [],
@@ -46,7 +46,7 @@ export function legalNextStates(from: OrderState): readonly OrderState[] {
 
 /**
  * The email fired on entry to a state (Phase 5 §5/§6). `pending` (no entry
- * event) and `failed` (no longer entered at all, ADR-0021) have **no**
+ * event) and `failed` (no longer entered at all, ADR-0022) have **no**
  * template. `expired` DOES get one (§5 email-on-`expired` decision) — and since
  * an order whose payment was declined and never retried now ends `expired`,
  * that is the email such a buyer receives.

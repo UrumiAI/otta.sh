@@ -4,7 +4,7 @@
 "@otta-sh/plugin": minor
 ---
 
-A declined card no longer fails the order (ADR-0021, #304). Stripe keeps a PaymentIntent
+A declined card no longer fails the order (ADR-0022, #304). Stripe keeps a PaymentIntent
 payable after a decline and the pay page retries on the same client secret, so failing the
 order and releasing its stock and coupon at `payment_intent.payment_failed` turned the
 everyday "first card declined, second card accepted" sequence into a charged buyer, released

@@ -728,7 +728,7 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		// durable FIRST and `releaseByOrder` runs after it. A crash between the two
 		// leaves an expired order still holding a coupon use, and `listExpirable` never
 		// returns an expired order again — so without this arm the use leaks for good.
-		// Declined-and-abandoned orders take exactly this path (ADR-0021).
+		// Declined-and-abandoned orders take exactly this path (ADR-0022).
 		const suffix = "expired-crash";
 		const couponId = `coupon-${suffix}`;
 		const customer = toCustomerId(`cust-${suffix}`);

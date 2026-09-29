@@ -822,7 +822,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(stripe.requests).toHaveLength(0);
 	});
 	/**
-	 * ISSUE #304 / ADR-0021, end to end: a DECLINE followed by a successful retry on
+	 * ISSUE #304 / ADR-0022, end to end: a DECLINE followed by a successful retry on
 	 * the SAME PaymentIntent. Stripe leaves the intent payable after a decline and the
 	 * pay page confirms it again, so the webhook route sees `payment_failed` and then
 	 * `succeeded` for one order. Both deliveries are correctly signed with the
