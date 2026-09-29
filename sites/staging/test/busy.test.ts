@@ -33,6 +33,10 @@ import {
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
+	ACCOUNT_LOGIN_REQUEST_ROUTE,
+	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
+	SESSION_COOKIE_NAME,
 } from "@otta-sh/plugin";
 import { seeOther } from "../src/lib/cart-actions.js";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
@@ -49,6 +53,9 @@ import {
 import { POST as ADD_POST } from "../src/pages/cart/add.js";
 import { POST as UPDATE_POST } from "../src/pages/cart/update.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
+import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.js";
+import { POST as LOGOUT_POST } from "../src/pages/account/logout.js";
+import { POST as VERIFY_CONFIRM_POST } from "../src/pages/account/verify/confirm.js";
 
 const SITE = "http://localhost:4321";
 const BUSY_RESULT = { ok: false, error: "BUSY", retryable: true } as const;
@@ -411,6 +418,39 @@ describe("form endpoints that end BUSY answer 503, not the generic 303", () => {
 		const other = await PLACE_POST(formContext("/checkout/place", form, failed.handler));
 		expect(other.status).toBe(303);
 		expect(failed.calls).toHaveLength(1);
+	});
+});
+
+describe("account form endpoints (#329) that end BUSY answer 503, not SERVICE_UNAVAILABLE", () => {
+	test("/account/login/request: a busy login-link request is a 503 (not retried)", async () => {
+		const { handler, calls } = scripted({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: [BUSY_RESULT] });
+		const response = await LOGIN_REQUEST_POST(
+			formContext("/account/login/request", { email: "a@example.com" }, handler),
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBe(String(BUSY_RETRY_AFTER_SECONDS));
+		expect(calls).toHaveLength(1);
+	});
+
+	test("/account/verify/confirm: a busy verify is a 503 — nothing was consumed, so the emailed link still works", async () => {
+		const { handler, calls } = scripted({ [ACCOUNT_LOGIN_VERIFY_ROUTE]: [BUSY_RESULT] });
+		const response = await VERIFY_CONFIRM_POST(
+			formContext("/account/verify/confirm", { challenge: "c-1", token: "t-1" }, handler),
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBe(String(BUSY_RETRY_AFTER_SECONDS));
+		// The busy page's way back never carries the one-time token.
+		expect(await response.text()).not.toContain("t-1");
+		expect(calls).toHaveLength(1);
+	});
+
+	test("/account/logout: a busy revoke still signs the browser out and says so in the log", async () => {
+		const { handler } = scripted({ [ACCOUNT_LOGOUT_ROUTE]: [BUSY_RESULT] });
+		const context = formContext("/account/logout", {}, handler);
+		context.cookies.set(SESSION_COOKIE_NAME, "s-1");
+		const response = await LOGOUT_POST(context);
+		expect(response.status).toBe(303);
+		expect(console.error).toHaveBeenCalled();
 	});
 });
 

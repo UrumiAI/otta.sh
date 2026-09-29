@@ -14,7 +14,7 @@ import type { APIRoute } from "astro";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { isPlausibleEmail } from "../../../lib/email.js";
 import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
-import { dispatchOttaRoute } from "../../../lib/otta-api.js";
+import { busyResponse, dispatchOttaRoute, isBusyResult } from "../../../lib/otta-api.js";
 
 const LOGIN_PATH = "/account/login";
 
@@ -37,6 +37,8 @@ export const POST: APIRoute = async (context) => {
 		{ email },
 		context.url,
 	);
+	// Busy: nothing was issued, so asking again is safe — the 503 says so.
+	if (isBusyResult(result)) return busyResponse(LOGIN_PATH);
 	if (result === null || !result.ok) return seeOther(context, LOGIN_PATH, SERVICE_UNAVAILABLE);
 
 	const sent = new URL(LOGIN_PATH, context.url);
