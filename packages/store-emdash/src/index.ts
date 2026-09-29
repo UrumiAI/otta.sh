@@ -4,6 +4,7 @@ export {
 	CAS_MAX_DELAY_MS,
 	CAS_RETRY,
 	casDone,
+	isRetryableStorageBusy,
 	isStorageContentionError,
 	StorageContentionError,
 	withCasRetry,

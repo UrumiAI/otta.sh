@@ -89,6 +89,12 @@ const result =
 			)
 		: null;
 
+/* A BUSY summary (already retried once) deliberately takes the same 303 to
+   /cart?error=BUSY as every other non-renderable state, NOT a 503 here: /checkout
+   is a transactional GET only a buyer with a cart reaches (nothing to crawl or
+   cache), and /cart is where they can act — it shows the busy copy, and its own
+   cart read answers 503 + Retry-After if the store is still busy. Rendering a
+   bare busy page here would strand the buyer on a step with nothing to do. */
 const redirect = checkoutEntryRedirect(cartId, result);
 if (redirect !== null) {
 	const target = new URL(redirect.path, Astro.url);

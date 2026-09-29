@@ -68,7 +68,7 @@ import {
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { productImage, type ProductEntryData } from "../../lib/products.js";
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
@@ -89,6 +89,10 @@ const pricing = result !== null && result.ok ? result.pricing : null;
 // (RENDER_FAILED / dispatch null) from "cart gone" (CART_NOT_FOUND).
 const degraded =
 	cartId !== undefined && cart === null && !(result !== null && !result.ok && "reason" in result);
+/* BUSY (storage contention, already retried once): the same degraded banner with
+   the busy copy, and a 503 + short Retry-After — the read was refused, not failed. */
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 
 /**
  * ABSENT pricing counts as degraded, not as "no prices" (§5). `pricing?.degraded`
@@ -434,7 +438,7 @@ const partialNote =
 		   for a cart it just admitted it cannot see. What is certainly true is
 		   the narrower thing: this failed read changed nothing. */
 		<div class="notice-slot">
-			<Notice lead="Your cart is unavailable right now.">
+			<Notice lead={busy ? cartErrorMessage(BUSY) : "Your cart is unavailable right now."}>
 				We haven't changed anything — try again in a moment.
 			</Notice>
 		</div>

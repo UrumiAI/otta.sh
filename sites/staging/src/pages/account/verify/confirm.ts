@@ -26,7 +26,12 @@ import {
 } from "../../../lib/account.js";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
-import { dispatchOttaRoute, formString } from "../../../lib/otta-api.js";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formString,
+	isBusyResult,
+} from "../../../lib/otta-api.js";
 
 const LOGIN_PATH = "/account/login";
 
@@ -58,6 +63,10 @@ export const POST: APIRoute = async (context) => {
 		context.url,
 	);
 	if (result === null) return seeOther(context, LOGIN_PATH, SERVICE_UNAVAILABLE);
+	// Busy: the challenge was NOT consumed (a busy step writes nothing), so the
+	// emailed link still works — the 503 invites another click. The way back is
+	// the login page, never this URL: it must not carry the one-time token.
+	if (isBusyResult(result)) return busyResponse(LOGIN_PATH);
 	if (!result.ok) {
 		return seeOther(
 			context,

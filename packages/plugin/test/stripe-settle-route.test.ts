@@ -27,7 +27,8 @@ import {
 	type SettleResult,
 } from "@otta-sh/domain";
 import { signStripeWebhook } from "@otta-sh/payments-stripe";
-import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import { StorageContentionError } from "@otta-sh/store-emdash";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_HEADER,
@@ -57,6 +58,10 @@ beforeEach(async () => {
 	if (harness === undefined) harness = await makeInProcessCommerce();
 	else await harness.reset();
 	for (const { key } of await harness.ctx.kv.list()) await harness.ctx.kv.delete(key);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -574,5 +579,89 @@ describe("(viii) a VERIFIED event Otta does not handle is acknowledged, and touc
 		);
 		expect(res).toEqual({ ok: false, status: 400, reason: "INVALID_SIGNATURE" });
 		expect(await orderState("ord-refunded-forged")).toBe("pending");
+	});
+});
+
+/** A settle seam that throws the store's "too busy" refusal — optionally AFTER
+ *  the real use-case ran, which is the worst case for a retry: the delivery
+ *  made progress and is then redelivered anyway. */
+function busySettle(options: { afterRealSettle: boolean }): SettleFn {
+	return async (deps, gateway, raw) => {
+		if (options.afterRealSettle) await settleOrder(deps, gateway, raw);
+		throw new StorageContentionError("markPaid", 24);
+	};
+}
+
+/** A seam that throws a retryable serialization abort in its BRIDGED shape. */
+const bridgedAbortSettle: SettleFn = async () => {
+	// oxlint-disable-next-line no-throw-literal -- the bridge shape IS a plain object
+	throw { code: "STORAGE_SERIALIZATION_FAILURE", retryable: true };
+};
+
+const faultySettle: SettleFn = async () => {
+	throw new Error("a real fault");
+};
+
+describe("(ix) storage pressure is a 503 Stripe retries — and the redelivery settles exactly once", () => {
+	test("an exhausted compare-and-set budget is 503 BUSY, never a thrown host 500", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-busy");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const res = await invoke(
+			await signedDelivery("ord-busy"),
+			{},
+			{
+				settle: busySettle({ afterRealSettle: false }),
+			},
+		);
+
+		expect(res).toEqual({ ok: false, status: 503, reason: "BUSY", retryable: true });
+		expect(await orderState("ord-busy")).toBe("pending");
+	});
+
+	test("a retryable serialization abort arriving as a plain object (the bridge shape) is 503 BUSY too", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-busy-40001");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const res = await invoke(
+			await signedDelivery("ord-busy-40001"),
+			{},
+			{ settle: bridgedAbortSettle },
+		);
+
+		expect(res).toEqual({ ok: false, status: 503, reason: "BUSY", retryable: true });
+	});
+
+	test("Stripe's redelivery after a 503 — even one that had made progress — settles ONCE (the domain dedupe, cf. (iv))", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-busy-replay");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const delivery = await signedDelivery("ord-busy-replay");
+		const { settle, calls } = recordingSettle();
+
+		const first = await invoke(delivery, {}, { settle: busySettle({ afterRealSettle: true }) });
+		const redelivery = await invoke(delivery, {}, { settle });
+
+		expect(first).toEqual({ ok: false, status: 503, reason: "BUSY", retryable: true });
+		expect(redelivery).toEqual({ ok: true, status: 200 });
+		expect(calls).toEqual([expect.objectContaining({ ok: true, noop: true })]);
+		expect(await orderState("ord-busy-replay")).toBe("paid");
+		await expect(
+			harness.stores.paymentEventStore.dedupe(
+				"evt_ord-busy-replay",
+				toOrderId("ord-busy-replay"),
+				"stripe",
+				new Date().toISOString(),
+			),
+		).resolves.toBe(false);
+	});
+
+	test("any OTHER throw still propagates — busy is not a blanket catch", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-fault");
+		await expect(
+			invoke(await signedDelivery("ord-fault"), {}, { settle: faultySettle }),
+		).rejects.toThrow("a real fault");
 	});
 });

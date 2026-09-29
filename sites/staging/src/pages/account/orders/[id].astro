@@ -23,7 +23,7 @@ import {
 	orderStateLabel,
 } from "../../../lib/account.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
-import { dispatchOttaRoute } from "../../../lib/otta-api.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
 
 Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
 
@@ -47,6 +47,9 @@ if (result !== null && !result.ok && "redirectTo" in result) {
 const order = result !== null && result.ok ? result.order : null;
 const notFound = result !== null && !result.ok && "error" in result && result.error === "NOT_FOUND";
 if (order === null) Astro.response.status = notFound ? 404 : 503;
+// Busy (storage contention): the same 503, plus Retry-After and the busy copy.
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 
 const ledgerRows =
 	order?.lines.map((line) => ({
@@ -81,7 +84,7 @@ const totals =
 				<h1 class="title">Order</h1>
 				<div class="notice-slot" role="alert">
 					<Notice>
-						{cartErrorMessage(notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE")}
+						{cartErrorMessage(busy ? "BUSY" : notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE")}
 					</Notice>
 				</div>
 			</>

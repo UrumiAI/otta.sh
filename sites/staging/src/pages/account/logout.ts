@@ -12,7 +12,7 @@ import type { APIRoute } from "astro";
 import { clearSessionCookie, currentSessionToken } from "../../lib/account.js";
 import { routeDispatcher } from "../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF FIRST — a cross-site form must not be able to sign a customer out.
@@ -27,7 +27,7 @@ export const POST: APIRoute = async (context) => {
 			{ sessionToken },
 			context.url,
 		);
-		if (result === null) {
+		if (result === null || isBusyResult(result)) {
 			console.error("[site-staging] logout: the session could not be revoked server-side");
 		}
 	}

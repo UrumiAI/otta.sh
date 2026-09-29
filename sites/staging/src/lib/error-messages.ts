@@ -70,6 +70,10 @@ const MESSAGES: Record<string, string> = {
 	INVALID_CURRENCY: GENERIC_FALLBACK,
 	RENDER_FAILED: GENERIC_FALLBACK,
 	SERVICE_UNAVAILABLE: GENERIC_FALLBACK,
+	// The plugin's BUSY (storage contention on a hot item): nothing went wrong
+	// with the shopper's request and nothing was lost — the store is just
+	// momentarily busy, and trying again in a few seconds will work.
+	BUSY: "We're a little busy right now — please try again in a few seconds.",
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",

@@ -26,7 +26,7 @@ import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { resolveLoginLinkUrl } from "./login-link.js";
-import { renderGuard } from "./pdp-route.js";
+import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const ACCOUNT_LOGIN_REQUEST_ROUTE = "storefront/account/login/request";
@@ -85,7 +85,7 @@ export interface AccountLoginRequestInput {
 export type AccountLoginRequestResult =
 	| { ok: true }
 	| { ok: false; error: "INVALID_INPUT" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountLoginVerifyInput {
 	challengeId?: unknown;
@@ -95,7 +95,7 @@ export type AccountLoginVerifyResult =
 	| { ok: true; cookie: SessionCookieDescriptor; redirectTo: string }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "EXPIRED" | "INVALID" | "CONSUMED" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountSessionInput {
 	sessionToken?: unknown;
@@ -103,7 +103,7 @@ export interface AccountSessionInput {
 export type AccountOrdersResult =
 	| { ok: true; orders: OrderSummaryWire[] }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountOrderInput {
 	sessionToken?: unknown;
@@ -113,7 +113,7 @@ export type AccountOrderResult =
 	| { ok: true; order: OrderSummaryWire }
 	| { ok: false; error: "NOT_FOUND" }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 /** Logout always answers the same: the session (if any) is revoked, and the
  *  theme clears its cookie and goes home. */
@@ -130,7 +130,7 @@ const MAX_SESSION_TOKEN_LENGTH = 512;
 export type AccountAddressesResult =
 	| { ok: true; addresses: AddressWire[] }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 /** Issue a challenge and email the magic link — generic success regardless of
  *  account existence or throttling (§9 Risk 4). The link is the operator's
@@ -171,7 +171,7 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 /** Revoke the session. Idempotent and uniform: no token, an unknown token and a
  *  live one all answer the same, with the cookie the theme must clear. */
 export function createAccountLogoutHandler(): RouteHandler<AccountSessionInput> {
-	return (routeCtx, ctx): Promise<AccountLogoutResult | { ok: false; error: "RENDER_FAILED" }> =>
+	return (routeCtx, ctx): Promise<AccountLogoutResult | RenderGuardFailure> =>
 		renderGuard(ACCOUNT_LOGOUT_ROUTE, async () => {
 			const sessionToken = routeCtx.input.sessionToken;
 			if (isNonEmptyString(sessionToken) && sessionToken.length <= MAX_SESSION_TOKEN_LENGTH) {

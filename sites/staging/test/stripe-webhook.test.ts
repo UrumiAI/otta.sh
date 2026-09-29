@@ -60,6 +60,7 @@ import {
 // honest about a non-Cloudflare adapter, and useless to mutate).
 import { env as virtualEnv } from "./helpers/virtual-emdash-env.js";
 import { OTTA_WH_TOKEN_VAR } from "../src/lib/webhook-env.js";
+import { BUSY_RETRY_AFTER_SECONDS } from "../src/lib/otta-api.js";
 import { POST } from "../src/pages/webhooks/stripe.js";
 
 const SITE = "http://localhost:4321";
@@ -334,6 +335,28 @@ describe("POST /webhooks/stripe — the plugin's status is replayed, never swall
 		const { handler } = makeDispatcher({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
 
 		expect((await POST(makeContext(handler))).status).toBe(503);
+	});
+
+	test("BUSY ⇒ 503 with a short Retry-After, dispatched ONCE — Stripe's own retry is the retry", async () => {
+		const { handler, calls } = makeDispatcher({
+			ok: false,
+			status: 503,
+			reason: "BUSY",
+			retryable: true,
+		});
+
+		const response = await POST(makeContext(handler));
+
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBe(String(BUSY_RETRY_AFTER_SECONDS));
+		expect(await response.json()).toMatchObject({ reason: "BUSY", retryable: true });
+		expect(calls).toHaveLength(1);
+	});
+
+	test("a non-busy status carries no Retry-After", async () => {
+		const { handler } = makeDispatcher({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
+
+		expect((await POST(makeContext(handler))).headers.get("retry-after")).toBeNull();
 	});
 });
 

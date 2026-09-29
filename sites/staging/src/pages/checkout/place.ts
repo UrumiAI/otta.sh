@@ -31,7 +31,7 @@ import {
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { dispatchOttaRoute, formString } from "../../lib/otta-api.js";
+import { busyResponse, dispatchOttaRoute, formString, isBusyResult } from "../../lib/otta-api.js";
 import { isCodeShapedRegion } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
@@ -205,6 +205,11 @@ export const POST: APIRoute = async (context) => {
 		context.url,
 	);
 
+	// Busy. NOT auto-retried (not on otta-api.ts's retry allowlist — this is the
+	// route that mints a payment intent). The 503 invites the buyer to try again:
+	// a reload re-posts the same `checkout:<cartId>` key, and since #337 a
+	// same-key replay finishes a partial first attempt rather than skipping it.
+	if (isBusyResult(result)) return busyResponse("/checkout");
 	if (result === null || !result.ok) {
 		// Back to /checkout, which can explain and let the buyer retry — the cart
 		// is still theirs, and for CART_CHECKED_OUT the page offers a way out. The

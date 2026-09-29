@@ -78,10 +78,11 @@ import {
 	type X402Proof,
 } from "@otta-sh/domain";
 import { X402FacilitatorUnavailableError } from "@otta-sh/payments-x402";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenAccepted } from "../edge-token.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
-import type { RouteHandler } from "../types.js";
+import type { PluginContext, RouteHandler } from "../types.js";
 import { x402GatewayFromCtx, type X402Egress } from "./x402-wiring.js";
 
 /** The PUBLIC route path an x402 page-gate proof posts to. Named in the repo's
@@ -116,6 +117,8 @@ export type X402SettleReason =
 	 *  facts for the page layer; neither discloses anything about the order. */
 	| "WRONG_PAYMENT_METHOD"
 	| "AMOUNT_MISMATCH"
+	/** Storage contention: nothing was written by the refused step. 503, retry. */
+	| "BUSY"
 	/** The receipt's `transaction` is already recorded against a DIFFERENT order
 	 *  (`settleOrder` step 2b). One settlement, one on-chain payment. */
 	| "RECEIPT_REBOUND";
@@ -128,7 +131,10 @@ export type X402SettleReason =
  */
 export type X402SettleResult =
 	| { ok: true; status: 200 }
-	| { ok: false; status: 400 | 401 | 404 | 503; reason: X402SettleReason };
+	| { ok: false; status: 400 | 401 | 404 | 503; reason: Exclude<X402SettleReason, "BUSY"> }
+	/** Storage contention: the same proof will work later. `retryable` rides on
+	 *  every busy shape Otta emits. */
+	| { ok: false; status: 503; reason: "BUSY"; retryable: true };
 
 /** UUID v4, the shape every order id in this system has — the same bound the
  *  service's `idParam` enforced, restated because there is no zod in the
@@ -238,37 +244,61 @@ export function createX402SettleHandler(
 		const gateway = await x402GatewayFromCtx(ctx, egress);
 		if (gateway === undefined) return { ok: false, status: 503, reason: "NOT_CONFIGURED" };
 
-		// ── CHECK 2: THIS ORDER IS AN x402 ORDER — before the facilitator call ────
-		// `settleOrder` is gateway-agnostic by design and never consults
-		// `paymentMethod`; behind `requireInternalToken` the service could rely on
-		// that. Anonymous it cannot: without this, a facilitator-valid receipt of
-		// the right amount settles a STRIPE order of the same total, and storefront
-		// checkout originates nothing else today. Route-local on purpose — it is a
-		// statement about THIS surface, not a new rule for every gateway.
-		const stores = createInProcessCommerceStores(ctx);
-		const order = await stores.orderStore.getById(proof.orderId);
-		if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
-		if (order.paymentMethod !== "x402") {
-			return { ok: false, status: 400, reason: "WRONG_PAYMENT_METHOD" };
-		}
-
 		try {
-			return x402SettleResultToResponse(
-				await settleOrder(settleDeps(stores), gateway, {
-					kind: "page_gate",
-					proof,
-				}),
-			);
+			return await settleProof(ctx, proof, gateway);
 		} catch (err) {
-			// The one throw this path can produce on purpose. Anything else is a real
-			// fault and must keep propagating rather than be flattened into a 503
-			// that hides it.
-			if (err instanceof X402FacilitatorUnavailableError) {
-				return { ok: false, status: 503, reason: "FACILITATOR_UNAVAILABLE" };
+			// Storage pressure — a compare-and-set budget ran out, or the host aborted
+			// a transaction as retryable — anywhere in the pre-flight read or the
+			// settle. 503 BUSY, retryable: the refused step wrote nothing, and a
+			// retry of the same proof is replay-safe because `settleOrder` dedupes on
+			// the receipt's transaction (see "REPLAY is the domain's job" in the
+			// test suite). Anything else propagates.
+			if (isRetryableStorageBusy(err)) {
+				console.warn(`[otta] ${X402_SETTLE_ROUTE} busy (retryable):`, err);
+				return { ok: false, status: 503, reason: "BUSY", retryable: true };
 			}
 			throw err;
 		}
 	};
+}
+
+/** CHECK 2 and the settle itself — split out so the storage-pressure mapping
+ *  above covers both the pre-flight order read and the settlement. */
+async function settleProof(
+	ctx: PluginContext,
+	proof: X402Proof,
+	gateway: NonNullable<Awaited<ReturnType<typeof x402GatewayFromCtx>>>,
+): Promise<X402SettleResult> {
+	// ── CHECK 2: THIS ORDER IS AN x402 ORDER — before the facilitator call ────
+	// `settleOrder` is gateway-agnostic by design and never consults
+	// `paymentMethod`; behind `requireInternalToken` the service could rely on
+	// that. Anonymous it cannot: without this, a facilitator-valid receipt of
+	// the right amount settles a STRIPE order of the same total, and storefront
+	// checkout originates nothing else today. Route-local on purpose — it is a
+	// statement about THIS surface, not a new rule for every gateway.
+	const stores = createInProcessCommerceStores(ctx);
+	const order = await stores.orderStore.getById(proof.orderId);
+	if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
+	if (order.paymentMethod !== "x402") {
+		return { ok: false, status: 400, reason: "WRONG_PAYMENT_METHOD" };
+	}
+
+	try {
+		return x402SettleResultToResponse(
+			await settleOrder(settleDeps(stores), gateway, {
+				kind: "page_gate",
+				proof,
+			}),
+		);
+	} catch (err) {
+		// The one throw this path can produce on purpose. Anything else is a real
+		// fault and must keep propagating rather than be flattened into a 503
+		// that hides it.
+		if (err instanceof X402FacilitatorUnavailableError) {
+			return { ok: false, status: 503, reason: "FACILITATOR_UNAVAILABLE" };
+		}
+		throw err;
+	}
 }
 
 /** Every `SettleDeps` field, from the same composition root the Stripe settle

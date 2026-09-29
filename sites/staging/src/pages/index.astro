@@ -34,7 +34,7 @@ import {
 	TAPE_FETCH_LIMIT,
 	type StoreSettings,
 } from "../lib/tape.js";
-import { dispatchOttaRoute } from "../lib/otta-api.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../lib/otta-api.js";
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -94,6 +94,11 @@ const result =
 				Astro.url,
 			);
 const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+/* BUSY (storage contention, already retried once): the DEGRADED RULE still holds
+   — the tape is omitted and no error box is shown — but the response is a 503 +
+   short Retry-After, so a crawler or cache comes back for the priced front page
+   instead of keeping the tapeless one as a healthy 200. */
+if (isBusyResult(result)) markBusy(Astro.response);
 
 const rows = tapeRows(view);
 

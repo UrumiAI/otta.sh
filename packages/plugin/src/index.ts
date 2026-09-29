@@ -295,6 +295,8 @@ export {
 	STOREFRONT_PRODUCT_ROUTE,
 	type PdpRouteInput,
 	type PdpRouteResult,
+	type RenderBusy,
+	type RenderGuardFailure,
 } from "./storefront/pdp-route.js";
 export {
 	createPlpRouteHandler,

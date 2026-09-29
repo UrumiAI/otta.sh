@@ -51,6 +51,7 @@
 
 import { settleOrder, type SettleDeps, type SettleResult } from "@otta-sh/domain";
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenAccepted } from "../edge-token.js";
 import { stripeWebhookSecretFromKv } from "../payment-secrets.js";
@@ -79,7 +80,14 @@ export interface StripeWebhookSettleInput {
  */
 export type StripeWebhookSettleResult =
 	| { ok: true; status: 200 }
-	| { ok: false; status: 400 | 401 | 404 | 200 | 503; reason: StripeWebhookSettleReason };
+	| {
+			ok: false;
+			status: 400 | 401 | 404 | 200 | 503;
+			reason: Exclude<StripeWebhookSettleReason, "BUSY">;
+	  }
+	/** Storage contention — the one refusal that says "the same delivery will
+	 *  work later". `retryable` rides on every busy shape Otta emits. */
+	| { ok: false; status: 503; reason: "BUSY"; retryable: true };
 
 /** Every refusal this route can express. A FIXED vocabulary: no message is built
  *  from a secret, a kv error, or a gateway diagnostic. */
@@ -91,7 +99,10 @@ export type StripeWebhookSettleReason =
 	| "UNKNOWN_EVENT"
 	| "ORDER_NOT_FOUND"
 	| "AMOUNT_MISMATCH"
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/** The store was too busy to commit (compare-and-set budget exhausted, or a
+	 *  retryable serialization abort). Always 503: Stripe retries it. */
+	| "BUSY";
 
 /** Decode base64 to bytes with `atob` — an ambient global in workerd AND in
  *  modern Node, so no `node:buffer` import crosses the sandbox perimeter.
@@ -231,6 +242,22 @@ export function createStripeWebhookSettleHandler(
 			inventoryStore: stores.inventory,
 			clock: stores.clock,
 		};
-		return settleResultToResponse(await settleOnce(deps, gateway, body, stripeSignature, settle));
+		try {
+			return settleResultToResponse(await settleOnce(deps, gateway, body, stripeSignature, settle));
+		} catch (err) {
+			// STORAGE PRESSURE IS A 503, AND A 503 IS WHAT MAKES STRIPE RETRY. Before
+			// this, the throw escaped as the host's 500 — which Stripe also retries,
+			// but indistinguishably from a real fault. Retrying is safe because
+			// replay is the DOMAIN's job (see `settleOnce`): the redelivery re-claims
+			// the same event id and re-drives only state-guarded steps, so a delivery
+			// that made progress before the store gave up still settles exactly once
+			// (`stripe-settle-route.test.ts` (iv) and (ix)). Anything else keeps
+			// propagating — flattening a real fault into a 503 would hide it.
+			if (isRetryableStorageBusy(err)) {
+				console.warn(`[otta] ${STRIPE_WEBHOOK_SETTLE_ROUTE} busy (retryable):`, err);
+				return { ok: false, status: 503, reason: "BUSY", retryable: true };
+			}
+			throw err;
+		}
 	};
 }
