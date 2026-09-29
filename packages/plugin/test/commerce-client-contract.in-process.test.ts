@@ -532,3 +532,45 @@ describe("in-process commerce: a zone tie-break is logged with ids only", () => 
 		}
 	});
 });
+
+/**
+ * ADR-0021, the SECOND line of defence: the console validates zone regions
+ * before it writes, and the rules client refuses a non-code again, so no other
+ * caller of the surface can store a region checkout could never match.
+ */
+describe("in-process admin rules: zone regions must be ISO codes", () => {
+	let harness: InProcessCommerceHarness;
+	let rules: InProcessAdminRulesClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		rules = new InProcessAdminRulesClient(harness.ctx);
+	}, 120_000);
+	afterEach(async () => {
+		await harness.reset();
+	});
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("createZone / updateZone refuse ['UK'] and a non-array, and store codes uppercased", async () => {
+		await expectRefusal(rules.createZone({ id: "z-uk", name: "UK", regions: ["UK"] }), "regions");
+		expect(await harness.stores.shippingRules.getZone("z-uk")).toBeNull();
+
+		expect(
+			await rules.createZone({ id: "z-gb", name: "GB", regions: ["gb", "us-ca"] }),
+		).toMatchObject({
+			ok: true,
+			value: { regions: ["GB", "US-CA"] },
+		});
+		await expectRefusal(rules.updateZone("z-gb", { name: "GB", regions: ["UK"] }), "regions");
+		await expectRefusal(
+			rules.updateZone("z-gb", { name: "GB", regions: "GB" as unknown as string[] }),
+			"regions",
+		);
+		expect((await harness.stores.shippingRules.getZone("z-gb"))?.regions).toEqual(["GB", "US-CA"]);
+		expect(await rules.updateZone("z-gb", { name: "GB", regions: null })).toMatchObject({
+			ok: true,
+		});
+	});
+});

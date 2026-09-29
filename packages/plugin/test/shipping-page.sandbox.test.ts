@@ -392,17 +392,17 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("create-zone stores {id,name,regions} with the regions parsed to a string array, then re-lists with a success notice", async () => {
+	test("create-zone stores {id,name,regions} with the regions parsed to UPPERCASE ISO codes, then re-lists with a success notice", async () => {
 		await seedShipping();
 		const blocks = await submitForm("shipping:create-zone", {
 			id: "eu",
 			name: "Europe",
-			regions: " EU , FR ",
+			regions: " FR , de ",
 		});
 		expect(await shippingRules.getZone("eu")).toEqual({
 			id: "eu",
 			name: "Europe",
-			regions: ["EU", "FR"],
+			regions: ["FR", "DE"],
 		});
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
@@ -449,16 +449,21 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect((await shippingRules.listZones()).filter((z) => z.id === "us")).toHaveLength(1);
 	});
 
-	test("the create screen carries the F-8 line about regions; the page context stays terse and says nothing about them", async () => {
+	test("the create screen carries the F-8 line about regions — ISO codes, exact, most specific wins (ADR-0021); the page context stays terse", async () => {
 		await seedShipping();
 		const blocks = await loadZones();
 		// The page-level context stays terse (≤140) and says nothing about regions.
 		const pageContext = String(findBlocks(blocks, "context")[0]?.text);
 		expect(pageContext.length).toBeLessThanOrEqual(140);
-		expect(pageContext).not.toMatch(/auto-match/i);
-		// The F-8 line moved WITH the form it qualifies, onto the create screen.
+		expect(pageContext).not.toMatch(/ISO/);
+		// The F-8 line moved WITH the form it qualifies, onto the create screen,
+		// and it now says what checkout actually does with the codes.
 		const screen = await openNewZoneScreen(blocks);
-		expect(contextTexts(screen).some((t) => /auto-match/i.test(t))).toBe(true);
+		const line = contextTexts(screen).find((t) => /ISO/.test(t)) ?? "";
+		expect(line).toMatch(/US-CA/);
+		expect(line).toMatch(/most specific/i);
+		expect(line).toMatch(/exact/i);
+		expect(contextTexts(screen).some((t) => /auto-match/i.test(t))).toBe(false);
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------
@@ -506,7 +511,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		const screen = await openNewZoneScreen();
 		const blocks = await submitForm(
 			"shipping:create-zone",
-			{ id: "", name: "Canada", regions: "CA, US" },
+			{ id: "", name: "Canada", regions: "CA, MX" },
 			formFor(screen, "shipping:create-zone")?.block_id,
 		);
 		expect(await shippingRules.getZone("ca")).toBeNull();
@@ -514,16 +519,16 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(blocks.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
 		expect(formInitialValues(blocks, "shipping:create-zone")).toEqual({
 			name: "Canada",
-			regions: "CA, US", // VERBATIM — never the parsed region array
+			regions: "CA, MX", // VERBATIM — never the parsed region array
 		});
 
 		// Fixing the one field and resubmitting creates the zone and returns.
 		const created = await submitForm(
 			"shipping:create-zone",
-			{ id: "ca", name: "Canada", regions: "CA, US" },
+			{ id: "ca", name: "Canada", regions: "CA, MX" },
 			formFor(blocks, "shipping:create-zone")?.block_id,
 		);
-		expect((await shippingRules.getZone("ca"))?.regions).toEqual(["CA", "US"]);
+		expect((await shippingRules.getZone("ca"))?.regions).toEqual(["CA", "MX"]);
 		expect(bannerOf(created)?.variant).toBe("default");
 		expect(formFor(created, "shipping:create-zone")).toBeUndefined();
 	});
@@ -1374,4 +1379,145 @@ describe("admin Shipping console — assertBlockContract (§15 V-3)", () => {
 		await seedShipping(manyMethods(26));
 		assertBlockContract(await openPath(["us"]), { screen: "shipping", level: "list" });
 	}, 180_000);
+});
+
+/**
+ * ADR-0021: zone regions are ISO codes, because checkout now DERIVES the zone
+ * from the buyer's address by matching them. The console refuses anything else
+ * on write, refuses overlaps, and says out loud which stored zones (written
+ * before this rule) can never match.
+ */
+describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sandbox)", () => {
+	test("create with 'UK, United States, US-XX' is refused: the banner names EVERY bad token with a hint, the draft comes back, nothing is written", async () => {
+		await seedShipping();
+		const before = await shippingRules.listZones();
+
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "bad",
+			name: "Bad",
+			regions: "UK, United States, US-XX, US-TX",
+		});
+
+		expect(await shippingRules.listZones()).toEqual(before);
+		const banner = bannerOf(blocks);
+		expect(banner?.variant).toBe("error");
+		const text = String(banner?.description);
+		expect(text).toContain("UK");
+		expect(text).toMatch(/GB/);
+		expect(text).toContain("United States");
+		expect(text).toContain("US-XX");
+		expect(text).not.toContain("US-TX");
+		// The refusal re-renders the create screen with what was typed.
+		expect(formInitialValues(blocks, "shipping:create-zone")).toMatchObject({
+			id: "bad",
+			name: "Bad",
+			regions: "UK, United States, US-XX, US-TX",
+		});
+	});
+
+	test("a code another zone already lists is an OVERLAP: refused on create and on save, naming the other zone", async () => {
+		await seedShipping();
+
+		const created = await submitForm("shipping:create-zone", {
+			id: "us2",
+			name: "US again",
+			regions: "us, US-CA",
+		});
+		expect(bannerOf(created)?.variant).toBe("error");
+		expect(String(bannerOf(created)?.description)).toContain("United States");
+		expect(String(bannerOf(created)?.description)).toContain("US");
+		expect(await shippingRules.getZone("us2")).toBeNull();
+
+		const list = await loadZones();
+		const form = formFor(groupBlocks(list, "ship:zone:empty"), "shipping:save-zone");
+		const saved = await submitForm(
+			"shipping:save-zone",
+			{ name: "Empty zone", regions: "US" },
+			form?.block_id,
+		);
+		expect(bannerOf(saved)?.variant).toBe("error");
+		expect(String(bannerOf(saved)?.description)).toContain("United States");
+		expect((await shippingRules.getZone("empty"))?.regions).toBeNull();
+	});
+
+	test("re-saving a zone with its OWN codes is not an overlap", async () => {
+		await seedShipping();
+		const list = await loadZones();
+		const form = formFor(groupBlocks(list, "ship:zone:us"), "shipping:save-zone");
+		const saved = await submitForm(
+			"shipping:save-zone",
+			{ name: "USA", regions: "US" },
+			form?.block_id,
+		);
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(await shippingRules.getZone("us")).toMatchObject({ name: "USA", regions: ["US"] });
+	});
+
+	describe("a zone stored BEFORE the rule, holding free text", () => {
+		const LEGACY: ShippingFixture = {
+			zones: [
+				{ id: "legacy", name: "Old zone", regions: ["United States", "de"] },
+				{ id: "empty", name: "Empty zone", regions: null },
+			],
+			methods: [{ id: "m-legacy", zoneId: "legacy", name: "Old method", type: "flat_rate" }],
+			rates: [],
+		};
+
+		test("the landing page warns that it can never match, naming the zone and its bad tokens", async () => {
+			await seedShipping(LEGACY);
+			const blocks = await loadZones();
+			const warning = blocks.find((b) => b.block_id === "ship:legacy-regions");
+			expect(warning?.type).toBe("banner");
+			expect(warning?.variant).toBe("alert");
+			expect(String(warning?.description)).toContain("Old zone");
+			expect(String(warning?.description)).toContain("United States");
+			// INC-14's order survives: the warning never displaces the create button.
+			expect(blocks.map((b) => String(b.type)).slice(0, 3)).toEqual([
+				"header",
+				"context",
+				"actions",
+			]);
+		});
+
+		test("its row labels the legacy tokens 'never matches'; a zone with no codes says 'Matches no address'", async () => {
+			await seedShipping(LEGACY);
+			const blocks = await loadZones();
+			const legacy = contextTexts(groupBlocks(blocks, "ship:zone:legacy")).join(" | ");
+			expect(legacy).toMatch(/Matches: DE/);
+			expect(legacy).toMatch(/United States \(not a region code — never matches\)/);
+			const empty = contextTexts(groupBlocks(blocks, "ship:zone:empty")).join(" | ");
+			expect(empty).toMatch(/Matches no address/);
+		});
+
+		test("its methods screen carries the same warning", async () => {
+			await seedShipping(LEGACY);
+			const blocks = await openPath(["legacy"]);
+			const warning = blocks.find((b) => b.block_id === "ship:legacy-regions");
+			expect(warning?.variant).toBe("alert");
+			expect(String(warning?.description)).toContain("United States");
+		});
+
+		test("saving it with its legacy text is refused until it is fixed; with codes it saves", async () => {
+			await seedShipping(LEGACY);
+			const list = await loadZones();
+			const form = formFor(groupBlocks(list, "ship:zone:legacy"), "shipping:save-zone");
+			expect(field(form, "regions")?.initial_value).toBe("United States, de");
+
+			const refused = await submitForm(
+				"shipping:save-zone",
+				{ name: "Old zone", regions: "United States, de" },
+				form?.block_id,
+			);
+			expect(bannerOf(refused)?.variant).toBe("error");
+			expect((await shippingRules.getZone("legacy"))?.regions).toEqual(["United States", "de"]);
+
+			const fixed = await submitForm(
+				"shipping:save-zone",
+				{ name: "Old zone", regions: "US, de" },
+				form?.block_id,
+			);
+			expect(bannerOf(fixed)?.variant).toBe("default");
+			expect((await shippingRules.getZone("legacy"))?.regions).toEqual(["US", "DE"]);
+		});
+	});
 });
