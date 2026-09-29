@@ -56,3 +56,24 @@ export function isCartLink(url: string): boolean {
 export function cartCountLabel(count: number): string {
 	return count === 1 ? "1 item" : `${count} items`;
 }
+
+/**
+ * The theme's own "Account" entry (issue #306). The primary menu is
+ * CMS-authored and predates the account pages, so the theme appends this rather
+ * than waiting for an operator to add it — the account is a route THIS THEME
+ * defines, like the fallback entries above.
+ */
+export const ACCOUNT_NAV_ITEM: NavItem = { label: "Account", url: "/account/orders" };
+
+/** Does this menu URL point into the account area? Same tolerance as
+ *  {@link isCartLink}: query, fragment and trailing slashes are all legal. */
+export function isAccountLink(url: string): boolean {
+	const path = (url.split(/[?#]/)[0] ?? "").replace(/\/+$/, "");
+	return path === "/account" || path.startsWith("/account/");
+}
+
+/** The menu plus the account entry — unless the operator's menu already links
+ *  into /account, in which case theirs stands and no duplicate is added. */
+export function withAccountLink(items: readonly NavItem[]): readonly NavItem[] {
+	return items.some((item) => isAccountLink(item.url)) ? items : [...items, ACCOUNT_NAV_ITEM];
+}
