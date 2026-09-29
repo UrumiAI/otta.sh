@@ -13,6 +13,7 @@ import {
 	readCouponParam,
 	readDestinationParams,
 	readMethodParam,
+	shapedDestination,
 } from "../src/lib/checkout-selection.js";
 
 const at = (search: string) => new URL(`http://localhost:4321/checkout${search}`);
@@ -213,5 +214,18 @@ describe("placeFailurePath", () => {
 
 	test("no selection, nothing to keep", () => {
 		expect(placeFailurePath("INVALID_EMAIL", {})).toBe("/checkout?error=INVALID_EMAIL");
+	});
+});
+
+describe("shapedDestination — a form's destination, shape-checked before it can enter a URL", () => {
+	test.each([
+		[["us", "ca"], { country: "US", region: "CA" }],
+		[["US", "us-ca"], { country: "US", region: "US-CA" }],
+		[["DE", ""], { country: "DE" }],
+		[["US", "1 Private Road"], { country: "US" }],
+		[["Ada Lovelace", "CA"], {}],
+		[[undefined, undefined], {}],
+	] as const)("%j → %j", ([country, region], expected) => {
+		expect(shapedDestination(country, region)).toEqual(expected);
 	});
 });

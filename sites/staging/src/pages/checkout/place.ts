@@ -25,6 +25,7 @@ import {
 	checkoutPath,
 	placeFailurePath,
 	readCouponCode,
+	shapedDestination,
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
@@ -136,8 +137,10 @@ export const POST: APIRoute = async (context) => {
 	const selection: CheckoutUrlSelection = {
 		couponCode,
 		shippingMethodId,
+		// Shape-checked like the delivery form's GET: a crafted hidden field
+		// never reaches the redirect URL.
 		...(zoned
-			? { country: formString(form.get("country")), region: formString(form.get("region")) }
+			? shapedDestination(formString(form.get("country")), formString(form.get("region")))
 			: {}),
 	};
 

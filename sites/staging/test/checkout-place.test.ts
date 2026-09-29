@@ -869,6 +869,44 @@ describe("the delivery address at place (ADR-0021)", () => {
 		expect(response.headers.get("location")).toBe(expected);
 	});
 
+	// A crafted POST can put anything in the "hidden" destination fields. Only
+	// values that pass the same SHAPE checks as the delivery form's GET
+	// (readDestinationParams) may ride a failure redirect; anything else is dropped.
+	test.each([
+		// A region means nothing without its country: both go.
+		[{ country: "Ada Lovelace", region: "CA" }, "/checkout?method=m-1&error=INVALID_EMAIL"],
+		[
+			{ country: "US", region: "1 Private Road" },
+			"/checkout?country=US&method=m-1&error=INVALID_EMAIL",
+		],
+		[
+			{ country: "us", region: "ca" },
+			"/checkout?country=US&region=CA&method=m-1&error=INVALID_EMAIL",
+		],
+	])(
+		"a crafted hidden destination %j is shape-checked before it enters a redirect",
+		async (hidden, expected) => {
+			const { handler, calls } = makeHandler();
+			const response = await PLACE_POST(
+				makeContext({ ...ZONED, ...hidden, email: "not-an-email" }, handler).context,
+			);
+
+			expect(response.headers.get("location")).toBe(expected);
+			expect(calls).toHaveLength(0);
+		},
+	);
+
+	test("a crafted destination never reaches a redirect after a DISPATCH failure either", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		const response = await PLACE_POST(
+			makeContext({ ...ZONED, country: "Private", region: "Street 12" }, handler).context,
+		);
+
+		expect(response.headers.get("location")).toBe(
+			"/checkout?method=m-1&error=PAYMENT_INTENT_FAILED",
+		);
+	});
+
 	test("the redirect never carries a typed address field — only the coarse destination", async () => {
 		const { handler } = makeHandler({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
 		const location = (

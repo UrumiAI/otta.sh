@@ -108,6 +108,25 @@ export interface DestinationRead {
 	methodDropped: boolean;
 }
 
+/**
+ * A destination from a FORM (the place form's hidden echo) → only what passes
+ * the same SHAPE checks as the delivery form's GET: a two-letter country and a
+ * code-shaped region, both uppercased. A crafted POST can put anything in a
+ * hidden field, and these values go back into a redirect URL — so anything
+ * else is dropped, and a region without a valid country goes with it.
+ */
+export function shapedDestination(
+	country: string | undefined,
+	region: string | undefined,
+): { country?: string; region?: string } {
+	const code = (country ?? "").trim().toUpperCase();
+	if (!COUNTRY_SHAPE.test(code)) return {};
+	const sub = (region ?? "").trim();
+	return sub.length > 0 && isCodeShapedRegion(sub)
+		? { country: code, region: sub.toUpperCase() }
+		: { country: code };
+}
+
 /** A region, NORMALISED for comparison: trimmed, uppercased, and its own
  *  country's `CC-` prefix stripped — so `ca`, `CA` and `US-CA` are equal. */
 function comparableRegion(country: string, region: string | null): string {
