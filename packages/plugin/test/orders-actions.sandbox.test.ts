@@ -39,18 +39,18 @@
  * watermark moved. What the key BUYS is still observable here too: a replayed
  * note reads `Already added` (below), which is the dedupe the key performs.
  *
- * REFUNDS CANNOT COMPLETE ON THIS TIER, and that is recorded, not worked around.
- * `InProcessAdminOrdersClient` composes NO payment gateways yet (INC-C1/C3 move
- * the payment adapters), so every well-formed refund reaches its "no gateway is
- * wired for this order's method" arm and answers `409
- * REFUND_GATEWAY_UNAVAILABLE`. The refund cases below therefore cover everything
- * IN FRONT of that arm — which is where DA-3a and DA-3b live and where the money
- * bugs are — plus the honest notice the arm itself produces. The success,
- * duplicate and fully-refunded notices, the `REFUND_EXCEEDS_TOTAL` ceiling
- * refusal and the `GATEWAY_UNVERIFIED` ambiguous-timeout copy are unreachable
- * until a gateway map is composed; they had exactly one previous source of truth,
- * a stub answering an invented status code, and a test that stubs a reply it
- * cannot provoke proves nothing about this tier.
+ * REFUNDS RUN ON TWO BOOTS. `makeAdminClients` composes the payment gateways
+ * from kv exactly as checkout does (issue #303), so a refund's fate depends on
+ * whether Stripe is configured. This file's MAIN boot provisions no Stripe
+ * secrets: every well-formed refund there reaches the "no gateway is wired for
+ * this order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`, and the
+ * refund cases on it cover everything IN FRONT of that arm — which is where
+ * DA-3a and DA-3b live and where the money bugs are. The LAST describe boots a
+ * second isolate with both Stripe secrets saved and `api.stripe.com` stubbed
+ * (`helpers/stripe-api-stub.ts`), and drives the configured path end to end:
+ * one `POST /v1/refunds` over `ctx.http` carrying the refund's idempotency key,
+ * the success and fully-refunded notices, a double-submit that asks Stripe for
+ * nothing more, and a ceiling refusal that never reaches Stripe.
  *
  * THE STALE-WATERMARK REFUSAL IS THE GATE (ADR-0015 Decision 3, as amended), and
  * it is proven on every write that carries a watermark: `THE REFUSAL — a refund
@@ -91,9 +91,19 @@ import {
 	uuidIdGen,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { REFUND_TOO_HIGH_TITLE } from "@otta-sh/admin-presentation";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
-import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import {
+	startStripeApiStub,
+	type StripeApiStub,
+	type StripeResponder,
+} from "./helpers/stripe-api-stub.js";
+import {
+	loadPluginInSandbox,
+	productionAllowedHosts,
+	type SandboxHandle,
+} from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const ACT = "otta_console_act";
@@ -200,16 +210,25 @@ async function readOrder(id: string): Promise<Order> {
 	return order;
 }
 
+/** One console write, exactly as `performAction` sends it, on a given boot. */
+async function actOn(
+	boot: SandboxHandle,
+	actionId: string,
+	value: Record<string, string>,
+): Promise<ActOutcome> {
+	const outcome = await boot.invokeRoute("admin", {
+		type: ACT,
+		action_id: actionId,
+		value,
+	});
+	expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
+	return (outcome as { result: ActOutcome }).result;
+}
+
 describe("the Orders write path (workerd sandbox)", () => {
-	/** One console write, exactly as `performAction` sends it. */
+	/** One console write on this file's main boot (no Stripe secrets). */
 	async function act(actionId: string, value: Record<string, string>): Promise<ActOutcome> {
-		const outcome = await sandbox.invokeRoute("admin", {
-			type: ACT,
-			action_id: actionId,
-			value,
-		});
-		expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
-		return (outcome as { result: ActOutcome }).result;
+		return actOn(sandbox, actionId, value);
 	}
 
 	/** Move a seeded order along the state machine using the console's own
@@ -656,19 +675,16 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
 
-	test("an HONEST watermark reaches the write, and this tier answers that no gateway is wired", async () => {
+	test("an HONEST watermark reaches the write, and with NO Stripe configured it answers that no gateway is wired", async () => {
 		// THE ARM BEHIND THE GATE. Everything the console checks has passed — the
 		// amount parses as integer minor units, the currency is named, the watermark
 		// matches the live ledger — so the refund genuinely reaches
-		// `InProcessAdminOrdersClient.refundOrder`, which composes no payment
-		// gateways yet (INC-C1/C3) and answers `409 REFUND_GATEWAY_UNAVAILABLE`.
-		// That lands on `refundFailureNotice`'s default arm.
-		//
-		// This is the case the deleted success/duplicate/fully-refunded tests become
-		// until a gateway map exists: asserting the notice a stub was told to produce
-		// would have said nothing about this tier, and asserting a success would have
-		// been false.
-		const id = await seedOrder();
+		// `InProcessAdminOrdersClient.refundOrder`. This boot provisions no Stripe
+		// secrets, so `makeAdminClients` composes no `stripe` gateway and the refund
+		// is refused fail-closed with `409 REFUND_GATEWAY_UNAVAILABLE`, which lands on
+		// `refundFailureNotice`'s default arm. The configured path is the describe
+		// at the end of this file.
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
 		const result = await act("orders:refund", {
 			orderId: id,
 			amountCents: "500",
@@ -740,5 +756,204 @@ describe("the Orders write path (workerd sandbox)", () => {
 			});
 			expect(result.notice?.title, amountCents).toBe("That action could not be read");
 		}
+	});
+});
+
+/**
+ * ADMIN REFUNDS WITH STRIPE CONFIGURED (issue #303), inside workerd.
+ *
+ * A SECOND BOOT, like `storefront-checkout.sandbox.test.ts`'s `place` suite: it
+ * saves both Stripe secrets through the Settings form's own actions, grants
+ * production's allowlist, and points workerd's global outbound at a local Stripe
+ * API stub — so the refund passes the plugin's real `ctx.http` allowlist check
+ * for `api.stripe.com` and then lands on the stub instead of the internet. The
+ * main boot above stays secret-less, which is what keeps its fail-closed case
+ * honest.
+ *
+ * The stub answers the two requests `StripePaymentGateway.refund` makes the way
+ * Stripe does: the pre-flight `GET /v1/payment_intents/:id?expand[]=latest_charge`
+ * reports the live refunded/captured view, and `POST /v1/refunds` refunds —
+ * honouring Stripe's native idempotency (a repeated `Idempotency-Key` returns the
+ * SAME refund and moves no more money). Orders are seeded through the same
+ * adapters as above, with a succeeded capture whose `providerRef` is the
+ * PaymentIntent the refund targets.
+ */
+describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed)", () => {
+	const STRIPE_SECRET_KEY = "sk_test_refunds_NEVER_LEAK";
+	const STRIPE_WEBHOOK_SECRET = "whsec_refunds_NEVER_LEAK";
+	let stripeBoot: SandboxHandle;
+	let stripe: StripeApiStub;
+
+	/** Stripe's side of every PaymentIntent the cases refund against. */
+	function refundingStripe(captured: number): StripeResponder {
+		const refundedByIntent = new Map<string, number>();
+		const byKey = new Map<string, { status: number; body: unknown }>();
+		let n = 0;
+		return (req) => {
+			const read = /^\/v1\/payment_intents\/([^/?]+)\?/.exec(req.path);
+			if (req.method === "GET" && read !== null) {
+				const intent = decodeURIComponent(read[1] ?? "");
+				return {
+					status: 200,
+					body: {
+						id: intent,
+						latest_charge: {
+							amount_refunded: refundedByIntent.get(intent) ?? 0,
+							amount_captured: captured,
+							currency: "usd",
+						},
+					},
+				};
+			}
+			if (req.method === "POST" && req.path === "/v1/refunds") {
+				const key = req.headers["idempotency-key"];
+				const previous = typeof key === "string" ? byKey.get(key) : undefined;
+				if (previous !== undefined) return previous;
+				const intent = req.form.get("payment_intent") ?? "";
+				const amount = Number(req.form.get("amount"));
+				refundedByIntent.set(intent, (refundedByIntent.get(intent) ?? 0) + amount);
+				n += 1;
+				const reply = {
+					status: 200,
+					body: { id: `re_stub_${String(n)}`, amount, currency: "usd", status: "succeeded" },
+				};
+				if (typeof key === "string") byKey.set(key, reply);
+				return reply;
+			}
+			return { status: 404, body: { error: { type: "invalid_request_error" } } };
+		};
+	}
+
+	function refundPosts(): typeof stripe.requests {
+		return stripe.requests.filter((r) => r.method === "POST" && r.path === "/v1/refunds");
+	}
+
+	beforeAll(async () => {
+		stripe = await startStripeApiStub({ forwardTo: [(await storageBridge()).baseUrl] });
+		stripeBoot = await loadPluginInSandbox({
+			allowedHosts: productionAllowedHosts(),
+			storage: true,
+			globalOutbound: stripe.address,
+		});
+		for (const [action, field, value] of [
+			["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY],
+			["save-stripe-webhook-secret", "stripeWebhookSecret", STRIPE_WEBHOOK_SECRET],
+		] as const) {
+			const saved = await stripeBoot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: action,
+				values: { [field]: value },
+			});
+			expect(saved).toHaveProperty("result");
+		}
+	}, 300_000);
+
+	afterAll(async () => {
+		await stripeBoot?.close();
+		await stripe?.close();
+	});
+
+	beforeEach(() => {
+		stripe.reset();
+		stripe.respondWith(refundingStripe(TOTAL_CENTS));
+	});
+
+	afterEach(() => {
+		// A refused forward is a 502 INSIDE the isolate, which the refund would
+		// report as an ordinary provider failure — so it is asserted here.
+		expect(stripe.refused).toEqual([]);
+	});
+
+	test("a refund goes to Stripe ONCE over ctx.http, carrying its idempotency key, and is recorded", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		expect(result.notice?.title).toBe("Refund recorded");
+
+		const posts = refundPosts();
+		expect(posts).toHaveLength(1);
+		// The key the console derived (F-2a) is the key Stripe sees — its NATIVE
+		// idempotency is what makes a retry safe provider-side.
+		expect(posts[0]?.headers["idempotency-key"]).toBe(`admin-refund:${id}:500:0`);
+		expect(posts[0]?.headers.authorization).toBe(`Bearer ${STRIPE_SECRET_KEY}`);
+		expect(Object.fromEntries(posts[0]?.form ?? [])).toEqual({
+			payment_intent: `pi-${id.slice("order-".length)}`,
+			amount: "500",
+		});
+
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]).toMatchObject({
+			amount: 500,
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: "re_stub_1",
+			status: "recorded",
+			refundedBy: "carol",
+		});
+
+		// THE DOUBLE-SUBMIT: the same confirm clicked again. Its watermark is now
+		// stale, so the console refuses it before the write — and, what matters
+		// here, Stripe is asked for nothing more.
+		const again = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		expect(again.notice?.title).toBe("The refund ledger changed — nothing was refunded");
+		expect(refundPosts()).toHaveLength(1);
+		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
+	});
+
+	test("refunding the rest of the ceiling completes the order", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		expect(
+			(
+				await actOn(stripeBoot, "orders:refund", {
+					orderId: id,
+					amountCents: "500",
+					refundedSoFarCents: "0",
+					currency: "USD",
+					refundedBy: "carol",
+				})
+			).notice?.title,
+		).toBe("Refund recorded");
+		const rest = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "1000",
+			refundedSoFarCents: "500",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(rest.notice?.title).toBe("Refund complete");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:1000:500`,
+		]);
+		expect((await readOrder(id)).state).toBe("refunded");
+	});
+
+	test("a refund past a SHORT capture is refused by the ceiling and never reaches Stripe", async () => {
+		// $6.00 captured against a $15.00 total: the ceiling binds at $6.00.
+		const id = await seedOrder({ capturedCents: 600 });
+		const result = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "1000",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
+		expect(stripe.requests).toEqual([]);
+		expect(await orderStore.listRefunds(toOrderId(id))).toEqual([]);
 	});
 });
