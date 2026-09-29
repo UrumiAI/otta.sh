@@ -29,7 +29,9 @@ import type {
 	PaymentIntentWire,
 	PublicOrderWire,
 	QuoteBreakdownWire,
+	QuoteDestinationWire,
 	QuoteFailureReason,
+	ShippingOptionWire,
 } from "../product-commerce/commerce-client.js";
 import type { CartMoneyWire, CartPricingWire } from "./cart-pricing.js";
 
@@ -275,17 +277,36 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
  *  wire union, so it cannot drift from it. */
 export type CouponSelectionReason = Extract<QuoteFailureReason, `COUPON_${string}`>;
 
-/** The quote refusals that blame the SHIPPING METHOD the buyer chose. */
-export type ShippingSelectionReason = Extract<QuoteFailureReason, `SHIPPING_${string}`>;
+/** The quote refusals that blame the DESTINATION (ADR-0021): the country is not
+ *  a code, the region is not a real one (or is needed), or no zone matches. */
+export type DestinationSelectionReason = Extract<
+	QuoteFailureReason,
+	"INVALID_SHIPPING_ADDRESS" | "SHIPPING_ZONE_NOT_MATCHED" | "SHIPPING_REGION_CODE_REQUIRED"
+>;
+
+/** The quote refusals that blame the SHIPPING METHOD the buyer chose — shown
+ *  as a notice. `SHIPPING_METHOD_NOT_APPLICABLE` is deliberately NOT one: it is
+ *  dropped silently (see {@link isSilentSelectionReason}). */
+export type ShippingSelectionReason = Extract<
+	QuoteFailureReason,
+	| "SHIPPING_METHOD_NOT_FOUND"
+	| "SHIPPING_RATE_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
+	| "MISSING_SHIPPING_ADDRESS"
+>;
 
 /** Which part of the selection a refusal blames. */
-export type SelectionField = "coupon" | "shippingMethod";
+export type SelectionField = "coupon" | "shippingMethod" | "destination";
 
 /**
  * EXHAUSTIVE over the wire union: a quote reason added later without a row
  * here fails the type check, rather than silently bouncing a buyer to `/cart`
  * (a refusal that blames no selection is a cart-level one, and the summary
  * route returns it as `ok: false`).
+ *
+ * A DESTINATION refusal drops the destination and the method with it (a method
+ * only means something inside the zone it belongs to); a METHOD refusal keeps
+ * the destination.
  */
 const SELECTION_FIELD: Record<QuoteFailureReason, SelectionField | null> = {
 	COUPON_NOT_FOUND: "coupon",
@@ -295,6 +316,12 @@ const SELECTION_FIELD: Record<QuoteFailureReason, SelectionField | null> = {
 	COUPON_CURRENCY_MISMATCH: "coupon",
 	SHIPPING_METHOD_NOT_FOUND: "shippingMethod",
 	SHIPPING_RATE_NOT_FOUND: "shippingMethod",
+	SHIPPING_METHOD_NOT_IN_ZONE: "shippingMethod",
+	MISSING_SHIPPING_ADDRESS: "shippingMethod",
+	SHIPPING_METHOD_NOT_APPLICABLE: "shippingMethod",
+	INVALID_SHIPPING_ADDRESS: "destination",
+	SHIPPING_ZONE_NOT_MATCHED: "destination",
+	SHIPPING_REGION_CODE_REQUIRED: "destination",
 	CART_NOT_FOUND: null,
 	CART_EMPTY: null,
 	PRODUCT_NOT_PRICED: null,
@@ -303,6 +330,15 @@ const SELECTION_FIELD: Record<QuoteFailureReason, SelectionField | null> = {
 
 export function selectionFieldFor(reason: QuoteFailureReason): SelectionField | null {
 	return SELECTION_FIELD[reason];
+}
+
+/**
+ * A refusal dropped WITHOUT a notice (D10): a method on a digital-only cart —
+ * typically a stale `?method=` from before the physical line was removed. There
+ * is nothing for the buyer to fix, so there is nothing to say.
+ */
+export function isSilentSelectionReason(reason: QuoteFailureReason): boolean {
+	return reason === "SHIPPING_METHOD_NOT_APPLICABLE";
 }
 
 export function isCouponSelectionReason(
@@ -314,7 +350,76 @@ export function isCouponSelectionReason(
 export function isShippingSelectionReason(
 	reason: QuoteFailureReason,
 ): reason is ShippingSelectionReason {
-	return SELECTION_FIELD[reason] === "shippingMethod";
+	return SELECTION_FIELD[reason] === "shippingMethod" && !isSilentSelectionReason(reason);
+}
+
+export function isDestinationSelectionReason(
+	reason: QuoteFailureReason,
+): reason is DestinationSelectionReason {
+	return SELECTION_FIELD[reason] === "destination";
+}
+
+// ── delivery (#305 part 2, ADR-0021) ─────────────────────────────────────────
+
+/** One delivery choice as the page renders it. `price` is always printable:
+ *  money, "Free" for a computed zero, or "Unavailable" for an option with no
+ *  rate — which is `disabled` and can never be `selected`. */
+export interface ShippingOptionView {
+	id: string;
+	label: string;
+	price: string;
+	disabled: boolean;
+	selected: boolean;
+}
+
+export const FREE_LABEL = "Free";
+export const UNAVAILABLE_LABEL = "Unavailable";
+
+export function buildShippingOptionsView(
+	options: ReadonlyArray<ShippingOptionWire>,
+	context: { currency: string; locale: string; selected: string | null },
+): ShippingOptionView[] {
+	const code = currency(context.currency);
+	return options.map((option) => {
+		const priced = option.amountCents !== null;
+		return {
+			id: option.methodId,
+			label: option.name,
+			price: !priced
+				? UNAVAILABLE_LABEL
+				: option.amountCents === 0
+					? FREE_LABEL
+					: money(option.amountCents ?? 0, code, context.locale).formatted,
+			disabled: !priced,
+			selected: priced && option.methodId === context.selected,
+		};
+	});
+}
+
+/**
+ * Why the total leaves something out, so the page can say it truthfully:
+ *  - `no_zones` — the store has no delivery set up;
+ *  - `address_needed` — shipping and tax depend on where it is delivered;
+ *  - `method_needed` — the address matched, a delivery option is not chosen;
+ *  - `digital_only` — nothing ships, so no delivery or location-based tax;
+ *  - `null` — nothing is left out.
+ */
+export type UncalculatedReason = "no_zones" | "address_needed" | "method_needed" | "digital_only";
+
+export function uncalculatedReasonFor(
+	status: QuoteDestinationWire["status"],
+	methodSelected: boolean,
+): UncalculatedReason | null {
+	switch (status) {
+		case "no_zones":
+			return "no_zones";
+		case "address_needed":
+			return "address_needed";
+		case "not_required":
+			return "digital_only";
+		case "matched":
+			return methodSelected ? null : "method_needed";
+	}
 }
 
 /**

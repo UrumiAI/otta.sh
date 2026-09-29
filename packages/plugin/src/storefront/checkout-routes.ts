@@ -33,8 +33,10 @@ import type {
 	ClientActionWire,
 	PublicOrderWire,
 	QuoteBreakdownWire,
+	QuoteDestinationWire,
 	QuoteFailureReason,
 	QuoteRequestWire,
+	QuoteResult,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -55,18 +57,25 @@ import {
 	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
+	buildShippingOptionsView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
 	isCouponSelectionReason,
+	isDestinationSelectionReason,
 	isShippingSelectionReason,
+	isSilentSelectionReason,
 	lockedCheckoutPhase,
 	orderTotalsFlags,
+	uncalculatedReasonFor,
 	type CheckoutLineView,
 	type CheckoutTotalsView,
 	type CouponSelectionReason,
+	type DestinationSelectionReason,
 	type LockedCheckoutPhase,
 	type PublicOrderView,
+	type ShippingOptionView,
 	type ShippingSelectionReason,
+	type UncalculatedReason,
 } from "./checkout-view-model.js";
 import { createCommerceLoader, renderGuard } from "./pdp-route.js";
 
@@ -87,6 +96,9 @@ export interface CheckoutSummaryRouteInput {
 	/** Trimmed, case kept (lookup is case-sensitive); blank ⇒ no coupon. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
+	/** `{ country, region? }` — ISO codes (ADR-0021). The coarse ship-to the
+	 *  review is priced for; the zone is derived from it. Never a street address. */
+	destination?: unknown;
 	// There is deliberately NO `shippingZoneId`: the tax zone is never the
 	// client's to choose. A body that carries one is read for nothing.
 }
@@ -117,6 +129,9 @@ export interface OrderRouteInput {
 export interface CheckoutSelectionView {
 	couponCode: string | null;
 	shippingMethodId: string | null;
+	/** The destination the totals were priced for (uppercased codes; region
+	 *  as given, `CA` or `US-CA`), or `null` when none was. */
+	destination: { country: string; region: string | null } | null;
 }
 
 /**
@@ -128,6 +143,22 @@ export interface CheckoutSelectionErrors {
 	/** `code` is the code AS TYPED, so the page can put it back for correcting. */
 	coupon?: { code: string; reason: CouponSelectionReason };
 	shippingMethod?: { reason: ShippingSelectionReason };
+	/** The destination was refused (ADR-0021) — it and the method were dropped. */
+	destination?: { reason: DestinationSelectionReason };
+}
+
+/**
+ * Delivery, as the review can offer it (ADR-0021). `status` is the quote's
+ * zone resolution; `options` are the MATCHED zone's methods (empty otherwise)
+ * and `noOptions` says the zone matched but offers nothing priced — the buyer
+ * cannot place, and the page says why.
+ */
+export interface CheckoutShippingView {
+	status: QuoteDestinationWire["status"];
+	/** `US-CA` / `US` — the code the zone matched on. */
+	matchedRegion: string | null;
+	noOptions: boolean;
+	options: ShippingOptionView[];
 }
 
 /** The order a cart already became — see `lockedCheckoutPhase`. */
@@ -151,6 +182,19 @@ interface CheckoutSummaryViewBase {
 	hasUnpricedLines: boolean;
 	selection: CheckoutSelectionView;
 	selectionErrors: CheckoutSelectionErrors;
+	/** Whether any line ships. */
+	requiresShipping: boolean;
+	shipping: CheckoutShippingView;
+	/** The page must collect an address (a physical cart in a zoned store). */
+	addressRequired: boolean;
+	/**
+	 * The ONE answer to "may the page offer the place button?". Unlocked: the
+	 * cart ships nothing, or the store has no zones, or a zone matched and a
+	 * method is selected. Locked: the order is still payable.
+	 */
+	readyToPlace: boolean;
+	/** Why the total leaves something out (`null` when it leaves nothing out). */
+	uncalculatedReason: UncalculatedReason | null;
 }
 
 export type CheckoutSummaryView = CheckoutSummaryViewBase &
@@ -210,19 +254,31 @@ export type OrderRouteResult =
 /**
  * The selection → the quote/checkout request's pricing fields. ONE function used
  * by both the summary and the place route, so the review and the order can never
- * be priced from different selections — and PR 2 (#305) adds the zone derived
- * from the ship-to address here, in one place. A client-supplied zone never
- * reaches it: the parsers do not read one.
+ * be priced from different selections. There is no zone to forward: the domain
+ * DERIVES it (ADR-0021) — from `destination` on the summary, from the ship-to
+ * address on the place (whose parser never sets `destination`). A
+ * client-supplied zone never reaches here: the parsers do not read one.
  */
 function quoteSelection(
 	selection: CheckoutSelection,
-): Pick<QuoteRequestWire, "couponCode" | "shippingMethodId"> {
+): Pick<QuoteRequestWire, "couponCode" | "shippingMethodId" | "destination"> {
 	return {
 		...(selection.couponCode !== undefined ? { couponCode: selection.couponCode } : {}),
 		...(selection.shippingMethodId !== undefined
 			? { shippingMethodId: selection.shippingMethodId }
 			: {}),
+		...(selection.destination !== undefined ? { destination: selection.destination } : {}),
 	};
+}
+
+/** `selection` without the named keys. */
+function without(
+	selection: CheckoutSelection,
+	...keys: ReadonlyArray<keyof CheckoutSelection>
+): CheckoutSelection {
+	const next: CheckoutSelection = { ...selection };
+	for (const key of keys) delete next[key];
+	return next;
 }
 
 /**
@@ -286,35 +342,90 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			//
 			// A refusal that blames the buyer's SELECTION is different: it is
 			// recorded, and the cart is quoted again WITHOUT that part, so a typo in
-			// a coupon costs a notice rather than the checkout. Each round drops one
-			// field, so this ends. BOUNDED at three quotes because `computeQuote`
-			// (domain pricing/quote.ts) checks the shipping method BEFORE the coupon:
-			// "both bad" is refused on shipping, then on the coupon, then priced —
-			// reordering those checks there would change this bound.
+			// a coupon costs a notice rather than the checkout. A DESTINATION
+			// refusal drops the method with it (a method only means something in
+			// the zone it belongs to); a method on a cart that ships nothing is
+			// dropped silently (D10). Each round drops at least one field, so this
+			// ends — BOUNDED at three quotes because `computeQuote` (domain
+			// pricing/quote.ts) checks destination → method → coupon in that order,
+			// and a destination refusal drops the method too. Reordering those
+			// checks there would change this bound. The single-option preselect
+			// below may add a fourth.
 			let selection = input.selection;
 			const selectionErrors: CheckoutSelectionErrors = {};
-			let quote = await client.quoteCheckout({
-				cartId: input.cartId,
-				...quoteSelection(selection),
-			});
+			const quoteWith = (current: CheckoutSelection): Promise<QuoteResult> =>
+				client.quoteCheckout({ cartId: input.cartId, ...quoteSelection(current) });
+			let quote = await quoteWith(selection);
 			while (!quote.ok) {
 				const reason = quote.reason;
 				if (isCouponSelectionReason(reason) && selection.couponCode !== undefined) {
 					selectionErrors.coupon = { code: selection.couponCode, reason };
-					const { couponCode: _refused, ...rest } = selection;
-					selection = rest;
+					selection = without(selection, "couponCode");
+				} else if (isDestinationSelectionReason(reason) && selection.destination !== undefined) {
+					selectionErrors.destination = { reason };
+					selection = without(selection, "destination", "shippingMethodId");
 				} else if (isShippingSelectionReason(reason) && selection.shippingMethodId !== undefined) {
 					selectionErrors.shippingMethod = { reason };
-					const { shippingMethodId: _refused, ...rest } = selection;
-					selection = rest;
+					selection = without(selection, "shippingMethodId");
+				} else if (isSilentSelectionReason(reason) && selection.shippingMethodId !== undefined) {
+					selection = without(selection, "shippingMethodId");
 				} else {
 					return { ok: false as const, reason };
 				}
-				quote = await client.quoteCheckout({
-					cartId: input.cartId,
-					...quoteSelection(selection),
-				});
+				quote = await quoteWith(selection);
 			}
+
+			// The matched zone's delivery options — read ONCE per render (D12), after
+			// the last fallback quote, from the quote's OWN reply: the zone id and
+			// the subtotal never come from route input.
+			const destination = quote.destination;
+			const options =
+				destination.status === "matched" && destination.zoneId !== null
+					? await client.listShippingOptions({
+							zoneId: destination.zoneId,
+							currency: quote.breakdown.currency,
+							discountedSubtotalCents: quote.discountedSubtotalCents,
+						})
+					: [];
+
+			// PRESELECT (D4): a zone with exactly ONE option, priced in the cart's
+			// currency, and no method chosen ⇒ choose it — there is nothing to
+			// choose between. Never over an explicit method, never on the locked
+			// page (which returned above). One more quote at most; if it fails, the
+			// review keeps the previous result.
+			const only = options.length === 1 ? options[0] : undefined;
+			if (
+				only !== undefined &&
+				only.amountCents !== null &&
+				selection.shippingMethodId === undefined
+			) {
+				const withMethod = { ...selection, shippingMethodId: only.methodId };
+				const preselected = await quoteWith(withMethod);
+				if (preselected.ok) {
+					quote = preselected;
+					selection = withMethod;
+					// The explicit method was dropped because the destination moved to
+					// another zone, and the one option there now fills it: the
+					// "Delivery: {method} ({price})" line states the truth, so a
+					// "delivery options changed" notice would only be noise.
+					if (selectionErrors.shippingMethod?.reason === "SHIPPING_METHOD_NOT_IN_ZONE") {
+						delete selectionErrors.shippingMethod;
+					}
+				}
+			}
+
+			const methodSelected = selection.shippingMethodId !== undefined;
+			const status = quote.destination.status;
+			const shipping: CheckoutShippingView = {
+				status,
+				matchedRegion: quote.destination.matchedRegion,
+				noOptions: status === "matched" && !options.some((o) => o.amountCents !== null),
+				options: buildShippingOptionsView(options, {
+					currency: quote.breakdown.currency,
+					locale: input.locale,
+					selected: selection.shippingMethodId ?? null,
+				}),
+			};
 
 			return {
 				ok: true as const,
@@ -324,19 +435,32 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
 					// Shipping was calculated iff a method was priced (a free-threshold
-					// method is a COMPUTED zero). No tax zone is ever passed yet —
-					// TRANSITIONAL: #305 part 2 derives it from the ship-to address, and
-					// replaces this `false` with that.
-					shippingSelected: selection.shippingMethodId !== undefined,
-					taxZoneSelected: false,
+					// method is a COMPUTED zero); tax iff a zone matched (ADR-0021).
+					shippingSelected: methodSelected,
+					taxZoneSelected: status === "matched",
 				}),
 				idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 				hasUnpricedLines: !pricing.allLinesPriced,
 				selection: {
 					couponCode: selection.couponCode ?? null,
 					shippingMethodId: selection.shippingMethodId ?? null,
+					destination:
+						selection.destination !== undefined
+							? {
+									country: selection.destination.country,
+									region: selection.destination.region ?? null,
+								}
+							: null,
 				},
 				selectionErrors,
+				requiresShipping: quote.requiresShipping,
+				shipping,
+				addressRequired: quote.requiresShipping && status !== "no_zones",
+				readyToPlace:
+					!quote.requiresShipping ||
+					status === "no_zones" ||
+					(status === "matched" && methodSelected),
+				uncalculatedReason: uncalculatedReasonFor(status, methodSelected),
 				orderCreated: false as const,
 				order: null,
 			};
@@ -359,6 +483,17 @@ function lockedSummary(
 	locale: string,
 ): CheckoutSummaryView {
 	const totals: QuoteBreakdownWire = order.totals;
+	const phase = lockedCheckoutPhase(order.state);
+	// What the ORDER was priced with, read off its own snapshot: a zone ⇒ it
+	// matched; no zone and a physical line ⇒ a store with no zones then; every
+	// line digital ⇒ nothing shipped.
+	const requiresShipping = order.lines.some((line) => line.fulfillmentKind === "physical");
+	const status: QuoteDestinationWire["status"] =
+		order.totals.shippingZoneId !== null
+			? "matched"
+			: requiresShipping
+				? "no_zones"
+				: "not_required";
 	return {
 		ok: true,
 		cartId: cart.cartId,
@@ -370,10 +505,24 @@ function lockedSummary(
 		selection: {
 			couponCode: order.totals.appliedCouponCode,
 			shippingMethodId: order.totals.shippingMethodId,
+			// The order's ship-to is private (the public projection omits it), and
+			// nothing here may be changed anyway.
+			destination: null,
 		},
 		selectionErrors: {},
+		requiresShipping,
+		// Nothing to choose: no options are read and none are offered. The
+		// order's method is stated by its totals.
+		shipping: { status, matchedRegion: null, noOptions: false, options: [] },
+		// Nothing to collect: a same-key place replays the order before any
+		// address or method is looked at (createOrderFromCart's I1).
+		addressRequired: false,
+		// The ONE source for the locked page: a pending order can still be paid.
+		readyToPlace: phase === "payable",
+		uncalculatedReason:
+			status === "matched" ? null : status === "no_zones" ? "no_zones" : "digital_only",
 		orderCreated: true,
-		order: { id: order.id, state: order.state, phase: lockedCheckoutPhase(order.state) },
+		order: { id: order.id, state: order.state, phase },
 	};
 }
 

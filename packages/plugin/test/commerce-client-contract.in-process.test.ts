@@ -45,7 +45,7 @@
  */
 import { email as toEmail } from "@otta-sh/domain";
 import { FixedClock } from "@otta-sh/domain/testing";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
@@ -198,6 +198,7 @@ function inProcessTier(): CommerceClientTier {
 						...(spec.price !== undefined ? { price: spec.price } : {}),
 						...(spec.title !== undefined ? { title: spec.title } : {}),
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
+						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},
 					spec.idempotencyKey,
 				);
@@ -477,5 +478,57 @@ describe("in-process admin orders: search is PREFIX-only, by dialect (ADR-0019 Â
 		const midString = await orders.listOrders({ search: "guerite@" });
 		expect(midString.orders).toEqual([]);
 		expect(midString.total).toBe(0);
+	});
+});
+
+/**
+ * ADR-0021 Decision 10: an overlap the admin should have refused (two zones
+ * listing the same code) is resolved at runtime to the LOWEST zone id, and the
+ * tie is logged â€” with zone ids and the matched code ONLY. No address, no cart
+ * id: this log line leaves the plugin's process.
+ */
+describe("in-process commerce: a zone tie-break is logged with ids only", () => {
+	let harness: InProcessCommerceHarness;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("two zones listing US: the lowest id prices it, and one warn carries exactly {zoneId, ambiguousWith, matchedRegion}", async () => {
+		const { client, stores } = harness;
+		await stores.shippingRules.createZone({ id: "tie-b", name: "B", regions: ["US"] });
+		await stores.shippingRules.createZone({ id: "tie-a", name: "A", regions: ["US"] });
+		await client.upsertProductCommerce(
+			"prod-tie",
+			{ sku: "SKU-TIE", price: { amount: 1000, currency: "USD" }, initialOnHand: 3 },
+			"tie-seed",
+		);
+		await client.activateProductCommerce("prod-tie", "tie-publish", "2026-01-01T00:00:00.000Z");
+		const { cartId } = await client.createCart("USD");
+		const added = await client.addCartLine(cartId, "SKU-TIE", "prod-tie", 1, "tie-add");
+		if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const quoted = await client.quoteCheckout({
+				cartId,
+				destination: { country: "US", region: "NY" },
+			});
+			expect(quoted.ok && quoted.destination.zoneId).toBe("tie-a");
+			expect(warn).toHaveBeenCalledTimes(1);
+			const [message, payload] = warn.mock.calls[0] ?? [];
+			expect(message).toBe("[otta] shipping zone tie-break");
+			expect(Object.keys(payload as object).toSorted()).toEqual([
+				"ambiguousWith",
+				"matchedRegion",
+				"zoneId",
+			]);
+			expect(payload).toEqual({ zoneId: "tie-a", ambiguousWith: ["tie-b"], matchedRegion: "US" });
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });

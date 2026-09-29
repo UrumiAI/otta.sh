@@ -125,7 +125,13 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 		},
 
 		async shippingMethod(spec) {
-			await ports.shippingRules.createZone({ id: spec.zoneId, name: spec.zoneId, regions: null });
+			if ((await ports.shippingRules.getZone(spec.zoneId)) === null) {
+				await ports.shippingRules.createZone({
+					id: spec.zoneId,
+					name: spec.zoneId,
+					regions: spec.regions ?? null,
+				});
+			}
 			await ports.shippingRules.createMethod({
 				id: spec.methodId,
 				zoneId: spec.zoneId,

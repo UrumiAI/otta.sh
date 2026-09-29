@@ -18,7 +18,7 @@ const ADDRESS = {
 	line1: "1 Test St",
 	city: "Testville",
 	postalCode: "12345",
-	country: "Testland",
+	country: "GB",
 };
 
 describe("parseCheckoutSummaryInput", () => {
@@ -132,9 +132,61 @@ describe("parseCheckoutPlaceInput", () => {
 			cartId: "cart-1",
 			buyerRef: "a@b.co",
 			idempotencyKey: "k",
-			shippingAddress: { ...ADDRESS, name: "  A Buyer  ", line2: "", region: "TS" },
+			shippingAddress: { ...ADDRESS, name: "  A Buyer  ", line2: "", region: " LND " },
 		});
-		expect(parsed?.shippingAddress).toEqual({ ...ADDRESS, region: "TS" });
+		expect(parsed?.shippingAddress).toEqual({ ...ADDRESS, region: "LND" });
+	});
+
+	// ADR-0021: codes everywhere — but the ROUTE checks only their SHAPE. Whether a
+	// code-shaped value is a REAL country/subdivision is the domain's call, and it
+	// answers with a typed reason the buyer can act on, never INVALID_INPUT.
+	test.each([["Testland"], ["United States"], ["U"], ["USA"], ["U1"]])(
+		"rejects a shippingAddress whose country %j is not two letters",
+		(country) => {
+			expect(
+				parseCheckoutPlaceInput({
+					cartId: "cart-1",
+					buyerRef: "a@b.co",
+					idempotencyKey: "k",
+					shippingAddress: { ...ADDRESS, country },
+				}),
+			).toBeNull();
+		},
+	);
+
+	test.each([["California"], ["US_CA"], ["Greater London"], ["ABCD"]])(
+		"rejects a shippingAddress whose region %j is not code-shaped",
+		(region) => {
+			expect(
+				parseCheckoutPlaceInput({
+					cartId: "cart-1",
+					buyerRef: "a@b.co",
+					idempotencyKey: "k",
+					shippingAddress: { ...ADDRESS, region },
+				}),
+			).toBeNull();
+		},
+	);
+
+	test("a code-SHAPED fake (country ZZ, region XX) passes: the domain refuses it with a typed reason", () => {
+		const parsed = parseCheckoutPlaceInput({
+			cartId: "cart-1",
+			buyerRef: "a@b.co",
+			idempotencyKey: "k",
+			shippingAddress: { ...ADDRESS, country: "zz", region: "xx" },
+		});
+		expect(parsed?.shippingAddress).toMatchObject({ country: "zz", region: "xx" });
+	});
+
+	test("a destination key on the place body is read for nothing — the address is the destination", () => {
+		const body: Record<string, unknown> = {
+			cartId: "cart-1",
+			buyerRef: "a@b.co",
+			idempotencyKey: "k",
+			destination: { country: "DE" },
+		};
+		const parsed = parseCheckoutPlaceInput(body);
+		expect(parsed?.selection).toEqual({});
 	});
 
 	test.each([["name"], ["line1"], ["city"], ["postalCode"], ["country"]])(
@@ -267,6 +319,50 @@ describe.each([
 		expect(parsed).not.toBeNull();
 		expect(JSON.stringify(parsed)).not.toContain("zone-1");
 		expect(parsed?.selection).toEqual({ couponCode: "C", shippingMethodId: "m" });
+	});
+});
+
+/** ADR-0021: the summary's `destination` — the coarse ship-to that prices the
+ *  review (country + region code), never the street address. */
+const parseDestination = (destination: unknown) =>
+	parseCheckoutSummaryInput({ cartId: "cart-1", destination });
+
+describe("parseCheckoutSummaryInput — the destination", () => {
+	const parse = parseDestination;
+
+	test("country and region are uppercased and trimmed", () => {
+		expect(parse({ country: " us ", region: "us-ca" })?.selection).toEqual({
+			destination: { country: "US", region: "US-CA" },
+		});
+	});
+
+	test("a blank region is omitted; an absent or null destination is no destination", () => {
+		expect(parse({ country: "DE", region: "  " })?.selection).toEqual({
+			destination: { country: "DE" },
+		});
+		expect(parse(undefined)?.selection).toEqual({});
+		expect(parse(null)?.selection).toEqual({});
+	});
+
+	test("a code-shaped fake passes (XX) — the domain answers it SHIPPING_REGION_CODE_REQUIRED", () => {
+		expect(parse({ country: "US", region: "XX" })?.selection).toEqual({
+			destination: { country: "US", region: "XX" },
+		});
+	});
+
+	test.each([
+		[{ country: "United States" }],
+		[{ country: "" }],
+		[{ region: "CA" }],
+		[{ country: "US", region: "California" }],
+		[{ country: "DE", region: "Bavaria" }],
+		[{ country: "US", region: "US_CA" }],
+		[{ country: 42 }],
+		[{ country: "US", region: 7 }],
+		["US"],
+		[["US"]],
+	])("rejects %j as INVALID_INPUT", (destination) => {
+		expect(parse(destination)).toBeNull();
 	});
 });
 

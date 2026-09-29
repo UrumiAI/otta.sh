@@ -173,6 +173,8 @@ export interface ArrangedProduct {
 	 *  sellable one, because every sell path refuses an unpublished row. A case about
 	 *  the gate itself passes `false` and drives the flips it asserts on. */
 	published?: boolean;
+	/** Physical by default. A digital product ships nothing (ADR-0021). */
+	productKind?: "physical" | "digital";
 	idempotencyKey: string;
 }
 
@@ -208,6 +210,18 @@ export interface ArrangedOrder {
 	shippingMethod?: { zoneId: string | null; methodId: string };
 }
 
+/** A complete ship-to for the destination-refusal cases (ADR-0021). */
+function refusalAddress(country: string, region?: string) {
+	return {
+		name: "Ada",
+		line1: "1 Main St",
+		city: "Town",
+		postalCode: "00001",
+		country,
+		...(region !== undefined ? { region } : {}),
+	};
+}
+
 /** One shipping zone, one flat-rate method in it, and optionally the rate. A spec
  *  with NO rate is how a case arranges the rate-missing refusal: the method
  *  resolves and its rate does not. */
@@ -218,6 +232,10 @@ export interface ArrangedShippingMethod {
 	/** A `standard`-class tax rate in the zone, applied to shipping too — so a
 	 *  case can show when a zone's tax does and does not reach a quote. */
 	taxRateBps?: number;
+	/** The zone's ISO region codes (ADR-0021) — what a destination matches.
+	 *  Absent ⇒ `null`, a zone that matches no address. A second spec naming
+	 *  an existing zone adds a method to it (the zone is not re-created). */
+	regions?: string[];
 }
 
 /**
@@ -1346,17 +1364,21 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			return cartId;
 		}
 
-		test("a quote with a shipping zone and method selected adds the method's rate to the total", async () => {
+		// ADR-0021 (#305 part 2): the zone is DERIVED from the destination, never
+		// passed. Tax follows the matched zone; a chosen method must belong to it.
+
+		test("a quote with a destination and a method of the zone it matches adds the method's rate to the total", async () => {
 			await tier.arrange.shippingMethod({
 				zoneId: "zone-q-ship",
 				methodId: "method-q-ship",
+				regions: ["US"],
 				rate: { amount: 599, currency: "USD" },
 			});
 			const cartId = await pricedCart("ship");
 
 			const quoted = await client.quoteCheckout({
 				cartId,
-				shippingZoneId: "zone-q-ship",
+				destination: { country: "US", region: "NY" },
 				shippingMethodId: "method-q-ship",
 			});
 			expect(quoted.ok).toBe(true);
@@ -1372,30 +1394,46 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				totalCents: 3599,
 				appliedCouponCode: null,
 			});
+			expect(quoted.requiresShipping).toBe(true);
+			expect(quoted.discountedSubtotalCents).toBe(3000);
+			expect(quoted.destination).toEqual({
+				status: "matched",
+				zoneId: "zone-q-ship",
+				matchedRegion: "US",
+			});
 		});
 
-		// TRANSITIONAL — replaced by #305 part 2, which derives the zone from the
-		// ship-to address. Until then the storefront passes a method and NO zone,
-		// and this is exactly what that prices: the method's rate, and no tax even
-		// though the method's own zone has a rate — tax is only looked up for a zone
-		// the caller passes.
-		test("a quote with a shipping method and NO zone charges the method's rate and applies no tax (transitional — replaced by #305 part 2)", async () => {
+		// INVERTS PR 1's transitional "a method with NO zone charges the method's
+		// rate and applies no tax": in a zoned store a method with no destination is
+		// refused, and with one the matched zone's tax applies.
+		test("in a zoned store a method with no destination refuses MISSING_SHIPPING_ADDRESS; with a destination the zone's tax applies", async () => {
 			await tier.arrange.shippingMethod({
 				zoneId: "zone-q-nozone",
 				methodId: "method-q-nozone",
+				regions: ["US"],
 				rate: { amount: 599, currency: "USD" },
 				taxRateBps: 1000,
 			});
 			const cartId = await pricedCart("nozone");
 
-			const quoted = await client.quoteCheckout({ cartId, shippingMethodId: "method-q-nozone" });
+			expect(await client.quoteCheckout({ cartId, shippingMethodId: "method-q-nozone" })).toEqual({
+				ok: false,
+				reason: "MISSING_SHIPPING_ADDRESS",
+			});
+			const quoted = await client.quoteCheckout({
+				cartId,
+				destination: { country: "us" },
+				shippingMethodId: "method-q-nozone",
+			});
 			expect(quoted.ok).toBe(true);
 			if (!quoted.ok) throw new Error("unreachable");
+			// 10% of 3000 = 300, plus 10% of the 599 shipping (applies to shipping)
+			// = 59.9 → 60 half-up.
 			expect(quoted.breakdown).toMatchObject({
 				subtotalCents: 3000,
 				shippingCents: 599,
-				taxCents: 0,
-				totalCents: 3599,
+				taxCents: 360,
+				totalCents: 3959,
 			});
 		});
 
@@ -1409,15 +1447,217 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		test("a declared method with no rate in the cart's currency refuses SHIPPING_RATE_NOT_FOUND", async () => {
 			// The method resolves and its rate does not, which is the only way to reach
 			// this refusal and a real merchant state: a method added and never priced.
-			await tier.arrange.shippingMethod({ zoneId: "zone-q-norate", methodId: "method-q-norate" });
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-norate",
+				methodId: "method-q-norate",
+				regions: ["US"],
+			});
 			const cartId = await pricedCart("norate");
 			expect(
 				await client.quoteCheckout({
 					cartId,
-					shippingZoneId: "zone-q-norate",
+					destination: { country: "US" },
 					shippingMethodId: "method-q-norate",
 				}),
 			).toEqual({ ok: false, reason: "SHIPPING_RATE_NOT_FOUND" });
+		});
+
+		test("destination.status: no_zones, address_needed, matched — and not_required for a digital-only cart", async () => {
+			const cartId = await pricedCart("status");
+			const bare = await client.quoteCheckout({ cartId, destination: { country: "US" } });
+			expect(bare.ok && bare.destination).toEqual({
+				status: "no_zones",
+				zoneId: null,
+				matchedRegion: null,
+			});
+
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-status",
+				methodId: "method-q-status",
+				regions: ["US-CA", "US"],
+				rate: { amount: 100, currency: "USD" },
+			});
+			const needed = await client.quoteCheckout({ cartId });
+			expect(needed.ok && needed.destination.status).toBe("address_needed");
+			const matched = await client.quoteCheckout({
+				cartId,
+				destination: { country: "US", region: "US-CA" },
+			});
+			expect(matched.ok && matched.destination).toEqual({
+				status: "matched",
+				zoneId: "zone-q-status",
+				matchedRegion: "US-CA",
+			});
+
+			const digitalId = await tier.arrange.product({
+				productId: "prod-q-digital",
+				sku: "SKU-Q-DIGITAL",
+				price: { amount: 1500, currency: "USD" },
+				productKind: "digital",
+				idempotencyKey: "q-seed-digital",
+			});
+			const digitalCart = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(
+				digitalCart,
+				"SKU-Q-DIGITAL",
+				digitalId,
+				1,
+				"q-add-dig",
+			);
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+			const digital = await client.quoteCheckout({
+				cartId: digitalCart,
+				destination: { country: "FR" },
+			});
+			expect(digital.ok && digital.requiresShipping).toBe(false);
+			expect(digital.ok && digital.destination.status).toBe("not_required");
+			expect(
+				await client.quoteCheckout({ cartId: digitalCart, shippingMethodId: "method-q-status" }),
+			).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_APPLICABLE" });
+		});
+
+		/** Zones {US, US-CA}, each with one priced method, and a priced cart. */
+		async function refusalFixture(tag: string): Promise<string> {
+			await tier.arrange.shippingMethod({
+				zoneId: `zone-${tag}-us`,
+				methodId: `method-${tag}-us`,
+				regions: ["US"],
+				rate: { amount: 100, currency: "USD" },
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: `zone-${tag}-ca`,
+				methodId: `method-${tag}-ca`,
+				regions: ["US-CA"],
+				rate: { amount: 200, currency: "USD" },
+			});
+			return pricedCart(tag);
+		}
+
+		const REFUSED_DESTINATIONS: ReadonlyArray<[{ country: string; region?: string }, string]> = [
+			[{ country: "FR" }, "SHIPPING_ZONE_NOT_MATCHED"],
+			[{ country: "US" }, "SHIPPING_REGION_CODE_REQUIRED"],
+			[{ country: "US", region: "XX" }, "SHIPPING_REGION_CODE_REQUIRED"],
+			[{ country: "ZZ" }, "INVALID_SHIPPING_ADDRESS"],
+		];
+
+		test("every destination refusal on the quote, and a method outside the matched zone", async () => {
+			const cartId = await refusalFixture("qrf");
+			for (const [destination, reason] of REFUSED_DESTINATIONS) {
+				expect(
+					await client.quoteCheckout({ cartId, destination, shippingMethodId: "method-qrf-us" }),
+				).toEqual({ ok: false, reason });
+			}
+			expect(
+				await client.quoteCheckout({
+					cartId,
+					destination: { country: "US", region: "CA" },
+					shippingMethodId: "method-qrf-us",
+				}),
+			).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_IN_ZONE" });
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"every destination refusal on createOrder, plus MISSING_SHIPPING_ADDRESS / SHIPPING_METHOD_REQUIRED / SHIPPING_METHOD_NOT_IN_ZONE (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const cartId = await refusalFixture("orf");
+				const inputs: Array<[Record<string, unknown>, string]> = [
+					...REFUSED_DESTINATIONS.map(([d, reason]): [Record<string, unknown>, string] => [
+						{
+							shippingAddress: refusalAddress(d.country, d.region),
+							shippingMethodId: "method-orf-us",
+						},
+						reason,
+					]),
+					[{ shippingMethodId: "method-orf-us" }, "MISSING_SHIPPING_ADDRESS"],
+					[{ shippingAddress: refusalAddress("US", "TX") }, "SHIPPING_METHOD_REQUIRED"],
+					[
+						{ shippingAddress: refusalAddress("US", "CA"), shippingMethodId: "method-orf-us" },
+						"SHIPPING_METHOD_NOT_IN_ZONE",
+					],
+				];
+				for (const [i, [input, reason]] of inputs.entries()) {
+					expect(
+						await client.createOrder(
+							{ cartId, paymentMethod, buyerRef: "refuse@example.test", ...input },
+							`refuse-${String(i)}`,
+						),
+					).toEqual({ ok: false, reason });
+				}
+			},
+		);
+
+		test("listShippingOptions: the zone's methods only, priced, a method with no rate as null; an unknown zone is []", async () => {
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-opts",
+				methodId: "method-q-opts-a",
+				regions: ["DE"],
+				rate: { amount: 450, currency: "USD" },
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-opts",
+				methodId: "method-q-opts-b",
+				regions: ["DE"],
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-other",
+				methodId: "method-q-other",
+				regions: ["FR"],
+				rate: { amount: 1, currency: "USD" },
+			});
+			const options = await client.listShippingOptions({
+				zoneId: "zone-q-opts",
+				currency: "USD",
+				discountedSubtotalCents: 3000,
+			});
+			expect(options).toEqual([
+				{
+					methodId: "method-q-opts-a",
+					name: "method-q-opts-a",
+					type: "flat_rate",
+					amountCents: 450,
+				},
+				{
+					methodId: "method-q-opts-b",
+					name: "method-q-opts-b",
+					type: "flat_rate",
+					amountCents: null,
+				},
+			]);
+			expect(
+				await client.listShippingOptions({
+					zoneId: "zone-q-unknown",
+					currency: "USD",
+					discountedSubtotalCents: 0,
+				}),
+			).toEqual([]);
+		});
+
+		test("listShippingOptions refuses malformed input as a programmer error, never a silent []", async () => {
+			for (const input of [
+				{ zoneId: "", currency: "USD", discountedSubtotalCents: 0 },
+				{ zoneId: "zone x", currency: "USD", discountedSubtotalCents: 0 },
+				{ zoneId: "z", currency: "usd", discountedSubtotalCents: 0 },
+				{ zoneId: "z", currency: "USD", discountedSubtotalCents: -1 },
+				{ zoneId: "z", currency: "USD", discountedSubtotalCents: 1.5 },
+			]) {
+				await expect(client.listShippingOptions(input), JSON.stringify(input)).rejects.toThrow();
+			}
+		});
+
+		test("a zone smuggled onto the quote or the order (a cast past the type) is refused, never priced", async () => {
+			const cartId = await pricedCart("smuggle");
+			const quoteInput = { cartId, shippingZoneId: "zone-anything" } as unknown as Parameters<
+				typeof client.quoteCheckout
+			>[0];
+			await expect(client.quoteCheckout(quoteInput)).rejects.toThrow(/shippingZoneId/);
+			const orderInput = {
+				cartId,
+				paymentMethod: "stripe",
+				buyerRef: "smuggle@example.test",
+				shippingZoneId: "zone-anything",
+			} as unknown as Parameters<typeof client.createOrder>[0];
+			await expect(client.createOrder(orderInput, "smuggle-1")).rejects.toThrow(/shippingZoneId/);
 		});
 
 		// EVERY quote-time coupon refusal the port declares, one case each, each with

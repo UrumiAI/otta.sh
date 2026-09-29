@@ -139,9 +139,10 @@ async function usesOf(code: string): Promise<number> {
 	return record!.usesCount;
 }
 
-/** The shipping fixtures every selection case prices against. The zone carries a
- *  10% `standard` tax rate that applies to shipping — which is what lets a case
- *  prove a client-supplied zone is IGNORED (it would otherwise add tax). */
+/** The shipping fixtures every selection case prices against. The zone matches
+ *  the US (ADR-0021: the zone is derived from the destination) and carries a 10%
+ *  `standard` tax rate that applies to shipping — which is what lets a case prove
+ *  a client-supplied zone is IGNORED (it would otherwise add tax). */
 const ZONE_ID = `${NS}-zone`;
 const METHOD_ID = `${NS}-ship`;
 const FREE_METHOD_ID = `${NS}-ship-free`;
@@ -150,7 +151,7 @@ const SHIPPING_CENTS = 599;
 
 async function seedShippingRules(): Promise<void> {
 	const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
-	await rules.createZone({ id: ZONE_ID, name: "CK zone", regions: null });
+	await rules.createZone({ id: ZONE_ID, name: "CK zone", regions: ["US"] });
 	await rules.createMethod({ id: METHOD_ID, zoneId: ZONE_ID, name: "Flat", type: "flat_rate" });
 	await rules.createRate({
 		methodId: METHOD_ID,
@@ -227,15 +228,127 @@ let shippingRulesSeeded = false;
  * `afterAll` (vitest runs a file's describes sequentially, so no other case
  * overlaps that window), and every case outside asserts it sees no zone.
  */
-function useShippingRules(): void {
+function useShippingRules(
+	seed: () => Promise<void> = seedShippingRules,
+	remove: () => Promise<void> = removeShippingRules,
+): void {
 	beforeAll(async () => {
-		await seedShippingRules();
+		await seed();
 		shippingRulesSeeded = true;
 	});
 	afterAll(async () => {
 		shippingRulesSeeded = false;
-		await removeShippingRules();
+		await remove();
 	});
+}
+
+/**
+ * #305 part 2 (ADR-0021) — the zone DERIVED from the destination. Four zones,
+ * each shaped for one question the summary must answer:
+ *  - US (0% tax): TWO priced methods — nothing to preselect;
+ *  - US-CA (7.25%): ONE priced method — preselected; beats US for a CA address;
+ *  - DE (19%): one priced and one unpriced method — nothing to preselect, the
+ *    unpriced one shown disabled;
+ *  - FR: only an unpriced method — "no delivery options for this address".
+ * Every cart priced against it is ONE line of 2 × $15.00 (see `p2Cart`), so the
+ * per-line half-up rounding is visible: 7.25% of 3000 = 217.5 → 218.
+ */
+const P2 = {
+	US: `${NS}-p2-us`,
+	CA: `${NS}-p2-ca`,
+	DE: `${NS}-p2-de`,
+	FR: `${NS}-p2-fr`,
+	US_STD: `${NS}-p2-us-std`,
+	US_EXP: `${NS}-p2-us-exp`,
+	CA_STD: `${NS}-p2-ca-std`,
+	DE_STD: `${NS}-p2-de-std`,
+	DE_NORATE: `${NS}-p2-de-norate`,
+	FR_NORATE: `${NS}-p2-fr-norate`,
+} as const;
+
+const P2_ZONES: ReadonlyArray<{
+	id: string;
+	regions: string[];
+	taxBps: number | null;
+	methods: ReadonlyArray<{ id: string; name: string; amount: number | null }>;
+}> = [
+	{
+		id: P2.US,
+		regions: ["US"],
+		taxBps: 0,
+		methods: [
+			{ id: P2.US_STD, name: "US Standard", amount: 499 },
+			{ id: P2.US_EXP, name: "US Express", amount: 999 },
+		],
+	},
+	{
+		id: P2.CA,
+		regions: ["US-CA"],
+		taxBps: 725,
+		methods: [{ id: P2.CA_STD, name: "California Standard", amount: 599 }],
+	},
+	{
+		id: P2.DE,
+		regions: ["DE"],
+		taxBps: 1900,
+		methods: [
+			{ id: P2.DE_STD, name: "DHL", amount: 900 },
+			{ id: P2.DE_NORATE, name: "Courier", amount: null },
+		],
+	},
+	{
+		id: P2.FR,
+		regions: ["FR"],
+		taxBps: null,
+		methods: [{ id: P2.FR_NORATE, name: "Colissimo", amount: null }],
+	},
+];
+
+async function seedZoneFixture(): Promise<void> {
+	const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	const tax = new EmdashTaxRulesStore({ storage, clock: systemClock });
+	for (const zone of P2_ZONES) {
+		await rules.createZone({ id: zone.id, name: zone.id, regions: zone.regions });
+		for (const method of zone.methods) {
+			await rules.createMethod({
+				id: method.id,
+				zoneId: zone.id,
+				name: method.name,
+				type: "flat_rate",
+			});
+			if (method.amount !== null) {
+				await rules.createRate({
+					methodId: method.id,
+					currency: currency("USD"),
+					amountCents: cents(method.amount),
+					minSubtotalCents: null,
+				});
+			}
+		}
+		if (zone.taxBps !== null) {
+			await tax.createRate({
+				id: `${zone.id}-standard`,
+				taxClassId: "standard",
+				zoneId: zone.id,
+				rateBps: zone.taxBps,
+				appliesToShipping: false,
+			});
+		}
+	}
+}
+
+async function removeZoneFixture(): Promise<void> {
+	const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	const tax = new EmdashTaxRulesStore({ storage, clock: systemClock });
+	for (const zone of P2_ZONES) {
+		for (const method of zone.methods) {
+			expect(gone(await rules.deleteRate(method.id, currency("USD")))).toBe(true);
+			expect(gone(await rules.deleteMethod(method.id))).toBe(true);
+		}
+		expect(gone(await rules.deleteZone(zone.id))).toBe(true);
+		expect(gone(await tax.deleteRate(`${zone.id}-standard`))).toBe(true);
+	}
+	expect(await rules.listZones()).toEqual([]);
 }
 
 /**
@@ -274,6 +387,7 @@ interface SeedProduct {
 	readonly sku: string;
 	readonly amount: number;
 	readonly currency?: string;
+	readonly productKind?: "physical" | "digital";
 }
 
 /** A live, priced, activated product with stock — the state an add's SKU guard
@@ -286,6 +400,7 @@ async function seedProduct(product: SeedProduct): Promise<void> {
 			sku: toSku(product.sku),
 			price: { amount: cents(product.amount), currency: currency(product.currency ?? "USD") },
 			title: "Bamboo Water Bottle",
+			...(product.productKind !== undefined ? { productKind: product.productKind } : {}),
 		},
 		idempotencyKey(`seed-${product.id}`),
 	);
@@ -345,6 +460,22 @@ async function seedThreeLineCart(): Promise<string> {
 	return cartId;
 }
 
+/** The delivery options a summary offered. */
+function optionsOf(result: Record<string, unknown>): Array<Record<string, unknown>> {
+	return (result["shipping"] as { options: Array<Record<string, unknown>> }).options;
+}
+
+/** The part-2 carts: ONE line of 2 × $15.00, physical or digital. */
+const P2_PRODUCT = { id: `prod-${NS}-p2`, sku: `SKU-${NS}-P2` } as const;
+const P2_DIGITAL = { id: `prod-${NS}-p2-dig`, sku: `SKU-${NS}-P2-DIG` } as const;
+
+async function p2Cart(kind: "physical" | "digital" = "physical"): Promise<string> {
+	const product = kind === "physical" ? P2_PRODUCT : P2_DIGITAL;
+	const cartId = await createCart();
+	await addLine(cartId, product.sku, product.id, 2);
+	return cartId;
+}
+
 async function summary(input: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return resultOf(await sandboxHandle.invokeRoute("storefront/checkout/summary", input));
 }
@@ -372,6 +503,13 @@ beforeAll(async () => {
 	await seedProduct({ id: LINE_PRODUCT_IDS[0]!, sku: LINE_SKUS[0]!, amount: 1999 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[1]!, sku: LINE_SKUS[1]!, amount: 1000 });
 	await seedProduct({ id: LINE_PRODUCT_IDS[2]!, sku: LINE_SKUS[2]!, amount: 333 });
+	await seedProduct({ id: P2_PRODUCT.id, sku: P2_PRODUCT.sku, amount: 1500 });
+	await seedProduct({
+		id: P2_DIGITAL.id,
+		sku: P2_DIGITAL.sku,
+		amount: 1500,
+		productKind: "digital",
+	});
 	await seedCoupon({ id: `${NS}-save5`, code: "CK-SAVE5", amount: 500 });
 	await seedCoupon({
 		id: `${NS}-expired`,
@@ -451,6 +589,20 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 		expect(first).toMatchObject({ qty: 1 });
 		expect(first!.lineTotal.formatted).toBe("$19.99");
 		expect(result["hasUnpricedLines"]).toBe(false);
+	});
+
+	test("a store with NO zones: nothing to collect, ready to place, delivery 'no_zones' (ADR-0021 Decision 4)", async () => {
+		const result = await summary({ cartId: await seedThreeLineCart() });
+
+		expect(result).toMatchObject({
+			ok: true,
+			requiresShipping: true,
+			shipping: { status: "no_zones", matchedRegion: null, noOptions: false, options: [] },
+			addressRequired: false,
+			readyToPlace: true,
+			uncalculatedReason: "no_zones",
+			selection: { destination: null },
+		});
 	});
 
 	test("carries the STABLE per-cart idempotency key the form embeds (never a fresh one per render)", async () => {
@@ -563,7 +715,11 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		expect(totals["discount"]!.label).toBe("$5.00");
 		expect(totals["total"]!.label).toBe("$44.98");
 		expect(totals.appliedCouponCode).toBe("CK-SAVE5");
-		expect(result["selection"]).toEqual({ couponCode: "CK-SAVE5", shippingMethodId: null });
+		expect(result["selection"]).toEqual({
+			couponCode: "CK-SAVE5",
+			shippingMethodId: null,
+			destination: null,
+		});
 		expect(result["selectionErrors"]).toEqual({});
 		expect(result["orderCreated"]).toBe(false);
 		expect(productQueries).toHaveLength(2);
@@ -578,7 +734,11 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		expect(result["selectionErrors"]).toEqual({
 			coupon: { code: "ck-save5", reason: "COUPON_NOT_FOUND" },
 		});
-		expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+		expect(result["selection"]).toEqual({
+			couponCode: null,
+			shippingMethodId: null,
+			destination: null,
+		});
 	});
 
 	// COUPON_EXHAUSTED is proven by a REAL redemption on the Stripe boot below —
@@ -598,34 +758,77 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 
 			expect(result["ok"]).toBe(true);
 			expect(result["selectionErrors"]).toEqual({ coupon: { code, reason } });
-			expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+			expect(result["selection"]).toEqual({
+				couponCode: null,
+				shippingMethodId: null,
+				destination: null,
+			});
 			expect(result["totals"]).toEqual(bare["totals"]);
 		},
 	);
 
-	test('a shippingMethodId adds its rate as real money; tax stays "Not calculated" (transitional — replaced by #305 part 2)', async () => {
+	/** The destination every method case below prices for: the US, which the
+	 *  fixture zone matches (ADR-0021). */
+	const US = { country: "US" };
+
+	// INVERTS PR 1's transitional "a shippingMethodId adds its rate; tax stays
+	// Not calculated": the zone is now derived from the destination, so a method
+	// with none is refused, and with one BOTH shipping and tax are computed.
+	test("a shippingMethodId with NO destination is refused MISSING_SHIPPING_ADDRESS — ok:true, nothing computed", async () => {
 		const cartId = await seedThreeLineCart();
 
 		const result = await summary({ cartId, shippingMethodId: METHOD_ID });
 
 		expect(result["ok"]).toBe(true);
+		expect(result["selectionErrors"]).toEqual({
+			shippingMethod: { reason: "MISSING_SHIPPING_ADDRESS" },
+		});
+		const totals = totalsOf(result);
+		expect(totals["shipping"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(result).toMatchObject({
+			shipping: { status: "address_needed", options: [] },
+			addressRequired: true,
+			readyToPlace: false,
+			uncalculatedReason: "address_needed",
+		});
+	});
+
+	test("a shippingMethodId WITH a destination: shipping and the matched zone's tax are both real money", async () => {
+		const cartId = await seedThreeLineCart();
+
+		const result = await summary({ cartId, destination: US, shippingMethodId: METHOD_ID });
+
+		expect(result["ok"]).toBe(true);
 		const totals = totalsOf(result);
 		expect(totals["shipping"]!.label).toBe("$5.99");
-		expect(totals["total"]!.label).toBe("$55.97");
-		// TRANSITIONAL: no zone is derived until PR 2, so no tax was calculated.
-		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
-		expect(totals.totalExcludesUncalculated).toBe(true);
-		expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: METHOD_ID });
+		// 10% per line, half-up: 199.9 → 200, 200, 99.9 → 100; plus 10% of the
+		// 599 shipping (the rate applies to shipping) = 59.9 → 60. 560 in all.
+		expect(totals["tax"]!.label).toBe("$5.60");
+		expect(totals["total"]!.label).toBe("$61.57");
+		expect(totals.totalExcludesUncalculated).toBe(false);
+		expect(result["selection"]).toEqual({
+			couponCode: null,
+			shippingMethodId: METHOD_ID,
+			destination: { country: "US", region: null },
+		});
+		expect(result).toMatchObject({
+			shipping: { status: "matched", matchedRegion: "US", noOptions: false },
+			readyToPlace: true,
+			uncalculatedReason: null,
+		});
 	});
 
 	test('a method whose free-shipping threshold the cart meets is a COMPUTED $0.00, never "Not calculated"', async () => {
 		const cartId = await seedThreeLineCart();
 
-		const totals = totalsOf(await summary({ cartId, shippingMethodId: FREE_METHOD_ID }));
+		const totals = totalsOf(
+			await summary({ cartId, destination: US, shippingMethodId: FREE_METHOD_ID }),
+		);
 
 		expect(totals["shipping"]!.money).toMatchObject({ amount: 0 });
 		expect(totals["shipping"]!.label).toBe("$0.00");
-		expect(totals["total"]!.label).toBe("$49.98");
+		expect(totals["total"]!.label).toBe("$54.98");
 	});
 
 	test.each([
@@ -636,20 +839,26 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		async (reason, shippingMethodId) => {
 			const cartId = await seedThreeLineCart();
 
-			const result = await summary({ cartId, shippingMethodId });
+			const result = await summary({ cartId, destination: US, shippingMethodId });
 
 			expect(result["ok"]).toBe(true);
 			expect(result["selectionErrors"]).toEqual({ shippingMethod: { reason } });
-			expect(result["selection"]).toEqual({ couponCode: null, shippingMethodId: null });
+			expect(result["selection"]).toEqual({
+				couponCode: null,
+				shippingMethodId: null,
+				destination: { country: "US", region: null },
+			});
 			expect(totalsOf(result)["shipping"]).toEqual({ money: null, label: "Not calculated" });
 		},
 	);
 
 	test("a bad method does not discard a good coupon", async () => {
 		const cartId = await seedThreeLineCart();
+		const couponOnly = await summary({ cartId, destination: US, couponCode: "CK-SAVE5" });
 
 		const result = await summary({
 			cartId,
+			destination: US,
 			couponCode: "CK-SAVE5",
 			shippingMethodId: `${NS}-ship-never-declared`,
 		});
@@ -657,17 +866,19 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		expect(result["selectionErrors"]).toEqual({
 			shippingMethod: { reason: "SHIPPING_METHOD_NOT_FOUND" },
 		});
-		expect(result["selection"]).toEqual({ couponCode: "CK-SAVE5", shippingMethodId: null });
-		expect(totalsOf(result)["total"]!.label).toBe("$44.98");
+		expect(result["selection"]).toMatchObject({ couponCode: "CK-SAVE5", shippingMethodId: null });
+		expect(result["totals"]).toEqual(couponOnly["totals"]);
+		expect(totalsOf(result).appliedCouponCode).toBe("CK-SAVE5");
 	});
 
 	test("both selections bad ⇒ both reported, bare totals, and the retry is BOUNDED (1 display read + 3 quotes)", async () => {
 		const cartId = await seedThreeLineCart();
-		const bare = await summary({ cartId });
+		const bare = await summary({ cartId, destination: US });
 		productQueries.length = 0;
 
 		const result = await summary({
 			cartId,
+			destination: US,
 			couponCode: "CK-NO-SUCH-CODE",
 			shippingMethodId: `${NS}-ship-never-declared`,
 		});
@@ -677,10 +888,11 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 			shippingMethod: { reason: "SHIPPING_METHOD_NOT_FOUND" },
 		});
 		expect(result["totals"]).toEqual(bare["totals"]);
+		// The zone has three methods, so nothing is preselected: no fourth quote.
 		expect(productQueries).toHaveLength(4);
 	});
 
-	test('a client-supplied shippingZoneId is IGNORED — a zone with a 10% rate still yields tax "Not calculated" and total = subtotal', async () => {
+	test('a client-supplied shippingZoneId is IGNORED — with no destination, a zone with a 10% rate still yields tax "Not calculated" and total = subtotal', async () => {
 		const cartId = await seedThreeLineCart();
 
 		const result = await summary({ cartId, shippingZoneId: ZONE_ID });
@@ -702,6 +914,261 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 
 		expect(await summary({ cartId, ...extra })).toEqual({ ok: false, error: "INVALID_INPUT" });
 		expect(productQueries).toHaveLength(0);
+	});
+});
+
+/**
+ * #305 part 2 (ADR-0021) — the review priced for a DESTINATION: the zone is
+ * derived from it, tax follows it, the matched zone's options are offered, and
+ * a lone priced option is preselected. See `P2_ZONES` for the fixture.
+ */
+describe("storefront/checkout/summary — the zone derived from the destination (workerd sandbox)", () => {
+	useShippingRules(seedZoneFixture, removeZoneFixture);
+
+	type Totals = Record<string, { money: { amount: number } | null; label: string }>;
+	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
+
+	test("B1: (US, CA) matches US-CA over US; its ONE option is preselected; 3000 + 599 + 218 = $38.17", async () => {
+		const cartId = await p2Cart();
+
+		const result = await summary({ cartId, destination: { country: "us", region: "ca" } });
+
+		expect(result, JSON.stringify(result)).toMatchObject({
+			ok: true,
+			shipping: { status: "matched", matchedRegion: "US-CA", noOptions: false },
+			selection: {
+				shippingMethodId: P2.CA_STD,
+				destination: { country: "US", region: "CA" },
+			},
+			selectionErrors: {},
+			addressRequired: true,
+			readyToPlace: true,
+			uncalculatedReason: null,
+		});
+		expect(result["selectionErrors"]).toEqual({});
+		expect(optionsOf(result)).toEqual([
+			{
+				id: P2.CA_STD,
+				label: "California Standard",
+				price: "$5.99",
+				disabled: false,
+				selected: true,
+			},
+		]);
+		const totals = totalsOf(result);
+		expect(totals["shipping"]!.label).toBe("$5.99");
+		expect(totals["tax"]!.label).toBe("$2.18");
+		expect(totals["total"]!.label).toBe("$38.17");
+	});
+
+	test.each([
+		[{ country: "US", region: "XX" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		[{ country: "US" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		[{ country: "JP" }, "SHIPPING_ZONE_NOT_MATCHED"],
+		[{ country: "ZZ" }, "INVALID_SHIPPING_ADDRESS"],
+	])(
+		"%j → ok:true, address_needed, and a destination notice %s (never RENDER_FAILED)",
+		async (destination, reason) => {
+			const result = await summary({ cartId: await p2Cart(), destination });
+
+			expect(result).toMatchObject({
+				ok: true,
+				shipping: { status: "address_needed", options: [] },
+				selectionErrors: { destination: { reason } },
+				selection: { destination: null, shippingMethodId: null },
+				addressRequired: true,
+				readyToPlace: false,
+			});
+		},
+	);
+
+	test("a region that is not even code-shaped (DE, Bavaria) is INVALID_INPUT before any store work", async () => {
+		const cartId = await p2Cart();
+		productQueries.length = 0;
+
+		expect(await summary({ cartId, destination: { country: "DE", region: "Bavaria" } })).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
+		expect(productQueries).toHaveLength(0);
+	});
+
+	test("B3: a destination in DE with a US method → matched DE, DE's options, SHIPPING_METHOD_NOT_IN_ZONE, DE's 19% tax", async () => {
+		const result = await summary({
+			cartId: await p2Cart(),
+			destination: { country: "DE" },
+			shippingMethodId: P2.US_STD,
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			shipping: { status: "matched", matchedRegion: "DE" },
+			selectionErrors: { shippingMethod: { reason: "SHIPPING_METHOD_NOT_IN_ZONE" } },
+			selection: { shippingMethodId: null },
+			readyToPlace: false,
+			uncalculatedReason: "method_needed",
+		});
+		expect(optionsOf(result).map((o) => o["id"])).toEqual([P2.DE_NORATE, P2.DE_STD]);
+		expect(totalsOf(result)["tax"]!.label).toBe("$5.70");
+		expect(totalsOf(result)["shipping"]).toEqual({ money: null, label: "Not calculated" });
+	});
+
+	describe("the single-option preselect", () => {
+		test("two priced options (US) → nothing preselected", async () => {
+			const result = await summary({
+				cartId: await p2Cart(),
+				destination: { country: "US", region: "TX" },
+			});
+
+			expect(result).toMatchObject({ selection: { shippingMethodId: null }, readyToPlace: false });
+			expect(optionsOf(result).every((o) => o["selected"] === false)).toBe(true);
+		});
+
+		test("one priced + one unpriced (DE) → nothing preselected, the unpriced one disabled", async () => {
+			const result = await summary({ cartId: await p2Cart(), destination: { country: "DE" } });
+
+			expect(result).toMatchObject({ selection: { shippingMethodId: null } });
+			expect(optionsOf(result)).toEqual([
+				{
+					id: P2.DE_NORATE,
+					label: "Courier",
+					price: "Unavailable",
+					disabled: true,
+					selected: false,
+				},
+				{ id: P2.DE_STD, label: "DHL", price: "$9.00", disabled: false, selected: false },
+			]);
+		});
+
+		test("an explicit valid method is never overridden", async () => {
+			const result = await summary({
+				cartId: await p2Cart(),
+				destination: { country: "US", region: "TX" },
+				shippingMethodId: P2.US_EXP,
+			});
+
+			expect(result).toMatchObject({
+				selection: { shippingMethodId: P2.US_EXP },
+				readyToPlace: true,
+			});
+			expect(totalsOf(result)["shipping"]!.label).toBe("$9.99");
+		});
+
+		test("a method dropped as NOT_IN_ZONE and then filled by the preselect raises NO notice — the delivery line states the truth", async () => {
+			const result = await summary({
+				cartId: await p2Cart(),
+				destination: { country: "US", region: "CA" },
+				shippingMethodId: P2.US_STD,
+			});
+
+			expect(result).toMatchObject({
+				selection: { shippingMethodId: P2.CA_STD },
+				readyToPlace: true,
+			});
+			// `toEqual`, not `toMatchObject`: an empty object matches anything.
+			expect(result["selectionErrors"]).toEqual({});
+		});
+	});
+
+	test("a matched zone with NO priced option (FR): noOptions, not ready to place — and no preselect is even attempted", async () => {
+		const cartId = await p2Cart();
+		productQueries.length = 0;
+		const result = await summary({ cartId, destination: { country: "FR" } });
+		// 1 display join + 1 quote: a lone UNPRICED option is never tried.
+		expect(productQueries).toHaveLength(2);
+
+		expect(result).toMatchObject({
+			ok: true,
+			shipping: { status: "matched", matchedRegion: "FR", noOptions: true },
+			selection: { shippingMethodId: null },
+			addressRequired: true,
+			readyToPlace: false,
+		});
+		expect(optionsOf(result)).toEqual([
+			{
+				id: P2.FR_NORATE,
+				label: "Colissimo",
+				price: "Unavailable",
+				disabled: true,
+				selected: false,
+			},
+		]);
+	});
+
+	test("the truth table: addressRequired / readyToPlace by delivery status", async () => {
+		const physical = await p2Cart();
+		const digital = await p2Cart("digital");
+		const rows = [
+			[await summary({ cartId: physical }), "address_needed", true, false],
+			[
+				await summary({ cartId: physical, destination: { country: "US", region: "TX" } }),
+				"matched",
+				true,
+				false,
+			],
+			[
+				await summary({
+					cartId: physical,
+					destination: { country: "US", region: "TX" },
+					shippingMethodId: P2.US_STD,
+				}),
+				"matched",
+				true,
+				true,
+			],
+			[await summary({ cartId: physical, destination: { country: "FR" } }), "matched", true, false],
+			[await summary({ cartId: digital }), "not_required", false, true],
+		] as const;
+		for (const [result, status, addressRequired, readyToPlace] of rows) {
+			expect(result).toMatchObject({
+				ok: true,
+				shipping: { status },
+				addressRequired,
+				readyToPlace,
+			});
+		}
+		// (no_zones is the store-without-zones summary case above.)
+	});
+
+	test("a digital-only cart: a stale shippingMethodId is dropped SILENTLY (D10); nothing ships and no tax is calculated", async () => {
+		const result = await summary({
+			cartId: await p2Cart("digital"),
+			destination: { country: "DE" },
+			shippingMethodId: P2.DE_STD,
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			requiresShipping: false,
+			shipping: { status: "not_required", options: [] },
+			selection: { shippingMethodId: null },
+			selectionErrors: {},
+			addressRequired: false,
+			readyToPlace: true,
+			uncalculatedReason: "digital_only",
+		});
+		expect(result["selectionErrors"]).toEqual({});
+		expect(totalsOf(result)["tax"]).toEqual({ money: null, label: "Not calculated" });
+	});
+
+	test("the WORST fallback path is bounded: method NOT_IN_ZONE → coupon refused → bare → preselect = 4 quotes, 5 product reads", async () => {
+		const cartId = await p2Cart();
+		productQueries.length = 0;
+
+		const result = await summary({
+			cartId,
+			destination: { country: "US", region: "CA" },
+			shippingMethodId: P2.US_STD,
+			couponCode: "CK-NO-SUCH-CODE",
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			selection: { shippingMethodId: P2.CA_STD, couponCode: null },
+			selectionErrors: { coupon: { code: "CK-NO-SUCH-CODE", reason: "COUPON_NOT_FOUND" } },
+		});
+		// 1 display join + 4 quotes, each ONE batched read.
+		expect(productQueries).toHaveLength(5);
 	});
 });
 
@@ -792,7 +1259,7 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  * process-scoped document store, which is why carts made through the first boot
  * can be placed through this one.
  *
- * TWO PARKED NAMES DID NOT COME BACK, because neither property exists in process:
+ * TWO PARKED NAMES, and what became of them:
  *  - "a reply with NO totals block still places the order — total simply absent".
  *    A service REPLY could omit its totals; an in-process `Order` cannot. On a
  *    pending replay the domain reads `order.totals` to build the PaymentIntent
@@ -801,11 +1268,13 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  *    `in-process-commerce-client.ts`) — both before the route formats anything,
  *    so a missing block throws first and the route answers RENDER_FAILED. The
  *    route's own containment is still pinned, by the unformattable-total cases.
- *  - "a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason". The route's
- *    parser applies the domain's own address rules (the same required fields,
- *    trimming and caps), so no ship-to the domain would refuse gets past it.
- *    What IS true is pinned instead: such an address is refused as INVALID_INPUT
- *    before an order, a hold adoption or a PaymentIntent exists.
+ *  - "a 400 INVALID_SHIPPING_ADDRESS becomes the typed reason" came back with
+ *    #305 part 2 (ADR-0021): the route's parser checks the SHAPE of the codes
+ *    and the domain their MEMBERSHIP, so a code-shaped country that is not one
+ *    (ZZ) now reaches the domain and is refused as the typed reason (the part-2
+ *    describe below). A ship-to that fails the shared required-field / cap rules
+ *    is still refused as INVALID_INPUT before an order, a hold adoption or a
+ *    PaymentIntent exists.
  */
 describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbed)", () => {
 	const STRIPE_SECRET_KEY = "sk_test_sandbox_NEVER_LEAK";
@@ -874,6 +1343,31 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		const order = await orderStore.getById(toOrderId(orderId));
 		expect(order).not.toBeNull();
 		return order!;
+	}
+
+	async function expectRefusedAtPlace(
+		cartId: string,
+		extra: Record<string, unknown>,
+		reason: string,
+	): Promise<void> {
+		const before = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
+		const heldBefore = (before["cart"] as { lines: { reservationId: string | null }[] }).lines;
+
+		expect(await placeCart(cartId, extra)).toEqual({ ok: false, reason });
+
+		// Refused BEFORE anything was minted: no order under the checkout key, and
+		// no PaymentIntent asked for.
+		expect(await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`))).toBeNull();
+		expect(stripe.requests).toHaveLength(0);
+		const after = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
+		const cart = after["cart"] as {
+			state: string;
+			orderId: string | null;
+			lines: { reservationId: string | null }[];
+		};
+		expect(cart.state).toBe("active");
+		expect(cart.orderId).toBeNull();
+		expect(cart.lines.map((l) => l.reservationId)).toEqual(heldBefore.map((l) => l.reservationId));
 	}
 
 	test("forwards the idempotency key verbatim — one PaymentIntent create per place, a same-key replay returns the SAME order — and stores buyerRef un-rewritten", async () => {
@@ -1151,13 +1645,11 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	});
 
 	/**
-	 * #305 part 1 — the selection at place, and the locked review. Nested so the
-	 * store-wide shipping/tax rules exist ONLY for these cases (see
-	 * `useShippingRules`); every #286 case above runs with no zone at all.
+	 * #305 part 1 — the coupon at place, and the locked review, in a store with
+	 * NO zones: nothing here is about delivery, so no address is needed
+	 * (ADR-0021 Decision 4). The zoned cases are the part-2 describe below.
 	 */
-	describe("#305 — the selection at place, and the locked review", () => {
-		useShippingRules();
-
+	describe("#305 — the coupon at place, and the locked review (a store with no zones)", () => {
 		/** The order a place minted, read back from the real store. */
 		async function totalsSnapshot(orderId: string) {
 			return (await storedOrder(orderId)).totals;
@@ -1227,66 +1719,6 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			);
 		});
 
-		async function expectRefusedAtPlace(
-			cartId: string,
-			extra: Record<string, unknown>,
-			reason: string,
-		): Promise<void> {
-			const before = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
-			const heldBefore = (before["cart"] as { lines: { reservationId: string | null }[] }).lines;
-
-			expect(await placeCart(cartId, extra)).toEqual({ ok: false, reason });
-
-			// Refused BEFORE anything was minted: no order under the checkout key, and
-			// no PaymentIntent asked for.
-			expect(await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`))).toBeNull();
-			expect(stripe.requests).toHaveLength(0);
-			const after = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));
-			const cart = after["cart"] as {
-				state: string;
-				orderId: string | null;
-				lines: { reservationId: string | null }[];
-			};
-			expect(cart.state).toBe("active");
-			expect(cart.orderId).toBeNull();
-			expect(cart.lines.map((l) => l.reservationId)).toEqual(
-				heldBefore.map((l) => l.reservationId),
-			);
-		}
-
-		test("a shippingMethodId's rate reaches the order and the PaymentIntent", async () => {
-			const cartId = await seedThreeLineCart();
-
-			const placed = await placeCart(cartId, { shippingMethodId: METHOD_ID });
-
-			expect(placed["ok"]).toBe(true);
-			const expected = SUBTOTAL_CENTS + SHIPPING_CENTS;
-			const totals = await totalsSnapshot(placed["orderId"] as string);
-			expect(totals.shipping).toBe(SHIPPING_CENTS);
-			expect(totals.total).toBe(expected);
-			expect(stripe.requests[0]!.form.get("amount")).toBe(String(expected));
-			// TRANSITIONAL — replaced by #305 part 2 (which derives the zone from the
-			// address): the snapshot records the method and NO zone, and no tax.
-			expect(totals.shippingMethodSnapshot).toEqual({ zoneId: null, methodId: METHOD_ID });
-			expect(totals.tax).toBe(0);
-		});
-
-		test("a supplied shippingZoneId is never forwarded: the client's zone reaches neither the order nor its tax", async () => {
-			const cartId = await seedThreeLineCart();
-
-			const placed = await placeCart(cartId, {
-				shippingMethodId: METHOD_ID,
-				shippingZoneId: ZONE_ID,
-			});
-
-			expect(placed["ok"]).toBe(true);
-			const totals = await totalsSnapshot(placed["orderId"] as string);
-			// The zone carries a 10% rate that applies to shipping; had it been
-			// forwarded, tax would be non-zero here.
-			expect(totals.tax).toBe(0);
-			expect((totals.shippingMethodSnapshot as { zoneId: unknown }).zoneId).not.toBe(ZONE_ID);
-		});
-
 		test("after PAYMENT_INTENT_FAILED with coupon A, a same-key place with coupon B returns the ORIGINAL order at A's total, and Stripe sees A's identical form", async () => {
 			await seedCoupon({ id: `${NS}-a`, code: "CK-A", amount: 500 });
 			await seedCoupon({ id: `${NS}-b`, code: "CK-B", amount: 900 });
@@ -1331,10 +1763,14 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				ok: true,
 				orderCreated: true,
 				order: { id: placed["orderId"], state: "pending", phase: "payable" },
-				selection: { couponCode: "CK-LOCK", shippingMethodId: null },
+				selection: { couponCode: "CK-LOCK", shippingMethodId: null, destination: null },
 				selectionErrors: {},
 				idempotencyKey: `checkout:${cartId}`,
 				hasUnpricedLines: false,
+				// Nothing to collect or choose; a pending order can still be paid.
+				shipping: { status: "no_zones", options: [] },
+				addressRequired: false,
+				readyToPlace: true,
 			});
 			const totals = locked["totals"] as Record<string, { label: string }>;
 			expect(totals["total"]!.label).toBe("$44.98");
@@ -1386,6 +1822,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				ok: true,
 				orderCreated: true,
 				order: { id: placed["orderId"], state: "paid", phase: "placed" },
+				readyToPlace: false,
 			});
 		});
 
@@ -1442,21 +1879,250 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			expect(await summary({ cartId })).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 		});
 
-		test('storefront/order for an order placed with a method states shipping as money and tax "Not calculated" (transitional — replaced by #305 part 2)', async () => {
+		test("the locked review after a Stripe 502 (no zones): delivery 'no_zones', ready to place, and a bare same-key place replays the ORIGINAL order", async () => {
 			const cartId = await seedThreeLineCart();
-			const placed = await placeCart(cartId, { shippingMethodId: METHOD_ID });
+			stripe.respondWith(() => ({ status: 502, body: { error: { code: "api_error" } } }));
+			expect(await placeCart(cartId)).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+			const failed = await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`));
+			stripe.respondWith(stripeLikeResponder());
+
+			expect(await summary({ cartId })).toMatchObject({
+				ok: true,
+				orderCreated: true,
+				order: { id: failed?.id, phase: "payable" },
+				shipping: { status: "no_zones" },
+				readyToPlace: true,
+			});
+			expect(await placeCart(cartId)).toMatchObject({ ok: true, orderId: failed?.id });
+		});
+
+		test("an order's method whose ONLY zone was deleted between the review and the place → SHIPPING_METHOD_NOT_FOUND, nothing minted", async () => {
+			const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+			const zoneId = `${NS}-only-zone`;
+			const methodId = `${NS}-only-method`;
+			await rules.createZone({ id: zoneId, name: "Only", regions: ["US"] });
+			await rules.createMethod({ id: methodId, zoneId, name: "Only", type: "flat_rate" });
+			await rules.createRate({
+				methodId,
+				currency: currency("USD"),
+				amountCents: cents(100),
+				minSubtotalCents: null,
+			});
+			const cartId = await seedThreeLineCart();
+			const review = await summary({ cartId, destination: { country: "US" } });
+			expect(review).toMatchObject({ selection: { shippingMethodId: methodId } });
+
+			expect(gone(await rules.deleteRate(methodId, currency("USD")))).toBe(true);
+			expect(gone(await rules.deleteMethod(methodId))).toBe(true);
+			expect(gone(await rules.deleteZone(zoneId))).toBe(true);
+
+			await expectRefusedAtPlace(
+				cartId,
+				{ shippingAddress: SHIP_TO, shippingMethodId: methodId },
+				"SHIPPING_METHOD_NOT_FOUND",
+			);
+		});
+	});
+
+	/**
+	 * #305 part 2 (ADR-0021) at place: the zone DERIVED from the ship-to address.
+	 * The same `P2_ZONES` fixture as the summary cases, and the same one-line
+	 * 2 × $15.00 cart, so a review and its order can be compared figure for figure.
+	 */
+	describe("#305 part 2 — the zone derived from the ship-to, at place", () => {
+		useShippingRules(seedZoneFixture, removeZoneFixture);
+
+		const CA_ADDRESS = { ...SHIP_TO, region: "CA" };
+
+		test("PARITY — (US, CA) + its method + a $5.00 coupon: 2500 + 599 + 181 = 3280 on the review, the place, the stored order AND the PaymentIntent", async () => {
+			await seedCoupon({ id: `${NS}-p2-coupon`, code: "CK-P2-500", amount: 500 });
+			const cartId = await p2Cart();
+			const review = await summary({
+				cartId,
+				destination: { country: "US", region: "CA" },
+				couponCode: "CK-P2-500",
+			});
+			const reviewed = (review["totals"] as { total: { money: { amount: number } } }).total.money;
+			const selection = review["selection"] as { shippingMethodId: string };
+
+			const placed = await placeCart(cartId, {
+				shippingAddress: CA_ADDRESS,
+				shippingMethodId: selection.shippingMethodId,
+				couponCode: "CK-P2-500",
+			});
+
+			expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
+			expect(reviewed.amount).toBe(3280);
+			expect((placed["total"] as { amount: number }).amount).toBe(3280);
+			const order = await storedOrder(placed["orderId"] as string);
+			expect(order.totals).toMatchObject({ discount: 500, shipping: 599, tax: 181, total: 3280 });
+			expect(stripe.requests[0]!.form.get("amount")).toBe("3280");
+		});
+
+		test("the PRESELECTED method reaches the order: the review preselects it, the form echoes it, the snapshot records {zoneId, methodId, matchedRegion} — 3817", async () => {
+			const cartId = await p2Cart();
+			const review = await summary({ cartId, destination: { country: "US", region: "CA" } });
+			const echoed = (review["selection"] as { shippingMethodId: string }).shippingMethodId;
+			expect(echoed).toBe(P2.CA_STD);
+
+			const placed = await placeCart(cartId, {
+				shippingAddress: CA_ADDRESS,
+				shippingMethodId: echoed,
+			});
+
+			expect(placed["ok"]).toBe(true);
+			const order = await storedOrder(placed["orderId"] as string);
+			// INVERTS PR 1's transitional `{ zoneId: null, methodId }`.
+			expect(order.totals.shippingMethodSnapshot).toEqual({
+				zoneId: P2.CA,
+				methodId: P2.CA_STD,
+				matchedRegion: "US-CA",
+			});
+			expect(order.totals.total).toBe(3817);
+			expect(order.shippingAddress?.region).toBe("CA");
+			expect(stripe.requests[0]!.form.get("amount")).toBe("3817");
+			expect(stripe.requests[0]!.form.get("shipping[address][state]")).toBe("CA");
+		});
+
+		test("INVERTS PR 1: a method and NO address in a zoned store is the typed MISSING_SHIPPING_ADDRESS", async () => {
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{ shippingMethodId: P2.CA_STD },
+				"MISSING_SHIPPING_ADDRESS",
+			);
+		});
+
+		test("INVERTS PR 1: a supplied shippingZoneId (DE, 19%) is IGNORED — the tax comes from the zone the address matched", async () => {
+			const placed = await placeCart(await p2Cart(), {
+				shippingAddress: CA_ADDRESS,
+				shippingMethodId: P2.CA_STD,
+				shippingZoneId: P2.DE,
+			});
+
+			expect(placed["ok"]).toBe(true);
+			const order = await storedOrder(placed["orderId"] as string);
+			expect(order.totals.tax).toBe(218);
+			expect((order.totals.shippingMethodSnapshot as { zoneId: string }).zoneId).toBe(P2.CA);
+		});
+
+		test("(US, XX) is the typed SHIPPING_REGION_CODE_REQUIRED — no order, no intent", async () => {
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{ shippingAddress: { ...SHIP_TO, region: "XX" }, shippingMethodId: P2.US_STD },
+				"SHIPPING_REGION_CODE_REQUIRED",
+			);
+		});
+
+		test("(DE, Bavaria) is INVALID_INPUT before any order or intent exists", async () => {
+			const cartId = await p2Cart();
+			orderOps.length = 0;
+			expect(
+				await placeCart(cartId, {
+					shippingAddress: { ...SHIP_TO, country: "DE", region: "Bavaria" },
+					shippingMethodId: P2.DE_STD,
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+		});
+
+		test("an address no zone matches is the typed SHIPPING_ZONE_NOT_MATCHED — no order, no intent, the coupon's uses unchanged", async () => {
+			await seedCoupon({ id: `${NS}-p2-unmatched`, code: "CK-P2-UNMATCHED", amount: 500 });
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{
+					shippingAddress: { ...SHIP_TO, country: "JP" },
+					shippingMethodId: P2.US_STD,
+					couponCode: "CK-P2-UNMATCHED",
+				},
+				"SHIPPING_ZONE_NOT_MATCHED",
+			);
+			expect(await usesOf("CK-P2-UNMATCHED")).toBe(0);
+		});
+
+		test("RESTORED #286 case: a code-SHAPED country that is not one (ZZ) is the typed INVALID_SHIPPING_ADDRESS — no order, no intent", async () => {
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{ shippingAddress: { ...SHIP_TO, country: "ZZ" }, shippingMethodId: P2.US_STD },
+				"INVALID_SHIPPING_ADDRESS",
+			);
+		});
+
+		test("a zone deleted between the review and the place, with another zone still configured → SHIPPING_ZONE_NOT_MATCHED, nothing minted", async () => {
+			const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+			const zoneId = `${NS}-p2-nz`;
+			const methodId = `${NS}-p2-nz-std`;
+			await rules.createZone({ id: zoneId, name: "NZ", regions: ["NZ"] });
+			await rules.createMethod({ id: methodId, zoneId, name: "NZ Post", type: "flat_rate" });
+			await rules.createRate({
+				methodId,
+				currency: currency("USD"),
+				amountCents: cents(700),
+				minSubtotalCents: null,
+			});
+			const cartId = await p2Cart();
+			expect(await summary({ cartId, destination: { country: "NZ" } })).toMatchObject({
+				selection: { shippingMethodId: methodId },
+			});
+
+			expect(gone(await rules.deleteRate(methodId, currency("USD")))).toBe(true);
+			expect(gone(await rules.deleteMethod(methodId))).toBe(true);
+			expect(gone(await rules.deleteZone(zoneId))).toBe(true);
+
+			await expectRefusedAtPlace(
+				cartId,
+				{ shippingAddress: { ...SHIP_TO, country: "NZ" }, shippingMethodId: methodId },
+				"SHIPPING_ZONE_NOT_MATCHED",
+			);
+		});
+
+		test("THE LOCKED REVIEW (zoned) after a Stripe 502: matched, ready to place, the order's $38.17 — and a place with NO address and NO method replays the SAME order with Stripe's identical body", async () => {
+			const cartId = await p2Cart();
+			stripe.respondWith(() => ({ status: 502, body: { error: { code: "api_error" } } }));
+			expect(
+				await placeCart(cartId, { shippingAddress: CA_ADDRESS, shippingMethodId: P2.CA_STD }),
+			).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+			const order = await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`));
+			expect(order).not.toBeNull();
+			stripe.respondWith(stripeLikeResponder());
+
+			const locked = await summary({ cartId, destination: { country: "DE" } });
+			expect(locked, JSON.stringify(locked)).toMatchObject({
+				ok: true,
+				orderCreated: true,
+				order: { id: order!.id, phase: "payable" },
+				shipping: { status: "matched", options: [] },
+				selection: { shippingMethodId: P2.CA_STD },
+				addressRequired: false,
+				readyToPlace: true,
+			});
+			expect((locked["totals"] as Record<string, { label: string }>)["total"]!.label).toBe(
+				"$38.17",
+			);
+
+			// Exactly the body the locked page's form sends: key, email, nothing else.
+			const replay = await placeCart(cartId);
+			expect(replay).toMatchObject({ ok: true, orderId: order!.id });
+			expect(stripe.requests).toHaveLength(2);
+			expect(stripe.requests[1]!.form.toString()).toBe(stripe.requests[0]!.form.toString());
+			expect(stripe.requests[1]!.form.get("amount")).toBe("3817");
+		});
+
+		test("storefront/order for an order placed in a matched zone states shipping AND tax as money", async () => {
+			const placed = await placeCart(await p2Cart(), {
+				shippingAddress: CA_ADDRESS,
+				shippingMethodId: P2.CA_STD,
+			});
 
 			const read = resultOf(
 				await sandboxHandle.invokeRoute("storefront/order", { orderId: placed["orderId"] }),
 			);
 
 			expect(read["ok"]).toBe(true);
-			const totals = (
-				read["order"] as { totals: Record<string, { money: unknown; label: string }> }
-			).totals;
+			const totals = (read["order"] as { totals: Record<string, { label: string }> }).totals;
 			expect(totals["shipping"]!.label).toBe("$5.99");
-			expect(totals["total"]!.label).toBe("$55.97");
-			expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+			expect(totals["tax"]!.label).toBe("$2.18");
+			expect(totals["total"]!.label).toBe("$38.17");
 		});
 	});
 });
@@ -1482,7 +2148,7 @@ describe("storefront/order (workerd sandbox)", () => {
 				city: "Testville",
 				region: null,
 				postalCode: "12345",
-				country: "Testland",
+				country: "GB",
 				email: null,
 				phone: null,
 			},

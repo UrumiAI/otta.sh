@@ -23,12 +23,15 @@ import {
 	buildCheckoutTotals,
 	buildOrderTotal,
 	buildOrderView,
+	buildShippingOptionsView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
+	isSilentSelectionReason,
 	lockedCheckoutPhase,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 	selectionFieldFor,
+	uncalculatedReasonFor,
 	type LockedCheckoutPhase,
 	type SelectionField,
 } from "../src/storefront/checkout-view-model.js";
@@ -334,9 +337,11 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(view.totals.totalExcludesUncalculated).toBe(true);
 	});
 
-	test('a method without a zone ⇒ shipping is real money (even $0.00), tax "Not calculated" — transitional, replaced by #305 part 2', () => {
-		// TRANSITIONAL: until PR 2 derives the zone from the address, an order can
-		// be priced with a method and no zone, and so with no tax.
+	test('a LEGACY order priced with a method and no zone (placed before ADR-0021) ⇒ shipping is real money (even $0.00), tax "Not calculated"', () => {
+		// Since #305 part 2 every new order that carries a method carries the zone
+		// it was matched to, so this shape is only ever an order placed under
+		// part 1 — which must still read truthfully: it was charged shipping and
+		// no tax was calculated for it.
 		const charged = buildOrderView(
 			order({ shippingMethodId: "m-1", shippingCents: 599, totalCents: 4597 }),
 			LOCALE,
@@ -372,6 +377,16 @@ describe("selectionFieldFor — which selection a quote refusal blames", () => {
 		COUPON_CURRENCY_MISMATCH: "coupon",
 		SHIPPING_METHOD_NOT_FOUND: "shippingMethod",
 		SHIPPING_RATE_NOT_FOUND: "shippingMethod",
+		// ADR-0021: a refusal of the destination drops the destination AND the
+		// method (a method is only meaningful inside the zone it came from)…
+		INVALID_SHIPPING_ADDRESS: "destination",
+		SHIPPING_ZONE_NOT_MATCHED: "destination",
+		SHIPPING_REGION_CODE_REQUIRED: "destination",
+		// …one that blames the method keeps the destination.
+		MISSING_SHIPPING_ADDRESS: "shippingMethod",
+		SHIPPING_METHOD_NOT_IN_ZONE: "shippingMethod",
+		// Dropped SILENTLY (see isSilentSelectionReason).
+		SHIPPING_METHOD_NOT_APPLICABLE: "shippingMethod",
 		CART_NOT_FOUND: null,
 		CART_EMPTY: null,
 		PRODUCT_NOT_PRICED: null,
@@ -380,6 +395,55 @@ describe("selectionFieldFor — which selection a quote refusal blames", () => {
 
 	test.each(Object.entries(EXPECTED))("%s → %s", (reason, field) => {
 		expect(selectionFieldFor(reason as QuoteFailureReason)).toBe(field);
+	});
+
+	test("only SHIPPING_METHOD_NOT_APPLICABLE is silent: a stale method on a digital-only cart is dropped with no notice (D10)", () => {
+		for (const reason of Object.keys(EXPECTED) as QuoteFailureReason[]) {
+			expect(isSilentSelectionReason(reason), reason).toBe(
+				reason === "SHIPPING_METHOD_NOT_APPLICABLE",
+			);
+		}
+	});
+});
+
+describe("buildShippingOptionsView — the delivery choices of the matched zone", () => {
+	const OPTIONS = [
+		{ methodId: "m-flat", name: "Standard", type: "flat_rate" as const, amountCents: 599 },
+		{ methodId: "m-free", name: "Free over $10", type: "free_shipping" as const, amountCents: 0 },
+		{ methodId: "m-none", name: "Courier", type: "flat_rate" as const, amountCents: null },
+	];
+
+	test("each priced option carries its money; a computed zero reads Free; the selected one is marked", () => {
+		const view = buildShippingOptionsView(OPTIONS, {
+			currency: "USD",
+			locale: LOCALE,
+			selected: "m-free",
+		});
+		expect(view).toEqual([
+			{ id: "m-flat", label: "Standard", price: "$5.99", disabled: false, selected: false },
+			{ id: "m-free", label: "Free over $10", price: "Free", disabled: false, selected: true },
+			{ id: "m-none", label: "Courier", price: "Unavailable", disabled: true, selected: false },
+		]);
+	});
+
+	test("an option with no rate is disabled and never labelled Free, even when its name says so", () => {
+		const [view] = buildShippingOptionsView(
+			[{ methodId: "m", name: "Free shipping", type: "free_shipping", amountCents: null }],
+			{ currency: "USD", locale: LOCALE, selected: "m" },
+		);
+		expect(view).toMatchObject({ disabled: true, selected: false, price: "Unavailable" });
+	});
+});
+
+describe("uncalculatedReasonFor — why the total leaves something out", () => {
+	test.each([
+		["no_zones", false, "no_zones"],
+		["address_needed", false, "address_needed"],
+		["not_required", false, "digital_only"],
+		["matched", false, "method_needed"],
+		["matched", true, null],
+	] as const)("%s (method selected: %s) → %s", (status, methodSelected, reason) => {
+		expect(uncalculatedReasonFor(status, methodSelected)).toBe(reason);
 	});
 });
 
