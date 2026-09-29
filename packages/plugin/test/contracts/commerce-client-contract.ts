@@ -1746,9 +1746,14 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				const clock = tier.clock;
 				const paymentMethod = tier.payments?.method;
 				if (clock === undefined || paymentMethod === undefined) throw new Error("unreachable");
+				// THE TITLE IS LOAD-BEARING here too, for the same reason the checkout-
+				// replay case above documents: order pricing snapshots price AND title,
+				// and a row nobody has titled is refused PRODUCT_NOT_PRICED before this
+				// case's own subject — the lapsed hold — is ever reached.
 				const productId = await tier.arrange.product({
 					productId: "prod-co-lost",
 					sku: "SKU-CO-LOST",
+					title: "Lapsed Hold Product",
 					price: { amount: 2500, currency: "USD" },
 					onHand: 3,
 					idempotencyKey: "co-lost-seed",
@@ -2680,11 +2685,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ceilingCents: 0,
 				remainingCents: 0,
 				paymentMethod: "stripe",
-				// The gateway's HONEST capability: false ⇒ the panel offers "record a
-				// manual refund", never a provider button that silently no-ops. Both
-				// tiers answer false today, for different reasons (no gateway composed /
-				// a Stripe gateway with no secret), and neither softens it.
-				refundable: false,
+				// The gateway's HONEST capability: this tier now composes a real (fake)
+				// Stripe gateway, and Stripe genuinely supports refunds — so `true` is
+				// the honest answer, not a softened one. A tier with no gateway composed,
+				// or a Stripe gateway missing its secret, still answers `false`; the
+				// panel reads this to decide between a provider button and "record a
+				// manual refund" (ADR-0008), and neither state is faked here.
+				refundable: true,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
@@ -2745,7 +2752,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
 						{ idempotencyKey: "adm-o-refc-1" },
 					),
-				).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_CAPTURED" });
+				).toEqual({ ok: false, status: 409, reason: "NO_CAPTURED_PAYMENT" });
 			},
 		);
 

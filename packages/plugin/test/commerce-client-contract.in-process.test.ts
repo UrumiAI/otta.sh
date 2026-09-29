@@ -44,7 +44,7 @@
  * appears here and those cases start running with no edit to any case.
  */
 import { email as toEmail } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
@@ -81,6 +81,7 @@ function inProcessTier(): CommerceClientTier {
 	 * decides at COLLECTION time which cases this tier's hooks let it run.
 	 */
 	const clock = new FixedClock(new Date());
+	const stripeGateway = new FakePaymentGateway({ id: "stripe" });
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
@@ -96,7 +97,7 @@ function inProcessTier(): CommerceClientTier {
 		name: "in-process, plugin storage, sqlite",
 		async setup() {
 			if (harness !== undefined) return; // one database per tier, however many slices ask
-			harness = await makeInProcessCommerce({ clock });
+			harness = await makeInProcessCommerce({ clock, gateways: { stripe: stripeGateway } });
 			client = harness.client;
 		},
 		async teardown() {
@@ -130,7 +131,7 @@ function inProcessTier(): CommerceClientTier {
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
 			const ctx = harnessOrThrow().ctx;
 			return {
-				orders: new InProcessAdminOrdersClient(ctx, { clock }),
+				orders: new InProcessAdminOrdersClient(ctx, { clock, gateways: { stripe: stripeGateway } }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
 				rules: new InProcessAdminRulesClient(ctx, { clock }),
 				reporting: new InProcessReportingSettingsClient(ctx, { clock }),
@@ -145,6 +146,7 @@ function inProcessTier(): CommerceClientTier {
 				clock.advance(ms);
 			},
 		},
+		payments: { method: "stripe" },
 		arrange: {
 			...sharedTierSeeders({
 				get orderStore() {
