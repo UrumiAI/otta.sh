@@ -293,6 +293,30 @@ export function paymentDeclineContract(
 			expect(await couponUses(h, couponId)).toBe(0);
 		});
 
+		test("a success arriving after the hold lapsed but BEFORE the sweep ran still settles; the sweep then has nothing to do", async () => {
+			const h = await makeHarness();
+			const { order, sku: s, couponId, holdExpiresAt } = await seedPendingOrder(h, "7");
+			await settleOrder(h.settleDeps, gateway, event(order, "failed", "evt_fail_7"));
+			// Past the deadline, but no sweep has run: the order is still `pending`, so
+			// the retry that pays now is a clean settle, not a reconciliation case.
+			const lapsed = new Date(holdExpiresAt.getTime() + 60_000);
+			const late = { ...h.settleDeps, clock: { now: () => lapsed } };
+
+			const res = await settleOrder(late, gateway, event(order, "succeeded", "evt_ok_7"));
+
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.noop).toBe(false);
+			const after = await state(h, order.id);
+			expect(after.state).toBe("paid");
+			expect(after.reconciliationFlag).toBeNull();
+			expect(await onHand(h, s)).toBe(ON_HAND - QTY);
+			// The sweep that would have expired it finds nothing to expire or release.
+			expect(await expireOrders(h.expireDeps, new Date(lapsed.getTime() + 60_000))).toBe(0);
+			expect((await state(h, order.id)).state).toBe("paid");
+			expect(await onHand(h, s)).toBe(ON_HAND - QTY);
+			expect(await couponUses(h, couponId)).toBe(1);
+		});
+
 		test("a success arriving after the order expired is flagged for reconciliation, exactly as before", async () => {
 			const h = await makeHarness();
 			const { order, sku: s, couponId, holdExpiresAt } = await seedPendingOrder(h, "6");

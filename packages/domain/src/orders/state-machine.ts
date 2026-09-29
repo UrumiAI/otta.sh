@@ -10,8 +10,9 @@ import type { OrderState } from "./model.js";
  *
  * `pending → failed` is GONE (ADR-0021): a declined payment keeps the order
  * `pending` — the PaymentIntent is still payable — and an unpaid order leaves
- * `pending` only by expiring or being cancelled, both of which release its stock
- * and coupon. `failed` stays a STATE, terminal and unreachable, because orders
+ * `pending` only by expiring or being cancelled. Both release its stock. Only
+ * expiry releases its coupon (`expireOrders`, with the coupon sweeper's `expired`
+ * arm as the retry); `cancelOrder` deliberately releases no coupon. `failed` stays a STATE, terminal and unreachable, because orders
  * failed before ADR-0021 still carry it and every reader must keep rendering them.
  */
 export const ORDER_STATE_MACHINE = {

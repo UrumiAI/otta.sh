@@ -58,15 +58,23 @@ Three options were considered:
 3. **Nobody pays → the order-expiry sweep.** `expireOrders` (the plugin cron's
    `expire-orders` leg) expires the order once its `holdExpiresAt` passes and releases both
    its stock and its coupon, exactly once. This is the same path every abandoned checkout
-   already takes; a declined-and-abandoned order is now simply one of them.
+   already takes; a declined-and-abandoned order is now simply one of them. Because the
+   `pending → expired` flip is durable before the coupon release, a crash between the two
+   would otherwise leak the coupon use; the cron's coupon sweeper (`coupon-orphans`)
+   therefore also releases a redemption whose order is `expired`, which completes that
+   release on a later tick. `release` is idempotent, so the use still comes back exactly
+   once.
 4. **`pending → failed` is removed from the state machine**, and with it
    `OrderStore.markFailed` (port, in-memory fake and the EmDash store) and
    `SettleDeps.couponStore` (settlement no longer touches coupons). The settle path was the
    only producer of `failed`. The admin console's bare `pending → failed` transition button,
    which the table also offered, was a half-wired path — a bare transition releases no
    stock, and the expiry sweep only sweeps `pending` orders, so it stranded the order's
-   holds permanently; operators have `cancel` (which records a reason) and expiry for an
-   unpaid order.
+   holds permanently. For an unpaid order an operator still has **cancel** (records a
+   reason and releases the stock, but deliberately releases **no** coupon — the existing
+   cancel policy, unchanged here) and the bare **`pending → expired`** transition (releases
+   the stock at once; its coupon is not released by the transition itself and is left to
+   the coupon sweeper's `expired` arm).
 5. **`failed` stays an `OrderState`**, terminal and now unreachable. Orders failed before
    this change still carry it, and every reader — the admin console's list filter and status
    rendering, reporting, the storefront order page — must keep rendering them. It is a
