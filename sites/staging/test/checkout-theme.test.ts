@@ -68,9 +68,14 @@ describe("the /checkout form contract", () => {
 		["city", "address-level2"],
 		["region", "address-level1"],
 		["postalCode", "postal-code"],
-		["country", "country-name"],
 		["phone", "tel"],
 	];
+
+	test("the country is a SELECT of ISO codes (issue #305) — free text would match no shipping zone", () => {
+		const field = /<select[^>]*name="country"[^>]*>/.exec(REVIEW)?.[0] ?? "";
+		expect(field, "country select is missing").not.toBe("");
+		expect(field).toContain('autocomplete="country"');
+	});
 
 	test.each(ADDRESS)("the ship-to field %s is present with autocomplete=%s", (name, complete) => {
 		const field = new RegExp(`<input[^>]*name="${name}"[^>]*>`).exec(REVIEW)?.[0] ?? "";

@@ -115,6 +115,12 @@ export const POST: APIRoute = async (context) => {
 	const shipping = readShippingAddress(form);
 	if (!shipping.ok) return seeOther(context, "/checkout", shipping.error);
 
+	// Issue #305: the buyer's delivery method and coupon, as chosen on the
+	// review page. There is deliberately no zone: the plugin derives it from
+	// the address's country/region and refuses a method that zone does not offer.
+	const shippingMethodId = formString(form.get("shippingMethodId"));
+	const couponCode = formString(form.get("couponCode"));
+
 	const result = await dispatchOttaRoute<CheckoutPlaceRouteResult>(
 		routeDispatcher(context),
 		STOREFRONT_CHECKOUT_PLACE_ROUTE,
@@ -123,6 +129,8 @@ export const POST: APIRoute = async (context) => {
 			buyerRef: email,
 			idempotencyKey,
 			...(shipping.address !== undefined ? { shippingAddress: shipping.address } : {}),
+			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
+			...(couponCode !== undefined ? { couponCode } : {}),
 		},
 		context.url,
 	);

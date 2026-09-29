@@ -23,6 +23,7 @@
 import type { APIRoute } from "astro";
 import { clearCartCookie, seeOther } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { clearCheckoutSelection } from "../../lib/checkout-selection.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 
 export const POST: APIRoute = (context) => {
@@ -33,6 +34,8 @@ export const POST: APIRoute = (context) => {
 
 	clearCartCookie(context);
 	clearCheckoutCookie(context.cookies);
+	// A new cart starts a new checkout: forget the old delivery/coupon choice.
+	clearCheckoutSelection(context.cookies);
 
 	return seeOther(context, "/products");
 };

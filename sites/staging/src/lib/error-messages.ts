@@ -60,6 +60,25 @@ const MESSAGES: Record<string, string> = {
 		"Please check the delivery address — some fields are missing or too long.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
+	// ── Delivery and coupons (issue #305) ──────────────────────────────────
+	// The zone is derived from the address, so every shipping refusal is about
+	// the ADDRESS or the chosen METHOD — never a zone the buyer picked.
+	SHIPPING_ADDRESS_REQUIRED: "Please choose your country and enter a delivery address.",
+	SHIPPING_UNAVAILABLE_FOR_ADDRESS:
+		"Sorry, we don't deliver to that address yet. Nothing has been charged.",
+	SHIPPING_METHOD_REQUIRED: "Please choose a delivery method.",
+	SHIPPING_METHOD_NOT_AVAILABLE:
+		"That delivery method isn't available for this address — please choose another.",
+	SHIPPING_METHOD_NOT_IN_ZONE:
+		"That delivery method isn't available for this address — please choose another.",
+	SHIPPING_METHOD_NOT_FOUND: "That delivery method is no longer offered — please choose another.",
+	SHIPPING_RATE_NOT_FOUND: "That delivery method is no longer offered — please choose another.",
+	COUPON_NOT_FOUND: "That coupon code isn't valid.",
+	COUPON_NOT_ACTIVE: "That coupon isn't active — it may have expired.",
+	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
+	COUPON_EXHAUSTED: "That coupon has been fully used.",
+	COUPON_MAX_PER_CUSTOMER: "You've already used that coupon the maximum number of times.",
+	COUPON_CURRENCY_MISMATCH: "That coupon can't be used with this store's currency.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 };
