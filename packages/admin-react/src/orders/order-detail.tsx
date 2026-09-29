@@ -179,6 +179,28 @@ export function checkRefundInput(
  */
 export type RefundPanelMode = "empty" | "fully-refunded" | "form";
 
+/** A refund row's lifecycle, as the ledger labels it. A row with no status came
+ *  from a plugin that only ever listed finalized refunds. */
+type RefundRowStatus = "recorded" | "reserved" | "unverified";
+
+function refundRowStatus(refund: RefundsSummary["refunds"][number]): RefundRowStatus {
+	return refund.status === "reserved" || refund.status === "unverified"
+		? refund.status
+		: "recorded";
+}
+
+const REFUND_STATUS_LABEL: Readonly<Record<RefundRowStatus, string>> = {
+	recorded: "Refunded",
+	reserved: "In progress",
+	unverified: "Outcome unknown — check your payment provider",
+};
+
+/** Money that actually came back. An older plugin sends no finalized total, and
+ *  listed only finalized rows, so its active total is the same figure. */
+function finalizedRefundedCents(refunds: RefundsSummary): number {
+	return refunds.finalizedTotalCents ?? refunds.refundedTotalCents;
+}
+
 export function refundPanelMode(summary: {
 	readonly ceilingCents: number;
 	readonly remainingCents: number;
@@ -399,6 +421,14 @@ export function RefundsPanel({
 	readonly refundedByRef: React.RefObject<HTMLInputElement | null>;
 }): React.ReactElement {
 	const refundMode = refundPanelMode(refunds);
+	// A `voided` attempt moved nothing and is not a refund; it stays on the wire
+	// for audit only. Everything else is listed WITH its status.
+	const listed = refunds.refunds.filter((refund) => refund.status !== "voided");
+	const finalizedCents = finalizedRefundedCents(refunds);
+	const recordedCount = listed.filter((refund) => refundRowStatus(refund) === "recorded").length;
+	const unverifiedCents = listed
+		.filter((refund) => refundRowStatus(refund) === "unverified")
+		.reduce((sum, refund) => sum + refund.amountCents, 0);
 	return (
 		<>
 			<section style={panelStyle}>
@@ -406,9 +436,9 @@ export function RefundsPanel({
 					testId="detail-money"
 					entries={[
 						["Captured", formatAmount(refunds.capturedTotalCents, cur)],
-						["Refunded", formatAmount(refunds.refundedTotalCents, cur)],
+						["Refunded", formatAmount(finalizedCents, cur)],
 						["Remaining refundable", formatAmount(refunds.remainingCents, cur)],
-						["Refunds recorded", String(refunds.refunds.length)],
+						["Refunds recorded", String(recordedCount)],
 					]}
 				/>
 			</section>
@@ -420,7 +450,7 @@ export function RefundsPanel({
 					refundMode === "empty"
 						? REFUNDS_GROUP_EMPTY_LABEL
 						: refundsGroupLabel(
-								formatAmount(refunds.refundedTotalCents, cur),
+								formatAmount(finalizedCents, cur),
 								formatAmount(refunds.ceilingCents, cur),
 							)
 				}
@@ -446,17 +476,24 @@ export function RefundsPanel({
 					</p>
 				)}
 
-				{refunds.refunds.length > 0 && (
+				{unverifiedCents > 0 && (
+					<p style={{ fontSize: 13 }} data-testid="refund-unverified-note">
+						{`A refund of ${formatAmount(unverifiedCents, cur)} timed out and its outcome is unknown. Check your payment provider's dashboard before refunding again; the amount stays reserved on this order until it is reconciled.`}
+					</p>
+				)}
+
+				{listed.length > 0 && (
 					<Table
 						testId="detail-refund-ledger"
 						caption="Refunds recorded"
-						headers={[<EndHeader label="Amount" />, "Provider ref", "By", "When"]}
+						headers={[<EndHeader label="Amount" />, "Status", "Provider ref", "By", "When"]}
 					>
-						{refunds.refunds.map((refund, index) => (
+						{listed.map((refund, index) => (
 							<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
 								<td className="otta-td otta-num" style={endCellStyle}>
 									{formatAmount(refund.amountCents, refund.currency ?? cur)}
 								</td>
+								<td className="otta-td">{REFUND_STATUS_LABEL[refundRowStatus(refund)]}</td>
 								<td className="otta-td">
 									<code>{refund.providerRef ?? "—"}</code>
 								</td>
@@ -746,7 +783,10 @@ export function OrderDetail({
 			value: {
 				orderId: order.id,
 				amountCents: String(amountCents),
-				refundedSoFarCents: String(refunds.refundedTotalCents),
+				// The FINALIZED total: an attempt still in flight (or one whose outcome
+				// is unknown) moved no money yet, and counting it would turn a retry
+				// into a "someone else refunded this order" refusal.
+				refundedSoFarCents: String(finalizedRefundedCents(refunds)),
 				currency: cur,
 				reason: refundReason,
 				refundedBy,

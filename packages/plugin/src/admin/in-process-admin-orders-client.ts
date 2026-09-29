@@ -25,8 +25,8 @@
  *  - `shippingAddress` is the order's immutable checkout SNAPSHOT (ADR-0009) and
  *    is read off the order row — never re-read from the mutable profile address
  *    book, which appears (separately) on the customer-context panel;
- *  - `RefundsSummaryWire.refundedTotalCents` is the watermark the refund action
- *    reads, and `refundable` is the gateway's HONEST capability — neither is
+ *  - `RefundsSummaryWire.finalizedTotalCents` is the watermark the refund action
+ *    reads (`refundedTotalCents` is the ACTIVE sum the remainder comes from), and `refundable` is the gateway's HONEST capability — neither is
  *    softened;
  *  - `updatedAt` doubles as the optimistic-concurrency token elsewhere in the
  *    admin surface, so an order's stamps pass through as the store spells them.
@@ -70,11 +70,9 @@
  * egress a refund makes is the gateway's own, over the `ctx.http` the root bound
  * it to — this class never touches `ctx.http` itself.
  *
- * ONE RECORDED DIVERGENCE, not an accidental one:
- *  - a refund ROW here carries no `status`. The service's `serializeRefund` emits
- *    one; the plugin's `RefundWire` has never declared it and no console reads
- *    it, so this tier matches the PLUGIN's wire type rather than adding a field
- *    the type says does not exist.
+ * A REFUND ROW CARRIES ITS `status`, as the service's `serializeRefund` did: a
+ * `voided` or in-flight attempt is on the ledger for audit, and a console that
+ * could not tell it from a finalized refund would list money that never moved.
  *
  * SEARCH IS PREFIX-ONLY ON THIS TIER, and that is the ADR-0019 §6 floor rather
  * than a gap: id PREFIX or folded buyerRef PREFIX or EXACT folded line sku. A SQL
@@ -106,6 +104,7 @@ import {
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
 	sumCapturedPayments,
+	sumFinalizedRefunds,
 	sumRefunds,
 	transitionOrder as transitionOrderUseCase,
 	cents as toCents,
@@ -453,6 +452,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const capturedTotal = sumCapturedPayments(payments);
 		const ceiling = computeRefundCeiling(capturedTotal, order.totals.total);
 		const refundedTotal = sumRefunds(refunds);
+		const finalizedTotal = sumFinalizedRefunds(refunds);
 		const remaining = Math.max(0, ceiling - refundedTotal);
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
@@ -464,6 +464,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			currency: order.totals.currency,
 			capturedTotalCents: capturedTotal,
 			refundedTotalCents: refundedTotal,
+			finalizedTotalCents: finalizedTotal,
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
@@ -758,10 +759,8 @@ function toTimelineWire(timeline: OrderTimeline): OrderTimelineWire {
 	};
 }
 
-/** `serializeRefund`'s twin, minus `status`: the plugin's `RefundWire` has never
- *  declared that field and no console reads it, so this tier matches the PLUGIN's
- *  wire type rather than adding a key the type says does not exist. Money is an
- *  integer minor `amountCents` + an ISO-4217 currency — never a float. */
+/** `serializeRefund`'s twin, `status` included (see `RefundWire.status`). Money is
+ *  an integer minor `amountCents` + an ISO-4217 currency — never a float. */
 function toRefundWire(refund: RefundRecord): RefundWire {
 	return {
 		id: refund.id,
@@ -776,6 +775,7 @@ function toRefundWire(refund: RefundRecord): RefundWire {
 		reason: refund.reason,
 		refundedBy: refund.refundedBy,
 		createdAt: refund.createdAt,
+		status: refund.status,
 	};
 }
 

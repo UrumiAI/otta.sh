@@ -132,6 +132,10 @@ export interface RefundRow {
 	readonly providerRef?: string | null;
 	readonly refundedBy?: string | null;
 	readonly createdAt?: string | null;
+	/** The row's lifecycle: `recorded` (money came back), `reserved` (an attempt
+	 *  still in progress), `unverified` (outcome unknown — check the provider) or
+	 *  `voided` (nothing moved). Absent on a row from an older plugin ⇒ recorded. */
+	readonly status?: string | null;
 }
 
 export interface RefundsSummary {
@@ -139,6 +143,9 @@ export interface RefundsSummary {
 	readonly currency: string;
 	readonly capturedTotalCents: number;
 	readonly refundedTotalCents: number;
+	/** Σ refunds that actually came back — the refund confirm's watermark and
+	 *  the "Refunded" figure. Absent from an older plugin ⇒ `refundedTotalCents`. */
+	readonly finalizedTotalCents?: number;
 	readonly ceilingCents: number;
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;

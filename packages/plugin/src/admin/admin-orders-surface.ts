@@ -226,6 +226,12 @@ export interface RefundWire {
 	reason: string | null;
 	refundedBy: string;
 	createdAt: string;
+	/** The row's reserve-before-issue lifecycle (ADR-0008): `recorded` (money
+	 *  came back), `reserved` (an attempt holding ceiling capacity, not yet
+	 *  issued or retryable), `unverified` (the provider call's outcome is
+	 *  UNKNOWN — check the provider) or `voided` (nothing moved; an audit row
+	 *  only). Only `recorded` is a refund that happened. */
+	status: string;
 }
 
 /** The refunds summary for an order (ADR-0008): the append-only ledger plus the
@@ -236,7 +242,13 @@ export interface RefundsSummaryWire {
 	refunds: RefundWire[];
 	currency: string;
 	capturedTotalCents: number;
+	/** Σ ACTIVE refunds (everything but `voided`) — the capacity the ceiling
+	 *  arbitrates against, so `remainingCents` is computed from it. */
 	refundedTotalCents: number;
+	/** Σ FINALIZED (`recorded`) refunds — money that actually came back, and the
+	 *  refund confirm's optimistic watermark: an attempt that failed or is still
+	 *  in flight must not read as "someone else refunded this order". */
+	finalizedTotalCents: number;
 	ceilingCents: number;
 	remainingCents: number;
 	paymentMethod: string | null;

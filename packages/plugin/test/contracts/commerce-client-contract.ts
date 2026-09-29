@@ -2708,16 +2708,16 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				currency: "USD",
 				capturedTotalCents: 0,
 				refundedTotalCents: 0,
+				finalizedTotalCents: 0,
 				ceilingCents: 0,
 				remainingCents: 0,
 				paymentMethod: "stripe",
-				// The gateway's HONEST capability: this tier now composes a real (fake)
-				// Stripe gateway, and Stripe genuinely supports refunds — so `true` is
-				// the honest answer, not a softened one. A tier with no gateway composed,
-				// or a Stripe gateway missing its secret, still answers `false`; the
-				// panel reads this to decide between a provider button and "record a
-				// manual refund" (ADR-0008), and neither state is faked here.
-				refundable: true,
+				// The gateway's HONEST capability: a tier that composes a Stripe gateway
+				// answers `true`, because Stripe genuinely supports refunds; a tier with
+				// no gateway composed answers `false`. The panel reads this to decide
+				// between a provider button and "record a manual refund" (ADR-0008), and
+				// neither state is faked here.
+				refundable: tier.payments !== undefined,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
@@ -2882,6 +2882,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					currency: "USD",
 					kind: "gateway",
 					gateway: method,
+					status: "recorded",
 					reason: "damaged",
 					refundedBy: "ops@example.test",
 				});
@@ -2965,6 +2966,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				expect(after?.refunds[0]).toMatchObject({
 					kind: "manual",
 					gateway: method,
+					status: "recorded",
 					refundRef: null,
 					amountCents: 1500,
 				});

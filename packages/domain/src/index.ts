@@ -272,6 +272,7 @@ export {
 	computeRefundCeiling,
 	refundOrder,
 	sumCapturedPayments,
+	sumFinalizedRefunds,
 	sumRefunds,
 	type RefundOrderCommand,
 	type RefundOrderDeps,
