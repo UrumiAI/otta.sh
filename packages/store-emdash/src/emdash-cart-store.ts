@@ -51,7 +51,10 @@
  *   partial, and only the writer that MINTED the token reports the expiry as won,
  *   so stock returns exactly once.
  * - **The checkout fence** → one compare-and-set guarded on `state === "active"`,
- *   setting `state` and `orderId` together. The guard IS the write-once.
+ *   setting `state` and `orderId` together. The guard IS the write-once. It
+ *   deliberately leaves `holdExpiresAt` alone: a checked-out cart can still owe
+ *   the sweep a `held` hold, so the sweep itself narrows the deadline to what is
+ *   owed (`#narrowCheckedOut`) instead of the fence guessing.
  */
 import {
 	type AdjustLineInput,
@@ -78,6 +81,7 @@ import {
 	type CasRetryOptions,
 	type CasStep,
 	casDone,
+	isStorageContentionError,
 	withCasRetry,
 } from "./cas-retry.js";
 import {
@@ -441,7 +445,8 @@ export class EmdashCartStore implements CartStore {
 		// observable apart — and the UNCHANGED `state === "active"` predicate IS the
 		// CAS that makes the stamp write-once. A replay finds the cart already
 		// terminal and returns false (success for the same order). `checked_out` is
-		// terminal: nothing here flips a cart back.
+		// terminal: nothing here flips a cart back. `holdExpiresAt` is NOT cleared
+		// here — see `#narrowCheckedOut`, which retires it once nothing is owed.
 		return this.#casCart<boolean>("checkout", async () => {
 			const current = await this.#carts.getVersioned(cartId);
 			if (current === null) return casDone(false);
@@ -472,8 +477,13 @@ export class EmdashCartStore implements CartStore {
 				limit: EXPIRY_PAGE_SIZE,
 				cursor,
 			});
-			for (const { data } of result.items) {
-				await this.#collectExpired(normalizeCartDoc(data), now, cutoff, found);
+			for (const { id, data } of result.items) {
+				const doc = normalizeCartDoc(data);
+				// A checked-out cart is narrowed to what it still OWES before its arms
+				// are re-applied — see `#narrowCheckedOut` for why that, and not a
+				// `state: "active"` filter on this query, is the fix.
+				const owed = doc.state === "checked_out" ? await this.#narrowOrWhole(id, doc) : doc;
+				if (owed !== null) await this.#collectExpired(owed, now, cutoff, found);
 			}
 			if (!result.hasMore || result.cursor === undefined) break;
 			cursor = result.cursor;
@@ -631,6 +641,114 @@ export class EmdashCartStore implements CartStore {
 			});
 			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * Retire a checked-out cart's settled lines from the candidate index, and
+	 * return the cart as the sweep should see it: only what it still OWES.
+	 *
+	 * `checkout` leaves `holdExpiresAt` behind, and every order line's hold is
+	 * `adopted` by then (the flip lands only after `adoptMany` lost nothing), so
+	 * without this every checked-out cart in history stays a candidate forever,
+	 * each line re-listed per tick for `#claimExpiry` to refuse at a read cost per
+	 * line — a sweep that grows with lifetime order lines until it eats a
+	 * per-invocation query budget and starves every cron leg after it.
+	 *
+	 * NOT a `state: "active"` filter on the query, and NOT clearing the deadline
+	 * in `checkout`, because a checked-out cart can still own a `held` hold this
+	 * sweep is the ONLY reaper of (the inventory aggregate has no TTL of its own):
+	 * a line that raced the checkout — its add read `active` in `guardActiveCart`
+	 * and landed after the order snapshotted the cart, so no order adopted it — and
+	 * an add that claimed and reserved but crashed before its line write. Either
+	 * filter would orphan that stock. So the deadline is RECOMPUTED over the
+	 * lines still owed: a line whose hold is live and `held`, a line carrying an
+	 * expiry token (a claimed expiry is owed its completion even once its hold is
+	 * gone), a line with no `reserveKey` (defensive only: the field is null exactly
+	 * when `reservationId` is, so such a line is skipped above), and every
+	 * outstanding `add` claim, exactly as `computeHoldExpiresAt` counts them. A
+	 * hold that can no longer be FOUND is dropped, not kept: a hold is pruned from
+	 * the inventory document only after its reservation went terminal, so a
+	 * missing hold is a settled one. A cart that owes nothing drops to `null` and
+	 * out of the index.
+	 *
+	 * Safe to persist because "not `held`" is PERMANENT for a reservation — held →
+	 * adopted/released/committed never runs backwards — so a line excluded here can
+	 * never become the cart's to reap again. And it never widens the sweep: it only
+	 * removes lines `#claimExpiry` would have refused, so it cannot release a hold
+	 * an order adopted or is entitled to adopt. A write that adds a line to the
+	 * cart after the read loses this compare-and-set (the revision moved) and is
+	 * re-read; a later write that recomputes the full deadline (an expiry
+	 * completion) re-arms the cart for exactly one more narrowing pass.
+	 *
+	 * Self-healing, so it needs no backfill: every checked-out cart already in
+	 * the data is narrowed the first time the sweep fetches it, and then costs
+	 * nothing on later ticks. It is done here rather than in `checkout` to keep a
+	 * hold read per line off the checkout path.
+	 */
+	async #narrowCheckedOut(cartId: string): Promise<CartDoc | null> {
+		return this.#casCart<CartDoc | null>("listExpired.narrow", async () => {
+			const current = await this.#carts.getVersioned(cartId);
+			if (current === null) return casDone(null);
+			const doc = normalizeCartDoc(current.value);
+			if (doc.state !== "checked_out") return casDone(doc); // cannot happen: terminal
+
+			const lines: Record<string, CartLineDoc> = {};
+			for (const [key, line] of Object.entries(doc.lines)) {
+				if (line.reservationId === null) continue; // never a candidate
+				if (line.expiring === undefined && line.reserveKey !== null) {
+					const hold = await this.#holdOf(line.sku, line.reserveKey, line.reservationId);
+					if (hold?.state !== "held") continue; // settled for good
+				}
+				lines[key] = line;
+			}
+			// An outstanding `add` claim is owed UNLESS its reserve was DECIDED with no
+			// reservation: an OUT_OF_STOCK add leaves its claim incomplete forever (the
+			// domain never completes a failed add), yet a terminal reserve key is
+			// once-only — a replay returns the recorded answer — so that claim can
+			// never mint a hold. It is the same fact `#collectExpired` reads to skip
+			// it; left in, it would pin the deadline at its `claimedAt` and keep the
+			// cart listed on every tick. A claim with NO key document (reserve not
+			// yet run, or still in flight) or a `claimed`/minted one may still own
+			// stock, so it stays — the ledger itself is never edited here.
+			const mutations: CartDoc["mutations"] = {};
+			for (const [key, record] of Object.entries(doc.mutations)) {
+				if (record.kind === "add" && !record.completed && record.abandoned !== true) {
+					const reserve = await this.#reservationKeys.get(key);
+					if (reserve?.state === "terminal" && reserve.reservationId === null) continue;
+				}
+				mutations[key] = record;
+			}
+			const holdExpiresAt = computeHoldExpiresAt({ lines, mutations });
+			const owed: CartDoc = { ...doc, lines, mutations, holdExpiresAt };
+			if (holdExpiresAt === doc.holdExpiresAt) return casDone(owed);
+			// Only the index moves: the lines stay on the document, which is the
+			// buyer's record of the cart that became the order.
+			const written = await this.#carts.compareAndSet(cartId, current.revision, {
+				...doc,
+				holdExpiresAt,
+			});
+			return written.applied ? casDone(owed) : CAS_RETRY;
+		});
+	}
+
+	/**
+	 * `#narrowCheckedOut`, falling back to the cart AS FETCHED when the narrowing
+	 * cannot land. Narrowing is only an optimization, and the fallback is exactly
+	 * the listing this store made before it existed — every arm re-checked by
+	 * `#claimExpiry` — so it can list more, never less. Without it one contended
+	 * checked-out cart would abort the whole listing and cost every OTHER cart on
+	 * the tick its reaping. Only `StorageContentionError` (the CAS budget spent,
+	 * nothing written) is absorbed: it is a retry-next-tick condition, not a
+	 * fault, and the store raises it by type. Anything else is a real fault and
+	 * still fails the sweep loudly.
+	 */
+	async #narrowOrWhole(cartId: string, fetched: CartDoc): Promise<CartDoc | null> {
+		try {
+			return await this.#narrowCheckedOut(cartId);
+		} catch (err) {
+			if (!isStorageContentionError(err)) throw err;
+			return fetched;
+		}
 	}
 
 	/** Re-apply the SQL's two arms to one fetched cart document. */
