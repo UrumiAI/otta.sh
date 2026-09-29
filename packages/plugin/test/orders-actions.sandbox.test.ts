@@ -1029,4 +1029,34 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 		expect(keys[0]).toBe(`admin-refund:${id}:500:0`);
 		expect(keys[1]).not.toBe(keys[0]);
 	});
+
+	test("a rejection of a DIFFERENT refund on the order does not move a retryable refund onto a new key", async () => {
+		// $5.00 hits a 429 and stays reserved under `…:500:0`; a $3.00 refund on the
+		// same order is then rejected by Stripe (voided). Retrying the $5.00 must
+		// RESUME its own reservation, not mint a new one beside it.
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429, 400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Temporary problem");
+		const three = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "300",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(three.notice?.title).toBe("Refund rejected");
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:300:0`,
+			`admin-refund:${id}:500:0`,
+		]);
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger.map((r) => [r.status, r.amount]).sort()).toEqual([
+			["recorded", 500],
+			["voided", 300],
+		]);
+	});
 });

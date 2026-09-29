@@ -316,5 +316,9 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		// The audit row stays on the wire, marked for what it is — never a bare row
 		// a console would list as money returned.
 		expect(summary?.refunds.map((r) => r.status)).toEqual(["voided"]);
+		// Each row names the key it was attempted under — how the console tells
+		// THIS refund's rejected attempts from another refund's on the same order,
+		// and what an operator searches for in the provider's request logs.
+		expect(summary?.refunds.map((r) => r.idempotencyKey)).toEqual([`${id}-r1`]);
 	});
 });

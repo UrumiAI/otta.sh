@@ -50,8 +50,9 @@ interface Recorder {
 	/** Capacity held by attempts that are NOT finalized (`reserved`/`unverified`):
 	 *  counted in the active `refundedTotalCents`, never in the finalized total. */
 	inFlight: number;
-	/** How many `voided` attempts the ledger carries. */
-	voided: number;
+	/** The idempotency keys of the `voided` attempts the ledger carries — this
+	 *  refund's own, or another refund's on the same order. */
+	voidedKeys: string[];
 }
 
 /**
@@ -70,11 +71,11 @@ function refuse(method: string) {
 
 function recorder(): Recorder {
 	const keys: string[] = [];
-	const state = { refundedSoFar: 0, inFlight: 0, voided: 0 };
+	const state = { refundedSoFar: 0, inFlight: 0, voidedKeys: [] as string[] };
 	const client: AdminOrdersSurface = {
 		getRefunds: (orderId: string): Promise<RefundsSummaryWire | null> => {
 			expect(orderId).toBe(ORDER_ID);
-			const voidedRows = Array.from({ length: state.voided }, (_, i) => ({
+			const voidedRows = state.voidedKeys.map((key, i) => ({
 				id: `voided-${String(i)}`,
 				orderId: ORDER_ID,
 				amountCents: 500,
@@ -86,6 +87,7 @@ function recorder(): Recorder {
 				refundedBy: "carol",
 				createdAt: "2026-01-01T00:00:00.000Z",
 				status: "voided",
+				idempotencyKey: key,
 			}));
 			return Promise.resolve({
 				refunds: voidedRows,
@@ -143,11 +145,11 @@ function recorder(): Recorder {
 		set inFlight(value: number) {
 			state.inFlight = value;
 		},
-		get voided() {
-			return state.voided;
+		get voidedKeys() {
+			return state.voidedKeys;
 		},
-		set voided(value: number) {
-			state.voided = value;
+		set voidedKeys(value: string[]) {
+			state.voidedKeys = value;
 		},
 	};
 }
@@ -242,13 +244,32 @@ describe("the refund idempotency key (F-2a)", () => {
 		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0`]);
 	});
 
-	test("a VOIDED attempt spends its key, so a deliberate retry derives a new one", async () => {
+	test("a VOIDED attempt of THIS refund spends its key, so a deliberate retry derives a new one", async () => {
 		// A voided key answers its own rejection forever (the domain replays it), so
 		// the retry after a definite provider rejection must not reuse it. The
-		// count of voided attempts is read from the LIVE ledger, not the payload.
+		// count is of THIS refund's voided attempts, read from the LIVE ledger.
 		const rec = recorder();
-		rec.voided = 1;
+		rec.voidedKeys = [`admin-refund:${ORDER_ID}:500:0`];
 		await refund(rec.client, payloadFor("500", "0"));
-		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0:v1`]);
+		// ...and a second rejection of the retry moves it on again.
+		rec.voidedKeys = [`admin-refund:${ORDER_ID}:500:0`, `admin-refund:${ORDER_ID}:500:0:v1`];
+		await refund(rec.client, payloadFor("500", "0"));
+		expect(rec.keys).toEqual([
+			`admin-refund:${ORDER_ID}:500:0:v1`,
+			`admin-refund:${ORDER_ID}:500:0:v2`,
+		]);
+	});
+
+	test("a voided attempt of a DIFFERENT refund on the same order does not change this refund's key", async () => {
+		// A $5.00 refund that ended RETRYABLE is still reserved under `…:500:0`.
+		// A $3.00 refund on the same order is rejected (voided), and so is a
+		// $50.00 one whose key merely STARTS like this one's. Retrying the $5.00
+		// must still reach `…:500:0` and resume its reservation — a fresh key would
+		// orphan it and could refund twice.
+		const rec = recorder();
+		rec.inFlight = 500;
+		rec.voidedKeys = [`admin-refund:${ORDER_ID}:300:0`, `admin-refund:${ORDER_ID}:5000:0`];
+		await refund(rec.client, payloadFor("500", "0"));
+		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0`]);
 	});
 });
