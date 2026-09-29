@@ -6,8 +6,8 @@
  * twelve methods, the same argument shapes, the same RETURN VALUES — including
  * every field the `*Wire` types carry — with the `@otta-sh/domain` use-cases
  * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
- * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
- * never touched.
+ * instead of a commerce service. Nothing here reaches for egress itself; the one
+ * outbound call a refund can make belongs to the injected payment gateway.
  *
  * NO FIELD IS NARROWED, and that is a rule rather than a preference. The React
  * admin screens consume these results through `console-api.ts` STRUCTURAL
@@ -25,8 +25,8 @@
  *  - `shippingAddress` is the order's immutable checkout SNAPSHOT (ADR-0009) and
  *    is read off the order row — never re-read from the mutable profile address
  *    book, which appears (separately) on the customer-context panel;
- *  - `RefundsSummaryWire.refundedTotalCents` is the watermark the refund action
- *    reads, and `refundable` is the gateway's HONEST capability — neither is
+ *  - `RefundsSummaryWire.finalizedTotalCents` is the watermark the refund action
+ *    reads (`refundedTotalCents` is the ACTIVE sum the remainder comes from), and `refundable` is the gateway's HONEST capability — neither is
  *    softened;
  *  - `updatedAt` doubles as the optimistic-concurrency token elsewhere in the
  *    admin surface, so an order's stamps pass through as the store spells them.
@@ -62,17 +62,17 @@
  *    are real `@otta-sh/domain` exports; the COMPOSITION lived in the route, and
  *    now lives here too.
  *
- * TWO RECORDED DIVERGENCES, neither of them accidental:
- *  - NO GATEWAYS ARE COMPOSED YET (INC-C1/C3 move the payment adapters). The
- *    refund POST therefore reaches the route's own "no gateway wired for this
- *    order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`. The whole
- *    path in front of it — input bounds, the REQUIRED idempotency key, the order
- *    lookup — is ported faithfully, so when a gateway map arrives the one line
- *    that changes is where it comes from.
- *  - a refund ROW here carries no `status`. The service's `serializeRefund` emits
- *    one; the plugin's `RefundWire` has never declared it and no console reads
- *    it, so this tier matches the PLUGIN's wire type rather than adding a field
- *    the type says does not exist.
+ * THE GATEWAYS ARE INJECTED, never resolved here. The composition root
+ * (`makeAdminClients`) resolves them from kv exactly as `makeCommerceClient` does
+ * and passes them in through `options.gateways`; a method with no gateway in that
+ * map is the honest "no gateway wired for this order's method", and the refund
+ * POST answers it with `409 REFUND_GATEWAY_UNAVAILABLE` (fail-closed). The only
+ * egress a refund makes is the gateway's own, over the `ctx.http` the root bound
+ * it to — this class never touches `ctx.http` itself.
+ *
+ * A REFUND ROW CARRIES ITS `status`, as the service's `serializeRefund` did: a
+ * `voided` or in-flight attempt is on the ledger for audit, and a console that
+ * could not tell it from a finalized refund would list money that never moved.
  *
  * SEARCH IS PREFIX-ONLY ON THIS TIER, and that is the ADR-0019 §6 floor rather
  * than a gap: id PREFIX or folded buyerRef PREFIX or EXACT folded line sku. A SQL
@@ -104,6 +104,7 @@ import {
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
 	sumCapturedPayments,
+	sumFinalizedRefunds,
 	sumRefunds,
 	transitionOrder as transitionOrderUseCase,
 	cents as toCents,
@@ -167,26 +168,31 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
+export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+}
+
 export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	readonly #stores: InProcessCommerceStores;
 
 	/**
 	 * The payment gateways keyed by method (ADR-0008), exactly as
-	 * `AdminRoutesDeps.gateways` carries them — EMPTY until the payment adapters
-	 * move in-process (INC-C1/C3). An empty map is not a stub: it is the honest
-	 * "no gateway is wired for this order's method", and the refund POST answers
-	 * it with the route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than
-	 * pretending money could move.
+	 * `AdminRoutesDeps.gateways` carries them, taken from `options.gateways`. A
+	 * method missing from the map is not a stub: it is the honest "no gateway is
+	 * wired for this order's method", and the refund POST answers it with the
+	 * route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than pretending money
+	 * could move.
 	 */
-	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
+	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console route already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
+	constructor(ctx: PluginContext, options: InProcessAdminOrdersClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#gateways = options.gateways ?? {};
 	}
 
 	/**
@@ -446,17 +452,19 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const capturedTotal = sumCapturedPayments(payments);
 		const ceiling = computeRefundCeiling(capturedTotal, order.totals.total);
 		const refundedTotal = sumRefunds(refunds);
+		const finalizedTotal = sumFinalizedRefunds(refunds);
 		const remaining = Math.max(0, ceiling - refundedTotal);
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
-		// Never a button that silently no-ops — and with no gateway composed on this
-		// tier yet, false is the truth rather than a placeholder.
+		// Never a button that silently no-ops — and with no gateway composed for the
+		// order's method, false is the truth rather than a placeholder.
 		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
 			capturedTotalCents: capturedTotal,
 			refundedTotalCents: refundedTotal,
+			finalizedTotalCents: finalizedTotal,
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
@@ -469,12 +477,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
-	 * (mirrors restock). The order lookup comes next, then the gateway: with no
-	 * gateway map composed on this tier yet (INC-C1/C3), every well-formed call
-	 * against a real order lands on the route's own
-	 * `409 REFUND_GATEWAY_UNAVAILABLE`. The use-case call below is the path that
-	 * lights up the moment a gateway is wired — it is written now so the contract
-	 * around it is the same one the HTTP tier answers.
+	 * (mirrors restock). The order lookup comes next, then the gateway: an order
+	 * whose method has no gateway in the injected map lands on the route's own
+	 * `409 REFUND_GATEWAY_UNAVAILABLE`. Otherwise the domain use-case decides —
+	 * a `refundable` gateway issues at the provider (reserve → issue → finalize),
+	 * a non-refundable one records a manual, off-platform refund.
 	 */
 	async refundOrder(
 		orderId: string,
@@ -752,10 +759,8 @@ function toTimelineWire(timeline: OrderTimeline): OrderTimelineWire {
 	};
 }
 
-/** `serializeRefund`'s twin, minus `status`: the plugin's `RefundWire` has never
- *  declared that field and no console reads it, so this tier matches the PLUGIN's
- *  wire type rather than adding a key the type says does not exist. Money is an
- *  integer minor `amountCents` + an ISO-4217 currency — never a float. */
+/** `serializeRefund`'s twin, `status` included (see `RefundWire.status`). Money is
+ *  an integer minor `amountCents` + an ISO-4217 currency — never a float. */
 function toRefundWire(refund: RefundRecord): RefundWire {
 	return {
 		id: refund.id,
@@ -770,6 +775,8 @@ function toRefundWire(refund: RefundRecord): RefundWire {
 		reason: refund.reason,
 		refundedBy: refund.refundedBy,
 		createdAt: refund.createdAt,
+		status: refund.status,
+		idempotencyKey: refund.idempotencyKey,
 	};
 }
 

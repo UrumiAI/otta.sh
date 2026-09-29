@@ -588,6 +588,24 @@ function staleLedgerNotice(
  *    The watermark makes two DELIBERATE identical refunds differ (so both apply)
  *    while a double-click of the same control dedupes.
  *
+ * THE WATERMARK IS THE FINALIZED TOTAL (issue #303 review), never the active
+ * one. A gateway attempt that ended RETRYABLE or UNVERIFIED leaves a
+ * `reserved`/`unverified` row that holds ceiling capacity but moved no money
+ * yet. Were it counted, the operator's "try again" would be refused as "someone
+ * else refunded this order", the same-key RESUME the domain offers would be
+ * unreachable, and a re-entered refund under a new key would leave the orphan
+ * reservation holding capacity for good. Counting only finalized money keeps the
+ * retry on the SAME key: RETRYABLE resumes and issues once, UNVERIFIED answers
+ * "status unknown" again without calling the provider.
+ *
+ * A VOIDED ATTEMPT SPENDS ITS KEY. The domain replays a voided key's rejection,
+ * so the key gains `:v<n>` — the count of THIS refund's voided attempts on the
+ * LIVE ledger, i.e. voided rows whose key is the base key or `<base>:v<k>` —
+ * once one exists. A deliberate retry after a definite provider rejection is
+ * then a new intent. Another refund's rejection on the same order never counts:
+ * it would move a retryable refund off the key its reservation is held under,
+ * orphaning that reservation and risking a second issue.
+ *
  * They compose: DA-3a rejects the stale submit before the key is ever derived,
  * which matters because `refundOrder` resolves a duplicate by KEY ALONE with no
  * amount comparison.
@@ -631,14 +649,20 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		});
 	}
 	const liveCur = live.currency.length > 0 ? live.currency : currency;
-	if (live.refundedTotalCents !== observedSoFar) {
+	if (live.finalizedTotalCents !== observedSoFar) {
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
 		// drawn and this click. This is the ONLY window now checked server-side, and
 		// the surface's own pre-dialog validation cannot see it.
 		return applied(staleLedgerNotice(amountCents, live, liveCur));
 	}
 	// The observed watermark is the third key component (F-2a) — NOT a nonce.
-	const key = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
+	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
+	const voidedAttempts = live.refunds.filter(
+		(r) =>
+			r.status === "voided" &&
+			(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
+	).length;
+	const key = voidedAttempts > 0 ? `${baseKey}:v${String(voidedAttempts)}` : baseKey;
 	const result = await client.refundOrder(
 		orderId,
 		{

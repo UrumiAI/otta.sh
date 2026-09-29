@@ -52,6 +52,11 @@ export {
 } from "./refund-order-contract.js";
 export { orderCancellationContract } from "./order-cancellation-contract.js";
 export {
+	paymentDeclineContract,
+	type PaymentDeclineContractOptions,
+	type PaymentDeclineHarness,
+} from "./payment-decline-contract.js";
+export {
 	orderTimelineContract,
 	type OrderTimelineHarness,
 	type OrderTimelineContractOptions,

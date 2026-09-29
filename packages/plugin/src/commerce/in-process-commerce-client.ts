@@ -67,6 +67,7 @@ import {
 	money,
 	orderId as toOrderId,
 	productId as toProductId,
+	quoteShippingOptions,
 	removeLine,
 	requestLogin,
 	SkuConflictError,
@@ -97,6 +98,7 @@ import {
 	type ProductVariant,
 	type ProductVariantSummary,
 	type TotalsLineInput,
+	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
 	AddressWire,
@@ -118,8 +120,11 @@ import type {
 	ProductVariantWire,
 	PublicOrderResult,
 	PublicOrderWire,
+	QuoteDestinationWire,
 	QuoteRequestWire,
 	QuoteResult,
+	ShippingOptionsRequestWire,
+	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
@@ -128,11 +133,14 @@ import type {
 import { loginLinkUrl } from "../storefront/login-link.js";
 import type { PluginContext } from "../types.js";
 import {
+	CommerceInputError,
+	COUPON_CODE_MAX,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
 	requireBoundedText,
 	requireCurrencyCode,
+	requireDestination,
 	requireIdToken,
 	requireIdempotencyKey,
 	requireMoney,
@@ -817,11 +825,13 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	async quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult> {
 		requireIdToken("cartId", input.cartId);
-		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		refuseSuppliedZone(input);
+		if (input.destination !== undefined) requireDestination(input.destination);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		const cart = await this.#stores.cartStore.get(input.cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -833,6 +843,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				.map((id) => toProductId(id)),
 		);
 		const lines: TotalsLineInput[] = [];
+		let requiresShipping = false;
 		for (const line of cart.lines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
@@ -842,6 +853,8 @@ export class InProcessCommerceClient implements CommerceClient {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
+			// The same classification `createOrderFromCart` snapshots onto the line.
+			if (row.productKind === "physical") requiresShipping = true;
 			lines.push({
 				unitPriceCents: row.price.amount,
 				qty: line.qty,
@@ -859,15 +872,20 @@ export class InProcessCommerceClient implements CommerceClient {
 			{
 				currency: cart.currency,
 				lines,
-				...(input.shippingZoneId !== undefined ? { zoneId: input.shippingZoneId } : {}),
+				requiresShipping,
+				...(input.destination !== undefined ? { destination: input.destination } : {}),
 				...(input.shippingMethodId !== undefined ? { methodId: input.shippingMethodId } : {}),
 				...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			},
 		);
 		if (!quote.ok) return { ok: false, reason: quote.reason };
 		const breakdown = quote.breakdown;
+		logZoneTieBreak(quote.destination);
 		return {
 			ok: true,
+			requiresShipping,
+			destination: serializeDestination(quote.destination),
+			discountedSubtotalCents: breakdown.subtotalCents - breakdown.discountCents,
 			breakdown: {
 				currency: breakdown.currency,
 				subtotalCents: breakdown.subtotalCents,
@@ -898,18 +916,18 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireIdToken("cartId", input.cartId);
 		requireIdempotencyKey(idempotencyKey);
 		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
-		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
 			buyerRef: input.buyerRef,
 			paymentMethod: input.paymentMethod,
-			...(input.shippingZoneId !== undefined ? { shippingZoneId: input.shippingZoneId } : {}),
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			...(input.shippingAddress !== undefined ? { shippingAddress: input.shippingAddress } : {}),
@@ -920,6 +938,32 @@ export class InProcessCommerceClient implements CommerceClient {
 			order: serializePublicOrder(result.order),
 			intent: serializeIntent(result.intent),
 		};
+	}
+
+	/**
+	 * The priced delivery options of ONE zone — the one the summary's quote
+	 * matched. Validated like every other input: a malformed zone id, currency
+	 * or subtotal is a programmer error (the routes only ever pass the quote's
+	 * own reply), never a silent empty list.
+	 */
+	async listShippingOptions(input: ShippingOptionsRequestWire): Promise<ShippingOptionWire[]> {
+		requireIdToken("zoneId", input.zoneId);
+		requireCurrencyCode("currency", input.currency);
+		requireNonNegativeInteger("discountedSubtotalCents", input.discountedSubtotalCents);
+		const options = await quoteShippingOptions(
+			{ shippingRules: this.#stores.shippingRules },
+			{
+				zoneId: input.zoneId,
+				currency: toCurrency(input.currency),
+				discountedSubtotal: cents(input.discountedSubtotalCents),
+			},
+		);
+		return options.map((option) => ({
+			methodId: option.methodId,
+			name: option.name,
+			type: option.type,
+			amountCents: option.amountCents,
+		}));
 	}
 
 	/** The capability read: the order id alone is the credential, so the reply is
@@ -1142,6 +1186,7 @@ function serializePublicOrder(order: Order): PublicOrderWire {
 			totalCents: order.totals.total,
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment:
@@ -1166,6 +1211,63 @@ function shippingZoneIdOf(snapshot: unknown): string | null {
 	if (snapshot === null || typeof snapshot !== "object") return null;
 	const zoneId = (snapshot as { zoneId?: unknown }).zoneId;
 	return typeof zoneId === "string" ? zoneId : null;
+}
+
+/**
+ * ADR-0021 Decision 1: the zone is derived, never supplied. The wire types
+ * carry no zone field, so reaching here means a cast past the type — a
+ * programmer error, and one no buyer can reach (the routes build requests
+ * through `quoteSelection`). Refused loudly rather than silently ignored, so a
+ * caller that still sends one finds out.
+ */
+function refuseSuppliedZone(input: object): void {
+	if ("shippingZoneId" in input) {
+		throw new CommerceInputError(
+			"shippingZoneId",
+			"is not accepted: the shipping/tax zone is derived from the address (ADR-0021)",
+		);
+	}
+}
+
+/** The quote's zone resolution → the wire. Only a resolution the quote can
+ *  SUCCEED with reaches here (unmatched / region-required are refusals). */
+function serializeDestination(resolution: ZoneResolution): QuoteDestinationWire {
+	if (resolution.status === "matched") {
+		return {
+			status: "matched",
+			zoneId: resolution.zoneId,
+			matchedRegion: resolution.matchedRegion,
+		};
+	}
+	const status =
+		resolution.status === "not_required" || resolution.status === "no_zones"
+			? resolution.status
+			: "address_needed";
+	return { status, zoneId: null, matchedRegion: null };
+}
+
+/**
+ * ADR-0021 Decision 10: two zones matched at the same specificity (an overlap
+ * the admin refuses, so a store that has one predates that check). The lowest
+ * id priced it; the tie is logged with zone ids and the matched code ONLY — no
+ * address, no cart id.
+ */
+function logZoneTieBreak(resolution: ZoneResolution): void {
+	if (resolution.status !== "matched" || resolution.ambiguousWith.length === 0) return;
+	console.warn("[otta] shipping zone tie-break", {
+		zoneId: resolution.zoneId,
+		ambiguousWith: resolution.ambiguousWith,
+		matchedRegion: resolution.matchedRegion,
+	});
+}
+
+/** The shipping method the order was priced with, read off the same snapshot.
+ *  Display-only, like the zone: it decides whether the confirmation page may
+ *  state the shipping charge as money. */
+function shippingMethodIdOf(snapshot: unknown): string | null {
+	if (snapshot === null || typeof snapshot !== "object") return null;
+	const methodId = (snapshot as { methodId?: unknown }).methodId;
+	return typeof methodId === "string" && methodId.length > 0 ? methodId : null;
 }
 
 function serializeAddress(address: Address): AddressWire {

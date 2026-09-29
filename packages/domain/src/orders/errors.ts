@@ -13,12 +13,25 @@ export type CreateOrderFailure =
 	/** A line's `product_commerce` price currency ≠ the cart currency (review G5)
 	 *  — summing it into the cart-currency total would mix monies. */
 	| "CURRENCY_MISMATCH"
-	/** The submitted shipping address (ADR-0009) failed shape validation — a
-	 *  required field (name/line1/city/postalCode/country) was empty, or a field
-	 *  exceeded its bound. NOT the "physical order requires an address" rule: that
-	 *  enforcement is deferred until the storefront UI collects it (ADR-0009
-	 *  sequencing), so this slice ships capture-optional. */
+	/** The submitted shipping address (ADR-0009) failed validation — a required
+	 *  field (name/line1/city/postalCode/country) was empty, a field exceeded its
+	 *  bound, or the country is not an ISO 3166-1 alpha-2 code (ADR-0021). */
 	| "INVALID_SHIPPING_ADDRESS"
+	// ADR-0021 — the zone is derived from the address:
+	/** A cart with a physical line, in a store with zones, and no address. */
+	| "MISSING_SHIPPING_ADDRESS"
+	/** Zones exist and the address matches none of them ("we don't ship there"). */
+	| "SHIPPING_ZONE_NOT_MATCHED"
+	/** A non-blank region is not a real ISO 3166-2 subdivision of the country —
+	 *  or, for a cart that ships, it is blank where the country has a
+	 *  subdivision-level zone. */
+	| "SHIPPING_REGION_CODE_REQUIRED"
+	/** The chosen method does not belong to the zone the address matched. */
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
+	/** The address matched a zone, and no method was chosen. */
+	| "SHIPPING_METHOD_REQUIRED"
+	/** A method was chosen for a cart with nothing to ship. */
+	| "SHIPPING_METHOD_NOT_APPLICABLE"
 	/**
 	 * The gateway's `createIntent` failed (a live provider call refused or could
 	 * not be reached — a thrown `PaymentIntentError`). The `pending` order row

@@ -19,7 +19,7 @@ const SHIP_TO: OrderAddressInput = {
 	line1: "12 Analytical Way",
 	line2: "Unit 4",
 	city: "London",
-	region: "Greater London",
+	region: "LND",
 	postalCode: "EC1A 1BB",
 	country: "GB",
 	email: "ada@example.com",
@@ -534,7 +534,7 @@ describe("createOrderFromCart", () => {
 			line1: "12 Analytical Way",
 			line2: "Unit 4",
 			city: "London",
-			region: "Greater London",
+			region: "LND",
 			postalCode: "EC1A 1BB",
 			country: "GB",
 			email: "ada@example.com",
@@ -544,13 +544,14 @@ describe("createOrderFromCart", () => {
 		expect((await h.orderStore.getById(res.order.id))?.shippingAddress?.name).toBe("Ada Lovelace");
 	});
 
-	test("an order created without a shipping address has shippingAddress null (capture is optional this slice)", async () => {
+	test("an order created without a shipping address has shippingAddress null (a store with no zones)", async () => {
 		const cartId = await seededCart();
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
-		// A PHYSICAL order with no address is still accepted — the required-for-physical
-		// enforcement is deferred until the storefront UI collects it (ADR-0009).
+		// A PHYSICAL order with no address is accepted in a store with NO zones:
+		// nothing prices by it (ADR-0021 Decision 4). With zones it is refused
+		// MISSING_SHIPPING_ADDRESS — see create-order-zone-derivation.test.ts.
 		expect(res.order.shippingAddress).toBeNull();
 	});
 

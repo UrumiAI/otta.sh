@@ -198,10 +198,6 @@ export class InMemoryOrderStore implements OrderStore {
 		return this.#guardedFlip(orderId, "pending", "paid");
 	}
 
-	async markFailed(orderId: OrderId): Promise<boolean> {
-		return this.#guardedFlip(orderId, "pending", "failed");
-	}
-
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined) return false;
@@ -826,10 +822,10 @@ export class InMemoryOrderStore implements OrderStore {
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
 		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
-		// no modeled who (markPaid/markFailed/transition).
+		// no modeled who (markPaid/transition).
 		this.#appendEvent(orderId, from, to, null);
-		// markPaid/markFailed pass no explicit flag → enqueue iff the target state
-		// has a template (paid ⇒ yes, failed ⇒ no); `transition` passes it explicitly.
+		// markPaid passes no explicit flag → enqueue iff the target state has a
+		// template (paid ⇒ yes); `transition` passes it explicitly.
 		const shouldEnqueue = enqueue ?? emailTemplateForState(to) !== null;
 		if (shouldEnqueue) this.#enqueue(orderId, to);
 		return true;
