@@ -1,0 +1,224 @@
+---
+/**
+ * GET /account/orders/<id> — one of the signed-in customer's orders (issue #306).
+ *
+ * Read through `storefront/account/order`, which resolves the customer from the
+ * session and answers NOT_FOUND for an order that is not theirs — the same
+ * answer as for one that does not exist, so this page cannot confirm that
+ * someone else's order id is real. No session ⇒ 303 to /account/login;
+ * `private, no-store` like the list.
+ *
+ * The lines are the purchase-time snapshot (title and price as bought), which is
+ * what a receipt must show.
+ */
+import { ACCOUNT_ORDER_ROUTE, type AccountOrderResult } from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Ledger from "../../../components/Ledger.astro";
+import Notice from "../../../components/Notice.astro";
+import Base from "../../../layouts/Base.astro";
+import {
+	ACCOUNT_NO_STORE,
+	currentSessionToken,
+	orderMoney,
+	orderStateLabel,
+} from "../../../lib/account.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+import { dispatchOttaRoute } from "../../../lib/otta-api.js";
+
+Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+
+const sessionToken = currentSessionToken(Astro.cookies);
+if (sessionToken === undefined) return Astro.redirect("/account/login", 303);
+
+const { id } = Astro.params;
+const result =
+	id === undefined
+		? null
+		: await dispatchOttaRoute<AccountOrderResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				ACCOUNT_ORDER_ROUTE,
+				{ sessionToken, orderId: id },
+				Astro.url,
+			);
+if (result !== null && !result.ok && "redirectTo" in result) {
+	return Astro.redirect("/account/login", 303);
+}
+
+const order = result !== null && result.ok ? result.order : null;
+const notFound = result !== null && !result.ok && "error" in result && result.error === "NOT_FOUND";
+if (order === null) Astro.response.status = notFound ? 404 : 503;
+
+const ledgerRows =
+	order?.lines.map((line) => ({
+		title: line.title,
+		sku: line.sku,
+		qty: line.quantity,
+		money: orderMoney(line.unitPriceCents * line.quantity, line.currency),
+	})) ?? [];
+
+const totals =
+	order === null
+		? []
+		: [
+				["Subtotal", order.totals.subtotalCents],
+				["Discount", order.totals.discountCents],
+				["Shipping", order.totals.shippingCents],
+				["Tax", order.totals.taxCents],
+			].map(([label, amount]) => ({
+				label: label as string,
+				value: orderMoney(amount as number, order.totals.currency),
+			}));
+---
+
+<Base title={order === null ? "Order" : `Order ${order.id}`} currency={order?.currency ?? null}>
+	<p class="back">
+		<a href="/account/orders">← Your orders</a>
+	</p>
+
+	{
+		order === null ? (
+			<>
+				<h1 class="title">Order</h1>
+				<div class="notice-slot" role="alert">
+					<Notice>
+						{cartErrorMessage(notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE")}
+					</Notice>
+				</div>
+			</>
+		) : (
+			<>
+				<h1 class="title">
+					Order <span class="u-mono ref">{order.id}</span>
+				</h1>
+				<p class="state">{orderStateLabel(order.state)}</p>
+
+				<div class="cols">
+					<section class="panel">
+						<div class="panel-head">
+							<h2 class="u-label head-label">Items</h2>
+						</div>
+						<Ledger rows={ledgerRows} />
+					</section>
+
+					<section class="panel">
+						<div class="panel-head">
+							<h2 class="u-label head-label">Totals</h2>
+						</div>
+						<dl class="totals">
+							{totals.map((row) => (
+								<div class="row">
+									<dt>{row.label}</dt>
+									<dd class="u-mono">{row.value}</dd>
+								</div>
+							))}
+							<div class="row grand">
+								<dt>Total</dt>
+								<dd class="u-mono">
+									{orderMoney(order.totals.totalCents, order.totals.currency)}
+								</dd>
+							</div>
+						</dl>
+					</section>
+				</div>
+			</>
+		)
+	}
+</Base>
+
+<style>
+	.back {
+		margin: 0 0 1.5rem;
+		font-size: 0.8125rem;
+	}
+	.back a {
+		color: var(--u-mute);
+	}
+	.back a:hover {
+		color: var(--u-ink);
+	}
+
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 0.75rem;
+	}
+	.ref {
+		font-size: 0.6em;
+		overflow-wrap: anywhere;
+	}
+
+	.state {
+		margin: 0 0 2rem;
+		font-size: 0.875rem;
+		color: var(--u-mute);
+	}
+
+	.notice-slot {
+		margin-bottom: 1.5rem;
+	}
+
+	.cols {
+		display: grid;
+		grid-template-columns: 1.15fr 1fr;
+		gap: 3rem;
+		align-items: start;
+	}
+
+	.panel {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		min-width: 0;
+	}
+
+	.panel-head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding-bottom: 0.75rem;
+		border-bottom: var(--u-hair);
+	}
+	.head-label {
+		margin: 0;
+		color: var(--u-ink);
+	}
+
+	.totals {
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		font-size: 0.875rem;
+	}
+	.row {
+		display: flex;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+	.row dt {
+		color: var(--u-mute);
+	}
+	.row dd {
+		margin: 0;
+		color: var(--u-ink);
+	}
+	.grand {
+		padding-top: 0.625rem;
+		border-top: var(--u-hair);
+		font-weight: 600;
+	}
+	.grand dt {
+		color: var(--u-ink);
+	}
+
+	@media (max-width: 54rem) {
+		.cols {
+			grid-template-columns: 1fr;
+			gap: 2.5rem;
+		}
+	}
+</style>
