@@ -240,6 +240,11 @@ export async function refundOrder(
 	// is what holds the capacity, so it is what the provider is asked to refund.
 	const target = existing ?? { orderId: cmd.orderId, amount: cmd.amount, currency: cmd.currency };
 	const resuming = existing !== null;
+	// Whether THIS call created the reservation it is about to issue against. A
+	// resume, or a reserve that found a concurrent same-key row (`duplicate`),
+	// shares a reservation another request owns — see the PROVIDER_ALREADY_REFUNDED
+	// arm below for why that matters.
+	let createdReservation = false;
 
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = await deps.orderStore.getCapturedPayments(cmd.orderId);
@@ -301,6 +306,7 @@ export async function refundOrder(
 		) {
 			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		}
+		createdReservation = reserved.outcome !== "duplicate";
 	}
 
 	// 2. ISSUE — only ever reached with a committed reservation holding the
@@ -326,8 +332,13 @@ export async function refundOrder(
 				await deps.orderStore.markRefundUnverified(cmd.idempotencyKey);
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 			case "PROVIDER_ALREADY_REFUNDED":
-				// Fail-closed pre-flight: nothing issued — release the capacity.
-				await deps.orderStore.voidRefund(cmd.idempotencyKey);
+				// Fail-closed pre-flight: THIS call issued nothing. Release the capacity
+				// only if this call created the reservation. A same-key request that
+				// resumed (or raced into) another request's reservation may be seeing
+				// THAT request's refund already landed at the provider — voiding the
+				// row would make its finalize miss and turn money that moved into a
+				// REFUND_ISSUED_UNRECORDED anomaly. The owner settles its own row.
+				if (createdReservation) await deps.orderStore.voidRefund(cmd.idempotencyKey);
 				return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
 			case "TERMINAL":
 				await deps.orderStore.voidRefund(cmd.idempotencyKey);
