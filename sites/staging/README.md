@@ -92,13 +92,25 @@ admin console's **Settings** page instead.
   bytes / signed URL). Note for that task: `entitlements/download` is a public existence oracle
   (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
   page must rate-limit and/or tokenize access to it rather than exposing raw probing.
-- **Phase 5 customer-account pages are also a follow-up** (same scope note — no theme
-  pages built here). The plugin now serves five public account routes the theme is
-  expected to surface with login/account pages plus a first-party session cookie (the
-  plugin is session-stateless; the bearer token is route INPUT, so the theme layer owns
-  the cookie exactly like the cart shim does): `storefront/account/login/request`,
-  `storefront/account/login/verify`, `storefront/account/orders`,
-  `storefront/account/order`, `storefront/account/addresses`.
+- **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
+  `/account/login` (email form → `POST /account/login/request` → the same generic
+  "if an account exists…" notice for every address), `/account/verify` (where the
+  emailed link lands — it renders a button and redeems NOTHING on the GET, so a
+  mail scanner's pre-fetch cannot spend the single-use token; `POST
+  /account/verify/confirm` redeems it and applies the plugin's session-cookie
+  descriptor verbatim, HttpOnly/Secure/SameSite=Lax), `/account/orders` and
+  `/account/orders/<id>` (read through the session; guest orders under the same
+  address are claimed at sign-in), and `POST /account/logout` (revokes server-side,
+  always clears the cookie). Every POST runs the origin guard first; account pages
+  are `private, no-store`. The header carries a theme-owned "Account" link unless the
+  CMS menu already links into `/account`. Saved addresses
+  (`storefront/account/addresses`) have no page yet.
+  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in link
+  page** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
+  `https://shop.example/account/verify`. The emailed link points there and nowhere else.
+  The request's origin is never used, because a spoofed `Host` could otherwise aim a
+  victim's link at another domain. While the setting is unset, the login form still
+  shows its generic notice but no link is sent, and the plugin logs that once.
 - No secrets anywhere in this package: `.env` is gitignored, `.env.example` holds
   placeholders, `wrangler.jsonc` `vars` must never grow a secret-shaped key (pinned by
   `test/wrangler-config.test.ts`).

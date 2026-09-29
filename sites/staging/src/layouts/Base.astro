@@ -14,7 +14,13 @@
  */
 import { Font } from "astro:assets";
 import { getMenu, getSiteSettings } from "emdash";
-import { cartCountLabel, FALLBACK_MENU_ITEMS, isCartLink, type NavItem } from "../lib/nav.js";
+import {
+	cartCountLabel,
+	FALLBACK_MENU_ITEMS,
+	isCartLink,
+	withAccountLink,
+	type NavItem,
+} from "../lib/nav.js";
 import "../styles/tokens.css";
 
 interface Props {
@@ -133,7 +139,7 @@ try {
 				<a href="/" class="wordmark">{siteTitle}</a>
 				<nav class="nav" aria-label="Primary">
 					{
-						navItems.map((item) => (
+						withAccountLink(navItems).map((item) => (
 							<a href={item.url}>
 								{item.label}
 								{isCartLink(item.url) && cartCount !== null && (

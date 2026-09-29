@@ -104,6 +104,12 @@ const MESSAGES: Record<string, string> = {
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 	...SELECTION_MESSAGES,
+	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
+	// A failed magic link. Each says what to do next, and none says anything
+	// about whether an account exists.
+	LOGIN_LINK_USED: "That sign-in link has already been used — request a new one below.",
+	LOGIN_LINK_EXPIRED: "That sign-in link has expired — request a new one below.",
+	LOGIN_LINK_INVALID: "That sign-in link isn't valid — request a new one below.",
 };
 
 /** Never returns the raw token, `undefined`, or an empty string — an
