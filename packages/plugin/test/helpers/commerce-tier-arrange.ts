@@ -93,7 +93,14 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 						reservationId: null,
 					},
 				],
-				totals: { subtotal: total, total, currency: lineCurrency },
+				totals: {
+					subtotal: total,
+					total,
+					currency: lineCurrency,
+					...(spec.shippingMethod !== undefined
+						? { shippingMethodSnapshot: { ...spec.shippingMethod } }
+						: {}),
+				},
 			});
 			// A SETTLED order: paid, with one succeeded capture under its own method —
 			// the two writes `settleOrder` makes, through the same ports. The capture
@@ -137,7 +144,13 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 		},
 
 		async shippingMethod(spec) {
-			await ports.shippingRules.createZone({ id: spec.zoneId, name: spec.zoneId, regions: null });
+			if ((await ports.shippingRules.getZone(spec.zoneId)) === null) {
+				await ports.shippingRules.createZone({
+					id: spec.zoneId,
+					name: spec.zoneId,
+					regions: spec.regions ?? null,
+				});
+			}
 			await ports.shippingRules.createMethod({
 				id: spec.methodId,
 				zoneId: spec.zoneId,
@@ -152,6 +165,15 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 					currency: toCurrency(spec.rate.currency),
 					amountCents: cents(spec.rate.amount),
 					minSubtotalCents: null,
+				});
+			}
+			if (spec.taxRateBps !== undefined) {
+				await ports.taxRules.createRate({
+					id: `${spec.zoneId}-standard`,
+					taxClassId: "standard",
+					zoneId: spec.zoneId,
+					rateBps: spec.taxRateBps,
+					appliesToShipping: true,
 				});
 			}
 		},

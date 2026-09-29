@@ -75,6 +75,7 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
 	type CouponRecord,
@@ -180,7 +181,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const zone = await this.#stores.shippingRules.createZone({
 			id: input.id,
 			name: input.name,
-			regions: input.regions ?? null,
+			regions: requireZoneRegions(input.regions ?? null),
 		});
 		return { ok: true, value: toZoneWire(zone) };
 	}
@@ -196,7 +197,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireFullReplaceKey("regions", edit);
 		const res = await this.#stores.shippingRules.updateZone(zoneId, {
 			name: edit.name,
-			regions: edit.regions ?? null,
+			regions: requireZoneRegions(edit.regions ?? null),
 		});
 		return res.ok ? { ok: true, value: toZoneWire(res.zone) } : { ok: false, reason: "not_found" };
 	}
@@ -857,4 +858,25 @@ function fromBase64Url(token: string): Uint8Array {
 	const out = new Uint8Array(bin.length);
 	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
 	return out;
+}
+
+/**
+ * ADR-0021: a zone's regions are the ISO codes checkout matches a buyer's
+ * address against — `null`, or an array of ISO 3166-1 countries and ISO 3166-2
+ * `CC-SUB` subdivisions, stored uppercased. The console validates first (and
+ * explains); this is the second line, so no caller of the surface can store a
+ * region that could never match. Overlaps between zones are the console's
+ * check: they need the whole registry, and a refusal here could not name the
+ * other zone any better.
+ */
+function requireZoneRegions(regions: unknown): string[] | null {
+	if (regions === null) return null;
+	if (!Array.isArray(regions)) {
+		throw new CommerceInputError("regions", "must be null or an array of ISO region codes");
+	}
+	const { codes, invalid } = parseZoneRegions(regions);
+	if (invalid.length > 0) {
+		throw new CommerceInputError("regions", `not ISO region codes: ${invalid.join(", ")}`);
+	}
+	return codes;
 }

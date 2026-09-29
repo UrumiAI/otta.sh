@@ -827,7 +827,7 @@ describeEachDialect("order flow", (ctx) => {
 				line1: "12 Analytical Way",
 				line2: "Unit 4",
 				city: "London",
-				region: "Greater London",
+				region: "LND",
 				postalCode: "EC1A 1BB",
 				country: "GB",
 				email: "ada@example.com",
