@@ -123,6 +123,164 @@ export interface ReportingDailyDoc {
 	updatedAt: string;
 }
 
+/**
+ * The name of the top-level field a state's count is STORED under: `state_<state>`.
+ *
+ * The counts are stored flat, one numeric field per state, rather than as the nested
+ * `stateCounts` map {@link ReportingDailyDoc} presents, because the host's guarded
+ * numeric delta (`updateIf`'s `delta`) addresses a top-level field and nothing deeper.
+ * That is what lets an event land as ONE atomic statement instead of a read-modify-write
+ * loop (see `ReportingDailyStoredDoc`). A state that could not be a field name is a
+ * programming error rather than data, since the states are the domain's fixed enum, so
+ * it is refused loudly rather than escaped.
+ */
+export function stateCountField(state: string): StateCountField {
+	if (!STATE_NAME.test(state)) {
+		throw new RangeError(`order state '${state}' cannot be stored as a reporting counter field`);
+	}
+	return `${STATE_FIELD_PREFIX}${state}`;
+}
+
+/** A stored per-state counter field. */
+export type StateCountField = `state_${string}`;
+
+const STATE_FIELD_PREFIX = "state_";
+
+/** What the host accepts as a field name, less the prefix: `^[a-zA-Z][a-zA-Z0-9_]*$`. */
+const STATE_NAME = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * `reporting_daily/{currency}:{YYYY-MM-DD}` AS STORED. {@link ReportingDailyDoc} is the
+ * value every reader works with, and {@link normalizeReportingDailyDoc} is the only way
+ * from this shape to that one.
+ *
+ * **Two shapes exist, and both are read.**
+ *
+ * - **Current (`epoch` is a number).** Every counter is a top-level integer field and
+ *   the state counts are `state_<state>` fields, so a live event is a single guarded
+ *   numeric delta. Zero-valued state fields may be present (a delta decrements to 0 and
+ *   leaves the field) and are dropped on read.
+ * - **Legacy (no `epoch`).** The nested `stateCounts` map that the first rollup wrote.
+ *   It is read as it stands, and migrated forward by a revision compare-and-set the
+ *   first time anything writes it (the delta path, or a recompute that has something to
+ *   commit). No delta ever lands on a legacy document, because every delta is guarded on
+ *   `epoch` and a legacy document has none.
+ *
+ * **`epoch` and `seq` are the two guards that make a delta and a recompute safe
+ * together, and they move independently:**
+ *
+ * - `epoch` is moved ONLY by a recompute's commit, a migration or an un-taint. A delta
+ *   is guarded on the epoch it read before its claim was last checked, so a delta whose
+ *   event a recompute has since counted absolutely is refused atomically, and re-checks
+ *   its claim. It only ever increases EXCEPT across a mixed-version window: an older
+ *   version of this adapter can write back the epoch it read (a hybrid) or drop it (a
+ *   legacy rewrite), and a first migration with nothing known starts it at 0. Every write
+ *   of this version moves it past the highest epoch it knows of, and `reconcile` heals
+ *   whatever a rewound epoch let through.
+ * - `seq` is bumped by EVERY delta. A recompute commits guarded on the `(epoch, seq)` it
+ *   pinned before scanning, so a delta landing after the pin costs it the commit.
+ *
+ * The host's `updateIf` never moves a document's revision, so neither guard could be the
+ * revision: a revision pin would not see a delta at all.
+ */
+export interface ReportingDailyStoredDoc {
+	currency: string;
+	date: string;
+	/** Bumped by a recompute's commit only. Absent on a legacy document. */
+	epoch?: number;
+	/** Bumped by every delta. Absent on a legacy document. */
+	seq?: number;
+	revenueOrders?: number;
+	revenueCents?: number;
+	refundEntries?: number;
+	refundedCents?: number;
+	/**
+	 * LEGACY only: the nested per-state map the first rollup stored. On a document that
+	 * also carries `epoch` it is a TAINT (see {@link isHybridReportingDailyDoc}), and the
+	 * next live event or recompute clears it to `null`.
+	 */
+	stateCounts?: Record<string, number> | null;
+	updatedAt?: string;
+	/** The per-state counters, one field per state (current shape only). */
+	[field: StateCountField]: number | undefined;
+}
+
+/** A current-shape stored document: its guards are present. */
+export type CurrentReportingDailyDoc = ReportingDailyStoredDoc & { epoch: number; seq: number };
+
+/** Does this stored document carry the two guards (current, or a hybrid)? */
+export function hasReportingDailyGuards(
+	doc: ReportingDailyStoredDoc,
+): doc is CurrentReportingDailyDoc {
+	return typeof doc.epoch === "number" && typeof doc.seq === "number";
+}
+
+/**
+ * Is this a current-shape document that an OLDER version of this adapter has since
+ * rewritten? The old write path spreads the document it read and adds a nested
+ * `stateCounts` map built from nothing (it never knew the flat fields), so what it leaves
+ * is the guards and flat counters it read, plus a map holding only its own increments,
+ * and any delta that landed between its read and its write is gone. The only moment that
+ * happens is a mixed-version deploy or a rollback. Such a document is TAINTED.
+ *
+ * It is read by its flat fields alone: the old writer's revenue landed in the top-level
+ * fields, and its state move shows as an order left in the state it came from, which is
+ * the under-count residue this tier already heals. The next live event UN-TAINTS it in one
+ * guarded write (the map set to `null`, the epoch moved) and applies against the flat
+ * fields, announcing a `tainted` anomaly (see the store's `#currentDay`). It does not
+ * recompute the day inline: only `reconcile` recovers the discarded deltas.
+ */
+export function isHybridReportingDailyDoc(doc: ReportingDailyStoredDoc): boolean {
+	return (
+		hasReportingDailyGuards(doc) && typeof doc.stateCounts === "object" && doc.stateCounts !== null
+	);
+}
+
+/** Is this stored document the current (flat, guarded, untainted) shape? */
+export function isCurrentReportingDailyDoc(
+	doc: ReportingDailyStoredDoc,
+): doc is CurrentReportingDailyDoc {
+	return hasReportingDailyGuards(doc) && !isHybridReportingDailyDoc(doc);
+}
+
+/** The state-count fields a stored document carries, by state name. */
+export function storedStateCounts(doc: ReportingDailyStoredDoc): Record<string, number> {
+	// A document with guards is read by its flat fields, hybrid or not (see above).
+	if (!hasReportingDailyGuards(doc)) return { ...doc.stateCounts };
+	const counts: Record<string, number> = {};
+	for (const [field, value] of Object.entries(doc)) {
+		if (!field.startsWith(STATE_FIELD_PREFIX) || typeof value !== "number") continue;
+		counts[field.slice(STATE_FIELD_PREFIX.length)] = value;
+	}
+	return counts;
+}
+
+/**
+ * A logical day document written out in the CURRENT stored shape, at the given guards.
+ * This is what a creation, a migration and a recompute's full rewrite store.
+ */
+export function toStoredReportingDailyDoc(
+	doc: ReportingDailyDoc,
+	epoch: number,
+	seq: number,
+): CurrentReportingDailyDoc {
+	const stored: CurrentReportingDailyDoc = {
+		currency: doc.currency,
+		date: doc.date,
+		epoch,
+		seq,
+		revenueOrders: doc.revenueOrders,
+		revenueCents: doc.revenueCents,
+		refundEntries: doc.refundEntries,
+		refundedCents: doc.refundedCents,
+		updatedAt: doc.updatedAt,
+	};
+	for (const [state, count] of Object.entries(normalizeStateCounts(doc.stateCounts))) {
+		stored[stateCountField(state)] = count;
+	}
+	return stored;
+}
+
 /** Which kind of event a claim records. */
 export type ReportingEventKind = "transition" | "refund";
 
@@ -145,11 +303,12 @@ export type ReportingEventKind = "transition" | "refund";
  * **`absorbedAt` IS a gate, and it is the only one.** A recompute that has counted this
  * event's effect absolutely — from the order document itself — takes away the right this
  * claim confers, because a delta applied on top of an absolute recount is a double count.
- * So the recompute stamps it before it commits its counters, and the delta path re-reads
- * the claim immediately before EVERY bucket write and drops the delta when it is stamped
- * (ADR-0019's cross-cutting rule (a): the token is re-asserted before every write it
- * guards, on every attempt, because a writer parked past the moment its right was revoked
- * must not wake up and commit anyway).
+ * So the recompute stamps it before it commits its counters, and its commit bumps the day
+ * document's `epoch`. The delta is guarded on the epoch it read before the claim was last
+ * checked, so a delta parked past that commit is refused by its own write, re-reads the
+ * claim, and drops itself when it is stamped (ADR-0019's cross-cutting rule (a): the token
+ * is re-asserted before every write it guards, on every attempt, because a writer parked
+ * past the moment its right was revoked must not wake up and commit anyway).
  */
 export interface ReportingAppliedDoc {
 	/** INDEXED — which order this event belongs to. */
@@ -310,15 +469,25 @@ export function isAbsorbed(claim: ReportingAppliedDoc): boolean {
 	return (claim.absorbedAt ?? null) !== null;
 }
 
-/** Read a stored document back with its containers present. */
-export function normalizeReportingDailyDoc(doc: ReportingDailyDoc): ReportingDailyDoc {
+/**
+ * Read a stored document back as the value every reader works with, whichever shape it
+ * was stored in (see {@link ReportingDailyStoredDoc}). Only the fields of the logical
+ * value survive: the guards and the flat state fields are storage, not value, so a
+ * document stored in either shape and holding the same counters reads identically.
+ */
+export function normalizeReportingDailyDoc(
+	doc: ReportingDailyStoredDoc | ReportingDailyDoc,
+): ReportingDailyDoc {
+	const stored = doc as ReportingDailyStoredDoc;
 	return {
-		...doc,
-		stateCounts: normalizeStateCounts(doc.stateCounts ?? {}),
-		revenueOrders: doc.revenueOrders ?? 0,
-		revenueCents: doc.revenueCents ?? 0,
-		refundEntries: doc.refundEntries ?? 0,
-		refundedCents: doc.refundedCents ?? 0,
+		currency: stored.currency,
+		date: stored.date,
+		stateCounts: normalizeStateCounts(storedStateCounts(stored)),
+		revenueOrders: stored.revenueOrders ?? 0,
+		revenueCents: stored.revenueCents ?? 0,
+		refundEntries: stored.refundEntries ?? 0,
+		refundedCents: stored.refundedCents ?? 0,
+		updatedAt: stored.updatedAt ?? "",
 	};
 }
 

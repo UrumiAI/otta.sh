@@ -10,12 +10,17 @@
  * close them, and each case here holds one of the two orderings open with the
  * fault-injection helper and asserts the exact total:
  *
- * 1. every day document is PINNED (its revision read) before the orders are scanned, so
- *    a delta landing in between costs the recompute its commit and forces a re-scan;
+ * 1. every day document is PINNED (its `epoch` and `seq` read) before the orders are
+ *    scanned, and the commit is guarded on them, so a delta landing in between (which
+ *    bumps `seq`) costs the recompute its commit and forces a re-scan;
  * 2. the recompute ABSORBS the claims it reconstructed from the scanned orders before it
- *    commits any counter;
- * 3. the delta re-reads its claim immediately before every bucket write and skips itself
+ *    commits any counter, and its commit bumps `epoch`;
+ * 3. the delta is guarded on the `epoch` it read before its claim was checked, so a delta
+ *    parked across a recompute's commit is refused, re-reads its claim, and skips itself
  *    when it has been absorbed.
+ *
+ * Both writes that matter are guarded numeric updates (`updateIf`) on a current-shape
+ * document, so the windows are held open by parking those: {@link isCounterWrite}.
  *
  * The parking is real storage, not a mock: the parked call is performed for real once
  * released, so what lands is what the host would have written.
@@ -25,6 +30,7 @@ import { expect, test } from "vitest";
 import { REPORTING_APPLIED_COLLECTION, REPORTING_DAILY_COLLECTION } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import {
+	isGuardedUpdate,
 	isUpdateWrite,
 	isVersionedRead,
 	parkCall,
@@ -37,6 +43,15 @@ import { makeReportingHarness, type ReportingHarness } from "./reporting-harness
 const RANGE: DateRange = { from: "2026-07-01T00:00:00.000Z", to: "2026-07-31T23:59:59.999Z" };
 const DAY = "2026-07-04T09:00:00.000Z";
 const BUCKET = "USD:2026-07-04";
+
+/**
+ * A write that moves the day document's counters: the live delta and the recompute's
+ * commit are guarded updates, and a recompute rewriting an absent or legacy document is a
+ * revision compare-and-set. Matching both keeps these cases parking the counter write
+ * whichever shape the document is in.
+ */
+const isCounterWrite = (call: Parameters<typeof isUpdateWrite>[0]): boolean =>
+	isGuardedUpdate(call) || isUpdateWrite(call);
 
 /** The day document's counters, or a thrown premise. */
 async function bucket(h: ReportingHarness): Promise<{
@@ -73,9 +88,9 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 		// nothing, and there would be no window to hold open.
 		await h.moveOrderDocument("i2", "paid");
 
-		// Park the recompute's own COMMIT — the read-modify-write on the day document —
-		// so the window between its scan and its write is held open for a live event.
-		const parked = parkCall(bound.collection(REPORTING_DAILY_COLLECTION), isUpdateWrite);
+		// Park the recompute's own COMMIT (the guarded write on the day document), so the
+		// window between its scan and its write is held open for a live event.
+		const parked = parkCall(bound.collection(REPORTING_DAILY_COLLECTION), isCounterWrite);
 		const reconciler = makeReportingHarness(bound.storage, {
 			clock: h.clock,
 			storageForStore: withCollection(bound.storage, REPORTING_DAILY_COLLECTION, parked.collection),
@@ -90,8 +105,8 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 		parked.release();
 		await healing;
 
-		// The parked commit lost the revision it had pinned BEFORE its scan, re-scanned,
-		// and committed a value that includes both transitions. Had it pinned after
+		// The parked commit lost the `seq` it had pinned BEFORE its scan (the live delta
+		// bumped it), re-scanned, and committed a value that includes both transitions. Had it pinned after
 		// scanning, it would have committed the value it was holding — i2 paid, i1 still
 		// pending — and i1's transition would have been erased.
 		expect(await bucket(h)).toEqual({ revenueCents: 5000, stateCounts: { paid: 2 } });
@@ -108,9 +123,9 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 	test("the recompute PINS before it scans: a transition landing while the pin is held is not erased", async () => {
 		// This is the case that discriminates the ordering, and it fails against
 		// pin-after-scan. Parking the COMMIT does not: a scan-then-pin recompute loses that
-		// write too, because the peer moved the revision after it was taken. What separates
+		// write too, because the peer moved the pinned `seq` after it was taken. What separates
 		// the two orderings is a live write landing between the SCAN and the PIN — under
-		// scan-then-pin the pin then reads a revision NEWER than the scanned value, so the
+		// scan-then-pin the pin then reads a `seq` NEWER than the scanned value, so the
 		// stale value commits successfully and the transition is erased, while pinning first
 		// makes the same interleaving re-read both.
 		const h = makeReportingHarness(bound.storage);
@@ -175,7 +190,7 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 		// claim exists, the counters have not moved, and a recompute runs to completion in
 		// the gap. This is the ordering that double-counts without the absorbed marker.
 		const event = await h.moveOrderDocument("i3", "paid");
-		const parked = parkCall(bound.collection(REPORTING_DAILY_COLLECTION), isUpdateWrite);
+		const parked = parkCall(bound.collection(REPORTING_DAILY_COLLECTION), isCounterWrite);
 		const live = makeReportingHarness(bound.storage, {
 			clock: h.clock,
 			storageForStore: withCollection(bound.storage, REPORTING_DAILY_COLLECTION, parked.collection),
@@ -194,7 +209,8 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 		parked.release();
 		await applying;
 
-		// The parked delta re-read its claim, found it absorbed, and skipped itself.
+		// The parked delta was refused by the epoch the recompute bumped, re-read its claim,
+		// found it absorbed, and skipped itself.
 		expect(await bucket(h)).toEqual({ revenueCents: 2500, stateCounts: { paid: 1 } });
 	});
 
