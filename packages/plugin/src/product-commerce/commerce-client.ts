@@ -333,7 +333,14 @@ export interface CommerceClient {
 	// ── Phase 5: storefront customer account (plan §7) ────────────────────
 	// The bearer session token is passed through from the plugin's first-party
 	// cookie layer, never held by the sandboxed plugin itself. ─────────────
-	requestLoginLink(email: string): Promise<{ ok: true }>;
+	/**
+	 * Issue a login challenge and email the magic link. Always `{ ok: true }` —
+	 * the answer must not say whether the account exists or the request was
+	 * throttled. `linkBaseUrl` is the storefront origin the link points at; it
+	 * must come from the deployment or the request's own origin, NEVER from
+	 * caller input (see `storefront/login-link.ts`).
+	 */
+	requestLoginLink(email: string, options?: { linkBaseUrl?: string }): Promise<{ ok: true }>;
 	verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult>;
 	logout(sessionToken: string): Promise<void>;
 	listMyOrders(sessionToken: string): Promise<AuthedResult<{ orders: OrderSummaryWire[] }>>;

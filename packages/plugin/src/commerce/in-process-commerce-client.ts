@@ -82,6 +82,7 @@ import {
 	type Address,
 	type Cart,
 	type CartDeps,
+	type EmailSender,
 	type CartLine,
 	type CreateOrderDeps,
 	type FulfillmentKind,
@@ -124,6 +125,7 @@ import type {
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
+import { loginLinkUrl } from "../storefront/login-link.js";
 import type { PluginContext } from "../types.js";
 import {
 	looksLikeEmail,
@@ -165,6 +167,27 @@ const DEFAULT_CURRENCY = "USD";
  */
 export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/**
+	 * The mail egress the login link goes out through — resolved LAZILY, because
+	 * building the real one reads kv (the API key, the from-address) and only the
+	 * login request needs it; every other route builds a client too and must not
+	 * pay those reads. Absent, or resolving to `undefined`, means this deployment
+	 * has no email configured: a login request still answers the same generic
+	 * success, and the client logs that once.
+	 */
+	resolveEmailSender?: () => Promise<EmailSender | undefined>;
+}
+
+/**
+ * Server-side notices that are logged ONCE per isolate rather than once per
+ * request — a misconfiguration is a fact about the deployment, and a log line per
+ * login attempt would bury everything else.
+ */
+const loggedOnce = new Set<string>();
+function warnOnce(key: string, message: string): void {
+	if (loggedOnce.has(key)) return;
+	loggedOnce.add(key);
+	console.warn(message);
 }
 
 export class InProcessCommerceClient implements CommerceClient {
@@ -173,6 +196,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  measure a deadline. Everything that does goes through {@link #liveCartDeps}. */
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
+	readonly #resolveEmailSender: (() => Promise<EmailSender | undefined>) | undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -186,6 +210,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#resolveEmailSender = options.resolveEmailSender;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -600,21 +625,31 @@ export class InProcessCommerceClient implements CommerceClient {
 	// ── customer account ────────────────────────────────────────────────────
 
 	/**
-	 * Issues the login challenge. The answer is IDENTICAL whether or not an account
-	 * exists and whether or not the issue was throttled — an account oracle is
-	 * exactly what this surface must not be — so a malformed address is the same
-	 * generic success rather than a distinguishable refusal.
+	 * Issues the login challenge and emails the magic link. The answer is
+	 * IDENTICAL whatever happens behind it — an account oracle, or a throttle
+	 * oracle, is exactly what this surface must not be:
 	 *
-	 * The emailed link is not dispatched from here yet: mail delivery moves
-	 * in-process with the rest of the outbound topology, and until it does this
-	 * records the challenge and nothing more. A storage failure still rejects —
-	 * that is infrastructure, not an answer about an account.
+	 *  - a malformed address, a throttled one, a new one and a known one all
+	 *    answer `{ ok: true }`;
+	 *  - a THROTTLED issue sends nothing (ADR-0004: past the per-address cap the
+	 *    request no-ops);
+	 *  - a deployment with no email configured, or no storefront origin to point
+	 *    the link at, issues nothing — a challenge nobody can receive would only
+	 *    burn a throttle slot — and says so ONCE in the server log;
+	 *  - a provider that refuses or times out is logged and swallowed, because
+	 *    the rejection would reach the caller only on the non-throttled arm.
+	 *
+	 * The token leaves this method in exactly one place: inside the link, inside
+	 * the email. It is never in the reply and never in a log line. A storage
+	 * failure still rejects — that is infrastructure, not an answer about an
+	 * account, and it happens before either arm diverges.
 	 */
-	async requestLoginLink(email: string): Promise<{ ok: true }> {
+	async requestLoginLink(
+		email: string,
+		options: { linkBaseUrl?: string } = {},
+	): Promise<{ ok: true }> {
 		// CHECKED BUT NEVER REPORTED: a bound that fails here ends the call in the
-		// same generic success a valid address gets. This surface must answer
-		// identically whatever it is handed, so a refusal — of a bound OR of an
-		// address — would be a usable signal about which addresses exist.
+		// same generic success a valid address gets.
 		if (!looksLikeEmail(email)) return { ok: true };
 		let address;
 		try {
@@ -622,7 +657,48 @@ export class InProcessCommerceClient implements CommerceClient {
 		} catch {
 			return { ok: true };
 		}
-		await requestLogin({ credentialVerifier: this.#stores.credentialVerifier }, { email: address });
+		const sender = await this.#resolveEmailSender?.();
+		if (sender === undefined) {
+			warnOnce(
+				"login-email-unconfigured",
+				"[otta] login email is not configured (no email API URL in this build): " +
+					"login links are not being sent",
+			);
+			return { ok: true };
+		}
+		const baseUrl = options.linkBaseUrl;
+		if (baseUrl === undefined || baseUrl.length === 0) {
+			warnOnce(
+				"login-link-no-origin",
+				"[otta] login link has no storefront origin to point at: set settings:storefrontBaseUrl",
+			);
+			return { ok: true };
+		}
+		const issued = await requestLogin(
+			{ credentialVerifier: this.#stores.credentialVerifier },
+			{ email: address },
+		);
+		// THROTTLED: nothing inserted, nothing sent, the same answer.
+		if (!issued.ok) return { ok: true };
+		try {
+			await sender.send({
+				to: address,
+				template: "customer-login-link",
+				// The link ONLY: the token travels nowhere a template or a provider
+				// log could print it on its own.
+				data: { loginUrl: loginLinkUrl(baseUrl, issued.challengeId, issued.token) },
+				// The challenge, not the token: one challenge is one email, so a
+				// retried send dedupes provider-side.
+				idempotencyKey: `login:${issued.challengeId}`,
+			});
+		} catch (err) {
+			// The message, never the error object: a transport error is free to
+			// quote the request it failed on.
+			console.error(
+				"[otta] login email send failed:",
+				err instanceof Error ? err.message : "unknown error",
+			);
+		}
 		return { ok: true };
 	}
 

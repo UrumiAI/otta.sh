@@ -359,6 +359,26 @@ export {
 	type OrderRouteInput,
 	type OrderRouteResult,
 } from "./storefront/checkout-routes.js";
+// ── Phase 5: storefront customer account (ADR-0004, issue #306) ─────────────
+export {
+	ACCOUNT_ADDRESSES_ROUTE,
+	ACCOUNT_LOGIN_PATH,
+	ACCOUNT_LOGIN_REQUEST_ROUTE,
+	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
+	ACCOUNT_ORDER_ROUTE,
+	ACCOUNT_ORDERS_PATH,
+	ACCOUNT_ORDERS_ROUTE,
+	SESSION_COOKIE_NAME,
+	type AccountAddressesResult,
+	type AccountLoginRequestResult,
+	type AccountLoginVerifyResult,
+	type AccountLogoutResult,
+	type AccountOrderResult,
+	type AccountOrdersResult,
+	type SessionCookieDescriptor,
+} from "./storefront/account-routes.js";
+export { ACCOUNT_VERIFY_PATH, STOREFRONT_BASE_URL_KEY } from "./storefront/login-link.js";
 export {
 	buildCheckoutLines,
 	buildCheckoutTotals,
