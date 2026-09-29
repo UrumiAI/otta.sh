@@ -760,7 +760,12 @@ describe("the Orders write path (workerd sandbox)", () => {
 });
 
 /** Stripe's side of every PaymentIntent the cases refund against. */
-function refundingStripe(captured: number): StripeResponder {
+function refundingStripe(
+	captured: number,
+	/** Statuses for the next `POST /v1/refunds` calls, consumed in order, each
+	 *  answered with Stripe's error envelope before anything is refunded. */
+	postFailures: number[] = [],
+): StripeResponder {
 	const refundedByIntent = new Map<string, number>();
 	const byKey = new Map<string, { status: number; body: unknown }>();
 	let n = 0;
@@ -781,6 +786,10 @@ function refundingStripe(captured: number): StripeResponder {
 			};
 		}
 		if (req.method === "POST" && req.path === "/v1/refunds") {
+			const failure = postFailures.shift();
+			if (failure !== undefined) {
+				return { status: failure, body: { error: { type: "api_error", code: "scripted" } } };
+			}
 			const key = req.headers["idempotency-key"];
 			const previous = typeof key === "string" ? byKey.get(key) : undefined;
 			if (previous !== undefined) return previous;
@@ -955,5 +964,69 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
 		expect(stripe.requests).toEqual([]);
 		expect(await orderStore.listRefunds(toOrderId(id))).toEqual([]);
+	});
+
+	/** The same refund confirm, clicked again with the watermark the console
+	 *  now shows: the FINALIZED total, which a failed attempt did not move. */
+	const confirm500 = (id: string, soFar = "0") =>
+		actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: soFar,
+			currency: "USD",
+			refundedBy: "carol",
+		});
+
+	test("a 429 from Stripe says try again — and trying again RESUMES the same refund under the same key", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Temporary problem");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual([
+			"reserved",
+		]);
+
+		// The operator does what the notice says. Nothing was finalized, so the
+		// watermark they send is unchanged and the retry reaches the SAME key —
+		// never "someone else refunded this order".
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:500:0`,
+		]);
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger.map((r) => [r.status, r.amount])).toEqual([["recorded", 500]]);
+	});
+
+	test("an ambiguous Stripe failure reads as UNKNOWN, and clicking again asks Stripe for nothing", async () => {
+		// A 5xx on the create is ambiguous — Stripe may have refunded — exactly like
+		// a timeout (the unit suite drives the timeout itself).
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [500]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund status unknown");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual([
+			"unverified",
+		]);
+		const posted = refundPosts().length;
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund status unknown");
+		expect(refundPosts()).toHaveLength(posted);
+	});
+
+	test("a Stripe rejection voids the attempt, and a deliberate retry is a NEW refund under a new key", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund rejected");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual(["voided"]);
+
+		// The voided key is spent (a replay of it answers the same rejection), so
+		// the console derives a fresh one for the retry rather than a dead end.
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		const keys = refundPosts().map((r) => r.headers["idempotency-key"]);
+		expect(keys).toHaveLength(2);
+		expect(keys[0]).toBe(`admin-refund:${id}:500:0`);
+		expect(keys[1]).not.toBe(keys[0]);
 	});
 });

@@ -768,3 +768,78 @@ test("a buyerRef containing a double quote cannot break out of the confirm's quo
 	const unescapedQuoteCount = (confirmText.textContent?.match(/(?<!\\)"/g) ?? []).length;
 	expect(unescapedQuoteCount).toBe(2);
 });
+
+// ── issue #303 review: the ledger is not only finalized money ─────────────────
+//
+// A refund row carries its reserve-before-issue `status`. A `voided` attempt
+// moved nothing and must not be listed as a refund; `reserved` and `unverified`
+// hold ceiling capacity but are not money back yet. And the confirm's watermark
+// is the FINALIZED total: a failed attempt must not make the next click read as
+// "someone else refunded this order".
+
+const FINALIZED_CENTS = 500_000;
+const UNVERIFIED_CENTS = 200_000;
+const VOIDED_CENTS = 300_000;
+
+const MIXED: RefundsSummary = {
+	...CAPTURED,
+	refunds: [
+		{ ...refundRow(FINALIZED_CENTS), status: "recorded" },
+		{ ...refundRow(VOIDED_CENTS), status: "voided" },
+		{ ...refundRow(UNVERIFIED_CENTS), status: "unverified" },
+	],
+	// The ACTIVE sum: finalized plus the unverified attempt still holding capacity.
+	refundedTotalCents: FINALIZED_CENTS + UNVERIFIED_CENTS,
+	finalizedTotalCents: FINALIZED_CENTS,
+	remainingCents: TOTAL_CENTS - FINALIZED_CENTS - UNVERIFIED_CENTS,
+};
+
+test("a voided attempt is not listed as a refund, and an in-flight one is labelled for what it is", async () => {
+	const view = await show(detailFor("paid", MIXED));
+	await fire(tab(view, "money"), "click");
+
+	const ledger = table(view, "detail-refund-ledger");
+	const rows = bodyRows(ledger);
+	expect(rows.map((row) => row.cells.item(0)?.textContent)).toEqual([
+		formatAmount(FINALIZED_CENTS, CUR),
+		formatAmount(UNVERIFIED_CENTS, CUR),
+	]);
+	const statusColumn = [...ledger.querySelectorAll("thead th")].findIndex(
+		(th) => th.textContent === "Status",
+	);
+	expect(statusColumn).toBeGreaterThan(-1);
+	expect(rows.map((row) => row.cells.item(statusColumn)?.textContent)).toEqual([
+		"Refunded",
+		"Outcome unknown — check your payment provider",
+	]);
+	// Money back is the FINALIZED figure; the count is of refunds that happened.
+	expect(fieldValue(view, "detail-money", "Refunded").textContent).toBe(
+		formatAmount(FINALIZED_CENTS, CUR),
+	);
+	expect(fieldValue(view, "detail-money", "Refunds recorded").textContent).toBe("1");
+	// And the unknown outcome is said out loud, not left to a table cell.
+	expect(one(view, '[data-testid="refund-unverified-note"]').textContent).toContain(
+		formatAmount(UNVERIFIED_CENTS, CUR),
+	);
+});
+
+test("the refund confirm sends the FINALIZED total as its watermark", async () => {
+	const view = await show(detailFor("paid", MIXED));
+	await fire(tab(view, "money"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-full"]'), "click");
+	apiFetch.mockClear();
+	apiFetch.mockResolvedValue(
+		new Response(JSON.stringify({ data: { ok: true, notice: null } }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-yes"]'), "click");
+
+	const sent = apiFetch.mock.calls
+		.map((call) => JSON.parse(String(call[1]?.body ?? "{}")) as Record<string, unknown>)
+		.find((body) => body["action_id"] === "orders:refund");
+	expect((sent?.["value"] as Record<string, string> | undefined)?.["refundedSoFarCents"]).toBe(
+		String(FINALIZED_CENTS),
+	);
+});

@@ -47,6 +47,11 @@ interface Recorder {
 	/** The ledger total the next `getRefunds` reports — the watermark a dialog
 	 *  would have been drawn from. */
 	refundedSoFar: number;
+	/** Capacity held by attempts that are NOT finalized (`reserved`/`unverified`):
+	 *  counted in the active `refundedTotalCents`, never in the finalized total. */
+	inFlight: number;
+	/** How many `voided` attempts the ledger carries. */
+	voided: number;
 }
 
 /**
@@ -65,17 +70,31 @@ function refuse(method: string) {
 
 function recorder(): Recorder {
 	const keys: string[] = [];
-	const state = { refundedSoFar: 0 };
+	const state = { refundedSoFar: 0, inFlight: 0, voided: 0 };
 	const client: AdminOrdersSurface = {
 		getRefunds: (orderId: string): Promise<RefundsSummaryWire | null> => {
 			expect(orderId).toBe(ORDER_ID);
+			const voidedRows = Array.from({ length: state.voided }, (_, i) => ({
+				id: `voided-${String(i)}`,
+				orderId: ORDER_ID,
+				amountCents: 500,
+				currency: "USD",
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: null,
+				reason: null,
+				refundedBy: "carol",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				status: "voided",
+			}));
 			return Promise.resolve({
-				refunds: [],
+				refunds: voidedRows,
 				currency: "USD",
 				capturedTotalCents: CAPTURED_CENTS,
-				refundedTotalCents: state.refundedSoFar,
+				refundedTotalCents: state.refundedSoFar + state.inFlight,
+				finalizedTotalCents: state.refundedSoFar,
 				ceilingCents: CAPTURED_CENTS,
-				remainingCents: CAPTURED_CENTS - state.refundedSoFar,
+				remainingCents: CAPTURED_CENTS - state.refundedSoFar - state.inFlight,
 				paymentMethod: "stripe",
 				refundable: true,
 			});
@@ -117,6 +136,18 @@ function recorder(): Recorder {
 		},
 		set refundedSoFar(value: number) {
 			state.refundedSoFar = value;
+		},
+		get inFlight() {
+			return state.inFlight;
+		},
+		set inFlight(value: number) {
+			state.inFlight = value;
+		},
+		get voided() {
+			return state.voided;
+		},
+		set voided(value: number) {
+			state.voided = value;
 		},
 	};
 }
@@ -196,5 +227,28 @@ describe("the refund idempotency key (F-2a)", () => {
 		const result = await refund(rec.client, payloadFor("500", "0"));
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
 		expect(rec.keys).toEqual([]);
+	});
+
+	test("an attempt still IN FLIGHT does not move the watermark, so the retry reaches the SAME key and resumes it", async () => {
+		// A refund that ended GATEWAY_RETRYABLE (or UNVERIFIED) left a reserved row
+		// that holds ceiling capacity but moved no money yet. The console's
+		// watermark is the FINALIZED total, so the operator's "try again" is the
+		// same intent under the same key — the domain resumes that reservation
+		// instead of refusing the click as "someone else refunded this order".
+		const rec = recorder();
+		rec.inFlight = 500;
+		const result = await refund(rec.client, payloadFor("500", "0"));
+		expect(result.notice?.title).not.toBe("The refund ledger changed — nothing was refunded");
+		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0`]);
+	});
+
+	test("a VOIDED attempt spends its key, so a deliberate retry derives a new one", async () => {
+		// A voided key answers its own rejection forever (the domain replays it), so
+		// the retry after a definite provider rejection must not reuse it. The
+		// count of voided attempts is read from the LIVE ledger, not the payload.
+		const rec = recorder();
+		rec.voided = 1;
+		await refund(rec.client, payloadFor("500", "0"));
+		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0:v1`]);
 	});
 });

@@ -61,6 +61,9 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	let requests: RecordedRequest[];
 	/** Stripe's view of the one PaymentIntent every order here is paid with. */
 	let amountRefunded: number;
+	/** Scripted failures for the next `POST /v1/refunds` calls, consumed in order:
+	 *  a request that never answers (the transport's abort-timeout), or a status. */
+	let postFailures: Array<"timeout" | number>;
 	let seq = 0;
 
 	/** A recording Stripe: the pre-flight read answers the live refunded/captured
@@ -85,6 +88,16 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 					});
 				}
 				if (url === "https://api.stripe.com/v1/refunds" && init?.method === "POST") {
+					const failure = postFailures.shift();
+					if (failure === "timeout") {
+						throw new DOMException("The operation timed out.", "TimeoutError");
+					}
+					if (failure !== undefined) {
+						return Response.json(
+							{ error: { type: "invalid_request_error", code: "scripted" } },
+							{ status: failure },
+						);
+					}
 					const amount = Number(new URLSearchParams(body).get("amount"));
 					amountRefunded += amount;
 					return Response.json({
@@ -123,6 +136,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	beforeEach(() => {
 		requests = [];
 		amountRefunded = 0;
+		postFailures = [];
 	});
 	afterAll(async () => {
 		await harness.close();
@@ -203,5 +217,104 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			),
 		).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_TOTAL" });
 		expect(requests).toEqual([]);
+	});
+
+	/** Admin clients over a context with both Stripe secrets saved. */
+	async function configuredOrders() {
+		const ctx = withKv(
+			{ ...harness.ctx, http: stripeHttp() },
+			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_MAC", [STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC" },
+		);
+		return (await makeAdminClients(ctx)).orders;
+	}
+
+	const posts = (): RecordedRequest[] => requests.filter((r) => r.method === "POST");
+
+	test("a refund POST that times out is UNVERIFIED: it holds the ceiling, reads as unknown, and a same-key replay asks Stripe for nothing", async () => {
+		const orders = await configuredOrders();
+		const id = await seedPaidOrder();
+		postFailures = ["timeout"];
+		const refund = { amountCents: 500, currency: "USD", refundedBy: "ops@example.test" };
+
+		expect(await orders.refundOrder(id, refund, { idempotencyKey: `${id}-r1` })).toEqual({
+			ok: false,
+			status: 409,
+			reason: "GATEWAY_UNVERIFIED",
+		});
+		expect(posts()).toHaveLength(1);
+		const summary = await orders.getRefunds(id);
+		// The money MAY have moved, so the capacity stays held — but nothing is
+		// FINALIZED, and the row says its outcome is unknown rather than posing as
+		// a refund that happened.
+		expect(summary).toMatchObject({
+			refundedTotalCents: 500,
+			finalizedTotalCents: 0,
+			remainingCents: 1000,
+		});
+		expect(summary?.refunds.map((r) => r.status)).toEqual(["unverified"]);
+
+		const before = requests.length;
+		expect(await orders.refundOrder(id, refund, { idempotencyKey: `${id}-r1` })).toEqual({
+			ok: false,
+			status: 409,
+			reason: "GATEWAY_UNVERIFIED",
+		});
+		expect(requests.length, "no pre-flight and no POST on the replay").toBe(before);
+	});
+
+	test("a 429 on the refund POST is RETRYABLE, and a same-key retry RESUMES the reservation and succeeds", async () => {
+		const orders = await configuredOrders();
+		const id = await seedPaidOrder();
+		postFailures = [429];
+		const refund = { amountCents: 500, currency: "USD", refundedBy: "ops@example.test" };
+
+		expect(await orders.refundOrder(id, refund, { idempotencyKey: `${id}-r1` })).toEqual({
+			ok: false,
+			status: 503,
+			reason: "GATEWAY_RETRYABLE",
+		});
+		const held = await orders.getRefunds(id);
+		expect(held).toMatchObject({ refundedTotalCents: 500, finalizedTotalCents: 0 });
+		expect(held?.refunds.map((r) => r.status)).toEqual(["reserved"]);
+
+		expect(await orders.refundOrder(id, refund, { idempotencyKey: `${id}-r1` })).toEqual({
+			ok: true,
+			recorded: true,
+			duplicate: false,
+			fullyRefunded: false,
+		});
+		// Both POSTs carried the SAME key, so Stripe's native idempotency covers the
+		// retry — and the ledger holds ONE refund, not an orphan plus a second one.
+		expect(posts().map((p) => p.headers["idempotency-key"])).toEqual([`${id}-r1`, `${id}-r1`]);
+		const after = await orders.getRefunds(id);
+		expect(after).toMatchObject({
+			refundedTotalCents: 500,
+			finalizedTotalCents: 500,
+			remainingCents: 1000,
+		});
+		expect(after?.refunds.map((r) => r.status)).toEqual(["recorded"]);
+	});
+
+	test("a 4xx on the refund POST is TERMINAL: the reservation is voided and the capacity released", async () => {
+		const orders = await configuredOrders();
+		const id = await seedPaidOrder();
+		postFailures = [400];
+
+		expect(
+			await orders.refundOrder(
+				id,
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: `${id}-r1` },
+			),
+		).toEqual({ ok: false, status: 502, reason: "GATEWAY_TERMINAL" });
+		const summary = await orders.getRefunds(id);
+		expect(summary).toMatchObject({
+			refundedTotalCents: 0,
+			finalizedTotalCents: 0,
+			remainingCents: 1500,
+		});
+		// The audit row stays on the wire, marked for what it is — never a bare row
+		// a console would list as money returned.
+		expect(summary?.refunds.map((r) => r.status)).toEqual(["voided"]);
 	});
 });
