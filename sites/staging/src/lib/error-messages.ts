@@ -75,10 +75,13 @@ const MESSAGES: Record<string, string> = {
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",
 	// ── Checkout (storefront-checkout plan §1.7) ────────────────────────────
 	CART_EMPTY: "Your cart is empty — add something before checking out.",
-	// The 15-minute hold lapsed, or stock moved between the quote and the order.
-	// Not the buyer's fault, and not a dead end: the cart is still there.
+	// The hold lapsed, or stock moved between the quote and the order. Not the
+	// buyer's fault. The domain closes the checkout's order at once, so /checkout
+	// shows "This checkout has ended." beside this line: the way forward is a NEW
+	// cart (the checkout key is per cart), and — like that notice — no claim about
+	// money is made here.
 	RESERVATION_LOST:
-		"Your hold on one or more items expired before payment completed — please review your cart and try again.",
+		"Your hold on one or more items expired before payment, so this checkout was closed — start a new cart to order again.",
 	// Quoted from §1.7 rather than paraphrased, and shared by both reasons: from
 	// the buyer's side an unpriced product and a currency mismatch are the same
 	// fact — this cannot be bought right now.

@@ -92,8 +92,16 @@ describe("cartErrorMessage", () => {
 		expect(cartErrorMessage("CURRENCY_MISMATCH")).toBe(expected);
 	});
 
-	test("RESERVATION_LOST explains the expired hold and points at the cart, without blaming the buyer", () => {
-		expect(cartErrorMessage("RESERVATION_LOST")).toMatch(/expired/i);
+	test("RESERVATION_LOST explains the expired hold and points at a NEW cart, without blaming the buyer", () => {
+		// A lost hold now closes the checkout's order at once (the domain expires it),
+		// so /checkout renders "This checkout has ended." beside this line. It must
+		// agree with that: the way forward is a new cart, not reviewing this one —
+		// and, like the ended notice, it makes no claim about money.
+		const message = cartErrorMessage("RESERVATION_LOST");
+		expect(message).toMatch(/expired/i);
+		expect(message).toMatch(/new cart/i);
+		expect(message).not.toMatch(/review your cart|try again/i);
+		expect(message).not.toMatch(/charged|refund/i);
 	});
 
 	test("INVALID_EMAIL is specific enough to act on", () => {
