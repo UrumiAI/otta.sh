@@ -593,7 +593,6 @@ describeEachDialect("order flow", (ctx) => {
 				await expireOrders(h.expireDeps);
 				return h.store.markPaid(id);
 			},
-			markFailed: (id) => h.store.markFailed(id),
 			expire: (id, at) => h.store.expire(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),
@@ -827,7 +826,7 @@ describeEachDialect("order flow", (ctx) => {
 				line1: "12 Analytical Way",
 				line2: "Unit 4",
 				city: "London",
-				region: "Greater London",
+				region: "LND",
 				postalCode: "EC1A 1BB",
 				country: "GB",
 				email: "ada@example.com",

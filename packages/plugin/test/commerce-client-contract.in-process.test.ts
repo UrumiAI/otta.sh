@@ -31,20 +31,17 @@
  * Rows ARE cleared per case here, which is what makes `reset()` a real reset in
  * this tier rather than the documented no-op the HTTP tier implemented.
  *
- * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE; the HTTP tier
- * declared the reverse, and the two gaps were real and opposite rather than a
- * tier excusing itself. Each is still pinned by a case that names its own gate,
- * so a test report says what skipped and why. The clock is offerable HERE
- * because this backend is rebuilt per case, so winding it forward costs nothing
- * `reset()` cannot put back. The gateways are not offerable here YET, because the
- * payment adapters have not moved in-process; with the HTTP tier gone the gated
- * checkout and refund-ceiling cases therefore skip everywhere, and their
- * invariants are held at the DOMAIN layer meanwhile (see the note on
- * `CommerceClientTier.payments`). When the adapters land, the payments hook
- * appears here and those cases start running with no edit to any case.
+ * THIS TIER DECLARES BOTH OPTIONAL HOOKS. The clock is offerable because this
+ * backend is rebuilt per case, so winding it forward costs nothing `reset()`
+ * cannot put back. The payments hook is offerable because the tier composes a
+ * `FakePaymentGateway` for `stripe` into both the storefront client and the
+ * admin orders client, through the same `gateways` option production's
+ * composition roots use — so the gated checkout and refund cases run here.
+ * The fake stands in for the PROVIDER only; the order store, the refund ledger
+ * and its ceiling arbitration are the real adapters.
  */
 import { email as toEmail } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
@@ -81,6 +78,16 @@ function inProcessTier(): CommerceClientTier {
 	 * decides at COLLECTION time which cases this tier's hooks let it run.
 	 */
 	const clock = new FixedClock(new Date());
+	/**
+	 * The PROVIDER stand-ins, one per method, with the real adapters' honest
+	 * capabilities: Stripe can move money back (`refundable: true`), x402 cannot, so
+	 * a refund against an x402 order is recorded manually. Composed into the
+	 * storefront client and the admin orders client through the same `gateways`
+	 * option production's composition roots pass.
+	 */
+	const stripeGateway = new FakePaymentGateway({ id: "stripe" });
+	const x402Gateway = new FakePaymentGateway({ id: "x402" });
+	const gateways = { stripe: stripeGateway, x402: x402Gateway };
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
@@ -96,7 +103,7 @@ function inProcessTier(): CommerceClientTier {
 		name: "in-process, plugin storage, sqlite",
 		async setup() {
 			if (harness !== undefined) return; // one database per tier, however many slices ask
-			harness = await makeInProcessCommerce({ clock });
+			harness = await makeInProcessCommerce({ clock, gateways });
 			client = harness.client;
 		},
 		async teardown() {
@@ -130,7 +137,7 @@ function inProcessTier(): CommerceClientTier {
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
 			const ctx = harnessOrThrow().ctx;
 			return {
-				orders: new InProcessAdminOrdersClient(ctx, { clock }),
+				orders: new InProcessAdminOrdersClient(ctx, { clock, gateways }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
 				rules: new InProcessAdminRulesClient(ctx, { clock }),
 				reporting: new InProcessReportingSettingsClient(ctx, { clock }),
@@ -143,6 +150,22 @@ function inProcessTier(): CommerceClientTier {
 		clock: {
 			async advance(ms: number) {
 				clock.advance(ms);
+			},
+		},
+		payments: {
+			method: "stripe",
+			manualRefundMethod: "x402",
+			providerRefundCalls() {
+				return [stripeGateway, x402Gateway].flatMap((gateway) =>
+					gateway.refundCalls.map((call) => ({
+						gateway: gateway.id,
+						orderId: call.orderId,
+						providerRef: call.providerRef,
+						amountCents: call.amount,
+						currency: call.currency,
+						idempotencyKey: call.idempotencyKey,
+					})),
+				);
 			},
 		},
 		arrange: {
@@ -197,6 +220,7 @@ function inProcessTier(): CommerceClientTier {
 						...(spec.price !== undefined ? { price: spec.price } : {}),
 						...(spec.title !== undefined ? { title: spec.title } : {}),
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
+						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},
 					spec.idempotencyKey,
 				);
@@ -488,5 +512,153 @@ describe("in-process admin orders: search is PREFIX-only, by dialect (ADR-0019 �
 		const midString = await orders.listOrders({ search: "guerite@" });
 		expect(midString.orders).toEqual([]);
 		expect(midString.total).toBe(0);
+	});
+});
+
+/**
+ * FAIL-CLOSED WITH NO GATEWAY, pinned on this tier because the shared contract
+ * cannot reach it any more: the tier above composes gateways, so the contract's
+ * no-gateway case skips. A deployment with no Stripe secrets gets an admin orders
+ * client with an EMPTY gateway map (`makeAdminClients`), and a refund must then be
+ * refused — never recorded as if money had moved — even on a PAID order with a
+ * real capture, where every other check would pass.
+ */
+describe("in-process admin refunds: NO gateway configured stays fail-closed", () => {
+	let harness: InProcessCommerceHarness;
+	let orders: InProcessAdminOrdersClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		orders = new InProcessAdminOrdersClient(harness.ctx);
+		await sharedTierSeeders({
+			orderStore: harness.stores.orderStore,
+			addressStore: harness.stores.addressStore,
+			sessionStore: harness.stores.sessionStore,
+			shippingRules: harness.stores.shippingRules,
+			couponStore: harness.stores.couponStore,
+			taxRules: harness.stores.taxRules,
+		}).order({
+			orderId: "nogw-ref-1",
+			buyerRef: "nogw-ref@example.test",
+			captured: { amountCents: 1500, providerRef: "pi_nogw_ref_1" },
+		});
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("a refund against a paid, captured order is refused 409 REFUND_GATEWAY_UNAVAILABLE and records nothing", async () => {
+		// The panel is told the truth first: money is held, but nothing can move it.
+		expect(await orders.getRefunds("nogw-ref-1")).toMatchObject({
+			capturedTotalCents: 1500,
+			remainingCents: 1500,
+			refundable: false,
+		});
+		expect(
+			await orders.refundOrder(
+				"nogw-ref-1",
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: "nogw-ref-1-a" },
+			),
+		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+		expect(await orders.getRefunds("nogw-ref-1")).toMatchObject({
+			refunds: [],
+			refundedTotalCents: 0,
+		});
+		expect(harness.egressAttempts()).toBe(0);
+	});
+});
+
+/**
+ * ADR-0021 Decision 10: an overlap the admin should have refused (two zones
+ * listing the same code) is resolved at runtime to the LOWEST zone id, and the
+ * tie is logged — with zone ids and the matched code ONLY. No address, no cart
+ * id: this log line leaves the plugin's process.
+ */
+describe("in-process commerce: a zone tie-break is logged with ids only", () => {
+	let harness: InProcessCommerceHarness;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("two zones listing US: the lowest id prices it, and one warn carries exactly {zoneId, ambiguousWith, matchedRegion}", async () => {
+		const { client, stores } = harness;
+		await stores.shippingRules.createZone({ id: "tie-b", name: "B", regions: ["US"] });
+		await stores.shippingRules.createZone({ id: "tie-a", name: "A", regions: ["US"] });
+		await client.upsertProductCommerce(
+			"prod-tie",
+			{ sku: "SKU-TIE", price: { amount: 1000, currency: "USD" }, initialOnHand: 3 },
+			"tie-seed",
+		);
+		await client.activateProductCommerce("prod-tie", "tie-publish", "2026-01-01T00:00:00.000Z");
+		const { cartId } = await client.createCart("USD");
+		const added = await client.addCartLine(cartId, "SKU-TIE", "prod-tie", 1, "tie-add");
+		if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const quoted = await client.quoteCheckout({
+				cartId,
+				destination: { country: "US", region: "NY" },
+			});
+			expect(quoted.ok && quoted.destination.zoneId).toBe("tie-a");
+			expect(warn).toHaveBeenCalledTimes(1);
+			const [message, payload] = warn.mock.calls[0] ?? [];
+			expect(message).toBe("[otta] shipping zone tie-break");
+			expect(Object.keys(payload as object).toSorted()).toEqual([
+				"ambiguousWith",
+				"matchedRegion",
+				"zoneId",
+			]);
+			expect(payload).toEqual({ zoneId: "tie-a", ambiguousWith: ["tie-b"], matchedRegion: "US" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+/**
+ * ADR-0021, the SECOND line of defence: the console validates zone regions
+ * before it writes, and the rules client refuses a non-code again, so no other
+ * caller of the surface can store a region checkout could never match.
+ */
+describe("in-process admin rules: zone regions must be ISO codes", () => {
+	let harness: InProcessCommerceHarness;
+	let rules: InProcessAdminRulesClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		rules = new InProcessAdminRulesClient(harness.ctx);
+	}, 120_000);
+	afterEach(async () => {
+		await harness.reset();
+	});
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("createZone / updateZone refuse ['UK'] and a non-array, and store codes uppercased", async () => {
+		await expectRefusal(rules.createZone({ id: "z-uk", name: "UK", regions: ["UK"] }), "regions");
+		expect(await harness.stores.shippingRules.getZone("z-uk")).toBeNull();
+
+		expect(
+			await rules.createZone({ id: "z-gb", name: "GB", regions: ["gb", "us-ca"] }),
+		).toMatchObject({
+			ok: true,
+			value: { regions: ["GB", "US-CA"] },
+		});
+		await expectRefusal(rules.updateZone("z-gb", { name: "GB", regions: ["UK"] }), "regions");
+		await expectRefusal(
+			rules.updateZone("z-gb", { name: "GB", regions: "GB" as unknown as string[] }),
+			"regions",
+		);
+		expect((await harness.stores.shippingRules.getZone("z-gb"))?.regions).toEqual(["GB", "US-CA"]);
+		expect(await rules.updateZone("z-gb", { name: "GB", regions: null })).toMatchObject({
+			ok: true,
+		});
 	});
 });

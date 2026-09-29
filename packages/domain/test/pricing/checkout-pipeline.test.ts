@@ -9,7 +9,7 @@ async function seedRules(
 	h: OrderHarness,
 	opts: { shippingCents?: number; taxBps?: number; shippingTaxable?: boolean } = {},
 ): Promise<void> {
-	await h.shippingRules.createZone({ id: "z-us", name: "US", regions: null });
+	await h.shippingRules.createZone({ id: "z-us", name: "US", regions: ["US"] });
 	await h.shippingRules.createMethod({
 		id: "m-flat",
 		zoneId: "z-us",
@@ -37,7 +37,15 @@ function checkoutCmd(cartId: string, over: Record<string, unknown> = {}) {
 		idempotencyKey: idempotencyKey("k-checkout"),
 		buyerRef: "buyer@example.com",
 		paymentMethod: "stripe" as const,
-		shippingZoneId: "z-us",
+		// The zone is derived from this address (ADR-0021) — US matches z-us.
+		shippingAddress: {
+			name: "Buyer",
+			line1: "1 Main St",
+			city: "Austin",
+			region: "TX",
+			postalCode: "73301",
+			country: "US",
+		},
 		shippingMethodId: "m-flat",
 		...over,
 	};

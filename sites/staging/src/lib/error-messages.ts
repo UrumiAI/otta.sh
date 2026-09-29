@@ -13,7 +13,47 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
+import type { CheckoutFailureReason } from "@otta-sh/plugin";
+
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
+
+/**
+ * #305 part 1 — the buyer's selection, refused at the summary or at place.
+ * Derived from the plugin's wire union with `Extract<>` and checked with
+ * `satisfies`, so a coupon or shipping reason added to the plugin without copy
+ * here fails the type check (`CheckoutFailureReason` is the wider union: it
+ * also carries the place-only `COUPON_MAX_PER_CUSTOMER`).
+ *
+ * No copy promises a refund: no order is minted before the coupon and the
+ * method are checked, so nothing was charged.
+ */
+const SELECTION_MESSAGES = {
+	COUPON_NOT_FOUND:
+		"We couldn't find that coupon code — check it and try again (codes are case-sensitive).",
+	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
+	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
+	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",
+	// Unreachable today (no customer id is passed at checkout), but in the union.
+	COUPON_MAX_PER_CUSTOMER: "You've already used that coupon as many times as it allows.",
+	COUPON_CURRENCY_MISMATCH: "That coupon can't be used with this store's currency.",
+	SHIPPING_METHOD_NOT_FOUND: "That delivery option is no longer available — please choose another.",
+	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
+	// #305 part 2 (ADR-0021): the zone is derived from the address.
+	SHIPPING_ZONE_NOT_MATCHED: "We don't ship to this address.",
+	// Neutral about delivery: the site shows it only for a cart that ships (a
+	// digital-only review has no address block), but the words stay true for
+	// an API caller's digital order with a bad region too.
+	SHIPPING_REGION_CODE_REQUIRED:
+		"Enter your state/province code (e.g. CA), or leave it blank if your country doesn't use one.",
+	SHIPPING_METHOD_NOT_IN_ZONE: "Delivery options changed for your address — please choose again.",
+	SHIPPING_METHOD_REQUIRED: "There are no delivery options for this address.",
+	// For API callers: no page of this site sends a method for a cart with
+	// nothing to ship (the summary drops a stale one silently).
+	SHIPPING_METHOD_NOT_APPLICABLE: "Your order doesn't need delivery.",
+} satisfies Record<
+	Extract<CheckoutFailureReason, `COUPON_${string}` | `SHIPPING_${string}`>,
+	string
+>;
 
 const MESSAGES: Record<string, string> = {
 	OUT_OF_STOCK: "Sorry, that item is out of stock.",
@@ -58,10 +98,12 @@ const MESSAGES: Record<string, string> = {
 		"This checkout page was out of date — please review your order and place it again.",
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
+	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
+	...SELECTION_MESSAGES,
 	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
 	// A failed magic link. Each says what to do next, and none says anything
 	// about whether an account exists.

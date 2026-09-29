@@ -16,7 +16,7 @@
  * and a suite can assert on the count, which is what turns "sends no mail" from a
  * claim into a test.
  */
-import type { Clock, EmailSender } from "@otta-sh/domain";
+import type { Clock, EmailSender, PaymentGateway, PaymentMethod } from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
@@ -86,6 +86,7 @@ export interface MakeInProcessCommerceOptions {
 	 * deployment built without an email API URL gets: the unconfigured arm.
 	 */
 	emailSender?: EmailSender;
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
 }
 
 export async function makeInProcessCommerce(
@@ -107,7 +108,10 @@ export async function makeInProcessCommerce(
 	};
 	// ONE options object for both constructions, so the client's own stores and the
 	// harness's second set share whatever clock the caller passed.
-	const shared = options.clock !== undefined ? { clock: options.clock } : {};
+	const shared = {
+		...(options.clock !== undefined ? { clock: options.clock } : {}),
+		...(options.gateways !== undefined ? { gateways: options.gateways } : {}),
+	};
 	const stores = createInProcessCommerceStores(ctx, shared);
 	return {
 		client: new InProcessCommerceClient(ctx, {

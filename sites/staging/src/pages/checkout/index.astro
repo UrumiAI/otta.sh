@@ -16,6 +16,23 @@
  *    over the view model's `CheckoutAmountView`s untouched and never inspects a
  *    label (docs/theme/TEMPERED.md §7).
  *
+ * The coupon (#305 part 1) rides the URL as `?coupon=` (checkout-selection.ts):
+ * a refused one is a notice beside the undiscounted totals, never a bounce. Once
+ * the cart has become an order the review is LOCKED to that order — its totals,
+ * its coupon — and the order's state decides what may be offered: a pending
+ * order can still be paid, an ended one cannot (the page offers a new cart and
+ * no pay button), and a paid one never reaches here (checkoutEntryRedirect sends
+ * it to its confirmation).
+ *
+ * DELIVERY (#305 part 2, ADR-0021). The shipping/tax zone is derived from
+ * where the order goes, so the review asks for that first: a second zero-JS GET
+ * form — `?country=&region=&method=`, only coarse codes and an opaque id in the
+ * URL — prices the cart for the destination and offers the matched zone's
+ * delivery options as radios (a lone priced option comes back preselected).
+ * The place form then carries the destination and the method the totals were
+ * priced with as hidden fields, and the typed street address beside them. As
+ * with the coupon, resubmitting the delivery form loses typed address fields.
+ *
  * Shape (§8): step track, then two panels — the details form left (~1.15fr),
  * the order ledger + totals right.
  */
@@ -31,19 +48,43 @@ import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import {
+	readCouponParam,
+	readDestinationParams,
+	readMethodParam,
+} from "../../lib/checkout-selection.js";
+import { countryOptions } from "../../lib/countries.js";
+import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { checkoutFootnote } from "../../lib/totals.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
+/** Trimmed, case kept. A code over the plugin's cap is refused HERE (as not
+ *  found) and never dispatched. */
+const coupon = readCouponParam(Astro.url);
+/** Where the order goes (ADR-0021). A region that is not even a code is refused
+ *  HERE and never dispatched; a destination that changed from the one the page
+ *  was rendered for drops the method chosen for the old one. */
+const destinationRead = readDestinationParams(Astro.url);
+const method = destinationRead.methodDropped ? undefined : readMethodParam(Astro.url);
 
 const result =
 	cartId !== undefined && cartId.length > 0
 		? await dispatchOttaRoute<CheckoutSummaryRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
-				{ cartId },
+				{
+					cartId,
+					locale: SITE_LOCALE,
+					...(coupon.couponCode !== undefined ? { couponCode: coupon.couponCode } : {}),
+					...(destinationRead.destination !== undefined
+						? { destination: destinationRead.destination }
+						: {}),
+					...(method !== undefined ? { shippingMethodId: method } : {}),
+				},
 				Astro.url,
 			)
 		: null;
@@ -66,6 +107,50 @@ const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";
+
+/** LOCKED: this cart has already become an order (pending or ended — a paid one
+ *  was redirected above). ENDED: that order can no longer be paid, and
+ *  `expireOrders` does not reopen the cart, so a pay button would lead nowhere. */
+const locked = summary.orderCreated ? summary.order : null;
+const ended = locked?.phase === "ended";
+
+/** The coupon refusal to explain, from the plugin or from the cap check above.
+ *  Its code goes back into the field so a typo can be fixed. */
+const couponError = summary.selectionErrors.coupon ?? coupon.rejected ?? null;
+const couponValue = couponError?.code ?? summary.selection.couponCode ?? "";
+const shippingError = summary.selectionErrors.shippingMethod ?? null;
+/** A refused destination — by the plugin, or by the shape check above. */
+const destinationError = summary.selectionErrors.destination ?? destinationRead.rejected ?? null;
+
+/** The destination the totals were priced for, or null. */
+const destination = summary.selection.destination;
+/** What the delivery form's fields show: the priced destination, else what was
+ *  typed and refused (so a typo can be fixed). */
+const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
+const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
+
+/** The delivery form: an unlocked cart that ships, in a store with zones. */
+const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
+/** The address block: an unlocked cart that ships. On a store with NO zones
+ *  it also asks for the country; otherwise the country/region are the hidden
+ *  destination above. */
+const showAddress = locked === null && summary.requiresShipping;
+/** Named in the same language the summary formatted the money in. */
+const countries = countryOptions(SITE_LOCALE);
+const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
+
+/** The option the totals were priced with — stated beside the submit, so the
+ *  method charged is on the page even if a radio was changed without Update. */
+const chosenOption =
+	summary.shipping.options.find((option) => option.id === summary.selection.shippingMethodId) ??
+	null;
+
+/** Why the place button is not offered yet (unlocked only). */
+const notReadyCopy = summary.shipping.noOptions
+	? cartErrorMessage("SHIPPING_METHOD_REQUIRED")
+	: summary.shipping.status === "matched"
+		? "Choose a delivery option above to continue."
+		: "Choose where we're delivering above to continue.";
 
 /** SKU / qty / money — the same tape the home page opens with, itemised. The
  *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
@@ -96,6 +181,9 @@ const sumRows = [
 {/* The footer's currency comes from the totals this page already holds —
     the layout never invents one (§7). */}
 <Base title="Checkout" currency={totals.total.money?.currency ?? null}>
+	{/* The coupon code is in this page's URL; no subresource or outbound link
+	    may carry it off in a Referer. */}
+	<meta name="referrer" content="no-referrer" slot="head" />
 	{/* The components are wrapped rather than handed a class: a page's scoped
 	    selector deliberately cannot reach a component's root (see
 	    src/lib/rest-props.ts), so spacing AROUND one belongs to an element the
@@ -106,7 +194,32 @@ const sumRows = [
 	{error !== null && <div class="notice-slot"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
 	{
-		checkedOut && (
+		locked !== null && (
+			<div class="notice-slot">
+				{ended ? (
+					/* The `ended` phase — expired / failed — means NO LONGER PAYABLE,
+					   not "never charged": a declined attempt fails the order while its
+					   PaymentIntent stays confirmable, and a payment can land just after
+					   the TTL sweep. The public order carries no reconciliation flag, so
+					   this copy makes no claim about money either way — and promises no
+					   particular outcome: reconciliation may refund OR fulfil the order. */
+					<Notice lead="This checkout has ended.">
+						Its order can no longer be paid. If a payment did go through, contact the store with
+						your order number — shown on
+						<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a> — and they
+						will refund it or complete your order. Start a new cart to order again.
+					</Notice>
+				) : (
+					<Notice lead="Your order has already been created.">
+						Its coupon and delivery address can no longer be changed. To change them, start a new cart.
+					</Notice>
+				)}
+			</div>
+		)
+	}
+
+	{
+		(checkedOut || locked !== null) && (
 			<form method="POST" action="/checkout/new-cart" class="restart">
 				<button type="submit" class="u-btn u-btn-ghost">
 					Start a new cart
@@ -121,91 +234,314 @@ const sumRows = [
 				<h2 class="u-label head-label">Your details</h2>
 			</div>
 
-			<form method="POST" action="/checkout/place" class="details">
-				{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
-				    replays into the SAME order and the same PaymentIntent instead of
-				    minting a second order the CART_CHECKED_OUT fence would reject. */}
-				<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
-
-				{/* The note is a SIBLING of the label, not inside it. Nested, its
-				    ~25 words join the field's ACCESSIBLE NAME and get read out in
-				    full every time the input takes focus; `aria-describedby` is how
-				    a hint attaches — announced after the name, and as a hint. */}
-				<div class="field">
-					<label class="u-label" for="email">
-						Email <span class="req">required</span>
-					</label>
-					<input
-						type="email"
-						id="email"
-						name="email"
-						required
-						autocomplete="email"
-						aria-describedby="email-note"
-					/>
-					<span class="note" id="email-note">
-						We use this to send your order confirmation and to link the order to your account if
-						you sign in later.
-					</span>
-				</div>
-
-				<fieldset class="group">
-					<legend class="u-label head-label">Delivery address</legend>
-					<p class="note group-note">
-						Optional — fill it in completely, or leave it entirely blank.
-					</p>
-					<div class="fields">
-						<label class="field span2">
-							<span class="u-label">Full name</span>
-							<input type="text" name="name" autocomplete="name" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Address line 1</span>
-							<input type="text" name="line1" autocomplete="address-line1" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Address line 2</span>
-							<input type="text" name="line2" autocomplete="address-line2" />
-						</label>
-						<label class="field">
-							<span class="u-label">City</span>
-							<input type="text" name="city" autocomplete="address-level2" />
-						</label>
-						<label class="field">
-							<span class="u-label">Region / state</span>
-							<input type="text" name="region" autocomplete="address-level1" />
-						</label>
-						<label class="field">
-							<span class="u-label">Postal code</span>
-							<input type="text" name="postalCode" autocomplete="postal-code" />
-						</label>
-						<label class="field">
-							<span class="u-label">Country</span>
-							<input type="text" name="country" autocomplete="country-name" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Phone</span>
-							<input type="tel" name="phone" autocomplete="tel" />
-						</label>
-					</div>
-				</fieldset>
-
-				{
-					paymentConfigured ? (
-						<div>
-							<button type="submit" class="u-btn">
-								Continue to payment
-							</button>
+			{/* The coupon comes FIRST, and is a SIBLING of the place form, never
+			    nested in it: applying it is a GET navigation, which loses anything
+			    typed below — so the natural order is "coupon, then details". */}
+			{
+				!summary.orderCreated && (
+					<form method="GET" action="/checkout" class="coupon">
+						{/* The delivery choice rides along, so applying a coupon keeps it. */}
+						{destination !== null && (
+							<input type="hidden" name="country" value={destination.country} />
+						)}
+						{destination?.region != null && (
+							<input type="hidden" name="region" value={destination.region} />
+						)}
+						{summary.selection.shippingMethodId !== null && (
+							<input type="hidden" name="method" value={summary.selection.shippingMethodId} />
+						)}
+						<div class="field">
+							<label class="u-label" for="coupon">
+								Coupon code
+							</label>
+							<div class="coupon-row">
+								<input
+									type="text"
+									id="coupon"
+									name="coupon"
+									maxlength="200"
+									autocomplete="off"
+									value={couponValue}
+									aria-describedby={couponError !== null ? "coupon-error coupon-note" : "coupon-note"}
+								/>
+								<button type="submit" class="u-btn u-btn-ghost">
+									Apply
+								</button>
+							</div>
+							{couponError !== null && (
+								<div id="coupon-error">
+									<Notice>{cartErrorMessage(couponError.reason)}</Notice>
+								</div>
+							)}
+							<span class="note" id="coupon-note">
+								Codes are case-sensitive. Apply a code before filling in your details — applying it
+								reloads this page.
+								{summary.selection.couponCode !== null && (
+									<>
+										{" "}
+										<a href="/checkout">Remove coupon</a>
+									</>
+								)}
+							</span>
 						</div>
-					) : (
-						/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
-						   rather than restated here (§10). */
-						<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
-							This order can't be placed. Nothing has been charged and your cart is unchanged.
-						</Notice>
-					)
-				}
-			</form>
+					</form>
+				)
+			}
+
+			{/* DELIVERY (ADR-0021) — a SIBLING GET form like the coupon's, never
+			    nested: choosing where the order goes re-prices the review. */}
+			{
+				showDelivery && (
+					<form method="GET" action="/checkout" class="delivery" id="delivery">
+						<fieldset class="group">
+							<legend class="u-label head-label">Delivery</legend>
+							{destinationError !== null && (
+								<Notice>{cartErrorMessage(destinationError.reason)}</Notice>
+							)}
+							{shippingError !== null && <Notice>{cartErrorMessage(shippingError.reason)}</Notice>}
+							{summary.shipping.noOptions && (
+								<Notice>{cartErrorMessage("SHIPPING_METHOD_REQUIRED")}</Notice>
+							)}
+							<div class="fields">
+								<label class="field">
+									<span class="u-label">Country</span>
+									<select name="country" autocomplete="country" required>
+										<option value="">Choose a country…</option>
+										{countries.map((option) => (
+											<option value={option.code} selected={option.code === countryValue}>
+												{option.label}
+											</option>
+										))}
+									</select>
+								</label>
+								<div class="field">
+									<label class="u-label" for="delivery-region">
+										State / province
+									</label>
+									<input
+										type="text"
+										id="delivery-region"
+										name="region"
+										autocomplete="address-level1"
+										maxlength="6"
+										pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+										value={regionValue}
+										aria-describedby="region-note"
+									/>
+									<span class="note" id="region-note">
+										State/province code, e.g. CA — leave blank if your country doesn't use one.
+									</span>
+								</div>
+							</div>
+							{/* The destination these options were priced for: a changed country or
+							    region drops a method chosen for the old one. */}
+							<input type="hidden" name="fromCountry" value={destination?.country ?? ""} />
+							<input type="hidden" name="fromRegion" value={destination?.region ?? ""} />
+							{summary.selection.couponCode !== null && (
+								<input type="hidden" name="coupon" value={summary.selection.couponCode} />
+							)}
+							{summary.shipping.status === "matched" && summary.shipping.options.length > 0 && (
+								<div class="methods" role="radiogroup" aria-label="Delivery options">
+									{summary.shipping.options.map((option) => (
+										<label class="method">
+											<input
+												type="radio"
+												name="method"
+												value={option.id}
+												disabled={option.disabled}
+												checked={option.selected}
+											/>
+											<span>{option.label}</span>
+											<span class="method-price u-mono">{option.price}</span>
+										</label>
+									))}
+								</div>
+							)}
+							<div>
+								<button type="submit" class="u-btn u-btn-ghost">
+									Update delivery
+								</button>
+							</div>
+						</fieldset>
+					</form>
+				)
+			}
+
+			{
+				!ended && (
+					<form method="POST" action="/checkout/place" class="details">
+						{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
+						    replays into the SAME order and the same PaymentIntent instead of
+						    minting a second order the CART_CHECKED_OUT fence would reject. */}
+						<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
+						{/* Exactly the coupon the totals beside this form were priced with;
+						    the place re-checks it. Absent when none applied. */}
+						{summary.selection.couponCode !== null && (
+							<input type="hidden" name="couponCode" value={summary.selection.couponCode} />
+						)}
+						{/* The method the totals were priced with. NOT on the locked page: the
+						    same-key place replays the order before it would look at one, and
+						    the locked form sends key, email and coupon only. */}
+						{locked === null && summary.selection.shippingMethodId !== null && (
+							<input
+								type="hidden"
+								name="shippingMethodId"
+								value={summary.selection.shippingMethodId}
+							/>
+						)}
+
+						{/* The note is a SIBLING of the label, not inside it. Nested, its
+						    ~25 words join the field's ACCESSIBLE NAME and get read out in
+						    full every time the input takes focus; `aria-describedby` is how
+						    a hint attaches — announced after the name, and as a hint. */}
+						<div class="field">
+							<label class="u-label" for="email">
+								Email <span class="req">required</span>
+							</label>
+							<input
+								type="email"
+								id="email"
+								name="email"
+								required
+								autocomplete="email"
+								aria-describedby="email-note"
+							/>
+							<span class="note" id="email-note">
+								We use this to send your order confirmation and to link the order to your account if
+								you sign in later.
+							</span>
+						</div>
+
+						{/* LOCKED: the order's ship-to is fixed — a same-key place replays the
+						    order and would silently drop an address typed here. The email above
+						    stays: place.ts requires it. A digital-only cart ships nothing. */}
+						{
+							showAddress && (
+								<fieldset class="group">
+									<legend class="u-label head-label">Delivery address</legend>
+									{showDelivery ? (
+										<>
+											{/* The destination the review priced, as hidden fields: place.ts
+											    counts only the typed fields toward all-or-nothing here. */}
+											<input type="hidden" name="addressMode" value="zoned" />
+											{destination !== null && (
+												<>
+													<input type="hidden" name="country" value={destination.country} />
+													{destination.region !== null && (
+														<input type="hidden" name="region" value={destination.region} />
+													)}
+													<p class="note group-note">
+														Delivering to {countryName(destination.country)}
+														{destination.region !== null && <>, {destination.region}</>} —{" "}
+														<a href="#delivery">change</a>
+													</p>
+												</>
+											)}
+										</>
+									) : (
+										<p class="note group-note">
+											Optional — fill it in completely, or leave it entirely blank.
+										</p>
+									)}
+									<div class="fields">
+										<label class="field span2">
+											<span class="u-label">
+												Full name{summary.addressRequired && <span class="req">required</span>}
+											</span>
+											<input type="text" name="name" autocomplete="name" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">
+												Address line 1
+												{summary.addressRequired && <span class="req">required</span>}
+											</span>
+											<input type="text" name="line1" autocomplete="address-line1" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Address line 2</span>
+											<input type="text" name="line2" autocomplete="address-line2" />
+										</label>
+										<label class="field">
+											<span class="u-label">
+												City{summary.addressRequired && <span class="req">required</span>}
+											</span>
+											<input type="text" name="city" autocomplete="address-level2" />
+										</label>
+										<label class="field">
+											<span class="u-label">
+												Postal code{summary.addressRequired && <span class="req">required</span>}
+											</span>
+											<input type="text" name="postalCode" autocomplete="postal-code" />
+										</label>
+										{!showDelivery && (
+											<>
+												<label class="field">
+													<span class="u-label">Country</span>
+													<select name="country" autocomplete="country">
+														<option value="">Choose a country…</option>
+														{countries.map((option) => (
+															<option value={option.code}>{option.label}</option>
+														))}
+													</select>
+												</label>
+												<label class="field">
+													<span class="u-label">State / province code</span>
+													<input
+														type="text"
+														name="region"
+														autocomplete="address-level1"
+														maxlength="6"
+														pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+													/>
+												</label>
+											</>
+										)}
+										<label class="field span2">
+											<span class="u-label">Phone</span>
+											<input type="tel" name="phone" autocomplete="tel" />
+										</label>
+									</div>
+								</fieldset>
+							)
+						}
+
+						{
+							chosenOption !== null && locked === null && (
+								<p class="note delivery-line">
+									Delivery: {chosenOption.label} ({chosenOption.price})
+								</p>
+							)
+						}
+
+						{
+							paymentConfigured ? (
+								summary.readyToPlace ? (
+									<div>
+										<button type="submit" class="u-btn">
+											Continue to payment
+										</button>
+									</div>
+								) : (
+									<Notice>{notReadyCopy}</Notice>
+								)
+							) : locked !== null ? (
+								/* LOCKED: an order exists and the cart is checked out, so the
+								   unlocked copy's "nothing has been charged" and "your cart is
+								   unchanged" would both be wrong here. */
+								<Notice>
+									Card payment isn't set up on this store, so this order can't be paid right now.
+								</Notice>
+							) : (
+								/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
+								   rather than restated here (§10). */
+								<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
+									This order can't be placed. Nothing has been charged and your cart is unchanged.
+								</Notice>
+							)
+						}
+					</form>
+				)
+			}
 		</section>
 
 		<section class="panel">
@@ -227,6 +563,11 @@ const sumRows = [
 				rows={sumRows}
 				total={totals.total}
 				excludesUncalculated={totals.totalExcludesUncalculated}
+				footnote={checkoutFootnote(
+					summary.uncalculatedReason,
+					sumRows,
+					totals.totalExcludesUncalculated,
+				)}
 			/>
 		</section>
 	</div>
@@ -296,6 +637,19 @@ const sumRows = [
 		color: var(--u-ink);
 	}
 
+	.coupon-row {
+		display: flex;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+	.coupon-row input {
+		flex: 1;
+		min-width: 0;
+	}
+	.coupon .note a {
+		color: var(--u-mute);
+	}
+
 	.details {
 		display: flex;
 		flex-direction: column;
@@ -310,7 +664,8 @@ const sumRows = [
 		min-width: 0;
 	}
 
-	.field input {
+	.field input,
+	.field select {
 		width: 100%;
 		padding: 0.625rem 0.75rem;
 		border: var(--u-hair);
@@ -363,6 +718,32 @@ const sumRows = [
 		padding: 0.25rem 0 0.75rem;
 		margin-bottom: 1rem;
 		border-bottom: var(--u-hair);
+	}
+
+	.delivery {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		min-width: 0;
+	}
+	.methods {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin: 1rem 0;
+	}
+	.method {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		font-size: 0.875rem;
+	}
+	.method-price {
+		margin-inline-start: auto;
+	}
+	.delivery-line {
+		font-size: 0.8125rem;
+		color: var(--u-ink);
 	}
 
 	.fields {

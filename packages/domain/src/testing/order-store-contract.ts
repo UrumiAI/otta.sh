@@ -332,12 +332,12 @@ export function orderStoreContract(
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
 		});
 
-		test("markPaid on a failed order is rejected (illegal transition → false)", async () => {
+		test("markPaid on an expired order is rejected (illegal transition → false)", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
-			expect(await store.markFailed(orderId("ord-1"))).toBe(true);
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
-			expect((await store.getById(orderId("ord-1")))?.state).toBe("failed");
+			expect((await store.getById(orderId("ord-1")))?.state).toBe("expired");
 		});
 
 		test("expire transitions pending→expired only when hold_expires_at<=now", async () => {

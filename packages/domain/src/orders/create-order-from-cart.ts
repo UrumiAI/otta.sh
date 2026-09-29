@@ -56,22 +56,23 @@ export interface CreateOrderCommand {
 	/** Email/session claim token — the pre-Phase-5 entitlement key (§6). */
 	buyerRef: string;
 	paymentMethod: PaymentMethod;
-	// -- Phase 6 checkout inputs (all optional; absent ⇒ zero shipping/tax) ----
-	/** The buyer's tax zone. */
-	shippingZoneId?: string;
-	/** The selected shipping method. */
+	// -- Phase 6 checkout inputs -------------------------------------------
+	// There is deliberately NO zone: the shipping/tax zone is derived from
+	// `shippingAddress` (ADR-0021 Decision 1). Nobody can supply one.
+	/** The selected shipping method. Required for a physical cart once the
+	 *  address matched a zone; refused for a digital-only cart. */
 	shippingMethodId?: string;
 	/** An optional coupon code, redeemed atomically alongside order creation. */
 	couponCode?: string;
 	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
 	customerId?: CustomerId;
 	/**
-	 * The optional shipping address the checkout submitted (ADR-0009). Validated
-	 * (shape + bounds) and snapshotted IMMUTABLY onto the order — a frozen copy of
-	 * whatever checkout submitted (the Shopify model), never a live pointer to the
-	 * profile address book. Absent ⇒ no ship-to captured (allowed this slice:
-	 * required-for-physical enforcement is deferred until the storefront UI
-	 * collects it, per ADR-0009 sequencing).
+	 * The shipping address the checkout submitted (ADR-0009). Validated (shape,
+	 * bounds, ISO codes — ADR-0021) and snapshotted IMMUTABLY onto the order — a
+	 * frozen copy of whatever checkout submitted (the Shopify model), never a
+	 * live pointer to the profile address book. It is the ONLY input to the
+	 * shipping/tax zone. Required for a cart with a physical line when zones
+	 * are configured (`MISSING_SHIPPING_ADDRESS`); optional otherwise.
 	 */
 	shippingAddress?: OrderAddressInput;
 }
@@ -165,15 +166,24 @@ export async function createOrderFromCart(
 		return { ok: true, order: already, intent };
 	}
 
-	// Validate + normalize the optional ship-to snapshot (ADR-0009) BEFORE minting
-	// anything: a malformed address must reject the checkout cleanly, never a
-	// half-written order. A replay short-circuited above, so this never re-runs for
-	// an order that already captured its address. Absent ⇒ null (capture-optional
-	// this slice — required-for-physical is a later flip).
+	// Validate + normalize the ship-to snapshot (ADR-0009, ADR-0021) BEFORE
+	// minting anything: a malformed address must reject the checkout cleanly,
+	// never a half-written order. A replay short-circuited above, so this never
+	// re-runs for an order that already captured its address — the locked
+	// review's retry sends none. The code rules hold for EVERY order, digital
+	// ones included; whether an address is REQUIRED is decided below.
 	let shippingAddress: OrderAddress | null = null;
 	if (command.shippingAddress !== undefined) {
 		const normalized = normalizeOrderAddress(command.shippingAddress);
-		if (!normalized.ok) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
+		if (!normalized.ok) {
+			return {
+				ok: false,
+				reason:
+					normalized.reason === "REGION_NOT_A_CODE"
+						? "SHIPPING_REGION_CODE_REQUIRED"
+						: "INVALID_SHIPPING_ADDRESS",
+			};
+		}
 		shippingAddress = normalized.value;
 	}
 
@@ -254,7 +264,10 @@ export async function createOrderFromCart(
 
 	// Phase 6: compute the full totals breakdown (subtotal → discount → shipping
 	// → tax) via the pipeline — this REPLACES the Phase-4 naive Σ(line) stub. Pure
-	// engine after the store reads; read-only (no redemption here).
+	// engine after the store reads; read-only (no redemption here). The zone is
+	// derived from the address inside the quote (ADR-0021), so the review and
+	// the order resolve it identically.
+	const requiresShipping = lines.some((line) => line.fulfillmentKind === "physical");
 	const quote = await computeQuote(
 		{
 			shippingRules: deps.shippingRules,
@@ -265,13 +278,30 @@ export async function createOrderFromCart(
 		{
 			currency,
 			lines: totalsLines,
-			...(command.shippingZoneId !== undefined ? { zoneId: command.shippingZoneId } : {}),
+			requiresShipping,
+			...(shippingAddress !== null
+				? { destination: { country: shippingAddress.country, region: shippingAddress.region } }
+				: {}),
 			...(command.shippingMethodId !== undefined ? { methodId: command.shippingMethodId } : {}),
 			...(command.couponCode !== undefined ? { couponCode: command.couponCode } : {}),
 		},
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;
+	// Completeness is enforced HERE only, never by the read-only quote (a review
+	// may be priced before the buyer has chosen) — and before any redemption or
+	// mint.
+	const zone = quote.destination;
+	if (zone.status === "address_needed") return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	const methodId = command.shippingMethodId ?? "";
+	if (zone.status === "matched" && methodId === "") {
+		return { ok: false, reason: "SHIPPING_METHOD_REQUIRED" };
+	}
+	// ADR-0021 Decision 7: what priced the shipping and the tax.
+	const shippingMethodSnapshot =
+		zone.status === "matched"
+			? { zoneId: zone.zoneId, methodId, matchedRegion: zone.matchedRegion }
+			: null;
 
 	const freshOrderId = brandOrderId(deps.idGen.newId());
 	const holdExpiresAt = new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
@@ -318,8 +348,7 @@ export async function createOrderFromCart(
 			lines,
 			breakdown,
 			couponRecord: quote.couponRecord,
-			shippingZoneId: command.shippingZoneId,
-			shippingMethodId: command.shippingMethodId,
+			shippingMethodSnapshot,
 			shippingAddress,
 			gateway,
 			onFailure: async () => {
@@ -378,8 +407,9 @@ interface FinalizeContext {
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
 	couponRecord: CouponRecord | null;
-	shippingZoneId?: string;
-	shippingMethodId?: string;
+	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
+	 *  matched (no zones configured, or nothing ships). */
+	shippingMethodSnapshot: { zoneId: string; methodId: string; matchedRegion: string } | null;
 	/** The validated ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
 	gateway: PaymentGateway;
@@ -430,10 +460,7 @@ async function finalizeOrder(
 			shipping: breakdown.shippingCents,
 			tax: breakdown.taxCents,
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
-			shippingMethodSnapshot:
-				ctx.shippingMethodId !== undefined
-					? { zoneId: ctx.shippingZoneId ?? null, methodId: ctx.shippingMethodId }
-					: null,
+			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			taxBreakdown: {
 				lines: breakdown.lineBreakdown,
 				shippingTaxCents: breakdown.shippingTaxCents,

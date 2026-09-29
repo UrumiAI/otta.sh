@@ -281,7 +281,6 @@ function settleDeps(stores: ReturnType<typeof createInProcessCommerceStores>): S
 		entitlementStore: stores.entitlementStore,
 		paymentEventStore: stores.paymentEventStore,
 		inventoryStore: stores.inventory,
-		couponStore: stores.couponStore,
 		clock: stores.clock,
 	};
 }

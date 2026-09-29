@@ -1,9 +1,11 @@
+import { COUNTRY_CODES, parseZoneRegions, validateZoneRegionsInput } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
 	AccordionBlock,
 	ActionsBlock,
 	AdminPageConfig,
+	BannerBlock,
 	Block,
 	ButtonElement,
 	FieldsBlock,
@@ -71,13 +73,17 @@ import {
  * accordion wrapping one row would cost a click and save nothing. It keeps
  * its existing inline `fields` + edit-or-create form shape.
  *
- * REGIONS, presented honestly: `ShippingZone.regions` is opaque config the
- * pricing engine never reads (`@otta-sh/domain`'s `ShippingRulesStore` doc:
- * "opaque config the engine never reads") — checkout/quote takes an explicit
- * `shippingZoneId`, not an address-to-zone match. That fact does not fit the
- * zones level's ≤140-char page context, so it lives as one `context` line on
- * the "New shipping zone" create screen instead (F-8) — the one place an
- * operator is about to type into the field it explains.
+ * REGIONS ARE ISO CODES (ADR-0021). Checkout DERIVES the buyer's shipping/tax
+ * zone from their address by matching these codes — an ISO 3166-1 country
+ * (`US`) or an ISO 3166-2 subdivision (`US-CA`), exactly, the most specific
+ * zone winning. So the console refuses anything else on write (naming each bad
+ * token, with a hint), refuses a code another zone already lists (an overlap
+ * would make the match ambiguous), labels the stored tokens that can never
+ * match (zones written before the rule), and warns about such zones on this
+ * landing screen and on the zone's own methods screen. How matching works does
+ * not fit the zones level's ≤140-char page context, so it lives as one
+ * `context` line on the "New shipping zone" create screen (F-8) — the one place
+ * an operator is about to type into the field it explains.
  *
  * NO METHOD/RATE COUNT ON A ZONE OR METHOD LABEL (D-6): `ShippingZoneWire` is
  * `{id, name, regions}` and `ShippingMethodWire` carries no rate count either
@@ -365,6 +371,7 @@ function zonesBlocks(
 		createActionBlock("ship:create-zone-action", ACTION_OPEN_CREATE_ZONE, "New shipping zone"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push(...zoneRegionWarnings(zones));
 
 	if (zones.length === 0) {
 		blocks.push(
@@ -433,6 +440,7 @@ function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
 		// just a string with no grammar to violate.
 		block_id: `ship:zone:${zone.id}`,
 		blocks: [
+			{ type: "context", text: zoneMatchSummary(zone.regions) },
 			editZoneForm(zone),
 			{
 				type: "actions",
@@ -517,7 +525,7 @@ function newZoneScreen(draft: ZoneDraft | undefined, notice: Notice | undefined)
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({
 		type: "context",
-		text: "Regions are a reference list only — checkout does not yet auto-match a buyer's address to a zone.",
+		text: "Regions are ISO codes: a country (US) or state/province (US-CA). Addresses match exactly; the most specific zone wins.",
 	});
 	blocks.push(createZoneForm(draft));
 	return blocks;
@@ -637,11 +645,26 @@ function methodsLevel() {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
 			const methods = await client.listMethods(zoneId);
-			return { items: await pricedMethods(client, methods, filter), nextCursor: null };
+			const items = await pricedMethods(client, methods, filter);
+			// SECONDARY and contained, like the price reads: the zone is read only for
+			// its legacy-regions warning, and losing it must not blank the level.
+			try {
+				const zone = (await client.listZones()).find((z) => z.id === zoneId);
+				if (zone !== undefined) METHODS_ZONE.set(items, zone);
+			} catch (err) {
+				console.error("[otta] admin shipping zone read for the methods level failed:", err);
+			}
+			return { items, nextCursor: null };
 		},
 		render({ path, filter, items, nextToken, notice, renderState }) {
 			const zoneId = path[0] ?? "";
-			return methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
+			const blocks = methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
+			const zone = METHODS_ZONE.get(items);
+			const warnings = zone === undefined ? [] : zoneRegionWarnings([zone]);
+			if (warnings.length === 0 || renderState?.kind === "new-method") return blocks;
+			// Under the intro, above the rows — the same place the landing puts them.
+			const at = blocks.findIndex((b) => b.type === "actions");
+			return [...blocks.slice(0, at + 1), ...warnings, ...blocks.slice(at + 1)];
 		},
 		onError: () => methodsFailClosed(),
 	});
@@ -1296,8 +1319,11 @@ function createZoneAction() {
 					{ kind: "new-zone", draft },
 				);
 			}
-			const regions = parseRegionsInput(readString(values.regions) ?? "");
-			const result = await client.createZone({ id, name, regions });
+			const checked = await checkZoneRegions(client, readString(values.regions) ?? "", null);
+			if (!checked.ok) {
+				return showList(undefined, checked.notice("Zone not created"), { kind: "new-zone", draft });
+			}
+			const result = await client.createZone({ id, name, regions: checked.codes });
 			const notice = createZoneNotice(result, id, name);
 			// A SERVICE refusal keeps the draft too (a duplicate id is one edit
 			// away); success drops it, which is what returns the operator to the
@@ -1343,8 +1369,9 @@ function saveZoneAction() {
 				description: "Name cannot be blank.",
 			});
 		}
-		const regions = parseRegionsInput(readString(values.regions) ?? "");
-		const result = await client.updateZone(zoneId, { name, regions });
+		const checked = await checkZoneRegions(client, readString(values.regions) ?? "", zoneId);
+		if (!checked.ok) return showList(undefined, checked.notice("Zone not saved"));
+		const result = await client.updateZone(zoneId, { name, regions: checked.codes });
 		return showList(undefined, saveZoneNotice(result));
 	});
 }
@@ -1746,16 +1773,163 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 
 // -- regions (opaque, string[]-or-null) helpers ---------------------------------
 
-/** Parse the comma-separated regions text input into the wire's `string[] |
- *  null` — blank ⇒ `null` (an explicit clear on edit; simply "no regions" on
- *  create). Never throws: any token that trims to empty is dropped. */
-function parseRegionsInput(raw: string): string[] | null {
-	const parts = raw
-		.split(",")
-		.map((p) => p.trim())
-		.filter((p) => p.length > 0);
-	return parts.length > 0 ? parts : null;
+/**
+ * The regions input → the ISO codes to store (ADR-0021), or a refusal the
+ * screen shows as-is. Two checks, both before any write:
+ *  - every token is a country or a real `CC-SUB` code (the domain's
+ *    `validateZoneRegionsInput`) — each bad token is named, with a hint;
+ *  - no code is already listed by ANOTHER zone: an overlap would make an
+ *    address match two zones (checkout would take the lowest id and log it).
+ * Blank ⇒ `null` (no regions — a zone that matches no address).
+ */
+async function checkZoneRegions(
+	client: AdminRulesSurface,
+	raw: string,
+	selfId: string | null,
+): Promise<
+	{ ok: true; codes: string[] | null } | { ok: false; notice: (title: string) => Notice }
+> {
+	const validated = validateZoneRegionsInput(raw);
+	if (!validated.ok) {
+		const bad = validated.invalid.map(regionHint).join("; ");
+		return {
+			ok: false,
+			notice: (title) => ({
+				variant: "error",
+				title,
+				description: `Not ISO region codes: ${bad}. Use a country code (US) or a state/province code (US-CA).`,
+			}),
+		};
+	}
+	if (validated.codes === null) return { ok: true, codes: null };
+	const zones = await client.listZones();
+	for (const other of zones) {
+		if (other.id === selfId) continue;
+		const theirs = parseZoneRegions(other.regions).codes;
+		const shared = validated.codes.find((code) => theirs.includes(code));
+		if (shared !== undefined) {
+			return {
+				ok: false,
+				notice: (title) => ({
+					variant: "error",
+					title,
+					description: `${shared} is already in the zone "${other.name}" (${other.id}). A code can belong to one zone only — remove it there first.`,
+				}),
+			};
+		}
+	}
+	return { ok: true, codes: validated.codes };
 }
+
+/** One refused token, with the likeliest fix. */
+function regionHint(token: string): string {
+	const upper = token.trim().toUpperCase();
+	if (upper === "UK") return "UK (use GB)";
+	if (upper === "EU") return "EU (not a country — list its countries)";
+	const prefixed = /^([A-Z]{2})-/.exec(upper);
+	if (prefixed !== null && COUNTRY_CODES.has(prefixed[1] ?? "")) {
+		return `${token} (not a ${prefixed[1] ?? ""} subdivision)`;
+	}
+	return `${token} (not a code)`;
+}
+
+/** What a stored zone matches, for its row: its valid codes, and every legacy
+ *  token labelled as never matching. */
+function zoneMatchSummary(regions: unknown): string {
+	const { codes, invalid } = parseZoneRegions(regions);
+	const matches = codes.length > 0 ? `Matches: ${codes.join(", ")}` : "Matches no address";
+	const legacy = invalid.map((token) => `${token} (not a region code — never matches)`);
+	return [matches, ...legacy].join(" · ");
+}
+
+/**
+ * The landing (and methods-screen) warnings about zone regions checkout cannot
+ * use (ADR-0021), in this order:
+ *  - a zone that MATCHES NO ADDRESS — no valid code at all (`null`, `[]`, or
+ *    only legacy text). Before ADR-0021 a blank regions list was normal; now
+ *    such a zone's methods are never offered, and a store whose zones all match
+ *    nothing refuses every physical checkout;
+ *  - stored tokens that are not codes (zones written before the rule).
+ */
+function zoneRegionWarnings(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock[] {
+	const warnings: BannerBlock[] = [];
+	const unmatched = zones.filter((zone) => parseZoneRegions(zone.regions).codes.length === 0);
+	if (unmatched.length > 0) {
+		warnings.push({
+			type: "banner",
+			block_id: NO_MATCH_ZONES_BLOCK_ID,
+			variant: "alert",
+			title: "Some zones match no address",
+			description: fitDescription(
+				"These zones list no ISO code, so no order can be delivered through them. Add codes such as US, US-CA: ",
+				unmatched.map((zone) => `${zone.name} (${zone.id})`),
+			),
+		});
+	}
+	const legacy = legacyRegionsWarning(zones);
+	if (legacy !== null) warnings.push(legacy);
+	return warnings;
+}
+
+const NO_MATCH_ZONES_BLOCK_ID = "ship:no-match-zones";
+
+/** A banner description's budget (X-11, §1). */
+const BANNER_DESCRIPTION_MAX = 240;
+
+/**
+ * `prefix` + as many entries as fit, then "and N more" + ".", within the banner
+ * budget — a store can have any number of affected zones, with names of any
+ * length. At least the first entry's name is attempted; an entry that alone
+ * would overflow is cut to fit.
+ */
+function fitDescription(prefix: string, entries: readonly string[]): string {
+	const room = BANNER_DESCRIPTION_MAX - prefix.length - 1; // the closing "."
+	const shown: string[] = [];
+	for (const [i, entry] of entries.entries()) {
+		const rest = entries.length - i - 1;
+		const tail = rest > 0 ? `; and ${String(rest)} more` : "";
+		const candidate = [...shown, entry].join("; ") + tail;
+		if (candidate.length <= room) {
+			shown.push(entry);
+			continue;
+		}
+		if (shown.length === 0) {
+			// The first entry alone overflows: show as much of it as fits.
+			const cut = entry.slice(0, Math.max(0, room - tail.length - 1));
+			return `${prefix}${cut}…${tail}.`;
+		}
+		return `${prefix}${shown.join("; ")}; and ${String(entries.length - shown.length)} more.`;
+	}
+	return `${prefix}${shown.join("; ")}.`;
+}
+
+/** Stored region tokens that are not codes, or `null` when there are none. */
+function legacyRegionsWarning(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock | null {
+	const affected = zones
+		.map((zone) => ({ zone, invalid: parseZoneRegions(zone.regions).invalid }))
+		.filter((entry) => entry.invalid.length > 0);
+	if (affected.length === 0) return null;
+	return {
+		type: "banner",
+		block_id: LEGACY_REGIONS_BLOCK_ID,
+		variant: "alert",
+		title: "Some zone regions can never match an address",
+		description: fitDescription(
+			"These entries are not ISO codes, so they never match an address. Replace them with codes (e.g. US, US-CA): ",
+			affected.map(({ zone, invalid }) => `${zone.name} (${zone.id}): ${invalid.join(", ")}`),
+		),
+	};
+}
+
+const LEGACY_REGIONS_BLOCK_ID = "ship:legacy-regions";
+
+/**
+ * The methods screen's zone, looked up by `fetchPage` for its warning. Keyed by
+ * the rows array the level hands `render` (the scaffold passes it through by
+ * reference), because `render` is synchronous and the level's rows are methods,
+ * not the zone. Weak, so a render's entry dies with it.
+ */
+const METHODS_ZONE = new WeakMap<object, ShippingZoneWire>();
 
 /** Pre-fill the regions text input from whatever the wire returned — only a
  *  `string[]` round-trips to a comma list; anything else (a legacy shape, or

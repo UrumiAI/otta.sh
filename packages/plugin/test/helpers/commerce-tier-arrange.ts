@@ -69,6 +69,7 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 			const quantity = spec.quantity ?? 1;
 			const lineCurrency = toCurrency(unitPrice.currency);
 			const total = cents(unitPrice.amount * quantity);
+			const paymentMethod = spec.paymentMethod ?? "stripe";
 			// A GUEST order: it names an email and no customer, which is the state every
 			// order is in until its buyer proves that inbox. Logging in as the same
 			// address is what claims it, and that is the path the ownership cases take.
@@ -79,7 +80,7 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 				idempotencyKey: toIdempotencyKey(`arranged-${spec.orderId}`),
 				holdExpiresAt: SEEDED_HOLD_EXPIRES_AT,
 				buyerRef: spec.buyerRef,
-				paymentMethod: "stripe",
+				paymentMethod,
 				lines: [
 					{
 						productId: toProductId(spec.productId ?? `prod-${spec.orderId}`),
@@ -92,8 +93,33 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 						reservationId: null,
 					},
 				],
-				totals: { subtotal: total, total, currency: lineCurrency },
+				totals: {
+					subtotal: total,
+					total,
+					currency: lineCurrency,
+					...(spec.shippingMethod !== undefined
+						? { shippingMethodSnapshot: { ...spec.shippingMethod } }
+						: {}),
+				},
 			});
+			// A SETTLED order: paid, with one succeeded capture under its own method —
+			// the two writes `settleOrder` makes, through the same ports. The capture
+			// may be SHORT of the total (settle admits one), which is how a case
+			// arranges a ceiling that binds at `Σ captured` rather than the total.
+			if (spec.captured !== undefined) {
+				const oid = toOrderId(spec.orderId);
+				if (!(await ports.orderStore.markPaid(oid))) {
+					throw new Error(`arrange.order: ${spec.orderId} could not be marked paid`);
+				}
+				await ports.orderStore.recordPayment({
+					orderId: oid,
+					gateway: paymentMethod,
+					providerRef: spec.captured.providerRef,
+					amount: cents(spec.captured.amountCents),
+					currency: lineCurrency,
+					status: "succeeded",
+				});
+			}
 			return spec.orderId;
 		},
 
@@ -118,7 +144,13 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 		},
 
 		async shippingMethod(spec) {
-			await ports.shippingRules.createZone({ id: spec.zoneId, name: spec.zoneId, regions: null });
+			if ((await ports.shippingRules.getZone(spec.zoneId)) === null) {
+				await ports.shippingRules.createZone({
+					id: spec.zoneId,
+					name: spec.zoneId,
+					regions: spec.regions ?? null,
+				});
+			}
 			await ports.shippingRules.createMethod({
 				id: spec.methodId,
 				zoneId: spec.zoneId,
@@ -133,6 +165,15 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 					currency: toCurrency(spec.rate.currency),
 					amountCents: cents(spec.rate.amount),
 					minSubtotalCents: null,
+				});
+			}
+			if (spec.taxRateBps !== undefined) {
+				await ports.taxRules.createRate({
+					id: `${spec.zoneId}-standard`,
+					taxClassId: "standard",
+					zoneId: spec.zoneId,
+					rateBps: spec.taxRateBps,
+					appliesToShipping: true,
 				});
 			}
 		},

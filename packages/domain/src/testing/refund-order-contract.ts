@@ -530,6 +530,50 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("refunded");
 		});
 
+		test("a RESUMED reservation whose provider pre-flight already shows the refund is held UNVERIFIED and flagged, never left reserved", async () => {
+			// The crash-heal window: an earlier attempt's refunds.create succeeded at
+			// the provider but the process died (or the call failed retryably) before
+			// finalize. A same-key resume's pre-flight now sees money the ledger never
+			// finalized and fails closed. The row is not this call's to void — but it
+			// must not sit `reserved` forever either: it becomes `unverified` (still
+			// holding capacity) and the order is flagged for a human to reconcile.
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-resume-already", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const cmd = {
+				orderId: id,
+				amount: cents(600),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-resume-already"),
+			};
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
+				ok: false,
+				reason: "GATEWAY_RETRYABLE",
+			});
+
+			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
+				ok: false,
+				reason: "GATEWAY_UNVERIFIED",
+			});
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger.map((r) => r.status)).toEqual(["unverified"]);
+			expect(sumRefunds(ledger), "the capacity stays held").toBe(600);
+			const order = await h.orderStore.getById(id);
+			expect(order?.reconciliationFlag ?? null).not.toBeNull();
+			expect(order?.state).toBe("paid");
+
+			// And a further same-key replay asks the provider for nothing.
+			const calls = gw.refundCalls.length;
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
+				ok: false,
+				reason: "GATEWAY_UNVERIFIED",
+			});
+			expect(gw.refundCalls).toHaveLength(calls);
+		});
+
 		test("finalizeRefund is status-guarded: it never clobbers a voided row, and a same-ref re-finalize is a benign duplicate", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-guarded", totalCents: 1000 });
