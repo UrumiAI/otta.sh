@@ -129,7 +129,12 @@ export interface OrderDetail {
 export interface RefundRow {
 	readonly amountCents: number;
 	readonly currency?: string | null;
+	/** The provider's own refund id (Stripe `re_…`) — the WIRE field. */
+	readonly refundRef?: string | null;
+	/** Legacy spelling some fixtures used; read only when `refundRef` is absent. */
 	readonly providerRef?: string | null;
+	/** The key the refund was attempted under (Stripe's `Idempotency-Key`). */
+	readonly idempotencyKey?: string | null;
 	readonly refundedBy?: string | null;
 	readonly createdAt?: string | null;
 	/** The row's lifecycle: `recorded` (money came back), `reserved` (an attempt

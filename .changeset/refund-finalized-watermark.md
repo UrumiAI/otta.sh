@@ -21,3 +21,10 @@ A console refund that failed at the provider can be retried honestly.
   and totals only finalized refunds as "Refunded", and says when a refund's
   outcome is unknown.
 - `@otta-sh/domain` exports `sumFinalizedRefunds`.
+- The retry suffix counts only THIS refund's voided attempts (rows whose
+  `idempotencyKey` is the refund's base key or `<base>:v<k>`), so another
+  refund's rejection on the same order never moves a retryable refund off the
+  key its reservation is held under. `RefundWire` carries `idempotencyKey`.
+- The order detail's ledger shows the provider refund id from the wire's
+  `refundRef` (it read a field the wire never sent, so it always showed "—") and
+  the idempotency key an operator can match in the provider's request log.

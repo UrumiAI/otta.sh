@@ -599,9 +599,12 @@ function staleLedgerNotice(
  * "status unknown" again without calling the provider.
  *
  * A VOIDED ATTEMPT SPENDS ITS KEY. The domain replays a voided key's rejection,
- * so the key gains `:v<n>` — the count of voided attempts on the LIVE ledger —
+ * so the key gains `:v<n>` — the count of THIS refund's voided attempts on the
+ * LIVE ledger, i.e. voided rows whose key is the base key or `<base>:v<k>` —
  * once one exists. A deliberate retry after a definite provider rejection is
- * then a new intent, and nothing changes for a ledger with no voided row.
+ * then a new intent. Another refund's rejection on the same order never counts:
+ * it would move a retryable refund off the key its reservation is held under,
+ * orphaning that reservation and risking a second issue.
  *
  * They compose: DA-3a rejects the stale submit before the key is ever derived,
  * which matters because `refundOrder` resolves a duplicate by KEY ALONE with no
@@ -653,10 +656,13 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		return applied(staleLedgerNotice(amountCents, live, liveCur));
 	}
 	// The observed watermark is the third key component (F-2a) — NOT a nonce.
-	const voidedAttempts = live.refunds.filter((r) => r.status === "voided").length;
-	const key = `admin-refund:${orderId}:${amountCents}:${observedSoFar}${
-		voidedAttempts > 0 ? `:v${String(voidedAttempts)}` : ""
-	}`;
+	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
+	const voidedAttempts = live.refunds.filter(
+		(r) =>
+			r.status === "voided" &&
+			(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
+	).length;
+	const key = voidedAttempts > 0 ? `${baseKey}:v${String(voidedAttempts)}` : baseKey;
 	const result = await client.refundOrder(
 		orderId,
 		{

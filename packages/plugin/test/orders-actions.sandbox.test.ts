@@ -1054,9 +1054,12 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 			`admin-refund:${id}:500:0`,
 		]);
 		const ledger = await orderStore.listRefunds(toOrderId(id));
-		expect(ledger.map((r) => [r.status, r.amount]).sort()).toEqual([
-			["recorded", 500],
-			["voided", 300],
-		]);
+		expect(ledger).toHaveLength(2);
+		expect(ledger.map((r) => [r.status, r.amount])).toEqual(
+			expect.arrayContaining([
+				["recorded", 500],
+				["voided", 300],
+			]),
+		);
 	});
 });

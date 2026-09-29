@@ -478,7 +478,7 @@ export function RefundsPanel({
 
 				{unverifiedCents > 0 && (
 					<p style={{ fontSize: 13 }} data-testid="refund-unverified-note">
-						{`A refund of ${formatAmount(unverifiedCents, cur)} timed out and its outcome is unknown. Check your payment provider's dashboard before refunding again; the amount stays reserved on this order until it is reconciled.`}
+						{`Refunds totalling ${formatAmount(unverifiedCents, cur)} have an unknown outcome — check your payment provider before refunding again. The amount stays reserved on this order until it is reconciled; match it in the provider by its idempotency key below.`}
 					</p>
 				)}
 
@@ -486,16 +486,26 @@ export function RefundsPanel({
 					<Table
 						testId="detail-refund-ledger"
 						caption="Refunds recorded"
-						headers={[<EndHeader label="Amount" />, "Status", "Provider ref", "By", "When"]}
+						headers={[
+							<EndHeader label="Amount" />,
+							"Status",
+							"Provider ref",
+							"Idempotency key",
+							"By",
+							"When",
+						]}
 					>
 						{listed.map((refund, index) => (
-							<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
+							<tr key={`${refund.idempotencyKey ?? refund.refundRef ?? "ref"}:${String(index)}`}>
 								<td className="otta-td otta-num" style={endCellStyle}>
 									{formatAmount(refund.amountCents, refund.currency ?? cur)}
 								</td>
 								<td className="otta-td">{REFUND_STATUS_LABEL[refundRowStatus(refund)]}</td>
 								<td className="otta-td">
-									<code>{refund.providerRef ?? "—"}</code>
+									<code>{refund.refundRef ?? refund.providerRef ?? "—"}</code>
+								</td>
+								<td className="otta-td">
+									<code>{refund.idempotencyKey ?? "—"}</code>
 								</td>
 								<td className="otta-td">{refund.refundedBy ?? "—"}</td>
 								<td className="otta-td otta-num">

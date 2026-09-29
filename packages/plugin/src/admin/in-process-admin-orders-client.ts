@@ -776,6 +776,7 @@ function toRefundWire(refund: RefundRecord): RefundWire {
 		refundedBy: refund.refundedBy,
 		createdAt: refund.createdAt,
 		status: refund.status,
+		idempotencyKey: refund.idempotencyKey,
 	};
 }
 
