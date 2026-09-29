@@ -22,6 +22,18 @@ import { fileURLToPath } from "node:url";
 export const CLDR_VERSION = "48.2";
 
 /**
+ * CLDR's `regular` regions are WIDER than ISO 3166-1's officially assigned
+ * alpha-2 codes: they also list codes ISO 3166/MA only EXCEPTIONALLY RESERVES
+ * (Ascension, Clipperton, Sark, Diego Garcia, Ceuta & Melilla, the Canary
+ * Islands, Tristan da Cunha). A payment provider need not accept those as a
+ * shipping country, so an order to one could be minted and then fail at
+ * payment. They are excluded here, explicitly (ADR-0021 Decision 2). XK
+ * (Kosovo, user-assigned) is KEPT (D11). Officially assigned uninhabited
+ * territories (AQ, BV, HM, UM) are kept: they are ISO 3166-1 countries.
+ */
+export const EXCEPTIONALLY_RESERVED: readonly string[] = ["AC", "CP", "CQ", "DG", "EA", "IC", "TA"];
+
+/**
  * CLDR's compact range form: `AC~G` is AC, AD, AE, AF, AG — the final
  * character runs from the start's last character to the one after the `~`.
  * Only single-character ranges over one character class occur in the validity
@@ -64,18 +76,29 @@ export function regularIds(xml: string, type: "region" | "subdivision"): string[
 		.flatMap(expandCldrRange);
 }
 
-/** The attribution every generated file carries (the vendored XML's own). */
-const ATTRIBUTION = [
-	"Copyright © 1991-2024 Unicode, Inc.",
-	"For terms of use, see http://www.unicode.org/copyright.html",
-	"SPDX-License-Identifier: Unicode-3.0",
-];
+/** The licence's OWN copyright line, so the generated header and
+ *  THIRD_PARTY_NOTICES (which carries the licence verbatim) say the same. */
+function licenceCopyright(licenseText: string): string {
+	const line = /^Copyright © .* Unicode, Inc\.$/m.exec(licenseText)?.[0];
+	if (line === undefined) throw new Error("no Unicode copyright line in the licence");
+	return line;
+}
 
-export function generateIso3166(input: { regionXml: string; subdivisionXml: string }): string {
-	// Alpha-2 only: the regular region block also lists nothing numeric today,
-	// but a numeric area code is never a country a parcel can go to.
+export function generateIso3166(input: {
+	regionXml: string;
+	subdivisionXml: string;
+	licenseText: string;
+}): string {
+	const attribution = [
+		licenceCopyright(input.licenseText),
+		"For terms of use, see https://www.unicode.org/copyright.html",
+		"SPDX-License-Identifier: Unicode-3.0",
+	];
+	// Alpha-2 only (a numeric area code is never a country a parcel can go to),
+	// and never an exceptionally reserved code (see EXCEPTIONALLY_RESERVED).
+	const excluded = new Set(EXCEPTIONALLY_RESERVED);
 	const countries = regularIds(input.regionXml, "region")
-		.filter((code) => /^[A-Z]{2}$/.test(code))
+		.filter((code) => /^[A-Z]{2}$/.test(code) && !excluded.has(code))
 		.toSorted();
 	const countrySet = new Set(countries);
 
@@ -83,6 +106,7 @@ export function generateIso3166(input: { regionXml: string; subdivisionXml: stri
 	for (const id of regularIds(input.subdivisionXml, "subdivision")) {
 		const country = id.slice(0, 2).toUpperCase();
 		const suffix = id.slice(2).toUpperCase();
+		if (excluded.has(country)) continue;
 		if (!countrySet.has(country)) throw new Error(`subdivision ${id} of unknown country`);
 		if (!/^[A-Z0-9]{1,3}$/.test(suffix)) throw new Error(`subdivision ${id} is not code-shaped`);
 		const list = byCountry.get(country) ?? [];
@@ -101,12 +125,12 @@ export function generateIso3166(input: { regionXml: string; subdivisionXml: stri
 	lines.push(" * Excluded from oxfmt (.prettierignore): the generator owns its layout.");
 	lines.push(" *");
 	lines.push(" * Derived from CLDR data files:");
-	for (const line of ATTRIBUTION) lines.push(` *   ${line}`);
+	for (const line of attribution) lines.push(` *   ${line}`);
 	lines.push(" * Distributed under the Unicode License v3; see THIRD_PARTY_NOTICES.");
 	lines.push(" */");
 	lines.push("");
 	lines.push(
-		"/** ISO 3166-1 alpha-2 country codes (CLDR regular: includes XK; excludes EU, UN, ZZ). */",
+		`/** ISO 3166-1 alpha-2 country codes: CLDR regular regions restricted to the officially assigned codes (the exceptionally reserved ${EXCEPTIONALLY_RESERVED.join(", ")} are excluded), plus XK. */`,
 	);
 	lines.push("export const COUNTRY_CODES: ReadonlySet<string> = new Set(");
 	lines.push(`\t${JSON.stringify(countries.join(" "))}.split(" "),`);
@@ -137,6 +161,7 @@ function main(): void {
 	const out = generateIso3166({
 		regionXml: read(`scripts/cldr-${CLDR_VERSION}/validity/region.xml`),
 		subdivisionXml: read(`scripts/cldr-${CLDR_VERSION}/validity/subdivision.xml`),
+		licenseText: read(`scripts/cldr-${CLDR_VERSION}/LICENSE`),
 	});
 	writeFileSync(new URL("src/pricing/iso-3166.generated.ts", root), out);
 }

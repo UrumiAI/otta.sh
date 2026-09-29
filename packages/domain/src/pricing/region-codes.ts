@@ -15,7 +15,8 @@
  */
 import { COUNTRY_CODES, SUBDIVISIONS } from "./iso-3166.generated.js";
 
-/** A country code, uppercased, or `null` when it is not a CLDR regular one. */
+/** A country code, uppercased, or `null` when it is not in `COUNTRY_CODES` (the
+ *  officially assigned ISO 3166-1 alpha-2 codes, plus XK). */
 export function normalizeCountryCode(raw: string): string | null {
 	const code = raw.trim().toUpperCase();
 	return COUNTRY_CODES.has(code) ? code : null;

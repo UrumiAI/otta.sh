@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
 	CLDR_VERSION,
+	EXCEPTIONALLY_RESERVED,
 	expandCldrRange,
 	generateIso3166,
 	regularIds,
@@ -28,6 +29,7 @@ describe("iso-3166.generated.ts", () => {
 		const emitted = generateIso3166({
 			regionXml: read(`${vendored}/validity/region.xml`),
 			subdivisionXml: read(`${vendored}/validity/subdivision.xml`),
+			licenseText: read(`${vendored}/LICENSE`),
 		});
 		expect(read("src/pricing/iso-3166.generated.ts")).toBe(emitted);
 	});
@@ -39,7 +41,24 @@ describe("iso-3166.generated.ts", () => {
 		expect(header).toContain("GENERATED");
 		expect(header).toContain("do not edit");
 		expect(header).toContain("Unicode-3.0");
-		expect(header).toContain("Copyright © 1991-2024 Unicode, Inc.");
+	});
+
+	test("the Unicode copyright line is the licence's OWN, identical in the header and both notices", () => {
+		const line = /^Copyright © .* Unicode, Inc\.$/m.exec(read(`${vendored}/LICENSE`))?.[0] ?? "";
+		expect(line).toBe("Copyright © 2004-2026 Unicode, Inc.");
+		expect(read("src/pricing/iso-3166.generated.ts").split("\n").slice(0, 20).join("\n")).toContain(
+			line,
+		);
+		expect(read("THIRD_PARTY_NOTICES")).toContain(line);
+		expect(readFileSync(new URL("../plugin/THIRD_PARTY_NOTICES", root), "utf8")).toContain(line);
+		for (const file of ["src/pricing/iso-3166.generated.ts", "THIRD_PARTY_NOTICES"]) {
+			expect(read(file)).not.toMatch(/Copyright © 1991-2024/);
+		}
+	});
+
+	test("the exclusions are an explicit, documented list in the generator", () => {
+		expect(EXCEPTIONALLY_RESERVED).toEqual(["AC", "CP", "CQ", "DG", "EA", "IC", "TA"]);
+		expect(read("src/pricing/iso-3166.generated.ts")).toContain("exceptionally reserved");
 	});
 
 	test("the Unicode licence text ships beside the vendored data and in the published package", () => {

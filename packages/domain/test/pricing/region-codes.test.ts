@@ -37,6 +37,23 @@ describe("the bundled CLDR data carries every code the suites use", () => {
 		}
 	});
 
+	// CLDR "regular" is wider than ISO 3166-1 "officially assigned": it also
+	// lists the EXCEPTIONALLY RESERVED codes. An order to one could be minted and
+	// then refused by the payment provider, so the generator excludes them.
+	test.each(["AC", "CP", "CQ", "DG", "EA", "IC", "TA"])(
+		"%s (ISO 3166-1 exceptionally reserved) is NOT a country",
+		(code) => {
+			expect(COUNTRY_CODES.has(code)).toBe(false);
+			expect(SUBDIVISIONS.has(code)).toBe(false);
+		},
+	);
+
+	test("officially assigned territories stay (AQ, BV, HM, UM), and the set is the 249 assigned codes plus XK", () => {
+		for (const code of ["AQ", "BV", "HM", "UM", "XK"])
+			expect(COUNTRY_CODES.has(code), code).toBe(true);
+		expect(COUNTRY_CODES.size).toBe(250);
+	});
+
 	test("every subdivision's country is itself a country code", () => {
 		for (const country of SUBDIVISIONS.keys())
 			expect(COUNTRY_CODES.has(country), country).toBe(true);
