@@ -275,13 +275,9 @@ export interface CommerceClientTierClock {
 
 /**
  * OPTIONAL. Whether this tier composes a payment gateway at all, i.e. whether a
- * checkout can SUCCEED on it. Absent ⇒ it cannot, and the cases whose subject is a
- * minted order skip with the reason in the case name.
- *
- * This is a phase gap rather than a defect, and it is asymmetric in the useful
- * direction: the transport being replaced carries the gateways today and the
- * replacement gets them when the payment adapters move, at which point the flag
- * appears and these cases start running with no edit here.
+ * checkout can SUCCEED on it and a refund can reach a provider. Absent ⇒ neither
+ * can, and the cases whose subject is a minted order or a gateway refund skip
+ * with the reason in the case name.
  */
 export interface CommerceClientTierPayments {
 	/** The method whose gateway this tier composes. */
@@ -307,13 +303,9 @@ export interface CommerceClientTier {
 	 *  subject is an elapsed deadline skip, saying so in their own names. */
 	readonly clock?: CommerceClientTierClock;
 	/** OPTIONAL: see {@link CommerceClientTierPayments}. Absent ⇒ the cases whose
-	 *  subject is a minted order skip, saying so in their own names. NO TIER
-	 *  DECLARES IT since the HTTP tier was deleted, so those three cases (the
-	 *  checkout replay, the lapsed-hold checkout, the refund ceiling) now skip
-	 *  everywhere: a composition-layer gap, not an unguarded invariant — each is
-	 *  covered at the domain layer, in `orders/create-order-from-cart.test.ts` and
-	 *  `refund-order-contract.ts`. They start running again the day the payment
-	 *  adapters move in-process, with no edit to any case. */
+	 *  subject is a minted order or a gateway refund skip, saying so in their own
+	 *  names. The in-process tier declares it (it composes a fake Stripe gateway),
+	 *  so the checkout-replay, lapsed-hold and refund cases run there. */
 	readonly payments?: CommerceClientTierPayments;
 	arrange: CommerceClientTierArrange;
 }
@@ -404,9 +396,9 @@ function requireSurface<K extends keyof AdminClientSurfaces>(
 // every other. No case asserts a generated id.
 //
 // TWO OPTIONAL HOOKS, AND WHY OPTIONAL IS NOT A LOOPHOLE. `clock` and `payments`
-// gate one case each, in OPPOSITE directions — one tier has the gateways and not
-// the movable clock, the other has the movable clock and not the gateways — so
-// neither gate is a tier quietly excusing itself from the shared spec. A gated
+// gate only the cases whose subject needs them — a movable clock, a composed
+// payment gateway — and the in-process tier offers both, so nothing it runs is
+// excused from the shared spec. A gated
 // case states its gate in its own NAME, so a test report says which tier skipped
 // what and why without anyone reading this file. Every other case runs on every
 // tier, unchanged: the moment a tier is allowed to narrow, reorder or soften one,
@@ -1120,10 +1112,10 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		// in its own title so a test report says why rather than a comment:
 		//  - the elapsed-deadline case needs `tier.clock`, which a shared,
 		//    long-lived backend could not offer;
-		//  - the minted-order case needs `tier.payments`, which the transport
-		//    that has not yet received the payment adapters cannot offer.
-		// Neither is a weakened case. Each runs in full where it can run at all,
-		// and starts running the day the surviving tier grows the hook it lacks.
+		//  - the minted-order case needs `tier.payments`, which a tier that
+		//    composes no payment gateway cannot offer.
+		// Neither is a weakened case. Each runs in full on any tier that has the
+		// hook — the in-process tier has both.
 
 		// ── identity: the session is the only credential ───────────────────
 		//
@@ -1733,15 +1725,13 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
-		// BOTH HOOKS, so it runs on NEITHER tier today — and it is written anyway,
-		// because the gap it names is real and otherwise invisible. Checkout resolves
-		// its gateway BEFORE it reads the cart, so on a tier with no gateway every
-		// cart-level checkout refusal is unreachable, and on a tier with a gateway there
-		// is no way to reach the deadline. The refusal a lapsed hold must produce at the
-		// checkout itself is therefore unasserted on both transports right now; this is
-		// where it gets asserted the moment either tier grows the hook it lacks.
+		// BOTH HOOKS. Checkout resolves its gateway BEFORE it reads the cart, so on a
+		// tier with no gateway every cart-level checkout refusal is unreachable, and on
+		// a tier with no movable clock there is no way to reach the deadline. The
+		// in-process tier has both, so this is where the refusal a lapsed hold must
+		// produce at the checkout itself is asserted.
 		test.skipIf(tier.clock === undefined || tier.payments === undefined)(
-			"a checkout against a lapsed hold is refused RESERVATION_LOST (SKIPPED until one tier has both a movable clock and a payment gateway)",
+			"a checkout against a lapsed hold is refused RESERVATION_LOST (SKIPPED where the tier lacks a movable clock or a payment gateway)",
 			async () => {
 				const clock = tier.clock;
 				const paymentMethod = tier.payments?.method;
@@ -2001,17 +1991,16 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * each tier pins its own side of it in its own file, where the difference is
  * visible as a difference.
  *
- * THE ONE REFUSAL THE TIERS SPELL DIFFERENTLY is a refund against an order that
- * captured nothing. Both refuse with a 409 and both leave the ledger empty —
- * that much is shared — but the REASON differs because the composition does: a
- * tier with gateways composed is refused by the ceiling
- * (`REFUND_EXCEEDS_CAPTURED`), and a tier with none is refused for want of a
- * gateway (`REFUND_GATEWAY_UNAVAILABLE`, until INC-C1/C3 moves the payment
- * adapters in-process). Rather than soften the shared case into accepting
- * either, the shared case asserts what both owe and a GATED PAIR — keyed off the
- * existing `payments` hook, each naming its gate in its own name — pins the
- * reason on each side. The pair collapses into one case the day gateways are
- * composed on both tiers.
+ * THE ONE REFUSAL WHOSE REASON DEPENDS ON THE COMPOSITION is a refund against an
+ * order that captured nothing. Every tier refuses it with a 409 and leaves the
+ * ledger empty — that much is shared — but the REASON differs: a tier with a
+ * gateway composed for the order's method is refused because there is no
+ * captured payment to refund against (`NO_CAPTURED_PAYMENT`, checked before the
+ * ceiling is ever arbitrated), and a tier with none is refused for want of a
+ * gateway (`REFUND_GATEWAY_UNAVAILABLE`). Rather than soften the shared case
+ * into accepting either, the shared case asserts what both owe and a GATED PAIR
+ * — keyed off the `payments` hook, each naming its gate in its own name — pins
+ * the reason on each side.
  *
  * WHAT THE SHARED ARRANGE SURFACE CANNOT REACH, recorded so it is not mistaken
  * for a decision: `arrange.product` goes through `upsertProductCommerce`, which
@@ -2743,7 +2732,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		});
 
 		test.skipIf(tier.payments === undefined)(
-			"(gateways composed) that refusal names the CEILING: nothing was captured to refund against",
+			"(gateways composed) that refusal is NO_CAPTURED_PAYMENT: there is nothing captured to refund against",
 			async () => {
 				await tier.arrange.order({ orderId: "adm-o-refc", buyerRef: "refc@example.test" });
 				expect(

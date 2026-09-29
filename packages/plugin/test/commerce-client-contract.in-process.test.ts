@@ -31,17 +31,14 @@
  * Rows ARE cleared per case here, which is what makes `reset()` a real reset in
  * this tier rather than the documented no-op the HTTP tier implemented.
  *
- * THIS TIER DECLARES THE CLOCK HOOK AND NOT THE PAYMENTS ONE; the HTTP tier
- * declared the reverse, and the two gaps were real and opposite rather than a
- * tier excusing itself. Each is still pinned by a case that names its own gate,
- * so a test report says what skipped and why. The clock is offerable HERE
- * because this backend is rebuilt per case, so winding it forward costs nothing
- * `reset()` cannot put back. The gateways are not offerable here YET, because the
- * payment adapters have not moved in-process; with the HTTP tier gone the gated
- * checkout and refund-ceiling cases therefore skip everywhere, and their
- * invariants are held at the DOMAIN layer meanwhile (see the note on
- * `CommerceClientTier.payments`). When the adapters land, the payments hook
- * appears here and those cases start running with no edit to any case.
+ * THIS TIER DECLARES BOTH OPTIONAL HOOKS. The clock is offerable because this
+ * backend is rebuilt per case, so winding it forward costs nothing `reset()`
+ * cannot put back. The payments hook is offerable because the tier composes a
+ * `FakePaymentGateway` for `stripe` into both the storefront client and the
+ * admin orders client, through the same `gateways` option production's
+ * composition roots use — so the gated checkout and refund cases run here.
+ * The fake stands in for the PROVIDER only; the order store, the refund ledger
+ * and its ceiling arbitration are the real adapters.
  */
 import { email as toEmail } from "@otta-sh/domain";
 import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
