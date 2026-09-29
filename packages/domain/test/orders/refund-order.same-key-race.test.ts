@@ -16,10 +16,11 @@ const USD = toCurrency("USD");
 // retry sent while the first attempt is still in flight). Request A reserved the
 // ledger slot and is waiting on the provider; request B reaches the provider's
 // pre-flight after A's refund has landed there, so the pre-flight sees money it
-// has no record of and answers PROVIDER_ALREADY_REFUNDED. That refusal is about
-// B's view, not A's reservation: B must not void the row A's successful refund
-// is about to finalize, or A ends REFUND_ISSUED_UNRECORDED for money that did
-// move.
+// has no record of and answers PROVIDER_ALREADY_REFUNDED. B cannot tell a live
+// owner from a crashed one, so it must not VOID the row (that would make A's
+// successful refund end REFUND_ISSUED_UNRECORDED); it marks the row
+// `unverified` and flags the order, and A — which finalizes from `reserved` or
+// `unverified` alike — still records its refund.
 
 /** A gateway whose FIRST refund call is held open until the test releases it,
  *  and whose later calls answer the provider pre-flight's fail-closed refusal. */
@@ -132,18 +133,20 @@ describe("refundOrder — a same-key request never voids a reservation it did no
 			const a = refundOrder({ orderStore }, gw, cmd);
 			await gw.firstCallStarted;
 			const b = await refundOrder({ orderStore }, gw, cmd);
-			// B's own attempt issued nothing, and says so.
-			expect(b).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-			// ...and it left A's reservation exactly as it was.
+			// B's own attempt issued nothing; the refund's fate is now "check the
+			// provider" — the row is held, not voided.
+			expect(b).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });
 			const [held] = await orderStore.listRefunds(id);
-			expect(held?.status).toBe("reserved");
+			expect(held?.status).toBe("unverified");
 
 			gw.release();
 			const settled = await a;
 			expect(settled).toMatchObject({ ok: true, recorded: true, duplicate: false });
 			const [row] = await orderStore.listRefunds(id);
 			expect(row).toMatchObject({ status: "recorded", refundRef: "re_rf-same-key", amount: 400 });
-			expect((await orderStore.getById(id))?.reconciliationFlag ?? null).toBeNull();
+			// B could not know A was alive, so the order was flagged: a false alarm a
+			// human clears, which is the safe direction against a lost refund.
+			expect((await orderStore.getById(id))?.reconciliationFlag ?? null).not.toBeNull();
 		});
 	}
 });
