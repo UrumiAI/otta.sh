@@ -833,7 +833,11 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			true,
 		);
 		expect(findBlock(blocks, "empty")?.title).toBe("No shipping methods yet");
-		expect(findBlock(blocks, "banner")).toBeUndefined();
+		// The ONLY banner is ADR-0021's warning that this regions-less zone matches
+		// no address — never a fail-closed or error banner.
+		const banners = findBlocks(blocks, "banner");
+		expect(banners.map((b) => b.block_id)).toEqual(["ship:no-match-zones"]);
+		expect(banners[0]?.variant).toBe("alert");
 	});
 
 	test("the empty state's create action carries the zoneId in value.__path and opens the create screen at the RIGHT zone", async () => {
@@ -1487,6 +1491,80 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 			expect(legacy).toMatch(/United States \(not a region code — never matches\)/);
 			const empty = contextTexts(groupBlocks(blocks, "ship:zone:empty")).join(" | ");
 			expect(empty).toMatch(/Matches no address/);
+		});
+
+		// Before ADR-0021 a blank regions list was normal — nothing read it. Now a
+		// zone that lists no code matches no address, its methods are never offered,
+		// and a store whose zones ALL match nothing refuses every physical checkout.
+		test("a zone that MATCHES NO ADDRESS (null, [] or only legacy text) is warned about on the landing page and its methods screen", async () => {
+			await seedShipping({
+				zones: [
+					{ id: "blank", name: "Blank zone", regions: null },
+					{ id: "none", name: "Empty list", regions: [] },
+					{ id: "legacy", name: "Old zone", regions: ["United States"] },
+					{ id: "ok", name: "Good zone", regions: ["US-CA"] },
+				],
+				methods: [{ id: "m-blank", zoneId: "blank", name: "Standard", type: "flat_rate" }],
+				rates: [],
+			});
+			const landing = await loadZones();
+			const warning = landing.find((b) => b.block_id === "ship:no-match-zones");
+			expect(warning?.type).toBe("banner");
+			expect(warning?.variant).toBe("alert");
+			const text = String(warning?.description);
+			for (const name of ["Blank zone", "Empty list", "Old zone"]) expect(text).toContain(name);
+			expect(text.length).toBeLessThanOrEqual(240);
+			expect(text).not.toContain("Good zone");
+			expect(String(warning?.title)).toMatch(/match no address/i);
+			expect(text).toMatch(/US, US-CA/);
+			expect(landing.map((b) => String(b.type)).slice(0, 3)).toEqual([
+				"header",
+				"context",
+				"actions",
+			]);
+
+			const methods = await openPath(["blank"]);
+			const onMethods = methods.find((b) => b.block_id === "ship:no-match-zones");
+			expect(onMethods?.variant).toBe("alert");
+			expect(String(onMethods?.description)).toContain("Blank zone");
+
+			const good = await openPath(["ok"]);
+			expect(good.find((b) => b.block_id === "ship:no-match-zones")).toBeUndefined();
+		});
+
+		test("the matches-no-address warning names as many zones as fit, then a count — it stays within the banner budget however many there are", async () => {
+			await seedShipping({
+				zones: Array.from({ length: 6 }, (_, i) => ({
+					id: `blank-${String(i)}`,
+					name: `A rather long zone name number ${String(i)}`,
+					regions: null,
+				})),
+				methods: [],
+				rates: [],
+			});
+			const warning = (await loadZones()).find((b) => b.block_id === "ship:no-match-zones");
+			const text = String(warning?.description);
+			expect(text).toContain("number 0");
+			expect(text).toMatch(/and \d more\.$/);
+			expect(text).not.toContain("number 5");
+			expect(text.length).toBeLessThanOrEqual(240);
+		});
+
+		test("one zone whose name alone would overflow is cut to fit, never past the budget", async () => {
+			await seedShipping({
+				zones: [
+					// Listed by id: the long one comes first.
+					{ id: "a-long", name: "N".repeat(200), regions: null },
+					{ id: "b-blank", name: "Blank", regions: null },
+				],
+				methods: [],
+				rates: [],
+			});
+			const text = String(
+				(await loadZones()).find((b) => b.block_id === "ship:no-match-zones")?.description,
+			);
+			expect(text.length).toBeLessThanOrEqual(240);
+			expect(text).toMatch(/N…; and 1 more\.$/);
 		});
 
 		test("its methods screen carries the same warning", async () => {

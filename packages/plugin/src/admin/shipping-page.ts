@@ -371,8 +371,7 @@ function zonesBlocks(
 		createActionBlock("ship:create-zone-action", ACTION_OPEN_CREATE_ZONE, "New shipping zone"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	const legacy = legacyRegionsWarning(zones);
-	if (legacy !== null) blocks.push(legacy);
+	blocks.push(...zoneRegionWarnings(zones));
 
 	if (zones.length === 0) {
 		blocks.push(
@@ -661,11 +660,11 @@ function methodsLevel() {
 			const zoneId = path[0] ?? "";
 			const blocks = methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
 			const zone = METHODS_ZONE.get(items);
-			const warning = zone === undefined ? null : legacyRegionsWarning([zone]);
-			if (warning === null || renderState?.kind === "new-method") return blocks;
-			// Under the intro, above the rows — the same place the landing puts it.
+			const warnings = zone === undefined ? [] : zoneRegionWarnings([zone]);
+			if (warnings.length === 0 || renderState?.kind === "new-method") return blocks;
+			// Under the intro, above the rows — the same place the landing puts them.
 			const at = blocks.findIndex((b) => b.type === "actions");
-			return [...blocks.slice(0, at + 1), warning, ...blocks.slice(at + 1)];
+			return [...blocks.slice(0, at + 1), ...warnings, ...blocks.slice(at + 1)];
 		},
 		onError: () => methodsFailClosed(),
 	});
@@ -1843,22 +1842,82 @@ function zoneMatchSummary(regions: unknown): string {
 	return [matches, ...legacy].join(" · ");
 }
 
-/** The landing (and methods-screen) warning for zones written before ADR-0021
- *  whose regions hold text that is not a code — or `null` when there are none. */
+/**
+ * The landing (and methods-screen) warnings about zone regions checkout cannot
+ * use (ADR-0021), in this order:
+ *  - a zone that MATCHES NO ADDRESS — no valid code at all (`null`, `[]`, or
+ *    only legacy text). Before ADR-0021 a blank regions list was normal; now
+ *    such a zone's methods are never offered, and a store whose zones all match
+ *    nothing refuses every physical checkout;
+ *  - stored tokens that are not codes (zones written before the rule).
+ */
+function zoneRegionWarnings(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock[] {
+	const warnings: BannerBlock[] = [];
+	const unmatched = zones.filter((zone) => parseZoneRegions(zone.regions).codes.length === 0);
+	if (unmatched.length > 0) {
+		warnings.push({
+			type: "banner",
+			block_id: NO_MATCH_ZONES_BLOCK_ID,
+			variant: "alert",
+			title: "Some zones match no address",
+			description: fitDescription(
+				"These zones list no ISO code, so no order can be delivered through them. Add codes such as US, US-CA: ",
+				unmatched.map((zone) => `${zone.name} (${zone.id})`),
+			),
+		});
+	}
+	const legacy = legacyRegionsWarning(zones);
+	if (legacy !== null) warnings.push(legacy);
+	return warnings;
+}
+
+const NO_MATCH_ZONES_BLOCK_ID = "ship:no-match-zones";
+
+/** A banner description's budget (X-11, §1). */
+const BANNER_DESCRIPTION_MAX = 240;
+
+/**
+ * `prefix` + as many entries as fit, then "and N more" + ".", within the banner
+ * budget — a store can have any number of affected zones, with names of any
+ * length. At least the first entry's name is attempted; an entry that alone
+ * would overflow is cut to fit.
+ */
+function fitDescription(prefix: string, entries: readonly string[]): string {
+	const room = BANNER_DESCRIPTION_MAX - prefix.length - 1; // the closing "."
+	const shown: string[] = [];
+	for (const [i, entry] of entries.entries()) {
+		const rest = entries.length - i - 1;
+		const tail = rest > 0 ? `; and ${String(rest)} more` : "";
+		const candidate = [...shown, entry].join("; ") + tail;
+		if (candidate.length <= room) {
+			shown.push(entry);
+			continue;
+		}
+		if (shown.length === 0) {
+			// The first entry alone overflows: show as much of it as fits.
+			const cut = entry.slice(0, Math.max(0, room - tail.length - 1));
+			return `${prefix}${cut}…${tail}.`;
+		}
+		return `${prefix}${shown.join("; ")}; and ${String(entries.length - shown.length)} more.`;
+	}
+	return `${prefix}${shown.join("; ")}.`;
+}
+
+/** Stored region tokens that are not codes, or `null` when there are none. */
 function legacyRegionsWarning(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock | null {
 	const affected = zones
 		.map((zone) => ({ zone, invalid: parseZoneRegions(zone.regions).invalid }))
 		.filter((entry) => entry.invalid.length > 0);
 	if (affected.length === 0) return null;
-	const list = affected
-		.map(({ zone, invalid }) => `${zone.name} (${zone.id}): ${invalid.join(", ")}`)
-		.join("; ");
 	return {
 		type: "banner",
 		block_id: LEGACY_REGIONS_BLOCK_ID,
 		variant: "alert",
 		title: "Some zone regions can never match an address",
-		description: `Checkout matches a buyer's address to ISO codes, so these entries never match, and an order delivering there is refused until they are replaced with codes (e.g. US, US-CA): ${list}.`,
+		description: fitDescription(
+			"These entries are not ISO codes, so they never match an address. Replace them with codes (e.g. US, US-CA): ",
+			affected.map(({ zone, invalid }) => `${zone.name} (${zone.id}): ${invalid.join(", ")}`),
+		),
 	};
 }
 
