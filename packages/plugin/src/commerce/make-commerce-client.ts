@@ -16,9 +16,7 @@
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
-import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
-import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
-import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
+import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
 import { InProcessCommerceClient } from "./in-process-commerce-client.js";
@@ -37,22 +35,12 @@ import { InProcessCommerceClient } from "./in-process-commerce-client.js";
  * never several frames later inside a storefront route.
  */
 export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceClient> {
-	// The payment gateways the service used to wire from env are wired HERE,
+	// The payment gateways the service used to wire from env are resolved HERE,
 	// because resolving them is asynchronous (kv) and the client's constructor is
-	// not. INC-C5 wires x402, whose facilitator call goes over `ctx.http` to the
-	// host `allowedHosts` already grants; `stripe-wiring.ts` wires the other half
-	// storefront checkout actually uses (`PAYMENT_METHOD` in
-	// `checkout-routes.ts`). Each resolves independently to `undefined` on an
-	// unconfigured deployment and is simply omitted from the map, which the
-	// domain refuses loudly rather than minting an unpayable order.
-	const [x402, stripe] = await Promise.all([
-		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
-		stripeGatewayFromCtx(ctx),
-	]);
-	return new InProcessCommerceClient(ctx, {
-		gateways: {
-			...(x402 === undefined ? {} : { x402 }),
-			...(stripe === undefined ? {} : { stripe }),
-		},
-	});
+	// not: x402 (INC-C5) and Stripe, the method storefront checkout actually uses
+	// (`PAYMENT_METHOD` in `checkout-routes.ts`). An unconfigured one is omitted
+	// from the map, which the domain refuses loudly rather than minting an
+	// unpayable order. `resolvePaymentGateways` is shared with `makeAdminClients`,
+	// so console refunds reach the same gateways checkout charged through.
+	return new InProcessCommerceClient(ctx, { gateways: await resolvePaymentGateways(ctx) });
 }

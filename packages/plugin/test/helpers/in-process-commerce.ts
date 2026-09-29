@@ -16,7 +16,7 @@
  * and a suite can assert on the count, which is what turns "sends no mail" from a
  * claim into a test.
  */
-import type { Clock } from "@otta-sh/domain";
+import type { Clock, PaymentGateway, PaymentMethod } from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
@@ -80,6 +80,7 @@ export interface MakeInProcessCommerceOptions {
 	/** A clock the caller keeps a handle on, for a suite whose subject is an
 	 *  elapsed deadline. Omitted ⇒ real time, which is what a deployment gets. */
 	clock?: Clock;
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
 }
 
 export async function makeInProcessCommerce(
@@ -101,7 +102,10 @@ export async function makeInProcessCommerce(
 	};
 	// ONE options object for both constructions, so the client's own stores and the
 	// harness's second set share whatever clock the caller passed.
-	const shared = options.clock !== undefined ? { clock: options.clock } : {};
+	const shared = {
+		...(options.clock !== undefined ? { clock: options.clock } : {}),
+		...(options.gateways !== undefined ? { gateways: options.gateways } : {}),
+	};
 	const stores = createInProcessCommerceStores(ctx, shared);
 	return {
 		client: new InProcessCommerceClient(ctx, shared),
