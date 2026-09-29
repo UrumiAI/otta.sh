@@ -376,6 +376,14 @@ export interface CommerceClient {
 	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
 	 *  it must be stable per cart, or a reload mints a second order). */
 	createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult>;
+	/**
+	 * The delivery options of the zone a quote MATCHED (ADR-0021), each priced
+	 * for the cart. `zoneId` and `discountedSubtotalCents` come ONLY from this
+	 * server's own `quoteCheckout` reply — never from route input: a caller that
+	 * could name a zone could list (and so pick) another zone's options.
+	 * Malformed input throws (`CommerceInputError`); an unknown zone is `[]`.
+	 */
+	listShippingOptions(input: ShippingOptionsRequestWire): Promise<ShippingOptionWire[]>;
 	/** The unauthenticated capability read (ADR-0010 §2). Sends NO
 	 *  `X-Internal-Token`: that header unlocks the full admin projection
 	 *  (`serializeOrder`, incl. `buyerRef`/`shippingAddress`) on a page a guest
@@ -391,9 +399,44 @@ export interface CommerceClient {
 
 export interface QuoteRequestWire {
 	cartId: string;
-	shippingZoneId?: string;
+	/**
+	 * Where the order ships: an ISO 3166-1 alpha-2 country and an optional ISO
+	 * 3166-2 region code (`CA` or `US-CA`). The shipping/tax zone is DERIVED
+	 * from it (ADR-0021); there is deliberately no zone field — nobody chooses
+	 * their own tax zone.
+	 */
+	destination?: DestinationRequestWire;
 	shippingMethodId?: string;
 	couponCode?: string;
+}
+
+export interface DestinationRequestWire {
+	country: string;
+	region?: string;
+}
+
+/** How the quote resolved the zone. `matched` names the zone (an opaque
+ *  merchant config id, never buyer data) and the code that matched it. */
+export interface QuoteDestinationWire {
+	status: "not_required" | "no_zones" | "address_needed" | "matched";
+	zoneId: string | null;
+	/** `US-CA` or `US` — the code the zone matched on. */
+	matchedRegion: string | null;
+}
+
+export interface ShippingOptionsRequestWire {
+	zoneId: string;
+	currency: string;
+	discountedSubtotalCents: number;
+}
+
+/** One delivery option. `amountCents: null` ⇒ no rate in the cart's
+ *  currency: it cannot be chosen. */
+export interface ShippingOptionWire {
+	methodId: string;
+	name: string;
+	type: "flat_rate" | "free_shipping";
+	amountCents: number | null;
 }
 
 export interface QuoteBreakdownWire {
@@ -414,7 +457,14 @@ export type QuoteFailureReason =
 	| "PRODUCT_NOT_PRICED"
 	| "CURRENCY_MISMATCH"
 	| "COUPON_NOT_FOUND"
+	// ADR-0021: the destination and the zone derived from it.
+	| "INVALID_SHIPPING_ADDRESS"
+	| "SHIPPING_REGION_CODE_REQUIRED"
+	| "SHIPPING_ZONE_NOT_MATCHED"
+	| "MISSING_SHIPPING_ADDRESS"
 	| "SHIPPING_METHOD_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
+	| "SHIPPING_METHOD_NOT_APPLICABLE"
 	| "SHIPPING_RATE_NOT_FOUND"
 	| "COUPON_NOT_ACTIVE"
 	| "COUPON_MIN_SUBTOTAL"
@@ -422,7 +472,16 @@ export type QuoteFailureReason =
 	| "COUPON_CURRENCY_MISMATCH";
 
 export type QuoteResult =
-	| { ok: true; breakdown: QuoteBreakdownWire }
+	| {
+			ok: true;
+			breakdown: QuoteBreakdownWire;
+			/** Whether any line ships. A digital-only cart needs no address. */
+			requiresShipping: boolean;
+			destination: QuoteDestinationWire;
+			/** `subtotal − discount` — what a delivery option's free-shipping
+			 *  threshold is measured against (`listShippingOptions`). */
+			discountedSubtotalCents: number;
+	  }
 	| { ok: false; reason: QuoteFailureReason };
 
 /** ADR-0009's optional ship-to snapshot — bounds mirror `shippingAddressBody`. */
@@ -444,9 +503,11 @@ export interface CheckoutRequestWire {
 	/** Email/session claim token (ADR-0004). Stored VERBATIM by the service —
 	 *  the site trims but never lowercases it. */
 	buyerRef: string;
-	shippingZoneId?: string;
+	// No zone: it is derived from `shippingAddress` (ADR-0021).
 	shippingMethodId?: string;
 	couponCode?: string;
+	/** Required for a cart that ships, in a store with zones. The country is an
+	 *  ISO alpha-2 code and a region an ISO 3166-2 code, on EVERY order. */
 	shippingAddress?: ShippingAddressWire;
 }
 
@@ -473,7 +534,11 @@ export interface PublicOrderWire {
 	paymentMethod: string | null;
 	holdExpiresAt: string;
 	createdAt: string;
-	totals: QuoteBreakdownWire & { shippingZoneId: string | null };
+	/** `shippingZoneId` / `shippingMethodId` are read off the order's shipping
+	 *  snapshot: opaque merchant config ids, never buyer data. They are the only
+	 *  evidence on the wire of WHAT the totals were priced with — the method
+	 *  decides whether shipping was calculated, the zone whether tax was. */
+	totals: QuoteBreakdownWire & { shippingZoneId: string | null; shippingMethodId: string | null };
 	lines: OrderLineWire[];
 	fulfillment: {
 		carrier: string;
@@ -497,7 +562,13 @@ export type CheckoutFailureReason =
 	/** The idempotency key already names an order of ANOTHER cart (issue #133):
 	 *  a stale/second checkout tab. Nothing was placed; the cart is untouched. */
 	| "IDEMPOTENCY_KEY_REUSED"
+	| "MISSING_SHIPPING_ADDRESS"
+	| "SHIPPING_ZONE_NOT_MATCHED"
+	| "SHIPPING_REGION_CODE_REQUIRED"
 	| "SHIPPING_METHOD_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
+	| "SHIPPING_METHOD_REQUIRED"
+	| "SHIPPING_METHOD_NOT_APPLICABLE"
 	| "SHIPPING_RATE_NOT_FOUND"
 	| "COUPON_NOT_FOUND"
 	| "COUPON_NOT_ACTIVE"

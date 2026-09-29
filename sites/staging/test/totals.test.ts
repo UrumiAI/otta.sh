@@ -24,6 +24,7 @@ import {
 	isUnpricedText,
 	moneyCellText,
 	payButtonLabel,
+	checkoutFootnote,
 	sumRowText,
 	uncalculatedFootnote,
 } from "../src/lib/totals.js";
@@ -305,5 +306,43 @@ describe("uncalculatedFootnote — the footnote NAMES what is missing", () => {
 		expect(note).not.toMatch(/sorry|apolog/i);
 		expect(note).not.toMatch(/commerce service|view model|CMS|plugin/i);
 		expect(note).not.toMatch(/free/i);
+	});
+});
+
+/**
+ * #305 part 2 (ADR-0021): WHY the checkout total leaves something out now has
+ * more than one answer, and "this store hasn't set it up yet" is only true of
+ * one of them. The review says the one that is true.
+ */
+describe("checkoutFootnote — the reason the total is incomplete, stated truthfully", () => {
+	const shipping = { label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) };
+	const tax = { label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) };
+	const rows = [shipping, tax];
+
+	test("no_zones (or no reason given) keeps the store-has-not-set-it-up footnote", () => {
+		expect(checkoutFootnote("no_zones", rows, true)).toBe(uncalculatedFootnote(rows, true));
+		expect(checkoutFootnote(null, rows, true)).toBe(uncalculatedFootnote(rows, true));
+	});
+
+	test("address_needed: shipping and tax depend on where it is delivered", () => {
+		const note = checkoutFootnote("address_needed", rows, true) ?? "";
+		expect(note).toMatch(/depend on where/i);
+		expect(note).not.toMatch(/set .* up/i);
+	});
+
+	test("method_needed: choose a delivery option", () => {
+		expect(checkoutFootnote("method_needed", [shipping], true)).toMatch(
+			/choose a delivery option/i,
+		);
+	});
+
+	test("digital_only: nothing ships — no delivery charge and no location-based tax, and no blame", () => {
+		const note = checkoutFootnote("digital_only", rows, true) ?? "";
+		expect(note).toMatch(/nothing in this order ships/i);
+		expect(note).not.toMatch(/set .* up/i);
+	});
+
+	test("a complete total has no footnote, whatever the reason", () => {
+		expect(checkoutFootnote("address_needed", rows, false)).toBeNull();
 	});
 });

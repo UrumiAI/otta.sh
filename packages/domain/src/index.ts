@@ -22,6 +22,23 @@ export {
 	type QuoteFailure,
 	type QuoteResult,
 } from "./pricing/quote.js";
+// ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
+export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
+export {
+	isCodeShapedRegion,
+	normalizeCountryCode,
+	normalizeSubdivision,
+	parseZoneRegions,
+	validateZoneRegionsInput,
+	type NormalizeSubdivisionResult,
+	type ValidateZoneRegionsResult,
+} from "./pricing/region-codes.js";
+export {
+	resolveShippingZone,
+	type ZoneDestination,
+	type ZoneResolution,
+} from "./pricing/zone-match.js";
+export { quoteShippingOptions, type ShippingOption } from "./pricing/shipping-options.js";
 export {
 	deleteTaxClass,
 	type DeleteTaxClassDeps,
