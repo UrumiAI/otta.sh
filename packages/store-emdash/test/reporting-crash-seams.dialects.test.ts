@@ -257,6 +257,7 @@ describeEachDialect("EmdashReportingStore crash seams", (ctx) => {
 		const anomalies: { counter: string; docId: string; orderId: string }[] = [];
 		const h = makeReportingHarness(bound.storage, {
 			onAnomaly: (anomaly) => {
+				if (anomaly.kind !== "floored") throw new Error(`unexpected ${anomaly.kind} anomaly`);
 				anomalies.push({
 					counter: anomaly.counter,
 					docId: anomaly.docId,
