@@ -3,7 +3,7 @@
  * The base is the operator's configured storefront URL, else the request's own
  * origin, and NEVER anything a caller supplies.
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	loginLinkUrl,
 	resolveLoginLinkBase,
@@ -77,5 +77,45 @@ describe("loginLinkUrl", () => {
 		expect(loginLinkUrl("https://brand.example/shop", "c", "t")).toBe(
 			"https://brand.example/shop/account/verify?challenge=c&token=t",
 		);
+	});
+});
+
+/**
+ * Falling back to the request origin is correct on Workers and a risk on a Node
+ * host that does not pin `Host` — so the fallback is announced ONCE per isolate,
+ * naming the setting that removes the doubt. A fresh module graph per case,
+ * because "once" is module state.
+ */
+async function freshModule() {
+	vi.resetModules();
+	return import("../src/storefront/login-link.js");
+}
+
+describe("the request-origin fallback is logged once", () => {
+	test("warns once, across repeated requests, when no storefront URL is configured", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const fresh = await freshModule();
+			await fresh.resolveLoginLinkBase(ctxWithKv({}), REQUEST);
+			await fresh.resolveLoginLinkBase(ctxWithKv({}), REQUEST);
+			const fallback = warn.mock.calls.filter((call) =>
+				String(call[0]).includes(STOREFRONT_BASE_URL_KEY),
+			);
+			expect(fallback).toHaveLength(1);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("says nothing when the storefront URL is configured", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const fresh = await freshModule();
+			const ctx = ctxWithKv({ [STOREFRONT_BASE_URL_KEY]: "https://www.brand.example" });
+			await fresh.resolveLoginLinkBase(ctx, REQUEST);
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });

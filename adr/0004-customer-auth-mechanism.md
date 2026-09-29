@@ -49,3 +49,29 @@ the verifier. Sessions are opaque and DB-backed so revocation actually works.
 
 _Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
 Phase 5 plan §4 recommendation._
+
+## Amended 2026-09-29 — the per-address throttle is a lockout lever; per-IP limiting is a launch prerequisite
+
+Issue #306 made the magic link actually send, in process: `storefront/account/login/request`
+issues the challenge and emails the link through `CtxHttpEmailSender` over `ctx.http`. The
+decision above is unchanged. Two consequences it did not state are recorded here.
+
+- **The per-address window can lock a customer out.** It is keyed on the address alone, and the
+  request route is public. Anyone can send three requests for a victim's address every
+  challenge lifetime (15 minutes) and hold the window full. The victim's own request then
+  no-ops, identically and silently, and no link arrives. Three requests per quarter-hour per
+  target is cheap. The domain port stays IP-blind, as decided above, so the fix belongs at the
+  gateway. **Per-IP (and per-network) rate limiting on the login-request endpoint, at the
+  reverse proxy or WAF in front of the site, is a prerequisite for exposing customer login to
+  real customers.** It is no longer an optional hardening. Until it is in place, login should
+  be treated as not launch-ready. On Cloudflare, a rate-limiting rule on
+  `POST /account/login/request` (and the plugin's public
+  `/_emdash/api/plugins/otta/storefront/account/login/request` mount) satisfies this.
+- **The response is identical, but its latency is not quite.** A throttled request skips the
+  provider round trip, and a sent one waits for it. The send is therefore bounded by a short
+  ceiling (`LOGIN_EMAIL_TIMEOUT_MS`, 3 s, versus the 30 s the cron-driven order emails use),
+  and a failure or timeout is swallowed into the same answer. That keeps the gap to one
+  provider round trip, but does not close it. Closing it fully means deferring the send (an
+  outbox leg or a `waitUntil`), and the in-process plugin has neither for this path today.
+  Per-IP limiting also blunts the timing probe, because it bounds how many samples an
+  attacker can take.
