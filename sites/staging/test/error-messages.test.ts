@@ -17,6 +17,13 @@ const SELECTION_TOKENS = [
 	"COUPON_CURRENCY_MISMATCH",
 	"SHIPPING_METHOD_NOT_FOUND",
 	"SHIPPING_RATE_NOT_FOUND",
+	// #305 part 2 (ADR-0021) — the zone derived from the address.
+	"SHIPPING_ZONE_NOT_MATCHED",
+	"SHIPPING_REGION_CODE_REQUIRED",
+	"SHIPPING_METHOD_NOT_IN_ZONE",
+	"SHIPPING_METHOD_REQUIRED",
+	"SHIPPING_METHOD_NOT_APPLICABLE",
+	"MISSING_SHIPPING_ADDRESS",
 ];
 
 const KNOWN_TOKENS = [
@@ -121,5 +128,25 @@ describe("cartErrorMessage", () => {
 		const message = cartErrorMessage("COUPON_NOT_FOUND");
 		expect(message).toMatch(/check/i);
 		expect(message).toMatch(/case-sensitive/i);
+	});
+
+	test("SHIPPING_ZONE_NOT_MATCHED says plainly that the store does not ship there", () => {
+		expect(cartErrorMessage("SHIPPING_ZONE_NOT_MATCHED")).toBe("We don't ship to this address.");
+	});
+
+	test("SHIPPING_REGION_CODE_REQUIRED asks for a CODE, and says blank is fine where a country uses none", () => {
+		const message = cartErrorMessage("SHIPPING_REGION_CODE_REQUIRED");
+		expect(message).toMatch(/code/i);
+		expect(message).toMatch(/e\.g\. CA/);
+		expect(message).toMatch(/leave it blank/i);
+	});
+
+	test("SHIPPING_METHOD_REQUIRED is about the ADDRESS having no delivery options — not a nag to choose", () => {
+		expect(cartErrorMessage("SHIPPING_METHOD_REQUIRED")).toMatch(/no delivery options/i);
+	});
+
+	test("the shipping copy is distinct per reason too", () => {
+		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map(cartErrorMessage);
+		expect(new Set(shipping).size).toBe(shipping.length);
 	});
 });

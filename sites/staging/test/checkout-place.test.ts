@@ -273,7 +273,7 @@ describe("6b — email validation happens on the SITE, before any dispatch", () 
 				line1: "1 Private Road",
 				city: "Townsville",
 				postalCode: "12345",
-				country: "Testland",
+				country: "GB",
 			},
 			handler,
 		);
@@ -695,9 +695,11 @@ describe("the coupon at place", () => {
 		expect(JSON.stringify(calls[0]!.body)).not.toContain("zone-1");
 	});
 
-	test("the LOCKED review's form (email, key, coupon — no address block) places with NO shippingAddress", async () => {
+	test("the LOCKED review's form (email, key, coupon — no address block, no method) places with NO shippingAddress and NO shippingMethodId", async () => {
 		// What `/checkout` posts once the cart has become an order: the address
-		// fieldset is not rendered, so no address field is in the body at all.
+		// fieldset and the hidden method are not rendered, so the body carries
+		// neither. The domain's same-key replay returns the order before it would
+		// look at either (ADR-0021 Decision 8).
 		const { handler, calls } = makeHandler();
 		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-LOCK" }, handler);
 
@@ -705,6 +707,7 @@ describe("the coupon at place", () => {
 
 		expect(calls).toHaveLength(1);
 		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+		expect(calls[0]!.body).not.toHaveProperty("shippingMethodId");
 		expect(calls[0]!.body["couponCode"]).toBe("CK-LOCK");
 	});
 
@@ -737,7 +740,7 @@ describe("the coupon at place", () => {
 				line1: "1 Private Road",
 				city: "Townsville",
 				postalCode: "12345",
-				country: "Testland",
+				country: "GB",
 			},
 			handler,
 		);
@@ -760,13 +763,168 @@ describe("the coupon at place", () => {
 	});
 });
 
+/**
+ * #305 part 2 (ADR-0021): the delivery address at place, and the page it came
+ * from. On a ZONED store's page the country/region are HIDDEN — the destination
+ * the review priced — and only the typed fields decide all-or-nothing; on a
+ * page with no zones the country is a select the buyer fills in, and it counts.
+ */
+describe("the delivery address at place (ADR-0021)", () => {
+	const TYPED = { name: "A Buyer", line1: "1 Test St", city: "Testville", postalCode: "90001" };
+	const ZONED = {
+		...VALID_FORM,
+		addressMode: "zoned",
+		country: "US",
+		region: "CA",
+		shippingMethodId: "m-1",
+	};
+
+	test("zoned page: typed fields + the hidden destination are forwarded as one address, with the method", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(makeContext({ ...ZONED, ...TYPED }, handler).context);
+
+		expect(calls[0]!.body["shippingAddress"]).toEqual({ ...TYPED, country: "US", region: "CA" });
+		expect(calls[0]!.body["shippingMethodId"]).toBe("m-1");
+	});
+
+	test("zoned page: the hidden destination ALONE is no address — omitted, not a partial reject", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(makeContext(ZONED, handler).context);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+	});
+
+	test("zoned page: some typed fields filled is still a partial reject", async () => {
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(makeContext({ ...ZONED, name: "A Buyer" }, handler).context);
+
+		expect(response.headers.get("location")).toBe(
+			"/checkout?country=US&region=CA&method=m-1&error=INVALID_SHIPPING_ADDRESS",
+		);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("no-zones page: the country select COUNTS — a country alone is a partial reject; all blank is omitted", async () => {
+		const alone = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...VALID_FORM, country: "GB" }, alone.handler).context,
+		);
+		expect(response.headers.get("location")).toContain("error=INVALID_SHIPPING_ADDRESS");
+		expect(alone.calls).toHaveLength(0);
+
+		const blank = makeHandler();
+		await PLACE_POST(
+			makeContext(
+				{ ...VALID_FORM, name: "", line1: "", city: "", postalCode: "", country: "" },
+				blank.handler,
+			).context,
+		);
+		expect(blank.calls[0]!.body).not.toHaveProperty("shippingAddress");
+	});
+
+	test("a region that is not a code is refused HERE as SHIPPING_REGION_CODE_REQUIRED — never dispatched", async () => {
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...VALID_FORM, ...TYPED, country: "US", region: "California" }, handler)
+				.context,
+		);
+
+		expect(response.headers.get("location")).toBe("/checkout?error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a country that is not two letters is refused HERE as INVALID_SHIPPING_ADDRESS — never dispatched", async () => {
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...VALID_FORM, ...TYPED, country: "United States" }, handler).context,
+		);
+
+		expect(response.headers.get("location")).toBe("/checkout?error=INVALID_SHIPPING_ADDRESS");
+		expect(calls).toHaveLength(0);
+	});
+
+	test.each([
+		["SHIPPING_ZONE_NOT_MATCHED", "/checkout?coupon=C&error=SHIPPING_ZONE_NOT_MATCHED"],
+		["SHIPPING_REGION_CODE_REQUIRED", "/checkout?coupon=C&error=SHIPPING_REGION_CODE_REQUIRED"],
+		[
+			"SHIPPING_METHOD_NOT_IN_ZONE",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE",
+		],
+		[
+			"MISSING_SHIPPING_ADDRESS",
+			"/checkout?coupon=C&country=US&region=CA&error=MISSING_SHIPPING_ADDRESS",
+		],
+		["COUPON_NOT_FOUND", "/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND"],
+		[
+			"PAYMENT_INTENT_FAILED",
+			"/checkout?coupon=C&country=US&region=CA&method=m-1&error=PAYMENT_INTENT_FAILED",
+		],
+	])("a %s failure redirects with the blamed part dropped", async (reason, expected) => {
+		const { handler } = makeHandler({ ok: false, reason });
+		const response = await PLACE_POST(
+			makeContext({ ...ZONED, ...TYPED, couponCode: "C" }, handler).context,
+		);
+
+		expect(response.headers.get("location")).toBe(expected);
+	});
+
+	// A crafted POST can put anything in the "hidden" destination fields. Only
+	// values that pass the same SHAPE checks as the delivery form's GET
+	// (readDestinationParams) may ride a failure redirect; anything else is dropped.
+	test.each([
+		// A region means nothing without its country: both go.
+		[{ country: "Ada Lovelace", region: "CA" }, "/checkout?method=m-1&error=INVALID_EMAIL"],
+		[
+			{ country: "US", region: "1 Private Road" },
+			"/checkout?country=US&method=m-1&error=INVALID_EMAIL",
+		],
+		[
+			{ country: "us", region: "ca" },
+			"/checkout?country=US&region=CA&method=m-1&error=INVALID_EMAIL",
+		],
+	])(
+		"a crafted hidden destination %j is shape-checked before it enters a redirect",
+		async (hidden, expected) => {
+			const { handler, calls } = makeHandler();
+			const response = await PLACE_POST(
+				makeContext({ ...ZONED, ...hidden, email: "not-an-email" }, handler).context,
+			);
+
+			expect(response.headers.get("location")).toBe(expected);
+			expect(calls).toHaveLength(0);
+		},
+	);
+
+	test("a crafted destination never reaches a redirect after a DISPATCH failure either", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		const response = await PLACE_POST(
+			makeContext({ ...ZONED, country: "Private", region: "Street 12" }, handler).context,
+		);
+
+		expect(response.headers.get("location")).toBe(
+			"/checkout?method=m-1&error=PAYMENT_INTENT_FAILED",
+		);
+	});
+
+	test("the redirect never carries a typed address field — only the coarse destination", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		const location = (
+			await PLACE_POST(makeContext({ ...ZONED, ...TYPED }, handler).context)
+		).headers.get("location")!;
+
+		for (const value of Object.values(TYPED))
+			expect(location).not.toContain(encodeURIComponent(value));
+	});
+});
+
 describe("the optional ship-to (ADR-0009 slice c)", () => {
 	const ADDRESS = {
 		name: "A Buyer",
 		line1: "1 Test St",
 		city: "Testville",
 		postalCode: "12345",
-		country: "Testland",
+		country: "GB",
 	};
 
 	test("a fully-filled address is forwarded to the plugin route", async () => {
@@ -878,8 +1036,13 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
 				hasUnpricedLines: false,
-				selection: { couponCode: null, shippingMethodId: null },
+				selection: { couponCode: null, shippingMethodId: null, destination: null },
 				selectionErrors: {},
+				requiresShipping: true,
+				shipping: { status: "no_zones", matchedRegion: null, noOptions: false, options: [] },
+				addressRequired: false,
+				readyToPlace: true,
+				uncalculatedReason: "no_zones",
 				orderCreated: false,
 				order: null,
 			}),

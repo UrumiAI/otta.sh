@@ -67,6 +67,8 @@
  * here to carry one, and a caller branches on the code.
  */
 
+import { isCodeShapedRegion } from "@otta-sh/domain";
+
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -273,8 +275,32 @@ export function requireShippingAddress(address: {
 		requireBoundedText("shippingAddress.region", address.region, 0, 120);
 	requireBoundedText("shippingAddress.postalCode", address.postalCode, 1, 32);
 	requireBoundedText("shippingAddress.country", address.country, 1, 100);
+	requireCodeShapes("shippingAddress", address.country, address.region);
 	if (address.email !== undefined)
 		requireBoundedText("shippingAddress.email", address.email, 0, 320);
 	if (address.phone !== undefined)
 		requireBoundedText("shippingAddress.phone", address.phone, 0, 64);
 }
+
+/**
+ * ADR-0021: a destination's SHAPE — a two-letter country and, when given, a
+ * code-shaped region. Shape only: whether the codes are REAL (in CLDR) is the
+ * domain's call, and it answers with a typed reason a buyer can act on
+ * (`INVALID_SHIPPING_ADDRESS` / `SHIPPING_REGION_CODE_REQUIRED`). The routes'
+ * parsers refuse the same shapes first, so a buyer never reaches this throw.
+ */
+export function requireDestination(destination: { country: string; region?: string }): void {
+	requireCodeShapes("destination", destination.country, destination.region);
+}
+
+function requireCodeShapes(prefix: string, country: string, region: string | undefined): void {
+	if (!COUNTRY_SHAPE.test(country.trim())) {
+		fail(`${prefix}.country`, "must be an ISO 3166-1 alpha-2 code");
+	}
+	if (region !== undefined && region.trim().length > 0 && !isCodeShapedRegion(region)) {
+		fail(`${prefix}.region`, "must be an ISO 3166-2 subdivision code");
+	}
+}
+
+/** Two letters, either case — the SHAPE of an ISO 3166-1 alpha-2 code. */
+export const COUNTRY_SHAPE = /^[A-Za-z]{2}$/;

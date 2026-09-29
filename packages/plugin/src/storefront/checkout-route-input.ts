@@ -17,8 +17,12 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
-import { COUPON_CODE_MAX, isIdToken } from "../commerce/commerce-input.js";
-import type { ShippingAddressWire } from "../product-commerce/commerce-client.js";
+import { isCodeShapedRegion } from "@otta-sh/domain";
+import { COUNTRY_SHAPE, COUPON_CODE_MAX, isIdToken } from "../commerce/commerce-input.js";
+import type {
+	DestinationRequestWire,
+	ShippingAddressWire,
+} from "../product-commerce/commerce-client.js";
 import { sanitizeLocale } from "./route-input.js";
 
 /** `checkoutBody.buyerRef` — `z.string().min(1).max(320)`. */
@@ -50,6 +54,12 @@ export interface CheckoutSelection {
 	/** Trimmed, case KEPT — coupon lookup is case-sensitive. */
 	couponCode?: string;
 	shippingMethodId?: string;
+	/**
+	 * SUMMARY ONLY (ADR-0021): the coarse ship-to that prices the review — an
+	 * uppercased two-letter country and a code-shaped region. The place route
+	 * never reads one: its destination is the address it is placing with.
+	 */
+	destination?: DestinationRequestWire;
 }
 
 export interface CheckoutSummaryParsedInput {
@@ -116,12 +126,40 @@ export function parseCheckoutSummaryInput(input: {
 	locale?: unknown;
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
+	destination?: unknown;
 }): CheckoutSummaryParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	if (cartId === null) return null;
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
-	return { cartId, locale: sanitizeLocale(input.locale), selection };
+	const destination = parseDestination(input.destination);
+	if (destination === null) return null;
+	return {
+		cartId,
+		locale: sanitizeLocale(input.locale),
+		selection: { ...selection, ...(destination !== undefined ? { destination } : {}) },
+	};
+}
+
+/**
+ * The summary's destination (ADR-0021): absent/null ⇒ none; otherwise an object
+ * with a two-letter `country` and an optional code-shaped `region`, both
+ * uppercased — else `null` (INVALID_INPUT). SHAPE only: a code-shaped value
+ * that is not a real code (`XX`) passes, and the domain refuses it with a typed
+ * reason the page can explain (`SHIPPING_REGION_CODE_REQUIRED`).
+ */
+function parseDestination(value: unknown): DestinationRequestWire | undefined | null {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "object" || Array.isArray(value)) return null;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw["country"] !== "string") return null;
+	const country = raw["country"].trim().toUpperCase();
+	if (!COUNTRY_SHAPE.test(country)) return null;
+	const region = optionalString(raw["region"]);
+	if (region === null) return null;
+	if (region === undefined) return { country };
+	if (!isCodeShapedRegion(region)) return null;
+	return { country, region: region.toUpperCase() };
 }
 
 export function parseOrderRouteInput(input: {
@@ -199,5 +237,9 @@ export function parseShippingAddress(value: unknown): ShippingAddressWire | null
 		}
 		out[field] = trimmed;
 	}
+	// ADR-0021: codes, by SHAPE. Membership (a real country, a real subdivision
+	// of it) is the domain's, which answers a typed reason the buyer can fix.
+	if (!COUNTRY_SHAPE.test(out["country"] ?? "")) return null;
+	if (out["region"] !== undefined && !isCodeShapedRegion(out["region"])) return null;
 	return out as unknown as ShippingAddressWire;
 }

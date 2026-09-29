@@ -6,13 +6,15 @@
  * The snapshotted value is **whatever checkout submitted** (the Shopify model) —
  * a logged-in checkout MAY prefill the form from a saved profile `Address`, but
  * that is a client convenience; the order copies the *submitted* value, never a
- * live pointer to the profile row. Validation here is shape-only (required fields
- * present + non-empty, bounded lengths). It deliberately does NOT enforce
- * required-for-physical — per ADR-0009's sequencing that enforcement flips only
- * once the storefront UI collects the address, so this slice ships
- * capture-optional.
+ * live pointer to the profile row. Validation: required fields present and
+ * non-empty, bounded lengths, and — since ADR-0021 — ISO codes: the country is
+ * an ISO 3166-1 alpha-2 code and a non-blank region a real ISO 3166-2
+ * subdivision of it, stored as the canonical bare code (`CA`). Whether an
+ * address is REQUIRED is not decided here; `createOrderFromCart` decides that
+ * from the cart and the configured zones.
  */
 
+import { normalizeCountryCode, normalizeSubdivision } from "../pricing/region-codes.js";
 import type { OrderAddress } from "./model.js";
 
 /**
@@ -35,9 +37,9 @@ export interface OrderAddressInput {
 }
 
 /** Per-field max lengths (post-trim), enforced by {@link normalizeOrderAddress}.
- *  Generous but bounded — the address is record data at rest, not a pricing input,
- *  so the bounds only exist to keep garbage out of the store (mirrors the service
- *  zod bounds; the domain is the authoritative guard). */
+ *  Generous but bounded, to keep garbage out of the store (mirrors the old service
+ *  zod bounds; the domain is the authoritative guard). The country and region are
+ *  additionally ISO codes (ADR-0021): they now decide the shipping/tax zone. */
 export const ORDER_ADDRESS_MAX_LENGTHS = {
 	name: 200,
 	line1: 200,
@@ -50,9 +52,15 @@ export const ORDER_ADDRESS_MAX_LENGTHS = {
 	phone: 64,
 } as const;
 
-/** A required field (post-trim) that came back empty, or any field that exceeded
- *  its bound, fails normalization. */
-export type NormalizeOrderAddressResult = { ok: true; value: OrderAddress } | { ok: false };
+/**
+ * `INVALID`: a required field (post-trim) came back empty, a field exceeded its
+ * bound, or the country is not an ISO 3166-1 alpha-2 code.
+ * `REGION_NOT_A_CODE`: a non-blank region is not a real ISO 3166-2 subdivision
+ * of the country — its own reason, because the buyer can fix it with a code.
+ */
+export type NormalizeOrderAddressResult =
+	| { ok: true; value: OrderAddress }
+	| { ok: false; reason: "INVALID" | "REGION_NOT_A_CODE" };
 
 /** Trim + null a value; empty-after-trim becomes `null`. */
 function trimToNull(value: string | null | undefined): string | null {
@@ -76,10 +84,10 @@ export function normalizeOrderAddress(input: OrderAddressInput): NormalizeOrderA
 	const country = trimToNull(input.country);
 	// Required fields must survive trimming.
 	if (name === null || line1 === null || city === null || postalCode === null || country === null) {
-		return { ok: false };
+		return { ok: false, reason: "INVALID" };
 	}
 	const line2 = trimToNull(input.line2);
-	const region = trimToNull(input.region);
+	const rawRegion = trimToNull(input.region);
 	const email = trimToNull(input.email);
 	const phone = trimToNull(input.phone);
 	const value: OrderAddress = {
@@ -87,7 +95,7 @@ export function normalizeOrderAddress(input: OrderAddressInput): NormalizeOrderA
 		line1,
 		line2,
 		city,
-		region,
+		region: rawRegion,
 		postalCode,
 		country,
 		email,
@@ -99,11 +107,17 @@ export function normalizeOrderAddress(input: OrderAddressInput): NormalizeOrderA
 		line1.length > ORDER_ADDRESS_MAX_LENGTHS.line1 ||
 		(line2 !== null && line2.length > ORDER_ADDRESS_MAX_LENGTHS.line2) ||
 		city.length > ORDER_ADDRESS_MAX_LENGTHS.city ||
-		(region !== null && region.length > ORDER_ADDRESS_MAX_LENGTHS.region) ||
+		(rawRegion !== null && rawRegion.length > ORDER_ADDRESS_MAX_LENGTHS.region) ||
 		postalCode.length > ORDER_ADDRESS_MAX_LENGTHS.postalCode ||
 		country.length > ORDER_ADDRESS_MAX_LENGTHS.country ||
 		(email !== null && email.length > ORDER_ADDRESS_MAX_LENGTHS.email) ||
 		(phone !== null && phone.length > ORDER_ADDRESS_MAX_LENGTHS.phone);
-	if (overLength) return { ok: false };
-	return { ok: true, value };
+	if (overLength) return { ok: false, reason: "INVALID" };
+
+	// ADR-0021: codes, not free text.
+	const countryCode = normalizeCountryCode(country);
+	if (countryCode === null) return { ok: false, reason: "INVALID" };
+	const region = normalizeSubdivision(countryCode, rawRegion);
+	if (!region.ok) return { ok: false, reason: "REGION_NOT_A_CODE" };
+	return { ok: true, value: { ...value, country: countryCode, region: region.code } };
 }
