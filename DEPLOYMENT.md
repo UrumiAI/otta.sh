@@ -317,6 +317,22 @@ double-release or double-send. A hot aggregate therefore retries rather than blo
 contention budget is a measured number recorded in ADR-0019, not a hope. The scaling ceiling
 is that single D1 database.
 
+**Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
+not as a gradual rollout that keeps old and new Workers serving side by side. A release that
+changes a stored document's shape migrates it forward on first write, and an old Worker still
+serving traffic can write the old shape back over it. The reporting day document is the live
+case ([ADR-0022](./adr/0022-reporting-rollup-is-a-guarded-delta.md)). A pre-delta Worker's
+**rollup** rewrites a migrated day document from the copy it read: any events counted since
+that read are lost, and its own state move is kept only in an old-style field the new code
+ignores. The next event on that day clears the old field in one write, logs a `tainted`
+reporting anomaly, and carries on from the counters that survived. A pre-delta Worker's
+**reconcile** writes the old shape back, which the new code migrates forward on its next
+write. Either way the day's figures can be wrong (almost always low; a rare race during the
+overlap can count one event twice) until a reconcile covering it runs, and
+the scheduled reconcile reaches a day only once it has closed. So after a rollback past such a
+release, or a rollout that overlapped versions, treat today's report figures as provisional
+until then. Orders, stock and payments are unaffected — only the reporting rollup is.
+
 ## 6. Troubleshooting
 
 | Symptom | Cause → fix |

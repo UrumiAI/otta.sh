@@ -2179,7 +2179,7 @@ of the four reports moved to write time and two did not:
 
 | Document | Contents |
 |---|---|
-| `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: `stateCounts`, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents` |
+| `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: one flat `state_<state>` count per state, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents`, and the two guards `epoch` and `seq` (see "One event is one guarded delta"). Read back as a `stateCounts` map. A LEGACY document (nested `stateCounts`, no guards) is still read as it stands and migrated forward on its first write |
 | `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed — and, once a recompute has counted it absolutely, `absorbedAt`. Indexed by `date` (how a recompute pages a day's claims) and `orderId` (the diagnostic axis) |
 
 **The day is the grain, and the other two intervals are folds over it.** A week is the
@@ -2227,8 +2227,9 @@ itself, whereas the observer has already reached the log.
 One event is two documents and there is no transaction between them:
 
 ```
+epoch     reporting_daily/{currency}:{day} read (created / migrated forward if need be)
 claim     reporting_applied/{claim} create-if-absent — the once-only gate
-counters  reporting_daily/{currency}:{day} compare-and-set — the value
+counters  reporting_daily/{currency}:{day} ONE guarded numeric delta (`updateIf`) — the value
 stamp     the claim's `appliedAt`, best-effort, as a DIAGNOSTIC
 ```
 
@@ -2255,21 +2256,27 @@ both against one document has exactly two failure modes — the recompute erasin
 transition it did not see, and a delta landing on top of a recompute that already counted
 it. Three mechanisms close them, in the order the code does them:
 
-1. **Pin before scanning.** Every day document an attempt may write has its revision read
-   BEFORE the orders are scanned, so a live delta landing in between costs the recompute
-   its commit and forces a re-scan. Scanning first and pinning afterwards is the bug that
-   ordering exists to prevent: the value in hand would predate the transition and the
-   revision would not say so.
+1. **Pin before scanning.** Every day document an attempt may write has its `epoch` and
+   `seq` read BEFORE the orders are scanned, and the commit is an `updateIf` guarded on
+   both, so a live delta landing in between (every delta bumps `seq`) costs the recompute
+   its commit and forces a re-scan. The pin cannot be the revision: the host's `updateIf`
+   never moves it, so a revision pin would not see a delta at all. Scanning first and
+   pinning afterwards is the bug that ordering exists to prevent: the value in hand would
+   predate the transition and the pin would not say so. (An absent or legacy document is
+   pinned by revision and committed by compare-and-set; no delta ever lands on either.)
 2. **Absorb the claims the scan proves, before committing.** A claim is the right to move
    these counters; a recompute that has counted the event absolutely spends that right, and
    `absorbedAt` is how the claim says so. The claims absorbed are exactly the ones
    RECONSTRUCTED from the scanned orders — never every claim an order has — because a
    transition that is not in the scanned document is one the recompute did not count, and
    absorbing it would drop its delta.
-3. **Every delta re-reads its claim immediately before every bucket write** and skips
-   itself when it has been absorbed (cross-cutting rule (a): the token is re-asserted
-   before each write it guards, on every attempt, because this path retries with backoff
-   and a writer parked past the moment its right was revoked must not commit anyway).
+3. **The commit bumps `epoch`, and every delta is guarded on the epoch it read before its
+   claim was last checked.** A delta parked across a recompute's commit is therefore
+   refused by its own statement, re-reads its claim, and skips itself when it has been
+   absorbed (cross-cutting rule (a): the token is re-asserted before each write it guards,
+   on every attempt, and here the check and the write are one statement). A commit bumps
+   the epoch even over an already-exact document when its attempt absorbed claims, so a
+   delta that passed its claim check just before the absorb cannot land afterwards.
 
 The claims are reconstructed from the order itself: its append-only audit log carries every
 `(fromState → toState)` pair, its refunds ledger every finalized refund, and the arrival
@@ -2277,7 +2284,7 @@ into its original state is the event creation owes. An amount carried on a recon
 claim is diagnostic only — nothing recomputes from a claim.
 
 A day that has lost every order keeps a ZEROED document rather than being deleted: a live
-event racing that write needs a revision to lose to, and an all-zero document reads as no
+event racing that write needs a guard to lose to, and an all-zero document reads as no
 bucket at all.
 
 **Reconcile a CLOSED day as a matter of course, and a live day only on demand.** Yesterday
@@ -2369,25 +2376,51 @@ it heals:
 | the CLAIM write landed and the caller then died | a spent claim over counters that never moved | only `reconcile` — every redelivery is a no-op, however often it is retried |
 | a decrement arriving with no matching increment | the counter floored at zero, the day's money still on the document | `reconcile`; meanwhile the anomaly observer has announced it and the bucket is still reported |
 
+### One event is one guarded delta
+
+Every order created on a day in a currency shares one document, so every checkout, settle
+and refund that day writes to it. When the counters were moved by read-modify-write
+compare-and-set, that was a crowd-bound hotspot: nothing refuses a reporting writer, so a
+writer lost its revision once per peer that committed ahead of it, the retry depth grew
+with the crowd, and the order path (which awaits the hook inline) paid the backoff and the
+extra round trips on every checkout.
+
+An event is now **one `updateIf`** on flat top-level counters: `delta` carries the
+arithmetic (done in SQL, so the database serializes the writers on the row lock instead of
+refusing them), and `where` carries only
+- the **`epoch`** the writer read before its claim was checked (moved only by a
+  recompute's commit, see above), and
+- a **floor guard** per decremented counter (`>= dec`). A floor guard failing means a lost
+  increment. The delta is then re-planned from a fresh read, the counter floored at zero
+  against the exact value it was judged on, and the floor announced, exactly as before.
+
+and it bumps **`seq`**, which is what a recompute pins. Peers' deltas never guard on each
+other, so the crowd costs lock queueing and nothing else. The first write to an absent day
+is a create-if-absent (race-safe: a loser re-reads), and the first write to a LEGACY
+nested document migrates it forward by a revision compare-and-set (safe for the same
+reason: no delta lands on a legacy document). Claim-once, stamp and absorb are unchanged.
+
+A document an OLDER version rewrote during a mixed-version deploy or after a rollback (its
+guards and flat counters, plus a nested `stateCounts` map: a "hybrid") is read by its flat
+fields. The next event un-taints it in ONE `updateIf` guarded on the `(epoch, seq)` it read
+(the map set to `null`, the epoch moved past everything known), reports a `tainted`
+anomaly, and applies its delta. It never recomputes the day inline, since that would put a
+full-day scan on every checkout during the window; what the old writer discarded is left to
+`reconcile`. The decision is ADR-0022.
+
 ### Reporting contention, measured
 
-The day document's bound is the CROWD rather than the document: every distinct event
-legitimately moves a counter, so nothing refuses anybody and a writer can lose its revision
-once per peer that commits ahead of it. That is the shipping/tax-rules shape, not the
-inventory one.
+`test/reporting-bucket-race.pg.test.ts`, at **N=200 writers on one day document**:
 
-**The shape that would exceed it is a BATCH**, not a busy shop: a hold-expiry sweep or a
-bulk fulfilment run flips many orders at once, and if those orders were placed on the same
-day they all contend for one document. Past roughly the ceiling the surplus writers raise
-the typed contention refusal — which the order store's hook swallows, because reporting
-must never fail a transition — so the day reads low until a recompute fixes it. That chain
-is the designed degradation: batch → contention → swallowed → under-count → healed.
+| Shape | Before (compare-and-set loop, `CAS_MAX_ATTEMPTS` = 24) | After (one guarded delta) |
+|---|---|---|
+| 200 concurrent transitions | 120–143 of 200 refused with `StorageContentionError`, depth 24 | 0 refused, depth **1**, exact sum |
+| 250 first events (200 arrivals + 50 refunds) on an absent document | 146–176 of 250 refused, depth 24 | 0 refused, depth 1, exact sums |
+| 200 deliveries of ONE event | one delta | one delta |
+| 200 deltas racing a recompute | 47 of 200 refused | 0 refused; never over-counts mid-race; a quiet recompute is exact |
 
-**Measured max CAS attempts: 12 at N=24 transitions into one day document (4 loops),
-against `CAS_MAX_ATTEMPTS` = 24** — `test/reporting-bucket-race.pg.test.ts`, which also
-races N=16 deliveries of ONE event and asserts a single delta. No contention refusal occurs
-at that size; the headroom is what the extra attempts buy, and a busier day spends more of
-it before the typed, retryable refusal rather than reporting a wrong total.
+The depth assertion (exactly 1) is what keeps a regression back to a read-modify-write loop
+from passing quietly. The old measurement, 12 attempts at N=24, is superseded.
 
 ### What the reporting tier does NOT carry
 

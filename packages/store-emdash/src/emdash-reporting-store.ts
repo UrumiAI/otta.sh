@@ -72,6 +72,9 @@ import {
 	dayKeysBetween,
 	dayStartOf,
 	FINALIZED_REFUND_STATUS,
+	hasReportingDailyGuards,
+	isCurrentReportingDailyDoc,
+	isHybridReportingDailyDoc,
 	newReportingDailyDoc,
 	normalizeReportingDailyDoc,
 	normalizeStateCounts,
@@ -82,11 +85,22 @@ import {
 	reportingTransitionClaimId,
 	isAbsorbed,
 	REVENUE_STATES,
+	stateCountField,
+	storedStateCounts,
+	toStoredReportingDailyDoc,
+	type CurrentReportingDailyDoc,
 	type ReportingAppliedDoc,
 	type ReportingDailyDoc,
+	type ReportingDailyStoredDoc,
 	type ReportingOrderEvent,
 } from "./reporting-documents.js";
-import type { StorageAccess, StorageCollection, Versioned, WhereClause } from "./storage-access.js";
+import type {
+	NumericDelta,
+	StorageAccess,
+	StorageCollection,
+	Versioned,
+	WhereClause,
+} from "./storage-access.js";
 
 /** The host clamps `limit` at 100, so that is the page every scan here reads. */
 const PAGE_SIZE = 100;
@@ -161,18 +175,39 @@ export interface EmdashReportingStoreOptions {
 	onAnomaly?: (anomaly: ReportingAnomaly) => void;
 }
 
-/** Evidence that the counters have drifted from the orders. */
-export interface ReportingAnomaly {
-	kind: "floored";
-	/** Which counter the decrement would have driven negative. */
-	counter: string;
-	/** The day document it happened on. */
-	docId: string;
-	orderId: string;
-	/** What the counter held, and what the decrement asked for. */
-	held: number;
-	delta: number;
-}
+/**
+ * Evidence that the counters have drifted from the orders. An operator seeing either kind
+ * should run a recompute over the day.
+ *
+ * - `floored`: a decrement would have driven a counter below zero, so its matching
+ *   increment is missing. The counter was floored at zero.
+ * - `tainted`: a live event found the day document rewritten by an OLDER version of this
+ *   adapter (a mixed-version deploy or a rollback; see `isHybridReportingDailyDoc`), and
+ *   un-tainted it before applying. Whatever that writer's rewrite discarded is still
+ *   missing until a recompute restores it.
+ */
+export type ReportingAnomaly =
+	| {
+			kind: "floored";
+			/** Which counter the decrement would have driven negative. */
+			counter: string;
+			/** The day document it happened on. */
+			docId: string;
+			orderId: string;
+			/** What the counter held, and what the decrement asked for. */
+			held: number;
+			delta: number;
+	  }
+	| {
+			kind: "tainted";
+			/** The day document it happened on. */
+			docId: string;
+			/** The order whose event found it. */
+			orderId: string;
+			/** The guards the tainted document carried when it was found. */
+			epoch: number;
+			seq: number;
+	  };
 
 /** What a recompute did — the numbers a scheduled sweep logs. */
 export interface ReportingReconcileResult {
@@ -195,7 +230,7 @@ interface PageBudget {
 }
 
 export class EmdashReportingStore implements ReportingStore {
-	readonly #daily: StorageCollection<ReportingDailyDoc>;
+	readonly #daily: StorageCollection<ReportingDailyStoredDoc>;
 	readonly #applied: StorageCollection<ReportingAppliedDoc>;
 	readonly #orders: StorageCollection<OrderDoc>;
 	readonly #inventory: StorageCollection<InventoryDoc>;
@@ -208,7 +243,10 @@ export class EmdashReportingStore implements ReportingStore {
 	readonly #onAnomaly: (anomaly: ReportingAnomaly) => void;
 
 	constructor(options: EmdashReportingStoreOptions) {
-		this.#daily = collectionOf<ReportingDailyDoc>(options.storage, REPORTING_DAILY_COLLECTION);
+		this.#daily = collectionOf<ReportingDailyStoredDoc>(
+			options.storage,
+			REPORTING_DAILY_COLLECTION,
+		);
 		this.#applied = collectionOf<ReportingAppliedDoc>(
 			options.storage,
 			REPORTING_APPLIED_COLLECTION,
@@ -237,10 +275,25 @@ export class EmdashReportingStore implements ReportingStore {
 	 * Two documents, in this order and for this reason:
 	 *
 	 * ```
-	 * claim   reporting_applied/{claim} create-if-absent — the once-only gate
-	 * counters reporting_daily/{currency}:{day} compare-and-set — the value
-	 * stamp   the claim's `appliedAt`, best-effort, as a diagnostic
+	 * epoch    reporting_daily/{currency}:{day} read (created or migrated if need be)
+	 * claim    reporting_applied/{claim} create-if-absent — the once-only gate
+	 * counters reporting_daily/{currency}:{day} ONE guarded numeric delta — the value
+	 * stamp    the claim's `appliedAt`, best-effort, as a diagnostic
 	 * ```
+	 *
+	 * **The counters are one statement, not a read-modify-write loop.** Every order
+	 * created on a day in a currency shares one document, so a compare-and-set here made
+	 * every checkout that day contend with every other one, and nothing ever refused a
+	 * writer: retry depth grew with the crowd until the typed contention error, and each
+	 * checkout paid the backoff inline. The delta is `updateIf` with the arithmetic done
+	 * in SQL, which the database serializes on the row lock instead of refusing, so a
+	 * busy day costs each event one write however many peers it has.
+	 *
+	 * **Why the epoch is read BEFORE the claim is made.** The delta is guarded on that
+	 * epoch, and a recompute bumps it when it commits. So if a recompute counts this event
+	 * absolutely (which it can only do after the claim exists, and it absorbs the claim to
+	 * say so) and commits before the delta lands, the delta is refused in the same statement
+	 * that would have double-counted, and re-checks its claim. See {@link #applyEvent}.
 	 *
 	 * **The claim is first, so the residue is an under-count.** A crash between the two
 	 * leaves an event spent and its counters unmoved: the report says less revenue than
@@ -268,6 +321,10 @@ export class EmdashReportingStore implements ReportingStore {
 
 		const day = dayKeyOf(event.orderCreatedAt);
 		const now = this.#clock.now().toISOString();
+		const docId = reportingDailyDocId(event.currency, day);
+		// Read (creating or migrating the document if it must) BEFORE the claim: the epoch
+		// in hand has to predate the claim check the delta is relying on.
+		const snapshot = await this.#currentDay(docId, event, day, now, null);
 		const claim: ReportingAppliedDoc = {
 			orderId: event.orderId,
 			kind: event.kind,
@@ -287,7 +344,7 @@ export class EmdashReportingStore implements ReportingStore {
 		// exists to prevent.
 		if (!created.applied) return;
 
-		if (!(await this.#applyEvent(event, day, claimId, now))) return;
+		if (!(await this.#applyEvent(event, docId, day, claimId, snapshot, now))) return;
 
 		// The stamp is a DIAGNOSTIC and never a gate (see `ReportingAppliedDoc`): it is
 		// what makes a claim-only residue legible. A lost stamp changes no answer, so the
@@ -297,46 +354,154 @@ export class EmdashReportingStore implements ReportingStore {
 	}
 
 	/**
-	 * Move the day document's counters, under the compare-and-set retry budget.
+	 * Move the day document's counters: ONE guarded numeric delta, retried only when its
+	 * guard genuinely failed.
 	 *
-	 * **The claim is re-read immediately before EVERY bucket write**, and the delta is
-	 * dropped if a recompute has absorbed it in the meantime. That is ADR-0019's
-	 * cross-cutting rule (a) applied to this step: the claim is the right to move these
-	 * counters, a recompute can take that right away by folding the event's effect in
-	 * absolutely, and a writer parked between its own claim and its own write must not
-	 * wake up and commit work it no longer has the right to do. Checking once, at the
-	 * top of the call, would leave exactly that window open — and it is not a narrow
-	 * one, because this path retries with backoff.
+	 * The write is `updateIf` guarded on the `epoch` read before the claim was last
+	 * checked, plus a floor guard per decremented counter, and it bumps `seq`:
 	 *
-	 * Returns whether the delta was applied, so the caller knows whether the `appliedAt`
-	 * stamp still means anything.
+	 * - **A peer's delta never refuses it.** Deltas do not guard on each other at all;
+	 *   the database applies them one after another on the row lock. That is the whole
+	 *   point: the crowd costs nothing but lock queueing, and the retry depth is 1.
+	 * - **A recompute's commit does.** It bumps `epoch`, so a delta computed against a
+	 *   claim the recompute has since absorbed is refused atomically rather than applied
+	 *   on top of an absolute count. ADR-0019's cross-cutting rule (a) (the right to write
+	 *   is re-asserted before every write it guards) is kept, and tightened: the old loop
+	 *   re-read the claim and then wrote in a separate statement, while here the check and
+	 *   the write are one statement. When the epoch has moved, the claim is re-read and the
+	 *   delta dropped if it was absorbed.
+	 * - **A floor guard failing means drift.** A decrement whose counter is below it has
+	 *   lost its matching increment; the plan is recomputed from a fresh read and the
+	 *   counter floored at zero (announced through `onAnomaly`), as before.
+	 *
+	 * The retry budget therefore only ever runs on a recompute committing mid-flight or
+	 * on drift, never on the crowd. Returns whether the delta was applied, so the caller
+	 * knows whether the `appliedAt` stamp still means anything.
 	 */
 	async #applyEvent(
 		event: ReportingOrderEvent,
+		docId: string,
 		day: string,
 		claimId: string,
+		first: CurrentReportingDailyDoc,
 		now: string,
 	): Promise<boolean> {
-		const docId = reportingDailyDocId(event.currency, day);
+		let snapshot = first;
+		// Whether the epoch in hand is newer than the last claim check. The first attempt's
+		// epoch was read before the claim was created, so it needs none.
+		let recheck = false;
 		return withCasRetry<boolean>(
 			"recordReportingEvent",
 			async () => {
-				// Re-asserted on every attempt, immediately before the write it guards.
-				const claim = await this.#applied.get(claimId);
-				if (claim !== null && isAbsorbed(claim)) return casDone(false);
+				if (recheck) {
+					const claim = await this.#applied.get(claimId);
+					if (claim !== null && isAbsorbed(claim)) return casDone(false);
+					recheck = false;
+				}
+				const plan = planDelta(snapshot, event);
+				const written = await this.#daily.updateIf(docId, {
+					where: { ...plan.where, epoch: snapshot.epoch },
+					set: { updatedAt: now },
+					delta: { ...plan.delta, seq: { inc: 1 } },
+				});
+				if (written.applied) {
+					for (const anomaly of plan.floored) {
+						this.#onAnomaly({ ...anomaly, docId, orderId: event.orderId });
+					}
+					return casDone(true);
+				}
+				// Refused: a recompute committed (the epoch moved), or a floor guard failed.
+				// Re-read to find out which, and plan again against what is there now. The
+				// epoch only increases (outside a mixed-version window, see
+				// `ReportingDailyStoredDoc`), so an unchanged one proves no recompute committed
+				// since the claim was last checked, and that check still stands. The epoch in
+				// hand is passed down so a migration or un-taint moves past it.
+				const next = await this.#currentDay(docId, event, day, now, snapshot.epoch);
+				if (next.epoch !== snapshot.epoch) recheck = true;
+				snapshot = next;
+				return CAS_RETRY;
+			},
+			this.#retry,
+		);
+	}
+
+	/**
+	 * The day document in its CURRENT shape, creating it, migrating a legacy one forward,
+	 * or un-tainting a hybrid one first if it has to.
+	 *
+	 * The create and the migration are revision compare-and-sets, so both are race-safe: a
+	 * create-if-absent can only lose to a peer that created the document, and a migration
+	 * only to a peer that moved it (another migration, or a recompute rewriting it), and in
+	 * both cases the next read finds the current shape. No delta lands on a legacy
+	 * document, since a delta is guarded on `epoch`, so the migration's revision cannot
+	 * miss one. Once a document is current, this is one read.
+	 *
+	 * **A hybrid (tainted) document is un-tainted, never recomputed here.** This runs on the
+	 * checkout, settle and refund path, once per event, so a day recompute here would be N
+	 * concurrent full-day scans fighting over the same claims and commit, and a day past the
+	 * page budget would refuse every event on it. Instead ONE `updateIf` guarded on the
+	 * `epoch` and `seq` just read clears the nested map and moves the epoch, and the event
+	 * proceeds against the flat fields, which are authoritative (see
+	 * `isHybridReportingDailyDoc`). Moving the epoch makes any delta parked across the
+	 * un-taint re-check its claim. What the old writer discarded stays missing, which is
+	 * the under-count residue `reconcile` heals, and `onAnomaly` says so.
+	 *
+	 * `knownEpoch` is the highest epoch the caller has already seen on this document (the
+	 * delta path's snapshot on a retry), or `null`. A migration or un-taint writes an epoch
+	 * past both it and the one it read, so the epoch does not move backwards past anything
+	 * this writer relied on, even when an older writer has rewound it.
+	 */
+	async #currentDay(
+		docId: string,
+		event: ReportingOrderEvent,
+		day: string,
+		now: string,
+		knownEpoch: number | null,
+	): Promise<CurrentReportingDailyDoc> {
+		return withCasRetry<CurrentReportingDailyDoc>(
+			"ensureReportingDay",
+			async () => {
 				const held = await this.#daily.getVersioned(docId);
-				const base =
+				if (held !== null && isCurrentReportingDailyDoc(held.value)) return casDone(held.value);
+				if (
+					held !== null &&
+					hasReportingDailyGuards(held.value) &&
+					isHybridReportingDailyDoc(held.value)
+				) {
+					const tainted = held.value;
+					const untainted = await this.#daily.updateIf(docId, {
+						where: { epoch: tainted.epoch, seq: tainted.seq },
+						// `updateIf` can set a field but not remove one, so the map is set to null,
+						// which every reader treats as absent.
+						set: {
+							stateCounts: null,
+							epoch: Math.max(tainted.epoch, knownEpoch ?? tainted.epoch) + 1,
+							updatedAt: now,
+						},
+					});
+					// A peer moved it first (a delta, another un-taint, a recompute): re-read.
+					if (!untainted.applied || !isCurrentReportingDailyDoc(untainted.data)) {
+						return CAS_RETRY;
+					}
+					this.#onAnomaly({
+						kind: "tainted",
+						docId,
+						orderId: event.orderId,
+						epoch: tainted.epoch,
+						seq: tainted.seq,
+					});
+					return casDone(untainted.data);
+				}
+				const epoch = knownEpoch === null ? 0 : knownEpoch + 1;
+				const next = toStoredReportingDailyDoc(
 					held === null
 						? newReportingDailyDoc(event.currency, day, now)
-						: normalizeReportingDailyDoc(held.value);
-				const next =
-					event.kind === "transition"
-						? applyTransition(base, event, now, (anomaly) =>
-								this.#onAnomaly({ ...anomaly, docId, orderId: event.orderId }),
-							)
-						: applyRefund(base, event, now);
+						: { ...normalizeReportingDailyDoc(held.value), updatedAt: now },
+					epoch,
+					0,
+				);
 				const written = await this.#daily.compareAndSet(docId, held?.revision ?? null, next);
-				return written.applied ? casDone(true) : CAS_RETRY;
+				return written.applied ? casDone(next) : CAS_RETRY;
 			},
 			this.#retry,
 		);
@@ -353,12 +518,14 @@ export class EmdashReportingStore implements ReportingStore {
 	 * **It is safe to run while events are landing, and three things make it so.** They
 	 * are stated in the order the code does them, because the order is the argument:
 	 *
-	 * 1. **Pin before scanning.** Every day document this attempt may write has its
-	 *    revision read BEFORE the orders are scanned. Any bucket write that lands after
-	 *    that — a live delta — moves the revision, so the commit is refused and the whole
-	 *    day is re-scanned. Reading the orders first and pinning afterwards would do the
-	 *    opposite: a transition landing in between would be committed away, because the
-	 *    value in hand predates it and the revision would not say so.
+	 * 1. **Pin before scanning.** Every day document this attempt may write has its guards
+	 *    (`epoch`, `seq`; the revision for a legacy or absent one) read BEFORE the orders
+	 *    are scanned, and the commit is guarded on them. Any delta that lands after that
+	 *    bumps `seq`, so the commit is refused and the whole day is re-scanned. Reading the
+	 *    orders first and pinning afterwards would do the opposite: a transition landing in
+	 *    between would be committed away, because the value in hand predates it and the
+	 *    pin would not say so. (The pin cannot be the revision here: the host's `updateIf`
+	 *    never moves it, so it would not see a delta at all.)
 	 * 2. **Absorb the claims the scan folded in, before committing.** A claim is the
 	 *    right to move these counters; once a recompute has counted the event
 	 *    absolutely, that right is spent, and `absorbedAt` is how the claim says so. The
@@ -366,9 +533,12 @@ export class EmdashReportingStore implements ReportingStore {
 	 *    never every claim an order has — because a claim whose transition is not in the
 	 *    scanned document describes something the recompute did not count, and absorbing
 	 *    that one would drop its delta.
-	 * 3. **The delta re-reads its claim before every write** (`#applyEvent`). So an event
-	 *    whose order this recompute already counted, and whose own bucket write had not
-	 *    landed yet, becomes a SKIP rather than a second increment.
+	 * 3. **The commit bumps `epoch`, and every delta is guarded on the epoch it read
+	 *    before its claim was checked** (`#applyEvent`). So an event whose order this
+	 *    recompute already counted, and whose own delta had not landed yet, is refused by
+	 *    the delta's own statement, re-reads its claim, and becomes a SKIP rather than a
+	 *    second increment. That is why a commit bumps the epoch even over an exact document
+	 *    when the attempt absorbed claims.
 	 *
 	 * What is left is one residue, and it is in the safe direction: a transition that
 	 * lands after the scan read its order but before the absorb reaches its claim is
@@ -425,15 +595,15 @@ export class EmdashReportingStore implements ReportingStore {
 				};
 				const now = this.#clock.now().toISOString();
 
-				// 1. PIN: the currencies this day already has, and each document's revision AND
-				//    value, read before anything is scanned. The value is kept as well as the
-				//    revision so the "already exact" short-circuit below and the pin agree on
-				//    ONE snapshot — re-reading the document there would let a commit be skipped
+				// 1. PIN: the currencies this day already has, and each document's value (whose
+				//    `epoch` and `seq` are the pin) and revision, read before anything is scanned.
+				//    One read serves as both, so the "already exact" short-circuit below and the
+				//    pin agree on ONE snapshot — re-reading the document there would let a commit be skipped
 				//    against a value newer than the one this attempt is pinned to.
 				// The per-currency pin reads are deliberately EXEMPT from the budget: there is one
 				// per currency the day holds, which is the store's currency count and not a
 				// function of its traffic, so charging them would buy nothing but noise.
-				const pinned = new Map<string, Versioned<ReportingDailyDoc> | null>();
+				const pinned = new Map<string, Versioned<ReportingDailyStoredDoc> | null>();
 				for (const currency of await this.#dayCurrencies(day, budget)) {
 					pinned.set(currency, await this.#daily.getVersioned(reportingDailyDocId(currency, day)));
 				}
@@ -452,7 +622,7 @@ export class EmdashReportingStore implements ReportingStore {
 				// the write — so this day's premises are stale. Re-run it.
 				if (absorbed === "retry") return CAS_RETRY;
 
-				// 4. COMMIT, each document against the revision pinned in step 1.
+				// 4. COMMIT, each document against what was pinned in step 1.
 				let written = 0;
 				for (const currency of [...new Set([...computed.keys(), ...pinned.keys()])].toSorted()) {
 					const docId = reportingDailyDocId(currency, day);
@@ -460,26 +630,77 @@ export class EmdashReportingStore implements ReportingStore {
 					// `null` is a real pin, and a peer creating it first loses this commit.
 					const held = pinned.get(currency) ?? null;
 					// A day that has lost every order keeps a ZEROED document rather than being
-					// deleted: a live event racing this write needs a revision to lose to, and
+					// deleted: a live event racing this write needs a guard to lose to, and
 					// an all-zero document is read as no bucket at all.
 					const target = {
 						...(computed.get(currency) ?? newReportingDailyDoc(currency, day, now)),
 						updatedAt: now,
 					};
-					if (held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target)) {
-						continue;
-					}
-					const applied = await this.#daily.compareAndSet(docId, held?.revision ?? null, target);
+					const exact =
+						held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target);
+					// An exact document is left alone unless this attempt absorbed claims. Then
+					// the epoch is still bumped, so a delta that passed its claim check before the
+					// absorb, and has not landed yet, is refused rather than applied on top.
+					// A tainted (hybrid) document is always rewritten: its counters may agree by
+					// accident, but its nested map has to go.
+					const tainted = held !== null && isHybridReportingDailyDoc(held.value);
+					if (exact && absorbed.claims === 0 && !tainted) continue;
+					const applied = await this.#commitDay(docId, held, target);
 					// A peer moved this day after it was pinned. Re-scan: the value in hand was
 					// derived from an older snapshot of the orders.
-					if (!applied.applied) return CAS_RETRY;
-					written++;
+					if (!applied) return CAS_RETRY;
+					if (!exact || tainted) written++;
 				}
 
 				return casDone({ written, claims: absorbed.claims, scanned: budget.scanned });
 			},
 			this.#retry,
 		);
+	}
+
+	/**
+	 * Commit a recomputed day document against its pin, bumping the epoch.
+	 *
+	 * - **Absent at the pin:** a create-if-absent, which a peer's creation refuses.
+	 * - **Legacy at the pin:** a revision compare-and-set that writes the current shape.
+	 *   No delta lands on a legacy document, so the revision sees every peer that could
+	 *   have moved it.
+	 * - **Current at the pin:** `updateIf` guarded on the pinned `epoch` AND `seq`. A delta
+	 *   never moves the revision (the host's `updateIf` leaves it alone), so the revision
+	 *   cannot be the pin. `seq` moves on every delta, so any delta landing after the pin
+	 *   refuses the commit, and `epoch` moves on every commit, so two recomputes pinned to
+	 *   the same value cannot both win. Every state field the pinned document carried is
+	 *   written, zeroed if the recompute no longer counts it; since `seq` proves nothing
+	 *   landed in between, those are all the fields there are.
+	 */
+	async #commitDay(
+		docId: string,
+		held: Versioned<ReportingDailyStoredDoc> | null,
+		target: ReportingDailyDoc,
+	): Promise<boolean> {
+		if (held === null || !hasReportingDailyGuards(held.value)) {
+			const epoch = held === null ? 1 : 1 + (held.value.epoch ?? 0);
+			const written = await this.#daily.compareAndSet(
+				docId,
+				held?.revision ?? null,
+				toStoredReportingDailyDoc(target, epoch, 0),
+			);
+			return written.applied;
+		}
+		const pinned = held.value;
+		const next = toStoredReportingDailyDoc(target, pinned.epoch + 1, pinned.seq);
+		for (const state of Object.keys(storedStateCounts(pinned))) {
+			const field = stateCountField(state);
+			next[field] ??= 0;
+		}
+		const { currency: _currency, date: _date, seq: _seq, ...set } = next;
+		const written = await this.#daily.updateIf(docId, {
+			where: { epoch: pinned.epoch, seq: pinned.seq },
+			// Clearing the nested map is what un-taints a hybrid (`updateIf` can set a field
+			// but not remove one, so it is set to null). Harmless on a current document.
+			set: isHybridReportingDailyDoc(pinned) ? { ...set, stateCounts: null } : set,
+		});
+		return written.applied;
 	}
 
 	/**
@@ -1016,68 +1237,105 @@ function claimIdFor(event: ReportingOrderEvent): string {
 		: reportingRefundClaimId(event.orderId, event.refundId);
 }
 
-/**
- * Move an order between state buckets, and revenue with it.
- *
- * Every decrement is FLOORED at zero, which is the one place this adapter tolerates
- * being wrong: a decrement whose matching increment was lost (a rollup that never
- * landed, an event redelivered after a restore) would otherwise drive a counter
- * negative and report a negative revenue — a number no report should ever be able to
- * show. Flooring resolves it as an under-count instead, and the recompute is what makes
- * it exact.
- */
-function applyTransition(
-	base: ReportingDailyDoc,
-	event: Extract<ReportingOrderEvent, { kind: "transition" }>,
-	now: string,
-	onFloor: (anomaly: { kind: "floored"; counter: string; held: number; delta: number }) => void,
-): ReportingDailyDoc {
-	const counts: Record<string, number> = { ...base.stateCounts };
-	let revenueOrders = base.revenueOrders;
-	let revenueCents = base.revenueCents;
-	/** Decrement, never below zero, and SAY SO when the floor engages. */
-	const floor = (counter: string, held: number, delta: number): number => {
-		if (held >= delta) return held - delta;
-		onFloor({ kind: "floored", counter, held, delta });
-		return 0;
-	};
-	if (event.fromState !== null) {
-		counts[event.fromState] = floor(
-			`stateCounts.${event.fromState}`,
-			counts[event.fromState] ?? 0,
-			1,
-		);
-		if (REVENUE_STATES.has(event.fromState)) {
-			revenueOrders = floor("revenueOrders", revenueOrders, 1);
-			revenueCents = floor("revenueCents", revenueCents, event.orderTotalCents);
-		}
-	}
-	counts[event.toState] = (counts[event.toState] ?? 0) + 1;
-	if (REVENUE_STATES.has(event.toState)) {
-		revenueOrders += 1;
-		revenueCents = addAggregate(revenueCents, event.orderTotalCents);
-	}
-	return {
-		...base,
-		stateCounts: normalizeStateCounts(counts),
-		revenueOrders,
-		revenueCents,
-		updatedAt: now,
-	};
+/** One counter the delta floors, reported through `onAnomaly` once the write lands. */
+interface FlooredCounter {
+	kind: "floored";
+	counter: string;
+	held: number;
+	delta: number;
 }
 
-/** Add a finalized refund to the day's returned money. No state allow-list applies. */
-function applyRefund(
-	base: ReportingDailyDoc,
-	event: Extract<ReportingOrderEvent, { kind: "refund" }>,
-	now: string,
-): ReportingDailyDoc {
-	return {
-		...base,
-		refundEntries: base.refundEntries + 1,
-		refundedCents: addAggregate(base.refundedCents, event.refundedCents),
-		updatedAt: now,
+/** One event's delta: the floor guards, the per-field amounts, and what it floors. */
+interface DeltaPlan {
+	where: WhereClause;
+	delta: Partial<Record<keyof ReportingDailyStoredDoc, NumericDelta>>;
+	floored: FlooredCounter[];
+}
+
+/**
+ * Plan one event as a guarded numeric delta against the document it was read from.
+ *
+ * **A transition MOVES an order between buckets.** The state it leaves is decremented
+ * and the state it enters incremented, and revenue follows the same rule through the
+ * allow-list. A refund adds to the day's returned money whatever the order's state.
+ *
+ * **Every decrement is FLOORED at zero**, which is the one place this adapter tolerates
+ * being wrong: a decrement whose matching increment was lost would otherwise drive a
+ * counter negative and report a negative revenue. Per counter the result is exactly the
+ * read-modify-write's, `max(held - dec, 0) + inc`, expressed so it stays correct under
+ * peers' deltas:
+ *
+ * - `held >= dec` (the healthy case): the delta is `inc - dec`, guarded on `>= dec`, so
+ *   peers' deltas landing first can only keep the guard true or, if they drain the
+ *   counter, refuse the write so it is planned again.
+ * - `held < dec` (drift): the delta is `inc - held`, guarded on the counter still being
+ *   exactly `held` (or absent), so the floor is taken against the value it was judged on.
+ *   It is announced, because flooring is proof that something was lost. That exact-value
+ *   guard DOES couple the writer to its peers: any peer delta moving that counter first
+ *   refuses it, and it re-plans once per such write. That is accepted because it only
+ *   runs on drift, which is rare and already a case for a recompute.
+ *
+ * Increments are checked against the safe-integer ceiling here, from the value read,
+ * so an overflow is the `RangeError` it always was rather than a guard refusal the
+ * retry loop could not tell from contention.
+ */
+function planDelta(doc: CurrentReportingDailyDoc, event: ReportingOrderEvent): DeltaPlan {
+	const moves = new Map<
+		keyof ReportingDailyStoredDoc,
+		{ counter: string; dec: number; inc: number }
+	>();
+	const move = (
+		field: keyof ReportingDailyStoredDoc,
+		counter: string,
+		dec: number,
+		inc: number,
+	): void => {
+		const held = moves.get(field) ?? { counter, dec: 0, inc: 0 };
+		held.dec += dec;
+		held.inc += inc;
+		moves.set(field, held);
 	};
+	if (event.kind === "transition") {
+		if (event.fromState !== null) {
+			move(stateCountField(event.fromState), `stateCounts.${event.fromState}`, 1, 0);
+			if (REVENUE_STATES.has(event.fromState)) {
+				move("revenueOrders", "revenueOrders", 1, 0);
+				move("revenueCents", "revenueCents", event.orderTotalCents, 0);
+			}
+		}
+		move(stateCountField(event.toState), `stateCounts.${event.toState}`, 0, 1);
+		if (REVENUE_STATES.has(event.toState)) {
+			move("revenueOrders", "revenueOrders", 0, 1);
+			move("revenueCents", "revenueCents", 0, event.orderTotalCents);
+		}
+	} else {
+		move("refundEntries", "refundEntries", 0, 1);
+		move("refundedCents", "refundedCents", 0, event.refundedCents);
+	}
+
+	const plan: DeltaPlan = { where: {}, delta: {}, floored: [] };
+	for (const [field, { counter, dec, inc }] of moves) {
+		const raw = doc[field];
+		const held = typeof raw === "number" ? raw : 0;
+		let net: number;
+		if (dec === 0) {
+			net = inc;
+		} else if (held >= dec) {
+			net = inc - dec;
+			plan.where[field] = { gte: dec };
+		} else {
+			net = inc - held;
+			// Absent reads as 0, and an absent field is matched by `null`, not by `0`.
+			plan.where[field] = typeof raw === "number" ? raw : null;
+			plan.floored.push({ kind: "floored", counter, held, delta: dec });
+		}
+		// The safe-integer refusal, from the value in hand (see the docblock).
+		if (net > 0) addAggregate(held, net);
+		else addAggregate(0, -net);
+		if (net > 0) plan.delta[field] = { inc: net };
+		else if (net < 0) plan.delta[field] = { dec: -net };
+	}
+	return plan;
 }
 
 /**

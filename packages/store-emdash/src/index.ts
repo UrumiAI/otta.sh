@@ -417,6 +417,7 @@ export {
 	type ReportingAppliedDoc,
 	type ReportingCollectionIndexDeclaration,
 	type ReportingDailyDoc,
+	type ReportingDailyStoredDoc,
 	type ReportingEventKind,
 	type ReportingOrderEvent,
 	type ReportingRollupWriter,
