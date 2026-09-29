@@ -78,7 +78,16 @@ function inProcessTier(): CommerceClientTier {
 	 * decides at COLLECTION time which cases this tier's hooks let it run.
 	 */
 	const clock = new FixedClock(new Date());
+	/**
+	 * The PROVIDER stand-ins, one per method, with the real adapters' honest
+	 * capabilities: Stripe can move money back (`refundable: true`), x402 cannot, so
+	 * a refund against an x402 order is recorded manually. Composed into the
+	 * storefront client and the admin orders client through the same `gateways`
+	 * option production's composition roots pass.
+	 */
 	const stripeGateway = new FakePaymentGateway({ id: "stripe" });
+	const x402Gateway = new FakePaymentGateway({ id: "x402" });
+	const gateways = { stripe: stripeGateway, x402: x402Gateway };
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
@@ -94,7 +103,7 @@ function inProcessTier(): CommerceClientTier {
 		name: "in-process, plugin storage, sqlite",
 		async setup() {
 			if (harness !== undefined) return; // one database per tier, however many slices ask
-			harness = await makeInProcessCommerce({ clock, gateways: { stripe: stripeGateway } });
+			harness = await makeInProcessCommerce({ clock, gateways });
 			client = harness.client;
 		},
 		async teardown() {
@@ -128,7 +137,7 @@ function inProcessTier(): CommerceClientTier {
 		async makeAdminClients(): Promise<AdminClientSurfaces> {
 			const ctx = harnessOrThrow().ctx;
 			return {
-				orders: new InProcessAdminOrdersClient(ctx, { clock, gateways: { stripe: stripeGateway } }),
+				orders: new InProcessAdminOrdersClient(ctx, { clock, gateways }),
 				products: new InProcessAdminProductsClient(ctx, { clock }),
 				rules: new InProcessAdminRulesClient(ctx, { clock }),
 				reporting: new InProcessReportingSettingsClient(ctx, { clock }),
@@ -143,7 +152,22 @@ function inProcessTier(): CommerceClientTier {
 				clock.advance(ms);
 			},
 		},
-		payments: { method: "stripe" },
+		payments: {
+			method: "stripe",
+			manualRefundMethod: "x402",
+			providerRefundCalls() {
+				return [stripeGateway, x402Gateway].flatMap((gateway) =>
+					gateway.refundCalls.map((call) => ({
+						gateway: gateway.id,
+						orderId: call.orderId,
+						providerRef: call.providerRef,
+						amountCents: call.amount,
+						currency: call.currency,
+						idempotencyKey: call.idempotencyKey,
+					})),
+				);
+			},
+		},
 		arrange: {
 			...sharedTierSeeders({
 				get orderStore() {
@@ -476,5 +500,59 @@ describe("in-process admin orders: search is PREFIX-only, by dialect (ADR-0019 �
 		const midString = await orders.listOrders({ search: "guerite@" });
 		expect(midString.orders).toEqual([]);
 		expect(midString.total).toBe(0);
+	});
+});
+
+/**
+ * FAIL-CLOSED WITH NO GATEWAY, pinned on this tier because the shared contract
+ * cannot reach it any more: the tier above composes gateways, so the contract's
+ * no-gateway case skips. A deployment with no Stripe secrets gets an admin orders
+ * client with an EMPTY gateway map (`makeAdminClients`), and a refund must then be
+ * refused — never recorded as if money had moved — even on a PAID order with a
+ * real capture, where every other check would pass.
+ */
+describe("in-process admin refunds: NO gateway configured stays fail-closed", () => {
+	let harness: InProcessCommerceHarness;
+	let orders: InProcessAdminOrdersClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		orders = new InProcessAdminOrdersClient(harness.ctx);
+		await sharedTierSeeders({
+			orderStore: harness.stores.orderStore,
+			addressStore: harness.stores.addressStore,
+			sessionStore: harness.stores.sessionStore,
+			shippingRules: harness.stores.shippingRules,
+			couponStore: harness.stores.couponStore,
+			taxRules: harness.stores.taxRules,
+		}).order({
+			orderId: "nogw-ref-1",
+			buyerRef: "nogw-ref@example.test",
+			captured: { amountCents: 1500, providerRef: "pi_nogw_ref_1" },
+		});
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("a refund against a paid, captured order is refused 409 REFUND_GATEWAY_UNAVAILABLE and records nothing", async () => {
+		// The panel is told the truth first: money is held, but nothing can move it.
+		expect(await orders.getRefunds("nogw-ref-1")).toMatchObject({
+			capturedTotalCents: 1500,
+			remainingCents: 1500,
+			refundable: false,
+		});
+		expect(
+			await orders.refundOrder(
+				"nogw-ref-1",
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: "nogw-ref-1-a" },
+			),
+		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+		expect(await orders.getRefunds("nogw-ref-1")).toMatchObject({
+			refunds: [],
+			refundedTotalCents: 0,
+		});
+		expect(harness.egressAttempts()).toBe(0);
 	});
 });

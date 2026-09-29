@@ -203,6 +203,17 @@ export interface ArrangedOrder {
 	title?: string;
 	unitPrice?: CommerceMoney;
 	quantity?: number;
+	/** The method the order was placed with. Defaults to `stripe`. */
+	paymentMethod?: "stripe" | "x402";
+	/**
+	 * A SETTLED payment for the order, in the order's currency: the order is
+	 * flipped `pending → paid` and one `succeeded` payment row is recorded under
+	 * the order's method, carrying `providerRef` (the PaymentIntent / transaction
+	 * id a gateway refund targets). This is what gives the refund ceiling —
+	 * `min(Σ captured, frozen total)` — a non-zero value. Absent ⇒ a pending order
+	 * with nothing captured, the state every order is born in.
+	 */
+	captured?: { amountCents: number; providerRef: string };
 }
 
 /** One shipping zone, one flat-rate method in it, and optionally the rate. A spec
@@ -282,6 +293,31 @@ export interface CommerceClientTierClock {
 export interface CommerceClientTierPayments {
 	/** The method whose gateway this tier composes. */
 	readonly method: "stripe" | "x402";
+	/**
+	 * OPTIONAL: a method whose gateway the tier ALSO composes and which declares
+	 * `refundable: false` (x402), so a refund against it is RECORDED as a manual,
+	 * off-platform refund and never sent to a provider. Absent ⇒ the manual-refund
+	 * case skips, saying so in its name.
+	 */
+	readonly manualRefundMethod?: "x402";
+	/**
+	 * Every refund call the tier's composed gateways have received, oldest first
+	 * and across cases (a case filters by its own idempotency key, which is
+	 * disjoint by rule). This is the PROVIDER's view: what money a refund actually
+	 * asked a payment provider to move, which the ledger alone cannot show.
+	 */
+	providerRefundCalls(): readonly ProviderRefundCall[];
+}
+
+/** One refund request as a payment gateway received it. Money in integer minor
+ *  units, as the port carries it. */
+export interface ProviderRefundCall {
+	readonly gateway: string;
+	readonly orderId: string;
+	readonly providerRef: string;
+	readonly amountCents: number;
+	readonly currency: string;
+	readonly idempotencyKey: string;
 }
 
 export interface CommerceClientTier {
@@ -1975,13 +2011,14 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  *
  * WHAT THE ORDERS CASES CANNOT ARRANGE, recorded for the same reason the
  * products gaps are: `arrange.order` seeds a PENDING guest order with one
- * digital line, no captured payment, no shipping-address snapshot and no
- * reconciliation flag — which is the state every order is born in. So a CAPTURED
- * payment (and with it a non-zero refund ceiling), a flagged reconciliation, and
- * a `processing` order that can legally be fulfilled are all out of reach from
- * here. Each is therefore asserted in the direction this surface CAN reach — the
- * refusal — and the refusals are the load-bearing half anyway: `NOT_FULFILLABLE`,
- * `NOT_IN_RECONCILIATION`, and a refund that moves no money.
+ * digital line, no shipping-address snapshot and no reconciliation flag — which
+ * is the state every order is born in — or, with `captured`, a PAID one carrying
+ * a settled payment (which is what gives the refund ceiling a non-zero value, so
+ * the gateway refund cases can reach the provider). A flagged reconciliation and
+ * a `processing` order that can legally be fulfilled are still out of reach from
+ * here, so each is asserted in the direction this surface CAN reach — the
+ * refusal — and the refusals are the load-bearing half anyway: `NOT_FULFILLABLE`
+ * and `NOT_IN_RECONCILIATION`.
  *
  * SEARCH IS ASSERTED AT ITS FLOOR, NEVER AT A TIER'S CEILING (ADR-0019 §6). The
  * shared case pins the three matches every dialect owes — an order-id PREFIX, a
@@ -2746,7 +2783,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		);
 
 		test.skipIf(tier.payments !== undefined)(
-			"(no gateways yet — INC-C1/C3) that refusal names the missing GATEWAY, not the ceiling",
+			"(no gateway composed) that refusal names the missing GATEWAY, not the ceiling",
 			async () => {
 				await tier.arrange.order({ orderId: "adm-o-refg", buyerRef: "refg@example.test" });
 				expect(
@@ -2756,6 +2793,182 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ idempotencyKey: "adm-o-refg-1" },
 					),
 				).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+			},
+		);
+
+		/** The refund calls a provider received under ONE idempotency key. */
+		function providerCallsFor(idempotencyKey: string): readonly ProviderRefundCall[] {
+			const payments = tier.payments;
+			if (payments === undefined) throw new Error("unreachable: gated on tier.payments");
+			return payments.providerRefundCalls().filter((c) => c.idempotencyKey === idempotencyKey);
+		}
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a refund past a SHORT capture is refused REFUND_EXCEEDS_CAPTURED before any provider call",
+			async () => {
+				// $10.00 captured against a $15.00 total: the ceiling is min(1000, 1500),
+				// so it binds at what was CAPTURED, not at the order total.
+				await tier.arrange.order({
+					orderId: "adm-o-refshort",
+					buyerRef: "refshort@example.test",
+					captured: { amountCents: 1000, providerRef: "pi_adm_o_refshort" },
+				});
+				expect(await orders.getRefunds("adm-o-refshort")).toMatchObject({
+					capturedTotalCents: 1000,
+					ceilingCents: 1000,
+					remainingCents: 1000,
+					refundable: true,
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refshort",
+						{ amountCents: 1200, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refshort-1" },
+					),
+				).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_CAPTURED" });
+				// Refused at RESERVATION, so no money was ever asked of the provider and
+				// no row — not even a voided one — is on the ledger.
+				expect(providerCallsFor("adm-o-refshort-1")).toEqual([]);
+				expect(await orders.getRefunds("adm-o-refshort")).toMatchObject({
+					refunds: [],
+					refundedTotalCents: 0,
+					remainingCents: 1000,
+				});
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a refund within the ceiling calls the provider EXACTLY ONCE with its key, and the ledger records it",
+			async () => {
+				const method = tier.payments?.method ?? "stripe";
+				await tier.arrange.order({
+					orderId: "adm-o-refok",
+					buyerRef: "refok@example.test",
+					paymentMethod: method,
+					captured: { amountCents: 1500, providerRef: "pi_adm_o_refok" },
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refok",
+						{
+							amountCents: 500,
+							currency: "USD",
+							reason: "damaged",
+							refundedBy: "ops@example.test",
+						},
+						{ idempotencyKey: "adm-o-refok-1" },
+					),
+				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+				// The PROVIDER's view: one call, against the captured PaymentIntent, for
+				// the amount asked, carrying the command's key as its own idempotency key.
+				expect(providerCallsFor("adm-o-refok-1")).toEqual([
+					{
+						gateway: method,
+						orderId: "adm-o-refok",
+						providerRef: "pi_adm_o_refok",
+						amountCents: 500,
+						currency: "USD",
+						idempotencyKey: "adm-o-refok-1",
+					},
+				]);
+				const after = await orders.getRefunds("adm-o-refok");
+				expect(after).toMatchObject({ refundedTotalCents: 500, remainingCents: 1000 });
+				expect(after?.refunds).toHaveLength(1);
+				expect(after?.refunds[0]).toMatchObject({
+					orderId: "adm-o-refok",
+					amountCents: 500,
+					currency: "USD",
+					kind: "gateway",
+					gateway: method,
+					reason: "damaged",
+					refundedBy: "ops@example.test",
+				});
+				// A gateway refund carries the provider's own refund id — the proof money
+				// moved, which a manual row never has.
+				expect(typeof after?.refunds[0]?.refundRef).toBe("string");
+
+				// The REST of the ceiling, under a new key, refunds the order fully.
+				expect(
+					await orders.refundOrder(
+						"adm-o-refok",
+						{ amountCents: 1000, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refok-2" },
+					),
+				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: true });
+				expect(providerCallsFor("adm-o-refok-2")).toHaveLength(1);
+				expect(await orders.getRefunds("adm-o-refok")).toMatchObject({
+					refundedTotalCents: 1500,
+					remainingCents: 0,
+				});
+				expect((await orders.getOrder("adm-o-refok"))?.order.state).toBe("refunded");
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a replayed refund key records nothing new and makes NO second provider call",
+			async () => {
+				await tier.arrange.order({
+					orderId: "adm-o-refrep",
+					buyerRef: "refrep@example.test",
+					paymentMethod: tier.payments?.method ?? "stripe",
+					captured: { amountCents: 1500, providerRef: "pi_adm_o_refrep" },
+				});
+				const refund = { amountCents: 700, currency: "USD", refundedBy: "ops@example.test" };
+				expect(
+					await orders.refundOrder("adm-o-refrep", refund, { idempotencyKey: "adm-o-refrep-1" }),
+				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+
+				// THE DOUBLE-SUBMIT: same key, same refund. The ledger answers it — the
+				// provider is never asked twice, so money cannot move twice.
+				expect(
+					await orders.refundOrder("adm-o-refrep", refund, { idempotencyKey: "adm-o-refrep-1" }),
+				).toEqual({ ok: true, recorded: false, duplicate: true, fullyRefunded: false });
+				expect(providerCallsFor("adm-o-refrep-1")).toHaveLength(1);
+				expect(await orders.getRefunds("adm-o-refrep")).toMatchObject({
+					refundedTotalCents: 700,
+					remainingCents: 800,
+				});
+				expect((await orders.getRefunds("adm-o-refrep"))?.refunds).toHaveLength(1);
+			},
+		);
+
+		test.skipIf(tier.payments?.manualRefundMethod === undefined)(
+			"(non-refundable gateway composed) a MANUAL refund is recorded without any provider call (SKIPPED where the tier composes no such gateway)",
+			async () => {
+				const method = tier.payments?.manualRefundMethod ?? "x402";
+				await tier.arrange.order({
+					orderId: "adm-o-refman",
+					buyerRef: "refman@example.test",
+					paymentMethod: method,
+					captured: { amountCents: 1500, providerRef: "0xadm-o-refman" },
+				});
+				// The gateway's HONEST capability: it cannot move money back, so the panel
+				// offers "record a manual refund" — and recording one must still work.
+				expect(await orders.getRefunds("adm-o-refman")).toMatchObject({
+					paymentMethod: method,
+					refundable: false,
+					remainingCents: 1500,
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refman",
+						{ amountCents: 1500, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refman-1" },
+					),
+				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: true });
+				expect(providerCallsFor("adm-o-refman-1")).toEqual([]);
+				const after = await orders.getRefunds("adm-o-refman");
+				expect(after?.refunds).toHaveLength(1);
+				expect(after?.refunds[0]).toMatchObject({
+					kind: "manual",
+					gateway: method,
+					refundRef: null,
+					amountCents: 1500,
+				});
+				expect(after).toMatchObject({ refundedTotalCents: 1500, remainingCents: 0 });
 			},
 		);
 
