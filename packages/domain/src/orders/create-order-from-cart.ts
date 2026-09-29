@@ -56,22 +56,23 @@ export interface CreateOrderCommand {
 	/** Email/session claim token — the pre-Phase-5 entitlement key (§6). */
 	buyerRef: string;
 	paymentMethod: PaymentMethod;
-	// -- Phase 6 checkout inputs (all optional; absent ⇒ zero shipping/tax) ----
-	/** The buyer's tax zone. */
-	shippingZoneId?: string;
-	/** The selected shipping method. */
+	// -- Phase 6 checkout inputs -------------------------------------------
+	// There is deliberately NO zone: the shipping/tax zone is derived from
+	// `shippingAddress` (ADR-0021 Decision 1). Nobody can supply one.
+	/** The selected shipping method. Required for a physical cart once the
+	 *  address matched a zone; refused for a digital-only cart. */
 	shippingMethodId?: string;
 	/** An optional coupon code, redeemed atomically alongside order creation. */
 	couponCode?: string;
 	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
 	customerId?: CustomerId;
 	/**
-	 * The optional shipping address the checkout submitted (ADR-0009). Validated
-	 * (shape + bounds) and snapshotted IMMUTABLY onto the order — a frozen copy of
-	 * whatever checkout submitted (the Shopify model), never a live pointer to the
-	 * profile address book. Absent ⇒ no ship-to captured (allowed this slice:
-	 * required-for-physical enforcement is deferred until the storefront UI
-	 * collects it, per ADR-0009 sequencing).
+	 * The shipping address the checkout submitted (ADR-0009). Validated (shape,
+	 * bounds, ISO codes — ADR-0021) and snapshotted IMMUTABLY onto the order — a
+	 * frozen copy of whatever checkout submitted (the Shopify model), never a
+	 * live pointer to the profile address book. It is the ONLY input to the
+	 * shipping/tax zone. Required for a cart with a physical line when zones
+	 * are configured (`MISSING_SHIPPING_ADDRESS`); optional otherwise.
 	 */
 	shippingAddress?: OrderAddressInput;
 }
@@ -89,8 +90,9 @@ function ttl(deps: CreateOrderDeps): number {
  * each line's **price + title** from `product_commerce` and writes the
  * `order_totals` stub (`subtotal = total = Σ(unitPrice × quantity)`). The
  * **`pending` order row is durably inserted before any reservation is adopted**
- * (§5 ordering), so a partial-adoption abort is healed by `expireOrders` — never a
- * stranded hold. Physical lines adopt their cart reservation via the guarded
+ * (§5 ordering), so a partial-adoption abort is never a stranded hold: the abort
+ * expires the order at once and releases what it adopted (and a crash before that
+ * leaves it to `expireOrders`). Physical lines adopt their cart reservation via the guarded
  * `held → adopted` flip (moving it out of the Phase-3 sweep's scope); **digital
  * lines reserve nothing** (§6). All lines adopted ⇒ the cart flips `active →
  * checked_out` **and records the order's id** (secondary fence + issue #132) —
@@ -103,12 +105,16 @@ function ttl(deps: CreateOrderDeps): number {
  * order", never "that order was paid"; and because the idempotency
  * short-circuit returns earlier, a NULL cart `orderId` never proves the absence
  * of an order (`orders.cart_id` is the complete answer). Idempotent under
- * `idempotencyKey`: a replay returns the same order, re-snapshots nothing,
- * re-adopts nothing (the guarded flips see the reservations already `adopted`
- * for this order). A replay is the same key for the SAME cart: the key reused
- * for a different cart is refused `IDEMPOTENCY_KEY_REUSED` (issue #133), both at
- * the short-circuit and — for a call that raced past it — after the deduped
- * insert, before anything is adopted or stamped.
+ * `idempotencyKey`: a replay returns the same order and re-snapshots nothing. A
+ * replay of a still-`pending` order re-runs the adoption and the cart flip —
+ * idempotent for this order (the guarded flips see the reservations already
+ * `adopted` for it, and the cart already terminal) — so a call that threw
+ * between the durable insert and either step is FINISHED by its retry, never
+ * handed a payment intent over holds still on the cart's deadline. A replay is
+ * the same key for the SAME cart: the key reused for a different cart is refused
+ * `IDEMPOTENCY_KEY_REUSED` (issue #133), both at the short-circuit and — for a
+ * call that raced past it — after the deduped insert, before anything is adopted
+ * or stamped.
  */
 export async function createOrderFromCart(
 	deps: CreateOrderDeps,
@@ -134,21 +140,23 @@ export async function createOrderFromCart(
 		// state branch: a paid order is no more this cart's than a pending one.
 		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		if (already.state !== "pending") {
-			// The order has already left the checkout window — paid, failed, expired or
-			// cancelled. There is nothing left to begin paying for, so re-issuing an
-			// intent would be a pointless LIVE provider call whose outage could turn a
-			// replay of a PAID order into a 502. Return the order with an explicitly
-			// EMPTY handle: `clientAction: "none"` (no buyer-facing next action) and an
-			// empty `intentId` — this call minted no intent, and the original intent id
-			// is not on the order (it lives on `payments.provider_ref`; a caller that
-			// needs it reads the order's payments, never this field). The wire shape is
-			// unchanged (`serializeIntent` still emits gateway/intentId/clientAction).
-			return {
-				ok: true,
-				order: already,
-				intent: { gateway: gateway.id, intentId: "", clientAction: { kind: "none" } },
-			};
+			// Already left the checkout window: nothing to pay for (see the helper).
+			// A dead order's coupon use is re-freed here too — the self-heal for a
+			// call that died between its expiry flip and its coupon release.
+			await healCouponOf(deps, already);
+			return leftCheckoutWindow(already, gateway);
 		}
+		// A `pending` order does NOT prove the checkout finished — finish it first
+		// (see `finishCheckout`). The cart flipped is the one the ORDER was made
+		// from, never the command's.
+		// KNOWN FOLLOW-UP (pre-existing): a cart line edited between the failed call
+		// and this replay (qty adjusted on the same hold) is adopted as edited for an
+		// order that snapshotted the old lines.
+		const finished = await finishCheckout(deps, already, already.cartId, async () => {
+			await deps.couponStore.releaseByOrder(already.id);
+		});
+		if (finished.outcome === "left") return leftCheckoutWindow(finished.order, gateway);
+		if (finished.outcome === "lost") return { ok: false, reason: "RESERVATION_LOST" };
 		let intent: PaymentIntentHandle;
 		try {
 			// Same builder as the fresh path below — the replay must describe the SAME
@@ -165,15 +173,24 @@ export async function createOrderFromCart(
 		return { ok: true, order: already, intent };
 	}
 
-	// Validate + normalize the optional ship-to snapshot (ADR-0009) BEFORE minting
-	// anything: a malformed address must reject the checkout cleanly, never a
-	// half-written order. A replay short-circuited above, so this never re-runs for
-	// an order that already captured its address. Absent ⇒ null (capture-optional
-	// this slice — required-for-physical is a later flip).
+	// Validate + normalize the ship-to snapshot (ADR-0009, ADR-0021) BEFORE
+	// minting anything: a malformed address must reject the checkout cleanly,
+	// never a half-written order. A replay short-circuited above, so this never
+	// re-runs for an order that already captured its address — the locked
+	// review's retry sends none. The code rules hold for EVERY order, digital
+	// ones included; whether an address is REQUIRED is decided below.
 	let shippingAddress: OrderAddress | null = null;
 	if (command.shippingAddress !== undefined) {
 		const normalized = normalizeOrderAddress(command.shippingAddress);
-		if (!normalized.ok) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
+		if (!normalized.ok) {
+			return {
+				ok: false,
+				reason:
+					normalized.reason === "REGION_NOT_A_CODE"
+						? "SHIPPING_REGION_CODE_REQUIRED"
+						: "INVALID_SHIPPING_ADDRESS",
+			};
+		}
 		shippingAddress = normalized.value;
 	}
 
@@ -254,7 +271,10 @@ export async function createOrderFromCart(
 
 	// Phase 6: compute the full totals breakdown (subtotal → discount → shipping
 	// → tax) via the pipeline — this REPLACES the Phase-4 naive Σ(line) stub. Pure
-	// engine after the store reads; read-only (no redemption here).
+	// engine after the store reads; read-only (no redemption here). The zone is
+	// derived from the address inside the quote (ADR-0021), so the review and
+	// the order resolve it identically.
+	const requiresShipping = lines.some((line) => line.fulfillmentKind === "physical");
 	const quote = await computeQuote(
 		{
 			shippingRules: deps.shippingRules,
@@ -265,13 +285,30 @@ export async function createOrderFromCart(
 		{
 			currency,
 			lines: totalsLines,
-			...(command.shippingZoneId !== undefined ? { zoneId: command.shippingZoneId } : {}),
+			requiresShipping,
+			...(shippingAddress !== null
+				? { destination: { country: shippingAddress.country, region: shippingAddress.region } }
+				: {}),
 			...(command.shippingMethodId !== undefined ? { methodId: command.shippingMethodId } : {}),
 			...(command.couponCode !== undefined ? { couponCode: command.couponCode } : {}),
 		},
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;
+	// Completeness is enforced HERE only, never by the read-only quote (a review
+	// may be priced before the buyer has chosen) — and before any redemption or
+	// mint.
+	const zone = quote.destination;
+	if (zone.status === "address_needed") return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	const methodId = command.shippingMethodId ?? "";
+	if (zone.status === "matched" && methodId === "") {
+		return { ok: false, reason: "SHIPPING_METHOD_REQUIRED" };
+	}
+	// ADR-0021 Decision 7: what priced the shipping and the tax.
+	const shippingMethodSnapshot =
+		zone.status === "matched"
+			? { zoneId: zone.zoneId, methodId, matchedRegion: zone.matchedRegion }
+			: null;
 
 	const freshOrderId = brandOrderId(deps.idGen.newId());
 	const holdExpiresAt = new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
@@ -318,8 +355,7 @@ export async function createOrderFromCart(
 			lines,
 			breakdown,
 			couponRecord: quote.couponRecord,
-			shippingZoneId: command.shippingZoneId,
-			shippingMethodId: command.shippingMethodId,
+			shippingMethodSnapshot,
 			shippingAddress,
 			gateway,
 			onFailure: async () => {
@@ -378,8 +414,9 @@ interface FinalizeContext {
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
 	couponRecord: CouponRecord | null;
-	shippingZoneId?: string;
-	shippingMethodId?: string;
+	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
+	 *  matched (no zones configured, or nothing ships). */
+	shippingMethodSnapshot: { zoneId: string; methodId: string; matchedRegion: string } | null;
 	/** The validated ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
 	gateway: PaymentGateway;
@@ -430,10 +467,7 @@ async function finalizeOrder(
 			shipping: breakdown.shippingCents,
 			tax: breakdown.taxCents,
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
-			shippingMethodSnapshot:
-				ctx.shippingMethodId !== undefined
-					? { zoneId: ctx.shippingZoneId ?? null, methodId: ctx.shippingMethodId }
-					: null,
+			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			taxBreakdown: {
 				lines: breakdown.lineBreakdown,
 				shippingTaxCents: breakdown.shippingTaxCents,
@@ -453,11 +487,74 @@ async function finalizeOrder(
 	// call frame, owns the coupon redemption from here on.
 	ctx.onOrderMinted();
 
+	// 2 + 3. Adopt the holds, then flip the cart — the steps a same-key replay
+	//    re-runs when a call threw between them (see `finishCheckout`).
+	const finished = await finishCheckout(deps, order, command.cartId, ctx.onFailure);
+	if (finished.outcome === "left") return leftCheckoutWindow(finished.order, ctx.gateway);
+	if (finished.outcome === "lost") return { ok: false, reason: "RESERVATION_LOST" };
+
+	// 4. Begin payment; hand the buyer-facing next-action back to the caller.
+	const intentInput = intentInputFor(order, command.idempotencyKey);
+	//    A live gateway can FAIL here (Stripe down / rejecting). Catch ONLY the
+	//    typed PaymentIntentError — any other throw is a bug and propagates. The
+	//    inserted `pending` order, its adopted reservations and its coupon
+	//    redemption all STAY: `expireOrders` sweeps them at TTL, and a same-key
+	//    retry returns this order and re-issues the intent (the provider's native
+	//    idempotency key makes that the SAME intent, never a duplicate charge).
+	//    `onFailure` is deliberately NOT called (see the DELIBERATE ASYMMETRY note
+	//    in `finishCheckout`'s lost-hold branch).
+	try {
+		const intent = await ctx.gateway.createIntent(intentInput);
+		return { ok: true, order, intent };
+	} catch (err) {
+		if (!(err instanceof PaymentIntentError)) throw err;
+		logIntentFailure(err, order.id);
+		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+	}
+}
+
+/**
+ * The post-insert steps of a checkout — adopt every physical hold, then flip the
+ * cart — shared VERBATIM by the fresh path and the I1 replay of a `pending`
+ * order, because a call can throw between the durable insert and either step and
+ * the client's same-key retry must finish what it never reached. Both steps are
+ * idempotent for the same order, so re-running them after a completed checkout
+ * is a no-op.
+ *
+ * Three outcomes:
+ *  - `finished` — every hold adopted for a still-`pending` order, cart flipped.
+ *  - `left` — the order left `pending` underneath this call (a settle, the
+ *    expiry sweep, a cancel, a concurrent same-key call's lost-hold flip).
+ *    Whatever this call adopted for an order that no longer claims its holds is
+ *    released again, an `expired` / `failed` order's coupon use is re-freed
+ *    (idempotent; never for `cancelled` or `paid`), and no intent is minted. The
+ *    cart is not stamped — unless the flip landed after the stamp, which the
+ *    final re-check before returning `finished` catches.
+ *  - `lost` — a hold is gone, so the order can never be paid. It is abandoned AT
+ *    ONCE, exactly as the expiry sweep would abandon it (`pending → expired`,
+ *    coupon use freed, then adopted holds released): the storefront's checkout
+ *    key is fixed per cart, so an order left `pending` here would answer every
+ *    later place from that cart RESERVATION_LOST until the sweep ran. Expired,
+ *    the replay answers it as an order that has left the checkout window.
+ *
+ * Two concurrent same-key calls that both see the lost hold get different
+ * answers — the flip winner RESERVATION_LOST, the loser `ok` with the expired
+ * order and an empty, no-intent handle — and both are safe: neither can pay.
+ *
+ * `cartId` is the cart the order was made from (`null` only for an order with no
+ * cart, which has nothing to fence). `releaseCoupon` is the caller's eager coupon
+ * release on RESERVATION_LOST (the fresh path knows its redemption id; the replay
+ * releases order-scoped).
+ */
+async function finishCheckout(
+	deps: CreateOrderDeps,
+	order: Order,
+	cartId: string | null,
+	releaseCoupon: () => Promise<void>,
+): Promise<FinishOutcome> {
 	// 2. Adopt every physical line's reservation in ONE batched held → adopted flip
 	//    (PR B — checkout-write batching), collected from the persisted order lines
 	//    so a replay re-issues idempotently. Digital lines carry no reservation.
-	//    ANY lost hold aborts the checkout: the already-adopted siblings are left in
-	//    place (not stranded) and healed by expireOrders once the TTL passes.
 	const now = deps.clock.now().toISOString();
 	const physicalReservationIds = order.lines
 		.map((line) => line.reservationId)
@@ -468,17 +565,45 @@ async function finalizeOrder(
 		holdExpiresAt: order.holdExpiresAt,
 		now,
 	});
+
+	// Re-read the order AFTER the adoption. The order may have left `pending`
+	// between the caller's read and `adoptMany`: a settle (which flips `→ paid`
+	// before it commits, so a hold it spent reads `lost` here), or an expiry /
+	// cancel whose own `releaseAdopted` ran while the holds were still cart-`held`
+	// — a no-op — so this call's adoption just claimed them for a dead order.
+	// Only this call can undo that. Reading after the adopt is what closes the
+	// window: any flip that preceded the adopt is visible here, and any flip after
+	// it releases the (by then adopted) holds itself.
+	const current = await deps.orderStore.getById(order.id);
+	if (current !== null && current.state !== "pending") return leftPending(deps, current);
+
 	if (result.lost.length > 0) {
-		// A lost hold after redemption: synchronously release the coupon (§5) before
-		// surfacing the failure. The pending order row stays and is healed by
-		// expireOrders; the coupon use is freed here.
-		//
-		// DELIBERATE ASYMMETRY with PAYMENT_INTENT_FAILED below: recovery from a
+		// Abandon the order now — the expiry sweep's own guarded flip, early, and
+		// without its email (the buyer is being told synchronously). Losing it means
+		// the order left `pending` after the read above: answered the same way.
+		const flip = await deps.orderStore.transition({
+			orderId: order.id,
+			fromState: "pending",
+			toState: "expired",
+			idempotencyKey: order.idempotencyKey,
+			enqueueEmail: false,
+		});
+		if (!flip.transitioned) {
+			const moved = flip.order ?? (await deps.orderStore.getById(order.id));
+			if (moved !== null && moved.state !== "pending") return leftPending(deps, moved);
+		}
+		// DELIBERATE ASYMMETRY with PAYMENT_INTENT_FAILED (the callers): recovery from a
 		// lost hold is a NEW cart with a NEW key (this order can never be paid), so
 		// the use must be freed immediately; an intent failure recovers by REPLAYING
 		// the same key against this very order, which must keep its discount.
-		await ctx.onFailure();
-		return { ok: false, reason: "RESERVATION_LOST" };
+		// The coupon goes FIRST, before the holds: nothing else will ever free it
+		// once the order is `expired` (`expireOrders` lists only `pending` orders),
+		// so a throw in the hold release (a contended hot SKU) must not strand it.
+		// A crash between the flip and this line is healed by the next same-key call
+		// (`healCouponOf`).
+		await releaseCoupon();
+		await releaseAdoptedHolds(deps, order);
+		return { outcome: "lost" };
 	}
 
 	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay),
@@ -490,30 +615,98 @@ async function finalizeOrder(
 	//    `order.id` is the WINNER's — that is the id the cart must record.
 	//
 	//    A `false` return is deliberately silent (a replay legitimately loses the
-	//    flip). Note the stamp lands here, BEFORE `gateway.createIntent()` below,
-	//    so a stamped cart proves only "this cart became that order", never that
-	//    the order was paid. And because the I1 short-circuit returns long before
-	//    this line, a NULL `orderId` does NOT prove no order exists — see the
-	//    port's JSDoc; `orders.cart_id` is the complete answer.
-	await deps.cartStore.checkout(command.cartId, order.id);
+	//    flip). Note the stamp lands here, BEFORE `gateway.createIntent()`, so a
+	//    stamped cart proves only "this cart became that order", never that the
+	//    order was paid. And because a call can die between the order insert and
+	//    this line (healed only when the same key is replayed), a NULL `orderId`
+	//    does NOT prove no order exists — see the port's JSDoc; `orders.cart_id`
+	//    is the complete answer.
+	if (cartId !== null) await deps.cartStore.checkout(cartId, order.id);
 
-	// 4. Begin payment; hand the buyer-facing next-action back to the caller.
-	const intentInput = intentInputFor(order, command.idempotencyKey);
-	//    A live gateway can FAIL here (Stripe down / rejecting). Catch ONLY the
-	//    typed PaymentIntentError — any other throw is a bug and propagates. The
-	//    inserted `pending` order, its adopted reservations and its coupon
-	//    redemption all STAY: `expireOrders` sweeps them at TTL, and a same-key
-	//    retry returns this order and re-issues the intent (the provider's native
-	//    idempotency key makes that the SAME intent, never a duplicate charge).
-	//    `onFailure` is deliberately NOT called (see the asymmetry note above).
-	try {
-		const intent = await ctx.gateway.createIntent(intentInput);
-		return { ok: true, order, intent };
-	} catch (err) {
-		if (!(err instanceof PaymentIntentError)) throw err;
-		logIntentFailure(err, order.id);
-		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+	// 4. Re-check, immediately before the caller mints the intent. A concurrent
+	//    same-key call whose (later) `now` classed a hold lost can win the
+	//    pending → expired flip AFTER the re-read above — this call adopted with an
+	//    older `now`. Its own release covers the holds; what this call must not do
+	//    is hand the buyer a payable intent for the order it just expired. (The
+	//    cart stamp above stays: it records only "this cart became that order".)
+	const beforeIntent = await deps.orderStore.getById(order.id);
+	if (beforeIntent !== null && beforeIntent.state !== "pending") {
+		return leftPending(deps, beforeIntent);
 	}
+
+	return { outcome: "finished" };
+}
+
+/**
+ * The states in which an order no longer claims its holds — the ones whose own
+ * transition released (or never adopted) them. `paid` and its successors are
+ * absent on purpose: a paid order's adopted holds are about to be COMMITTED by
+ * the settle that flipped it, and releasing them would put spent units back on
+ * sale.
+ */
+const RELEASES_HOLDS: ReadonlySet<Order["state"]> = new Set(["expired", "cancelled", "failed"]);
+
+/** The `left` outcome, undoing whatever this call adopted for a dead order. */
+async function leftPending(deps: CreateOrderDeps, current: Order): Promise<FinishOutcome> {
+	await healCouponOf(deps, current);
+	if (RELEASES_HOLDS.has(current.state)) await releaseAdoptedHolds(deps, current);
+	return { outcome: "left", order: current };
+}
+
+/**
+ * The states whose own transition frees the coupon use (`expireOrders`, a failed
+ * settle, a lost-hold abandonment). `cancelled` is absent on purpose —
+ * `cancelOrder` deliberately keeps the use — and so is `paid`, which consumed it.
+ */
+const RELEASES_COUPON: ReadonlySet<Order["state"]> = new Set(["expired", "failed"]);
+
+/**
+ * Re-free the coupon use of an order observed `expired` / `failed`. Order-scoped
+ * and idempotent (a no-op once released), so every call that sees such an order
+ * runs it: it is what heals a call that died between its `pending → expired`
+ * flip and its coupon release — nothing else ever looks at that order again.
+ */
+async function healCouponOf(deps: CreateOrderDeps, order: Order): Promise<void> {
+	if (RELEASES_COUPON.has(order.state)) await deps.couponStore.releaseByOrder(order.id);
+}
+
+/** `expireOrders`' release, verbatim: order-scoped, a no-op for any hold this
+ *  order does not hold `adopted`, so it is safe to run twice. */
+async function releaseAdoptedHolds(deps: CreateOrderDeps, order: Order): Promise<void> {
+	for (const line of order.lines) {
+		if (line.reservationId !== null) {
+			await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
+		}
+	}
+}
+
+/**
+ * What {@link finishCheckout} decided: every step done; a hold lost (order
+ * expired, holds and coupon already released); or the order LEFT `pending`
+ * underneath it (paid / expired / cancelled concurrently), carried as re-read.
+ */
+type FinishOutcome =
+	| { outcome: "finished" }
+	| { outcome: "lost" }
+	| { outcome: "left"; order: Order };
+
+/**
+ * The answer for an order that has already left the checkout window — paid,
+ * failed, expired or cancelled. There is nothing left to begin paying for, so
+ * re-issuing an intent would be a pointless LIVE provider call whose outage could
+ * turn a replay of a PAID order into a 502. The order comes back with an
+ * explicitly EMPTY handle: `clientAction: "none"` (no buyer-facing next action)
+ * and an empty `intentId` — this call minted no intent, and the original intent
+ * id is not on the order (it lives on `payments.provider_ref`; a caller that
+ * needs it reads the order's payments, never this field). The wire shape is
+ * unchanged (`serializeIntent` still emits gateway/intentId/clientAction).
+ */
+function leftCheckoutWindow(order: Order, gateway: PaymentGateway): CreateOrderFromCartResult {
+	return {
+		ok: true,
+		order,
+		intent: { gateway: gateway.id, intentId: "", clientAction: { kind: "none" } },
+	};
 }
 
 /**

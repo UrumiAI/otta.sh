@@ -3,7 +3,7 @@
 ---
 
 Apply each reporting rollup event as ONE guarded numeric delta instead of a
-compare-and-set retry loop on the day document (ADR-0022).
+compare-and-set retry loop on the day document (ADR-0023).
 
 Every order created on a day in a currency shares one `reporting_daily`
 document, and the order store awaits the rollup inline, so every checkout,

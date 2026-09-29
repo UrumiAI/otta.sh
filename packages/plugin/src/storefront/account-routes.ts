@@ -25,6 +25,7 @@
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
+import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -33,6 +34,7 @@ export const ACCOUNT_LOGIN_VERIFY_ROUTE = "storefront/account/login/verify";
 export const ACCOUNT_ORDERS_ROUTE = "storefront/account/orders";
 export const ACCOUNT_ORDER_ROUTE = "storefront/account/order";
 export const ACCOUNT_ADDRESSES_ROUTE = "storefront/account/addresses";
+export const ACCOUNT_LOGOUT_ROUTE = "storefront/account/logout";
 
 /** Where an unauthenticated account request is redirected. */
 export const ACCOUNT_LOGIN_PATH = "/account/login";
@@ -113,19 +115,36 @@ export type AccountOrderResult =
 	| { ok: false; redirectTo: string }
 	| { ok: false; error: "RENDER_FAILED" };
 
+/** Logout always answers the same: the session (if any) is revoked, and the
+ *  theme clears its cookie and goes home. */
+export interface AccountLogoutResult {
+	ok: true;
+	clearCookie: { name: string; path: string };
+	redirectTo: string;
+}
+
+/** A session token longer than this is not one we minted — it is dropped
+ *  without a store round trip. */
+const MAX_SESSION_TOKEN_LENGTH = 512;
+
 export type AccountAddressesResult =
 	| { ok: true; addresses: AddressWire[] }
 	| { ok: false; redirectTo: string }
 	| { ok: false; error: "RENDER_FAILED" };
 
-/** `POST /auth/login/request` proxy — generic success regardless of account
- *  existence (§9 Risk 4). */
+/** Issue a challenge and email the magic link — generic success regardless of
+ *  account existence or throttling (§9 Risk 4). The link is the operator's
+ *  configured sign-in page and nothing request-derived — not the input, not the
+ *  request's origin (see `login-link.ts`). */
 export function createAccountLoginRequestHandler(): RouteHandler<AccountLoginRequestInput> {
 	return (routeCtx, ctx): Promise<AccountLoginRequestResult> =>
 		renderGuard(ACCOUNT_LOGIN_REQUEST_ROUTE, async () => {
 			const email = routeCtx.input.email;
 			if (!isNonEmptyString(email)) return { ok: false, error: "INVALID_INPUT" } as const;
-			await (await makeCommerceClient(ctx)).requestLoginLink(email);
+			const verifyPageUrl = await resolveLoginLinkUrl(ctx);
+			await (
+				await makeCommerceClient(ctx)
+			).requestLoginLink(email, verifyPageUrl === undefined ? {} : { verifyPageUrl });
 			return { ok: true as const };
 		});
 }
@@ -145,6 +164,23 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 				ok: true as const,
 				cookie: sessionCookieDescriptor(result.sessionToken, result.expiresAt),
 				redirectTo: ACCOUNT_ORDERS_PATH,
+			};
+		});
+}
+
+/** Revoke the session. Idempotent and uniform: no token, an unknown token and a
+ *  live one all answer the same, with the cookie the theme must clear. */
+export function createAccountLogoutHandler(): RouteHandler<AccountSessionInput> {
+	return (routeCtx, ctx): Promise<AccountLogoutResult | { ok: false; error: "RENDER_FAILED" }> =>
+		renderGuard(ACCOUNT_LOGOUT_ROUTE, async () => {
+			const sessionToken = routeCtx.input.sessionToken;
+			if (isNonEmptyString(sessionToken) && sessionToken.length <= MAX_SESSION_TOKEN_LENGTH) {
+				await (await makeCommerceClient(ctx)).logout(sessionToken);
+			}
+			return {
+				ok: true as const,
+				clearCookie: { name: SESSION_COOKIE_NAME, path: "/" },
+				redirectTo: "/",
 			};
 		});
 }

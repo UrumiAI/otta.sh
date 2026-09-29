@@ -236,9 +236,9 @@ order of appearance in a deployment's life:
   With both secrets set, `createIntent` performs a real `POST /v1/payment_intents` over
   `ctx.http.fetch` (LIVE client secret, `metadata[order_id]` as the settlement key the
   webhook is matched on, the checkout `Idempotency-Key` travelling as Stripe's native one).
-  Refunds from the admin console are not wired to the gateway yet: the admin orders client
-  still composes an empty gateway map, so a refund there is refused with
-  `REFUND_GATEWAY_UNAVAILABLE` rather than sent to Stripe. A live-intent failure (Stripe
+  Refunds from the admin console go to the same gateway (`POST /v1/refunds` over
+  `ctx.http.fetch`, carrying the refund's idempotency key); with no gateway configured a
+  refund is refused `REFUND_GATEWAY_UNAVAILABLE`. A live-intent failure (Stripe
   down or rejecting) refuses the checkout with `PAYMENT_INTENT_FAILED` and the `pending`
   order is kept deliberately — retrying with the same `Idempotency-Key` re-issues the *same*
   PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing stock
@@ -321,7 +321,7 @@ is that single D1 database.
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
 serving traffic can write the old shape back over it. The reporting day document is the live
-case ([ADR-0022](./adr/0022-reporting-rollup-is-a-guarded-delta.md)). A pre-delta Worker's
+case ([ADR-0023](./adr/0023-reporting-rollup-is-a-guarded-delta.md)). A pre-delta Worker's
 **rollup** rewrites a migrated day document from the copy it read: any events counted since
 that read are lost, and its own state move is kept only in an old-style field the new code
 ignores. The next event on that day clears the old field in one write, logs a `tainted`

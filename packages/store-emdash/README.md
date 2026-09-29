@@ -2406,7 +2406,7 @@ fields. The next event un-taints it in ONE `updateIf` guarded on the `(epoch, se
 (the map set to `null`, the epoch moved past everything known), reports a `tainted`
 anomaly, and applies its delta. It never recomputes the day inline, since that would put a
 full-day scan on every checkout during the window; what the old writer discarded is left to
-`reconcile`. The decision is ADR-0022.
+`reconcile`. The decision is ADR-0023.
 
 ### Reporting contention, measured
 

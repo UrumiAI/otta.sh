@@ -603,6 +603,51 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
 	});
 
+	// Issue #306: the sign-in link page. Setting and validation adapted from #325
+	// by @stephanedemotte. The emailed link points here and ONLY here, so a
+	// relative path, a non-http(s) scheme or a URL carrying credentials is
+	// refused whole, like a bad payTo.
+	test("#306: the sign-in link URL is SET, READ BACK, and validated on save", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "https://boutique.example/account/verify" },
+		});
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(field(formFor(loaded, "save-payment-settings"), "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/account/verify",
+		);
+
+		for (const bad of [
+			"/account/verify",
+			"javascript:alert(1)",
+			"ftp://boutique.example/verify",
+			"https://user:pw@boutique.example/account/verify",
+		]) {
+			const refused = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: { emailFrom: "orders@boutique.example", loginLinkUrl: bad },
+			});
+			expect(JSON.stringify(refused)).toContain("Nothing was saved");
+			// The banner names the field and the shape, never the rejected value.
+			expect(JSON.stringify(refused)).not.toContain("user:pw");
+		}
+		const after = formFor(
+			blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+			"save-payment-settings",
+		);
+		expect(field(after, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/account/verify",
+		);
+		// ATOMIC, like payTo: the valid sibling in a refused submit did not land.
+		expect(field(after, "emailFrom")?.["initial_value"]).toBe("");
+	});
+
 	test("INC-09: a successful secret save remounts its own form BLANK with a DIFFERENT block_id, and does not remount an unrelated secret's form", async () => {
 		// The old two-token version of this case is deleted along with the
 		// tokens; the underlying mechanism (`secretForm` carries a `gen` in its

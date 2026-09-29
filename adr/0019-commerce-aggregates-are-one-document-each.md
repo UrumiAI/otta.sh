@@ -88,7 +88,7 @@ it failed.** Everything else — including every lease — is `compareAndSet`.
 Both surviving sites take their refusal **decision from a prior read**, never from `applied: false`, for
 that same reason.
 
-Refined by [ADR-0022](./0022-reporting-rollup-is-a-guarded-delta.md) for the reporting rollup.
+Refined by [ADR-0023](./0023-reporting-rollup-is-a-guarded-delta.md) for the reporting rollup.
 
 **Reserve is a `compareAndSet` read-modify-write, permanently.** A guarded single statement cannot
 carry it: the hold must be recorded in the same write as the decrement, and the hold lives at a nested

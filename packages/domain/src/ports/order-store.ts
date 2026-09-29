@@ -45,13 +45,11 @@ export interface OrderStore {
 	getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null>;
 	/** Guarded `pending → paid` flip. 0 rows (not pending) ⇒ false. */
 	markPaid(orderId: OrderId): Promise<boolean>;
-	/** Guarded `pending → failed` flip. 0 rows ⇒ false. */
-	markFailed(orderId: OrderId): Promise<boolean>;
 	/**
 	 * Order-level guarded expiry (§5): `UPDATE orders SET state='expired' WHERE
 	 * id=:id AND state='pending' AND hold_expires_at<=:now RETURNING id`. Re-checks
 	 * the deadline inside the flip so a double-sweep race expires exactly once.
-	 * 0 rows ⇒ someone else won (paid/failed/expired, or not yet due) ⇒ false.
+	 * 0 rows ⇒ someone else won (paid/cancelled/expired, or not yet due) ⇒ false.
 	 */
 	expire(orderId: OrderId, now: string): Promise<boolean>;
 	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
@@ -251,7 +249,7 @@ export interface OrderStore {
 	 * NOTHING` in a **single transaction on one connection** — so no reachable
 	 * state has the order transitioned but no outbox row (or vice versa). A guard
 	 * that matches 0 rows (already transitioned / raced) is a no-op:
-	 * `transitioned:false`, no outbox write. `markPaid`/`markFailed`/`expire`
+	 * `transitioned:false`, no outbox write. `markPaid`/`expire`
 	 * route through the same primitive so the Phase-4 transitions also enqueue.
 	 */
 	transition(input: OrderTransitionInput): Promise<OrderTransitionResult>;

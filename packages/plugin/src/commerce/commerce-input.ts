@@ -67,6 +67,8 @@
  * here to carry one, and a caller branches on the code.
  */
 
+import { isCodeShapedRegion } from "@otta-sh/domain";
+
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -76,6 +78,17 @@ const ID_CHARSET = /^[\x21-\x7e]+$/;
 
 /** An opaque id's ceiling — long enough for any id the system mints. */
 const ID_MAX = 200;
+
+/** A coupon code's ceiling. Exported so a boundary parser in front of this
+ *  client (the storefront checkout routes) rejects exactly what this refuses. */
+export const COUPON_CODE_MAX = 200;
+
+/** `requireIdToken`'s rule as a predicate, for a boundary parser that must turn
+ *  a malformed id into its own INVALID_INPUT rather than let this client throw.
+ *  One definition, so the two cannot drift. */
+export function isIdToken(value: string): boolean {
+	return value.length > 0 && value.length <= ID_MAX && ID_CHARSET.test(value);
+}
 
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
@@ -262,8 +275,32 @@ export function requireShippingAddress(address: {
 		requireBoundedText("shippingAddress.region", address.region, 0, 120);
 	requireBoundedText("shippingAddress.postalCode", address.postalCode, 1, 32);
 	requireBoundedText("shippingAddress.country", address.country, 1, 100);
+	requireCodeShapes("shippingAddress", address.country, address.region);
 	if (address.email !== undefined)
 		requireBoundedText("shippingAddress.email", address.email, 0, 320);
 	if (address.phone !== undefined)
 		requireBoundedText("shippingAddress.phone", address.phone, 0, 64);
 }
+
+/**
+ * ADR-0021: a destination's SHAPE — a two-letter country and, when given, a
+ * code-shaped region. Shape only: whether the codes are REAL (in CLDR) is the
+ * domain's call, and it answers with a typed reason a buyer can act on
+ * (`INVALID_SHIPPING_ADDRESS` / `SHIPPING_REGION_CODE_REQUIRED`). The routes'
+ * parsers refuse the same shapes first, so a buyer never reaches this throw.
+ */
+export function requireDestination(destination: { country: string; region?: string }): void {
+	requireCodeShapes("destination", destination.country, destination.region);
+}
+
+function requireCodeShapes(prefix: string, country: string, region: string | undefined): void {
+	if (!COUNTRY_SHAPE.test(country.trim())) {
+		fail(`${prefix}.country`, "must be an ISO 3166-1 alpha-2 code");
+	}
+	if (region !== undefined && region.trim().length > 0 && !isCodeShapedRegion(region)) {
+		fail(`${prefix}.region`, "must be an ISO 3166-2 subdivision code");
+	}
+}
+
+/** Two letters, either case — the SHAPE of an ISO 3166-1 alpha-2 code. */
+export const COUNTRY_SHAPE = /^[A-Za-z]{2}$/;

@@ -15,6 +15,7 @@ import {
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 	type CheckoutAmountView,
+	type UncalculatedReason,
 } from "@otta-sh/plugin";
 
 /**
@@ -184,4 +185,30 @@ export function uncalculatedFootnote(rows: SumRow[], excludesUncalculated: boole
 			: `${names.slice(0, -1).join(", ")} or ${names[names.length - 1] ?? ""}`;
 	const it = names.length === 1 ? "it" : "them";
 	return `This total doesn't include ${list} — this store hasn't set ${it} up yet.`;
+}
+
+/**
+ * The checkout review's footnote, by the plugin's `uncalculatedReason`
+ * (#305 part 2, ADR-0021). "This store hasn't set it up yet" is true only when
+ * the store has no delivery zones; a total can also be incomplete because the
+ * buyer has not said where it is going, or has not chosen a delivery option —
+ * or because nothing in it ships at all. `null` when the total is complete.
+ */
+export function checkoutFootnote(
+	reason: UncalculatedReason | null,
+	rows: SumRow[],
+	excludesUncalculated: boolean,
+): string | null {
+	if (!excludesUncalculated) return null;
+	switch (reason) {
+		case "address_needed":
+			return "This total doesn't include shipping or tax yet — they depend on where your order is delivered.";
+		case "method_needed":
+			return "This total doesn't include shipping yet — choose a delivery option above.";
+		case "digital_only":
+			return "Nothing in this order ships, so there's no delivery charge and no location-based tax.";
+		case "no_zones":
+		case null:
+			return uncalculatedFootnote(rows, excludesUncalculated);
+	}
 }

@@ -56,13 +56,13 @@ as the retryable error it is — a caller has to be able to see that.
 
 ### Not yet wired
 
-Two gaps in the in-process transport are deliberate, and each is pinned by a test so
-it stays visible until it closes:
-
-- **`requestLoginLink` dispatches no mail.** It records the challenge — the login
-  itself works if you hold the token — and sends nothing, because the outbound mail
-  path moves in-process with the rest of the outbound topology. The reply is the same
-  generic success either way, so the surface is still no account oracle.
+One gap in the in-process transport is deliberate, and it is pinned by a test so it
+stays visible until it closes. (The other, "`requestLoginLink` dispatches no mail",
+closed with issue #306: the magic link is emailed through `CtxHttpEmailSender` over
+`ctx.http`, pointing at the sign-in page the operator saves in Settings
+(`settings:loginLinkUrl`, required; never the request's origin). With no email API URL
+in the build, or no sign-in link URL, it still answers the same generic success, issues
+nothing, and logs once server-side.)
 
 - **Two hold TTLs fall back to the domain's defaults** — a PARITY GAP, not a
   decision. The deployment docs carry one environment variable that drives both the

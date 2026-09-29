@@ -1,4 +1,4 @@
-# 0022. The reporting rollup is one guarded numeric delta per event
+# 0023. The reporting rollup is one guarded numeric delta per event
 
 - Status: accepted
 - Date: 2026-09-29
