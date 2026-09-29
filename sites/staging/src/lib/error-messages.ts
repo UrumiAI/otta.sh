@@ -38,6 +38,18 @@ const SELECTION_MESSAGES = {
 	COUPON_CURRENCY_MISMATCH: "That coupon can't be used with this store's currency.",
 	SHIPPING_METHOD_NOT_FOUND: "That delivery option is no longer available — please choose another.",
 	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
+	// #305 part 2 (ADR-0021): the zone is derived from the address.
+	SHIPPING_ZONE_NOT_MATCHED: "We don't ship to this address.",
+	// Neutral about delivery: the site shows it only for a cart that ships (a
+	// digital-only review has no address block), but the words stay true for
+	// an API caller's digital order with a bad region too.
+	SHIPPING_REGION_CODE_REQUIRED:
+		"Enter your state/province code (e.g. CA), or leave it blank if your country doesn't use one.",
+	SHIPPING_METHOD_NOT_IN_ZONE: "Delivery options changed for your address — please choose again.",
+	SHIPPING_METHOD_REQUIRED: "There are no delivery options for this address.",
+	// For API callers: no page of this site sends a method for a cart with
+	// nothing to ship (the summary drops a stale one silently).
+	SHIPPING_METHOD_NOT_APPLICABLE: "Your order doesn't need delivery.",
 } satisfies Record<
 	Extract<CheckoutFailureReason, `COUPON_${string}` | `SHIPPING_${string}`>,
 	string
@@ -86,6 +98,7 @@ const MESSAGES: Record<string, string> = {
 		"This checkout page was out of date — please review your order and place it again.",
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
+	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.

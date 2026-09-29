@@ -21,11 +21,17 @@ import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "
 import type { APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
-import { placeFailurePath, readCouponCode } from "../../lib/checkout-selection.js";
+import {
+	checkoutPath,
+	placeFailurePath,
+	readCouponCode,
+	type CheckoutUrlSelection,
+} from "../../lib/checkout-selection.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute, formString } from "../../lib/otta-api.js";
+import { isCodeShapedRegion } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -33,34 +39,65 @@ const INVALID_EMAIL = "INVALID_EMAIL";
 const INVALID_SHIPPING_ADDRESS = "INVALID_SHIPPING_ADDRESS";
 const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
 
-/** ADR-0009's ship-to, as the form names them. `line2`/`region`/`phone` are
- *  optional; the five required fields are all-or-nothing (see below). */
-const REQUIRED_ADDRESS_FIELDS = ["name", "line1", "city", "postalCode", "country"] as const;
-const OPTIONAL_ADDRESS_FIELDS = ["line2", "region", "phone"] as const;
+const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
+
+/** ADR-0009's ship-to, as the form names them. The TYPED fields always decide
+ *  all-or-nothing; `country` joins them only where the buyer types it too. */
+const TYPED_ADDRESS_FIELDS = ["name", "line1", "city", "postalCode"] as const;
+const OPTIONAL_ADDRESS_FIELDS = ["line2", "phone"] as const;
+
+/** Two letters — the SHAPE of an ISO 3166-1 alpha-2 code (ADR-0021). */
+const COUNTRY_SHAPE = /^[A-Za-z]{2}$/;
 
 type AddressResult =
 	| { ok: true; address: Record<string, string> | undefined }
-	| { ok: false; error: string };
+	/** `partial`: the destination itself is fine — only typed fields are
+	 *  missing — so the redirect keeps it rather than making the buyer choose
+	 *  their delivery again. */
+	| { ok: false; error: string; partial: boolean };
 
 /**
  * Read the ship-to block. Three outcomes, and the middle one matters:
- *  - every required field blank ⇒ ABSENT (capture is optional this slice,
- *    ADR-0009 — the buyer simply did not fill it in);
+ *  - every counted field blank ⇒ ABSENT (whether the order may go without one
+ *    is the plugin's call: a cart that ships, in a store with zones, is
+ *    refused MISSING_SHIPPING_ADDRESS);
  *  - PARTIALLY filled ⇒ a validation reject, never a silently truncated
  *    snapshot: an order that quietly loses half its delivery address is
  *    unfulfillable and immutable;
  *  - fully filled ⇒ the snapshot, trimmed.
+ *
+ * WHICH fields count depends on the page (ADR-0021). On a ZONED store's review
+ * (`addressMode=zoned`) the country and region are HIDDEN — the destination the
+ * totals were priced for — so they are always "filled" and must not make a
+ * blank address look partial: only the typed fields count, and the hidden pair
+ * joins them. On a page with no zones the country is a select the buyer fills
+ * in, and it counts like any typed field.
+ *
+ * Codes are checked by SHAPE here, never dispatched malformed: a country that is
+ * not two letters is INVALID_SHIPPING_ADDRESS, a region that is not a code
+ * SHIPPING_REGION_CODE_REQUIRED. Whether they are REAL codes is the plugin's.
  */
-function readShippingAddress(form: FormData): AddressResult {
-	const required = REQUIRED_ADDRESS_FIELDS.map(
-		(field) => [field, formString(form.get(field))] as const,
-	);
-	const filled = required.filter(([, value]) => value !== undefined);
+function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
+	const typed = TYPED_ADDRESS_FIELDS.map((field) => [field, formString(form.get(field))] as const);
+	const country = formString(form.get("country"));
+	const region = formString(form.get("region"));
+	const counted = zoned ? typed : [...typed, ["country", country] as const];
+	const filled = counted.filter(([, value]) => value !== undefined);
 	if (filled.length === 0) return { ok: true, address: undefined };
-	if (filled.length !== required.length) return { ok: false, error: INVALID_SHIPPING_ADDRESS };
+	if (filled.length !== counted.length || country === undefined) {
+		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: true };
+	}
+	if (!COUNTRY_SHAPE.test(country)) {
+		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false };
+	}
+	if (region !== undefined && !isCodeShapedRegion(region)) {
+		return { ok: false, error: SHIPPING_REGION_CODE_REQUIRED, partial: false };
+	}
 
 	const address: Record<string, string> = {};
-	for (const [field, value] of required) address[field] = value!;
+	for (const [field, value] of typed) address[field] = value!;
+	address["country"] = country;
+	if (region !== undefined) address["region"] = region;
 	for (const field of OPTIONAL_ADDRESS_FIELDS) {
 		const value = formString(form.get(field));
 		if (value !== undefined) address[field] = value;
@@ -84,19 +121,32 @@ export const POST: APIRoute = async (context) => {
 	// refused here as what it is — no such coupon — without a dispatch.
 	const coupon = readCouponCode(formString(form.get("couponCode")));
 	if (coupon.rejected !== undefined) {
-		return context.redirect(placeFailurePath(coupon.rejected.reason, undefined), 303);
+		return context.redirect(placeFailurePath(coupon.rejected.reason, {}), 303);
 	}
 	const couponCode = coupon.couponCode;
-	// No picker offers one yet (#305 part 2); forwarded only when present. The
-	// zone is NEVER read: the tax zone is not the client's to choose.
+	// The method the review priced (a radio, or the lone option it preselected),
+	// echoed as a hidden field; forwarded only when present. The zone is NEVER
+	// read: the plugin derives it from the address (ADR-0021).
 	const shippingMethodId = formString(form.get("shippingMethodId"));
+	// A zoned store's review carries the destination it priced as hidden
+	// fields (see readShippingAddress).
+	const zoned = formString(form.get("addressMode")) === "zoned";
+	// What a failure redirect may carry back — never an address field: only the
+	// coupon, the method and, from a zoned page, the coarse destination.
+	const selection: CheckoutUrlSelection = {
+		couponCode,
+		shippingMethodId,
+		...(zoned
+			? { country: formString(form.get("country")), region: formString(form.get("region")) }
+			: {}),
+	};
 
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
 	// order would hold stock for 15 minutes against a payment that structurally
 	// cannot happen. (A malformed key never reaches here — it fails the build.)
 	if (STRIPE_PUBLISHABLE_KEY === undefined) {
-		return context.redirect(placeFailurePath(STRIPE_NOT_CONFIGURED, couponCode), 303);
+		return context.redirect(placeFailurePath(STRIPE_NOT_CONFIGURED, selection), 303);
 	}
 
 	const cartId = currentCartId(context);
@@ -119,7 +169,7 @@ export const POST: APIRoute = async (context) => {
 		// re-rendering from the POST response instead of 303-ing, which was not
 		// taken because it breaks POST-redirect-GET (reload re-POSTs). Revisit if
 		// the re-entry cost shows up in real use.
-		return context.redirect(placeFailurePath(INVALID_EMAIL, couponCode), 303);
+		return context.redirect(placeFailurePath(INVALID_EMAIL, selection), 303);
 	}
 
 	// From the form, forwarded verbatim — never invented here (see module doc).
@@ -128,8 +178,15 @@ export const POST: APIRoute = async (context) => {
 		return new Response("Bad request: idempotencyKey is required", { status: 400 });
 	}
 
-	const shipping = readShippingAddress(form);
-	if (!shipping.ok) return context.redirect(placeFailurePath(shipping.error, couponCode), 303);
+	const shipping = readShippingAddress(form, zoned);
+	if (!shipping.ok) {
+		return context.redirect(
+			shipping.partial
+				? checkoutPath({ ...selection, error: shipping.error })
+				: placeFailurePath(shipping.error, selection),
+			303,
+		);
+	}
 
 	const result = await dispatchOttaRoute<CheckoutPlaceRouteResult>(
 		routeDispatcher(context),
@@ -147,9 +204,9 @@ export const POST: APIRoute = async (context) => {
 
 	if (result === null || !result.ok) {
 		// Back to /checkout, which can explain and let the buyer retry — the cart
-		// is still theirs, and for CART_CHECKED_OUT the page offers a way out. A
-		// coupon refusal drops the coupon; anything else keeps it.
-		return context.redirect(placeFailurePath(failureToken(result), couponCode), 303);
+		// is still theirs, and for CART_CHECKED_OUT the page offers a way out. The
+		// part of the selection a refusal blames is dropped; the rest is kept.
+		return context.redirect(placeFailurePath(failureToken(result), selection), 303);
 	}
 
 	// A replay of an order that has already LEFT pending: no intent was minted
