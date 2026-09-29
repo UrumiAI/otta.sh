@@ -25,10 +25,10 @@ Deleted outright in Phase D: `@otta-sh/service`, `@otta-sh/store-postgres`, `Htt
 the four admin HTTP clients, and the `commerce.mode` flag. Details in §4.
 
 The decision itself is recorded in
-[ADR-0020](../adr/0020-one-deployable-plugin-owns-commerce-truth.md) (one deployable; ADR-0002 is
+[ADR-0020](../../adr/0020-one-deployable-plugin-owns-commerce-truth.md) (one deployable; ADR-0002 is
 partially superseded by it), resting on
-[ADR-0018](../adr/0018-plugin-owns-commerce-truth-in-process.md) (the plugin owns commerce truth
-in-process) and [ADR-0019](../adr/0019-commerce-aggregates-are-one-document-each.md) (one document
+[ADR-0018](../../adr/0018-plugin-owns-commerce-truth-in-process.md) (the plugin owns commerce truth
+in-process) and [ADR-0019](../../adr/0019-commerce-aggregates-are-one-document-each.md) (one document
 per aggregate). ADR-0020 also records the re-derivation path: a future service would be rebuilt
 from the unchanged domain ports, not kept on standby, so the deletion is not mistaken for a lost
 capability.
@@ -38,7 +38,7 @@ records it rather than minimising it: the Stripe API secret — previously an en
 a separate Worker, behind an HTTP boundary — now lives in the plugin's write-only `kv` and is
 readable inside the very process that renders storefront pages and the admin console, so a
 code-execution bug anywhere in the plugin reaches it. Read
-[ADR-0020 §2](../adr/0020-one-deployable-plugin-owns-commerce-truth.md) for what bounds that
+[ADR-0020 §2](../../adr/0020-one-deployable-plugin-owns-commerce-truth.md) for what bounds that
 (write-only persistence, non-ambient egress gated by a build-time `allowedHosts` allowlist, an
 IO-free domain) and for its honest caveat: `@otta-sh/payments-stripe` defaults its transport to
 `globalThis.fetch` rather than `ctx.http.fetch` — unlike the x402 facilitator client and the email
@@ -110,7 +110,7 @@ shopper who could have bought is never told the item is out of stock.
 
 **Sources:** `packages/store-emdash/README.md` §"Contention budget" and §"Coupon contention,
 measured" (the live tables, which is where they are re-measured);
-[ADR-0019](../adr/0019-commerce-aggregates-are-one-document-each.md) §"The contention budget, as
+[ADR-0019](../../adr/0019-commerce-aggregates-are-one-document-each.md) §"The contention budget, as
 numbers". ADR-0019 explicitly defers to the package README for live figures, so cite the README
 rather than the ADR's table, which predates the ceiling raise.
 

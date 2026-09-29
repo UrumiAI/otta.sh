@@ -67,7 +67,7 @@ CMS content became a **second writer**, and any publish reverted whatever the co
 edited — pinned for months as the store contract's `KNOWN GAP (F4)` case.
 
 The widget, its `commerce` seed field and its validator were removed in
-["one home per field"](../plans/one-home-per-field.md) PR 1b. Commercial fields now have
+["one home per field"](../plans/archive/one-home-per-field.md) PR 1b. Commercial fields now have
 exactly one home, `product_commerce`, edited only from the admin's **Pricing & inventory**
 page. The CMS owns content — title, description, images, slug — and the sync hooks became
 lifecycle-only apart from one permanent projection: `product_commerce.title`, a derived

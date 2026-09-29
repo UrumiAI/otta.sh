@@ -550,7 +550,7 @@ migration file changed).
 
 **Running the pg suites locally — use the throwaway test container, on port 55432.** The repo
 documents one shape for this and it is the only one to copy
-([`README.md`](../README.md), [`sites/staging/README.md`](../sites/staging/README.md)):
+([`README.md`](../../README.md), [`sites/staging/README.md`](../../sites/staging/README.md)):
 
 ```bash
 PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test pnpm test:pg

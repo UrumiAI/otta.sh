@@ -81,8 +81,9 @@ admin console's **Settings** page instead.
 ## Notes
 
 - **The checkout is built** (ADR-0012): `/checkout` (review + honest totals + contact and
-  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — **the only
-  client JavaScript on this site**, and `js.stripe.com` the only third-party origin), and
+  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — the site's only
+  third-party script, `js.stripe.com` its only third-party origin; the one other client
+  script is the hold ribbon's bundled countdown, `src/components/HoldRibbon.astro`), and
   `/orders/<orderId>` (the capability-URL confirmation page, which polls with a bounded
   `<meta http-equiv="refresh">` and never claims "paid" on the strength of Stripe's
   redirect — the webhook is the sole authority). `POST /checkout/new-cart` is the way out

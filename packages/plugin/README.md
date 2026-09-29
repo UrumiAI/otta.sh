@@ -56,22 +56,21 @@ as the retryable error it is — a caller has to be able to see that.
 
 ### Not yet wired
 
-Two gaps in the in-process transport are deliberate, and each is pinned by a test so
-it stays visible until it closes:
+Two gaps in the in-process transport are still open, and stay listed here until they
+close:
 
 - **`requestLoginLink` dispatches no mail.** It records the challenge — the login
   itself works if you hold the token — and sends nothing, because the outbound mail
   path moves in-process with the rest of the outbound topology. The reply is the same
   generic success either way, so the surface is still no account oracle.
 
-- **Two hold TTLs fall back to the domain's defaults** — a PARITY GAP, not a
-  decision. The deployment docs carry one environment variable that drives both the
-  cart hold and the checkout hold, and the settings aggregate this composition
-  builds a store for carries a hold TTL of its own; neither is read yet, so a
-  deployment that had moved its hold window would silently get fifteen minutes back.
-  Reading it belongs with the settings and scheduled-sweep wiring (a per-request read
-  for a value that changes almost never is a read on the hot path), and it must close:
-  this is the only transport.
+- **The checkout hold ignores the hold TTL setting.** The Settings page's "Cart hold
+  TTL (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no
+  environment variable for it) now drives the CART hold end to end: add-to-cart and
+  adjust stamp it, the lazy expiry on cart read measures against it, and the
+  `expire-holds` sweep leg reaps by it (#318). The CHECKOUT hold — the window a
+  `pending` order keeps its adopted stock — does not read it: `createOrder` passes no
+  `ttlMs`, so it is always the domain's fifteen-minute `DEFAULT_CHECKOUT_TTL_MS`.
 
 ### Narrower, never wider
 

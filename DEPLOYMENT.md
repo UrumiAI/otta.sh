@@ -19,9 +19,15 @@ alongside CMS content ([ADR-0018](./adr/0018-plugin-owns-commerce-truth-in-proce
 `sites/staging` is the reference site: copy it for your own store rather than treating it as
 staging-only.
 
+> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
+> works today, but APIs, storage document shapes, settings and admin screens may still change
+> between releases. This guide is the self-deploy path; a one-click / hosted Cloudflare
+> Workers deployment is coming soon.
+
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
 > checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
-> discounts, entitlements, reporting, and settings. The reference **storefront** covers
+> discounts, entitlements, reporting, and settings — except that the login-link email is not
+> dispatched in-process yet (§3, Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012). Three page surfaces
 > are not built yet: the x402 payment gate and the download delivery page (both still under
@@ -103,7 +109,8 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
 4. **Build the site.** The Cloudflare adapter reads `wrangler.local.jsonc` at **build**
    time (`astro.config.ts` passes it as `configPath`), so the build, not the deploy, is
    where your Worker name, D1, and R2 config becomes real. Commerce runs in-process, so
-   there is no service URL to bake in:
+   there is no service URL to bake in; the optional email and x402 provider URLs are read
+   here too (§4):
 
    ```bash
    pnpm --filter @otta-sh/site-staging build
@@ -173,7 +180,7 @@ cannot be retried in place:
 > `sites/staging/test/wrangler-config.test.ts` (flag presence, template hygiene). Do not
 > "fix" one side without the other.
 >
-> A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules (§3).
+> A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
 ## 3. Secrets & tokens checklist
 
@@ -191,7 +198,7 @@ order of appearance in a deployment's life:
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
-| Email API key (with the `EMAIL_API_URL` / `EMAIL_FROM` build-time values) | admin Settings | optional | when wiring real email |
+| Email API key + from-address (with the `EMAIL_API_URL` build-time value, §4) | admin Settings (from-address in `settings:emailFrom`) | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
   never echoed into logs; **back it up in a password manager** (it protects the CMS's
@@ -263,11 +270,15 @@ order of appearance in a deployment's life:
 > and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
 > and live alongside it in Settings.
 
-- **Email** — with no email API URL configured the console sender is used: emails are
-  **logged, not delivered** (visible in `wrangler tail`). The API URL and From address are
-  build-time values (the URL also seeds `allowedHosts`); the API key is a Settings
-  credential. Set the storefront base URL so magic-link login emails carry a clickable URL
-  (unset, they carry raw challenge credentials only).
+- **Email** — with no email API URL baked in at build time there is **no sender at all**:
+  nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
+  rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
+  API key is a write-only Settings credential, and the from-address ("Order email
+  from-address", `settings:emailFrom`, default `no-reply@otta.local`) is a readable Settings
+  field. **Magic-link login mail is not sent yet:** `requestLoginLink` records the challenge
+  and dispatches nothing in-process, whatever is configured — see "Not yet wired" in
+  [`packages/plugin/README.md`](./packages/plugin/README.md).
 
 ## 4. Egress and `allowedHosts`
 
@@ -280,6 +291,11 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | `api.stripe.com` | always — the one constant entry |
 | the email API host | when an email API URL is configured |
 | the x402 facilitator host | when a facilitator URL is configured |
+
+The two URLs are `EMAIL_API_URL` and `X402_FACILITATOR_URL`, read by
+`sites/staging/astro.config.ts` from `process.env`, falling back to `sites/staging/.env`.
+Set them in the shell or in `sites/staging/.env` **before** building (§2.1 step 4); unset,
+the provider is simply unconfigured and no host is granted for it.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -300,6 +316,12 @@ task table. The **plugin** registers one task, `commerce-sweeps`, due every `*/1
 executor fires the plugin's `cron` hook when it comes due. One task drives all nine sweep
 legs: they share a store composition and a clock, and splitting them would only put nine
 rows in contention on the same documents.
+
+Nothing needs to register that task by hand. The site lists the plugin in its `plugins`
+array, so the host never fires `plugin:activate` for it; instead the plugin wraps its four
+content-sync hooks and the two public catalog routes (product list and product page) in
+`withSweepBootstrap` (`packages/plugin/src/cron/index.ts`), which ensures the task exists
+once per isolate on the first such request and retries on the next if that write fails.
 
 Every leg is **idempotent** and runs in its own try/catch with its own label, so a leg that
 throws cannot starve the eight beside it; a tick always returns a summary, and each leg logs
@@ -325,5 +347,5 @@ is that single D1 database.
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
-| Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and hit a storefront route once (§5) |
+| Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

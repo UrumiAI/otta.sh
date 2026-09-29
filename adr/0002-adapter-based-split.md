@@ -23,7 +23,7 @@ constraint, no cross-call transaction, and no DDL** — verified against source
 (`ctx.storage` is a shared `_plugin_storage` JSON document store whose only write is an
 unconditional upsert; declared `uniqueIndexes` are downgraded to plain indexes; there is
 no `db`/`schema` capability). A sandboxed plugin therefore cannot own inventory / order /
-payment truth. See [`../draft-plans/emdash-platform-notes.md`](../draft-plans/emdash-platform-notes.md).
+payment truth. See `draft-plans/emdash-platform-notes.md` (private, not in this repo).
 
 These are **gaps in EmDash's current plugin surface, not permanent laws.** EmDash may
 later add a conditional-write / CAS primitive, DB-enforced unique constraints, or
