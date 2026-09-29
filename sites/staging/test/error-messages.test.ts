@@ -8,6 +8,17 @@
 import { describe, expect, test } from "vitest";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 
+const SELECTION_TOKENS = [
+	"COUPON_NOT_FOUND",
+	"COUPON_NOT_ACTIVE",
+	"COUPON_MIN_SUBTOTAL",
+	"COUPON_EXHAUSTED",
+	"COUPON_MAX_PER_CUSTOMER",
+	"COUPON_CURRENCY_MISMATCH",
+	"SHIPPING_METHOD_NOT_FOUND",
+	"SHIPPING_RATE_NOT_FOUND",
+];
+
 const KNOWN_TOKENS = [
 	"OUT_OF_STOCK",
 	"CART_NOT_FOUND",
@@ -23,8 +34,7 @@ const KNOWN_TOKENS = [
 	"SERVICE_UNAVAILABLE",
 	"PRODUCT_NOT_FOUND",
 	"PRODUCT_UNAVAILABLE",
-	// Checkout (storefront-checkout plan §3 C7). Coupon/shipping-method tokens
-	// are deliberately absent: no such input is offered, so they are unreachable.
+	// Checkout (storefront-checkout plan §3 C7).
 	"CART_EMPTY",
 	"RESERVATION_LOST",
 	"PRODUCT_NOT_PRICED",
@@ -35,6 +45,8 @@ const KNOWN_TOKENS = [
 	"INVALID_EMAIL",
 	"ORDER_NOT_FOUND",
 	"STRIPE_NOT_CONFIGURED",
+	// #305 part 1 — the buyer's selection, at the summary and at place.
+	...SELECTION_TOKENS,
 ];
 
 describe("cartErrorMessage", () => {
@@ -94,5 +106,20 @@ describe("cartErrorMessage", () => {
 		const holdExpired = cartErrorMessage("HOLD_EXPIRED");
 		const cartNotFound = cartErrorMessage("CART_NOT_FOUND");
 		expect(new Set([outOfStock, holdExpired, cartNotFound]).size).toBe(3);
+	});
+
+	test.each(SELECTION_TOKENS)("%s has its OWN copy, not the generic fallback", (token) => {
+		expect(cartErrorMessage(token)).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
+	});
+
+	test("the coupon and shipping copy is distinct per reason — a buyer can tell them apart", () => {
+		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map(cartErrorMessage);
+		expect(new Set(coupon).size).toBe(coupon.length);
+	});
+
+	test("COUPON_NOT_FOUND tells the buyer to check the code, and that case matters", () => {
+		const message = cartErrorMessage("COUPON_NOT_FOUND");
+		expect(message).toMatch(/check/i);
+		expect(message).toMatch(/case-sensitive/i);
 	});
 });

@@ -17,6 +17,7 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
+import { COUPON_CODE_MAX, isIdToken } from "../commerce/commerce-input.js";
 import type { ShippingAddressWire } from "../product-commerce/commerce-client.js";
 import { sanitizeLocale } from "./route-input.js";
 
@@ -36,9 +37,25 @@ const ADDRESS_FIELDS = {
 	phone: { max: 64, required: false },
 } as const satisfies Record<keyof ShippingAddressWire, { max: number; required: boolean }>;
 
+/**
+ * What the buyer chose to price the cart WITH (#305). Shared by the summary and
+ * the place route, so the review and the order can never be priced from two
+ * differently-parsed selections.
+ *
+ * There is deliberately no `shippingZoneId`: the tax zone is never the
+ * client's to choose (a buyer who could pick one could pick a zero-tax one).
+ * Neither parser reads it; PR 2 derives it from the ship-to address.
+ */
+export interface CheckoutSelection {
+	/** Trimmed, case KEPT — coupon lookup is case-sensitive. */
+	couponCode?: string;
+	shippingMethodId?: string;
+}
+
 export interface CheckoutSummaryParsedInput {
 	cartId: string;
 	locale: string;
+	selection: CheckoutSelection;
 }
 
 export interface CheckoutPlaceParsedInput {
@@ -50,6 +67,7 @@ export interface CheckoutPlaceParsedInput {
 	 *  no upstream call. Sanitized like the other routes' (a malformed tag falls
 	 *  back rather than rejecting: a bad locale must not fail an order). */
 	locale: string;
+	selection: CheckoutSelection;
 }
 
 export interface OrderRouteParsedInput {
@@ -63,13 +81,47 @@ function nonEmptyString(value: unknown, max = 200): string | null {
 	return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
 }
 
+/** Absent, null or blank-after-trim ⇒ "not chosen" (a blank coupon field is
+ *  how a buyer removes one). Anything else must be a string. */
+function optionalString(value: unknown): string | undefined | null {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * The selection, or `null` for INVALID_INPUT. Present-but-malformed is a
+ * reject, never a silent drop — and it must be rejected HERE: the commerce
+ * client THROWS on an over-long code or a malformed id, and a throw past this
+ * point is the route guard's RENDER_FAILED, not a typed refusal.
+ */
+export function parseCheckoutSelection(input: {
+	couponCode?: unknown;
+	shippingMethodId?: unknown;
+}): CheckoutSelection | null {
+	const couponCode = optionalString(input.couponCode);
+	const shippingMethodId = optionalString(input.shippingMethodId);
+	if (couponCode === null || shippingMethodId === null) return null;
+	if (couponCode !== undefined && couponCode.length > COUPON_CODE_MAX) return null;
+	if (shippingMethodId !== undefined && !isIdToken(shippingMethodId)) return null;
+	return {
+		...(couponCode !== undefined ? { couponCode } : {}),
+		...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
+	};
+}
+
 export function parseCheckoutSummaryInput(input: {
 	cartId?: unknown;
 	locale?: unknown;
+	couponCode?: unknown;
+	shippingMethodId?: unknown;
 }): CheckoutSummaryParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	if (cartId === null) return null;
-	return { cartId, locale: sanitizeLocale(input.locale) };
+	const selection = parseCheckoutSelection(input);
+	if (selection === null) return null;
+	return { cartId, locale: sanitizeLocale(input.locale), selection };
 }
 
 export function parseOrderRouteInput(input: {
@@ -87,6 +139,8 @@ export function parseCheckoutPlaceInput(input: {
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
 	locale?: unknown;
+	couponCode?: unknown;
+	shippingMethodId?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -98,12 +152,15 @@ export function parseCheckoutPlaceInput(input: {
 	// NEVER invents one (a fresh key per attempt mints a second order).
 	const idempotencyKey = nonEmptyString(input.idempotencyKey);
 	if (cartId === null || buyerRef === null || idempotencyKey === null) return null;
+	const selection = parseCheckoutSelection(input);
+	if (selection === null) return null;
 
 	const parsed: CheckoutPlaceParsedInput = {
 		cartId,
 		buyerRef,
 		idempotencyKey,
 		locale: sanitizeLocale(input.locale),
+		selection,
 	};
 
 	if (input.shippingAddress !== undefined) {

@@ -13,7 +13,35 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
+import type { CheckoutFailureReason } from "@otta-sh/plugin";
+
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
+
+/**
+ * #305 part 1 — the buyer's selection, refused at the summary or at place.
+ * Derived from the plugin's wire union with `Extract<>` and checked with
+ * `satisfies`, so a coupon or shipping reason added to the plugin without copy
+ * here fails the type check (`CheckoutFailureReason` is the wider union: it
+ * also carries the place-only `COUPON_MAX_PER_CUSTOMER`).
+ *
+ * No copy promises a refund: no order is minted before the coupon and the
+ * method are checked, so nothing was charged.
+ */
+const SELECTION_MESSAGES = {
+	COUPON_NOT_FOUND:
+		"We couldn't find that coupon code — check it and try again (codes are case-sensitive).",
+	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
+	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
+	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",
+	// Unreachable today (no customer id is passed at checkout), but in the union.
+	COUPON_MAX_PER_CUSTOMER: "You've already used that coupon as many times as it allows.",
+	COUPON_CURRENCY_MISMATCH: "That coupon can't be used with this store's currency.",
+	SHIPPING_METHOD_NOT_FOUND: "That delivery option is no longer available — please choose another.",
+	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
+} satisfies Record<
+	Extract<CheckoutFailureReason, `COUPON_${string}` | `SHIPPING_${string}`>,
+	string
+>;
 
 const MESSAGES: Record<string, string> = {
 	OUT_OF_STOCK: "Sorry, that item is out of stock.",
@@ -62,6 +90,7 @@ const MESSAGES: Record<string, string> = {
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
+	...SELECTION_MESSAGES,
 };
 
 /** Never returns the raw token, `undefined`, or an empty string — an

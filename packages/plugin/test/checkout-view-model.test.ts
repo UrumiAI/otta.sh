@@ -15,18 +15,28 @@
  *     deterministic — a fresh key per render would mint a second order that
  *     the `CART_CHECKED_OUT` fence then rejects, stranding the buyer.
  */
+import type { OrderState } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import type { CartPricingWire } from "../src/storefront/cart-pricing.js";
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
 	buildOrderTotal,
+	buildOrderView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
+	lockedCheckoutPhase,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	selectionFieldFor,
+	type LockedCheckoutPhase,
+	type SelectionField,
 } from "../src/storefront/checkout-view-model.js";
-import type { CartLineWire, PublicOrderWire } from "../src/product-commerce/commerce-client.js";
+import type {
+	CartLineWire,
+	PublicOrderWire,
+	QuoteFailureReason,
+} from "../src/product-commerce/commerce-client.js";
 
 const LOCALE = "en-US";
 
@@ -258,7 +268,7 @@ describe("buildOrderTotal", () => {
 			paymentMethod: "stripe",
 			holdExpiresAt: "2099-01-01T00:00:00.000Z",
 			createdAt: "2026-07-27T00:00:00.000Z",
-			totals: { ...BREAKDOWN, ...totals, shippingZoneId: null },
+			totals: { ...BREAKDOWN, ...totals, shippingZoneId: null, shippingMethodId: null },
 			lines: [],
 			fulfillment: null,
 			cancellation: null,
@@ -289,5 +299,122 @@ describe("buildOrderTotal", () => {
 		// Deliberately NOT a CheckoutAmountView: the honest-zero rule is about
 		// components a store never configured, and an order's total is never one.
 		expect(buildOrderTotal(order({ totalCents: 0 }), LOCALE).formatted).toBe("$0.00");
+	});
+});
+
+/**
+ * The confirmation page's totals (#305). Shipping and tax are decided by
+ * DIFFERENT evidence: a charged shipping fee follows the METHOD the order was
+ * priced with, tax follows the ZONE. Before #305 both followed the zone, which
+ * turned a real shipping charge into "Not calculated" beside a total that
+ * included it.
+ */
+describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
+	const order = (
+		totals: Partial<PublicOrderWire["totals"]>,
+		extra: Partial<PublicOrderWire> = {},
+	): PublicOrderWire => ({
+		id: "order-1",
+		state: "pending",
+		currency: "USD",
+		paymentMethod: "stripe",
+		holdExpiresAt: "2099-01-01T00:00:00.000Z",
+		createdAt: "2026-07-27T00:00:00.000Z",
+		totals: { ...BREAKDOWN, shippingZoneId: null, shippingMethodId: null, ...totals },
+		lines: [],
+		fulfillment: null,
+		cancellation: null,
+		...extra,
+	});
+
+	test('neither method nor zone ⇒ shipping and tax are "Not calculated"', () => {
+		const view = buildOrderView(order({}), LOCALE);
+		expect(view.totals.shipping).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(view.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(view.totals.totalExcludesUncalculated).toBe(true);
+	});
+
+	test('a method without a zone ⇒ shipping is real money (even $0.00), tax "Not calculated" — transitional, replaced by #305 part 2', () => {
+		// TRANSITIONAL: until PR 2 derives the zone from the address, an order can
+		// be priced with a method and no zone, and so with no tax.
+		const charged = buildOrderView(
+			order({ shippingMethodId: "m-1", shippingCents: 599, totalCents: 4597 }),
+			LOCALE,
+		);
+		expect(charged.totals.shipping.label).toBe("$5.99");
+		expect(charged.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(charged.totals.totalExcludesUncalculated).toBe(true);
+
+		// A method whose free threshold the order met: a COMPUTED zero, never an absence.
+		const free = buildOrderView(order({ shippingMethodId: "m-1", shippingCents: 0 }), LOCALE);
+		expect(free.totals.shipping.money).toEqual({ amount: 0, currency: "USD", formatted: "$0.00" });
+	});
+
+	test("zone + method ⇒ both computed, and the total excludes nothing", () => {
+		const view = buildOrderView(
+			order({ shippingZoneId: "z-1", shippingMethodId: "m-1", shippingCents: 599, taxCents: 400 }),
+			LOCALE,
+		);
+		expect(view.totals.shipping.label).toBe("$5.99");
+		expect(view.totals.tax.label).toBe("$4.00");
+		expect(view.totals.totalExcludesUncalculated).toBe(false);
+	});
+});
+
+describe("selectionFieldFor — which selection a quote refusal blames", () => {
+	/** Typed as a Record over the WHOLE union, so a reason added to the wire
+	 *  without a classification here fails the type check, not a buyer. */
+	const EXPECTED: Record<QuoteFailureReason, SelectionField | null> = {
+		COUPON_NOT_FOUND: "coupon",
+		COUPON_NOT_ACTIVE: "coupon",
+		COUPON_MIN_SUBTOTAL: "coupon",
+		COUPON_EXHAUSTED: "coupon",
+		COUPON_CURRENCY_MISMATCH: "coupon",
+		SHIPPING_METHOD_NOT_FOUND: "shippingMethod",
+		SHIPPING_RATE_NOT_FOUND: "shippingMethod",
+		CART_NOT_FOUND: null,
+		CART_EMPTY: null,
+		PRODUCT_NOT_PRICED: null,
+		CURRENCY_MISMATCH: null,
+	};
+
+	test.each(Object.entries(EXPECTED))("%s → %s", (reason, field) => {
+		expect(selectionFieldFor(reason as QuoteFailureReason)).toBe(field);
+	});
+});
+
+describe("lockedCheckoutPhase — what a cart that already became an order may offer", () => {
+	/** EVERY domain order state, typed as a Record so a state added to the model
+	 *  without a decision here fails the type check. */
+	const EXPECTED: Record<OrderState, LockedCheckoutPhase> = {
+		// Still inside the checkout window: the same-key place replays it to payment.
+		pending: "payable",
+		// NO LONGER PAYABLE — only these two. `expireOrders` does not reopen the
+		// cart, so the only way on is a new cart; a pay button would lead nowhere.
+		// NOT "never charged": a declined attempt fails the order while its intent
+		// stays confirmable, and a payment can land just after the TTL sweep — so
+		// nothing built on `ended` may claim anything about money.
+		expired: "ended",
+		failed: "ended",
+		// CANCELLED IS NOT "ended": the domain allows paid → cancelled and
+		// processing → cancelled, so a cancelled order may have been charged. The
+		// confirmation page states what actually happened ("This order was
+		// cancelled."), which the checkout page cannot.
+		cancelled: "placed",
+		// Paid or beyond: the confirmation page is the truth.
+		paid: "placed",
+		processing: "placed",
+		shipped: "placed",
+		delivered: "placed",
+		completed: "placed",
+		refunded: "placed",
+	};
+
+	test.each(Object.entries(EXPECTED))("%s → %s", (state, phase) => {
+		expect(lockedCheckoutPhase(state)).toBe(phase);
+	});
+
+	test("a state this build does not know is 'placed' — never a pay button, never \"start again\" over an order that may be paid", () => {
+		expect(lockedCheckoutPhase("some_future_state")).toBe("placed");
 	});
 });

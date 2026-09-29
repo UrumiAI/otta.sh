@@ -21,6 +21,7 @@ import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "
 import type { APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { placeFailurePath, readCouponCode } from "../../lib/checkout-selection.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -74,15 +75,29 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
+	const form = await context.request.formData();
+
+	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
+	// every redirect below can carry it back: it is not personal data. Trimmed,
+	// never case-folded (lookup is case-sensitive); blank ⇒ OMITTED, never `""`,
+	// which the commerce client would refuse. A code over the plugin's cap is
+	// refused here as what it is — no such coupon — without a dispatch.
+	const coupon = readCouponCode(formString(form.get("couponCode")));
+	if (coupon.rejected !== undefined) {
+		return context.redirect(placeFailurePath(coupon.rejected.reason, undefined), 303);
+	}
+	const couponCode = coupon.couponCode;
+	// No picker offers one yet (#305 part 2); forwarded only when present. The
+	// zone is NEVER read: the tax zone is not the client's to choose.
+	const shippingMethodId = formString(form.get("shippingMethodId"));
+
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
 	// order would hold stock for 15 minutes against a payment that structurally
 	// cannot happen. (A malformed key never reaches here — it fails the build.)
 	if (STRIPE_PUBLISHABLE_KEY === undefined) {
-		return seeOther(context, "/checkout", STRIPE_NOT_CONFIGURED);
+		return context.redirect(placeFailurePath(STRIPE_NOT_CONFIGURED, couponCode), 303);
 	}
-
-	const form = await context.request.formData();
 
 	const cartId = currentCartId(context);
 	if (cartId === undefined) return seeOther(context, "/cart");
@@ -96,14 +111,15 @@ export const POST: APIRoute = async (context) => {
 		// address and an email through a query string puts them in browser
 		// history, in the Referer of every subresource and in Cloudflare's access
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
-		// secret. The buyer re-enters; the PII does not travel.
+		// secret. The buyer re-enters; the PII does not travel. (The coupon does:
+		// it is not personal data.)
 		// COST, stated plainly: this check runs BEFORE readShippingAddress, so a
 		// mistyped email discards any typed shipping address too — not just the
 		// email. The alternative that would preserve both without a URL is
 		// re-rendering from the POST response instead of 303-ing, which was not
 		// taken because it breaks POST-redirect-GET (reload re-POSTs). Revisit if
 		// the re-entry cost shows up in real use.
-		return seeOther(context, "/checkout", INVALID_EMAIL);
+		return context.redirect(placeFailurePath(INVALID_EMAIL, couponCode), 303);
 	}
 
 	// From the form, forwarded verbatim — never invented here (see module doc).
@@ -113,7 +129,7 @@ export const POST: APIRoute = async (context) => {
 	}
 
 	const shipping = readShippingAddress(form);
-	if (!shipping.ok) return seeOther(context, "/checkout", shipping.error);
+	if (!shipping.ok) return context.redirect(placeFailurePath(shipping.error, couponCode), 303);
 
 	const result = await dispatchOttaRoute<CheckoutPlaceRouteResult>(
 		routeDispatcher(context),
@@ -122,6 +138,8 @@ export const POST: APIRoute = async (context) => {
 			cartId,
 			buyerRef: email,
 			idempotencyKey,
+			...(couponCode !== undefined ? { couponCode } : {}),
+			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
 			...(shipping.address !== undefined ? { shippingAddress: shipping.address } : {}),
 		},
 		context.url,
@@ -129,8 +147,9 @@ export const POST: APIRoute = async (context) => {
 
 	if (result === null || !result.ok) {
 		// Back to /checkout, which can explain and let the buyer retry — the cart
-		// is still theirs, and for CART_CHECKED_OUT the page offers a way out.
-		return seeOther(context, "/checkout", failureToken(result));
+		// is still theirs, and for CART_CHECKED_OUT the page offers a way out. A
+		// coupon refusal drops the coupon; anything else keeps it.
+		return context.redirect(placeFailurePath(failureToken(result), couponCode), 303);
 	}
 
 	// A replay of an order that has already LEFT pending: no intent was minted

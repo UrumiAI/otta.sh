@@ -203,6 +203,9 @@ export interface ArrangedOrder {
 	title?: string;
 	unitPrice?: CommerceMoney;
 	quantity?: number;
+	/** The shipping snapshot the order was priced with — absent ⇒ none, which is
+	 *  every order placed without a method. */
+	shippingMethod?: { zoneId: string | null; methodId: string };
 }
 
 /** One shipping zone, one flat-rate method in it, and optionally the rate. A spec
@@ -212,6 +215,9 @@ export interface ArrangedShippingMethod {
 	zoneId: string;
 	methodId: string;
 	rate?: CommerceMoney;
+	/** A `standard`-class tax rate in the zone, applied to shipping too — so a
+	 *  case can show when a zone's tax does and does not reach a quote. */
+	taxRateBps?: number;
 }
 
 /**
@@ -1368,6 +1374,31 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// TRANSITIONAL — replaced by #305 part 2, which derives the zone from the
+		// ship-to address. Until then the storefront passes a method and NO zone,
+		// and this is exactly what that prices: the method's rate, and no tax even
+		// though the method's own zone has a rate — tax is only looked up for a zone
+		// the caller passes.
+		test("a quote with a shipping method and NO zone charges the method's rate and applies no tax (transitional — replaced by #305 part 2)", async () => {
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-nozone",
+				methodId: "method-q-nozone",
+				rate: { amount: 599, currency: "USD" },
+				taxRateBps: 1000,
+			});
+			const cartId = await pricedCart("nozone");
+
+			const quoted = await client.quoteCheckout({ cartId, shippingMethodId: "method-q-nozone" });
+			expect(quoted.ok).toBe(true);
+			if (!quoted.ok) throw new Error("unreachable");
+			expect(quoted.breakdown).toMatchObject({
+				subtotalCents: 3000,
+				shippingCents: 599,
+				taxCents: 0,
+				totalCents: 3599,
+			});
+		});
+
 		test("a shipping method nobody declared refuses SHIPPING_METHOD_NOT_FOUND", async () => {
 			const cartId = await pricedCart("nomethod");
 			expect(
@@ -1533,6 +1564,41 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(await client.getPublicOrder("order-public-never-minted")).toEqual({
 				ok: false,
 				reason: "ORDER_NOT_FOUND",
+			});
+		});
+
+		test("getPublicOrder exposes totals.shippingMethodId beside shippingZoneId — the method id when one was chosen, null when not", async () => {
+			const withMethod = await tier.arrange.order({
+				orderId: "order-public-method",
+				buyerRef: "public-method@example.test",
+				shippingMethod: { zoneId: null, methodId: "method-public-1" },
+			});
+			const withBoth = await tier.arrange.order({
+				orderId: "order-public-zone",
+				buyerRef: "public-zone@example.test",
+				shippingMethod: { zoneId: "zone-public-1", methodId: "method-public-2" },
+			});
+			const withNeither = await tier.arrange.order({
+				orderId: "order-public-none",
+				buyerRef: "public-none@example.test",
+			});
+
+			const totalsOf = async (orderId: string) => {
+				const read = await client.getPublicOrder(orderId);
+				if (!read.ok) throw new Error(`unreachable: ${read.reason}`);
+				return read.order.totals;
+			};
+			expect(await totalsOf(withMethod)).toMatchObject({
+				shippingZoneId: null,
+				shippingMethodId: "method-public-1",
+			});
+			expect(await totalsOf(withBoth)).toMatchObject({
+				shippingZoneId: "zone-public-1",
+				shippingMethodId: "method-public-2",
+			});
+			expect(await totalsOf(withNeither)).toMatchObject({
+				shippingZoneId: null,
+				shippingMethodId: null,
 			});
 		});
 

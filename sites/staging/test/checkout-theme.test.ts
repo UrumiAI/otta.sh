@@ -28,6 +28,13 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src")
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
 
 const REVIEW = read("pages/checkout/index.astro");
+
+/** What the buyer reads of a template slice: JS comments inside expressions
+ *  removed (`templateOf` strips markup comments only) and whitespace folded, so
+ *  copy wrapped across lines still matches. */
+function shown(source: string): string {
+	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+}
 const PAY = read("pages/checkout/pay.astro");
 const ORDER = read("pages/orders/[orderId].astro");
 const POLL_RIBBON = read("components/PollRibbon.astro");
@@ -97,6 +104,125 @@ describe("the /checkout form contract", () => {
 		expect(REVIEW).toMatch(/<h2 class="u-label head-label">Your order<\/h2>/);
 		expect(ORDER).toMatch(/<h2 class="u-label head-label">Items<\/h2>/);
 		expect(ORDER).toMatch(/<h2 class="u-label head-label">Totals<\/h2>/);
+	});
+});
+
+/**
+ * #305 part 1 — the coupon on the review page. The form is a zero-JS
+ * `GET /checkout?coupon=` (decision D2), a SIBLING of the place form: nested, its
+ * submit would post the place form's fields instead.
+ */
+describe("/checkout — the coupon", () => {
+	const TEMPLATE = templateOf(REVIEW);
+	const COUPON_FORM =
+		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ??
+		"";
+
+	test("the coupon form is GET /checkout with name=coupon maxlength=200", () => {
+		expect(COUPON_FORM, "no GET /checkout form").not.toBe("");
+		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON_FORM)?.[0] ?? "";
+		expect(field).toContain('maxlength="200"');
+		expect(field).toContain('autocomplete="off"');
+	});
+
+	test("the coupon form is NOT nested in the place form", () => {
+		const place =
+			/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
+		expect(place).not.toBe("");
+		expect(place).not.toContain('name="coupon"');
+		expect(TEMPLATE.indexOf(COUPON_FORM)).toBeLessThan(TEMPLATE.indexOf(place));
+	});
+
+	test("the place form carries a hidden couponCode bound to summary.selection.couponCode", () => {
+		expect(REVIEW).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="couponCode"[^>]*value=\{summary\.selection\.couponCode\}/,
+		);
+	});
+
+	test("the page passes the coupon into the summary dispatch", () => {
+		expect(REVIEW).toContain("readCouponParam(Astro.url)");
+		expect(REVIEW).toMatch(/\{\s*cartId,\s*\.\.\.\(coupon\.couponCode !== undefined/);
+	});
+
+	test("the coupon form is hidden once the cart has become an order", () => {
+		expect(REVIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
+	});
+
+	test("an ENDED checkout offers no pay button — only the way to a new cart", () => {
+		expect(REVIEW).toContain('phase === "ended"');
+		expect(REVIEW).toMatch(/!ended && \(\s*<form[^>]*action="\/checkout\/place"/);
+	});
+
+	test("the LOCKED review hides the delivery-address block — the order's ship-to is fixed", () => {
+		// The same-key place replays the existing order and re-prices nothing, so an
+		// address typed here would be silently dropped. The email stays: place.ts
+		// requires it.
+		expect(REVIEW).toMatch(/locked === null && \(\s*<fieldset class="group">/);
+		expect(REVIEW).not.toMatch(
+			/locked === null && \(\s*<div class="field">\s*<label class="u-label" for="email">/,
+		);
+	});
+
+	test("the lock notice says the coupon AND the delivery address can no longer be changed", () => {
+		expect(REVIEW).toContain(
+			"Its coupon and delivery address can no longer be changed. To change them, start a new cart.",
+		);
+	});
+
+	test("the shipping-method notice is kept, and says why it is not dead code", () => {
+		expect(REVIEW).toMatch(/unreachable until #305 part 2[\s\S]{0,200}shippingError !== null/);
+	});
+
+	/**
+	 * `ended` means NO LONGER PAYABLE, not "never charged": a declined attempt
+	 * flips the order to `failed` while the same PaymentIntent stays confirmable,
+	 * and a payment can land just after the TTL sweep expired the order. The
+	 * public order carries no reconciliation flag, so this page cannot know —
+	 * and must make no claim about money either way.
+	 */
+	test("the ENDED notice makes NO claim about a charge, and links to the order", () => {
+		const notice =
+			/<Notice lead="This checkout has ended\.">[\s\S]*?<\/Notice>/.exec(templateOf(REVIEW))?.[0] ??
+			"";
+		expect(notice, "no ended notice").not.toBe("");
+		expect(notice).not.toMatch(/charged|no charge/i);
+		// A charge on a failed/expired order goes to manual reconciliation, where
+		// the merchant may refund it OR complete the order — so the page promises
+		// neither; it tells the buyer who to contact and with what.
+		const text = notice.replace(/\s+/g, " ");
+		expect(text).not.toMatch(/the store will refund/i);
+		expect(text).toMatch(/contact the store with your order number/i);
+		expect(text).toMatch(/refund it or complete your order/i);
+		expect(notice).toContain("href={`/orders/${encodeURIComponent(locked.id)}`}");
+	});
+
+	/**
+	 * A LOCKED review with no publishable key: an order exists and the cart is
+	 * checked out, so the unlocked copy ("Nothing has been charged and your cart is
+	 * unchanged") would be wrong on both counts there.
+	 */
+	test("locked + payment not configured renders the LOCKED variant, with no money or cart claim", () => {
+		const template = templateOf(REVIEW);
+		const payment = template.indexOf("paymentConfigured ?");
+		const fork = template.indexOf(") : locked !== null ? (", payment);
+		expect(payment, "no paymentConfigured branch").toBeGreaterThan(-1);
+		expect(fork, "no locked branch under paymentConfigured").toBeGreaterThan(payment);
+		const lockedEnd = template.indexOf("</Notice>", fork) + "</Notice>".length;
+		const unlockedEnd = template.indexOf("</Notice>", lockedEnd) + "</Notice>".length;
+		const lockedVariant = shown(template.slice(fork, lockedEnd));
+		const unlockedVariant = shown(template.slice(lockedEnd, unlockedEnd));
+		expect(lockedVariant).toContain(
+			"Card payment isn't set up on this store, so this order can't be paid right now.",
+		);
+		expect(lockedVariant).not.toMatch(/charged|cart is unchanged/i);
+		// The unlocked variant is unchanged.
+		expect(unlockedVariant).toContain(
+			"This order can't be placed. Nothing has been charged and your cart is unchanged.",
+		);
+	});
+
+	test("the coupon in the URL never leaks through a Referer", () => {
+		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
 	});
 });
 

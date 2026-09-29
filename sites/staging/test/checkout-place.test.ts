@@ -637,6 +637,129 @@ describe("6f — every place-time failure becomes ?error=<TOKEN> on /checkout", 
 	});
 });
 
+/**
+ * #305 part 1 — the coupon the review priced rides the place form as a hidden
+ * `couponCode`; the plugin re-checks it regardless.
+ */
+describe("the coupon at place", () => {
+	test("the form's couponCode is forwarded verbatim — trimmed, case kept", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "  Ck-Save5 " }, handler);
+
+		await PLACE_POST(context);
+
+		expect(calls[0]!.body["couponCode"]).toBe("Ck-Save5");
+	});
+
+	test.each([[""], ["   "]])(
+		'a blank couponCode (%p) is OMITTED, never sent as ""',
+		async (couponCode) => {
+			const { handler, calls } = makeHandler();
+			const { context } = makeContext({ ...VALID_FORM, couponCode }, handler);
+
+			await PLACE_POST(context);
+
+			expect(calls[0]!.body).not.toHaveProperty("couponCode");
+		},
+	);
+
+	test("an over-long couponCode is refused as COUPON_NOT_FOUND without dispatching", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "X".repeat(201) }, handler);
+
+		const location = (await PLACE_POST(context)).headers.get("location");
+
+		expect(location).toBe("/checkout?error=COUPON_NOT_FOUND");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a shippingMethodId is forwarded only when present", async () => {
+		const withMethod = makeHandler();
+		await PLACE_POST(
+			makeContext({ ...VALID_FORM, shippingMethodId: " m-1 " }, withMethod.handler).context,
+		);
+		expect(withMethod.calls[0]!.body["shippingMethodId"]).toBe("m-1");
+
+		const without = makeHandler();
+		await PLACE_POST(makeContext({ ...VALID_FORM, shippingMethodId: "" }, without.handler).context);
+		expect(without.calls[0]!.body).not.toHaveProperty("shippingMethodId");
+	});
+
+	test("a shippingZoneId form field is NEVER forwarded — the tax zone is not the client's to choose", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, shippingZoneId: "zone-1" }, handler);
+
+		await PLACE_POST(context);
+
+		expect(calls[0]!.body).not.toHaveProperty("shippingZoneId");
+		expect(JSON.stringify(calls[0]!.body)).not.toContain("zone-1");
+	});
+
+	test("the LOCKED review's form (email, key, coupon — no address block) places with NO shippingAddress", async () => {
+		// What `/checkout` posts once the cart has become an order: the address
+		// fieldset is not rendered, so no address field is in the body at all.
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-LOCK" }, handler);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+		expect(calls[0]!.body["couponCode"]).toBe("CK-LOCK");
+	});
+
+	test("a coupon failure at place redirects to /checkout?error=<TOKEN> WITHOUT the coupon", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "COUPON_EXHAUSTED" });
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-LAST" }, handler);
+
+		const location = (await PLACE_POST(context)).headers.get("location");
+
+		expect(location).toBe("/checkout?error=COUPON_EXHAUSTED");
+	});
+
+	test("a non-coupon failure keeps ?coupon", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-SAVE5" }, handler);
+
+		const location = (await PLACE_POST(context)).headers.get("location");
+
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=PAYMENT_INTENT_FAILED");
+	});
+
+	test("an INVALID_EMAIL redirect keeps the coupon but still carries no personal data", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{
+				...VALID_FORM,
+				email: "not-an-email",
+				couponCode: "CK-SAVE5",
+				name: "A Buyer",
+				line1: "1 Private Road",
+				city: "Townsville",
+				postalCode: "12345",
+				country: "Testland",
+			},
+			handler,
+		);
+
+		const location = (await PLACE_POST(context)).headers.get("location")!;
+
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=INVALID_EMAIL");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("STRIPE_NOT_CONFIGURED keeps the coupon too, and still creates nothing", async () => {
+		stripeKey.value = undefined;
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "CK-SAVE5" }, handler);
+
+		const location = (await PLACE_POST(context)).headers.get("location");
+
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=STRIPE_NOT_CONFIGURED");
+		expect(calls).toHaveLength(0);
+	});
+});
+
 describe("the optional ship-to (ADR-0009 slice c)", () => {
 	const ADDRESS = {
 		name: "A Buyer",
@@ -680,6 +803,25 @@ describe("the optional ship-to (ADR-0009 slice c)", () => {
 		expect(calls).toHaveLength(0);
 	});
 });
+
+/** A renderable summary, with overrides for the #305 cases below. */
+const renderable = (
+	extra: Partial<Extract<CheckoutSummaryRouteResult, { ok: true }>>,
+): CheckoutSummaryRouteResult =>
+	({
+		ok: true,
+		cartId: "cart-1",
+		currency: "USD",
+		lines: [],
+		totals: {} as never,
+		idempotencyKey: "checkout:cart-1",
+		hasUnpricedLines: false,
+		selection: { couponCode: null, shippingMethodId: null },
+		selectionErrors: {},
+		orderCreated: false,
+		order: null,
+		...extra,
+	}) as CheckoutSummaryRouteResult;
 
 /**
  * The `GET /checkout` entry guard. `.astro` pages have no render harness here
@@ -736,8 +878,57 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
 				hasUnpricedLines: false,
+				selection: { couponCode: null, shippingMethodId: null },
+				selectionErrors: {},
+				orderCreated: false,
+				order: null,
 			}),
 		).toBeNull();
+	});
+
+	test("a summary that is ok but carries selectionErrors RENDERS — a mistyped coupon is a notice, never a bounce to /cart", () => {
+		expect(
+			checkoutEntryRedirect(
+				"cart-1",
+				renderable({
+					selectionErrors: {
+						coupon: { code: "CK-TYPO", reason: "COUPON_NOT_FOUND" },
+						shippingMethod: { reason: "SHIPPING_METHOD_NOT_FOUND" },
+					},
+				}),
+			),
+		).toBeNull();
+	});
+
+	test("a cart whose order is PAID (or later) goes to the order confirmation — never a second review", () => {
+		expect(
+			checkoutEntryRedirect(
+				"cart-1",
+				renderable({
+					orderCreated: true,
+					order: { id: "order 7/x", state: "paid", phase: "placed" },
+				}),
+			),
+		).toEqual({ path: "/orders/order%207%2Fx" });
+	});
+
+	test.each([
+		["payable", "pending"],
+		["ended", "expired"],
+	] as const)("a cart whose order is %s renders the LOCKED review", (phase, state) => {
+		expect(
+			checkoutEntryRedirect(
+				"cart-1",
+				renderable({ orderCreated: true, order: { id: "order-7", state, phase } }),
+			),
+		).toBeNull();
+	});
+
+	test("an unreadable order degrades to CART_CHECKED_OUT → /cart, whose checked-out panel offers the way on", () => {
+		expect(checkoutEntryRedirect("cart-1", { ok: false, reason: "CART_CHECKED_OUT" })).toEqual({
+			path: "/cart",
+			error: "CART_CHECKED_OUT",
+		});
 	});
 
 	test("the checkout page actually CALLS the guard and 303s on it", () => {

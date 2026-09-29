@@ -16,6 +16,14 @@
  *    over the view model's `CheckoutAmountView`s untouched and never inspects a
  *    label (docs/theme/TEMPERED.md §7).
  *
+ * The coupon (#305 part 1) rides the URL as `?coupon=` (checkout-selection.ts):
+ * a refused one is a notice beside the undiscounted totals, never a bounce. Once
+ * the cart has become an order the review is LOCKED to that order — its totals,
+ * its coupon — and the order's state decides what may be offered: a pending
+ * order can still be paid, an ended one cannot (the page offers a new cart and
+ * no pay button), and a paid one never reaches here (checkoutEntryRedirect sends
+ * it to its confirmation).
+ *
  * Shape (§8): step track, then two panels — the details form left (~1.15fr),
  * the order ledger + totals right.
  */
@@ -31,19 +39,23 @@ import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { readCouponParam } from "../../lib/checkout-selection.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
+/** Trimmed, case kept. A code over the plugin's cap is refused HERE (as not
+ *  found) and never dispatched. */
+const coupon = readCouponParam(Astro.url);
 
 const result =
 	cartId !== undefined && cartId.length > 0
 		? await dispatchOttaRoute<CheckoutSummaryRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
-				{ cartId },
+				{ cartId, ...(coupon.couponCode !== undefined ? { couponCode: coupon.couponCode } : {}) },
 				Astro.url,
 			)
 		: null;
@@ -66,6 +78,18 @@ const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";
+
+/** LOCKED: this cart has already become an order (pending or ended — a paid one
+ *  was redirected above). ENDED: that order can no longer be paid, and
+ *  `expireOrders` does not reopen the cart, so a pay button would lead nowhere. */
+const locked = summary.orderCreated ? summary.order : null;
+const ended = locked?.phase === "ended";
+
+/** The coupon refusal to explain, from the plugin or from the cap check above.
+ *  Its code goes back into the field so a typo can be fixed. */
+const couponError = summary.selectionErrors.coupon ?? coupon.rejected ?? null;
+const couponValue = couponError?.code ?? summary.selection.couponCode ?? "";
+const shippingError = summary.selectionErrors.shippingMethod ?? null;
 
 /** SKU / qty / money — the same tape the home page opens with, itemised. The
  *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
@@ -96,6 +120,9 @@ const sumRows = [
 {/* The footer's currency comes from the totals this page already holds —
     the layout never invents one (§7). */}
 <Base title="Checkout" currency={totals.total.money?.currency ?? null}>
+	{/* The coupon code is in this page's URL; no subresource or outbound link
+	    may carry it off in a Referer. */}
+	<meta name="referrer" content="no-referrer" slot="head" />
 	{/* The components are wrapped rather than handed a class: a page's scoped
 	    selector deliberately cannot reach a component's root (see
 	    src/lib/rest-props.ts), so spacing AROUND one belongs to an element the
@@ -105,8 +132,43 @@ const sumRows = [
 
 	{error !== null && <div class="notice-slot"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
+	{/* Kept on purpose, though unreachable until #305 part 2: nothing on this
+	    site sends a shipping method yet, so the summary cannot refuse one. */}
 	{
-		checkedOut && (
+		shippingError !== null && (
+			<div class="notice-slot">
+				<Notice>{cartErrorMessage(shippingError.reason)}</Notice>
+			</div>
+		)
+	}
+
+	{
+		locked !== null && (
+			<div class="notice-slot">
+				{ended ? (
+					/* The `ended` phase — expired / failed — means NO LONGER PAYABLE,
+					   not "never charged": a declined attempt fails the order while its
+					   PaymentIntent stays confirmable, and a payment can land just after
+					   the TTL sweep. The public order carries no reconciliation flag, so
+					   this copy makes no claim about money either way — and promises no
+					   particular outcome: reconciliation may refund OR fulfil the order. */
+					<Notice lead="This checkout has ended.">
+						Its order can no longer be paid. If a payment did go through, contact the store with
+						your order number — shown on
+						<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a> — and they
+						will refund it or complete your order. Start a new cart to order again.
+					</Notice>
+				) : (
+					<Notice lead="Your order has already been created.">
+						Its coupon and delivery address can no longer be changed. To change them, start a new cart.
+					</Notice>
+				)}
+			</div>
+		)
+	}
+
+	{
+		(checkedOut || locked !== null) && (
 			<form method="POST" action="/checkout/new-cart" class="restart">
 				<button type="submit" class="u-btn u-btn-ghost">
 					Start a new cart
@@ -121,91 +183,158 @@ const sumRows = [
 				<h2 class="u-label head-label">Your details</h2>
 			</div>
 
-			<form method="POST" action="/checkout/place" class="details">
-				{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
-				    replays into the SAME order and the same PaymentIntent instead of
-				    minting a second order the CART_CHECKED_OUT fence would reject. */}
-				<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
-
-				{/* The note is a SIBLING of the label, not inside it. Nested, its
-				    ~25 words join the field's ACCESSIBLE NAME and get read out in
-				    full every time the input takes focus; `aria-describedby` is how
-				    a hint attaches — announced after the name, and as a hint. */}
-				<div class="field">
-					<label class="u-label" for="email">
-						Email <span class="req">required</span>
-					</label>
-					<input
-						type="email"
-						id="email"
-						name="email"
-						required
-						autocomplete="email"
-						aria-describedby="email-note"
-					/>
-					<span class="note" id="email-note">
-						We use this to send your order confirmation and to link the order to your account if
-						you sign in later.
-					</span>
-				</div>
-
-				<fieldset class="group">
-					<legend class="u-label head-label">Delivery address</legend>
-					<p class="note group-note">
-						Optional — fill it in completely, or leave it entirely blank.
-					</p>
-					<div class="fields">
-						<label class="field span2">
-							<span class="u-label">Full name</span>
-							<input type="text" name="name" autocomplete="name" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Address line 1</span>
-							<input type="text" name="line1" autocomplete="address-line1" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Address line 2</span>
-							<input type="text" name="line2" autocomplete="address-line2" />
-						</label>
-						<label class="field">
-							<span class="u-label">City</span>
-							<input type="text" name="city" autocomplete="address-level2" />
-						</label>
-						<label class="field">
-							<span class="u-label">Region / state</span>
-							<input type="text" name="region" autocomplete="address-level1" />
-						</label>
-						<label class="field">
-							<span class="u-label">Postal code</span>
-							<input type="text" name="postalCode" autocomplete="postal-code" />
-						</label>
-						<label class="field">
-							<span class="u-label">Country</span>
-							<input type="text" name="country" autocomplete="country-name" />
-						</label>
-						<label class="field span2">
-							<span class="u-label">Phone</span>
-							<input type="tel" name="phone" autocomplete="tel" />
-						</label>
-					</div>
-				</fieldset>
-
-				{
-					paymentConfigured ? (
-						<div>
-							<button type="submit" class="u-btn">
-								Continue to payment
-							</button>
+			{/* The coupon comes FIRST, and is a SIBLING of the place form, never
+			    nested in it: applying it is a GET navigation, which loses anything
+			    typed below — so the natural order is "coupon, then details". */}
+			{
+				!summary.orderCreated && (
+					<form method="GET" action="/checkout" class="coupon">
+						<div class="field">
+							<label class="u-label" for="coupon">
+								Coupon code
+							</label>
+							<div class="coupon-row">
+								<input
+									type="text"
+									id="coupon"
+									name="coupon"
+									maxlength="200"
+									autocomplete="off"
+									value={couponValue}
+									aria-describedby={couponError !== null ? "coupon-error coupon-note" : "coupon-note"}
+								/>
+								<button type="submit" class="u-btn u-btn-ghost">
+									Apply
+								</button>
+							</div>
+							{couponError !== null && (
+								<div id="coupon-error">
+									<Notice>{cartErrorMessage(couponError.reason)}</Notice>
+								</div>
+							)}
+							<span class="note" id="coupon-note">
+								Codes are case-sensitive. Apply a code before filling in your details — applying it
+								reloads this page.
+								{summary.selection.couponCode !== null && (
+									<>
+										{" "}
+										<a href="/checkout">Remove coupon</a>
+									</>
+								)}
+							</span>
 						</div>
-					) : (
-						/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
-						   rather than restated here (§10). */
-						<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
-							This order can't be placed. Nothing has been charged and your cart is unchanged.
-						</Notice>
-					)
-				}
-			</form>
+					</form>
+				)
+			}
+
+			{
+				!ended && (
+					<form method="POST" action="/checkout/place" class="details">
+						{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
+						    replays into the SAME order and the same PaymentIntent instead of
+						    minting a second order the CART_CHECKED_OUT fence would reject. */}
+						<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
+						{/* Exactly the coupon the totals beside this form were priced with;
+						    the place re-checks it. Absent when none applied. */}
+						{summary.selection.couponCode !== null && (
+							<input type="hidden" name="couponCode" value={summary.selection.couponCode} />
+						)}
+
+						{/* The note is a SIBLING of the label, not inside it. Nested, its
+						    ~25 words join the field's ACCESSIBLE NAME and get read out in
+						    full every time the input takes focus; `aria-describedby` is how
+						    a hint attaches — announced after the name, and as a hint. */}
+						<div class="field">
+							<label class="u-label" for="email">
+								Email <span class="req">required</span>
+							</label>
+							<input
+								type="email"
+								id="email"
+								name="email"
+								required
+								autocomplete="email"
+								aria-describedby="email-note"
+							/>
+							<span class="note" id="email-note">
+								We use this to send your order confirmation and to link the order to your account if
+								you sign in later.
+							</span>
+						</div>
+
+						{/* LOCKED: the order's ship-to is fixed — a same-key place replays the
+						    order and would silently drop an address typed here. The email above
+						    stays: place.ts requires it. */}
+						{
+							locked === null && (
+								<fieldset class="group">
+									<legend class="u-label head-label">Delivery address</legend>
+									<p class="note group-note">
+										Optional — fill it in completely, or leave it entirely blank.
+									</p>
+									<div class="fields">
+										<label class="field span2">
+											<span class="u-label">Full name</span>
+											<input type="text" name="name" autocomplete="name" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Address line 1</span>
+											<input type="text" name="line1" autocomplete="address-line1" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Address line 2</span>
+											<input type="text" name="line2" autocomplete="address-line2" />
+										</label>
+										<label class="field">
+											<span class="u-label">City</span>
+											<input type="text" name="city" autocomplete="address-level2" />
+										</label>
+										<label class="field">
+											<span class="u-label">Region / state</span>
+											<input type="text" name="region" autocomplete="address-level1" />
+										</label>
+										<label class="field">
+											<span class="u-label">Postal code</span>
+											<input type="text" name="postalCode" autocomplete="postal-code" />
+										</label>
+										<label class="field">
+											<span class="u-label">Country</span>
+											<input type="text" name="country" autocomplete="country-name" />
+										</label>
+										<label class="field span2">
+											<span class="u-label">Phone</span>
+											<input type="tel" name="phone" autocomplete="tel" />
+										</label>
+									</div>
+								</fieldset>
+							)
+						}
+
+						{
+							paymentConfigured ? (
+								<div>
+									<button type="submit" class="u-btn">
+										Continue to payment
+									</button>
+								</div>
+							) : locked !== null ? (
+								/* LOCKED: an order exists and the cart is checked out, so the
+								   unlocked copy's "nothing has been charged" and "your cart is
+								   unchanged" would both be wrong here. */
+								<Notice>
+									Card payment isn't set up on this store, so this order can't be paid right now.
+								</Notice>
+							) : (
+								/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
+								   rather than restated here (§10). */
+								<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
+									This order can't be placed. Nothing has been charged and your cart is unchanged.
+								</Notice>
+							)
+						}
+					</form>
+				)
+			}
 		</section>
 
 		<section class="panel">
@@ -294,6 +423,19 @@ const sumRows = [
 	.head-label {
 		margin: 0;
 		color: var(--u-ink);
+	}
+
+	.coupon-row {
+		display: flex;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+	.coupon-row input {
+		flex: 1;
+		min-width: 0;
+	}
+	.coupon .note a {
+		color: var(--u-mute);
 	}
 
 	.details {
