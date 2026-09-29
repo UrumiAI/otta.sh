@@ -420,7 +420,7 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		try {
 			expect(
 				await client.requestLoginLink("shopper@example.test", {
-					linkBaseUrl: "https://shop.example.test",
+					verifyPageUrl: "https://shop.example.test/account/verify",
 				}),
 			).toEqual({ ok: true });
 		} finally {

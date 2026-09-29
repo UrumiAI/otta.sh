@@ -20,7 +20,8 @@ import {
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
 
-const BASE = "https://shop.example.test";
+/** The operator's configured sign-in page (`settings:loginLinkUrl`). */
+const VERIFY = "https://shop.example.test/account/verify";
 
 /** Pull `challenge` + `token` back out of the emailed link — the only place a
  *  shopper's token exists. */
@@ -49,15 +50,17 @@ describe("requestLoginLink sends the magic link", () => {
 	});
 
 	test("a never-seen address gets EXACTLY ONE email, and the reply carries no token", async () => {
-		const reply = await harness.client.requestLoginLink("new@example.test", { linkBaseUrl: BASE });
+		const reply = await harness.client.requestLoginLink("new@example.test", {
+			verifyPageUrl: VERIFY,
+		});
 
 		expect(reply).toEqual({ ok: true });
 		expect(sender.sends).toHaveLength(1);
 		const [sent] = sender.sends;
 		expect(sent).toMatchObject({ to: "new@example.test", template: "customer-login-link" });
 		const { url, challenge, token } = linkParts(sent?.data["loginUrl"]);
-		// The link lands on the storefront's verify page, on the origin it was given.
-		expect(`${url.origin}${url.pathname}`).toBe(`${BASE}/account/verify`);
+		// The link is the configured sign-in page, and nothing request-derived.
+		expect(`${url.origin}${url.pathname}`).toBe(VERIFY);
 		// The token is in the email and NOWHERE in the reply.
 		expect(JSON.stringify(reply)).not.toContain(token);
 		// Idempotency-keyed on the challenge, so a provider can dedupe a retried send.
@@ -68,7 +71,7 @@ describe("requestLoginLink sends the magic link", () => {
 	});
 
 	test("the emailed link redeems once, and a known address gets exactly one email too", async () => {
-		await harness.client.requestLoginLink("known@example.test", { linkBaseUrl: BASE });
+		await harness.client.requestLoginLink("known@example.test", { verifyPageUrl: VERIFY });
 		const first = linkParts(sender.sends[0]?.data["loginUrl"]);
 		const verified = await harness.client.verifyLogin(first.challenge, first.token);
 		expect(verified.ok).toBe(true);
@@ -81,7 +84,7 @@ describe("requestLoginLink sends the magic link", () => {
 		sender.reset();
 		// The account now exists; the answer and the mail count must not change.
 		expect(
-			await harness.client.requestLoginLink("known@example.test", { linkBaseUrl: BASE }),
+			await harness.client.requestLoginLink("known@example.test", { verifyPageUrl: VERIFY }),
 		).toEqual({ ok: true });
 		expect(sender.sends).toHaveLength(1);
 	});
@@ -91,7 +94,7 @@ describe("requestLoginLink sends the magic link", () => {
 		// The per-address cap is 3 live challenges; the fourth is throttled.
 		for (let i = 0; i < 4; i += 1) {
 			answers.push(
-				await harness.client.requestLoginLink("busy@example.test", { linkBaseUrl: BASE }),
+				await harness.client.requestLoginLink("busy@example.test", { verifyPageUrl: VERIFY }),
 			);
 		}
 		expect(sender.sends).toHaveLength(3);
@@ -99,7 +102,9 @@ describe("requestLoginLink sends the magic link", () => {
 	});
 
 	test("a malformed address sends nothing and answers the same generic success", async () => {
-		expect(await harness.client.requestLoginLink("not-an-email", { linkBaseUrl: BASE })).toEqual({
+		expect(
+			await harness.client.requestLoginLink("not-an-email", { verifyPageUrl: VERIFY }),
+		).toEqual({
 			ok: true,
 		});
 		expect(sender.sends).toHaveLength(0);
@@ -110,7 +115,7 @@ describe("requestLoginLink sends the magic link", () => {
 		try {
 			sender.failNextSends(1);
 			expect(
-				await harness.client.requestLoginLink("flaky@example.test", { linkBaseUrl: BASE }),
+				await harness.client.requestLoginLink("flaky@example.test", { verifyPageUrl: VERIFY }),
 			).toEqual({ ok: true });
 			expect(sender.sends).toHaveLength(0);
 			expect(errors).toHaveBeenCalled();
@@ -121,14 +126,20 @@ describe("requestLoginLink sends the magic link", () => {
 		}
 	});
 
-	test("with no storefront origin to point the link at, nothing is issued or sent", async () => {
+	test("with NO sign-in link URL configured: nothing issued, nothing sent, the same answer, logged ONCE", async () => {
 		const warns = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const challenges = harness.ctx.storage?.["login_challenges"];
 			if (challenges === undefined) throw new Error("login_challenges is not declared");
-			expect(await harness.client.requestLoginLink("nowhere@example.test")).toEqual({ ok: true });
+			for (const address of ["nowhere@example.test", "elsewhere@example.test"]) {
+				expect(await harness.client.requestLoginLink(address)).toEqual({ ok: true });
+			}
 			expect(sender.sends).toHaveLength(0);
 			expect(await challenges.count()).toBe(0);
+			const unconfigured = warns.mock.calls.filter((call) =>
+				String(call[0]).includes("settings:loginLinkUrl"),
+			);
+			expect(unconfigured).toHaveLength(1);
 		} finally {
 			warns.mockRestore();
 		}
@@ -151,7 +162,7 @@ describe("requestLoginLink on a deployment with NO email configured", () => {
 			const challenges = harness.ctx.storage?.["login_challenges"];
 			if (challenges === undefined) throw new Error("login_challenges is not declared");
 			for (const address of ["a@example.test", "b@example.test"]) {
-				expect(await harness.client.requestLoginLink(address, { linkBaseUrl: BASE })).toEqual({
+				expect(await harness.client.requestLoginLink(address, { verifyPageUrl: VERIFY })).toEqual({
 					ok: true,
 				});
 			}

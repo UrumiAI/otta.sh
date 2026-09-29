@@ -59,9 +59,10 @@ as the retryable error it is — a caller has to be able to see that.
 One gap in the in-process transport is deliberate, and it is pinned by a test so it
 stays visible until it closes. (The other, "`requestLoginLink` dispatches no mail",
 closed with issue #306: the magic link is emailed through `CtxHttpEmailSender` over
-`ctx.http`, pointing at the storefront's `/account/verify` page on the request's own
-origin or `settings:storefrontBaseUrl`. With no email API URL in the build it still
-answers the same generic success, issues nothing, and logs once server-side.)
+`ctx.http`, pointing at the sign-in page the operator saves in Settings
+(`settings:loginLinkUrl`, required; never the request's origin). With no email API URL
+in the build, or no sign-in link URL, it still answers the same generic success, issues
+nothing, and logs once server-side.)
 
 - **Two hold TTLs fall back to the domain's defaults** — a PARITY GAP, not a
   decision. The deployment docs carry one environment variable that drives both the

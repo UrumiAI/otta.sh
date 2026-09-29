@@ -54,7 +54,16 @@ Phase 5 plan §4 recommendation._
 
 Issue #306 made the magic link actually send, in process: `storefront/account/login/request`
 issues the challenge and emails the link through `CtxHttpEmailSender` over `ctx.http`. The
-decision above is unchanged. Two consequences it did not state are recorded here.
+decision above is unchanged. Three consequences it did not state are recorded here.
+
+- **The link's destination is configuration, never the request.** The emailed link is the
+  operator's saved sign-in page (`settings:loginLinkUrl`, an absolute http(s) URL with no
+  credentials, validated on save and again on send) with the challenge and token appended.
+  It is **required**: unset or invalid means no challenge is issued and nothing is sent. The
+  answer stays the same generic success, and the server logs once. The request's origin is
+  never used. On a host that does not pin `Host`, it would let an attacker request a
+  victim's link pointing at the attacker's domain and receive the token on the victim's
+  click. Setting and validation adapted from #325 by @stephanedemotte.
 
 - **The per-address window can lock a customer out.** It is keyed on the address alone, and the
   request route is public. Anyone can send three requests for a victim's address every
