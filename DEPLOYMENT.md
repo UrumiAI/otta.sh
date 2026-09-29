@@ -29,12 +29,12 @@ staging-only.
 > discounts, entitlements, reporting, and settings (the magic-link email needs the email API
 > and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
-> the order confirmation page (`/orders/<orderId>`) are built (ADR-0012). Three page surfaces
-> are not built yet: the x402 payment gate and the download delivery page (both still under
-> issue #27), and the customer account/login pages (a parallel follow-up scoped in the site
-> package's README — no issue yet). Deploying today gives you a browsable catalog, carts with
-> real inventory holds, and a Stripe card purchase end-to-end once Stripe is configured (§3).
-> When #27 and the account-pages task close, this banner shrinks to a version note.
+> the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
+> customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Two page
+> surfaces are not built yet: the x402 payment gate and the download delivery page (both still
+> under issue #27). Deploying today gives you a browsable catalog, carts with real inventory
+> holds, magic-link customer accounts, and a Stripe card purchase end-to-end once Stripe is
+> configured (§3). When #27 closes, this banner shrinks to a version note.
 
 ## 1. Universal contracts
 
@@ -280,8 +280,8 @@ order of appearance in a deployment's life:
   → "Sign-in link page" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
   `/account/verify` page — the emailed link points there and never at the request's origin.
   With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
-  success, issues nothing, and logs once server-side. The reference site has no account pages
-  yet, so a deployment of it has nowhere to point this.
+  success, issues nothing, and logs once server-side. For the reference site, set it to
+  `https://<your-site>/account/verify`.
 
 ## 4. Egress and `allowedHosts`
 

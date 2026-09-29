@@ -41,9 +41,9 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
    registered, so there's something to actually run. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
-   wiring Otta into your own site — it covers catalog, cart and card checkout today; the
-   x402 gate, download delivery and customer account pages are not built yet (see
-   [Status](#status)).
+   wiring Otta into your own site — it covers catalog, cart, card checkout and customer
+   accounts (magic-link sign-in, order history) today; the x402 gate and download delivery
+   are not built yet (see [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
 
@@ -159,17 +159,16 @@ The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inven
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
 shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
 an email API is configured and the Settings "Sign-in link page" (`settings:loginLinkUrl`)
-points at the storefront's verify page; the reference site does not have account pages yet
-(see below).
+points at the storefront's `/account/verify` page.
 
-The reference **storefront** (`sites/staging`) covers catalog, cart and **card
-checkout**: `/checkout`, the Stripe pay page and the order confirmation page are built
+The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout** and
+**customer accounts** (`/account/login`, `/account/verify`, `/account/orders`):
+`/checkout`, the Stripe pay page and the order confirmation page are built
 ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)), so a
 Stripe-configured deployment completes a card purchase end-to-end
 ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). The x402 gate and the download delivery page
-([#27](https://github.com/UrumiAI/otta.sh/issues/27)) and the customer account pages are
-not built yet — for those, build the pages or drive the plugin's own commerce routes
-directly.
+([#27](https://github.com/UrumiAI/otta.sh/issues/27)) are not built yet — for those, build
+the pages or drive the plugin's own commerce routes directly.
 
 ## License
 
