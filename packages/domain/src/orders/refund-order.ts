@@ -169,7 +169,10 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  *     - success   → `finalizeRefund` (stamps refundRef; flips `→ refunded` iff
  *                   the FINALIZED Σ reached the ceiling);
  *     - fail-closed / terminal / unsupported → `voidRefund` (nothing issued —
- *                   capacity released, audit row kept);
+ *                   capacity released, audit row kept) — except a RESUMED
+ *                   reservation whose pre-flight fails closed, which is held
+ *                   `unverified` and flagged (its own earlier issue may be the
+ *                   money the provider shows);
  *     - retryable → reservation KEPT (`reserved`): a same-key retry resumes it
  *                   (crash-heal: re-issues under the same provider key);
  *     - ambiguous → `markRefundUnverified` (capacity HELD — the safe direction —
@@ -332,14 +335,31 @@ export async function refundOrder(
 				await deps.orderStore.markRefundUnverified(cmd.idempotencyKey);
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 			case "PROVIDER_ALREADY_REFUNDED":
-				// Fail-closed pre-flight: THIS call issued nothing. Release the capacity
-				// only if this call created the reservation. A same-key request that
-				// resumed (or raced into) another request's reservation may be seeing
-				// THAT request's refund already landed at the provider — voiding the
-				// row would make its finalize miss and turn money that moved into a
-				// REFUND_ISSUED_UNRECORDED anomaly. The owner settles its own row.
-				if (createdReservation) await deps.orderStore.voidRefund(cmd.idempotencyKey);
-				return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+				// Fail-closed pre-flight: THIS call issued nothing. When this call
+				// created the reservation, nothing under its key can have moved money,
+				// so the capacity is released.
+				if (createdReservation) {
+					await deps.orderStore.voidRefund(cmd.idempotencyKey);
+					return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+				}
+				// A RESUME (or a race into another request's reservation) is different:
+				// the money the pre-flight sees may be THIS key's own earlier issue — a
+				// crash after refunds.create succeeded, or a concurrent owner still in
+				// flight. Voiding would make that refund's finalize miss (money moved,
+				// ledger silent), and leaving the row `reserved` would strand it: every
+				// resume would fail the same way, forever, unflagged. So the row is held
+				// `unverified` (capacity kept, the safe direction) and the order is
+				// flagged for a human to reconcile against the provider. The flip is
+				// guarded to `reserved`, so an owner that already finalized wins and
+				// nothing is flagged; an owner still in flight finalizes from
+				// `unverified` just the same.
+				if (await deps.orderStore.markRefundUnverified(cmd.idempotencyKey)) {
+					await deps.orderStore.flagReconciliation(
+						cmd.orderId,
+						`refund ${String(target.amount)} ${target.currency} (key ${cmd.idempotencyKey}): the provider already shows it refunded but the ledger never finalized it — check the provider before refunding again`,
+					);
+				}
+				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 			case "TERMINAL":
 				await deps.orderStore.voidRefund(cmd.idempotencyKey);
 				return { ok: false, reason: "GATEWAY_TERMINAL" };
