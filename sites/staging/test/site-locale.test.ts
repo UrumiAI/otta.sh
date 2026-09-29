@@ -4,7 +4,7 @@
  * countries in it — so it must be ONE value, already in canonical form (the
  * plugin's `sanitizeLocale` would otherwise rewrite it and the two could drift).
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -18,9 +18,15 @@ describe("SITE_LOCALE", () => {
 		expect(new Intl.Locale(SITE_LOCALE).toString()).toBe(SITE_LOCALE);
 	});
 
-	test("is the language the layout declares", () => {
-		const base = readFileSync(path.join(SRC, "layouts/Base.astro"), "utf8");
-		expect(base).toContain(`<html lang="${SITE_LOCALE}">`);
+	test("is the language every theme's layout declares", () => {
+		const themes = readdirSync(path.join(SRC, "themes"), { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name);
+		expect(themes.length).toBeGreaterThan(0);
+		for (const theme of themes) {
+			const layout = readFileSync(path.join(SRC, "themes", theme, "Layout.astro"), "utf8");
+			expect(layout, theme).toMatch(new RegExp(`<html lang="${SITE_LOCALE}"[\\s>]`));
+		}
 	});
 
 	test("names countries in that language", () => {

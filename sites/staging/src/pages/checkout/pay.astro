@@ -27,7 +27,7 @@
  */
 import Notice from "../../components/Notice.astro";
 import StepTrack from "../../components/StepTrack.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -52,7 +52,7 @@ const payLabel = payButtonLabel(stash.total?.formatted);
     money — §7's rule is that a page naming a price names the currency it is in.
     A pre-total stash carries neither: `null`, and the footer stays bare, which
     is still the truth about what this page printed. */}
-<Base title="Payment" currency={stash.total?.currency ?? null}>
+<Storefront title="Payment" currency={stash.total?.currency ?? null}>
 	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
 	    component's root (src/lib/rest-props.ts), so the spacing around one lives
 	    on an element the page owns. */}
@@ -463,7 +463,7 @@ const payLabel = payButtonLabel(stash.total?.formatted);
 	}
 
 	<p class="back"><a href={orderPath}>View your order</a></p>
-</Base>
+</Storefront>
 
 <style>
 	.steps {

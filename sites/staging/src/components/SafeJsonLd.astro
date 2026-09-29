@@ -1,0 +1,25 @@
+---
+/**
+ * One JSON-LD block, serialized safely.
+ *
+ * `safeJsonLdSerialize`, NOT `JSON.stringify`: `set:html` is required (HTML-
+ * escaping the JSON breaks the graph), and plain stringify lets a CMS-authored
+ * title containing "</script>" break out of this tag — stored XSS on the public
+ * PDP. em-dash's serializer escapes <, >, U+2028 and U+2029. Pinned by
+ * test/json-ld-xss.test.ts.
+ *
+ * A data block, not code: `hasExecutableScript` (test/astro-source.ts) exempts
+ * `application/ld+json`, so this adds nothing to the client-JS fence. Emitted by
+ * the Storefront shell rather than by a theme view, so no theme can drop or
+ * re-serialize it.
+ */
+import { safeJsonLdSerialize } from "emdash/page";
+
+interface Props {
+	data: unknown;
+}
+
+const { data } = Astro.props;
+---
+
+<script is:inline type="application/ld+json" set:html={safeJsonLdSerialize(data)} />

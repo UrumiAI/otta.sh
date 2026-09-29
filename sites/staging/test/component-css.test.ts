@@ -200,7 +200,7 @@ describe("component boundaries", () => {
 		 * allowed; the pattern below only matches a bare global as a whole
 		 * selector.
 		 */
-		const tokens = readFileSync(path.join(SRC_DIR, "styles/tokens.css"), "utf8").replace(
+		const tokens = readFileSync(path.join(SRC_DIR, "themes/tempered/theme.css"), "utf8").replace(
 			/\/\*[\s\S]*?\*\//g,
 			"",
 		);

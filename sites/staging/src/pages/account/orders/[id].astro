@@ -15,7 +15,7 @@ import { ACCOUNT_ORDER_ROUTE, type AccountOrderResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Ledger from "../../../components/Ledger.astro";
 import Notice from "../../../components/Notice.astro";
-import Base from "../../../layouts/Base.astro";
+import Storefront from "../../../layouts/Storefront.astro";
 import {
 	ACCOUNT_NO_STORE,
 	currentSessionToken,
@@ -73,7 +73,7 @@ const totals =
 			}));
 ---
 
-<Base title={order === null ? "Order" : `Order ${order.id}`} currency={order?.currency ?? null}>
+<Storefront title={order === null ? "Order" : `Order ${order.id}`} currency={order?.currency ?? null}>
 	<p class="back">
 		<a href="/account/orders">← Your orders</a>
 	</p>
@@ -126,7 +126,7 @@ const totals =
 			</>
 		)
 	}
-</Base>
+</Storefront>
 
 <style>
 	.back {

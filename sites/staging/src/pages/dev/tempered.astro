@@ -31,7 +31,7 @@
  * anywhere in `dist/`. `dev-route-guard.test.ts` pins the shape that buys
  * this; a static import here would silently put both chunks back.
  */
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import type { CheckoutAmountView } from "@otta-sh/plugin";
 import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@otta-sh/plugin";
 
@@ -92,7 +92,7 @@ const CONFIGURED = [
 ];
 ---
 
-<Base title="Tempered styleguide" cartCount={3} currency="USD">
+<Storefront title="Tempered styleguide" cartCount={3} currency="USD">
 	<h1 class="page-title">Tempered</h1>
 	<p class="lede">
 		Every component in every state. Dev only — this route is a 404 in a built worker.
@@ -301,7 +301,7 @@ const CONFIGURED = [
 			<Notice>Totals are unavailable right now. Your quantities and your holds are still exact.</Notice>
 		</div>
 	</section>
-</Base>
+</Storefront>
 
 <style>
 	.page-title {

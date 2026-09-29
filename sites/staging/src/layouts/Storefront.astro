@@ -1,0 +1,157 @@
+---
+/**
+ * Storefront — the ONE shell every storefront page renders through.
+ *
+ * It replaces `Base.astro`'s role: it makes the chrome's content reads (guarded,
+ * with the same true fallbacks), asks which theme is active for this request,
+ * and hands the result to that theme's Layout. A page that has a themed view
+ * (`home`, `shop`, `product`) passes its finished model and the theme renders
+ * it; every other page passes its markup in the default slot and gets the
+ * active theme's chrome and `--u-*` tokens around it.
+ *
+ * ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns the
+ * markup. Nothing here calls commerce — the cart count arrives as a PROP from a
+ * page that already read the cart, so the shell never puts commerce on the
+ * critical path of a page that would otherwise make no commerce call at all.
+ */
+import { getMenu, getSiteSettings } from "emdash";
+import SafeJsonLd from "../components/SafeJsonLd.astro";
+import {
+	cartCountLabel,
+	FALLBACK_MENU_ITEMS,
+	isCartLink,
+	withAccountLink,
+	type NavItem,
+} from "../lib/nav.js";
+import type { ChromeModel, HomeModel, ProductModel, ShopModel } from "../themes/contract.js";
+import { themeFor, viewFor } from "../themes/registry.js";
+import { activeTheme } from "../themes/resolve.js";
+
+interface ShellProps {
+	title: string;
+	description?: string | null;
+	/**
+	 * Units in the cart, for the nav badge. `null`/omitted renders the nav
+	 * item bare — "no cart read on this page" and "an empty cart" are
+	 * different facts and must not both render as `(0)`.
+	 */
+	cartCount?: number | null;
+	/**
+	 * The store's currency CODE, from a view model that already knows it
+	 * (§7: the shell never invents anything money-shaped, and it cannot know
+	 * the currency on its own). `null`/omitted renders no currency at all.
+	 *
+	 * Absence is meaningful and is why this is not defaulted: the pages that
+	 * pass nothing — home, the catalog index, 404 — are the ones that read no
+	 * money. A page that shows a price shows the currency; a page that shows
+	 * none says nothing. /checkout/pay passes whatever its cookie stash holds:
+	 * the code beside the place-time total when the stash carries one, and
+	 * nothing when it does not, because then the button names no amount either.
+	 */
+	currency?: string | null;
+}
+
+/** Discriminated on `view`: a themed view takes its model; no `view` takes the slot. */
+type Props = ShellProps &
+	(
+		| { view: "home"; model: HomeModel }
+		| { view: "shop"; model: ShopModel }
+		| { view: "product"; model: ProductModel; jsonLd?: unknown }
+		| { view?: undefined }
+	);
+
+const props = Astro.props;
+const { title, description = null, cartCount = null, currency = null } = props;
+
+/**
+ * BOTH content reads here are guarded, and this was the last unguarded read on
+ * the site — the one remaining path from "the content store is unreachable" to
+ * a 500 on every page at once.
+ *
+ * Neither call has an error channel. `getSiteSettings()` and `getMenu()` both
+ * await `getDb()` and a query behind it, and both reject outright when that
+ * fails; there is no `{ error }` to inspect the way `getEmDashCollection` gives
+ * one. An unguarded `await` in the SHELL is the worst version of that, because
+ * every page renders through it: the home page and the shop page already guard
+ * their own reads and still went down with this one. Probed against a dead D1:
+ * unguarded, every route 500s; guarded, the store serves 200 with the fallback
+ * chrome below and each page's own degraded state inside it.
+ *
+ * The fallbacks are chosen to be TRUE rather than merely non-empty:
+ *
+ *  - the title falls back to "Otta", which is what an absent `settings.title`
+ *    already did — a failed read and an unset setting land in the same place
+ *    rather than growing a second rule;
+ *  - the nav falls back to the routes THIS SITE defines (`FALLBACK_MENU_ITEMS`
+ *    in lib/nav.ts). They exist whatever the content store is doing, so a
+ *    shopper mid-visit keeps a way to the shop and to their cart instead of
+ *    being stranded on a page with a wordmark and nothing else.
+ *
+ * The fallback is used ONLY when the read THREW. A menu that comes back `null`
+ * is a store with no `primary` menu configured, which is a real answer and the
+ * operator's to change — substituting our own there would quietly override a
+ * deliberately empty nav.
+ */
+/* Which theme renders this request — STARTED here, before the two content
+   reads, so its options-row read runs alongside them instead of after them.
+   It never rejects (fail-soft to Tempered, memoized per request — see
+   themes/resolve.ts), so leaving it pending across the awaits below is safe. */
+const themeIdPending = activeTheme(Astro);
+
+let settings: { title?: string; tagline?: string } = {};
+try {
+	settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+} catch (error) {
+	console.error("[site-staging] layout settings read threw:", error);
+}
+const siteTitle = settings.title ?? "Otta";
+const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+
+let navItems: readonly NavItem[] = [];
+try {
+	navItems = (await getMenu("primary"))?.items ?? [];
+} catch (error) {
+	console.error("[site-staging] layout menu read threw:", error);
+	navItems = FALLBACK_MENU_ITEMS;
+}
+
+const themeId = await themeIdPending;
+const theme = themeFor(themeId);
+
+const chrome: ChromeModel = {
+	siteTitle,
+	fullTitle,
+	description: description ?? null,
+	navItems: withAccountLink(navItems).map((item) => ({
+		label: item.label,
+		url: item.url,
+		isCart: isCartLink(item.url),
+	})),
+	cartCount,
+	cartCountLabel: cartCount === null ? null : cartCountLabel(cartCount),
+	currency,
+	themeId,
+};
+
+const Layout = theme.Layout;
+const HomeView = viewFor(theme, "home");
+const ShopView = viewFor(theme, "shop");
+const ProductView = viewFor(theme, "product");
+const jsonLd = props.view === "product" ? (props.jsonLd ?? null) : null;
+---
+
+<Layout chrome={chrome}>
+	<slot name="head" slot="head" />
+	{
+		props.view === "home" ? (
+			<HomeView model={props.model} />
+		) : props.view === "shop" ? (
+			<ShopView model={props.model} />
+		) : props.view === "product" ? (
+			<ProductView model={props.model} />
+		) : (
+			<slot />
+		)
+	}
+	{jsonLd !== null && <SafeJsonLd data={jsonLd} />}
+</Layout>

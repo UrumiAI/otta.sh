@@ -9,7 +9,7 @@
  * payment step (ADR-0012).
  */
 import Notice from "../../../components/Notice.astro";
-import Base from "../../../layouts/Base.astro";
+import Storefront from "../../../layouts/Storefront.astro";
 import { ACCOUNT_NO_STORE, LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 
@@ -19,7 +19,7 @@ const sent = Astro.url.searchParams.get("sent") === "1";
 const error = Astro.url.searchParams.get("error");
 ---
 
-<Base title="Sign in">
+<Storefront title="Sign in">
 	<h1 class="title">Sign in</h1>
 	<p class="lede">
 		We'll email you a link that signs you in — no password. Orders you placed as a guest with the
@@ -50,7 +50,7 @@ const error = Astro.url.searchParams.get("error");
 			<button type="submit" class="u-btn">Email me a sign-in link</button>
 		</div>
 	</form>
-</Base>
+</Storefront>
 
 <style>
 	.title {

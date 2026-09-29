@@ -498,7 +498,7 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 		// So a pre-total stash names neither. Naming a currency under a "Pay now"
 		// button would be the footer claiming the page priced something it did not
 		// (§7) — `footer-currency.test.ts` owns the positive half of this rule.
-		expect(PAY).toMatch(/<Base[^>]*currency=\{stash\.total\?\.currency \?\? null\}/);
+		expect(PAY).toMatch(/<Storefront[^>]*currency=\{stash\.total\?\.currency \?\? null\}/);
 	});
 });
 

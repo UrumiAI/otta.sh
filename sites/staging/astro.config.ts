@@ -97,8 +97,11 @@ export default defineConfig({
 	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED: Astro
 	 * downloads them at build time and serves them from this origin, so a
 	 * shopper's browser never talks to fonts.googleapis.com or fonts.gstatic.com
-	 * at runtime. `src/styles/tokens.css` reads the `--u-face-*` variables these
-	 * declare; `src/layouts/Base.astro` emits the <Font> tags.
+	 * at runtime. Variables are namespaced per theme (`--f-<themeId>-<role>`) so
+	 * two themes' faces never collide: `src/themes/tempered/theme.css` maps the
+	 * `--f-tempered-*` variables these declare onto the shared `--u-display` /
+	 * `--u-body` / `--u-data` names, and `src/themes/tempered/Layout.astro`
+	 * emits the <Font> tags — only the ACTIVE theme's Layout emits its own.
 	 *
 	 * `options.experimental.variableAxis` is load-bearing, not a nicety. Google's
 	 * css2 endpoint only ships an axis you asked for, and the width contrast
@@ -118,7 +121,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.google(),
 			name: "Bricolage Grotesque",
-			cssVariable: "--u-face-display",
+			cssVariable: "--f-tempered-display",
 			// Wordmark and titles sit at 700–800; 400 is the muted counter-voice.
 			weights: ["400 800"],
 			styles: ["normal"],
@@ -129,7 +132,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.google(),
 			name: "Schibsted Grotesk",
-			cssVariable: "--u-face-body",
+			cssVariable: "--f-tempered-body",
 			weights: ["400 700"],
 			styles: ["normal"],
 			subsets: ["latin"],
@@ -138,7 +141,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.google(),
 			name: "Martian Mono",
-			cssVariable: "--u-face-data",
+			cssVariable: "--f-tempered-data",
 			weights: ["300 700"],
 			styles: ["normal"],
 			subsets: ["latin"],

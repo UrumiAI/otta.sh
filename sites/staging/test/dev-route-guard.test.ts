@@ -88,16 +88,18 @@ describe("the styleguide route — the components must not ship with it", () => 
 		const used = new Set(
 			[...source.slice(source.indexOf("\n---", 3)).matchAll(/<([A-Z]\w*)[\s/>]/g)].map((m) => m[1]),
 		);
-		// `Base` is the layout — it is on every real page anyway, so importing
-		// it statically costs this route nothing.
-		used.delete("Base");
+		// `Storefront` is the shell — it is on every real page anyway, so
+		// importing it statically costs this route nothing.
+		used.delete("Storefront");
 		used.delete("Fragment");
 		for (const name of used)
 			expect(dynamic, `<${name}> is not dynamically imported`).toContain(name);
 	});
 
 	test("the layout is still static — it is not this route's weight to carry", () => {
-		expect(staticImports.some((specifier) => specifier.includes("layouts/Base.astro"))).toBe(true);
+		expect(staticImports.some((specifier) => specifier.includes("layouts/Storefront.astro"))).toBe(
+			true,
+		);
 	});
 });
 

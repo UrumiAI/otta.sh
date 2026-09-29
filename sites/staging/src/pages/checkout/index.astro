@@ -46,7 +46,7 @@ import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
 import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import {
 	readCouponParam,
@@ -186,7 +186,7 @@ const sumRows = [
 
 {/* The footer's currency comes from the totals this page already holds —
     the layout never invents one (§7). */}
-<Base title="Checkout" currency={totals.total.money?.currency ?? null}>
+<Storefront title="Checkout" currency={totals.total.money?.currency ?? null}>
 	{/* The coupon code is in this page's URL; no subresource or outbound link
 	    may carry it off in a Referer. */}
 	<meta name="referrer" content="no-referrer" slot="head" />
@@ -579,7 +579,7 @@ const sumRows = [
 	</div>
 
 	<p class="back"><a href="/cart">Back to cart</a></p>
-</Base>
+</Storefront>
 
 <style>
 	.steps {

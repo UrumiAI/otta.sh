@@ -15,7 +15,7 @@
 import { ACCOUNT_ORDERS_ROUTE, type AccountOrdersResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Notice from "../../../components/Notice.astro";
-import Base from "../../../layouts/Base.astro";
+import Storefront from "../../../layouts/Storefront.astro";
 import {
 	ACCOUNT_NO_STORE,
 	currentSessionToken,
@@ -56,7 +56,7 @@ const rows =
 	})) ?? [];
 ---
 
-<Base title="Your orders">
+<Storefront title="Your orders">
 	<div class="head-row">
 		<h1 class="title">Your orders</h1>
 		<form method="POST" action="/account/logout">
@@ -89,7 +89,7 @@ const rows =
 			</ul>
 		)
 	}
-</Base>
+</Storefront>
 
 <style>
 	.head-row {

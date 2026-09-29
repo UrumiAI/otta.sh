@@ -47,10 +47,19 @@ function listPages(dir: string): string[] {
 }
 
 /**
- * The `.astro` components a file imports, resolved to absolute paths.
+ * The modules a file imports that can carry components, resolved to absolute
+ * paths: every `.astro` import, AND every relative TypeScript module (a `.js`
+ * specifier in this tree is a `.ts` file).
  *
  * One level is not enough: a page importing a component that imports a scripted
  * one ships the script just the same, so this is walked transitively below.
+ *
+ * The `.ts` half is load-bearing since the theme system. Every page renders
+ * through `layouts/Storefront.astro`, which reaches the theme views through
+ * `themes/registry.ts` — a TypeScript module importing `.astro` files. A walk
+ * that only followed `.astro` imports would stop at the registry and never see
+ * a theme view, which is exactly where a second theme's first script would
+ * land. Type-only imports erase at build time and are not followed.
  *
  * An unresolved specifier THROWS rather than being filtered out. A fence that
  * silently drops what it cannot resolve is a fence that a rename turns off, and
@@ -58,19 +67,29 @@ function listPages(dir: string): string[] {
  */
 function componentImports(file: string): string[] {
 	const source = readFileSync(file, "utf8");
-	return [...source.matchAll(/^import\s+\w+\s+from\s+["']([^"']+\.astro)["'];?$/gm)].map((m) => {
-		const resolved = path.resolve(path.dirname(file), m[1] ?? "");
-		if (!existsSync(resolved)) {
-			throw new Error(
-				`the client-JS fence cannot resolve "${m[1]}" imported by ${path.relative(SRC_DIR, file)} — ` +
-					"fix the path, or the fence stops covering this page",
-			);
-		}
+	const unresolved = (specifier: string): Error =>
+		new Error(
+			`the client-JS fence cannot resolve "${specifier}" imported by ${path.relative(SRC_DIR, file)} — ` +
+				"fix the path, or the fence stops covering this page",
+		);
+	const astro = [...source.matchAll(/^import\s+\w+\s+from\s+["']([^"']+\.astro)["'];?$/gm)].map(
+		(m) => {
+			const resolved = path.resolve(path.dirname(file), m[1] ?? "");
+			if (!existsSync(resolved)) throw unresolved(m[1] ?? "");
+			return resolved;
+		},
+	);
+	const modules = [
+		...source.matchAll(/^import\s+(?!type\b)[^;]*?\sfrom\s+["'](\.{1,2}\/[^"']+)\.js["'];?$/gm),
+	].map((m) => {
+		const resolved = path.resolve(path.dirname(file), `${m[1] ?? ""}.ts`);
+		if (!existsSync(resolved)) throw unresolved(`${m[1] ?? ""}.js`);
 		return resolved;
 	});
+	return [...astro, ...modules];
 }
 
-/** Every `.astro` file this one pulls into the browser's bundle, transitively. */
+/** Every module this one pulls in, transitively — `.astro` and `.ts` alike. */
 function componentClosure(entry: string): string[] {
 	const seen = new Set<string>();
 	const queue = componentImports(entry);
@@ -121,6 +140,7 @@ function clientJsRoutes(pagesDir: string): string[] {
 				? [`${relative} → (its own template)`]
 				: [];
 			const viaImports = componentClosure(file)
+				.filter((component) => component.endsWith(".astro"))
 				.filter((component) => hasExecutableScript(readFileSync(component, "utf8")))
 				.map((component) => `${relative} → ${path.basename(component)}`);
 			return [...own, ...viaImports];
@@ -187,6 +207,38 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
 			.toSorted();
 		expect(scripted).toEqual(["HoldRibbon.astro"]);
+	});
+
+	test("the walk sees THROUGH the theme registry, into every view and the shared form", () => {
+		// Page → Storefront.astro → themes/registry.ts → themes/<id>/*.astro. If
+		// the `.ts` hop were dropped, every theme view would sit outside the
+		// fence while the equality check above still passed.
+		const closure = componentClosure(path.join(PAGES_DIR, "index.astro")).map((file) =>
+			path.relative(SRC_DIR, file).split(path.sep).join("/"),
+		);
+		expect(closure).toEqual(
+			expect.arrayContaining([
+				"layouts/Storefront.astro",
+				"themes/registry.ts",
+				"themes/tempered/Layout.astro",
+				"themes/tempered/HomeView.astro",
+				"themes/tempered/ShopView.astro",
+				"themes/tempered/ProductView.astro",
+				"forms/AddToCartFields.astro",
+			]),
+		);
+	});
+
+	test("no theme and no shared form ships client JS — a theme script is a decision, not a drift", () => {
+		// Every theme renders on every page type, so a script here would reach
+		// pages ADR-0012 keeps free of client JavaScript. A future theme that
+		// needs one must name it in PERMITTED_CLIENT_JS, page by page.
+		const scripted = ["themes", "forms"].flatMap((dir) =>
+			listPages(path.join(SRC_DIR, dir))
+				.filter((file) => hasExecutableScript(readFileSync(file, "utf8")))
+				.map((file) => path.relative(SRC_DIR, file)),
+		);
+		expect(scripted).toEqual([]);
 	});
 
 	test("an unresolvable import FAILS the fence rather than being skipped", () => {

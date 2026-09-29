@@ -17,7 +17,7 @@
  * query is rendered except into the two hidden inputs the form needs.
  */
 import Notice from "../../../components/Notice.astro";
-import Base from "../../../layouts/Base.astro";
+import Storefront from "../../../layouts/Storefront.astro";
 import { ACCOUNT_NO_STORE } from "../../../lib/account.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 
@@ -28,7 +28,7 @@ const token = Astro.url.searchParams.get("token") ?? "";
 const usable = challenge.length > 0 && token.length > 0;
 ---
 
-<Base title="Sign in">
+<Storefront title="Sign in">
 	<meta name="referrer" content="same-origin" slot="head" />
 	<h1 class="title">Sign in</h1>
 
@@ -55,7 +55,7 @@ const usable = challenge.length > 0 && token.length > 0;
 			</>
 		)
 	}
-</Base>
+</Storefront>
 
 <style>
 	.title {

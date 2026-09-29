@@ -45,7 +45,7 @@ import PollRibbon from "../../components/PollRibbon.astro";
 import StateStamp from "../../components/StateStamp.astro";
 import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -187,7 +187,7 @@ const sumRows =
 ---
 
 {/* The order names its own currency; a failed read names none (§7). */}
-<Base
+<Storefront
 	title={order === null ? "Order" : `Order ${order.id}`}
 	currency={order?.currency ?? null}
 >
@@ -292,7 +292,7 @@ const sumRows =
 			</>
 		)
 	}
-</Base>
+</Storefront>
 
 <style>
 	.steps {

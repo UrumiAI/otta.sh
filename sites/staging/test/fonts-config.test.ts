@@ -32,18 +32,20 @@ const fonts = ((await import("../astro.config.js")).default.fonts ??
 const byVariable = new Map(fonts.map((font) => [font.cssVariable, font]));
 
 describe("astro.config fonts", () => {
-	test("declares exactly the three roles: display, body, data", () => {
+	test("declares exactly Tempered's three roles, namespaced `--f-<theme>-<role>`", () => {
+		// Namespaced per theme so a second theme's faces can never collide with
+		// these; theme.css maps them onto the shared `--u-display/-body/-data`.
 		expect([...byVariable.keys()].toSorted()).toEqual([
-			"--u-face-body",
-			"--u-face-data",
-			"--u-face-display",
+			"--f-tempered-body",
+			"--f-tempered-data",
+			"--f-tempered-display",
 		]);
 	});
 
 	test.each([
-		["--u-face-display", "Bricolage Grotesque"],
-		["--u-face-body", "Schibsted Grotesk"],
-		["--u-face-data", "Martian Mono"],
+		["--f-tempered-display", "Bricolage Grotesque"],
+		["--f-tempered-body", "Schibsted Grotesk"],
+		["--f-tempered-data", "Martian Mono"],
 	])("%s is %s, self-hosted from the Google provider", (cssVariable, name) => {
 		const font = byVariable.get(cssVariable);
 		expect(font?.name).toBe(name);
@@ -55,8 +57,8 @@ describe("astro.config fonts", () => {
 	});
 
 	test.each([
-		["--u-face-display", ["opsz", "wdth"]],
-		["--u-face-data", ["wdth"]],
+		["--f-tempered-display", ["opsz", "wdth"]],
+		["--f-tempered-data", ["wdth"]],
 	])("%s requests its %s axis, so font-variation-settings is not a no-op", (cssVariable, axes) => {
 		const requested = byVariable.get(cssVariable)?.options?.experimental?.variableAxis ?? {};
 		expect(Object.keys(requested).toSorted()).toEqual((axes as string[]).toSorted());

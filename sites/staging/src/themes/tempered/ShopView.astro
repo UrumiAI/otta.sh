@@ -1,0 +1,91 @@
+---
+/**
+ * Tempered's shop — a mono count, the title in the display face, then a 3-up
+ * grid of borderless cards (docs/theme/TEMPERED.md §8). `ProductCard` owns
+ * everything inside a cell — the coil, the price, the stock rule and the
+ * sold-out treatment — so this view is a grid and nothing else. Card position
+ * is passed as `index` so the coil tints cycle and every three cards show all
+ * three (§5).
+ *
+ * Presentation only: `src/pages/products/index.astro` reads the catalog,
+ * decides which of the three states this is, chooses the degraded notice's
+ * lead (BUSY copy included) and maps every card.
+ *
+ * Styles: `views.css` (`shop-*`), linked by this theme's Layout.
+ */
+import Notice from "../../components/Notice.astro";
+import ProductCard from "../../components/ProductCard.astro";
+import type { ShopModel } from "../contract.js";
+
+interface Props {
+	model: ShopModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+	/* The WRAPPER carries the spacing, not a class on the component: a view
+	   cannot style a component's root element (Astro scopes each component's
+	   CSS to its own hash — see src/lib/rest-props.ts). */
+	model.degradedNotice !== null && (
+		<div class="shop-notice-slot">
+			<Notice lead={model.degradedNotice.lead}>
+				The catalog below is complete — check back in a moment for live figures.
+			</Notice>
+		</div>
+	)
+}
+
+{
+	model.state === "unavailable" ? (
+		/* NOT the empty state. "No products yet." plus the admin link is a
+		   message to the OPERATOR of a brand-new store, and an outage would put
+		   it in front of a shopper as a statement about the shop. §10: say what
+		   happened and what to do, no apology, no internals. The heading stays:
+		   the page is still the shop, it just has nothing to show yet. No
+		   count — there is nothing to count. */
+		<>
+			<div class="shop-notice-slot">
+				<Notice lead="The catalog is unavailable right now.">Try again in a moment.</Notice>
+			</div>
+			<div class="shop-head">
+				<h1 class="shop-title">Shop</h1>
+			</div>
+		</>
+	) : model.state === "empty" ? (
+		<div class="shop-empty">
+			<h1 class="shop-title shop-empty-title">No products yet.</h1>
+			<p class="shop-empty-copy">
+				Create a product in the admin, price it there, and it appears here with live stock.
+			</p>
+			<a class="u-btn u-btn-ghost" href={model.adminHref}>
+				Open the admin
+			</a>
+		</div>
+	) : (
+		<>
+			<div class="shop-head">
+				{/* No label when the count is not exact — the title alone, rather
+				    than a figure the page cannot stand behind. */}
+				{model.countLabel !== null && <p class="u-label">{model.countLabel}</p>}
+				<h1 class="shop-title">Shop</h1>
+			</div>
+			<div class="shop-grid">
+				{model.cards.map((card, index) => (
+					<ProductCard
+						index={index}
+						href={card.href}
+						slug={card.slug}
+						title={card.title}
+						description={card.description}
+						image={card.image}
+						price={card.price}
+						priceNote={card.priceNote}
+						availability={card.availability}
+					/>
+				))}
+			</div>
+		</>
+	)
+}

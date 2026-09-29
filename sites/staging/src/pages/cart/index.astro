@@ -52,7 +52,7 @@ import Notice from "../../components/Notice.astro";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import {
 	CART_CHECKED_OUT_BODY,
 	CART_CHECKED_OUT_TITLE,
@@ -402,7 +402,7 @@ const partialNote =
     complaint in issue #110, and those three units are the order's now. The
     currency is NOT suppressed with it — the cart still has one, and the footer
     naming it is still true. */}
-<Base
+<Storefront
 	title="Cart"
 	cartCount={cart === null || terminal ? null : totalQty(cart)}
 	currency={cart?.currency ?? null}
@@ -640,7 +640,7 @@ const partialNote =
 			</div>
 		)
 	}
-</Base>
+</Storefront>
 
 <style>
 	/* §8's header block: the count in mono caps, then the title. */

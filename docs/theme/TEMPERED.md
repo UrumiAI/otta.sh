@@ -32,7 +32,8 @@ Three rules fall out, and everything else follows from them:
 
 ## 2. Tokens
 
-Define once in `src/styles/tokens.css`, imported by `Base.astro`. Every page reads these —
+Define once in `src/themes/tempered/theme.css`, linked by `src/themes/tempered/Layout.astro`
+(was `src/styles/tokens.css` / `Base.astro` before the theme system). Every page reads these —
 no page declares a raw colour or a font stack of its own.
 
 ### Light (default)
@@ -339,5 +340,6 @@ Not optional, and not worth announcing in the UI:
 - Both themes carry equal care — dark is not a naive inversion, and the accent works on both
   grounds.
 - Text contrast meets AA. Straw is never a text-on-fill colour.
-- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in `Base.astro`. Keep it
+- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in every theme's `Layout.astro`
+  (was `Base.astro`). Keep it
   inline; redraw the mark as the coil.
