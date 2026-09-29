@@ -748,14 +748,30 @@ function addDays(day: string, delta: number): string {
  * order that never became durable: the coupon looks exhausted, and the customer
  * looks like they already used it.
  *
- * ORPHANED MEANS THE ORDER DOES NOT EXIST, and nothing else. That is the domain's
- * own rule — `reconcileCouponRedemptions` in `@otta-sh/domain` releases exactly the
- * `getById === null` case — and it is the rule the brief amendment ratified. The
- * first cut also released redemptions whose order was `expired` or `cancelled`, and
- * both arms were wrong: `expireOrders` ALREADY calls `couponStore.releaseByOrder`,
- * so the expired arm was redundant, and `cancelOrder` deliberately releases no
- * coupon, so the cancelled arm silently reversed a shipped policy an hour after the
- * fact — handing back a per-customer slot for a coupon a real order consumed. A
+ * WHAT IS RELEASED: a redemption whose order does not exist (the domain's rule —
+ * `reconcileCouponRedemptions` in `@otta-sh/domain` releases exactly the
+ * `getById === null` case), OR whose order is `expired`.
+ *
+ * THE EXPIRED ARM IS THE RETRY FOR `expireOrders`, not a redundancy. That use-case
+ * makes the guarded `pending → expired` flip durable FIRST and calls
+ * `couponStore.releaseByOrder` after it; a crash between the two leaves an expired
+ * order still holding its coupon use, and nothing else would ever free it —
+ * `listExpirable` only returns pending orders, and an order that exists is not an
+ * orphan. An expired order owes its coupon back by policy (expiry releases it), so
+ * releasing here is completing owed work, and `release` is idempotent, so the
+ * normal case (already released by `expireOrders`) finds no redemption holding a use.
+ * A declined-and-abandoned order ends on exactly this path (ADR-0021).
+ *
+ * It relies on ORDER within a tick: this leg runs after `expire-orders`, and the
+ * grace window (`DEFAULT_COUPON_GRACE_MS`) is not shorter than the order hold
+ * (`DEFAULT_CHECKOUT_TTL_MS`), so by the time a redemption is old enough to be
+ * judged its order is already due and has been through `expire-orders` in the same
+ * tick. The residual — that leg failing outright AND the later release then
+ * crashing — needs two faults.
+ *
+ * `cancelled` is deliberately NOT released: `cancelOrder` releases no coupon, and a
+ * sweeper that did would silently reverse that shipped policy an hour after the
+ * fact, handing back a per-customer slot for a coupon a real order consumed. A
  * change to that policy belongs in an ADR, not in a sweeper.
  *
  * WHY NOT JUST CALL `reconcileCouponRedemptions`. Its rule is reused verbatim and
@@ -811,9 +827,9 @@ async function releaseOrphanedRedemptions(
 	let released = 0;
 	for (const item of window.items) {
 		const order = await stores.orderStore.getById(toOrderId(item.data.orderId));
-		// The ratified scope, and the domain's rule: an order that EXISTS is not this
-		// sweeper's business, whatever state it is in.
-		if (order !== null) continue;
+		// A missing order is an orphan; an EXPIRED one is owed its coupon back and may
+		// have lost the release to a crash (see above). Every other state keeps it.
+		if (order !== null && order.state !== "expired") continue;
 		await stores.couponStore.release(item.data.redemptionId);
 		released++;
 	}

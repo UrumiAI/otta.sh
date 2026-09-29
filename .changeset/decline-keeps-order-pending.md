@@ -23,3 +23,7 @@ stock and a manual-reconciliation flag.
   coupons).
 - **New contract**: `paymentDeclineContract` in `@otta-sh/domain/testing`, run on the fakes
   and on the document store over SQLite, Postgres and D1.
+- **Coupon sweeper**: the cron's `coupon-orphans` leg again releases a redemption whose
+  order is `expired`, as the retry for `expireOrders` (whose durable `pending → expired`
+  flip precedes the coupon release, so a crash in between would otherwise leak the use).
+  `cancelled` orders still keep their coupon, as before.

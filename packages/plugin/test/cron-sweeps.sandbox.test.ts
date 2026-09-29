@@ -672,14 +672,10 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		const couponId = `coupon-${suffix}`;
 		const customer = toCustomerId(`cust-${suffix}`);
 		const s = stores();
-		// A REAL ORDER, the whole point of the case. Orphaned means the order does not
-		// exist and NOTHING else: that is the domain's own rule in
-		// `reconcileCouponRedemptions`, and it is the scope the brief amendment
-		// ratified. The first cut also released redemptions whose order was `expired`
-		// or `cancelled` — the first redundant (`expireOrders` already calls
-		// `releaseByOrder`), the second a silent policy reversal, since `cancelOrder`
-		// deliberately releases no coupon. This case is what makes a return to either
-		// arm fail.
+		// A REAL, LIVE (pending) ORDER, the whole point of the case: a redemption whose
+		// order exists and has not expired is not the sweeper's to release. (An
+		// EXPIRED order's is — see the crash-window case below — and a CANCELLED
+		// order's never is, since `cancelOrder` deliberately releases no coupon.)
 		const placed = await placeOrder(suffix, {
 			at: new Date(Date.now() - HOUR_MS),
 			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
@@ -725,6 +721,67 @@ describe("the five new sweepers, each from an injected partial state", () => {
 			createdAt: new Date().toISOString(),
 		});
 		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
+	}, 180_000);
+
+	test("coupon-orphans heals an EXPIRED order whose coupon release was lost to a crash — exactly once", async () => {
+		// THE CRASH WINDOW in `expireOrders`: the guarded pending → expired flip is
+		// durable FIRST and `releaseByOrder` runs after it. A crash between the two
+		// leaves an expired order still holding a coupon use, and `listExpirable` never
+		// returns an expired order again — so without this arm the use leaks for good.
+		// Declined-and-abandoned orders take exactly this path (ADR-0021).
+		const suffix = "expired-crash";
+		const couponId = `coupon-${suffix}`;
+		const customer = toCustomerId(`cust-${suffix}`);
+		const s = stores();
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - 2 * HOUR_MS),
+			holdExpiresAt: new Date(Date.now() - HOUR_MS).toISOString(),
+		});
+		await s.couponStore.create({
+			id: couponId,
+			code: `SWEEP${suffix.toUpperCase().replace("-", "")}`,
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+			maxUses: 10,
+			maxUsesPerCustomer: 1,
+		});
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(placed.id),
+			idempotencyKey: idempotencyKey(`redeem-${suffix}`),
+			customerId: customer,
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		expect(claimed.ok).toBe(true);
+
+		// The flip landed; the coupon release did not (the simulated crash).
+		expect(await s.orderStore.expire(toOrderId(placed.id), new Date().toISOString())).toBe(true);
+		expect((await s.orderStore.getById(toOrderId(placed.id)))?.state).toBe("expired");
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(1);
+
+		// A fresh cursor, so the window certainly covers this redemption.
+		await sweepInProcess({ cursors: freshCursors() });
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		// The customer's single slot is free again.
+		const again = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`order-${suffix}-second`),
+			idempotencyKey: idempotencyKey(`redeem-${suffix}-2`),
+			customerId: customer,
+			createdAt: new Date().toISOString(),
+		});
+		expect(again).toMatchObject({ ok: true });
+
+		// Exactly once: a second sweep over the same window releases nothing more —
+		// the counter holds the one fresh use above, never drops below it.
+		await sweepInProcess({ cursors: freshCursors() });
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(1);
 	}, 180_000);
 });
 
