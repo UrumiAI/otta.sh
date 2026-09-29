@@ -148,7 +148,14 @@ export type DeleteShippingRateResult = { ok: true } | { ok: false; reason: "not_
 export interface ShippingZone {
 	id: string;
 	name: string;
-	/** Country/state/postal match list — opaque config the engine never reads. */
+	/**
+	 * The ISO codes this zone matches — `["US", "US-CA"]`: ISO 3166-1 alpha-2
+	 * countries and ISO 3166-2 subdivisions (ADR-0021). Read by the checkout's
+	 * zone matcher (`resolveShippingZone`). Kept `unknown` at the port — and
+	 * stored verbatim by every adapter — because zones written before ADR-0021
+	 * may hold free text; such tokens never match (`parseZoneRegions`). New
+	 * writes are validated by the admin (`validateZoneRegionsInput`).
+	 */
 	regions: unknown;
 }
 
