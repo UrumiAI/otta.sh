@@ -6,8 +6,8 @@
  * twelve methods, the same argument shapes, the same RETURN VALUES — including
  * every field the `*Wire` types carry — with the `@otta-sh/domain` use-cases
  * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
- * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
- * never touched.
+ * instead of a commerce service. Nothing here reaches for egress itself; the one
+ * outbound call a refund can make belongs to the injected payment gateway.
  *
  * NO FIELD IS NARROWED, and that is a rule rather than a preference. The React
  * admin screens consume these results through `console-api.ts` STRUCTURAL
@@ -62,13 +62,15 @@
  *    are real `@otta-sh/domain` exports; the COMPOSITION lived in the route, and
  *    now lives here too.
  *
- * TWO RECORDED DIVERGENCES, neither of them accidental:
- *  - NO GATEWAYS ARE COMPOSED YET (INC-C1/C3 move the payment adapters). The
- *    refund POST therefore reaches the route's own "no gateway wired for this
- *    order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`. The whole
- *    path in front of it — input bounds, the REQUIRED idempotency key, the order
- *    lookup — is ported faithfully, so when a gateway map arrives the one line
- *    that changes is where it comes from.
+ * THE GATEWAYS ARE INJECTED, never resolved here. The composition root
+ * (`makeAdminClients`) resolves them from kv exactly as `makeCommerceClient` does
+ * and passes them in through `options.gateways`; a method with no gateway in that
+ * map is the honest "no gateway wired for this order's method", and the refund
+ * POST answers it with `409 REFUND_GATEWAY_UNAVAILABLE` (fail-closed). The only
+ * egress a refund makes is the gateway's own, over the `ctx.http` the root bound
+ * it to — this class never touches `ctx.http` itself.
+ *
+ * ONE RECORDED DIVERGENCE, not an accidental one:
  *  - a refund ROW here carries no `status`. The service's `serializeRefund` emits
  *    one; the plugin's `RefundWire` has never declared it and no console reads
  *    it, so this tier matches the PLUGIN's wire type rather than adding a field
@@ -176,11 +178,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 
 	/**
 	 * The payment gateways keyed by method (ADR-0008), exactly as
-	 * `AdminRoutesDeps.gateways` carries them — EMPTY until the payment adapters
-	 * move in-process (INC-C1/C3). An empty map is not a stub: it is the honest
-	 * "no gateway is wired for this order's method", and the refund POST answers
-	 * it with the route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than
-	 * pretending money could move.
+	 * `AdminRoutesDeps.gateways` carries them, taken from `options.gateways`. A
+	 * method missing from the map is not a stub: it is the honest "no gateway is
+	 * wired for this order's method", and the refund POST answers it with the
+	 * route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than pretending money
+	 * could move.
 	 */
 	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 
@@ -454,8 +456,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const remaining = Math.max(0, ceiling - refundedTotal);
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
-		// Never a button that silently no-ops — and with no gateway composed on this
-		// tier yet, false is the truth rather than a placeholder.
+		// Never a button that silently no-ops — and with no gateway composed for the
+		// order's method, false is the truth rather than a placeholder.
 		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
 		return {
 			refunds: refunds.map(toRefundWire),
@@ -474,12 +476,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
-	 * (mirrors restock). The order lookup comes next, then the gateway: with no
-	 * gateway map composed on this tier yet (INC-C1/C3), every well-formed call
-	 * against a real order lands on the route's own
-	 * `409 REFUND_GATEWAY_UNAVAILABLE`. The use-case call below is the path that
-	 * lights up the moment a gateway is wired — it is written now so the contract
-	 * around it is the same one the HTTP tier answers.
+	 * (mirrors restock). The order lookup comes next, then the gateway: an order
+	 * whose method has no gateway in the injected map lands on the route's own
+	 * `409 REFUND_GATEWAY_UNAVAILABLE`. Otherwise the domain use-case decides —
+	 * a `refundable` gateway issues at the provider (reserve → issue → finalize),
+	 * a non-refundable one records a manual, off-platform refund.
 	 */
 	async refundOrder(
 		orderId: string,

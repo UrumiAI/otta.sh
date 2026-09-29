@@ -68,7 +68,10 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	function stripeHttp(): PluginContext["http"] {
 		return {
 			async fetch(url: string, init?: RequestInit): Promise<Response> {
-				const headers = Object.fromEntries(new Headers(init?.headers).entries());
+				const headers: Record<string, string> = {};
+				new Headers(init?.headers).forEach((value, name) => {
+					headers[name] = value;
+				});
 				const body = typeof init?.body === "string" ? init.body : "";
 				requests.push({ method: init?.method ?? "GET", url, headers, body });
 				if (url.startsWith("https://api.stripe.com/v1/payment_intents/")) {

@@ -759,6 +759,46 @@ describe("the Orders write path (workerd sandbox)", () => {
 	});
 });
 
+/** Stripe's side of every PaymentIntent the cases refund against. */
+function refundingStripe(captured: number): StripeResponder {
+	const refundedByIntent = new Map<string, number>();
+	const byKey = new Map<string, { status: number; body: unknown }>();
+	let n = 0;
+	return (req) => {
+		const read = /^\/v1\/payment_intents\/([^/?]+)\?/.exec(req.path);
+		if (req.method === "GET" && read !== null) {
+			const intent = decodeURIComponent(read[1] ?? "");
+			return {
+				status: 200,
+				body: {
+					id: intent,
+					latest_charge: {
+						amount_refunded: refundedByIntent.get(intent) ?? 0,
+						amount_captured: captured,
+						currency: "usd",
+					},
+				},
+			};
+		}
+		if (req.method === "POST" && req.path === "/v1/refunds") {
+			const key = req.headers["idempotency-key"];
+			const previous = typeof key === "string" ? byKey.get(key) : undefined;
+			if (previous !== undefined) return previous;
+			const intent = req.form.get("payment_intent") ?? "";
+			const amount = Number(req.form.get("amount"));
+			refundedByIntent.set(intent, (refundedByIntent.get(intent) ?? 0) + amount);
+			n += 1;
+			const reply = {
+				status: 200,
+				body: { id: `re_stub_${String(n)}`, amount, currency: "usd", status: "succeeded" },
+			};
+			if (typeof key === "string") byKey.set(key, reply);
+			return reply;
+		}
+		return { status: 404, body: { error: { type: "invalid_request_error" } } };
+	};
+}
+
 /**
  * ADMIN REFUNDS WITH STRIPE CONFIGURED (issue #303), inside workerd.
  *
@@ -783,46 +823,6 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 	const STRIPE_WEBHOOK_SECRET = "whsec_refunds_NEVER_LEAK";
 	let stripeBoot: SandboxHandle;
 	let stripe: StripeApiStub;
-
-	/** Stripe's side of every PaymentIntent the cases refund against. */
-	function refundingStripe(captured: number): StripeResponder {
-		const refundedByIntent = new Map<string, number>();
-		const byKey = new Map<string, { status: number; body: unknown }>();
-		let n = 0;
-		return (req) => {
-			const read = /^\/v1\/payment_intents\/([^/?]+)\?/.exec(req.path);
-			if (req.method === "GET" && read !== null) {
-				const intent = decodeURIComponent(read[1] ?? "");
-				return {
-					status: 200,
-					body: {
-						id: intent,
-						latest_charge: {
-							amount_refunded: refundedByIntent.get(intent) ?? 0,
-							amount_captured: captured,
-							currency: "usd",
-						},
-					},
-				};
-			}
-			if (req.method === "POST" && req.path === "/v1/refunds") {
-				const key = req.headers["idempotency-key"];
-				const previous = typeof key === "string" ? byKey.get(key) : undefined;
-				if (previous !== undefined) return previous;
-				const intent = req.form.get("payment_intent") ?? "";
-				const amount = Number(req.form.get("amount"));
-				refundedByIntent.set(intent, (refundedByIntent.get(intent) ?? 0) + amount);
-				n += 1;
-				const reply = {
-					status: 200,
-					body: { id: `re_stub_${String(n)}`, amount, currency: "usd", status: "succeeded" },
-				};
-				if (typeof key === "string") byKey.set(key, reply);
-				return reply;
-			}
-			return { status: 404, body: { error: { type: "invalid_request_error" } } };
-		};
-	}
 
 	function refundPosts(): typeof stripe.requests {
 		return stripe.requests.filter((r) => r.method === "POST" && r.path === "/v1/refunds");
