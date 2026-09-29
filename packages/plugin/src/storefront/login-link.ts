@@ -46,6 +46,9 @@ function normalizeBase(value: unknown, keepPath: boolean): string | undefined {
 	return `${url.origin}${path}`;
 }
 
+/** Logged at most once per isolate — see {@link resolveLoginLinkBase}. */
+let warnedOriginFallback = false;
+
 /** The base the link is built on — see the module doc for the order. Never
  *  throws: a kv outage falls through to the request origin. */
 export async function resolveLoginLinkBase(
@@ -58,7 +61,19 @@ export async function resolveLoginLinkBase(
 	} catch {
 		configured = undefined;
 	}
-	return normalizeBase(configured, true) ?? normalizeBase(request?.url, false);
+	const base = normalizeBase(configured, true);
+	if (base !== undefined) return base;
+	const origin = normalizeBase(request?.url, false);
+	if (origin !== undefined && !warnedOriginFallback) {
+		// Correct on Workers, where routing fixes the host; a risk on a Node host
+		// that does not pin `Host`. Said once, naming the setting that removes it.
+		warnedOriginFallback = true;
+		console.warn(
+			`[otta] login links use the request origin (${origin}); set ${STOREFRONT_BASE_URL_KEY} ` +
+				"to pin the storefront URL",
+		);
+	}
+	return origin;
 }
 
 /** The full link for one challenge. `baseUrl` is what {@link resolveLoginLinkBase}

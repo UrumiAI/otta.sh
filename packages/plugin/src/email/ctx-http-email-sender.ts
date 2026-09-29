@@ -148,6 +148,7 @@ export interface EmailSenderEgress {
 export async function makeEmailSender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
+	options: { requestTimeoutMs?: number } = {},
 ): Promise<EmailSender | undefined> {
 	const apiUrl = egress.apiUrl;
 	if (apiUrl === undefined || apiUrl.length === 0) return undefined;
@@ -160,7 +161,32 @@ export async function makeEmailSender(
 		apiUrl,
 		from,
 		...(apiKey !== undefined ? { apiKey } : {}),
+		...(options.requestTimeoutMs !== undefined
+			? { requestTimeoutMs: options.requestTimeoutMs }
+			: {}),
 	});
+}
+
+/**
+ * The ceiling on the LOGIN email's send (issue #306 review).
+ *
+ * The order emails ride the cron tick and can afford {@link DEFAULT_EMAIL_TIMEOUT_MS}.
+ * The login email cannot: it is awaited inline on the login-request route, and a
+ * THROTTLED request skips the send altogether. With a 30 s ceiling a slow provider
+ * would make a sent request seconds slower than a throttled one — the latency
+ * itself would say which it was. Bounding the send keeps that gap small; it does
+ * not close it (a healthy provider's round trip is still only paid on the sent
+ * arm — see ADR-0004's 2026-09-29 amendment). A send that times out is logged and
+ * the request still answers the same generic success.
+ */
+export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
+
+/** {@link makeEmailSender} with the login ceiling. */
+export function makeLoginEmailSender(
+	ctx: PluginContext,
+	egress: EmailSenderEgress,
+): Promise<EmailSender | undefined> {
+	return makeEmailSender(ctx, egress, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
 }
 
 /** The configured from-address, or the documented default — never a throw and

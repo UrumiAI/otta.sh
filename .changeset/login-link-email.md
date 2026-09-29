@@ -19,3 +19,8 @@ input, so a link cannot be aimed at another host).
 - `CommerceClient.requestLoginLink` takes an optional `{ linkBaseUrl }`; the account
   route names, paths, result types and `SESSION_COOKIE_NAME` are now exported from
   the package root.
+- The login email's send is bounded by `LOGIN_EMAIL_TIMEOUT_MS` (3 s) rather than the 30 s
+  order-email ceiling, because it is awaited inline and a throttled request skips it. The
+  first login link built from the request origin (no `settings:storefrontBaseUrl`) logs a
+  one-time warning naming the setting. ADR-0004 is amended: per-IP rate limiting at the
+  gateway is required before customers use login.

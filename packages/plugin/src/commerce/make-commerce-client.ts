@@ -16,7 +16,7 @@
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
  */
 
-import { makeEmailSender } from "../email/ctx-http-email-sender.js";
+import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
@@ -56,7 +56,9 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 			...(stripe === undefined ? {} : { stripe }),
 		},
 		// Lazy: only the login request sends mail, and building the sender reads kv.
-		// `undefined` on a bundle with no email API URL — the unconfigured arm.
-		resolveEmailSender: () => makeEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+		// `undefined` on a bundle with no email API URL — the unconfigured arm. The
+		// LOGIN sender, with its short ceiling: the send is awaited inline.
+		resolveEmailSender: () =>
+			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
 	});
 }
