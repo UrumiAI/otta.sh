@@ -25,8 +25,9 @@ as done.
   stock M (M < N); assert **exactly M** succeed and the rest get `OUT_OF_STOCK`. Written
   once, run against every `InventoryStore` adapter.
 - One behavioral suite lives in the domain (or a shared test package) and runs against
-  **every** store adapter — Postgres today, EmDash later. This mirrors EmDash's
-  `describeEachDialect`.
+  **every** dialect beneath the one store adapter, `@otta-sh/store-emdash` — SQLite and
+  Postgres via `packages/store-emdash/test/describe-each-dialect.ts`, and real D1 in its own
+  tier (below). This mirrors EmDash's `describeEachDialect`.
 
 ## 2. Real databases, never mocks
 
@@ -52,22 +53,25 @@ violations that are the entire point of the commerce layer.
   re-migrates per file, so it runs as CI's `d1` job — nightly, on demand, and gating the
   merge into `main` — rather than on every PR.
 
-Both dialects run the single-statement atomic write unchanged:
-
-```sql
-UPDATE inventory SET on_hand = on_hand - :q WHERE sku = :s AND on_hand >= :q RETURNING on_hand;
-```
-
-If a write can't be expressed as one conditional statement, it doesn't belong behind the
-store port — no `SELECT … FOR UPDATE`, no interactive transactions (D1 has neither).
+Every dialect runs the same write model, recorded in
+[ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md): **one storage document per
+aggregate, written by compare-and-set against its revision** and retried on conflict
+(`packages/store-emdash/src/cas-retry.ts`). The host's per-plugin store's only atomicity
+primitives are the conditional writes (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`) —
+no transaction, no multi-row batch, no raw SQL — so an invariant that spans two facts lives in
+one document (the inventory document records the holds applied to it, which is what makes a
+reserve replayable), and a coupling that spans two aggregates is made idempotently completable
+and swept. No `SELECT … FOR UPDATE`, no interactive transactions. The single-statement
+conditional `UPDATE` this section once prescribed can decrement but cannot record the hold that
+makes the decrement replayable; ADR-0019 is where that was reversed.
 
 ## 3. Ports-and-adapters purity is enforced, not trusted
 
 `@otta-sh/domain` depends on **nothing with IO**. A `pg`, `ctx`, or `fetch` import in the
 domain is a build-breaking bug, not a code-review nit.
 
-- Enforce the boundary with a dependency check (dependency-cruiser or an import-restriction
-  lint rule) wired into `lint`, so the layering can't rot silently.
+- The boundary is enforced by dependency-cruiser (`.dependency-cruiser.cjs`), run as part of
+  `pnpm lint`, so the layering can't rot silently.
 - **There is no wire to keep in step.** Commerce runs in-process: the plugin builds
   `InProcessCommerceClient` through its single composition root, `makeCommerceClient`, which
   binds the `@otta-sh/domain` use-cases to the `@otta-sh/store-emdash` stores over
@@ -98,12 +102,15 @@ in-process leniency.
 
 - **Dev and test against the workerd-on-Node sandbox**, not trusted in-process mode. If it
   only works trusted, it's broken.
-- **Block Kit widgets, not React.** The discriminator is the plugin's declared `format`, not
-  placement: `format: "native"` may declare `adminEntry` (a React admin surface); a `format:
-  "standard"` descriptor that declares `adminEntry` (or `componentsEntry`) throws at build time
-  (`emdash/src/astro/integration/index.ts:335-351`). `@otta-sh/plugin` registers `format:
-  "standard"` (ADR-0006) and stays Block Kit — the admin console — Pricing & inventory, Orders,
-  Reports, Settings — is Block Kit `elements` throughout.
+- **Block Kit on the plugin's descriptor; React only on a second, native one.** The
+  discriminator is the declared `format`, not placement: `format: "native"` may declare
+  `adminEntry` (a React admin surface); a `format: "standard"` descriptor that declares
+  `adminEntry` (or `componentsEntry`) throws at build time (EmDash's Astro integration).
+  `@otta-sh/plugin` registers `format: "standard"` (ADR-0006), and its admin pages — Reports,
+  Settings, Coupons, Tax, Shipping — are Block Kit `elements`. Orders and Pricing & inventory
+  are React, in `@otta-sh/admin-react`, on the separate `otta-console` native descriptor
+  (ADR-0014), which replaced the duplicated Block Kit screens (ADR-0015);
+  `@otta-sh/admin-presentation` holds the pure presentation primitives both surfaces share.
 - **Every capability is declared explicitly.** The plugin's only egress is `ctx.http` +
   `allowedHosts`, and its state lives only in what the host injects — `ctx.storage` for
   commerce truth (ADR-0018), `ctx.kv` for settings — nothing else. A test/CI check guards
@@ -115,7 +122,7 @@ in-process leniency.
 
 - **pnpm** workspace + `catalog:` for shared version pins.
 - **tsdown** builds (ESM + DTS).
-- **vitest** for tests; **Playwright** for storefront e2e when we get there.
+- **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`).
 - **oxfmt** formatting — **tabs**, run regularly.
 - **oxlint** type-aware for linting; keep it clean.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,

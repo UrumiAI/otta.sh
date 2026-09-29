@@ -5,7 +5,7 @@ under `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax
 and Settings (`admin-route.ts:83-101`). Earlier revisions said "six". Verified against a live local staging admin (Orders, order
 detail, Pricing & inventory) and against the em-dash Block Kit that staging actually runs.
 
-> **This plan sets scope; [`docs/admin/ADMIN-CONSOLE.md`](../docs/admin/ADMIN-CONSOLE.md) sets
+> **This plan sets scope; [`docs/admin/ADMIN-CONSOLE.md`](../../docs/admin/ADMIN-CONSOLE.md) sets
 > visual structure.** Where they disagree on *which increment ships what*, this plan wins. Where
 > they disagree on *what a screen looks like*, the spec wins. Three items in this plan were
 > **withdrawn** during the spec's review because the renderer cannot support them as written —

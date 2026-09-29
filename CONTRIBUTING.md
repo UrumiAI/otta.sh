@@ -74,7 +74,8 @@ Pick the tag for the area your change touches:
 |---|---|
 | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
 | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
-| The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
+| The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
+| `sites/*` (the reference storefront site/theme) | `[Site]` |
 | Shared test/contract packages | `[Test]` |
 | CI / tooling / build | `[CI]` |
 | `adr/`, `*.md`, docs | `[Docs]` |

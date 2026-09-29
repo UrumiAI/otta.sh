@@ -149,7 +149,7 @@ a **gap** — build the listing, report the gap.
 ---
 
 **Precedence — against the plan.** Where this document and
-[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md) disagree on
+[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md) disagree on
 *visual structure*, this document wins. Where they disagree on *scope* (which increment ships
 what), the plan wins — **except** for the three plan items withdrawn in §0.1 A, which are
 withdrawn outright and have been struck from the plan in the same commit as this revision.
@@ -940,7 +940,7 @@ gone.)*
 
 **Why Settings opens nothing, stated as a ruling.** Every group's **label** now carries its own
 current values — `Store — <name>`, `Checkout & holds — 15 min hold · low stock at 5`,
-`Service connection — token not set · service token not set` — so the screen answers "what is this
+`Payments & email — configured` — so the screen answers "what is this
 set to?" with **zero** clicks rather than one group's worth (D-6's discipline, applied to a
 settings screen). An opened group answers one question and buries the other two; three labels answer
 three. Label builders: `settings-form.ts:641-674`; the reasoning is at `:480-489`. Zero open groups
@@ -1088,7 +1088,8 @@ listed it as a lifecycle badge while the third bullet above forbade it — a con
 rule, which the Orders listing then mandated (§0.2 E-m). It resolves against the badge, decisively:
 `kind` is `gateway.refundable ? "gateway" : "manual"`
 (`domain/src/orders/refund-order.ts:211`), and the gateway is resolved once from the **order's own**
-`paymentMethod` (`service/src/routes/admin.ts:742`), so within any single order's ledger the value
+`paymentMethod` (`service/src/routes/admin.ts:742` when this was written; `service/` was removed
+under ADR-0020 and the in-process client resolves it the same way), so within any single order's ledger the value
 **cannot vary** — and the per-order ledger, now a React surface, is the only table in the console that
 renders it at all. The
 whitelist entry was therefore never valid anywhere it applied. `Kind` is deleted from the refunds
@@ -1194,12 +1195,12 @@ whenever a console defect lands on the same path, and its cost is not cosmetic: 
 the network is down and sends whoever they page to the wrong team. A `carriedForm` digest throw is
 exactly such a defect, and it surfaces here (§0.2 E-h).
 
-So the copy names the **symptom**, lists the two things the operator can check, and then says the
-remaining possibility out loud. Normative, ≤240 — **this blockquote is the spec** and the code is
+So the copy names the **symptom**, tells the operator the one thing worth doing (retry), and then
+says the remaining possibility out loud. Normative, ≤240 — **this blockquote is the spec** and the code is
 trimmed to it:
 
-> `<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
-> both look right, this is a fault in the console itself — not your data.`
+> `<Screen> could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the
+> console itself — not your data.`
 
 **It deliberately does not say "nothing was changed", and that is an accepted trade, not an omission
 to fix (§0.3 item 2).** The banner is honest about **cause** and silent about **effect**: `onError` is
@@ -1210,11 +1211,13 @@ would be a false statement about money. `showLeaf` is the same call on both path
 ("Nothing was refunded" / "Refund recorded"); the fail-closed banner carries only the symptom. Do not
 add an effect claim to the blockquote above.
 
-(164 chars at `Orders`.) Title: `<Screen> are unavailable` / `<Screen> is unavailable`. The last clause
-is the load-bearing one — it is the only thing that stops a console bug from being reported as an
-outage, and it costs 62 characters. **Applies to every screen's fail-closed banner**, and to any
-`context` line standing in for a failed secondary read where the cause is equally unknown (E-3's
-"read failed" row already gets this right by naming only what failed).
+(122 chars at `Orders`. The copy named "the service connection and the admin token in Settings"
+until ADR-0020 removed the service, and both with it.) Title: `<Screen> are unavailable` / `<Screen>
+is unavailable`. The last clause is the load-bearing one — it is the only thing that stops a console
+bug from being reported as an outage. **Applies to every screen's
+fail-closed banner**, and to any `context` line standing in for a failed secondary read where the
+cause is equally unknown (E-3's "read failed" row already gets this right by naming only what
+failed).
 
 ---
 
@@ -1347,7 +1350,10 @@ PATCH.** A record needing more than 6 fields *may* be split into sibling forms, 
 accordion, each with its own submit and its own `carriedForm` `block_id` (including
 `expectedUpdatedAt`) — **but only when omitting a key provably preserves it end to end.**
 
-**Verify the whole path, not just the plugin.** For products it holds and preservation is designed:
+**Verify the whole path, not just the plugin.** (Historical citations: the `service/src/…` and
+`kysely-product-commerce-store.ts` references below are to code deleted under ADR-0020; the rule
+stands, and today's path is the plugin's in-process client over `@otta-sh/store-emdash`.) For
+products it holds and preservation is designed:
 `buildEditWire` assigns conditionally only (`products-actions.ts:205-291`, with the
 `// field not in the form ⇒ preserve.` comment at `:242`), every wire field is `.optional()`
 (`service/src/schemas.ts:387-425`), the route spreads `...(body.x !== undefined ? {x} : {})`
@@ -3017,9 +3023,13 @@ the accordion labels above (P-2); the legacy `{variant, text}` banner at `:81-84
 
 ### 12.6 Settings (`settings-form.ts`) — §4.1 skeleton
 
-Four bare forms become three accordions. `Service connection` holds **two** forms with two
-submits — that is deliberate, because the two tokens are set independently and a combined form
-would make saving one require re-entering the other.
+Three accordions. The fourth group this section once specified, `Service connection` (the
+`X-Internal-Token` / `X-Service-Token` forms), was **retired** in work order 02 INC-D3a with the
+service it authenticated to (ADR-0020); its write-only-field discipline (INC-09, below) carries over
+unchanged to `Payments & email`, which holds **one form per credential** for the same reason the
+two tokens had two: each is set independently, and a combined form would make saving one require
+re-entering the others. The tree below matches `settings-form.ts` as built, copy included — two of
+its context strings still say "service" and are due a code fix, not a spec change.
 
 ```
 header      "Settings"
@@ -3037,7 +3047,7 @@ accordion   block_id settings:store
                      submit "Save display name"          → save-display
 accordion   block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
-                  |  "Checkout & holds — not loaded"   ← when the secondary GET failed:
+                  |  "Checkout & holds — not loaded"   ← when the secondary read failed:
                      the label says so rather than implying a zero (E-3, D-6b)
             default_open FALSE
             └─ context "These persist in the commerce service and affect live checkout."
@@ -3049,25 +3059,35 @@ accordion   block_id settings:checkout
                        text_input with one `/^\d+$/` parse. They are NOT money, so
                        `number_input` was not a violation — this is consistency, not a fix.
                      submit "Save operational settings"       → save-operational
-accordion   block_id settings:connection
-            label "Service connection — token set · service token not set"
-            ← the PROVISIONING question this group exists to answer. "token set" is a fact
-              ABOUT the credential, never any part of it: only booleans reach the label
+accordion   block_id settings:payments
+            label "Payments & email — configured"  |  "Payments & email — no <short>, …"
+            ← lists only what is MISSING (short names: stripe key, webhook, email, x402,
+              edge). "configured"/"no x" are facts ABOUT credentials, never any part of
+              one: only booleans reach the label
             default_open FALSE
-            └─ context "Both tokens are stored write-only — a blank submit keeps the current
-                        one. Neither is ever displayed."                          (≤200)
-               form  cf{"settings:admin-token", {gen:"<save generation>"}}       ← AMENDED
-                     text_input "Admin token (X-Internal-Token)"
-                     placeholder "Enter new admin token (blank keeps current)"
+            └─ context "Payment and email credentials, stored write-only — a blank submit
+                        keeps the current one. None is ever displayed."           (≤200)
+               form × 5, one per credential, each cf{"settings:<actionId>",
+                     {gen:"<save generation>"}}                          ← AMENDED (INC-09)
+                     text_input "Stripe secret key"                → save-stripe-secret-key
+                     text_input "Stripe webhook signing secret"    → save-stripe-webhook-secret
+                     text_input "Email provider API key"           → save-email-api-key
+                     text_input "x402 facilitator API key"         → save-x402-facilitator-secret
+                     text_input "Stripe webhook edge token (optional)"
+                                                                   → save-webhook-edge-token
+                     placeholder "Enter new <noun> (blank keeps current)"
                      ← PLAIN `text_input`, always empty. NO `secret_input`, NO `has_value`,
-                       NO `initial_value`                              ← AMENDED (INC-09)
-                     submit "Save admin token"                → save-token
-               form  cf{"settings:service-token", {gen:"<save generation>"}}
-                     text_input "Service token (X-Service-Token)"
-                     placeholder "Enter new service token (blank keeps current)"
-                     submit "Save service token"              → save-service-token
-               context (cond) "Admin token saved." / "Service token saved."
-                       ← never the value (F-6)
+                       NO `initial_value`
+               context "These are configuration, not credentials, so they are shown back to
+                        you. The x402 destination wallet is where buyers' payments go — x402
+                        checkout stays unavailable until it is set."
+               form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
+                     text_input "Order email from-address"   placeholder "no-reply@otta.local"
+                     text_input "Sign-in link page (absolute URL of the storefront's /account/verify page)"
+                                                     placeholder "https://shop.example/account/verify"
+                     text_input "x402 destination wallet"
+                     text_input "x402 accepted networks (comma-separated CAIP-2)"
+                     submit "Save payment settings"          → save-payment-settings
 ```
 
 **Why the masked variant went, and why the carrier had to grow a `gen` (INC-09).** Both are one
@@ -3388,7 +3408,7 @@ row you are claiming. And do not claim one verified because it "reads right".
 
 The order the programme was actually run in. It was **not** a suggestion; step 2 was a gate. (The
 plan's increment numbers map on as 3 · 3a · 5 · 5-last — see
-[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md), whose own screen
+[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md), whose own screen
 counts predate ADR-0015 and were not updated with it.)
 
 | Step | What | Concurrency |
@@ -3438,9 +3458,9 @@ fails loudly:
   a hand-written ternary returning `paid`'s row for every state it did not special-case
   (`test/orders-page.sandbox.test.ts:378-383`, as it stood before that suite was retired), so it offered
   `processing` **from** `shipped` — which the domain forbids outright — and omitted the legal
-  `delivered`. The real service returns `[...legalNextStates(state)]` with no narrowing whatsoever
-  (`service/src/routes/admin.ts`), so the fixture must be `ORDER_STATE_MACHINE[order.state]` imported
-  from `domain/src/orders/state-machine.ts`. That fidelity is load-bearing, not tidiness: a
+  `delivered`. The real service returned `[...legalNextStates(state)]` with no narrowing whatsoever
+  (`service/src/routes/admin.ts`, since removed under ADR-0020), so the fixture must be
+  `ORDER_STATE_MACHINE[order.state]` imported from `domain/src/orders/state-machine.ts`. That fidelity is load-bearing, not tidiness: a
   `processing` order's legal targets *include* the bare `shipped` the plugin must steer away from
   (DA-6), and a `shipped` order's *include* `refunded` — a **terminal** state (`refunded: []`) — which
   is the whole reason a transition carries a watermark (DA-2a). Neither assertion is expressible

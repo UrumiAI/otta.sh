@@ -196,8 +196,8 @@ Every cart line carries one. A 2px track in `--u-edge`; a fill that drains leftâ
 the line's `expiresAt` (already on the cart wire); the remaining time in mono beside it.
 
 The window is the store's hold TTL â€” **900 seconds, fifteen minutes**: the domain's
-`DEFAULT_HOLD_TTL_MS`, which a deployment overrides with `CART_HOLD_TTL_MS` and otherwise
-gets by default. It is *only* the fill's denominator. The wire carries the expiry instant,
+`DEFAULT_HOLD_TTL_MS`, unless the store changes the Settings "Cart hold TTL (minutes)"
+field (`holdTtlMinutes`; there is no environment variable for it). It is *only* the fill's denominator. The wire carries the expiry instant,
 not the length of the hold, so the state, the label and the countdown all come off
 `expiresAt` and are unaffected by this number: getting it wrong draws the bar at the wrong
 width, never the wrong time. (It shipped at 600, which pinned the bar at full for the first
