@@ -87,7 +87,8 @@ a 3px straw rule along the inner bottom edge.
 ## 3. Type
 
 Three faces, three roles, no overlap. Self-host through Astro's font API (`astro:fonts`,
-Google provider, latin subset) — **no CDN link at runtime**, and no silent fallback.
+local provider, latin subset, files vendored under `sites/staging/src/fonts/`) — **no CDN
+link at runtime**, and no silent fallback.
 
 | Role | Face | Settings | Used for |
 |---|---|---|---|
@@ -99,23 +100,30 @@ The display face is set **narrow** because the object the project is named after
 thin ribbon; the data face is set **wide** so figures read as objects rather than as text.
 The contrast between them is the theme's loudest move — don't flatten it.
 
-Self-hosting means the **ranges** are a build-time decision, not just the weights: Astro's
-font API asks Google's css2 endpoint for a variable file, and an axis nobody named is not in
-it. What the three entries in `astro.config.ts` actually ship:
+The files are the latin-subset variable fonts Google serves a Windows or Linux browser,
+checked in with each family's SIL OFL beside it. They are **vendored rather than fetched by
+Astro's Google provider** because that provider asks Google with a macOS user agent, and
+Google answers macOS with builds that carry no `prep` (hinting) table. A TrueType font with
+no instructions goes to FreeType's autohinter on Linux and Android Chromium, which rounds
+each glyph's advance at text sizes, so body copy spaces unevenly. Apart from that one table
+the two builds are identical.
 
-| Face | Weight range | Variable axes |
+Each file is the family's full variable font, so every axis the theme sets is present. What
+the three entries in `astro.config.ts` ship:
+
+| Face | Weight range declared | Axes in the file |
 |---|---|---|
-| Bricolage Grotesque | `400 800` | `opsz` 12–96, `wdth` 75–100 |
-| Schibsted Grotesk | `400 700` | — (weight is its only axis) |
-| Martian Mono | `300 700` | `wdth` 75–112.5 |
+| Bricolage Grotesque | `400 800` | `opsz` 12–96, `wdth` 75–100, `wght` 200–800 |
+| Schibsted Grotesk | `400 700` | `wght` 400–900 |
+| Martian Mono | `300 700` | `wdth` 75–112.5, `wght` 100–800 |
 
-The axes go through `options.experimental.variableAxis` — **unifont's** namespace, not
-Astro's, so a transitive patch bump can rename it with no major release to warn anyone. Drop
-them and every `font-variation-settings: "wdth" …` in the theme becomes a silent no-op that
-renders at the default width, with no error anywhere. `test/fonts-config.test.ts` pins that
-they are *requested* for that reason — the axis names, and that every weight is asked for as
-a range rather than as N static cuts. The numbers in the table above are the config's to
-choose; the test does not hold them.
+Drop the `wdth` axis from a file and every `font-variation-settings: "wdth" …` in the theme
+becomes a silent no-op that renders at the default width, with no error anywhere.
+`test/fonts-config.test.ts` pins the local provider, that each file exists with its OFL, that
+each carries a `prep` table, and that the display and data files carry their `wdth` (and
+`opsz`) axes. To refresh a file, fetch the family's css2 with a current Windows or Linux
+browser user agent, take the `/* latin */` face, and check its tables (`ttx -l`) still list
+`prep`.
 
 ### The two data recipes
 
