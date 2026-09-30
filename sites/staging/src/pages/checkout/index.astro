@@ -188,8 +188,13 @@ const sumRows = [
     the layout never invents one (§7). */}
 <Base title="Checkout" currency={totals.total.money?.currency ?? null}>
 	{/* The coupon code is in this page's URL; no subresource or outbound link
-	    may carry it off in a Referer. */}
-	<meta name="referrer" content="no-referrer" slot="head" />
+	    may carry it off to another host in a Referer. `same-origin`, NOT
+	    `no-referrer`: under `no-referrer` a browser sends `Origin: null` on this
+	    page's own form POSTs (/checkout/place, /checkout/new-cart), the origin
+	    guard reads that as cross-site, and every real order is refused with a
+	    403 — the bug /account/verify hit in #329. `same-origin` still sends no
+	    Referer to any other origin. */}
+	<meta name="referrer" content="same-origin" slot="head" />
 	{/* The components are wrapped rather than handed a class: a page's scoped
 	    selector deliberately cannot reach a component's root (see
 	    src/lib/rest-props.ts), so spacing AROUND one belongs to an element the

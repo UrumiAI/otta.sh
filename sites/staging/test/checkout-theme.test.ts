@@ -247,8 +247,13 @@ describe("/checkout — the coupon", () => {
 		);
 	});
 
-	test("the coupon in the URL never leaks through a Referer", () => {
-		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+	test("the coupon in the URL never leaks through a Referer to another host", () => {
+		// `same-origin`, NOT `no-referrer`: under `no-referrer` a browser sends
+		// `Origin: null` on the page's own POST to /checkout/place, the origin
+		// guard 403s it, and no order can be placed (pinned in a real browser by
+		// e2e/checkout-place.spec.ts).
+		expect(REVIEW).toContain('<meta name="referrer" content="same-origin" slot="head" />');
+		expect(REVIEW).not.toContain('content="no-referrer"');
 	});
 });
 
