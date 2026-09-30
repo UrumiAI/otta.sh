@@ -20,13 +20,15 @@
  *    and a redirect keeps it unless the response says otherwise; place.ts's
  *    responses send `Referrer-Policy: no-referrer`. The coupon used is made up:
  *    a refused code still stays in the review's URL, which is all this needs.
- * Where the 303 goes depends on the stack's payment configuration (a
- * placeholder Stripe key lands back on /checkout with PAYMENT_INTENT_FAILED; a
- * real one on /checkout/pay), and that is not this spec's subject.
+ * Where the 303 goes depends on the stack's payment configuration, and that is
+ * not this spec's subject: with no Stripe gateway configured in the plugin it
+ * lands back on /checkout with RENDER_FAILED; with a placeholder secret key,
+ * PAYMENT_INTENT_FAILED; with a real one, /checkout/pay.
  *
- * IT WRITES. Each run adds a product to a new cart and places a REAL order on
- * the target stack, which holds that product's stock for the order hold window
- * (15 minutes) until it is paid or swept. Point it only at a local stack.
+ * IT WRITES. Each run adds a product to a new cart and, on a stack with a
+ * Stripe gateway configured, places a REAL order, which holds that product's
+ * stock for the order hold window (15 minutes) until it is paid or swept. Point
+ * it only at a local stack.
  */
 import {
 	expect,

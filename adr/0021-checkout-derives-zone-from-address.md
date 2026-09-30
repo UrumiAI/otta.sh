@@ -163,3 +163,6 @@ which keys may ride a URL, and that no personal data ever does — is unchanged.
   path can forget it.
 
 ADR-0012's `no-referrer` for the order page (Decision 6, the client secret) is not changed here.
+The same `Origin: null` rule is why the order page's dead-end "Start a new cart" is a GET link to
+`/cart` (which is not `no-referrer` and offers the `POST /checkout/new-cart` for the checked-out
+cart) rather than a form on the order page itself.

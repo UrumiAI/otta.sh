@@ -144,6 +144,16 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
  * stops. `POST /checkout/new-cart` is the one control that actually moves them,
  * and it is already built. The stamp still leads with "No charge was made", so
  * the offer reads as "try again", not "pay again".
+ *
+ * The door is a GET LINK TO /cart, NOT that POST, and it must stay one. This
+ * page is `no-referrer` (ADR-0012 decision 6: its URL can hold the client
+ * secret), and under `no-referrer` browsers send `Origin: null` on the page's
+ * own form POSTs (Fetch, "serialize a request origin") — the origin guard 403s
+ * that, so a new-cart form here could never work. /cart is not `no-referrer`,
+ * and for the one cart that needs the door — `checked_out`, which is exactly
+ * this order's — it renders the same `POST /checkout/new-cart` button with its
+ * consequence stated. A buyer whose cookie holds some other cart, or none, lands
+ * on a cart they can already use. The link itself carries no Referer from here.
  */
 const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
 
@@ -253,12 +263,11 @@ const sumRows =
 								Complete payment
 							</a>
 						)}
+						{/* A link, never a form: see `deadEnd` above. */}
 						{deadEnd && (
-							<form method="POST" action="/checkout/new-cart">
-								<button type="submit" class="u-btn u-btn-ghost">
-									Start a new cart
-								</button>
-							</form>
+							<a class="u-btn u-btn-ghost" href="/cart">
+								Start a new cart
+							</a>
 						)}
 					</div>
 				)}
