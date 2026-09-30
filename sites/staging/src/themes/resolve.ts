@@ -2,14 +2,13 @@
  * Which theme renders THIS request.
  *
  * THE SETTING. The merchant picks a theme in the plugin's admin Settings form
- * (its "Store theme" radio lands in the plugin change that follows this one;
- * until then nothing writes the row and every store reads Tempered), which
- * writes plugin kv `settings:storeTheme`. EmDash's `createKVAccess`
- * prefixes every plugin kv key with `plugin:<id>:`, so the row lands in the
- * options table as `plugin:otta:settings:storeTheme` — and EmDash's public
- * `getPluginSetting(pluginId, key)` reads exactly `plugin:<id>:settings:<key>`
- * (emdash@0.38.0, `dist/settings-*.mjs`). So the site reads the plugin's write
- * as `getPluginSetting("otta", "storeTheme")` with no shared constant to drift.
+ * (its "Store theme" radio), which writes plugin kv `settings:storeTheme`.
+ * EmDash's `createKVAccess` prefixes every plugin kv key with `plugin:<id>:`,
+ * so the row lands in the options table as `plugin:otta:settings:storeTheme` —
+ * and EmDash's public `getPluginSetting(pluginId, key)` reads exactly
+ * `plugin:<id>:settings:<key>` (emdash@0.38.0, `dist/settings-*.mjs`). So the
+ * site reads the plugin's write as `getPluginSetting("otta", "storeTheme")`
+ * with no shared constant to drift.
  * `test/theme-resolve.test.ts` proves that round trip against a real migrated
  * host database: a real plugin route's `ctx.kv.set` in, this module's read out.
  *

@@ -21,6 +21,17 @@
 			}
 		},
 		{
+			"files": ["packages/plugin/src/admin/store-themes.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__OTTA_STORE_THEMES__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["sites/staging/src/lib/stripe-config.ts"],
 			"rules": {
 				"no-underscore-dangle": [

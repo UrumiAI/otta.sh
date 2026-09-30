@@ -780,6 +780,24 @@ describe("astro.config", () => {
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
+	test(
+		"the storefront theme list rides a build-time define the plugin's shape check accepts",
+		async () => {
+			// The plugin hard-codes no theme list: its Settings "Store theme" radio is
+			// built from this list, and a list its check refuses renders no radio.
+			const config = (await import("../astro.config.js")).default;
+			const define = config.vite?.define as Record<string, string>;
+			const themes = JSON.parse(define["__OTTA_STORE_THEMES__"] ?? "null") as unknown;
+			expect(themes).toEqual([{ id: "tempered", label: "Tempered" }]);
+			for (const { id, label } of themes as Array<{ id: string; label: string }>) {
+				expect(id).toMatch(/^[a-z][a-z0-9-]{0,31}$/);
+				expect(label.length).toBeGreaterThan(0);
+				expect(label.length).toBeLessThanOrEqual(40);
+			}
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
+
 	/**
 	 * THE LOAD-BEARING ONE — the baked egress defines and the REGISTERED
 	 * descriptor's allowlist must come from ONE decision.
