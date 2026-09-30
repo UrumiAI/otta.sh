@@ -43,6 +43,8 @@ describe("astro.config fonts", () => {
 		// A theme that sets everything in one family declares one role; a theme
 		// that pairs faces (a display face with a body face) declares one each.
 		expect([...byVariable.keys()].toSorted()).toEqual([
+			"--f-batch-body",
+			"--f-batch-display",
 			"--f-counter-sans",
 			"--f-tempered-body",
 			"--f-tempered-data",
@@ -184,6 +186,47 @@ function expectOflBeside(font: VendoredFont): void {
 		).toContain("SIL Open Font License");
 	}
 }
+
+/** Batch: a letterpress slab for titles and prices, a grotesque to read. */
+describe("Batch's Zilla Slab and Karla (vendored)", () => {
+	const zilla = vendored("--f-batch-display");
+	const karla = vendored("--f-batch-body");
+
+	test("Zilla Slab is its two static cuts (it has no variable file), from the local provider", () => {
+		expect(zilla.name).toBe("Zilla Slab");
+		expect(zilla.provider.name).toBe("local");
+		// Titles and prices use exactly these two cuts — one file per weight.
+		expect(zilla.options.variants.map((v) => [v.weight, v.style])).toEqual([
+			["600", "normal"],
+			["700", "normal"],
+		]);
+		for (const variant of zilla.options.variants) expect(variant.src).toHaveLength(1);
+	});
+
+	test("Karla is one variable variant across its whole weight range, from the local provider", () => {
+		expect(karla.name).toBe("Karla");
+		expect(karla.provider.name).toBe("local");
+		expect(karla.options.variants).toHaveLength(1);
+		expect(karla.options.variants[0]?.weight).toBe("200 800");
+		expect(karla.options.variants[0]?.style).toBe("normal");
+	});
+
+	test.each(zilla.options.variants.map((v) => [v.weight, v.src[0]]))(
+		"the Zilla Slab %s file is a hinted woff2 (fpgm + prep + cvt), so it is never autohinted",
+		(_weight, src) => {
+			expectHintedWoff2(src, ["fpgm", "prep", "cvt ", "GPOS"]);
+		},
+	);
+
+	test("the Karla file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(karla.options.variants[0]?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test.each([
+		["Zilla Slab", zilla],
+		["Karla", karla],
+	])("%s ships with its OFL licence beside it", (_name, font) => expectOflBeside(font));
+});
 
 /** Counter: ONE family for every role, money included. */
 describe("Counter's Rethink Sans (vendored)", () => {

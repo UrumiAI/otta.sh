@@ -150,6 +150,125 @@ export default defineConfig({
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
 		/**
+		 * Batch (src/themes/batch): a letterpress slab for titles and prices,
+		 * set at two static cuts (Zilla Slab has no variable file), and Karla
+		 * for everything else across its whole weight range.
+		 *
+		 * BOTH SELF-HOSTED FROM VENDORED FILES, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and Google answers that UA with builds
+		 * stripped of their hinting: Karla arrives with NO `prep` table, Zilla
+		 * Slab with no `fpgm`, `prep` or `cvt ` at all (the builds a current
+		 * browser gets carry them). A TrueType font with no instructions is
+		 * handed to FreeType's AUTOHINTER — Chromium on Linux and Android —
+		 * which rounds every glyph's advance at text sizes, so body copy set as
+		 * "lapt op", "Heavyweig ht", "Cont ent". The builds a current browser
+		 * receives carry the instructions and render correctly; they are
+		 * vendored at src/themes/batch/fonts/<family>/ (OFL, licence beside
+		 * each) and served by Astro from this origin like every other face.
+		 * Zilla Slab is its two static cuts, 600 and 700; Karla is the full
+		 * variable font, wght 200–800.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Zilla Slab",
+			cssVariable: "--f-batch-display",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/batch/fonts/zilla-slab/zilla-slab-600-latin.woff2"],
+						weight: "600",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+					{
+						src: ["./src/themes/batch/fonts/zilla-slab/zilla-slab-700-latin.woff2"],
+						weight: "700",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		{
+			provider: fontProviders.local(),
+			name: "Karla",
+			cssVariable: "--f-batch-body",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/batch/fonts/karla/karla-variable-latin.woff2"],
+						weight: "200 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
 		 * Counter (src/themes/counter): ONE family for every role — the brief's
 		 * whole type system is Rethink Sans at weights 400–800, money included
 		 * (tabular figures, no mono face anywhere).

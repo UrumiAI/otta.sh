@@ -41,6 +41,12 @@ export const STORE_THEMES = [
 		preview: "/theme-previews/tempered.webp",
 	},
 	{
+		id: "batch",
+		label: "Batch",
+		description: "Kraft paper, a letterpress label and a green stamp.",
+		preview: "/theme-previews/batch.webp",
+	},
+	{
 		id: "counter",
 		label: "Counter",
 		description: "Clean, calm and product-first.",

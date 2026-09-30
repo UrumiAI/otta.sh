@@ -796,6 +796,7 @@ describe("astro.config", () => {
 			}>;
 			expect(entries.map(({ id, label }) => ({ id, label }))).toEqual([
 				{ id: "tempered", label: "Tempered" },
+				{ id: "batch", label: "Batch" },
 				{ id: "counter", label: "Counter" },
 			]);
 			for (const { id, label, description, preview } of entries) {

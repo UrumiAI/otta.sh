@@ -11,6 +11,18 @@
  * rule. (Phase 1 exception: the shared `src/components/*` keep their scoped
  * styles — they are Tempered's today and harmless on any page.)
  */
+import BatchAccountLoginView from "./batch/AccountLoginView.astro";
+import BatchAccountOrdersView from "./batch/AccountOrdersView.astro";
+import BatchAccountOrderView from "./batch/AccountOrderView.astro";
+import BatchAccountVerifyView from "./batch/AccountVerifyView.astro";
+import BatchCartView from "./batch/CartView.astro";
+import BatchCheckoutView from "./batch/CheckoutView.astro";
+import BatchHomeView from "./batch/HomeView.astro";
+import BatchLayout from "./batch/Layout.astro";
+import BatchOrderView from "./batch/OrderView.astro";
+import BatchPayView from "./batch/PayView.astro";
+import BatchProductView from "./batch/ProductView.astro";
+import BatchShopView from "./batch/ShopView.astro";
 import type { ThemeModule, ThemeViews } from "./contract.js";
 import CounterAccountLoginView from "./counter/AccountLoginView.astro";
 import CounterAccountOrdersView from "./counter/AccountOrdersView.astro";
@@ -57,6 +69,25 @@ const tempered = {
 	},
 } satisfies ThemeModule & { views: ThemeViews };
 
+/** Every view its own. No drawer, so no chrome cart read: the bag is `/cart`. */
+const batch = {
+	id: "batch",
+	Layout: BatchLayout,
+	views: {
+		home: BatchHomeView,
+		shop: BatchShopView,
+		product: BatchProductView,
+		cart: BatchCartView,
+		checkout: BatchCheckoutView,
+		pay: BatchPayView,
+		order: BatchOrderView,
+		accountLogin: BatchAccountLoginView,
+		accountVerify: BatchAccountVerifyView,
+		accountOrders: BatchAccountOrdersView,
+		accountOrder: BatchAccountOrderView,
+	},
+} satisfies ThemeModule & { views: ThemeViews };
+
 /** Every view its own, and the one theme whose chrome draws the cart's lines
  *  (the bag drawer) — so the one theme that pays the shell's bag read. */
 const counter = {
@@ -81,6 +112,7 @@ const counter = {
 /** Every theme the manifest lists, and nothing else (held equal by test). */
 export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = {
 	tempered,
+	batch,
 	counter,
 };
 

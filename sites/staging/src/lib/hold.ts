@@ -172,3 +172,33 @@ export function wallClock(expiresAt: string): string | null {
 	const twelve = hours % 12 === 0 ? 12 : hours % 12;
 	return `${twelve}:${minutes < 10 ? `0${minutes}` : minutes} ${hours < 12 ? "am" : "pm"} UTC`;
 }
+
+/** How long after a hold is taken it still counts as JUST taken. */
+export const FRESH_HOLD_GRACE_SECONDS = 15;
+
+/**
+ * Was this hold taken within the last `graceSeconds` — is this render the one
+ * that follows the add (or the quantity change) that took it?
+ *
+ * For a theme's on-add moment (e.g. Batch's stamp landing): it must play
+ * ONCE, on the page the add lands on, not on every later render of the same
+ * live hold — a reload, a revisit, a change to another line. The wire carries
+ * no "just added" flag and the redirect `/cart/add` answers with carries none
+ * either, so the age of the hold stands in for it: `windowSeconds −
+ * secondsLeft` is how long ago the hold was taken.
+ *
+ * FAILS STATIC. `false` for no hold, a released one, an unparsable expiry, and
+ * for a store whose hold is not `windowSeconds` long (its age cannot be read
+ * off the expiry then, so the moment simply does not play).
+ */
+export function isFreshHold(
+	expiresAt: string | null | undefined,
+	now: Date = new Date(),
+	windowSeconds: number = HOLD_WINDOW_SECONDS,
+	graceSeconds: number = FRESH_HOLD_GRACE_SECONDS,
+): boolean {
+	const view = holdView(expiresAt, now, windowSeconds);
+	if (view === null || view.state === "released") return false;
+	const age = windowSeconds - view.secondsLeft;
+	return age >= 0 && age <= graceSeconds;
+}

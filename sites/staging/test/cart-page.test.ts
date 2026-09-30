@@ -83,6 +83,11 @@ const ARM_ANCHORS: Readonly<Record<string, { terminal: string; live: string; res
 		live: 'class="c-cart"',
 		restart: 'class="c-cart-terminal-restart"',
 	},
+	"themes/batch/CartView.astro": {
+		terminal: 'class="b-cart-terminal"',
+		live: 'class="b-cart"',
+		restart: 'class="b-cart-terminal-restart"',
+	},
 };
 
 /**

@@ -1,0 +1,63 @@
+---
+/**
+ * Batch's order list for a signed-in customer (issue #306, ADR-0004): the
+ * heading on the kraft with the way to sign out, and one label listing the
+ * orders — the reference as the link, its state, how many items, and the total
+ * in slab — in columns on a wide screen and two lines on a phone. Presentation
+ * only — `src/pages/account/orders/index.astro` resolves the customer from the
+ * SESSION (never a customer id), redirects the signed-out, sets
+ * `private, no-store`, maps BUSY, and hands over finished rows.
+ */
+import type { AccountOrdersModel } from "../contract.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+---
+
+<div class="b-view">
+	<div class="b-wrap b-page">
+		<header class="b-bar">
+			<h1 class="b-h1">Your orders</h1>
+			<form method="POST" action="/account/logout">
+				<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+			</form>
+		</header>
+
+		{
+			errorMessage !== null ? (
+				<div class="b-notice-slot b-narrow">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			) : rows.length === 0 ? (
+				<div class="b-label b-empty">
+					<h2 class="b-title">No orders yet.</h2>
+					<p class="b-lede">
+						Orders you place with this email address, including as a guest, appear here.
+					</p>
+					<a class="u-btn" href="/products">
+						See what's on the shelf
+					</a>
+				</div>
+			) : (
+				<div class="b-label b-orders-label">
+					<ul class="b-orders" role="list">
+						{rows.map((row) => (
+							<li class="b-orders-row" role="listitem">
+								<a class="b-orders-ref" href={row.href}>
+									{row.id}
+								</a>
+								<span class="b-orders-state">{row.state}</span>
+								<span class="b-orders-items">{row.items}</span>
+								<span class="b-orders-total b-figures">{row.total}</span>
+							</li>
+						))}
+					</ul>
+				</div>
+			)
+		}
+	</div>
+</div>

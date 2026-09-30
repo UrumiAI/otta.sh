@@ -1,0 +1,62 @@
+---
+/**
+ * The product's picture: its own image when it has one (3:4, cover crop,
+ * square corners), otherwise Batch's generated kraft object (art.ts).
+ *
+ * The object's geometry arrives as markup with no caller string in it (see
+ * art.ts), so `set:html` is safe; the WORDS printed on its label are the
+ * product's title and are rendered here as ordinary, escaped template text.
+ * The drawing is decorative (`aria-hidden`) — the title is always printed on
+ * the HTML label beside it.
+ */
+import { productArt } from "./art.js";
+
+interface Props {
+	/** The product's slug or id — seeds the band and the stamp's tilt. */
+	seed: string;
+	/** Picks the object and is printed on its label. */
+	title: string;
+	image: string | null;
+	/** Empty on a card, whose title is already the link's text. */
+	alt?: string;
+	/** Eager for the page's lead picture, lazy everywhere else. */
+	eager?: boolean;
+	/** Keeps clip-path ids unique when one product is drawn twice on a page. */
+	id?: string;
+}
+
+const { seed, title, image, alt = "", eager = false, id = "a" } = Astro.props;
+const art = image === null ? productArt(seed, title, id) : null;
+---
+
+{
+	image !== null ? (
+		<img
+			class="b-photo"
+			src={image}
+			alt={alt}
+			loading={eager ? "eager" : "lazy"}
+			decoding="async"
+			fetchpriority={eager ? "high" : undefined}
+		/>
+	) : (
+		art !== null && (
+			<svg
+				class="b-art"
+				viewBox="0 0 300 400"
+				preserveAspectRatio="xMidYMid slice"
+				aria-hidden="true"
+				focusable="false"
+			>
+				<Fragment set:html={art.body} />
+				{art.label !== null && (
+					<text class="b-art-print" text-anchor="middle" font-size={art.label.size}>
+						{art.label.lines.map((line) => (
+							<tspan x="150" y={line.y}>{line.text}</tspan>
+						))}
+					</text>
+				)}
+			</svg>
+		)
+	)
+}

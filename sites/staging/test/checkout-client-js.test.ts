@@ -259,6 +259,18 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/counter/AccountOrdersView.astro",
 				"themes/counter/AccountOrderView.astro",
 				"forms/CartLineFields.astro",
+				// Batch's own commerce views and its stamped hold (markup only —
+				// the /cart page's HoldClock ticks it).
+				"themes/batch/Layout.astro",
+				"themes/batch/HoldRibbon.astro",
+				"themes/batch/CartView.astro",
+				"themes/batch/CheckoutView.astro",
+				"themes/batch/PayView.astro",
+				"themes/batch/OrderView.astro",
+				"themes/batch/AccountLoginView.astro",
+				"themes/batch/AccountVerifyView.astro",
+				"themes/batch/AccountOrdersView.astro",
+				"themes/batch/AccountOrderView.astro",
 			]),
 		);
 	});
