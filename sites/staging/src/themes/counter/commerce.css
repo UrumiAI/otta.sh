@@ -1,0 +1,1447 @@
+/**
+ * Counter — the bag drawer and the commerce views (bag page, checkout, pay,
+ * order, account).  Linked by `themes/counter/Layout.astro` on every page,
+ * because the drawer is chrome.
+ *
+ * Same rules as views.css: every colour, face and radius is a token from
+ * theme.css; left-aligned throughout; 1px lines ONLY on form controls (an
+ * inset shadow, so a control's box never shifts) — sections and lines are
+ * separated by space, and the one band that needs to read as "the bottom of
+ * the drawer" is a surface fill, the same device as the site footer.  The
+ * brand colour appears only on things you can act on.
+ *
+ * The drawer's motion is here rather than in theme.css because it is part of
+ * how the drawer is DISPLAYED (`display` and `overlay` transition with it);
+ * it still sits inside the reduced-motion queries, and theme.css's clamp
+ * exempts the drawer element only so the brief's 150ms fade can run.
+ */
+
+/* ── Header bag: a link by default, the drawer's button where it can be ── */
+
+.c-bag-open {
+	display: none;
+	appearance: none;
+	border: 0;
+	background: none;
+	font: inherit;
+	font-size: 0.9375rem;
+	font-weight: 500;
+	cursor: pointer;
+}
+
+/* The drawer is never drawn where the Popover API is missing: an unknown
+   `popover` attribute would otherwise leave it in the page flow. */
+.c-drawer {
+	display: none;
+}
+
+/**
+ * `:popover-open` parses exactly where the Popover API exists, so this block is
+ * the feature test.  Inside it the button replaces the link — but only when
+ * the page drew a button (a page with no bag, the checkout flow, keeps the
+ * link).
+ */
+@supports selector(:popover-open) {
+	.c-bag-link:has(+ .c-bag-open) {
+		display: none;
+	}
+
+	.c-bag-open {
+		display: inline-flex;
+	}
+
+	/* The bag button while its drawer is open (the button itself is never the
+	   popover, and nothing sets aria-expanded without script). */
+	body:has(#bag:popover-open) .c-bag-open {
+		background: var(--c-surface);
+	}
+
+	/* The page behind an open drawer does not scroll under it. */
+	html:has(#bag:popover-open) {
+		overflow: hidden;
+	}
+
+	.c-drawer {
+		position: fixed;
+		inset: 0 0 0 auto;
+		width: min(27.5rem, 100vw);
+		height: 100dvh;
+		max-height: 100dvh;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--c-ground);
+		color: var(--c-ink);
+		border-radius: var(--c-r-drawer);
+		box-shadow: var(--c-shadow-drawer);
+	}
+
+	.c-drawer:popover-open {
+		display: flex;
+	}
+
+	.c-drawer::backdrop {
+		background: var(--c-scrim);
+	}
+}
+
+/* ── The drawer's inside ──────────────────────────────────────────────── */
+
+.c-drawer-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 1.125rem 1rem 0.75rem 1.5rem;
+}
+
+.c-drawer-title {
+	margin: 0;
+	font-size: 1.25rem;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	line-height: 1.2;
+}
+
+.c-drawer-count {
+	color: var(--c-ink-2);
+	font-weight: 500;
+}
+
+.c-drawer-x {
+	display: grid;
+	place-items: center;
+	width: 2.75rem;
+	height: 2.75rem;
+	flex: none;
+	padding: 0;
+	border: 0;
+	border-radius: var(--c-r-ctl);
+	background: none;
+	color: var(--c-ink);
+	cursor: pointer;
+}
+
+.c-drawer-x:hover {
+	background: var(--c-surface);
+}
+
+.c-drawer-lines {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	margin: 0;
+	padding: 0.25rem 1.5rem 1rem;
+	list-style: none;
+}
+
+/* One line: picture, the words and controls, the money. */
+.c-bl {
+	display: grid;
+	grid-template-columns: 4.5rem minmax(0, 1fr) auto;
+	gap: 0.875rem;
+	padding-block: 0.875rem;
+}
+
+.c-bl-thumb {
+	width: 4.5rem;
+	height: 5.625rem;
+	border-radius: var(--c-r-ctl);
+	overflow: hidden;
+	background: var(--u-panel);
+}
+
+.c-bl-thumb img,
+.c-bl-thumb svg,
+.c-cart-thumb img,
+.c-cart-thumb svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.c-bl-info {
+	min-width: 0;
+}
+
+.c-bl-name,
+.c-cart-name {
+	margin: 0;
+	font-size: 0.9375rem;
+	font-weight: 600;
+	line-height: 1.3;
+	overflow-wrap: anywhere;
+}
+
+.c-bl-sku,
+.c-cart-sku {
+	margin: 0.125rem 0 0;
+	font-size: 0.8125rem;
+	color: var(--c-ink-2);
+	overflow-wrap: anywhere;
+}
+
+.c-bl-ctl {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.25rem 0.875rem;
+	margin-top: 0.625rem;
+}
+
+.c-bl-money {
+	margin: 0;
+	font-size: 0.9375rem;
+	font-weight: 600;
+	text-align: right;
+	line-height: 1.3;
+}
+
+.c-bl-prose,
+.c-cart-prose {
+	display: block;
+	max-width: 7rem;
+	font-size: 0.8125rem;
+	font-weight: 500;
+	color: var(--c-ink-2);
+}
+
+/* The stepper: one control, so one line around it. */
+.c-stepper {
+	display: inline-flex;
+	align-items: center;
+	height: 2.25rem;
+	border-radius: var(--c-r-ctl);
+	box-shadow: inset 0 0 0 1px var(--c-line);
+}
+
+.c-stepper button {
+	display: grid;
+	place-items: center;
+	width: 2.25rem;
+	height: 2.25rem;
+	padding: 0;
+	border: 0;
+	border-radius: var(--c-r-ctl);
+	background: none;
+	color: var(--c-ink);
+	cursor: pointer;
+}
+
+.c-stepper button .c-ico {
+	width: 1rem;
+	height: 1rem;
+}
+
+.c-stepper button:hover:not(:disabled) {
+	background: var(--c-surface);
+}
+
+.c-stepper button:disabled {
+	color: var(--c-line);
+	cursor: default;
+}
+
+.c-stepper-n {
+	min-width: 1.5rem;
+	font-size: 0.9375rem;
+	font-weight: 600;
+	text-align: center;
+}
+
+/* A quiet action written as words: Remove, Update, Hold it again. */
+.c-textbtn {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.25rem;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--c-ink-2);
+	font: inherit;
+	font-size: 0.875rem;
+	text-decoration: underline;
+	text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+	text-underline-offset: 0.2em;
+	cursor: pointer;
+}
+
+.c-textbtn:hover {
+	color: var(--c-ink);
+	text-decoration-color: currentColor;
+}
+
+.c-textbtn-brand {
+	min-height: 0;
+	color: var(--c-brand-text);
+	font-weight: 600;
+	font-size: inherit;
+}
+
+.c-textbtn-brand:hover {
+	color: var(--c-brand-text);
+}
+
+/* The hold, as words beside a clock — static here (no script outside /cart). */
+.c-bl-hold {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.375rem;
+	margin: 0.5rem 0 0;
+	font-size: 0.8125rem;
+	line-height: 1.35;
+	color: var(--c-ink-2);
+}
+
+.c-bl-hold .c-ico,
+.c-holdline .c-ico {
+	width: 0.9375rem;
+	height: 0.9375rem;
+	margin-top: 0.0625rem;
+}
+
+.c-bl-hold[data-state="expiring"] {
+	color: var(--c-low);
+	font-weight: 500;
+}
+
+/* The foot: a surface band — the drawer's own "footer" — not a rule. */
+.c-drawer-foot {
+	flex: none;
+	padding: 1.25rem 1.5rem calc(1.25rem + env(safe-area-inset-bottom));
+	background: var(--c-surface);
+}
+
+.c-sub {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+	margin: 0;
+	font-size: 1.0625rem;
+	font-weight: 600;
+}
+
+.c-sub-prose {
+	font-size: 0.9375rem;
+	font-weight: 500;
+	color: var(--c-ink-2);
+}
+
+.c-sub-minor {
+	margin-top: 0.375rem;
+	font-size: 0.9375rem;
+	font-weight: 500;
+	color: var(--c-ink-2);
+}
+
+.c-sub-note {
+	margin: 0.25rem 0 0;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-drawer-go {
+	width: 100%;
+	min-height: 3.25rem;
+	margin-top: 1rem;
+}
+
+.c-drawer-more {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+
+.c-quiet {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 2.75rem;
+	padding: 0 0.75rem;
+	border: 0;
+	border-radius: var(--c-r-ctl);
+	background: none;
+	color: var(--c-ink);
+	font: inherit;
+	font-size: 0.9375rem;
+	font-weight: 500;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.c-quiet:hover {
+	background: var(--c-ground);
+}
+
+.c-drawer-state {
+	padding: 1.75rem 1.5rem;
+	color: var(--c-ink-2);
+}
+
+.c-drawer-state p {
+	margin: 0;
+	max-width: 32ch;
+}
+
+.c-drawer-state .c-drawer-state-lead {
+	margin-bottom: 0.25rem;
+	color: var(--c-ink);
+	font-size: 1.0625rem;
+	font-weight: 600;
+}
+
+.c-drawer-state .c-drawer-go {
+	margin-top: 1.5rem;
+}
+
+/* ── The drawer's motion (the signature) ──────────────────────────────── */
+
+@supports selector(:popover-open) {
+	@media (prefers-reduced-motion: no-preference) {
+		.c-drawer {
+			transform: translateX(100%);
+			transition:
+				transform 260ms var(--c-ease-in),
+				display 260ms allow-discrete,
+				overlay 260ms allow-discrete;
+		}
+
+		.c-drawer:popover-open {
+			transform: none;
+			transition:
+				transform 380ms var(--c-ease-sheet),
+				display 380ms allow-discrete,
+				overlay 380ms allow-discrete;
+		}
+
+		@starting-style {
+			.c-drawer:popover-open {
+				transform: translateX(100%);
+			}
+		}
+
+		.c-drawer::backdrop {
+			opacity: 0;
+			transition:
+				opacity 260ms var(--c-ease-in),
+				display 260ms allow-discrete,
+				overlay 260ms allow-discrete;
+		}
+
+		.c-drawer:popover-open::backdrop {
+			opacity: 1;
+			transition:
+				opacity 240ms var(--c-ease),
+				display 240ms allow-discrete,
+				overlay 240ms allow-discrete;
+		}
+
+		@starting-style {
+			.c-drawer:popover-open::backdrop {
+				opacity: 0;
+			}
+		}
+
+		/* The lines open in once the sheet is mostly there: a short rise and
+		   fade, one after the other (the brief's "line opens in", without a
+		   script to know which line is new). */
+		.c-drawer:popover-open .c-bl {
+			transition:
+				opacity 280ms var(--c-ease),
+				translate 280ms var(--c-ease-out);
+			transition-delay: calc(160ms + var(--i, 0) * 40ms);
+		}
+
+		@starting-style {
+			.c-drawer:popover-open .c-bl {
+				opacity: 0;
+				translate: 0 0.5rem;
+			}
+		}
+
+		.c-co-field input,
+		.c-co-field select,
+		.c-qtyin input,
+		.c-stepper button,
+		.c-drawer-x,
+		.c-quiet,
+		.c-textbtn,
+		.c-co-method {
+			transition:
+				background-color var(--c-dur-fast) var(--c-ease),
+				color var(--c-dur-fast) var(--c-ease),
+				box-shadow var(--c-dur-fast) var(--c-ease);
+		}
+	}
+
+	/* Reduced motion: the drawer fades in over 150ms instead of sliding; the
+	   lines are simply there. */
+	@media (prefers-reduced-motion: reduce) {
+		.c-drawer {
+			opacity: 0;
+			transition:
+				opacity 150ms linear,
+				display 150ms allow-discrete,
+				overlay 150ms allow-discrete;
+		}
+
+		.c-drawer:popover-open {
+			opacity: 1;
+		}
+
+		@starting-style {
+			.c-drawer:popover-open {
+				opacity: 0;
+			}
+		}
+
+		.c-drawer::backdrop {
+			opacity: 0;
+			transition:
+				opacity 150ms linear,
+				display 150ms allow-discrete,
+				overlay 150ms allow-discrete;
+		}
+
+		.c-drawer:popover-open::backdrop {
+			opacity: 1;
+		}
+
+		@starting-style {
+			.c-drawer:popover-open::backdrop {
+				opacity: 0;
+			}
+		}
+	}
+}
+
+/* ── Controls (checkout, account, bag page) ───────────────────────────── */
+
+.c-label {
+	font-size: 0.875rem;
+	font-weight: 500;
+	color: var(--c-ink);
+}
+
+.c-co-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+	min-width: 0;
+}
+
+.c-co-field input,
+.c-co-field select,
+.c-qtyin input {
+	width: 100%;
+	min-width: 0;
+	height: 3rem;
+	padding: 0 0.875rem;
+	border: 0;
+	border-radius: var(--c-r-ctl);
+	background: var(--c-ground);
+	box-shadow: inset 0 0 0 1px var(--c-line);
+	color: var(--c-ink);
+	font: inherit;
+	/* 16px: below it, iOS zooms the page when a field takes focus. */
+	font-size: 1rem;
+}
+
+.c-co-field select {
+	padding-right: 0.5rem;
+}
+
+.c-co-field input:hover,
+.c-co-field select:hover,
+.c-qtyin input:hover {
+	box-shadow: inset 0 0 0 1px var(--c-ink-2);
+}
+
+.c-co-field input:focus-visible,
+.c-co-field select:focus-visible,
+.c-qtyin input:focus-visible {
+	box-shadow: inset 0 0 0 1px var(--c-brand-text);
+}
+
+.c-co-field input:user-invalid {
+	box-shadow: inset 0 0 0 1px var(--c-error);
+}
+
+.c-co-note {
+	margin: 0;
+	font-size: 0.8125rem;
+	line-height: 1.45;
+	color: var(--c-ink-2);
+}
+
+.c-co-note a {
+	color: var(--c-brand-text);
+	font-weight: 500;
+}
+
+.c-co-req {
+	margin-left: 0.25rem;
+	font-weight: 400;
+	font-size: 0.8125rem;
+	color: var(--c-ink-2);
+}
+
+.c-co-req::before {
+	content: "(";
+}
+
+.c-co-req::after {
+	content: ")";
+}
+
+/* ── Checkout ─────────────────────────────────────────────────────────── */
+
+.c-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 1.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-step {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3125rem;
+}
+
+.c-step .c-ico {
+	width: 1rem;
+	height: 1rem;
+	stroke-width: 2;
+}
+
+.c-step[aria-current="step"] {
+	color: var(--c-ink);
+	font-weight: 600;
+}
+
+.c-co-steps {
+	padding-top: 0.5rem;
+	margin-bottom: 1rem;
+}
+
+.c-co-title {
+	margin: 0 0 2rem;
+	font-family: var(--u-display);
+	font-size: 2rem;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	line-height: 1.15;
+}
+
+.c-co-notice-slot,
+.c-co-restart {
+	margin-bottom: 1.5rem;
+}
+
+.c-co-cols,
+.c-order-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+	gap: 3.5rem;
+	align-items: start;
+}
+
+.c-co-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 2rem;
+	min-width: 0;
+}
+
+/* A section's name — a real heading, drawn at the section size. `.u-label`
+   (which the markup keeps, for the shared heading contract) is Counter's small
+   meta role; these are later in the cascade and more specific, so they step
+   it up without redefining it. */
+h2.c-co-head-label,
+legend.c-co-head-label,
+h2.c-order-head-label {
+	margin: 0;
+	font-size: 1.125rem;
+	font-weight: 650;
+	letter-spacing: -0.01em;
+	line-height: 1.3;
+	color: var(--c-ink);
+}
+
+.c-co-coupon-row {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.c-co-coupon-row input {
+	flex: 1;
+}
+
+.c-co-coupon-row .u-btn {
+	flex: none;
+	min-height: 3rem;
+}
+
+.c-co-coupon .c-co-field {
+	gap: 0.5rem;
+}
+
+.c-co-group {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.c-co-group legend {
+	float: left;
+	width: 100%;
+	padding: 0;
+	margin-bottom: 1rem;
+}
+
+.c-co-group legend + * {
+	clear: both;
+}
+
+.c-co-group-note {
+	margin-top: -0.5rem;
+}
+
+.c-co-delivery,
+.c-co-details {
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+	min-width: 0;
+}
+
+.c-co-fields {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1rem;
+}
+
+.c-co-span2 {
+	grid-column: 1 / -1;
+}
+
+.c-co-methods {
+	display: grid;
+	gap: 0.5rem;
+}
+
+.c-co-method {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	min-height: 3.5rem;
+	padding: 0 1rem;
+	border-radius: var(--c-r-ctl);
+	box-shadow: inset 0 0 0 1px var(--c-line);
+	cursor: pointer;
+	font-size: 0.9375rem;
+}
+
+.c-co-method:hover {
+	box-shadow: inset 0 0 0 1px var(--c-ink-2);
+}
+
+/* The selected ring is brand-TEXT (the brief's selection colour), 2px. */
+.c-co-method:has(input:checked) {
+	box-shadow: inset 0 0 0 2px var(--c-brand-text);
+}
+
+.c-co-method:has(input:disabled) {
+	color: var(--c-ink-2);
+	cursor: default;
+}
+
+.c-co-method input {
+	width: 1.125rem;
+	height: 1.125rem;
+	margin: 0;
+	flex: none;
+}
+
+.c-co-method-price {
+	margin-left: auto;
+	font-weight: 600;
+}
+
+.c-co-delivery-line {
+	color: var(--c-ink);
+	font-size: 0.875rem;
+}
+
+.c-co-go {
+	width: 100%;
+	min-height: 3.25rem;
+}
+
+/* The order panel: a surface you read, not a box you fill. Stays in view on a
+   wide screen while the form beside it scrolls. */
+.c-co-summary,
+.c-order-sum,
+.c-cart-summary {
+	gap: 1.25rem;
+	padding: 1.75rem;
+	border-radius: var(--c-r-panel);
+	background: var(--c-surface);
+}
+
+.c-co-summary,
+.c-cart-summary {
+	position: sticky;
+	top: 6rem;
+}
+
+/* On a wide screen the column beside a surface panel starts where the panel's
+   own heading does, so the two section names sit on one line. */
+@media (min-width: 53.8125rem) {
+	.c-co-panel:not(.c-co-summary),
+	.c-order-panel:not(.c-order-sum) {
+		padding-top: 1.75rem;
+	}
+}
+
+.c-co-back {
+	margin: 2.5rem 0 0;
+}
+
+/* ── Receipt lines and totals ─────────────────────────────────────────── */
+
+.c-receipt {
+	display: grid;
+	gap: 0.875rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.c-receipt-line {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+}
+
+.c-receipt-id {
+	display: grid;
+	min-width: 0;
+}
+
+.c-receipt-name {
+	font-size: 0.9375rem;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.c-receipt-meta {
+	font-size: 0.8125rem;
+	color: var(--c-ink-2);
+	overflow-wrap: anywhere;
+}
+
+.c-receipt-money {
+	flex: none;
+	font-size: 0.9375rem;
+	font-weight: 600;
+}
+
+.c-receipt-money[data-prose] {
+	font-size: 0.8125rem;
+	font-weight: 500;
+	color: var(--c-ink-2);
+}
+
+.c-totals {
+	display: grid;
+	gap: 0.5rem;
+	margin: 0.25rem 0 0;
+}
+
+.c-totals-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+	font-size: 0.9375rem;
+}
+
+.c-totals-row dt {
+	color: var(--c-ink-2);
+}
+
+.c-totals-row dd {
+	margin: 0;
+	font-weight: 500;
+	text-align: right;
+}
+
+.c-totals-row[data-prose] dd {
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-totals-grand {
+	margin-top: 0.625rem;
+	font-size: 1.125rem;
+}
+
+.c-totals-grand dt,
+.c-totals-grand dd {
+	color: var(--c-ink);
+	font-weight: 650;
+}
+
+.c-totals-note {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--c-ink-2);
+}
+
+/* ── The bag page ─────────────────────────────────────────────────────── */
+
+.c-cart {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 23rem);
+	gap: 4rem;
+	align-items: start;
+}
+
+.c-cart-lines {
+	display: grid;
+	gap: 2rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.c-cart-line {
+	display: grid;
+	grid-template-columns: 6rem minmax(0, 1fr) auto;
+	gap: 1.25rem;
+}
+
+.c-cart-thumb {
+	width: 6rem;
+	height: 7.5rem;
+	border-radius: var(--c-r-media);
+	overflow: hidden;
+	background: var(--u-panel);
+}
+
+.c-cart-name {
+	font-size: 1rem;
+}
+
+.c-cart-sku {
+	font-size: 0.875rem;
+}
+
+.c-cart-ctl {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem 1.25rem;
+	margin-top: 0.875rem;
+}
+
+.c-cart-update {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.c-qtyin {
+	display: inline-flex;
+}
+
+.c-qtyin input {
+	width: 4.5rem;
+	height: 2.75rem;
+	padding: 0 0.25rem 0 0.75rem;
+	font-weight: 600;
+	text-align: center;
+}
+
+.c-cart-money {
+	display: grid;
+	justify-items: end;
+	align-content: start;
+	gap: 0.125rem;
+	font-size: 1rem;
+	font-weight: 600;
+	text-align: right;
+}
+
+.c-cart-each {
+	font-size: 0.8125rem;
+	font-weight: 400;
+	color: var(--c-ink-2);
+	white-space: nowrap;
+}
+
+.c-cart-summary {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.c-cart-summary-title {
+	margin: 0 0 1rem;
+	font-size: 1.125rem;
+	font-weight: 650;
+	letter-spacing: -0.01em;
+}
+
+.c-cart-go {
+	width: 100%;
+	min-height: 3.25rem;
+	margin-top: 1.25rem;
+}
+
+.c-sub-fine {
+	margin: 0.75rem 0 0;
+	font-size: 0.8125rem;
+	line-height: 1.45;
+	color: var(--c-ink-2);
+}
+
+/* Under the page's own "Your bag", the empty state is a sentence and a way
+   on — not a second headline a screen's height lower. */
+.c-cart-empty {
+	padding-top: 0.5rem;
+}
+
+.c-cart-empty .c-h2 {
+	font-size: 1.25rem;
+	letter-spacing: -0.01em;
+}
+
+.c-cart-empty .c-empty-copy {
+	margin-top: 0.375rem;
+}
+
+/* The hold on /cart — ticking (components/HoldClock.astro drives the hooks).
+   The sentence around what the script writes is assembled here; see
+   HoldRibbon.astro. */
+.c-holdline {
+	margin-top: 0.625rem;
+}
+
+.c-holdline-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.375rem;
+	margin: 0;
+	font-size: 0.875rem;
+	line-height: 1.35;
+	color: var(--c-ink-2);
+}
+
+.c-holdline-label:not(:has(.c-holdline-join))::after {
+	content: " for";
+}
+
+.c-holdline[data-state="expiring"] .c-holdline-label:not(:has(.c-holdline-join))::after {
+	content: " in";
+}
+
+.c-holdline-keep {
+	display: none;
+}
+
+.c-holdline[data-state="expiring"] .c-holdline-row {
+	color: var(--c-low);
+	font-weight: 500;
+}
+
+.c-holdline[data-state="expiring"] .c-holdline-keep {
+	display: inline;
+}
+
+.c-holdline[data-state="released"] .c-holdline-clock {
+	display: none;
+}
+
+.c-holdline[data-state="released"] .c-holdline-label::after {
+	content: none;
+}
+
+.c-holdline-note {
+	margin: 0.25rem 0 0 1.3125rem;
+	font-size: 0.8125rem;
+	color: var(--c-ink-2);
+}
+
+.c-cart-terminal {
+	max-width: 40rem;
+}
+
+.c-cart-terminal-body {
+	margin: 0.5rem 0 1.5rem;
+	color: var(--c-ink-2);
+}
+
+.c-cart-terminal-lines {
+	display: grid;
+	gap: 0.75rem;
+	margin: 0 0 2rem;
+	padding: 1.25rem 1.5rem;
+	border-radius: var(--c-r-panel);
+	background: var(--c-surface);
+	list-style: none;
+}
+
+.c-cart-terminal-line {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+}
+
+.c-cart-terminal-id {
+	display: grid;
+	min-width: 0;
+}
+
+.c-cart-terminal-name {
+	font-weight: 600;
+}
+
+.c-cart-terminal-sku,
+.c-cart-terminal-qty {
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-cart-terminal-actions,
+.c-cart-terminal-resume,
+.c-cart-terminal-restart {
+	display: grid;
+	justify-items: start;
+	gap: 0.625rem;
+}
+
+.c-cart-terminal-actions {
+	gap: 1.5rem;
+}
+
+.c-cart-terminal-note {
+	margin: 0;
+	max-width: 52ch;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+/* ── Pay ──────────────────────────────────────────────────────────────── */
+
+.c-pay {
+	max-width: 34rem;
+}
+
+.c-pay-panel {
+	display: grid;
+	gap: 1.25rem;
+}
+
+.c-pay-trust {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.5rem;
+	margin: 0;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-pay-trust .c-ico {
+	width: 1.125rem;
+	height: 1.125rem;
+}
+
+/* The page's pay button (its slot) wears the full-width primary here too. */
+.c-pay-panel #payment-form .u-btn {
+	width: 100%;
+	min-height: 3.25rem;
+}
+
+/* ── Order ────────────────────────────────────────────────────────────── */
+
+.c-order-head {
+	max-width: 44rem;
+	margin-bottom: 2rem;
+}
+
+.c-order-ref {
+	margin: 0 0 0.375rem;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-order-id {
+	color: var(--c-ink);
+	font-weight: 500;
+	overflow-wrap: anywhere;
+}
+
+.c-order-title {
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: 2rem;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	line-height: 1.15;
+	text-wrap: balance;
+}
+
+.c-order-body {
+	margin: 0.75rem 0 0;
+	max-width: 56ch;
+	font-size: 1.0625rem;
+	color: var(--c-ink-2);
+}
+
+.c-order-poll {
+	margin-top: 1.25rem;
+	max-width: 24rem;
+}
+
+.c-order-keep {
+	margin: 1rem 0 0;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+.c-order-actions {
+	margin-bottom: 2.5rem;
+}
+
+.c-order-alert {
+	margin: 1rem 0 1.75rem;
+}
+
+.c-order-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	min-width: 0;
+}
+
+.c-order-ship {
+	margin: 0.5rem 0 0;
+	font-size: 0.875rem;
+	color: var(--c-ink-2);
+}
+
+/* ── Account ──────────────────────────────────────────────────────────── */
+
+.c-acct {
+	max-width: 30rem;
+	padding-top: 0.5rem;
+}
+
+.c-acct-lede {
+	margin: 0.75rem 0 1.75rem;
+	color: var(--c-ink-2);
+}
+
+.c-acct-form {
+	display: grid;
+	gap: 1.25rem;
+}
+
+.c-acct-form .c-acct-lede {
+	margin: 0;
+}
+
+.c-acct-gap {
+	margin-top: 1.25rem;
+}
+
+.c-orders {
+	display: grid;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.c-orders-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
+	align-items: baseline;
+	gap: 0.5rem 1.5rem;
+	padding: 1rem 1.25rem;
+	border-radius: var(--c-r-btn);
+	background: var(--c-surface);
+	font-size: 0.9375rem;
+}
+
+.c-orders-ref {
+	color: var(--c-brand-text);
+	font-weight: 600;
+	overflow-wrap: anywhere;
+	text-decoration: underline;
+	text-decoration-color: transparent;
+}
+
+.c-orders-ref:hover {
+	text-decoration-color: currentColor;
+}
+
+.c-orders-state,
+.c-orders-items {
+	color: var(--c-ink-2);
+}
+
+.c-orders-total {
+	font-weight: 600;
+	text-align: right;
+}
+
+.c-acct-empty {
+	padding-top: 1rem;
+}
+
+/* ── Touch ─────────────────────────────────────────────────────────────── */
+
+@media (pointer: coarse) {
+	.c-textbtn {
+		min-height: 2.75rem;
+	}
+
+	.c-stepper,
+	.c-stepper button {
+		height: 2.75rem;
+	}
+
+	.c-stepper button {
+		width: 2.75rem;
+	}
+}
+
+/* ── Tablet and phone ─────────────────────────────────────────────────── */
+
+@media (max-width: 53.75rem) {
+	.c-co-cols,
+	.c-order-cols,
+	.c-cart {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 2.5rem;
+	}
+
+	.c-co-summary,
+	.c-cart-summary {
+		position: static;
+	}
+
+	.c-co-summary,
+	.c-order-sum,
+	.c-cart-summary {
+		padding: 1.25rem;
+		margin-inline: -0.25rem;
+	}
+
+	.c-co-title,
+	.c-order-title {
+		font-size: 1.625rem;
+		margin-bottom: 1.5rem;
+	}
+
+	.c-order-title {
+		margin-bottom: 0;
+	}
+
+	.c-cart-line {
+		grid-template-columns: 5rem minmax(0, 1fr) auto;
+		gap: 1rem;
+	}
+
+	.c-cart-thumb {
+		width: 5rem;
+		height: 6.25rem;
+	}
+
+	.c-orders-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 0.125rem 1rem;
+	}
+
+	.c-orders-state,
+	.c-orders-items {
+		font-size: 0.875rem;
+	}
+
+	.c-orders-items {
+		grid-column: 2;
+		grid-row: 2;
+		text-align: right;
+	}
+
+	.c-orders-state {
+		grid-row: 2;
+	}
+
+	.c-orders-total {
+		grid-row: 1;
+		grid-column: 2;
+	}
+}
+
+@media (max-width: 30rem) {
+	@supports selector(:popover-open) {
+		.c-drawer {
+			width: 100vw;
+			border-radius: 0;
+		}
+	}
+
+	.c-drawer-head {
+		padding-left: 1rem;
+		padding-right: 0.5rem;
+	}
+
+	.c-drawer-lines {
+		padding-inline: 1rem;
+	}
+
+	.c-drawer-foot {
+		padding-inline: 1rem;
+	}
+
+	.c-drawer-state {
+		padding-inline: 1rem;
+	}
+
+	.c-co-fields {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	/* The line total moves under the words: the picture keeps its width and
+	   the name gets the row. */
+	.c-cart-line {
+		grid-template-columns: 5rem minmax(0, 1fr);
+	}
+
+	.c-cart-money {
+		grid-column: 2;
+		justify-items: start;
+		text-align: left;
+	}
+}

@@ -12,6 +12,18 @@
  * styles — they are Tempered's today and harmless on any page.)
  */
 import type { ThemeModule, ThemeViews } from "./contract.js";
+import CounterAccountLoginView from "./counter/AccountLoginView.astro";
+import CounterAccountOrdersView from "./counter/AccountOrdersView.astro";
+import CounterAccountOrderView from "./counter/AccountOrderView.astro";
+import CounterAccountVerifyView from "./counter/AccountVerifyView.astro";
+import CounterCartView from "./counter/CartView.astro";
+import CounterCheckoutView from "./counter/CheckoutView.astro";
+import CounterHomeView from "./counter/HomeView.astro";
+import CounterLayout from "./counter/Layout.astro";
+import CounterOrderView from "./counter/OrderView.astro";
+import CounterPayView from "./counter/PayView.astro";
+import CounterProductView from "./counter/ProductView.astro";
+import CounterShopView from "./counter/ShopView.astro";
 import type { ThemeId } from "./manifest.js";
 import TemperedAccountLoginView from "./tempered/AccountLoginView.astro";
 import TemperedAccountOrdersView from "./tempered/AccountOrdersView.astro";
@@ -45,8 +57,32 @@ const tempered = {
 	},
 } satisfies ThemeModule & { views: ThemeViews };
 
+/** Every view its own, and the one theme whose chrome draws the cart's lines
+ *  (the bag drawer) — so the one theme that pays the shell's bag read. */
+const counter = {
+	id: "counter",
+	Layout: CounterLayout,
+	views: {
+		home: CounterHomeView,
+		shop: CounterShopView,
+		product: CounterProductView,
+		cart: CounterCartView,
+		checkout: CounterCheckoutView,
+		pay: CounterPayView,
+		order: CounterOrderView,
+		accountLogin: CounterAccountLoginView,
+		accountVerify: CounterAccountVerifyView,
+		accountOrders: CounterAccountOrdersView,
+		accountOrder: CounterAccountOrderView,
+	},
+	chrome: { cartLines: true },
+} satisfies ThemeModule & { views: ThemeViews };
+
 /** Every theme the manifest lists, and nothing else (held equal by test). */
-export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = { tempered };
+export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = {
+	tempered,
+	counter,
+};
 
 export function themeFor(id: ThemeId): ThemeModule {
 	return THEMES[id];

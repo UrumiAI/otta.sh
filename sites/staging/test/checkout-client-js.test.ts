@@ -245,6 +245,20 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/tempered/AccountOrderView.astro",
 				"components/HoldRibbon.astro",
 				"forms/AddToCartFields.astro",
+				// Counter's own commerce views and its bag drawer (the popover —
+				// no script), with the drawer's shared form partial.
+				"themes/counter/Layout.astro",
+				"themes/counter/BagDrawer.astro",
+				"themes/counter/HoldRibbon.astro",
+				"themes/counter/CartView.astro",
+				"themes/counter/CheckoutView.astro",
+				"themes/counter/PayView.astro",
+				"themes/counter/OrderView.astro",
+				"themes/counter/AccountLoginView.astro",
+				"themes/counter/AccountVerifyView.astro",
+				"themes/counter/AccountOrdersView.astro",
+				"themes/counter/AccountOrderView.astro",
+				"forms/CartLineFields.astro",
 			]),
 		);
 	});

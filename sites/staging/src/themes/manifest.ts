@@ -40,6 +40,12 @@ export const STORE_THEMES = [
 		description: "Condensed headlines and a live stock table.",
 		preview: "/theme-previews/tempered.webp",
 	},
+	{
+		id: "counter",
+		label: "Counter",
+		description: "Clean, calm and product-first.",
+		preview: "/theme-previews/counter.webp",
+	},
 ] as const satisfies readonly StoreThemeEntry[];
 
 export type ThemeId = (typeof STORE_THEMES)[number]["id"];

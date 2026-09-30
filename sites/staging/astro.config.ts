@@ -149,6 +149,60 @@ export default defineConfig({
 			display: "swap",
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
+		/**
+		 * Counter (src/themes/counter): ONE family for every role — the brief's
+		 * whole type system is Rethink Sans at weights 400–800, money included
+		 * (tabular figures, no mono face anywhere).
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and for Rethink Sans Google answers that
+		 * UA with a build that has NO `prep` table (the build a current browser
+		 * gets carries one). A TrueType font with no instructions is handed to
+		 * FreeType's AUTOHINTER — Chromium on Linux and Android — which rounds
+		 * every glyph's advance at text sizes, so body copy set as "lapt op",
+		 * "Heavyweig ht", "Cont ent". The build a current browser receives
+		 * carries the `prep` and renders correctly; that file is vendored at
+		 * src/themes/counter/fonts/ (OFL, licence beside it) and served by Astro
+		 * from this origin like every other face. It is the full variable font:
+		 * wght 400–800.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Rethink Sans",
+			cssVariable: "--f-counter-sans",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/counter/fonts/rethink-sans-variable-latin.woff2"],
+						weight: "400 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
 	],
 	integrations: [react(), emdash(buildEmdashOptions(egress))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*

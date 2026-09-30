@@ -232,9 +232,7 @@ describe("the bag's hold copy is static wall-clock time", () => {
 
 describe("only a theme that draws the bag pays for the read", () => {
 	test.each(STORE_THEMES.map((theme) => theme.id))("%s", (id) => {
-		// No theme opts in yet: the first theme whose chrome draws the lines
-		// (Counter's bag drawer) turns it on in its own change.
-		expect(themeFor(id).chrome?.cartLines === true).toBe(false);
+		expect(themeFor(id).chrome?.cartLines === true).toBe(id === "counter");
 	});
 
 	test("the read lives in lib/bag.ts, which never marks a response BUSY", () => {
@@ -319,6 +317,17 @@ describe("the middleware: a page that drew a bag is never shared-cached", () => 
 		);
 		// Before the page and again after it (a page's own hint re-enables the cache).
 		expect(ctx.cache.set.mock.calls).toEqual(drawsBag ? [[false], [false]] : []);
+	});
+
+	test("a page that sets a cache hint cannot re-enable the route cache for a bag page", async () => {
+		// Astro 7's `cache.set(options)` clears an earlier `set(false)`, and the
+		// route cache reads the options after `next()` returns.
+		const ctx = middlewareContext("/products?theme=counter", "cart-1");
+		await runMiddleware(ctx, () => {
+			ctx.cache.set({ maxAge: 60 });
+			return htmlPage();
+		});
+		expect(ctx.cache.set.mock.calls.at(-1)).toEqual([false]);
 	});
 
 	test.each(STORE_THEMES.map((theme) => theme.id))(

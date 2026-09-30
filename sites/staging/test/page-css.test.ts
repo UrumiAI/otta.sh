@@ -126,11 +126,17 @@ describe("every page reads the token layer and writes nothing of its own", () =>
 		}
 	});
 
-	test.each(FILES)("%s uses the theme's one radius", (name) => {
+	test.each(FILES)("%s takes its corners from the theme's radius tokens", (name) => {
 		// `var(--u-r)` for corners; `1px` is the half-height rounding of a 2–3px
-		// bar and `50%` is a dot — neither is a corner.
+		// bar, `50%` is a dot and `0` is no corner at all. Tempered has exactly
+		// one radius, so for it this IS "the one radius". A theme whose brief
+		// gives radii by ROLE (Counter's control / button / media / panel /
+		// pill, say) names them as tokens in its own theme.css — `var(--<prefix>-r-<role>)` — so a corner
+		// is still never a raw length written in a view.
 		for (const [, value = ""] of declarations(name).matchAll(/border-radius:\s*([^;]+);/g)) {
-			expect(value.trim(), `${name} invents a radius`).toMatch(/^(var\(--u-r\)|1px|50%)$/);
+			expect(value.trim(), `${name} invents a radius`).toMatch(
+				/^(var\(--u-r\)|var\(--[a-z]+-r-[a-z]+\)|0|1px|50%)$/,
+			);
 		}
 	});
 
@@ -287,6 +293,45 @@ describe("the shared button shape is shared (§2)", () => {
 	});
 });
 
+const MOTION = /animation[-a-z]*\s*:|transition[-a-z]*\s*:|@keyframes/;
+
+/** A view sheet of any theme but Tempered — the one theme whose budget is zero.
+ *  Every sheet such a theme ships beside its token layer (its `views.css`, and
+ *  e.g. Counter's `commerce.css`, the bag drawer and commerce views). */
+function isOtherThemeSheet(name: string): boolean {
+	return /^themes\/[^/]+\/[\w-]+\.css$/.test(name) && !name.startsWith("themes/tempered/");
+}
+
+/** Split `css` into what lies OUTSIDE every `@media (prefers-reduced-motion: <mode>)`
+ *  block and the blocks' own contents (braces balanced, so nested rules go with them). */
+function splitMotionQuery(css: string, mode: "no-preference" | "reduce"): [string, string[]] {
+	const opener = new RegExp(
+		`@media\\s*\\(\\s*prefers-reduced-motion:\\s*${mode}\\s*\\)\\s*\\{`,
+		"g",
+	);
+	let out = "";
+	const blocks: string[] = [];
+	let from = 0;
+	for (let match = opener.exec(css); match !== null; match = opener.exec(css)) {
+		out += css.slice(from, match.index);
+		let depth = 1;
+		let i = match.index + match[0].length;
+		for (; i < css.length && depth > 0; i++) {
+			if (css[i] === "{") depth++;
+			else if (css[i] === "}") depth--;
+		}
+		blocks.push(css.slice(match.index + match[0].length, i - 1));
+		from = i;
+		opener.lastIndex = i;
+	}
+	return [out + css.slice(from), blocks];
+}
+
+/** The CSS with every `@media (prefers-reduced-motion: no-preference) { … }` removed. */
+function withoutNoPreference(css: string): string {
+	return splitMotionQuery(css, "no-preference")[0];
+}
+
 describe("the motion budget, at page scope (§2, §6, §11)", () => {
 	test("no page animates: the theme's only motion is the two ribbons and the button", () => {
 		// The component sweep pins that HoldRibbon and PollRibbon are the only
@@ -306,11 +351,58 @@ describe("the motion budget, at page scope (§2, §6, §11)", () => {
 		// COMMENT mentioning `transition:` — and there is one in this very
 		// theme — fails the test, which trains the next author to phrase the
 		// prose around the tripwire instead of the rule around the CSS.
-		const animated = FILES.filter((name) =>
-			/animation[-a-z]*\s*:|transition[-a-z]*\s*:|@keyframes/.test(declarations(name)),
+		//
+		// THIS BUDGET IS TEMPERED'S. Another theme's `views.css` may carry its
+		// own authored motion (a card → product morph, a hover crossfade) —
+		// the rule for those is the next test, not this one.
+		const animated = FILES.filter((name) => !isOtherThemeSheet(name)).filter((name) =>
+			MOTION.test(declarations(name)),
 		);
 		expect(animated).toEqual([]);
 	});
+
+	test.each(FILES.filter(isOtherThemeSheet))(
+		"%s keeps every transition and animation inside prefers-reduced-motion: no-preference",
+		(name) => {
+			// A theme other than Tempered may animate — each has one authored
+			// motion moment — but only for a visitor who has not asked for less.
+			// Strip the `no-preference` blocks (braces balanced, so nested rules
+			// go with them) and nothing that moves may be left. LONGHANDS count,
+			// as above, and so does `view-transition-name`: naming an element is
+			// what makes it morph.
+			// The one thing allowed outside them is the brief's reduced-motion
+			// VARIANT — a plain fade — inside `prefers-reduced-motion: reduce`,
+			// held to exactly that by the next test.
+			const [rest] = splitMotionQuery(withoutNoPreference(declarations(name)), "reduce");
+			expect(rest).not.toMatch(MOTION);
+		},
+	);
+
+	test.each(FILES.filter(isOtherThemeSheet))(
+		"%s: under reduced motion, nothing moves — at most a fade",
+		(name) => {
+			// A reduced-motion block may carry the brief's fade (Counter's drawer:
+			// 150ms of opacity instead of the slide), and the discrete `display` /
+			// `overlay` a top-layer element needs to fade out at all. Nothing that
+			// MOVES: no transform, translate, scale, animation or keyframes.
+			const [, reduced] = splitMotionQuery(withoutNoPreference(declarations(name)), "reduce");
+			for (const block of reduced) {
+				expect(block, `${name} animates under reduced motion`).not.toMatch(
+					/animation[-a-z]*\s*:|@keyframes|view-transition-name/,
+				);
+				for (const [, value = ""] of block.matchAll(/transition[-a-z]*\s*:([^;]+);/g)) {
+					for (const part of value.split(",")) {
+						expect(part.trim(), `${name}: a reduced-motion transition that is not a fade`).toMatch(
+							/^(opacity|display|overlay)\s/,
+						);
+					}
+				}
+				expect(block, `${name} moves something under reduced motion`).not.toMatch(
+					/(?<![\w-])(transform|translate|scale|rotate)\s*:/,
+				);
+			}
+		},
+	);
 
 	test("and the shared button's transition is covered by the reduced-motion clamp", () => {
 		const tokens = readFileSync(path.join(SRC_DIR, THEME_SHEET), "utf8");
