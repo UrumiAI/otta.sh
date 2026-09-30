@@ -112,6 +112,18 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// would be fixing the wrong file.
 		heading: /^Pricing & inventory$/,
 	},
+	{
+		// Not a migration — the first console screen with no Block Kit original
+		// (its fallback, the Settings "Store theme" radio, stays). It is gated here
+		// anyway because this registry is the ONE list every console page must be
+		// on (`site-config.test.ts`); "migrated" is this list's history, not a
+		// condition of entry.
+		name: "Themes",
+		increment: "ADR-0014 amendment 2026-09-30",
+		path: "/themes",
+		// The H1 alone: the theme count is a sibling badge, not part of the heading.
+		heading: /^Themes$/,
+	},
 ];
 
 /** Screens ADR-0014 Decision 6 forbids migrating — pinned so a future

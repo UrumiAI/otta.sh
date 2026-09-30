@@ -586,3 +586,49 @@ export function performAction(
 /** The subject a Pricing & inventory write's transport refusal names. Exported
  *  so the screen states it once rather than at every call site. */
 export const PRODUCTS_ACT_SUBJECT = PRODUCTS_UNAVAILABLE;
+
+// ── wire shapes: Themes (ADR-0014 as amended 2026-09-30) ─────────────────────
+
+/** One theme card — the plugin's `ThemeWire`, mirrored. `preview` is a
+ *  same-origin path the plugin has already validated; `previewUrl` is the
+ *  storefront in this theme, honoured by the site for an admin only. */
+export interface ThemeSummary {
+	readonly id: string;
+	readonly label: string;
+	readonly description: string | null;
+	readonly preview: string | null;
+	readonly previewUrl: string;
+}
+
+export interface ThemesPayload {
+	readonly ok: true;
+	readonly themes: readonly ThemeSummary[];
+	readonly activeId: string;
+	/** Loading this URL ends the admin's preview session on the storefront. */
+	readonly exitPreviewUrl: string;
+}
+
+export interface ThemeActivatePayload {
+	readonly ok: true;
+	readonly activeId: string;
+	readonly notice: {
+		readonly variant: string;
+		readonly title: string;
+		readonly description: string;
+	};
+}
+
+const THEMES_UNAVAILABLE = "Themes are unavailable";
+
+export function fetchThemes(): Promise<Result<ThemesPayload>> {
+	return post<ThemesPayload>({ type: READ, resource: "themes.list" }, THEMES_UNAVAILABLE);
+}
+
+/** Make `themeId` the store's theme — the Settings "Store theme" radio's write,
+ *  through the same plugin function. */
+export function activateTheme(themeId: string): Promise<Result<ThemeActivatePayload>> {
+	return post<ThemeActivatePayload>(
+		{ type: ACT, action_id: "themes:activate", value: { themeId } },
+		"The theme could not be activated",
+	);
+}
