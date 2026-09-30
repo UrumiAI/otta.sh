@@ -84,6 +84,35 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
 	? "wrangler.local.jsonc"
 	: undefined;
 
+/**
+ * The latin `unicode-range`: the range on the face Google Fonts' css2 response
+ * comments as "latin", copied verbatim. It is what the Google provider emitted
+ * before the fonts were vendored and what the vendored latin-subset files
+ * cover. All three faces share it; `test/fonts-config.test.ts` pins each face
+ * to this list.
+ */
+export const LATIN_UNICODE_RANGE: [string, ...string[]] = [
+	"U+0000-00FF",
+	"U+0131",
+	"U+0152-0153",
+	"U+02BB-02BC",
+	"U+02C6",
+	"U+02DA",
+	"U+02DC",
+	"U+0304",
+	"U+0308",
+	"U+0329",
+	"U+2000-206F",
+	"U+20AC",
+	"U+2122",
+	"U+2191",
+	"U+2193",
+	"U+2212",
+	"U+2215",
+	"U+FEFF",
+	"U+FFFD",
+];
+
 export default defineConfig({
 	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
@@ -105,14 +134,17 @@ export default defineConfig({
 	 * Astro's Google provider (unifont) fetches css2 with a pinned macOS
 	 * Chrome/121 user agent, and Google answers a macOS UA with builds that have
 	 * NO `prep` table (macOS ignores hinting). Otherwise the files are the same:
-	 * for all three faces the only table that differs is that 7-byte `prep`
-	 * program. A TrueType font with no instructions is handed to FreeType's
-	 * AUTOHINTER (Chromium on Linux and Android), which rounds each glyph's
-	 * advance at text sizes, so body copy spaces unevenly. The files here are
-	 * the builds a Windows/Linux browser gets from Google, which carry `prep`.
+	 * for all three faces the only table that differs is `prep`. That table is
+	 * a 7-byte scan-control program (PUSHW 511 SCANCTRL PUSHB 4 SCANTYPE), not
+	 * real hinting — but its presence is what makes FreeType take the native
+	 * TrueType path. A font with no instructions is handed to FreeType's
+	 * AUTOHINTER instead (Chromium on Linux and Android), which rounds each
+	 * glyph's advance at text sizes, so body copy spaces unevenly. The files
+	 * here are the builds a Windows/Linux browser gets from Google, which carry
+	 * `prep`.
 	 *
-	 * Each file is the FULL variable font — every axis Google has for the
-	 * family, not just the ones requested before: Bricolage Grotesque opsz 12–96,
+	 * Each file is the full variable font (same axes as the previous Google
+	 * download): Bricolage Grotesque opsz 12–96,
 	 * wdth 75–100, wght 200–800; Schibsted Grotesk wght 400–900; Martian Mono
 	 * wdth 75–112.5, wght 100–800. The width contrast between the narrow display
 	 * face and the wide data face is the theme's loudest move, so
@@ -120,8 +152,8 @@ export default defineConfig({
 	 * `weight` keeps the ranges the theme uses (and the descriptors the Google
 	 * provider emitted), and no `stretch` descriptor is declared, exactly as
 	 * before, so matching and rendering are unchanged apart from the hinting.
-	 * `test/fonts-config.test.ts` pins the provider, the files, the `prep`
-	 * table and the axes.
+	 * `test/fonts-config.test.ts` pins the provider, the files, a non-empty
+	 * `prep` table, the axes, `display` and the unicode range.
 	 */
 	fonts: [
 		{
@@ -136,27 +168,7 @@ export default defineConfig({
 						weight: "400 800",
 						style: "normal",
 						display: "swap",
-						unicodeRange: [
-							"U+0000-00FF",
-							"U+0131",
-							"U+0152-0153",
-							"U+02BB-02BC",
-							"U+02C6",
-							"U+02DA",
-							"U+02DC",
-							"U+0304",
-							"U+0308",
-							"U+0329",
-							"U+2000-206F",
-							"U+20AC",
-							"U+2122",
-							"U+2191",
-							"U+2193",
-							"U+2212",
-							"U+2215",
-							"U+FEFF",
-							"U+FFFD",
-						],
+						unicodeRange: LATIN_UNICODE_RANGE,
 					},
 				],
 			},
@@ -172,27 +184,7 @@ export default defineConfig({
 						weight: "400 700",
 						style: "normal",
 						display: "swap",
-						unicodeRange: [
-							"U+0000-00FF",
-							"U+0131",
-							"U+0152-0153",
-							"U+02BB-02BC",
-							"U+02C6",
-							"U+02DA",
-							"U+02DC",
-							"U+0304",
-							"U+0308",
-							"U+0329",
-							"U+2000-206F",
-							"U+20AC",
-							"U+2122",
-							"U+2191",
-							"U+2193",
-							"U+2212",
-							"U+2215",
-							"U+FEFF",
-							"U+FFFD",
-						],
+						unicodeRange: LATIN_UNICODE_RANGE,
 					},
 				],
 			},
@@ -208,27 +200,7 @@ export default defineConfig({
 						weight: "300 700",
 						style: "normal",
 						display: "swap",
-						unicodeRange: [
-							"U+0000-00FF",
-							"U+0131",
-							"U+0152-0153",
-							"U+02BB-02BC",
-							"U+02C6",
-							"U+02DA",
-							"U+02DC",
-							"U+0304",
-							"U+0308",
-							"U+0329",
-							"U+2000-206F",
-							"U+20AC",
-							"U+2122",
-							"U+2191",
-							"U+2193",
-							"U+2212",
-							"U+2215",
-							"U+FEFF",
-							"U+FFFD",
-						],
+						unicodeRange: LATIN_UNICODE_RANGE,
 					},
 				],
 			},

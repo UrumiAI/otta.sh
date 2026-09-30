@@ -103,13 +103,15 @@ The contrast between them is the theme's loudest move — don't flatten it.
 The files are the latin-subset variable fonts Google serves a Windows or Linux browser,
 checked in with each family's SIL OFL beside it. They are **vendored rather than fetched by
 Astro's Google provider** because that provider asks Google with a macOS user agent, and
-Google answers macOS with builds that carry no `prep` (hinting) table. A TrueType font with
-no instructions goes to FreeType's autohinter on Linux and Android Chromium, which rounds
-each glyph's advance at text sizes, so body copy spaces unevenly. Apart from that one table
-the two builds are identical.
+Google answers macOS with builds that carry no `prep` table. That table is a 7-byte
+scan-control program (`PUSHW 511 SCANCTRL PUSHB 4 SCANTYPE`), not real hinting, but its
+presence is what makes FreeType take the native TrueType path. A font with no instructions
+goes to FreeType's autohinter instead on Linux and Android Chromium, which rounds each
+glyph's advance at text sizes, so body copy spaces unevenly. Apart from that one table the
+two builds are identical.
 
-Each file is the family's full variable font, so every axis the theme sets is present. What
-the three entries in `astro.config.ts` ship:
+Each file is the full variable font (same axes as the previous Google download), so every
+axis the theme sets is present. What the three entries in `astro.config.ts` ship:
 
 | Face | Weight range declared | Axes in the file |
 |---|---|---|
@@ -120,10 +122,16 @@ the three entries in `astro.config.ts` ship:
 Drop the `wdth` axis from a file and every `font-variation-settings: "wdth" …` in the theme
 becomes a silent no-op that renders at the default width, with no error anywhere.
 `test/fonts-config.test.ts` pins the local provider, that each file exists with its OFL, that
-each carries a `prep` table, and that the display and data files carry their `wdth` (and
-`opsz`) axes. To refresh a file, fetch the family's css2 with a current Windows or Linux
-browser user agent, take the `/* latin */` face, and check its tables (`ttx -l`) still list
-`prep`.
+each carries a non-empty `prep` table (FreeType checks the table's size, not just its
+presence), and that the display and data files carry their `wdth` (and `opsz`) axes.
+
+To refresh a file, fetch the family's css2 with a current Windows or Linux browser user
+agent, for example
+`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36`,
+and take the `/* latin */` face. Before checking it in, confirm both that its tables still
+list `prep` and that its `fvar` axes match the table above, e.g.
+`uvx --from 'fonttools[woff]' ttx -l file.woff2` for the table list (and `prep`'s size) and
+`uvx --from 'fonttools[woff]' ttx -t fvar -o - file.woff2` for the axes.
 
 ### The two data recipes
 
