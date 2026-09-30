@@ -240,4 +240,28 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		expect(shell).toContain("fallbackSheetFor(theme, props.view)");
 		expect(shell).toContain('<link rel="stylesheet" href={viewSheet} slot="head" />');
 	});
+
+	test("no theme opts into the chrome's cart-lines read yet", () => {
+		// `ThemeModule.chrome.cartLines` makes the shell pay one cart read on every
+		// non-checkout page. Until a theme's chrome actually draws the bag's lines,
+		// setting it would pay that read for nothing.
+		expect(registry).not.toMatch(/cartLines\s*:/);
+	});
+
+	test("the shell reads the bag only for an opted-in theme, off the checkout flow", () => {
+		const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
+		// Opted in, not a checkout-flow view, and a cart link in the chrome to
+		// hang the bag on — all three, or no read.
+		expect(shell).toMatch(
+			/const drawsBag =\s*theme\.chrome\?\.cartLines === true &&\s*!BAGLESS_VIEWS\.has\(props\.view \?\? ""\) &&\s*chromeNav\.some\(\(item\) => item\.isCart\);/,
+		);
+		expect(shell).toMatch(/const bagPending = drawsBag\s*\?\s*readBag\(/);
+		expect(shell).toContain('new Set(["cart", "checkout", "pay", "order"])');
+		// Started before the settings read is awaited, so the two run together.
+		expect(shell.indexOf("const bagPending")).toBeLessThan(shell.indexOf("await settingsRead"));
+		// One call site, no other commerce read in the shell.
+		expect(shell.match(/readBag\(/g)).toHaveLength(1);
+		expect(shell).not.toMatch(/dispatchOttaRoute/);
+		expect(shell).not.toMatch(/markBusy/);
+	});
 });

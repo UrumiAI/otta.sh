@@ -216,6 +216,16 @@ describe("§8 — the home hero and its degraded rule", () => {
 		expect(HOME).toContain("const rows = tapeRows(view)");
 	});
 
+	test("the home cards ride the same degraded rule: no rows ⇒ no cards", () => {
+		// Every theme but Tempered leads its home with `model.cards`; they must
+		// vanish exactly when the tape does, so no theme shows a card for a shelf
+		// the tape left out — nor a grid of "price unavailable" placeholders.
+		expect(HOME).toMatch(
+			/const cards: HomeModel\["cards"\] =\s*rows\.length === 0 \|\| view === null\s*\? \[\]/,
+		);
+		expect(HOME).not.toContain("Price unavailable");
+	});
+
 	test("a degraded home shows NO error box — that is the catalog page's job", () => {
 		expect(HOME).not.toContain("Notice");
 		expect(HOME_VIEW).not.toContain("Notice");

@@ -104,6 +104,29 @@ if (isBusyResult(result)) markBusy(Astro.response);
 
 const rows = tapeRows(view);
 
+/* The same window as catalog cards, in catalog order — for a theme whose home
+   leads with cards rather than a tape. Mapped exactly as the shop page maps
+   them, so a card here and there cannot disagree about the same product:
+   content always, a price only when commerce answered and the product is
+   purchasable — never a zero.
+   The DEGRADED RULE rides along: no tape ⇒ no cards. When either read failed
+   (or answered BUSY) the tape is omitted, and so is every card — no theme can
+   show a card for a shelf the tape would have left out, nor a grid of
+   "price unavailable" placeholders on the front door. */
+const cards: HomeModel["cards"] =
+	rows.length === 0 || view === null
+		? []
+		: view.map((product) => ({
+				href: product.url ?? `/products/${product.slug ?? product.id}`,
+				slug: product.slug ?? product.id,
+				title: product.title,
+				description: product.description ?? null,
+				image: product.images?.[0] ?? null,
+				price: product.purchasable && product.price !== null ? product.price.formatted : null,
+				priceNote: undefined,
+				availability: product.availability,
+			}));
+
 /* §7: the currency the page quoted, from the view model that knows it. */
 const currency = view?.find((product) => product.price !== null)?.price?.currency ?? null;
 
@@ -128,6 +151,7 @@ const model: HomeModel = {
 	shopLabel,
 	rows,
 	count,
+	cards,
 };
 ---
 

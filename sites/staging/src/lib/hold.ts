@@ -153,3 +153,22 @@ export function absoluteExpiry(expiresAt: string | null | undefined): string | n
 	if (Number.isNaN(expiry)) return null;
 	return `${new Date(expiry).toISOString().slice(11, 19)} UTC`;
 }
+
+/**
+ * The hold's expiry as a wall clock — "4:52 pm UTC" — for copy that must stay
+ * true for as long as the page is open without a script to count (a drawer's
+ * static line, a stamp's fixed text).
+ *
+ * The minute is FLOORED, so the copy never promises time the shopper does not
+ * have, and UTC is named for `absoluteExpiry`'s reason: the server cannot know
+ * the shopper's zone. `null` for an expiry that does not parse.
+ */
+export function wallClock(expiresAt: string): string | null {
+	const expiry = Date.parse(expiresAt);
+	if (Number.isNaN(expiry)) return null;
+	const at = new Date(expiry);
+	const hours = at.getUTCHours();
+	const minutes = at.getUTCMinutes();
+	const twelve = hours % 12 === 0 ? 12 : hours % 12;
+	return `${twelve}:${minutes < 10 ? `0${minutes}` : minutes} ${hours < 12 ? "am" : "pm"} UTC`;
+}
