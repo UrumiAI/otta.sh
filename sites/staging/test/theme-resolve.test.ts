@@ -178,7 +178,7 @@ describe("round trip — the plugin's kv write is the site's getPluginSetting re
 	});
 
 	test("a saved id this build does not ship falls back to Tempered", async () => {
-		await save("jumble");
+		await save("not-a-shipped-theme");
 		expect(await readInRequest(() => readStoredThemeId())).toBe("tempered");
 	});
 

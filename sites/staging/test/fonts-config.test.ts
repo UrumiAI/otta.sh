@@ -46,6 +46,7 @@ describe("astro.config fonts", () => {
 			"--f-batch-body",
 			"--f-batch-display",
 			"--f-counter-sans",
+			"--f-jumble-sans",
 			"--f-tempered-body",
 			"--f-tempered-data",
 			"--f-tempered-display",
@@ -144,6 +145,17 @@ function woff2Tables(bytes: Buffer): { tags: string[]; tables: Map<string, Buffe
 	return { tags: entries.map(([tag]) => tag), tables };
 }
 
+/** The variation axes a font's `fvar` declares. */
+function fvarAxes(bytes: Buffer): string[] {
+	const fvar = woff2Tables(bytes).tables.get("fvar");
+	expect(fvar).toBeDefined();
+	const table = fvar as Buffer;
+	const axesAt = table.readUInt16BE(4);
+	return Array.from({ length: table.readUInt16BE(8) }, (_, i) =>
+		table.subarray(axesAt + i * 20, axesAt + i * 20 + 4).toString("latin1"),
+	);
+}
+
 /**
  * THE VENDORED FACES. Every theme but Tempered serves its faces from files
  * checked in beside the theme, NOT through the Google provider, and the
@@ -226,6 +238,29 @@ describe("Batch's Zilla Slab and Karla (vendored)", () => {
 		["Zilla Slab", zilla],
 		["Karla", karla],
 	])("%s ships with its OFL licence beside it", (_name, font) => expectOflBeside(font));
+});
+
+/** Jumble: ONE family, Recursive; its playfulness is the Casual axis. */
+describe("Jumble's Recursive (vendored)", () => {
+	const recursive = vendored("--f-jumble-sans");
+	const variant = recursive.options.variants[0];
+
+	test("is Recursive, from the local provider, as one variable variant", () => {
+		expect(recursive.name).toBe("Recursive");
+		expect(recursive.provider.name).toBe("local");
+		expect(recursive.options.variants).toHaveLength(1);
+		expect(variant?.weight).toBe("300 1000");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "fvar", "GPOS"]);
+	});
+
+	test("its variable axes are exactly wght and CASL — the Casual voice, and no MONO", () => {
+		expect(fvarAxes(readFileSync(fileOf(variant?.src[0]))).toSorted()).toEqual(["CASL", "wght"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(recursive));
 });
 
 /** Counter: ONE family for every role, money included. */

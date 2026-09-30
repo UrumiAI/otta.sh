@@ -1,0 +1,62 @@
+---
+/**
+ * Jumble's shop (brief "Layout (c)"): the title in casual 800 with its count
+ * across the same line, then the products 3-up (2-up on a phone), each on its
+ * own colour field (`Card.astro`).
+ *
+ * Every notice sits on the lavender surface, never on a colour field. The
+ * empty shop is a surface too: one line, and the way to the admin.
+ *
+ * Presentation only: `src/pages/products/index.astro` reads the catalog,
+ * decides which of the three states this is, chooses the degraded notice's
+ * lead (BUSY copy included) and maps every card.
+ */
+import type { ShopModel } from "../contract.js";
+import Card from "./Card.astro";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: ShopModel;
+}
+
+const { model } = Astro.props;
+---
+
+<div class="j-view j-wrap j-shop">
+	{
+		model.state === "unavailable" ? (
+			/* Not the empty state: an outage is not a statement about the shop. */
+			<div class="j-empty">
+				<h1 class="j-h1">The shop</h1>
+				<p>The catalog is unavailable right now. Try again in a moment.</p>
+			</div>
+		) : model.state === "empty" ? (
+			<div class="j-empty">
+				<h1 class="j-h1">No products yet.</h1>
+				<p>Create a product in the admin, price it there, and it appears here with live stock.</p>
+				<a class="u-btn u-btn-ghost" href={model.adminHref}>
+					Open the admin
+				</a>
+			</div>
+		) : (
+			<>
+				<div class="j-sec j-sec-top">
+					<h1 class="j-h1">The shop</h1>
+					{model.countLabel !== null && <p class="j-sec-meta">{model.countLabel}</p>}
+				</div>
+				{model.degradedNotice !== null && (
+					<div class="j-notice-slot">
+						<Notice lead={model.degradedNotice.lead}>
+							The catalog below is complete. Check back in a moment for live prices.
+						</Notice>
+					</div>
+				)}
+				<div class="j-grid">
+					{model.cards.map((card) => (
+						<Card card={card} />
+					))}
+				</div>
+			</>
+		)
+	}
+</div>

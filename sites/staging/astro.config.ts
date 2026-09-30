@@ -269,6 +269,61 @@ export default defineConfig({
 			},
 		},
 		/**
+		 * Jumble (src/themes/jumble) sets everything in ONE variable family,
+		 * Recursive: wght 300–1000 and its Casual axis (CASL 0–1), which is
+		 * the theme's playfulness — CASL 1 for things you play with (titles,
+		 * buttons, prices), CASL 0 for things you read. MONO is not in the
+		 * file (Google pins it at its default, 0): no monospace in any theme
+		 * but Tempered.
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, for a
+		 * measured defect, not taste. Unifont fetches Google's css2
+		 * with a pinned Chrome/121 user agent, and for Recursive Google answers
+		 * that UA with a build that has NO `prep` table (otherwise identical to
+		 * the current build, table for table). An uninstructed TrueType font is
+		 * handed to FreeType's AUTOHINTER (Chromium on Linux and Android), which
+		 * rounds glyph advances at text sizes and sets body copy unevenly. The
+		 * build a current browser receives carries the `prep`; that file is
+		 * vendored at src/themes/jumble/fonts/ (OFL, licence beside it) and
+		 * served by Astro from this origin like every other face.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Recursive",
+			cssVariable: "--f-jumble-sans",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/jumble/fonts/recursive-variable-latin.woff2"],
+						weight: "300 1000",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
 		 * Counter (src/themes/counter): ONE family for every role — the brief's
 		 * whole type system is Rethink Sans at weights 400–800, money included
 		 * (tabular figures, no mono face anywhere).

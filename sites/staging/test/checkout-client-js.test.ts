@@ -271,6 +271,18 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/batch/AccountVerifyView.astro",
 				"themes/batch/AccountOrdersView.astro",
 				"themes/batch/AccountOrderView.astro",
+				// Jumble's own commerce views and its draining Sun pill (markup
+				// only — the /cart page's HoldClock ticks it; the hop is CSS).
+				"themes/jumble/Layout.astro",
+				"themes/jumble/HoldRibbon.astro",
+				"themes/jumble/CartView.astro",
+				"themes/jumble/CheckoutView.astro",
+				"themes/jumble/PayView.astro",
+				"themes/jumble/OrderView.astro",
+				"themes/jumble/AccountLoginView.astro",
+				"themes/jumble/AccountVerifyView.astro",
+				"themes/jumble/AccountOrdersView.astro",
+				"themes/jumble/AccountOrderView.astro",
 			]),
 		);
 	});

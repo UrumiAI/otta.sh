@@ -1,0 +1,152 @@
+---
+/**
+ * Jumble's Layout — the document shell and the chrome (theme-briefs.md §4,
+ * "Layout (a)"): a 72px white header with the wordmark in casual 900 on the
+ * left, the menu beside it, and the account and the bag on the right — the bag
+ * a royal pill carrying a Sun badge with the count. The footer is a Sun field
+ * with indigo words, rounded like every other field and inset from the edges.
+ *
+ * PRESENTATION ONLY. Everything arrives on `chrome`, built by
+ * `src/layouts/Storefront.astro` (the guarded CMS reads, their fallbacks, the
+ * Account link, the cart count and its spoken label, the currency). The menu is
+ * the operator's and is printed as given — its labels too ("Cart", not the
+ * brief's "Bag") — and only SPLIT: the account and the bag go right.
+ *
+ * NOT DRAWN, deliberately: the brief's "Gifts by age" menu item and the
+ * footer's "Made in our workshop in <town>". This store has no age data and no
+ * town behind them; the footer says what is true instead.
+ *
+ * UNPORTED PAGES (the site 404, and anything a page renders in the default
+ * slot) have no Jumble view around them; views.css gives them a centred column
+ * on the white ground and they take Jumble's colours and face through the
+ * `--u-*` contract (theme.css). Every commerce view is Jumble's own.
+ *
+ * THE BAG is where the bag page's hop lands (`CartView.astro`,
+ * `commerce.css`): on `/cart`, on add, it squashes and its badge pops as the
+ * toy arrives. The badge is `data-motion="essential"` for one reason only — so
+ * theme.css's reduced-motion clamp lets its 150ms pulse (an opacity flash, the
+ * brief's reduced-motion variant of the hop) through; it moves nothing.
+ *
+ * STYLES are linked through `?url` (the registry imports every theme, so a
+ * theme `.astro` file carries no `<style>`): `theme.css` is the tokens, the
+ * shared recipes and the catalog's motion; `views.css` is the chrome and the
+ * three catalog views; `commerce.css` the bag, checkout, pay, order and
+ * account views, the draining hold pill and the hop. The face: Recursive,
+ * self-hosted through Astro's font API under `--f-jumble-sans`
+ * (astro.config.ts).
+ */
+import { Font } from "astro:assets";
+import { isAccountLink } from "../../lib/nav.js";
+import type { ChromeModel } from "../contract.js";
+import commerceHref from "./commerce.css?url";
+import themeHref from "./theme.css?url";
+import viewsHref from "./views.css?url";
+
+interface Props {
+	chrome: ChromeModel;
+}
+
+const { chrome } = Astro.props;
+const menu = chrome.navItems.filter((item) => !item.isCart && !isAccountLink(item.url));
+const account = chrome.navItems.find((item) => !item.isCart && isAccountLink(item.url)) ?? null;
+const bag = chrome.navItems.find((item) => item.isCart) ?? null;
+---
+
+<!doctype html>
+<html lang="en" data-theme-id={chrome.themeId}>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="light dark" />
+		<title>{chrome.fullTitle}</title>
+		{chrome.description && <meta name="description" content={chrome.description} />}
+		<Font cssVariable="--f-jumble-sans" preload />
+		<link rel="stylesheet" href={themeHref} />
+		<link rel="stylesheet" href={viewsHref} />
+		<link rel="stylesheet" href={commerceHref} />
+		<slot name="head" />
+		{/* A block stack on a Sun field — the whole theme in 32px. Inline, so
+		    no second request. */}
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23FFD23F'/%3E%3Crect x='7' y='21' width='18' height='5' rx='2' fill='%231B1464'/%3E%3Cpath d='M9 21v-6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6h-4a3 3 0 0 0-6 0z' fill='%232A1FA0'/%3E%3Ccircle cx='16' cy='9' r='4' fill='%23FF9CC9'/%3E%3C/svg%3E"
+		/>
+	</head>
+	<body>
+		<div class="j-skip-shell">
+			<a href="#main" class="j-skip-link">Skip to the main content</a>
+		</div>
+		<header class="j-head">
+			<div class="j-wrap j-head-row">
+				<a href="/" class="j-word">{chrome.siteTitle}</a>
+				{
+					menu.length > 0 && (
+						<nav class="j-nav" aria-label="Primary">
+							{menu.map((item) => (
+								<a href={item.url} data-home={item.url === "/" ? "" : undefined}>
+									{item.label}
+								</a>
+							))}
+						</nav>
+					)
+				}
+				<div class="j-right">
+					{
+						account !== null && (
+							<a class="j-account" href={account.url}>
+								{account.label}
+							</a>
+						)
+					}
+					{
+						bag !== null && (
+							<a class="j-bag" href={bag.url}>
+								{bag.label}
+								{chrome.cartCount !== null && (
+									<Fragment>
+										<span class="j-badge j-figures" aria-hidden="true" data-motion="essential">
+											{chrome.cartCount}
+										</span>
+										<span class="u-sr-only">, {chrome.cartCountLabel}</span>
+									</Fragment>
+								)}
+							</a>
+						)
+					}
+				</div>
+			</div>
+		</header>
+		<main id="main" class="j-main">
+			<slot />
+		</main>
+		<footer class="j-foot">
+			<div class="j-foot-grid">
+				<div class="j-foot-about">
+					<p class="j-foot-word">{chrome.siteTitle}</p>
+					<p>Content by EmDash, commerce by Otta.</p>
+				</div>
+				{
+					chrome.navItems.length > 0 && (
+						<nav class="j-foot-nav" aria-label="Footer">
+							<ul>
+								{chrome.navItems.map((item) => (
+									<li>
+										<a href={item.url}>{item.label}</a>
+									</li>
+								))}
+							</ul>
+						</nav>
+					)
+				}
+				{
+					chrome.currency !== null && (
+						<p class="j-foot-tag">
+							Prices in <span class="u-mono">{chrome.currency}</span>
+						</p>
+					)
+				}
+			</div>
+		</footer>
+	</body>
+</html>

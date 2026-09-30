@@ -36,6 +36,18 @@ import CounterOrderView from "./counter/OrderView.astro";
 import CounterPayView from "./counter/PayView.astro";
 import CounterProductView from "./counter/ProductView.astro";
 import CounterShopView from "./counter/ShopView.astro";
+import JumbleAccountLoginView from "./jumble/AccountLoginView.astro";
+import JumbleAccountOrdersView from "./jumble/AccountOrdersView.astro";
+import JumbleAccountOrderView from "./jumble/AccountOrderView.astro";
+import JumbleAccountVerifyView from "./jumble/AccountVerifyView.astro";
+import JumbleCartView from "./jumble/CartView.astro";
+import JumbleCheckoutView from "./jumble/CheckoutView.astro";
+import JumbleHomeView from "./jumble/HomeView.astro";
+import JumbleLayout from "./jumble/Layout.astro";
+import JumbleOrderView from "./jumble/OrderView.astro";
+import JumblePayView from "./jumble/PayView.astro";
+import JumbleProductView from "./jumble/ProductView.astro";
+import JumbleShopView from "./jumble/ShopView.astro";
 import type { ThemeId } from "./manifest.js";
 import TemperedAccountLoginView from "./tempered/AccountLoginView.astro";
 import TemperedAccountOrdersView from "./tempered/AccountOrdersView.astro";
@@ -88,6 +100,26 @@ const batch = {
 	},
 } satisfies ThemeModule & { views: ThemeViews };
 
+/** Every view its own. No drawer, so no chrome cart read: the bag is `/cart`,
+ *  where the newest line hops up into the header bag. */
+const jumble = {
+	id: "jumble",
+	Layout: JumbleLayout,
+	views: {
+		home: JumbleHomeView,
+		shop: JumbleShopView,
+		product: JumbleProductView,
+		cart: JumbleCartView,
+		checkout: JumbleCheckoutView,
+		pay: JumblePayView,
+		order: JumbleOrderView,
+		accountLogin: JumbleAccountLoginView,
+		accountVerify: JumbleAccountVerifyView,
+		accountOrders: JumbleAccountOrdersView,
+		accountOrder: JumbleAccountOrderView,
+	},
+} satisfies ThemeModule & { views: ThemeViews };
+
 /** Every view its own, and the one theme whose chrome draws the cart's lines
  *  (the bag drawer) — so the one theme that pays the shell's bag read. */
 const counter = {
@@ -113,6 +145,7 @@ const counter = {
 export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = {
 	tempered,
 	batch,
+	jumble,
 	counter,
 };
 

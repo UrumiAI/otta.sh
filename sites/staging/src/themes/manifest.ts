@@ -47,6 +47,12 @@ export const STORE_THEMES = [
 		preview: "/theme-previews/batch.webp",
 	},
 	{
+		id: "jumble",
+		label: "Jumble",
+		description: "Sunny, rounded and playful — a toy shop.",
+		preview: "/theme-previews/jumble.webp",
+	},
+	{
 		id: "counter",
 		label: "Counter",
 		description: "Clean, calm and product-first.",

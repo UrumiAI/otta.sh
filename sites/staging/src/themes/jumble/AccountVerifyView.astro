@@ -1,0 +1,54 @@
+---
+/**
+ * Jumble's verify step — where the emailed magic link lands (issue #306), on
+ * the same lavender field as the sign-in.
+ *
+ * THIS PAGE REDEEMS NOTHING: it renders one button that POSTs the challenge and
+ * token to `/account/verify/confirm`, because mail scanners pre-fetch links and
+ * a redeeming GET would spend the single-use token. The two values are printed
+ * ONLY into the two hidden inputs that form needs. The referrer policy
+ * (`same-origin`, deliberately not `no-referrer`) is the page's, in <head>.
+ */
+import type { AccountVerifyModel } from "../contract.js";
+import Field from "./Field.astro";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountVerifyModel;
+}
+
+const { usable, challenge, token, invalidMessage } = Astro.props.model;
+---
+
+<div class="j-view">
+	<div class="j-wrap j-page">
+		<div class="j-panel j-acct">
+			<div class="j-centre">
+				<Field class="j-acct-toy" seed="sign-in" image={null} field={5} />
+				<h1 class="j-title">Sign in</h1>
+			</div>
+
+			{
+				usable ? (
+					<form method="POST" action="/account/verify/confirm" class="j-acct-form">
+						<input type="hidden" name="challenge" value={challenge} />
+						<input type="hidden" name="token" value={token} />
+						<p class="j-lede j-centre">Continue to finish signing in. The link works once.</p>
+						<button type="submit" class="u-btn j-co-go">
+							Continue signing in
+						</button>
+					</form>
+				) : (
+					<>
+						<div class="j-notice-slot">
+							<Notice tone="error">{invalidMessage}</Notice>
+						</div>
+						<a class="u-btn u-btn-ghost j-co-go" href="/account/login">
+							Request a new sign-in link
+						</a>
+					</>
+				)
+			}
+		</div>
+	</div>
+</div>
