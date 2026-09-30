@@ -283,6 +283,20 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/jumble/AccountVerifyView.astro",
 				"themes/jumble/AccountOrdersView.astro",
 				"themes/jumble/AccountOrderView.astro",
+				// Pressing's own commerce views, its line hold chip and its bag
+				// strip (markup only — /cart's HoldClock ticks them; the rise and
+				// the sodium crossfade are CSS), drawn by the Layout off /cart too.
+				"themes/pressing/Layout.astro",
+				"themes/pressing/BagStrip.astro",
+				"themes/pressing/HoldRibbon.astro",
+				"themes/pressing/CartView.astro",
+				"themes/pressing/CheckoutView.astro",
+				"themes/pressing/PayView.astro",
+				"themes/pressing/OrderView.astro",
+				"themes/pressing/AccountLoginView.astro",
+				"themes/pressing/AccountVerifyView.astro",
+				"themes/pressing/AccountOrdersView.astro",
+				"themes/pressing/AccountOrderView.astro",
 			]),
 		);
 	});

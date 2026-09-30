@@ -41,6 +41,12 @@ export const STORE_THEMES = [
 		preview: "/theme-previews/tempered.webp",
 	},
 	{
+		id: "pressing",
+		label: "Pressing",
+		description: "Record-sleeve blue, sleeve pink and big type.",
+		preview: "/theme-previews/pressing.webp",
+	},
+	{
 		id: "batch",
 		label: "Batch",
 		description: "Kraft paper, a letterpress label and a green stamp.",

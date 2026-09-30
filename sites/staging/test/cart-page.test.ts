@@ -93,6 +93,11 @@ const ARM_ANCHORS: Readonly<Record<string, { terminal: string; live: string; res
 		live: 'class="j-cart"',
 		restart: 'class="j-cart-terminal-restart"',
 	},
+	"themes/pressing/CartView.astro": {
+		terminal: 'class="pr-cart-terminal"',
+		live: 'class="pr-cart"',
+		restart: 'class="pr-cart-terminal-restart"',
+	},
 };
 
 /**

@@ -150,6 +150,61 @@ export default defineConfig({
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
 		/**
+		 * Pressing (src/themes/pressing) sets everything in ONE family, Archivo,
+		 * and gets its two voices from the width axis: titles EXPANDED (wdth 125,
+		 * 800), body at normal width (wdth 100, 400).
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and for Archivo Google answers that UA
+		 * with a build that has NO `prep` table (byte-for-byte the current
+		 * build minus that one 7-byte program). A TrueType font with no
+		 * instructions is handed to FreeType's AUTOHINTER — Chromium on Linux
+		 * and Android — which rounds every glyph's advance at text sizes, so
+		 * body copy set as "lapt op", "Tendie-cut", "Cont ent". The build a
+		 * current browser receives carries the `prep` and renders correctly;
+		 * that file is vendored at src/themes/pressing/fonts/ (OFL, licence
+		 * beside it) and served by Astro from this origin like every other face.
+		 * It is the full variable font: wght 100–900, wdth 62–125.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Archivo",
+			cssVariable: "--f-pressing-body",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/pressing/fonts/archivo-variable-latin.woff2"],
+						weight: "100 900",
+						stretch: "62% 125%",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
 		 * Batch (src/themes/batch): a letterpress slab for titles and prices,
 		 * set at two static cuts (Zilla Slab has no variable file), and Karla
 		 * for everything else across its whole weight range.

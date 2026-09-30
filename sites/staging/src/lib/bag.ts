@@ -1,8 +1,9 @@
 /**
  * The chrome's bag — the cart's lines, read for a theme whose CHROME draws them
- * outside `/cart` (Counter's drawer). Opt-in: `layouts/Storefront.astro` calls
- * this only when the active theme sets `chrome.cartLines`, and never on the
- * checkout flow, so no other theme and no other page pays for it.
+ * outside `/cart` (Counter's drawer, Pressing's bag strip). Opt-in:
+ * `layouts/Storefront.astro` calls this only when the active theme sets
+ * `chrome.cartLines`, and never on the checkout flow, so no other theme and no
+ * other page pays for it.
  *
  * ONE cart read (the same public `storefront/cart/read` `/cart` makes) and, when
  * the cart has lines, ONE batched, request-cached content read for their names
@@ -127,6 +128,7 @@ export async function readBag(request: BagRequest): Promise<BagModel> {
 			artKey: content?.slug ?? line.productId ?? line.sku,
 			money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
 			hold: bagHold(line.expiresAt, now),
+			expiresAt: line.expiresAt,
 			updateKey: crypto.randomUUID(),
 			removeKey: crypto.randomUUID(),
 		};

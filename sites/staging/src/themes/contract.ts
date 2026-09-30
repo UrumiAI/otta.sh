@@ -56,7 +56,8 @@ export interface ChromeModel {
 	currency: string | null;
 	themeId: ThemeId;
 	/**
-	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer).
+	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer,
+	 * a strip).
 	 * `null` unless the active theme opts in ({@link ThemeChromeNeeds}) AND this
 	 * page is one the bag is drawn on — never on the checkout flow (`/cart`,
 	 * `/checkout`, `/checkout/pay`, `/orders/<id>`), which is its own summary.
@@ -87,6 +88,13 @@ export interface BagLineModel {
 	 * outside `/cart` (ADR-0012). `null` when the line took no reservation.
 	 */
 	hold: { state: "held" | "expiring" | "released"; text: string } | null;
+	/**
+	 * The wire line's own `expiresAt`, verbatim (as `CartLineModel.line` carries
+	 * it) — for a chrome that states ONE hold for the whole bag (Pressing's
+	 * strip: the one that runs out first) and so must compare them. Rendered only
+	 * as static wall-clock copy (`lib/hold.ts`'s `wallClock`), never counted.
+	 */
+	expiresAt: string | null;
 	/** One fresh key per rendered form: the update form (both steppers) and remove. */
 	updateKey: string;
 	removeKey: string;

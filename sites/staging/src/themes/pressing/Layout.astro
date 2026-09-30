@@ -1,0 +1,161 @@
+---
+/**
+ * Pressing's Layout — the document shell and the chrome. A record sleeve for
+ * an independent label: a 64px ultramarine header with the wordmark set
+ * expanded, the nav in muted 14/600 with an underline that draws on hover,
+ * and the bag as the one pink pill in the bar. The footer is a band of the
+ * sleeve blue.
+ *
+ * PRESENTATION ONLY. Everything here arrives on `chrome`, built by
+ * `src/layouts/Storefront.astro`; this file reads nothing and decides nothing
+ * (`themes-boundary.test.ts`). Splitting the menu into a left group and a
+ * right "Account / Bag" group is placement, keyed off the model's own
+ * `isCart` flag and nav.ts's account test — no item is added or dropped.
+ *
+ * THE BAG STRIP. Pressing opts into the shell's bag read (`chrome.cartLines`),
+ * so on every page that draws the bag — never the checkout flow, where
+ * `chrome.bag` is `null` — a bag with lines gets `BagStrip` at the foot of the
+ * viewport: the hold that runs out first as a STATIC wall clock ("Held for you
+ * until 4:52 pm UTC", floored — there is no countdown script off `/cart`), how
+ * many items, and "Check out". It does not rise here (that is the `/cart`
+ * render, where an add lands). An empty, checked-out or unreadable bag draws
+ * no strip: the header's bag pill is the way to `/cart`, which says why.
+ *
+ * STYLES are linked through `?url`, never imported, so only the ACTIVE theme's
+ * sheets reach the browser. `theme.css` is the `--u-*` token contract in
+ * Pressing's palette plus the shared recipes; `views.css` is this chrome and
+ * the three catalogue views, including the record sliding out of its sleeve;
+ * `commerce.css` the bag, checkout, pay, order and account views and the strip.
+ *
+ * ONE FAMILY: Archivo, self-hosted through Astro's font API under
+ * `--f-pressing-body` with its `wdth` axis, mapped onto `--u-display/-body/-data`
+ * by theme.css. DARK ONLY: `color-scheme: dark`, whatever the OS prefers.
+ */
+import { Font } from "astro:assets";
+import { isAccountLink } from "../../lib/nav.js";
+import type { ChromeModel } from "../contract.js";
+import BagStrip from "./BagStrip.astro";
+import commerceHref from "./commerce.css?url";
+import { stripLine } from "./strip.js";
+import themeHref from "./theme.css?url";
+import viewsHref from "./views.css?url";
+
+interface Props {
+	chrome: ChromeModel;
+}
+
+const { chrome } = Astro.props;
+const right = chrome.navItems.filter((item) => item.isCart || isAccountLink(item.url));
+const left = chrome.navItems.filter((item) => !right.includes(item));
+/* Account before the bag, whatever order the menu lists them in. */
+const rightOrdered = [...right.filter((item) => !item.isCart), ...right.filter((item) => item.isCart)];
+/* The strip: only for a bag with lines, stating the hold that runs out first. */
+const bag = chrome.bag !== null && chrome.bag.state === "lines" ? chrome.bag : null;
+const held = bag === null ? null : stripLine(bag.lines);
+const bagCount = chrome.cartCountLabel ?? "Your bag";
+---
+
+<!doctype html>
+<html lang="en" data-theme-id={chrome.themeId}>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="dark" />
+		<meta name="theme-color" content="#10163A" />
+		<title>{chrome.fullTitle}</title>
+		{chrome.description && <meta name="description" content={chrome.description} />}
+		<Font cssVariable="--f-pressing-body" preload />
+		<link rel="stylesheet" href={themeHref} />
+		<link rel="stylesheet" href={viewsHref} />
+		<link rel="stylesheet" href={commerceHref} />
+		<slot name="head" />
+		{/* A record half out of an ultramarine sleeve, pink label. Inline, so
+		    there is no second request and no public/ asset to rot. */}
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2310163A'/%3E%3Ccircle cx='19' cy='16' r='11' fill='%23070A20'/%3E%3Ccircle cx='19' cy='16' r='4' fill='%23FF8AC8'/%3E%3Crect x='3' y='5' width='14' height='22' fill='%231A2150'/%3E%3C/svg%3E"
+		/>
+	</head>
+	<body>
+		<a href="#main" class="pr-skip">Skip to the main content</a>
+		<header class="pr-head">
+			<a href="/" class="pr-word">{chrome.siteTitle}</a>
+			{
+				left.length > 0 && (
+					<nav class="pr-nav" aria-label="Primary">
+						{left.map((item) => (
+							<a href={item.url} class="pr-line">
+								{item.label}
+							</a>
+						))}
+					</nav>
+				)
+			}
+			<nav class="pr-nav pr-nav-end" aria-label="Account and bag">
+				{
+					rightOrdered.map((item) =>
+						item.isCart ? (
+							<a href={item.url} class="pr-bag">
+								{item.label}
+								{chrome.cartCount !== null && (
+									<Fragment>
+										{chrome.cartCount > 0 && (
+											<span class="pr-bag-count u-mono" aria-hidden="true">
+												{chrome.cartCount}
+											</span>
+										)}
+										<span class="u-sr-only">, {chrome.cartCountLabel}</span>
+									</Fragment>
+								)}
+							</a>
+						) : (
+							<a href={item.url} class="pr-line">
+								{item.label}
+							</a>
+						),
+					)
+				}
+			</nav>
+		</header>
+		<main id="main" class="pr-main">
+			<slot />
+		</main>
+		<footer class="pr-foot">
+			<div class="pr-foot-id">
+				<p class="pr-foot-word">{chrome.siteTitle}</p>
+				<p>Content by EmDash, commerce by Otta.</p>
+				{chrome.currency !== null && <p>Prices in {chrome.currency}</p>}
+			</div>
+			<nav class="pr-foot-nav" aria-label="Footer">
+				<p class="pr-foot-h" aria-hidden="true">Around the shop</p>
+				<ul role="list">
+					{
+						chrome.navItems.map((item) => (
+							<li>
+								<a href={item.url} class="pr-line">
+									{item.label}
+								</a>
+							</li>
+						))
+					}
+				</ul>
+			</nav>
+		</footer>
+		{
+			bag !== null && (
+				<BagStrip
+					expiresAt={held?.expiresAt ?? null}
+					what={
+						held === null
+							? "Stock is confirmed when you check out."
+							: held.hold?.state === "expiring"
+								? "Check out to keep it."
+								: `${bagCount} in your bag`
+					}
+					count={bagCount}
+				/>
+			)
+		}
+	</body>
+</html>

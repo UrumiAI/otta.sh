@@ -17,11 +17,11 @@
  * on the critical path of a page that would otherwise make no commerce call.
  *
  * THE ONE OPT-IN EXCEPTION is a theme whose chrome draws the cart's LINES
- * (`ThemeModule.chrome.cartLines` — Counter's bag drawer). For that theme only,
- * and only off the checkout flow, the shell makes one guarded cart read
- * (`lib/bag.ts`) that FAILS SOFT: an unreadable or BUSY read becomes an
- * "unreadable" bag, never an error page and never a 503. Every other theme
- * pays nothing.
+ * (`ThemeModule.chrome.cartLines` — Counter's bag drawer, Pressing's bag
+ * strip). For those themes only, and only off the checkout flow, the shell
+ * makes one guarded cart read (`lib/bag.ts`) that FAILS SOFT: an unreadable or
+ * BUSY read becomes an "unreadable" bag, never an error page and never a 503.
+ * Every other theme pays nothing.
  */
 import { getMenu, getSiteSettings } from "emdash";
 import SafeJsonLd from "../components/SafeJsonLd.astro";
