@@ -265,9 +265,17 @@ describe("HoldClock — the client script", () => {
 			"[data-hold-clock]",
 			"[data-hold-note]",
 			"[data-hold-announce]",
+			// The time in words ("14 min left", "42 sec"): opt-in slots a theme
+			// ships only when it draws them.
+			"[data-hold-minutes]",
+			"[data-hold-seconds]",
 		]) {
 			expect(script, `the script never looks for ${hook}`).toContain(hook);
 		}
+		// `data-minutes` is kept current ONLY on a root that shipped it, so no
+		// other theme's ribbon gains an attribute it never drew.
+		expect(script).toContain("const tracksMinutes = el.dataset.minutes !== undefined;");
+		expect(script).toContain("if (tracksMinutes) el.dataset.minutes = String(frame.minutesLeft);");
 		// `data-expires` / `data-window`, as the DOM spells them.
 		expect(script).toContain("dataset.expires");
 		expect(script).toContain("dataset.window");

@@ -203,6 +203,11 @@ export interface LedgerLine {
  *    (gets `--pct`, the share of the window left), `[data-hold-note]` (unhidden
  *    once released) and `[data-hold-announce]` (a polite live region, written
  *    only on a state change).
+ *  - for the time in WORDS rather than a clock: `[data-hold-minutes]` and
+ *    `[data-hold-seconds]` get the whole minutes / seconds left (floored), and
+ *    a root that ships `data-minutes` has it kept current — opt-in, so a
+ *    stylesheet can switch copy at a minute boundary (e.g. under five minutes,
+ *    "Check out soon"). Ship the server's first frame in each.
  *
  * `components/HoldRibbon.astro` is Tempered's rendering of exactly this, with
  * the server-side first frame (`lib/hold.ts`'s `holdView`) already in it. Any

@@ -7,7 +7,9 @@
  * keeps it current once a second — whichever theme drew the ribbon. The hooks
  * it writes are the contract in `themes/contract.ts` (`data-state`, and the
  * optional `[data-hold-label]`, `[data-hold-clock]`, `[data-hold-fill]`
- * (`--pct`), `[data-hold-note]` and `[data-hold-announce]` children), so a
+ * (`--pct`), `[data-hold-note]`, `[data-hold-announce]`,
+ * `[data-hold-minutes]` and `[data-hold-seconds]` children, and `data-minutes`
+ * on a root that ships one), so a
  * theme's cart view may draw its countdown however it likes and this one
  * script still drives it. Theme-agnostic by construction: no class name, no
  * copy, no colour.
@@ -50,6 +52,11 @@
 			const clock = el.querySelector<HTMLElement>("[data-hold-clock]");
 			const note = el.querySelector<HTMLElement>("[data-hold-note]");
 			const announce = el.querySelector<HTMLElement>("[data-hold-announce]");
+			const minutes = el.querySelector<HTMLElement>("[data-hold-minutes]");
+			const seconds = el.querySelector<HTMLElement>("[data-hold-seconds]");
+			// Opt-in: only a root that SHIPS `data-minutes` has it kept current,
+			// so no other theme's markup gains an attribute it never asked for.
+			const tracksMinutes = el.dataset.minutes !== undefined;
 			return {
 				expiry: Date.parse(el.dataset.expires ?? ""),
 				window: Number(el.dataset.window) || HOLD_WINDOW_SECONDS,
@@ -59,6 +66,9 @@
 					if (label) label.textContent = frame.label;
 					if (clock) clock.textContent = frame.clock;
 					if (fill) fill.style.setProperty("--pct", frame.fill);
+					if (minutes) minutes.textContent = String(frame.minutesLeft);
+					if (seconds) seconds.textContent = String(frame.secondsLeft);
+					if (tracksMinutes) el.dataset.minutes = String(frame.minutesLeft);
 					// The next-step line is always in the markup; a hold that
 					// lapses under the shopper's eyes reveals it.
 					if (note) note.hidden = frame.state !== "released";
