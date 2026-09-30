@@ -173,12 +173,20 @@ export default defineConfig({
 			// guard and `hostnameOf` read as "this provider is unconfigured".
 			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
 			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
-			// The storefront themes this build ships, as JSON `[{ id, label }]`,
-			// for the plugin's admin Settings "Store theme" radio (plugin kv
+			// The storefront themes this build ships, as JSON
+			// `[{ id, label, description, preview }]`, for the plugin's admin
+			// Settings radio and the React Themes screen (plugin kv
 			// `settings:storeTheme`). `src/themes/manifest.ts` is the SINGLE
 			// source — the site's registry is held equal to it by test — so the
 			// admin can never offer a theme this build cannot render.
-			__OTTA_STORE_THEMES__: JSON.stringify(STORE_THEMES.map(({ id, label }) => ({ id, label }))),
+			__OTTA_STORE_THEMES__: JSON.stringify(
+				STORE_THEMES.map(({ id, label, description, preview }) => ({
+					id,
+					label,
+					description,
+					preview,
+				})),
+			),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines

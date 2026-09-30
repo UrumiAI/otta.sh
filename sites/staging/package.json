@@ -9,6 +9,7 @@
 		"build": "astro check && astro build",
 		"preview": "astro preview",
 		"typecheck": "astro check",
+		"capture:theme-previews": "node --experimental-strip-types scripts/capture-theme-previews.ts",
 		"deploy": "wrangler deploy"
 	},
 	"dependencies": {
@@ -31,6 +32,7 @@
 		"@types/react-dom": "^19.2.3",
 		"better-sqlite3": "catalog:",
 		"kysely": "catalog:",
+		"sharp": "^0.35.4",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
 		"wrangler": "catalog:"

@@ -788,11 +788,25 @@ describe("astro.config", () => {
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			const themes = JSON.parse(define["__OTTA_STORE_THEMES__"] ?? "null") as unknown;
-			expect(themes).toEqual([{ id: "tempered", label: "Tempered" }]);
-			for (const { id, label } of themes as Array<{ id: string; label: string }>) {
+			const entries = themes as Array<{
+				id: string;
+				label: string;
+				description: string;
+				preview: string;
+			}>;
+			expect(entries.map(({ id, label }) => ({ id, label }))).toEqual([
+				{ id: "tempered", label: "Tempered" },
+			]);
+			for (const { id, label, description, preview } of entries) {
 				expect(id).toMatch(/^[a-z][a-z0-9-]{0,31}$/);
+				expect(id).not.toBe("off");
 				expect(label.length).toBeGreaterThan(0);
 				expect(label.length).toBeLessThanOrEqual(40);
+				// The Themes screen's card copy and screenshot (ADR-0024, amended
+				// 2026-09-30): one line, and a same-origin path the plugin accepts.
+				expect(description.length).toBeGreaterThan(0);
+				expect(description.length).toBeLessThanOrEqual(160);
+				expect(preview).toBe(`/theme-previews/${id}.webp`);
 			}
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,

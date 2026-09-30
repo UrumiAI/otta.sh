@@ -24,9 +24,15 @@
  * THE DEV OVERRIDE. `?theme=<id>` picks a registered theme for screenshots and
  * e2e — only when `import.meta.env.DEV`, which a production build replaces with
  * `false`, so the branch is dead code in anything deployed.
+ *
+ * THE ADMIN PREVIEW. `?preview_theme=<id>` (and its session cookie) IS honoured
+ * in production, for a signed-in admin only — decided by `src/middleware.ts`
+ * through `lib/theme-preview.ts`, which records the answer on `locals`. This
+ * module only reads that answer; it never sees the cookie or the user.
  */
 import { OTTA_PLUGIN_ID } from "@otta-sh/plugin";
 import { getPluginSetting } from "emdash";
+import { requestThemePreview } from "../lib/theme-preview.js";
 import { DEFAULT_THEME_ID, isThemeId, type ThemeId } from "./manifest.js";
 
 /** The kv key's suffix — the plugin writes `settings:storeTheme`. */
@@ -72,7 +78,11 @@ const perRequest = new WeakMap<object, Promise<ThemeId>>();
 export function activeTheme(astro: { url: URL; locals: object }): Promise<ThemeId> {
 	let pending = perRequest.get(astro.locals);
 	if (pending === undefined) {
-		pending = resolveActiveThemeId({ url: astro.url, dev: import.meta.env.DEV });
+		const preview = requestThemePreview(astro.locals);
+		pending =
+			preview === null
+				? resolveActiveThemeId({ url: astro.url, dev: import.meta.env.DEV })
+				: Promise.resolve(preview);
 		perRequest.set(astro.locals, pending);
 	}
 	return pending;
