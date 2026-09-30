@@ -15,6 +15,9 @@
   by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md). Decision 5's intent — that a
   host upgrade cannot quietly break the plugin — is unchanged, and Decision 1's zero-EmDash-
   dependency property for `@otta-sh/plugin` is untouched.
+- Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
+  is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
+  Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -262,3 +265,62 @@ single-descriptor alternative is one page higher than recorded — and no other 
 the figure. Every other count in this record is correct as written, including
 [`docs/admin/ADMIN-CONSOLE.md`](../docs/admin/ADMIN-CONSOLE.md)'s "seven admin screens", which had
 the same off-by-one in its own earlier revisions and was fixed there first.
+
+## Amendment 2026-09-30 — the storefront Themes screen is a React page
+
+**What changes.** Decision 6 fixed the console's scope; a screen outside it needs a ruling. This is
+that ruling, for one screen: `otta-console` gains `/themes`
+(`THEMES_PAGE`), a WordPress-style theme picker for [ADR-0024](./0024-storefront-themes-are-runtime-selected-full-templates.md)'s
+storefront themes — a grid of screenshot cards with the active theme first under a solid accent
+bar, an **Activate** button on every other card, and a **Live preview** that frames the real
+storefront in that theme in a full-screen overlay (desktop / tablet / phone widths, Esc to close,
+"Open in new tab"). The maintainer asked for it in these terms and chose React over Block Kit for it.
+
+**Why it cannot be Block Kit.** Not preference — the screen needs things Block Kit does not have:
+
+- **No image card.** Block Kit's `image` block is a standalone element; there is no card that
+  pairs a picture with a footer and actions, and no control over aspect ratio or crop.
+- **No hover or focus state.** The "Live preview" affordance appears over the picture on hover and
+  on keyboard focus; Block Kit renders no pointer or focus styling of its own.
+- **No link.** "View store" and "Open in new tab" are navigations; Block Kit actions are only
+  round trips to the plugin route.
+- **No frame.** The live preview is an `<iframe>` of the storefront; Block Kit has no embed.
+- **No re-ordering or client-side state.** The grid re-orders when a theme is activated; a Block
+  Kit screen can only re-render the whole tree from the server.
+
+**What does not change.**
+
+- **One data path.** The screen reads `themes.list` and writes `themes:activate` through the `otta`
+  admin route with the existing `otta_console_read` / `otta_console_act` interaction types
+  (`packages/plugin/src/admin/themes-console-route.ts`). `otta-console` still holds zero
+  capabilities, zero `allowedHosts`, no route, no hook and no storage (Decision 3).
+- **One write path.** Activate calls the same `saveStoreTheme` the Settings "Store theme" radio
+  calls (`store-theme-kv.ts`): an id the site offers, into kv `settings:storeTheme`, or nothing.
+- **The Block Kit fallback stays.** The Settings "Store theme" radio is not removed. Settings stays
+  Block Kit permanently, as Decision 6 says; this amendment adds a screen and migrates none.
+- **No component library.** The screen reads the admin's Kumo CSS custom properties
+  (`--color-kumo-brand`, `--color-kumo-base`, …) with theme-neutral fallbacks, so it is native in
+  light and dark mode. That is a dependency on the stylesheet the page already renders inside, not
+  on `@cloudflare/kumo`, which stays unadopted.
+
+**The preview is a site feature, not an admin one.** The overlay frames `/?preview_theme=<id>`; the
+site honours it for a signed-in, enabled user with role ≥ ADMIN (50) only, keeps it across in-frame
+links with a session cookie, marks every previewed response `Cache-Control: private, no-store`, and
+shows a "Previewing … — not live · Exit preview" pill. Recorded in ADR-0024's amendment of the same
+date.
+
+**The frame is same-origin and unsandboxed, on purpose.** The overlay's `<iframe>` carries no
+`sandbox`: the dialog listens for Esc on the frame's window (key events inside the frame never reach
+the dialog), and the frame must send the admin's session cookie for the site to honour the preview.
+That is acceptable because what it frames is this store's own first-party storefront code, which
+already runs under [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)'s
+client-JS fence — not third-party content.
+
+**A live preview is the real store.** It renders the real catalogue, cart and checkout in another
+theme; adding to cart or checking out inside it creates real holds and real orders. And the preview
+cookie is browser-session-wide, not frame-wide: while a preview is on, the admin's other storefront
+tabs render in the previewed theme too. Closing the overlay ends the preview everywhere in that
+browser — including a tab opened with "Open in new tab".
+
+**Reopens this amendment:** a second React screen justified by this one instead of by its own gaps;
+the Settings radio being removed; or the Themes screen acquiring a write other than `saveStoreTheme`.
