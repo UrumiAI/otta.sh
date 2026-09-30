@@ -26,6 +26,7 @@ import {
 	HOLD_RELEASED_NEXT_STEP,
 	HOLD_WINDOW_SECONDS,
 } from "../src/lib/hold.js";
+import { hasExecutableScript, templateOf } from "./astro-source.js";
 
 let container: AstroContainer;
 
@@ -169,14 +170,56 @@ describe("HoldRibbon — what a screen reader hears", () => {
 	});
 });
 
-describe("HoldRibbon — the client script", () => {
-	const source = readFileSync(
+/**
+ * The countdown's script lives in `HoldClock.astro` since the storefront-themes
+ * Phase 3 split: theme views draw ribbons (this one, or their own from the same
+ * `data-hold*` hooks) and the cart PAGE renders the one script. These are the
+ * assertions the script always carried, aimed at where it now lives — and the
+ * ribbon itself is pinned below to carry none.
+ */
+describe("HoldRibbon — the ribbon is markup, and ships no script", () => {
+	const ribbon = readFileSync(
 		path.resolve(
 			path.dirname(fileURLToPath(import.meta.url)),
 			"../src/components/HoldRibbon.astro",
 		),
 		"utf8",
 	);
+
+	test("no <script> in the ribbon — a view may import it without shipping JavaScript", () => {
+		expect(hasExecutableScript(ribbon)).toBe(false);
+	});
+
+	test("it still ships every hook the countdown writes", () => {
+		for (const hook of [
+			"data-hold",
+			"data-state=",
+			"data-expires=",
+			"data-window=",
+			"data-hold-fill",
+			"data-hold-label",
+			"data-hold-clock",
+			"data-hold-note",
+			"data-hold-announce",
+		]) {
+			expect(ribbon, `the ribbon no longer renders ${hook}`).toContain(hook);
+		}
+	});
+});
+
+describe("HoldClock — the client script", () => {
+	const source = readFileSync(
+		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/components/HoldClock.astro"),
+		"utf8",
+	);
+
+	test("it is the script and ONLY the script — no markup of its own", () => {
+		expect(hasExecutableScript(source)).toBe(true);
+		const template = templateOf(source)
+			.replace(/<script>[\s\S]*?<\/script>/g, "")
+			.trim();
+		expect(template).toBe("");
+	});
 	const script = source.slice(source.indexOf("<script>"), source.indexOf("</script>"));
 
 	test("it is a bundled module script, not an inline one — one copy per page", () => {

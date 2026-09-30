@@ -1,0 +1,73 @@
+---
+/**
+ * HoldClock — the hold countdown's SCRIPT, and nothing else (docs/theme/
+ * TEMPERED.md §6; ADR-0012 decision 2 as amended 2026-07-28).
+ *
+ * It renders no markup. It finds every `[data-hold]` ribbon on the page and
+ * keeps it current once a second — whichever theme drew the ribbon. The hooks
+ * it writes are the contract in `themes/contract.ts` (`data-state`, and the
+ * optional `[data-hold-label]`, `[data-hold-clock]`, `[data-hold-fill]`
+ * (`--pct`), `[data-hold-note]` and `[data-hold-announce]` children), so a
+ * theme's cart view may draw its countdown however it likes and this one
+ * script still drives it. Theme-agnostic by construction: no class name, no
+ * copy, no colour.
+ *
+ * WHY IT IS ITS OWN COMPONENT. `/cart` is the only page allowed to carry it,
+ * and the PAGE renders it — never a theme view. Views are reached through the
+ * theme registry, which every page imports, so a script imported by any view
+ * would ship to every page. `HoldRibbon.astro` is the markup half and carries
+ * no script. `checkout-client-js.test.ts` pins both halves: this is the one
+ * scripted component, and `cart/index.astro → HoldClock.astro` the one pair.
+ *
+ * Render it only on a cart that has a live hold to count: a module script on a
+ * page with nothing to tick is weight for nothing.
+ */
+---
+
+<script>
+	/**
+	 * The countdown (§6). Information, so it runs under reduced motion too —
+	 * the media query suppresses decoration, not a timer a shopper is relying
+	 * on. Every ribbon on the page shares one interval, and that interval is
+	 * dropped once there is nothing left to count.
+	 *
+	 * This is a BUNDLED module script (never `is:inline`), so it imports the
+	 * tick rather than restating it. Every state label, the sixty-second
+	 * boundary and the `mm:ss` format therefore have exactly one definition,
+	 * shared with the server render — there is no second copy to drift, and
+	 * nothing here that a test has to grep a source file to pin.
+	 *
+	 * What is left in this file is the DOM, and only the DOM: find the ribbons,
+	 * write the frames. The deciding is `src/lib/hold-ribbon.ts`.
+	 */
+	import { type HoldFrame, startHoldRibbons } from "../lib/hold-ribbon.js";
+	import { HOLD_WINDOW_SECONDS } from "../lib/hold.js";
+
+	startHoldRibbons(
+		[...document.querySelectorAll<HTMLElement>("[data-hold]")].map((el) => {
+			const fill = el.querySelector<HTMLElement>("[data-hold-fill]");
+			const label = el.querySelector<HTMLElement>("[data-hold-label]");
+			const clock = el.querySelector<HTMLElement>("[data-hold-clock]");
+			const note = el.querySelector<HTMLElement>("[data-hold-note]");
+			const announce = el.querySelector<HTMLElement>("[data-hold-announce]");
+			return {
+				expiry: Date.parse(el.dataset.expires ?? ""),
+				window: Number(el.dataset.window) || HOLD_WINDOW_SECONDS,
+				shownState: el.dataset.state ?? "",
+				render(frame: HoldFrame): void {
+					el.dataset.state = frame.state;
+					if (label) label.textContent = frame.label;
+					if (clock) clock.textContent = frame.clock;
+					if (fill) fill.style.setProperty("--pct", frame.fill);
+					// The next-step line is always in the markup; a hold that
+					// lapses under the shopper's eyes reveals it.
+					if (note) note.hidden = frame.state !== "released";
+					// Non-null only on a state CHANGE. Writing this every tick
+					// would turn a polite region into a once-a-second
+					// interruption.
+					if (frame.announce !== null && announce) announce.textContent = frame.announce;
+				},
+			};
+		}),
+	);
+</script>

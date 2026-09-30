@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { hasExecutableScript, splitAstro } from "./astro-source.js";
+import { viewCases } from "./theme-views.js";
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const PAGES_DIR = path.join(SRC_DIR, "pages");
@@ -115,7 +116,16 @@ const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// ticking timer a shopper times a decision against — information, not
 	// decoration, and it cannot be server-rendered without going stale in one
 	// second. See the ADR's 2026-07-28 amendment.
-	[path.join("cart", "index.astro"), "HoldRibbon.astro"],
+	//
+	// RENAMED, not widened (storefront themes, Phase 3): the pair was
+	// `cart/index.astro → HoldRibbon.astro` while the ribbon's markup and its
+	// script were one component. Theme views now draw the ribbon, and a view
+	// is reached through the registry every page imports — so a view importing
+	// a scripted ribbon would make EVERY page an offender. The script was split
+	// out into `HoldClock.astro` (script only, no markup), which the cart PAGE
+	// renders; `HoldRibbon.astro` is markup only. Still one page, still one
+	// component, still exactly this pair.
+	[path.join("cart", "index.astro"), "HoldClock.astro"],
 ];
 
 /** The dev styleguide renders every component in every state and 404s outside
@@ -199,14 +209,15 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 	});
 
 	test("the scripted components are named, so growing one is a decision", () => {
-		// `HoldRibbon` is the cart's §6 countdown and the only component that
-		// runs anything. `PollRibbon` exists precisely so the confirmation page
-		// can have the same ribbon without it.
+		// `HoldClock` is the cart's §6 countdown SCRIPT and the only component
+		// that runs anything (`HoldRibbon` is its markup, with no script).
+		// `PollRibbon` exists precisely so the confirmation page can have the
+		// same ribbon without it.
 		const scripted = readdirSync(COMPONENTS_DIR)
 			.filter((name) => name.endsWith(".astro"))
 			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
 			.toSorted();
-		expect(scripted).toEqual(["HoldRibbon.astro"]);
+		expect(scripted).toEqual(["HoldClock.astro"]);
 	});
 
 	test("the walk sees THROUGH the theme registry, into every view and the shared form", () => {
@@ -224,6 +235,15 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/tempered/HomeView.astro",
 				"themes/tempered/ShopView.astro",
 				"themes/tempered/ProductView.astro",
+				"themes/tempered/CartView.astro",
+				"themes/tempered/CheckoutView.astro",
+				"themes/tempered/PayView.astro",
+				"themes/tempered/OrderView.astro",
+				"themes/tempered/AccountLoginView.astro",
+				"themes/tempered/AccountVerifyView.astro",
+				"themes/tempered/AccountOrdersView.astro",
+				"themes/tempered/AccountOrderView.astro",
+				"components/HoldRibbon.astro",
 				"forms/AddToCartFields.astro",
 			]),
 		);
@@ -309,12 +329,12 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 describe("10a′ — the fence against a merged tree", () => {
 	test("the cart's §6 countdown is permitted, and named", () => {
 		// This is what lands when the cart branch merges: `/cart` renders the
-		// hold ribbon, so HoldRibbon's countdown module ships with it. ADR-0012's
+		// countdown, so HoldClock's module ships with it. ADR-0012's
 		// 2026-07-28 amendment allows exactly this pair, and the allowlist entry
 		// is what stops it being a surprise.
 		const tree = scratchTree({
 			"pages/cart/index.astro":
-				'---\nimport HoldRibbon from "../../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
 		});
 		expect(clientJsRoutes(path.join(tree, "pages"))).toEqual(PERMITTED);
 	});
@@ -325,12 +345,26 @@ describe("10a′ — the fence against a merged tree", () => {
 		// re-opened every page to the countdown.
 		const tree = scratchTree({
 			"pages/cart/index.astro":
-				'---\nimport HoldRibbon from "../../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
 			"pages/rogue.astro":
-				'---\nimport HoldRibbon from "../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../components/HoldClock.astro";\n---\n<HoldClock />',
 		});
 		const routes = clientJsRoutes(path.join(tree, "pages"));
-		expect(routes).toContain("rogue.astro → HoldRibbon.astro");
+		expect(routes).toContain("rogue.astro → HoldClock.astro");
+		expect(routes).not.toEqual(PERMITTED);
+	});
+
+	test("a THEME VIEW that imports the scripted countdown is an offender on every page", () => {
+		// Why the countdown is split. Every page reaches every theme view through
+		// the registry, so the script must be rendered by the cart PAGE and never
+		// by a view — here is the tree where a view forgets that.
+		const tree = scratchTree({
+			"themes/tempered/CartView.astro":
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
+		});
+		const routes = clientJsRoutes(path.join(tree, "pages"));
+		expect(routes).toContain("index.astro → HoldClock.astro");
+		expect(routes).toContain(`${path.join("orders", "[orderId].astro")} → HoldClock.astro`);
 		expect(routes).not.toEqual(PERMITTED);
 	});
 
@@ -407,3 +441,45 @@ describe("10c — Stripe's redirect parameters are read, never rendered", () => 
 		expect(source).not.toMatch(/state\s*=\s*["']paid["']/);
 	});
 });
+
+/**
+ * 10c, where the markup went. Since Phase 3 the confirmation's markup is a
+ * theme view (each theme's own, or Tempered's fallback); the page hands it a
+ * model that carries the COPY the redirect parameters chose and never the
+ * parameters. The same structural assertions, over every theme's view.
+ */
+describe.each(viewCases("order"))(
+	"10c — the order view %s never renders them either",
+	(_label, { source }) => {
+		const { frontmatter, body } = splitAstro(source);
+		const PARAMS = ["payment_intent_client_secret", "payment_intent", "redirect_status"] as const;
+
+		test("the file really does have a frontmatter fence (otherwise the split below proves nothing)", () => {
+			expect(frontmatter.length).toBeGreaterThan(0);
+			expect(body.length).toBeGreaterThan(0);
+			expect(body).not.toContain(frontmatter);
+		});
+
+		test.each(PARAMS)("%s appears nowhere in the view — not even its frontmatter", (param) => {
+			// Stricter than the page's rule on purpose: a view has no business
+			// reading the request at all (themes-boundary.test.ts), so the name has
+			// no reason to be in the file.
+			expect(source).not.toContain(param);
+		});
+
+		test("the body interpolates no variable whose name suggests it holds one of those parameters", () => {
+			const interpolations = [...body.matchAll(/\{([^}]*)\}/g)].map((m) =>
+				stripComments(m[1] ?? ""),
+			);
+			const leaking = interpolations.filter((expr) =>
+				/client_?secret|payment_?intent|redirect_?status/i.test(expr),
+			);
+			expect(leaking).toEqual([]);
+		});
+
+		test("it never treats anything as proof of payment itself", () => {
+			expect(source).not.toMatch(/state\s*=\s*["']paid["']/);
+			expect(source).not.toMatch(/redirect_?[sS]tatus/);
+		});
+	},
+);

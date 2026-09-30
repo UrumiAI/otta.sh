@@ -17,10 +17,12 @@
  * "still working", and the COUNT beside it carries all the information.
  *
  * Which is the reason this is its own file rather than a `variant` on
- * `HoldRibbon`. That component carries a bundled `<script>` for its countdown,
- * and Astro emits a component's script whenever the component renders — so
- * sharing one would have put ~1 kB of countdown machinery on the confirmation
- * page, which ADR-0012 decision 2 keeps free of client JavaScript. Nothing here
+ * `HoldRibbon`. That component carried a bundled `<script>` for its countdown
+ * (since the storefront-themes split the script is `HoldClock.astro`, rendered
+ * by `/cart` alone), and Astro emits a component's script whenever the
+ * component renders — so sharing one would have put ~1 kB of countdown
+ * machinery on the confirmation page, which ADR-0012 decision 2 keeps free of
+ * client JavaScript. Nothing here
  * runs in the browser: the sweep is a CSS animation on a page that reloads
  * itself through a bounded `<meta http-equiv="refresh">`, and the count is
  * rendered by the server on every hop.

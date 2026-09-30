@@ -7,7 +7,7 @@
  * countdown, the refusal to claim a hold that never existed — are unit-tested
  * rather than eyeballed.
  *
- * The client script in `HoldRibbon.astro` re-derives exactly these three
+ * The client script (`HoldClock.astro`, over `hold-ribbon.ts`) re-derives exactly these three
  * states from the same `expiresAt`; this module is the server's first render
  * and the no-JS answer.
  */

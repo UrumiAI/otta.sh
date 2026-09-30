@@ -5,9 +5,11 @@
  * It replaces `Base.astro`'s role: it makes the chrome's content reads (guarded,
  * with the same true fallbacks), asks which theme is active for this request,
  * and hands the result to that theme's Layout. A page that has a themed view
- * (`home`, `shop`, `product`) passes its finished model and the theme renders
- * it; every other page passes its markup in the default slot and gets the
- * active theme's chrome and `--u-*` tokens around it.
+ * (`home`, `shop`, `product`, and since Phase 3 the cart, checkout, pay,
+ * order and account views) passes its finished model and the theme renders it
+ * — or Tempered's view renders it, in the active theme's tokens, when that
+ * theme has not ported the view; every other page passes its markup in the
+ * default slot and gets the active theme's chrome and `--u-*` tokens around it.
  *
  * ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns the
  * markup. Nothing here calls commerce — the cart count arrives as a PROP from a
@@ -23,8 +25,21 @@ import {
 	withAccountLink,
 	type NavItem,
 } from "../lib/nav.js";
-import type { ChromeModel, HomeModel, ProductModel, ShopModel } from "../themes/contract.js";
-import { themeFor, viewFor } from "../themes/registry.js";
+import type {
+	AccountLoginModel,
+	AccountOrderModel,
+	AccountOrdersModel,
+	AccountVerifyModel,
+	CartModel,
+	CheckoutModel,
+	ChromeModel,
+	HomeModel,
+	OrderModel,
+	PayModel,
+	ProductModel,
+	ShopModel,
+} from "../themes/contract.js";
+import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
 import { activeTheme } from "../themes/resolve.js";
 
 interface ShellProps {
@@ -57,6 +72,14 @@ type Props = ShellProps &
 		| { view: "home"; model: HomeModel }
 		| { view: "shop"; model: ShopModel }
 		| { view: "product"; model: ProductModel; jsonLd?: unknown }
+		| { view: "cart"; model: CartModel }
+		| { view: "checkout"; model: CheckoutModel }
+		| { view: "pay"; model: PayModel }
+		| { view: "order"; model: OrderModel }
+		| { view: "accountLogin"; model: AccountLoginModel }
+		| { view: "accountVerify"; model: AccountVerifyModel }
+		| { view: "accountOrders"; model: AccountOrdersModel }
+		| { view: "accountOrder"; model: AccountOrderModel }
 		| { view?: undefined }
 	);
 
@@ -137,10 +160,22 @@ const Layout = theme.Layout;
 const HomeView = viewFor(theme, "home");
 const ShopView = viewFor(theme, "shop");
 const ProductView = viewFor(theme, "product");
+const CartView = viewFor(theme, "cart");
+const CheckoutView = viewFor(theme, "checkout");
+const PayView = viewFor(theme, "pay");
+const OrderView = viewFor(theme, "order");
+const AccountLoginView = viewFor(theme, "accountLogin");
+const AccountVerifyView = viewFor(theme, "accountVerify");
+const AccountOrdersView = viewFor(theme, "accountOrders");
+const AccountOrderView = viewFor(theme, "accountOrder");
 const jsonLd = props.view === "product" ? (props.jsonLd ?? null) : null;
+/* Tempered's commerce views are every theme's fallback; their sheet is linked
+   here, on the pages that render one, rather than by any one theme's Layout. */
+const viewSheet = props.view === undefined ? null : fallbackSheetFor(theme, props.view);
 ---
 
 <Layout chrome={chrome}>
+	{viewSheet !== null && <link rel="stylesheet" href={viewSheet} slot="head" />}
 	<slot name="head" slot="head" />
 	{
 		props.view === "home" ? (
@@ -149,6 +184,25 @@ const jsonLd = props.view === "product" ? (props.jsonLd ?? null) : null;
 			<ShopView model={props.model} />
 		) : props.view === "product" ? (
 			<ProductView model={props.model} />
+		) : props.view === "cart" ? (
+			<CartView model={props.model} />
+		) : props.view === "checkout" ? (
+			<CheckoutView model={props.model} />
+		) : props.view === "pay" ? (
+			/* The page's Stripe mount + script (ADR-0012), framed by the view. */
+			<PayView model={props.model}>
+				<slot name="payment" slot="payment" />
+			</PayView>
+		) : props.view === "order" ? (
+			<OrderView model={props.model} />
+		) : props.view === "accountLogin" ? (
+			<AccountLoginView model={props.model} />
+		) : props.view === "accountVerify" ? (
+			<AccountVerifyView model={props.model} />
+		) : props.view === "accountOrders" ? (
+			<AccountOrdersView model={props.model} />
+		) : props.view === "accountOrder" ? (
+			<AccountOrderView model={props.model} />
 		) : (
 			<slot />
 		)

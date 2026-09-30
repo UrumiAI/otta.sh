@@ -3,7 +3,8 @@
  *
  * `hold.ts` is the SERVER's answer — the first render, and what a browser with
  * no JavaScript is left holding. This module is the same arithmetic run once a
- * second in the browser, and it lives outside `HoldRibbon.astro` for one
+ * second in the browser (driven by `HoldClock.astro`, the countdown's script,
+ * over whatever ribbon markup the theme drew), and it lives outside it for one
  * reason: three of its behaviours are load-bearing, none of them is visible in
  * a screenshot, and none of them can be pinned by reading the script's source
  * text for a substring.

@@ -41,15 +41,21 @@ function astroFiles(dir: string, prefix: string): string[] {
 	});
 }
 
-/** Every theme's `views.css` — the chrome and view CSS that used to be the
- *  `<style>` blocks of `Base.astro` and the catalog pages. (`theme.css` is the
- *  token layer itself, pinned by tokens-css.test.ts, and is exempt as tokens
- *  were.) */
+/** Every theme's view sheets — `views.css` (the chrome and view CSS that used
+ *  to be the `<style>` blocks of `Base.astro` and the catalog pages) and any
+ *  other sheet a theme ships beside it, such as Tempered's `commerce.css` (the
+ *  cart, checkout, pay, order and account pages' blocks, Phase 3). Every
+ *  `*.css` in a theme's directory but `theme.css`, which is the token layer
+ *  itself, pinned by tokens-css.test.ts, and is exempt as tokens were. */
 function viewSheets(): string[] {
 	const themes = path.join(SRC_DIR, "themes");
 	return readdirSync(themes, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
-		.map((entry) => `themes/${entry.name}/views.css`);
+		.flatMap((entry) =>
+			readdirSync(path.join(themes, entry.name))
+				.filter((name) => name.endsWith(".css") && name !== "theme.css")
+				.map((name) => `themes/${entry.name}/${name}`),
+		);
 }
 
 /**
@@ -89,6 +95,7 @@ test("the sweep found the pages — an empty list would pass every case below", 
 	expect(FILES).toContain("layouts/Storefront.astro");
 	expect(FILES).toContain("themes/tempered/Layout.astro");
 	expect(FILES).toContain("themes/tempered/views.css");
+	expect(FILES).toContain("themes/tempered/commerce.css");
 	expect(FILES).toContain("pages/404.astro");
 	expect(FILES).toContain("pages/cart/index.astro");
 });
@@ -226,9 +233,13 @@ describe("the shared button shape is shared (§2)", () => {
 		// `align-items: center` is what keeps the 12px label on the optical line
 		// it was already on as that box grows. Pinning the height alone would let
 		// a tidy-up drop the other half and move every cart row's text.
-		const css = declarations("pages/cart/index.astro");
-		const [, rule = ""] = /\.link-btn\s*\{([^}]*)\}/.exec(css) ?? [];
-		expect(rule, "no `.link-btn` rule on the cart page").not.toBe("");
+		//
+		// The rule moved with the cart's markup into Tempered's commerce sheet
+		// (Phase 3), namespaced as `.cart-link-btn`; the exemption above still
+		// reaches it by the `link-btn` word.
+		const css = declarations("themes/tempered/commerce.css");
+		const [, rule = ""] = /\.cart-link-btn\s*\{([^}]*)\}/.exec(css) ?? [];
+		expect(rule, "no `.cart-link-btn` rule in the commerce sheet").not.toBe("");
 		expect(rule, "the 24px tap-target floor").toMatch(/min-height:\s*1\.5rem/);
 		expect(rule, "what makes min-height apply").toMatch(/display:\s*inline-flex/);
 	});
@@ -319,11 +330,16 @@ describe("the transitional bridge is gone (increment 6)", () => {
 		// moved that to `themes/tempered/theme.css`, so the directory is gone, and
 		// a theme's stylesheets are exactly its token sheet and its view sheet.
 		expect(existsSync(path.join(SRC_DIR, "styles"))).toBe(false);
+		//
+		// Phase 3 added exactly one, deliberately: `commerce.css`, the cart,
+		// checkout, pay, order and account views' sheet — every theme's
+		// fallback, so linked by the shell on those pages rather than by
+		// Tempered's Layout (see themes/registry.ts `fallbackSheetFor`).
 		expect(
 			readdirSync(path.join(SRC_DIR, "themes/tempered"))
 				.filter((name) => name.endsWith(".css"))
 				.toSorted(),
-		).toEqual(["theme.css", "views.css"]);
+		).toEqual(["commerce.css", "theme.css", "views.css"]);
 		for (const name of FILES) {
 			expect(source(name), `${name} still imports the bridge`).not.toContain("legacy-bridge");
 		}

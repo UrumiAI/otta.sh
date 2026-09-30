@@ -1,0 +1,75 @@
+---
+/**
+ * Tempered's view of one of a signed-in customer's orders (issue #306). The
+ * lines are the purchase-time snapshot — title and price as bought — which is
+ * what a receipt must show. Presentation only — `src/pages/account/orders/
+ * [id].astro` reads through the session route (NOT_FOUND for an order that is
+ * not theirs, the same answer as for one that does not exist), sets the status
+ * and the no-store header, and formats every figure.
+ *
+ * Styles: `commerce.css` (`account-order-*`).
+ */
+import Ledger from "../../components/Ledger.astro";
+import Notice from "../../components/Notice.astro";
+import type { AccountOrderModel } from "../contract.js";
+
+interface Props {
+	model: AccountOrderModel;
+}
+
+const { order, errorMessage } = Astro.props.model;
+---
+
+<p class="account-order-back">
+	<a href="/account/orders">← Your orders</a>
+</p>
+
+{
+	order === null ? (
+		<>
+			<h1 class="account-order-title">Order</h1>
+			<div class="account-order-notice-slot" role="alert">
+				<Notice>
+					{errorMessage}
+				</Notice>
+			</div>
+		</>
+	) : (
+		<>
+			<h1 class="account-order-title">
+				Order <span class="u-mono account-order-ref">{order.id}</span>
+			</h1>
+			<p class="account-order-state">{order.state}</p>
+
+			<div class="account-order-cols">
+				<section class="account-order-panel">
+					<div class="account-order-panel-head">
+						<h2 class="u-label account-order-head-label">Items</h2>
+					</div>
+					<Ledger rows={order.ledgerRows} />
+				</section>
+
+				<section class="account-order-panel">
+					<div class="account-order-panel-head">
+						<h2 class="u-label account-order-head-label">Totals</h2>
+					</div>
+					<dl class="account-order-totals">
+						{order.totals.map((row) => (
+							<div class="account-order-row">
+								<dt>{row.label}</dt>
+								<dd class="u-mono">{row.value}</dd>
+							</div>
+						))}
+						<div class="account-order-row account-order-grand">
+							<dt>Total</dt>
+							<dd class="u-mono">
+								{order.total}
+							</dd>
+						</div>
+					</dl>
+				</section>
+			</div>
+		</>
+	)
+}
+
