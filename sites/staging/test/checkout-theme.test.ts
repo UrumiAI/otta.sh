@@ -255,6 +255,14 @@ describe("/checkout — the coupon", () => {
 		expect(REVIEW).toContain('<meta name="referrer" content="same-origin" slot="head" />');
 		expect(REVIEW).not.toContain('content="no-referrer"');
 	});
+
+	test("the policy is also a response HEADER, not only the meta", () => {
+		// The meta arrives through `<slot name="head">`, after the layout's font
+		// preloads; a fetch the parser starts before it would not see the meta.
+		expect(splitAstro(REVIEW).frontmatter).toContain(
+			'Astro.response.headers.set("Referrer-Policy", "same-origin");',
+		);
+	});
 });
 
 /**

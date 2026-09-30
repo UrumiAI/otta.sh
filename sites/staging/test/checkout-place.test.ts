@@ -600,6 +600,50 @@ describe("6e — alreadyPlaced is a redirect, not an error", () => {
 	});
 });
 
+describe("the POST's /checkout?coupon=… Referer stops at the redirect", () => {
+	// /checkout is `same-origin`, so its own POSTs carry the page's full URL —
+	// coupon included — as Referer, and a 303 keeps the request's referrer. The
+	// response's own `Referrer-Policy: no-referrer` replaces the policy for the
+	// redirected GET, so /checkout/pay (where js.stripe.com runs) never holds the
+	// code in `document.referrer`. EVERY response, so no path can forget it.
+	const NO_REFERRER = "no-referrer";
+
+	test("the 303 to /checkout/pay is sent no-referrer", async () => {
+		const { handler } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, couponCode: "SAVE10" }, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.headers.get("location")).toBe("/checkout/pay");
+		expect(response.headers.get("referrer-policy")).toBe(NO_REFERRER);
+	});
+
+	test.each([
+		["a failure redirect", VALID_FORM, {}],
+		["an INVALID_EMAIL redirect", { ...VALID_FORM, email: "nope" }, {}],
+		["the 400 for a missing key", { email: "a@b.co" }, {}],
+		["the no-cart 303", VALID_FORM, { cartCookie: undefined }],
+		["the cross-origin 403", VALID_FORM, { origin: "https://evil.example" }],
+	] as const)("%s is sent no-referrer too", async (_label, form, opts) => {
+		const { handler } = makeHandler({ ok: false, error: "RESERVATION_LOST" });
+		const { context } = makeContext({ ...form }, handler, { ...opts });
+
+		const response = await PLACE_POST(context);
+
+		expect(response.headers.get("referrer-policy")).toBe(NO_REFERRER);
+	});
+
+	test("/checkout/new-cart's 303 to /products is sent no-referrer", async () => {
+		const { handler } = makeHandler();
+		const { context } = makeContext({}, handler, { url: "/checkout/new-cart" });
+
+		const response = await NEW_CART_POST(context);
+
+		expect(response.headers.get("location")).toBe("/products");
+		expect(response.headers.get("referrer-policy")).toBe(NO_REFERRER);
+	});
+});
+
 describe("6f — every place-time failure becomes ?error=<TOKEN> on /checkout", () => {
 	test.each([
 		["RESERVATION_LOST"],

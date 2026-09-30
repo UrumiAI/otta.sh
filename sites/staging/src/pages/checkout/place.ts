@@ -18,7 +18,7 @@
  * `CART_CHECKED_OUT` fence would then reject.
  */
 import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
-import type { APIRoute } from "astro";
+import type { APIContext, APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
@@ -26,6 +26,7 @@ import {
 	placeFailurePath,
 	readCouponCode,
 	shapedDestination,
+	withoutReferrer,
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
@@ -106,7 +107,13 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	return { ok: true, address };
 }
 
-export const POST: APIRoute = async (context) => {
+/** Every response — above all the 303 to /checkout/pay — is sent
+ *  `Referrer-Policy: no-referrer`, so the redirected GET does not carry this
+ *  POST's `/checkout?coupon=…` Referer into `document.referrer` (see
+ *  `withoutReferrer`). */
+export const POST: APIRoute = async (context) => withoutReferrer(await place(context));
+
+async function place(context: APIContext): Promise<Response> {
 	// CSRF FIRST — before the body is even read. emdash force-disables Astro's
 	// checkOrigin and its replacement covers only /_emdash/api/* (ADR-0006), so
 	// without this a cross-site form POST could create a real order.
@@ -239,4 +246,4 @@ export const POST: APIRoute = async (context) => {
 		...(total !== undefined ? { total } : {}),
 	});
 	return seeOther(context, "/checkout/pay");
-};
+}

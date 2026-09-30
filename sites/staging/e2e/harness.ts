@@ -452,6 +452,42 @@ export async function skipWithoutRefundableOrder(testInfo: TestInfo): Promise<vo
 }
 
 /**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the
+ * storefront can be added to a cart.
+ *
+ * ITS OWN MESSAGE, NOT {@link skipWithoutProducts}'S: a PDP renders its
+ * add-to-cart form only for a product that is priced and in stock, so a
+ * catalog of unpriced or sold-out products has products and nothing to buy.
+ * The fix is to price and stock one (the seed does), not to seed more rows.
+ */
+export async function skipWithoutPurchasableProduct(testInfo: TestInfo): Promise<void> {
+	const how =
+		"no product page on the storefront renders an add-to-cart form (every " +
+		"product is unpriced or out of stock). Seed the stack " +
+		"(sites/staging/scripts/seed-demo-commerce.ts), or price and stock a product.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when /checkout offers no
+ * place button for a cart that should be placeable.
+ *
+ * `reason` is the page's own explanation, read off it by the caller: most
+ * often the site was started without `STRIPE_PUBLIC_KEY` (the review then shows
+ * STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold stock
+ * against a payment that cannot happen), which a placeholder `pk_test_…` fixes.
+ */
+export async function skipWithoutPlaceButton(testInfo: TestInfo, reason: string): Promise<void> {
+	const how =
+		`/checkout offers no "Continue to payment" button (the page says: ${reason}). ` +
+		"If payment is not configured, start the site with STRIPE_PUBLIC_KEY set " +
+		"(a placeholder pk_test_… is enough for this spec).";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
  * Close EmDash's first-login welcome dialog, if this run drew one.
  *
  * The dev-bypass account is created on first use, and EmDash greets a
