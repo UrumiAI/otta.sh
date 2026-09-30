@@ -13,8 +13,8 @@
  *
  * A theme is added HERE when it is built, not before: listing an id the
  * registry cannot render would put an option in the admin that silently falls
- * back to Tempered. Tempered (the default) ships today; every other theme adds
- * its entry — and its preview — in the change that builds it.
+ * back to Tempered. All six ship: Tempered (the default), Plinth, Pressing,
+ * Batch, Jumble and Counter.
  */
 
 export interface StoreThemeEntry {
@@ -39,6 +39,12 @@ export const STORE_THEMES = [
 		label: "Tempered",
 		description: "Condensed headlines and a live stock table.",
 		preview: "/theme-previews/tempered.webp",
+	},
+	{
+		id: "plinth",
+		label: "Plinth",
+		description: "A quiet gallery: stone tones and wide margins.",
+		preview: "/theme-previews/plinth.webp",
 	},
 	{
 		id: "pressing",

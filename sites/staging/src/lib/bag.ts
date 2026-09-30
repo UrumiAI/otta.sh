@@ -43,7 +43,7 @@ import {
 } from "./cart-view.js";
 import { holdView, wallClock } from "./hold.js";
 import { dispatchOttaRouteOnce } from "./otta-api.js";
-import { productImage, type ProductEntryData } from "./products.js";
+import { productImage, productKey, type ProductEntryData } from "./products.js";
 
 /** The cart page's bound, for the cart page's reason (`cart/index.astro`). */
 export const BAG_CONTENT_ID_CAP = 50;
@@ -125,7 +125,7 @@ export async function readBag(request: BagRequest): Promise<BagModel> {
 			title: content?.title ?? null,
 			name: content?.title ?? line.sku,
 			image: content === null ? null : productImage(content),
-			artKey: content?.slug ?? line.productId ?? line.sku,
+			artKey: content === null ? (line.productId ?? line.sku) : productKey(content),
 			money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
 			hold: bagHold(line.expiresAt, now),
 			expiresAt: line.expiresAt,

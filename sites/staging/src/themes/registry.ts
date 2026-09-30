@@ -49,6 +49,18 @@ import JumblePayView from "./jumble/PayView.astro";
 import JumbleProductView from "./jumble/ProductView.astro";
 import JumbleShopView from "./jumble/ShopView.astro";
 import type { ThemeId } from "./manifest.js";
+import PlinthAccountLoginView from "./plinth/AccountLoginView.astro";
+import PlinthAccountOrdersView from "./plinth/AccountOrdersView.astro";
+import PlinthAccountOrderView from "./plinth/AccountOrderView.astro";
+import PlinthAccountVerifyView from "./plinth/AccountVerifyView.astro";
+import PlinthCartView from "./plinth/CartView.astro";
+import PlinthCheckoutView from "./plinth/CheckoutView.astro";
+import PlinthHomeView from "./plinth/HomeView.astro";
+import PlinthLayout from "./plinth/Layout.astro";
+import PlinthOrderView from "./plinth/OrderView.astro";
+import PlinthPayView from "./plinth/PayView.astro";
+import PlinthProductView from "./plinth/ProductView.astro";
+import PlinthShopView from "./plinth/ShopView.astro";
 import PressingAccountLoginView from "./pressing/AccountLoginView.astro";
 import PressingAccountOrdersView from "./pressing/AccountOrdersView.astro";
 import PressingAccountOrderView from "./pressing/AccountOrderView.astro";
@@ -90,6 +102,26 @@ const tempered = {
 		accountVerify: TemperedAccountVerifyView,
 		accountOrders: TemperedAccountOrdersView,
 		accountOrder: TemperedAccountOrderView,
+	},
+} satisfies ThemeModule & { views: ThemeViews };
+
+/** Every view its own. No drawer and no strip, so no chrome cart read: the bag
+ *  is `/cart`, where each line carries its product's view-transition name. */
+const plinth = {
+	id: "plinth",
+	Layout: PlinthLayout,
+	views: {
+		home: PlinthHomeView,
+		shop: PlinthShopView,
+		product: PlinthProductView,
+		cart: PlinthCartView,
+		checkout: PlinthCheckoutView,
+		pay: PlinthPayView,
+		order: PlinthOrderView,
+		accountLogin: PlinthAccountLoginView,
+		accountVerify: PlinthAccountVerifyView,
+		accountOrders: PlinthAccountOrdersView,
+		accountOrder: PlinthAccountOrderView,
 	},
 } satisfies ThemeModule & { views: ThemeViews };
 
@@ -178,6 +210,7 @@ const counter = {
 /** Every theme the manifest lists, and nothing else (held equal by test). */
 export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = {
 	tempered,
+	plinth,
 	pressing,
 	batch,
 	jumble,

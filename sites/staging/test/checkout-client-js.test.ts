@@ -297,6 +297,19 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/pressing/AccountVerifyView.astro",
 				"themes/pressing/AccountOrdersView.astro",
 				"themes/pressing/AccountOrderView.astro",
+				// Plinth's own commerce views and its text-and-dot hold (markup only —
+				// /cart's HoldClock ticks it; the continuity into the bag is a CSS
+				// view transition, no script).
+				"themes/plinth/Layout.astro",
+				"themes/plinth/HoldRibbon.astro",
+				"themes/plinth/CartView.astro",
+				"themes/plinth/CheckoutView.astro",
+				"themes/plinth/PayView.astro",
+				"themes/plinth/OrderView.astro",
+				"themes/plinth/AccountLoginView.astro",
+				"themes/plinth/AccountVerifyView.astro",
+				"themes/plinth/AccountOrdersView.astro",
+				"themes/plinth/AccountOrderView.astro",
 			]),
 		);
 	});
