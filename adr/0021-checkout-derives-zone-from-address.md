@@ -145,14 +145,14 @@ Everything above is left as written except the pointer in Decision 9. The rest o
 which keys may ride a URL, and that no personal data ever does — is unchanged.
 
 - **`/checkout` sends `Referrer-Policy: same-origin`, not `no-referrer`.** Under `no-referrer`,
-  browsers send `Origin: null` on the page's own form POSTs (the Fetch spec's "serialize a request
-  origin" returns `"null"` when the policy is `no-referrer`). The site's origin guard
+  browsers send `Origin: null` on the page's own form POSTs (Fetch's "append a request `Origin`
+  header" sets it to `null` when the policy is `no-referrer`). The site's origin guard
   (`src/lib/origin-guard.ts`) correctly reads `null` as cross-site, so `/checkout/place` and
   `/checkout/new-cart` answered 403 and no order could be placed from a browser. This is the bug
   #329 fixed on `/account/verify`. `same-origin` still sends no Referer to any other origin, so
-  the coupon never leaves for Stripe, a font host or an outbound link. The policy is sent as a
-  **response header** as well as the `<meta>`, because the meta arrives after the layout's font
-  preloads and an early fetch would not see it.
+  the coupon never leaves on an outbound link or any cross-origin request. The policy is also sent
+  as a **response header**, as defence in depth: it covers every subresource fetched before the
+  parser reaches the `<meta>` (which arrives through the head slot, after the layout's preloads).
 - **The responses to `/checkout`'s own POSTs send `Referrer-Policy: no-referrer`.** Under
   `same-origin` those POSTs carry the full `/checkout?coupon=…` URL as their Referer, and a 303
   keeps the request's referrer, so the page the redirect lands on — `/checkout/pay`, where
@@ -163,6 +163,6 @@ which keys may ride a URL, and that no personal data ever does — is unchanged.
   path can forget it.
 
 ADR-0012's `no-referrer` for the order page (Decision 6, the client secret) is not changed here.
-The same `Origin: null` rule is why the order page's dead-end "Start a new cart" is a GET link to
-`/cart` (which is not `no-referrer` and offers the `POST /checkout/new-cart` for the checked-out
-cart) rather than a form on the order page itself.
+The same `Origin: null` rule is why the order page's dead-end door ("Go to your cart") is a GET
+link to `/cart` (which is not `no-referrer` and offers the `POST /checkout/new-cart` for the
+checked-out cart) rather than a form on the order page itself.

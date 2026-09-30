@@ -551,7 +551,7 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 		);
 		expect(ORDER).not.toContain("Back to checkout");
 		expect(templateOf(ORDER)).toMatch(
-			/\{deadEnd && \(\s*<a class="u-btn u-btn-ghost" href="\/cart">\s*Start a new cart\s*<\/a>/,
+			/\{deadEnd && \(\s*<a class="u-btn u-btn-ghost" href="\/cart">\s*Go to your cart\s*<\/a>/,
 		);
 	});
 

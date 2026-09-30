@@ -19,14 +19,19 @@
  */
 import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
 import type { APIContext, APIRoute } from "astro";
-import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
+import {
+	currentCartId,
+	failureToken,
+	routeDispatcher,
+	seeOther,
+	withoutReferrer,
+} from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
 	checkoutPath,
 	placeFailurePath,
 	readCouponCode,
 	shapedDestination,
-	withoutReferrer,
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";

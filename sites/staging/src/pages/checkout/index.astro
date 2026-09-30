@@ -61,10 +61,10 @@ import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 /* The coupon rides this page's URL, so no Referer carrying it may leave for
-   another host. Sent as a HEADER as well as the meta below: the meta arrives
-   through `<slot name="head">`, after the layout's font preloads, so a fetch
-   that starts before the parser reaches it would not see it. `same-origin`,
-   not `no-referrer` — see the meta's comment. */
+   another origin. Sent as a HEADER as well as the meta below, as defence in
+   depth: the header covers every subresource fetched before the parser reaches
+   the meta, which arrives through `<slot name="head">` after the layout's
+   preloads. `same-origin`, not `no-referrer` — see the meta's comment. */
 Astro.response.headers.set("Referrer-Policy", "same-origin");
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
@@ -197,12 +197,12 @@ const sumRows = [
 	{/* The coupon code is in this page's URL; no subresource or outbound link
 	    may carry it off to another host in a Referer. `same-origin`, NOT
 	    `no-referrer`: under `no-referrer` browsers send `Origin: null` on this
-	    page's own form POSTs (/checkout/place, /checkout/new-cart) — the Fetch
-	    spec's "serialize a request origin" — the origin guard reads that as
+	    page's own form POSTs (/checkout/place, /checkout/new-cart) — Fetch's
+	    "append a request `Origin` header" — the origin guard reads that as
 	    cross-site, and every real order is refused with a 403 (the bug
 	    /account/verify hit in #329). `same-origin` still sends no Referer to any
 	    other origin; the full-URL Referer those POSTs do carry is cut off by
-	    their responses' own `no-referrer` header (checkout-selection.ts,
+	    their responses' own `no-referrer` header (cart-actions.ts,
 	    `withoutReferrer`). Also sent as a response header (frontmatter). */}
 	<meta name="referrer" content="same-origin" slot="head" />
 	{/* The components are wrapped rather than handed a class: a page's scoped

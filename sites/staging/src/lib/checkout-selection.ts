@@ -12,10 +12,10 @@
  *    single-use private code is exposed; the page sends `same-origin` so it at
  *    least never leaves for another host in a Referer (not `no-referrer`, under
  *    which browsers send `Origin: null` on the page's own POSTs — Fetch's
- *    "serialize a request origin" — and the origin guard 403s them). Its own
- *    POSTs DO carry the full URL as Referer, so their responses send
- *    `no-referrer` ({@link withoutReferrer}) and the page they redirect to
- *    never sees the code in `document.referrer`;
+ *    "append a request `Origin` header" — and the origin guard 403s them). Its
+ *    own POSTs DO carry the full URL as Referer, so their responses send
+ *    `no-referrer` (`withoutReferrer`, cart-actions.ts) and the page they
+ *    redirect to never sees the code in `document.referrer`;
  *  - applying a coupon is a navigation, so fields typed into the place form are
  *    lost — the same no-personal-data-in-URLs trade-off `place.ts` documents.
  *    The coupon field sits FIRST on the page for that reason.
@@ -31,23 +31,6 @@
  * fields typed below it.
  */
 import { isCodeShapedRegion } from "@otta-sh/plugin";
-
-/**
- * Stamp `Referrer-Policy: no-referrer` on a response to one of /checkout's own
- * POSTs (/checkout/place, /checkout/new-cart).
- *
- * The POST carries `/checkout?coupon=…` as its Referer (same-origin allows
- * it), and a 303 keeps the request's referrer — so without this, the page the
- * redirect lands on (/checkout/pay, where js.stripe.com runs) would hold the
- * code in `document.referrer`. A redirect response's `Referrer-Policy` replaces
- * the request's policy for the follow-up GET (Fetch, "HTTP-redirect fetch"), so
- * that GET carries no referrer at all. Applied to EVERY response, not just the
- * 303s to /checkout/pay: one invariant is easier to keep than a list.
- */
-export function withoutReferrer(response: Response): Response {
-	response.headers.set("Referrer-Policy", "no-referrer");
-	return response;
-}
 
 /** The query parameter the coupon form submits. */
 export const COUPON_PARAM = "coupon";

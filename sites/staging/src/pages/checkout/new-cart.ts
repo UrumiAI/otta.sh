@@ -21,9 +21,8 @@
  * belongs in its own PR.
  */
 import type { APIRoute } from "astro";
-import { clearCartCookie, seeOther } from "../../lib/cart-actions.js";
+import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
-import { withoutReferrer } from "../../lib/checkout-selection.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 
 export const POST: APIRoute = (context) => {
