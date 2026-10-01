@@ -1,6 +1,8 @@
 /**
  * Regenerate the admin Themes screen's preview images —
  * `public/theme-previews/<id>.webp`, one per theme in `src/themes/manifest.ts`.
+ * Today that is Tempered alone: the other five themes moved out of this repo
+ * (2026-10-01) and capture their previews in their own.
  *
  * WHAT A PREVIEW IS. The store's real home page in that theme, over the seeded
  * demo catalogue, the way a signed-out shopper first sees it: light scheme, a

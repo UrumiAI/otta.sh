@@ -90,7 +90,7 @@ export interface BagLineModel {
 	hold: { state: "held" | "expiring" | "released"; text: string } | null;
 	/**
 	 * The wire line's own `expiresAt`, verbatim (as `CartLineModel.line` carries
-	 * it) — for a chrome that states ONE hold for the whole bag (Pressing's
+	 * it) — for a chrome that states ONE hold for the whole bag (a bag
 	 * strip: the one that runs out first) and so must compare them. Rendered only
 	 * as static wall-clock copy (`lib/hold.ts`'s `wallClock`), never counted.
 	 */
@@ -298,7 +298,7 @@ export interface CartLineModel {
 	/**
 	 * The product's own page (`lib/products.ts`'s `productPath`), or `null` when
 	 * this store cannot name the line — for a view that links a line back to its
-	 * object (Plinth's bag, whose picture carries the product's view-transition
+	 * object (e.g. a bag whose picture carries the product's view-transition
 	 * name back to the product page).
 	 */
 	href: string | null;
