@@ -46,6 +46,9 @@ describe("astro.config fonts", () => {
 			"--f-batch-body",
 			"--f-batch-display",
 			"--f-counter-sans",
+			"--f-jumble-sans",
+			"--f-plinth-body",
+			"--f-pressing-body",
 			"--f-tempered-body",
 			"--f-tempered-data",
 			"--f-tempered-display",
@@ -144,6 +147,17 @@ function woff2Tables(bytes: Buffer): { tags: string[]; tables: Map<string, Buffe
 	return { tags: entries.map(([tag]) => tag), tables };
 }
 
+/** The variation axes a font's `fvar` declares. */
+function fvarAxes(bytes: Buffer): string[] {
+	const fvar = woff2Tables(bytes).tables.get("fvar");
+	expect(fvar).toBeDefined();
+	const table = fvar as Buffer;
+	const axesAt = table.readUInt16BE(4);
+	return Array.from({ length: table.readUInt16BE(8) }, (_, i) =>
+		table.subarray(axesAt + i * 20, axesAt + i * 20 + 4).toString("latin1"),
+	);
+}
+
 /**
  * THE VENDORED FACES. Every theme but Tempered serves its faces from files
  * checked in beside the theme, NOT through the Google provider, and the
@@ -187,6 +201,48 @@ function expectOflBeside(font: VendoredFont): void {
 	}
 }
 
+/** Plinth: ONE face — small type, big objects. */
+describe("Plinth's Host Grotesk (vendored)", () => {
+	const hostGrotesk = vendored("--f-plinth-body");
+	const variant = hostGrotesk.options.variants[0];
+
+	test("is Host Grotesk, from the local provider, as one variable variant", () => {
+		expect(hostGrotesk.name).toBe("Host Grotesk");
+		expect(hostGrotesk.provider.name).toBe("local");
+		expect(hostGrotesk.options.variants).toHaveLength(1);
+		// 300 is the home statement; 400/500 everything else.
+		expect(variant?.weight).toBe("300 800");
+		expect(variant?.style).toBe("normal");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(hostGrotesk));
+});
+
+/** Pressing: ONE family, Archivo; its second voice is the width axis. */
+describe("Pressing's Archivo (vendored)", () => {
+	const archivo = vendored("--f-pressing-body");
+	const variant = archivo.options.variants[0];
+
+	test("is Archivo, from the local provider, as one variable variant", () => {
+		expect(archivo.name).toBe("Archivo");
+		expect(archivo.provider.name).toBe("local");
+		expect(archivo.options.variants).toHaveLength(1);
+		expect(variant?.weight).toBe("100 900");
+		// The width axis IS the theme's second voice (titles at wdth 125).
+		expect(variant?.stretch).toBe("62% 125%");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(archivo));
+});
+
 /** Batch: a letterpress slab for titles and prices, a grotesque to read. */
 describe("Batch's Zilla Slab and Karla (vendored)", () => {
 	const zilla = vendored("--f-batch-display");
@@ -226,6 +282,29 @@ describe("Batch's Zilla Slab and Karla (vendored)", () => {
 		["Zilla Slab", zilla],
 		["Karla", karla],
 	])("%s ships with its OFL licence beside it", (_name, font) => expectOflBeside(font));
+});
+
+/** Jumble: ONE family, Recursive; its playfulness is the Casual axis. */
+describe("Jumble's Recursive (vendored)", () => {
+	const recursive = vendored("--f-jumble-sans");
+	const variant = recursive.options.variants[0];
+
+	test("is Recursive, from the local provider, as one variable variant", () => {
+		expect(recursive.name).toBe("Recursive");
+		expect(recursive.provider.name).toBe("local");
+		expect(recursive.options.variants).toHaveLength(1);
+		expect(variant?.weight).toBe("300 1000");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "fvar", "GPOS"]);
+	});
+
+	test("its variable axes are exactly wght and CASL — the Casual voice, and no MONO", () => {
+		expect(fvarAxes(readFileSync(fileOf(variant?.src[0]))).toSorted()).toEqual(["CASL", "wght"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(recursive));
 });
 
 /** Counter: ONE family for every role, money included. */

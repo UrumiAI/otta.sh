@@ -1,0 +1,20 @@
+---
+/**
+ * Jumble's notice: a soft lavender surface with a big radius — never a border,
+ * never a colour field (the brief puts text on no field but Sun). The lead is
+ * casual 800; the rest is linear body text. `tone="error"` prints the lead in
+ * the error red (5.9:1 on the surface) and makes it an alert; the default is
+ * plain information in ink.
+ */
+interface Props {
+	lead?: string | null;
+	tone?: "info" | "error";
+}
+
+const { lead = null, tone = "info" } = Astro.props;
+---
+
+<div class="j-notice" data-tone={tone} role={tone === "error" ? "alert" : "status"}>
+	{lead !== null && <p class="j-notice-lead">{lead}</p>}
+	<p class="j-notice-body"><slot /></p>
+</div>

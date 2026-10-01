@@ -10,26 +10,10 @@
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { PreviewUser } from "../src/lib/theme-preview.js";
-import type { ThemeId } from "../src/themes/manifest.js";
 
 vi.mock("astro:middleware", () => ({
 	defineMiddleware: <T>(handler: T): T => handler,
 }));
-
-/* The rules below need more shipped themes than this build has (it ships
-   Tempered alone), so the manifest gains neutral stand-in entries — ids no real
-   theme uses — and the preview's decisions run against them as shipped ids. */
-vi.mock("../src/themes/manifest.js", async (importOriginal) => {
-	const real = await importOriginal<typeof import("../src/themes/manifest.js")>();
-	const standIns = ["alpha", "beta", "gamma", "delta", "epsilon"].map((id) => ({ id, label: id }));
-	const STORE_THEMES = [...real.STORE_THEMES, ...standIns];
-	return {
-		...real,
-		STORE_THEMES,
-		isThemeId: (value: unknown) =>
-			typeof value === "string" && STORE_THEMES.some((theme) => theme.id === value),
-	};
-});
 
 const {
 	canPreviewThemes,
@@ -76,8 +60,8 @@ describe("who may preview", () => {
 describe("decideThemePreview", () => {
 	test("an admin with ?preview_theme=<shipped id> previews it and sets the cookie", () => {
 		expect(
-			decideThemePreview({ url: url("/?preview_theme=alpha"), cookie: undefined, user: ADMIN }),
-		).toEqual({ themeId: "alpha", cookie: { set: "alpha" }, exitTo: null, silent: false });
+			decideThemePreview({ url: url("/?preview_theme=pressing"), cookie: undefined, user: ADMIN }),
+		).toEqual({ themeId: "pressing", cookie: { set: "pressing" }, exitTo: null, silent: false });
 	});
 
 	test.each([
@@ -86,7 +70,7 @@ describe("decideThemePreview", () => {
 		["a disabled admin", DISABLED_ADMIN],
 	])("%s with the parameter gets the stored theme", (_name, user) => {
 		expect(
-			decideThemePreview({ url: url("/?preview_theme=alpha"), cookie: undefined, user }).themeId,
+			decideThemePreview({ url: url("/?preview_theme=pressing"), cookie: undefined, user }).themeId,
 		).toBeNull();
 	});
 
@@ -94,7 +78,7 @@ describe("decideThemePreview", () => {
 		["anonymous", undefined],
 		["an editor", EDITOR],
 	])("%s with the COOKIE gets the stored theme, and the cookie is cleared", (_name, user) => {
-		expect(decideThemePreview({ url: url("/products"), cookie: "alpha", user })).toEqual({
+		expect(decideThemePreview({ url: url("/products"), cookie: "pressing", user })).toEqual({
 			themeId: null,
 			cookie: "clear",
 			exitTo: null,
@@ -103,12 +87,14 @@ describe("decideThemePreview", () => {
 	});
 
 	test("an admin's cookie carries the preview across in-frame navigation", () => {
-		expect(decideThemePreview({ url: url("/products/tee"), cookie: "beta", user: ADMIN })).toEqual({
-			themeId: "beta",
-			cookie: "keep",
-			exitTo: null,
-			silent: false,
-		});
+		expect(decideThemePreview({ url: url("/products/tee"), cookie: "batch", user: ADMIN })).toEqual(
+			{
+				themeId: "batch",
+				cookie: "keep",
+				exitTo: null,
+				silent: false,
+			},
+		);
 	});
 
 	test("an unknown id is ignored — as a parameter and as a cookie", () => {
@@ -128,7 +114,7 @@ describe("decideThemePreview", () => {
 			expect(
 				decideThemePreview({
 					url: url("/products?page=2&preview_theme=off"),
-					cookie: "beta",
+					cookie: "batch",
 					user,
 				}),
 			).toEqual({ themeId: null, cookie: "clear", exitTo: "/products?page=2", silent: false });
@@ -139,7 +125,7 @@ describe("decideThemePreview", () => {
 		expect(
 			decideThemePreview({
 				url: url("/?preview_theme=off&silent=1"),
-				cookie: "beta",
+				cookie: "batch",
 				user: ADMIN,
 			}),
 		).toEqual({ themeId: null, cookie: "clear", exitTo: "/", silent: true });
@@ -158,13 +144,13 @@ describe("decideThemePreview", () => {
 	});
 
 	test("the pill's exit link is this page with off", () => {
-		expect(themePreviewExitHref(url("/products/tee?preview_theme=beta"))).toBe(
+		expect(themePreviewExitHref(url("/products/tee?preview_theme=batch"))).toBe(
 			"/products/tee?preview_theme=off",
 		);
 	});
 
 	test("the pill's exit link drops silent, so Exit never lands on the empty exit response", () => {
-		expect(themePreviewExitHref(url("/products/tee?silent=1&preview_theme=beta"))).toBe(
+		expect(themePreviewExitHref(url("/products/tee?silent=1&preview_theme=batch"))).toBe(
 			"/products/tee?preview_theme=off",
 		);
 	});
@@ -217,15 +203,15 @@ describe("the middleware", () => {
 	});
 
 	test("an admin's preview is recorded for the request, cookied, and sent private, no-store", async () => {
-		const ctx = context("/?preview_theme=gamma", { user: ADMIN });
+		const ctx = context("/?preview_theme=jumble", { user: ADMIN });
 		const response = await run(ctx, page);
 		expect(response.headers.get("Cache-Control")).toBe(THEME_PREVIEW_NO_STORE);
 		// …and kept out of Astro's route cache, which Cache-Control does not reach.
 		expect(ctx.cache.set).toHaveBeenCalledWith(false);
-		expect(requestThemePreview(ctx.locals)).toBe("gamma");
+		expect(requestThemePreview(ctx.locals)).toBe("jumble");
 		expect(ctx.cookies.set).toHaveBeenCalledWith(
 			THEME_PREVIEW_COOKIE,
-			"gamma",
+			"jumble",
 			expect.objectContaining({ path: "/", httpOnly: true, sameSite: "lax" }),
 		);
 		const options = ctx.cookies.set.mock.calls[0]?.[2] as Record<string, unknown>;
@@ -238,7 +224,7 @@ describe("the middleware", () => {
 		["in dev (plain-http localhost)", true, false],
 	])("the cookie is Secure %s", async (_name, dev, secure) => {
 		vi.stubEnv("DEV", dev);
-		const ctx = context("/?preview_theme=gamma", { user: ADMIN });
+		const ctx = context("/?preview_theme=jumble", { user: ADMIN });
 		await run(ctx, page);
 		const options = ctx.cookies.set.mock.calls[0]?.[2] as Record<string, unknown>;
 		expect(options.secure).toBe(secure);
@@ -247,7 +233,7 @@ describe("the middleware", () => {
 	test("a page that sets a cache hint cannot re-enable the route cache for a preview", async () => {
 		// Astro 7's `cache.set(options)` clears an earlier `set(false)`, and the
 		// route cache reads the options after `next()` returns.
-		const ctx = context("/?preview_theme=gamma", { user: ADMIN });
+		const ctx = context("/?preview_theme=jumble", { user: ADMIN });
 		await run(ctx, () => {
 			ctx.cache.set({ maxAge: 60 });
 			return page();
@@ -256,16 +242,19 @@ describe("the middleware", () => {
 	});
 
 	test("the resolver renders the recorded preview, not the stored theme", async () => {
-		const ctx = context("/", { user: ADMIN, cookie: "delta" });
+		const ctx = context("/", { user: ADMIN, cookie: "counter" });
 		await run(ctx, page);
 		expect(ctx.cache.set).toHaveBeenCalledWith(false);
-		expect(await activeTheme({ url: ctx.url, locals: ctx.locals })).toBe("delta");
+		expect(await activeTheme({ url: ctx.url, locals: ctx.locals })).toBe("counter");
 	});
 
 	test.each([
-		["anonymous, with the parameter", context("/?preview_theme=alpha")],
-		["anonymous, with the cookie", context("/", { cookie: "alpha" })],
-		["an editor, with both", context("/?preview_theme=alpha", { user: EDITOR, cookie: "alpha" })],
+		["anonymous, with the parameter", context("/?preview_theme=pressing")],
+		["anonymous, with the cookie", context("/", { cookie: "pressing" })],
+		[
+			"an editor, with both",
+			context("/?preview_theme=pressing", { user: EDITOR, cookie: "pressing" }),
+		],
 	])("%s: no preview, and the page's own caching is untouched", async (_name, ctx) => {
 		const response = await run(ctx, page);
 		expect(requestThemePreview(ctx.locals)).toBeNull();
@@ -275,7 +264,7 @@ describe("the middleware", () => {
 	});
 
 	test("off redirects (303, no-store) and clears the cookie", async () => {
-		const ctx = context("/products?preview_theme=off", { user: ADMIN, cookie: "beta" });
+		const ctx = context("/products?preview_theme=off", { user: ADMIN, cookie: "batch" });
 		const next = vi.fn(page);
 		const response = await run(ctx, next);
 		expect(response.status).toBe(303);
@@ -287,7 +276,7 @@ describe("the middleware", () => {
 	});
 
 	test("a silent off answers an empty 200 — no redirect, no page render — and clears the cookie", async () => {
-		const ctx = context("/?preview_theme=off&silent=1", { user: ADMIN, cookie: "beta" });
+		const ctx = context("/?preview_theme=off&silent=1", { user: ADMIN, cookie: "batch" });
 		const next = vi.fn(page);
 		const response = await run(ctx, next);
 		expect(response.status).toBe(200);
@@ -308,8 +297,8 @@ describe("the middleware", () => {
 
 	test("writes and the admin itself pass straight through", async () => {
 		for (const ctx of [
-			context("/cart/add?preview_theme=beta", { user: ADMIN, method: "POST" }),
-			context("/_emdash/admin?preview_theme=beta", { user: ADMIN }),
+			context("/cart/add?preview_theme=batch", { user: ADMIN, method: "POST" }),
+			context("/_emdash/admin?preview_theme=batch", { user: ADMIN }),
 		]) {
 			await run(ctx, page);
 			expect(requestThemePreview(ctx.locals)).toBeNull();
@@ -318,7 +307,7 @@ describe("the middleware", () => {
 	});
 
 	test("a response with immutable headers is copied, never sent cacheable", async () => {
-		const ctx = context("/?preview_theme=epsilon", { user: ADMIN });
+		const ctx = context("/?preview_theme=plinth", { user: ADMIN });
 		const frozen = Response.redirect("https://shop.example/products", 302);
 		const response = await run(ctx, () => Promise.resolve(frozen));
 		expect(response.headers.get("Cache-Control")).toBe(THEME_PREVIEW_NO_STORE);
@@ -326,9 +315,8 @@ describe("the middleware", () => {
 
 	test("setRequestThemePreview is per request", () => {
 		const a = {};
-		// A stand-in id (see the manifest mock above).
-		setRequestThemePreview(a, "beta" as ThemeId);
-		expect(requestThemePreview(a)).toBe("beta");
+		setRequestThemePreview(a, "batch");
+		expect(requestThemePreview(a)).toBe("batch");
 		expect(requestThemePreview({})).toBeNull();
 	});
 });

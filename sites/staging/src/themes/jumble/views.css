@@ -1,0 +1,775 @@
+/**
+ * Jumble — the chrome and the three views (home, shop, product), linked by
+ * `themes/jumble/Layout.astro` through a `?url` import beside `theme.css`.
+ *
+ * Held to `test/page-css.test.ts` like every theme's view sheet: every colour,
+ * face and corner is a token from theme.css; nothing here moves (the motion
+ * budget is theme.css's, inside `prefers-reduced-motion: no-preference`); no
+ * focus ring is restyled; no border is drawn at all.
+ *
+ * THE GRAMMAR. White ground, indigo ink. A product always stands on its own
+ * square colour field (radius 28; a photograph is inset on it at radius 18).
+ * The Sun field is the only field that carries words — the home hero and the
+ * footer — and they are indigo. Notices and empty states sit on the lavender
+ * surface. Nothing has a border, nothing has a hard shadow.
+ */
+
+/* ── Frame ────────────────────────────────────────────────────────────── */
+
+.j-wrap {
+	width: 100%;
+	max-width: 80rem;
+	margin-inline: auto;
+	padding-inline: 2rem;
+}
+
+.j-skip-shell {
+	position: relative;
+	z-index: 20;
+}
+
+.j-skip-link {
+	position: absolute;
+	top: 0.75rem;
+	left: 1rem;
+	padding: 0.75rem 1.25rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-sun);
+	color: var(--j-on-sun);
+	font-weight: 750;
+	transform: translateY(-200%);
+}
+
+.j-skip-link:focus {
+	transform: none;
+}
+
+/* ── Header: white, 72px ──────────────────────────────────────────────── */
+
+.j-head {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	background: var(--j-ground);
+}
+
+.j-head-row {
+	display: flex;
+	align-items: center;
+	gap: 2.25rem;
+	height: 4.5rem;
+	font-size: 1rem;
+	font-weight: 650;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-word {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	font-size: 1.875rem;
+	font-weight: 900;
+	line-height: 1;
+	letter-spacing: -0.02em;
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.j-nav,
+.j-right {
+	display: flex;
+	align-items: center;
+	gap: 1.5rem;
+	min-width: 0;
+}
+
+.j-right {
+	gap: 1.25rem;
+	margin-left: auto;
+}
+
+.j-nav a,
+.j-account,
+.j-foot a,
+.j-link {
+	text-decoration-line: underline;
+	text-decoration-color: transparent;
+	text-decoration-thickness: 3px;
+	text-underline-offset: 0.35em;
+}
+
+.j-nav a,
+.j-account {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+}
+
+.j-nav a:hover,
+.j-account:hover,
+.j-foot a:hover,
+.j-link:hover {
+	text-decoration-color: var(--j-f5);
+}
+
+/* The bag: a royal pill (Sun by night-light) carrying the count on a badge. */
+.j-bag {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.625rem;
+	min-height: 2.75rem;
+	padding: 0 1.125rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-accent);
+	color: var(--j-on-accent);
+	font-weight: 750;
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.j-bag:has(.j-badge) {
+	padding-right: 0.5rem;
+}
+
+.j-badge {
+	display: inline-grid;
+	place-items: center;
+	min-width: 1.75rem;
+	height: 1.75rem;
+	padding: 0 0.375rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-badge);
+	color: var(--j-badge-ink);
+	font-size: 0.9375rem;
+	font-weight: 800;
+	line-height: 1;
+}
+
+/* ── Main, and the column for pages Jumble has not drawn yet ──────────── */
+
+.j-main {
+	flex: 1 0 auto;
+	width: 100%;
+}
+
+/* A page with no Jumble view (the site 404 and default-slot pages) sits in
+   one centred column on the white ground; its colours and face come from the
+   --u-* contract. */
+.j-main:not(:has(> .j-view)) {
+	width: min(100% - 4rem, 76rem);
+	margin: 1.5rem auto 5.5rem;
+}
+
+/* ── Shared type ──────────────────────────────────────────────────────── */
+
+.j-display {
+	margin: 0 0 1.125rem;
+	max-width: 10ch;
+	font-size: clamp(3rem, 6.4vw, 5.5rem);
+	font-weight: 900;
+	/* 1.06, not tighter: Recursive's casual 900 has deep descenders, and at
+	   0.95 the "g" of one line met the apostrophe of the next. */
+	line-height: 1.06;
+	letter-spacing: -0.02em;
+	text-wrap: balance;
+}
+
+.j-h1,
+.j-h2 {
+	margin: 0;
+	font-weight: 800;
+	line-height: 1.1;
+	letter-spacing: -0.01em;
+}
+
+.j-h1 {
+	font-size: 2.5rem;
+}
+
+.j-h2 {
+	font-size: 1.625rem;
+}
+
+.j-link {
+	font-weight: 650;
+	font-variation-settings: "CASL" 1;
+	text-decoration-color: color-mix(in srgb, var(--j-f5) 70%, transparent);
+}
+
+.j-sec {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.5rem 1rem;
+	padding: 4rem 0 1.25rem;
+}
+
+.j-sec-top {
+	padding-top: 2.5rem;
+	padding-bottom: 1.75rem;
+}
+
+.j-sec .j-link,
+.j-sec-meta {
+	margin: 0;
+	font-size: 1rem;
+}
+
+.j-sec-meta {
+	color: var(--j-ink-2);
+}
+
+/* ── The field: a product on its crayon square ────────────────────────── */
+
+.j-field {
+	position: relative;
+	aspect-ratio: 1;
+	overflow: hidden;
+	border-radius: var(--j-r-field);
+	background: var(--j-f1);
+}
+
+.j-field[data-field="2"] {
+	background: var(--j-f2);
+}
+
+.j-field[data-field="3"] {
+	background: var(--j-f3);
+}
+
+.j-field[data-field="4"] {
+	background: var(--j-f4);
+}
+
+.j-field[data-field="5"] {
+	background: var(--j-f5);
+}
+
+/* Brief: a sold-out tile's field goes 40% grey. */
+.j-field[data-dimmed] {
+	filter: grayscale(0.4);
+}
+
+.j-art {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* A photograph stands inset on its field: 12% all round, contain-fit. */
+.j-photo {
+	position: absolute;
+	inset: 12%;
+	width: 76%;
+	height: 76%;
+	object-fit: contain;
+	border-radius: var(--j-r-media);
+}
+
+.j-sold {
+	position: absolute;
+	top: 1rem;
+	left: 1rem;
+	z-index: 1;
+	padding: 0.375rem 0.875rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-tag);
+	color: var(--j-on-sun);
+	font-size: 0.9375rem;
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.3;
+}
+
+/* ── Home: the Sun hero ───────────────────────────────────────────────── */
+
+.j-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+	align-items: center;
+	gap: 2rem;
+	width: min(100% - 4rem, 76rem);
+	margin: 0.5rem auto 0;
+	padding: 3.5rem;
+	overflow: hidden;
+	border-radius: var(--j-r-field);
+	background: var(--j-f5);
+	color: var(--j-on-sun);
+}
+
+.j-hero:not([data-tiles]) {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.j-hero-lede {
+	max-width: 36ch;
+	margin: 0 0 1.75rem;
+	font-size: 1.125rem;
+	text-wrap: pretty;
+}
+
+/* Up to three toys on their own tiles, each at its seeded tilt. */
+.j-toys {
+	position: relative;
+	aspect-ratio: 1.15 / 1;
+}
+
+.j-tile {
+	position: absolute;
+	width: 52%;
+	overflow: hidden;
+	border-radius: var(--j-r-field);
+	box-shadow: var(--j-lift);
+	transform: rotate(var(--j-tilt, 0deg));
+}
+
+.j-tile:nth-child(1) {
+	top: 20%;
+	left: 0;
+}
+
+.j-tile:nth-child(2) {
+	top: 0;
+	left: 26%;
+	z-index: 1;
+}
+
+.j-tile:nth-child(3) {
+	top: 36%;
+	right: 0;
+	z-index: 2;
+}
+
+.j-hero[data-tiles="1"] .j-tile {
+	top: 8%;
+	left: 20%;
+	width: 62%;
+}
+
+.j-hero[data-tiles="2"] .j-tile:nth-child(1) {
+	top: 6%;
+	left: 4%;
+	width: 56%;
+}
+
+.j-hero[data-tiles="2"] .j-tile:nth-child(2) {
+	top: 30%;
+	right: 2%;
+	left: auto;
+	width: 56%;
+}
+
+.j-shelf {
+	padding-bottom: 1rem;
+}
+
+/* ── The grid and its cards ───────────────────────────────────────────── */
+
+.j-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 2.25rem 1.5rem;
+	padding-bottom: 5.5rem;
+}
+
+.j-card {
+	display: block;
+	border-radius: var(--j-r-field);
+	color: inherit;
+	text-decoration: none;
+}
+
+.j-card-row {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.75rem;
+	margin-top: 0.875rem;
+}
+
+.j-card-title {
+	margin: 0;
+	font-size: 1.25rem;
+	font-weight: 800;
+	line-height: 1.2;
+	font-variation-settings: "CASL" 0.5;
+}
+
+.j-card:hover .j-card-title,
+.j-card:focus-visible .j-card-title {
+	font-variation-settings: "CASL" 1;
+}
+
+.j-card-price {
+	flex: none;
+	margin: 0;
+	font-size: 1.375rem;
+	font-weight: 800;
+	line-height: 1.2;
+}
+
+.j-card-price s,
+.j-price s {
+	color: var(--j-ink-2);
+	text-decoration-thickness: 2px;
+}
+
+.j-card-meta {
+	margin: 0.125rem 0 0;
+	overflow: hidden;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* ── Shop: empty, unavailable, notices ────────────────────────────────── */
+
+.j-empty {
+	display: grid;
+	justify-items: center;
+	gap: 1rem;
+	max-width: 36rem;
+	margin: 3rem auto 6rem;
+	padding: 3rem 2.5rem 2.75rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-surface);
+	text-align: center;
+}
+
+.j-empty p {
+	max-width: 34ch;
+	margin: 0;
+	text-wrap: pretty;
+}
+
+.j-empty .u-btn-ghost {
+	margin-top: 0.5rem;
+}
+
+.j-notice-slot {
+	margin: 0 0 2rem;
+}
+
+.j-notice-top {
+	margin-top: 1.5rem;
+	margin-bottom: 0;
+}
+
+.j-notice {
+	padding: 1rem 1.375rem;
+	border-radius: var(--j-r-input);
+	background: var(--j-surface);
+}
+
+.j-notice-lead {
+	margin: 0;
+	font-size: 1.0625rem;
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.35;
+}
+
+.j-notice-body {
+	margin: 0.25rem 0 0;
+	font-size: 0.9375rem;
+}
+
+.j-notice-body:first-child {
+	margin-top: 0;
+}
+
+.j-notice[data-tone="error"] {
+	color: var(--j-error);
+}
+
+/* ── Product ──────────────────────────────────────────────────────────── */
+
+.j-pdp {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	align-items: start;
+	gap: 3rem;
+	padding-top: 2.5rem;
+	padding-bottom: 5.5rem;
+}
+
+.j-pdp-info {
+	padding-top: 0.5rem;
+}
+
+.j-pdp-title {
+	margin: 0 0 0.375rem;
+	font-size: 2.75rem;
+	font-weight: 850;
+	/* 1.08, not tighter: at 850 two lines' ascenders and descenders collide. */
+	line-height: 1.08;
+	letter-spacing: -0.015em;
+	text-wrap: balance;
+}
+
+.j-price {
+	margin: 0 0 1rem;
+	font-size: 1.75rem;
+	font-weight: 800;
+	line-height: 1.3;
+}
+
+.j-desc {
+	max-width: 48ch;
+	margin: 0 0 1.75rem;
+	text-wrap: pretty;
+}
+
+.j-pdp-info .j-notice-slot {
+	margin: 0 0 1.5rem;
+}
+
+.j-buy {
+	margin: 0;
+}
+
+.j-add {
+	width: 100%;
+}
+
+.j-hold {
+	margin: 0.875rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	line-height: 1.45;
+}
+
+.j-sku {
+	margin: 1.5rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+}
+
+/* ── Footer: a Sun field, indigo words ────────────────────────────────── */
+
+.j-foot {
+	width: min(100% - 4rem, 76rem);
+	margin: auto auto 2rem;
+	padding: 2.5rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-f5);
+	color: var(--j-on-sun);
+	font-size: 1rem;
+}
+
+.j-foot-grid {
+	display: grid;
+	grid-template-columns: 1.3fr 1fr 1fr;
+	align-items: start;
+	gap: 2rem;
+}
+
+.j-foot p {
+	margin: 0;
+}
+
+.j-foot-word {
+	margin-bottom: 0.375rem;
+	font-size: 1.75rem;
+	font-weight: 900;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.1;
+	letter-spacing: -0.02em;
+}
+
+.j-foot-nav ul {
+	display: grid;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.j-foot-nav a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	font-weight: 650;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-foot a:hover {
+	text-decoration-color: var(--j-on-sun);
+}
+
+.j-foot .j-foot-tag {
+	justify-self: start;
+	padding-top: 0.625rem;
+	font-weight: 650;
+}
+
+/* ── Tablet ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 60rem) {
+	.j-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.j-hero {
+		padding: 2.5rem;
+	}
+}
+
+/* ── Phone ────────────────────────────────────────────────────────────── */
+
+@media (max-width: 45rem) {
+	.j-wrap {
+		padding-inline: 1rem;
+	}
+
+	.j-head-row {
+		gap: 1rem;
+		height: 4rem;
+		font-size: 0.9375rem;
+	}
+
+	.j-word {
+		font-size: 1.625rem;
+	}
+
+	.j-nav,
+	.j-right {
+		gap: 0.875rem;
+	}
+
+	/* The wordmark already goes home; the menu's own Home link is the one
+	   item a phone header drops. */
+	.j-nav a[data-home] {
+		display: none;
+	}
+
+	.j-bag {
+		padding-left: 0.875rem;
+	}
+
+	.j-main:not(:has(> .j-view)) {
+		width: min(100% - 2rem, 76rem);
+		margin: 1rem auto 4rem;
+	}
+
+	.j-hero {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.5rem;
+		width: calc(100% - 1.5rem);
+		margin-top: 0.25rem;
+		padding: 2rem 1.25rem 1.5rem;
+	}
+
+	.j-toys {
+		aspect-ratio: 1.6 / 1;
+	}
+
+	.j-tile {
+		width: 44%;
+	}
+
+	.j-hero[data-tiles="1"] .j-tile {
+		top: 4%;
+		left: 26%;
+		width: 48%;
+	}
+
+	.j-hero[data-tiles="2"] .j-tile:nth-child(1),
+	.j-hero[data-tiles="2"] .j-tile:nth-child(2) {
+		width: 46%;
+	}
+
+	.j-sec {
+		padding: 2.75rem 0 1rem;
+	}
+
+	.j-sec-top {
+		padding-top: 1.5rem;
+	}
+
+	.j-h1 {
+		font-size: 2rem;
+	}
+
+	.j-h2 {
+		font-size: 1.375rem;
+	}
+
+	.j-grid {
+		gap: 1.75rem 1rem;
+		padding-bottom: 4rem;
+	}
+
+	.j-card-row {
+		flex-direction: column;
+		gap: 0;
+		margin-top: 0.625rem;
+	}
+
+	.j-card-title {
+		font-size: 1.0625rem;
+	}
+
+	.j-card-price {
+		font-size: 1.1875rem;
+	}
+
+	.j-card-meta {
+		display: none;
+	}
+
+	.j-sold {
+		top: 0.625rem;
+		left: 0.625rem;
+		padding: 0.25rem 0.625rem;
+		font-size: 0.8125rem;
+	}
+
+	.j-empty {
+		margin: 1.5rem auto 4rem;
+		padding: 2rem 1.25rem;
+	}
+
+	/* The field goes full-bleed; the words follow it. */
+	.j-pdp {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.25rem;
+		padding-top: 0.75rem;
+		padding-bottom: 3.5rem;
+	}
+
+	.j-pdp-field {
+		width: calc(100% + 2rem);
+		margin-inline: -1rem;
+		border-radius: 0;
+	}
+
+	.j-pdp-info {
+		padding-top: 0;
+	}
+
+	.j-pdp-title {
+		font-size: 2.125rem;
+	}
+
+	.j-price {
+		margin-bottom: 0.75rem;
+		font-size: 1.5rem;
+	}
+
+	.j-desc {
+		margin-bottom: 1.25rem;
+	}
+
+	.j-foot {
+		width: calc(100% - 1.5rem);
+		margin-bottom: 0.75rem;
+		padding: 1.75rem 1.25rem;
+	}
+
+	.j-foot-grid {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1rem;
+	}
+}

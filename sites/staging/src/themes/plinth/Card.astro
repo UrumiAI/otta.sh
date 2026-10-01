@@ -1,0 +1,76 @@
+---
+/**
+ * One Plinth card: the object on stone at 4:5, then title left and price right
+ * on a single 16px/500 line — the theme's personality move (nothing on the
+ * storefront is larger than 22px except the home statement).
+ *
+ * - The image is `object-fit: contain` on stone, so no object is ever cropped.
+ *   With no image the generated art stands in (`art.ts`); on hover the art
+ *   crossfades to its own detail crop. A photographed product has one image
+ *   on the wire today, so it has no second frame to fade to and holds still.
+ * - "Sold out" in muted ink REPLACES the price. "In stock" is never said: it
+ *   is the default and stating it is noise.
+ * - `--pl-vt-media` / `--pl-vt-title` carry this product's view-transition
+ *   names; views.css applies them only under `prefers-reduced-motion:
+ *   no-preference`, and the product page carries the same two, which is the
+ *   whole of the card → product-page morph. No client script.
+ *
+ * Presentation only: every value is the page's (`ShopCard`).
+ */
+import type { ShopCard } from "../contract.js";
+import { plinthArt, plinthTransitionName } from "./art.js";
+
+interface Props {
+	card: ShopCard;
+	/** Heading level of the title. Both grids (home, shop) pass 2: their cards
+	 *  sit directly under the page's h1. The default, 3, is for a card placed
+	 *  under a section's h2. */
+	headingLevel?: 2 | 3;
+	/** Carry this product's view-transition names. `false` for a second card
+	 *  of the same product on one page: a duplicate name aborts the morph. */
+	named?: boolean;
+}
+
+const { card, headingLevel = 3, named = true } = Astro.props;
+const Heading = headingLevel === 2 ? "h2" : "h3";
+const soldOut = card.availability === "out_of_stock";
+const art = card.image === null ? plinthArt(card.slug, card.title) : null;
+const detail = card.image === null ? plinthArt(card.slug, card.title, { crop: true }) : null;
+const names = named
+	? `--pl-vt-media: ${plinthTransitionName(card.slug, "media")}; --pl-vt-title: ${plinthTransitionName(card.slug, "title")}`
+	: undefined;
+---
+
+<a class="pl-card" href={card.href} style={names}>
+	<div class="pl-media pl-vt-media" data-sold-out={soldOut ? "" : undefined}>
+		{
+			card.image !== null ? (
+				<img src={card.image} alt="" loading="lazy" decoding="async" />
+			) : (
+				<Fragment>
+					<Fragment set:html={art?.svg} />
+					<div class="pl-media-alt" aria-hidden="true">
+						<Fragment set:html={detail?.svg} />
+					</div>
+					{art?.object === null && (
+						<span class="pl-media-name" aria-hidden="true">
+							{card.title}
+						</span>
+					)}
+				</Fragment>
+			)
+		}
+	</div>
+	<div class="pl-row">
+		<Heading class="pl-card-title pl-vt-title">{card.title}</Heading>
+		{
+			soldOut ? (
+				<span class="pl-quiet">Sold out</span>
+			) : card.price !== null ? (
+				<span class="pl-price u-mono">{card.price}</span>
+			) : (
+				<span class="pl-quiet">{card.priceNote ?? "Not for sale"}</span>
+			)
+		}
+	</div>
+</a>

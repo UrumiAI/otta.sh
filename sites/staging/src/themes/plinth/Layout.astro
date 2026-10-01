@@ -1,0 +1,111 @@
+---
+/**
+ * Plinth's Layout — the document shell and the chrome. A gallery for a small
+ * design-objects studio: no rules, no colour on any control, hierarchy from
+ * space and one stone tone. The header is 72px of paper with the wordmark and
+ * nav at 16px; the footer is 160px of air and two muted columns.
+ *
+ * PRESENTATION ONLY. Everything here arrives on `chrome`, built by
+ * `src/layouts/Storefront.astro`; this file reads nothing and decides nothing
+ * (`themes-boundary.test.ts`). Splitting the menu into a left group and a
+ * right "Account / Bag" group is placement, keyed off the model's own
+ * `isCart` flag and nav.ts's account test — no item is added or dropped.
+ *
+ * STYLES are linked through `?url`, never imported, so only the ACTIVE theme's
+ * sheets reach the browser. `theme.css` is the `--u-*` token contract in
+ * Plinth's palette plus the shared recipes; `views.css` is this chrome and the
+ * three catalog views, including the card → product-page view transition (and
+ * its continuation into the bag); `commerce.css` is the bag, checkout, pay,
+ * order and account views — every one of them Plinth's own.
+ *
+ * ONE FACE: Host Grotesk, self-hosted through Astro's font API under
+ * `--f-plinth-body` and mapped onto `--u-display/-body/-data` by theme.css.
+ */
+import { Font } from "astro:assets";
+import { isAccountLink } from "../../lib/nav.js";
+import type { ChromeModel } from "../contract.js";
+import commerceHref from "./commerce.css?url";
+import themeHref from "./theme.css?url";
+import viewsHref from "./views.css?url";
+
+interface Props {
+	chrome: ChromeModel;
+}
+
+const { chrome } = Astro.props;
+const right = chrome.navItems.filter((item) => item.isCart || isAccountLink(item.url));
+const left = chrome.navItems.filter((item) => !right.includes(item));
+/* Account before the bag, whatever order the menu lists them in. */
+const rightOrdered = [...right.filter((item) => !item.isCart), ...right.filter((item) => item.isCart)];
+---
+
+<!doctype html>
+<html lang="en" data-theme-id={chrome.themeId}>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="light dark" />
+		<title>{chrome.fullTitle}</title>
+		{chrome.description && <meta name="description" content={chrome.description} />}
+		<Font cssVariable="--f-plinth-body" preload />
+		<link rel="stylesheet" href={themeHref} />
+		<link rel="stylesheet" href={viewsHref} />
+		<link rel="stylesheet" href={commerceHref} />
+		<slot name="head" />
+		{/* An object on a plinth: a graphite block on a stone ledge. Inline, so
+		    there is no second request and no public/ asset to rot. */}
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23E9E7E2'/%3E%3Crect x='0' y='23' width='32' height='9' fill='%23DEDBD5'/%3E%3Cpath d='M11 23 C9 17 11 12 14.5 9.5 L14.5 7 L17.5 7 L17.5 9.5 C21 12 23 17 21 23 Z' fill='%23262522'/%3E%3C/svg%3E"
+		/>
+	</head>
+	<body>
+		<a href="#main" class="pl-skip">Skip to the main content</a>
+		<header class="pl-head">
+			<a href="/" class="pl-word">{chrome.siteTitle}</a>
+			{
+				left.length > 0 && (
+					<nav class="pl-nav" aria-label="Primary">
+						{left.map((item) => (
+							<a href={item.url}>{item.label}</a>
+						))}
+					</nav>
+				)
+			}
+			<nav class="pl-nav pl-nav-end" aria-label="Account and bag">
+				{
+					rightOrdered.map((item) => (
+						<a href={item.url} class={item.isCart ? "pl-bag" : undefined}>
+							{item.label}
+							{item.isCart && chrome.cartCount !== null && (
+								<Fragment>
+									{chrome.cartCount > 0 && (
+										<span class="pl-count u-mono" aria-hidden="true">
+											{" "}
+											{chrome.cartCount}
+										</span>
+									)}
+									<span class="u-sr-only">, {chrome.cartCountLabel}</span>
+								</Fragment>
+							)}
+						</a>
+					))
+				}
+			</nav>
+		</header>
+		<main id="main" class="pl-main">
+			<slot />
+		</main>
+		<footer class="pl-foot">
+			<div>
+				<p class="pl-foot-word">{chrome.siteTitle}</p>
+				<p>Content by EmDash, commerce by Otta.</p>
+				{chrome.currency !== null && <p>Prices in <span class="u-mono">{chrome.currency}</span></p>}
+			</div>
+			<nav class="pl-foot-nav" aria-label="Footer">
+				{chrome.navItems.map((item) => <a href={item.url}>{item.label}</a>)}
+			</nav>
+		</footer>
+	</body>
+</html>

@@ -271,6 +271,45 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 				"themes/batch/AccountVerifyView.astro",
 				"themes/batch/AccountOrdersView.astro",
 				"themes/batch/AccountOrderView.astro",
+				// Jumble's own commerce views and its draining Sun pill (markup
+				// only — the /cart page's HoldClock ticks it; the hop is CSS).
+				"themes/jumble/Layout.astro",
+				"themes/jumble/HoldRibbon.astro",
+				"themes/jumble/CartView.astro",
+				"themes/jumble/CheckoutView.astro",
+				"themes/jumble/PayView.astro",
+				"themes/jumble/OrderView.astro",
+				"themes/jumble/AccountLoginView.astro",
+				"themes/jumble/AccountVerifyView.astro",
+				"themes/jumble/AccountOrdersView.astro",
+				"themes/jumble/AccountOrderView.astro",
+				// Pressing's own commerce views, its line hold chip and its bag
+				// strip (markup only — /cart's HoldClock ticks them; the rise and
+				// the sodium crossfade are CSS), drawn by the Layout off /cart too.
+				"themes/pressing/Layout.astro",
+				"themes/pressing/BagStrip.astro",
+				"themes/pressing/HoldRibbon.astro",
+				"themes/pressing/CartView.astro",
+				"themes/pressing/CheckoutView.astro",
+				"themes/pressing/PayView.astro",
+				"themes/pressing/OrderView.astro",
+				"themes/pressing/AccountLoginView.astro",
+				"themes/pressing/AccountVerifyView.astro",
+				"themes/pressing/AccountOrdersView.astro",
+				"themes/pressing/AccountOrderView.astro",
+				// Plinth's own commerce views and its text-and-dot hold (markup only —
+				// /cart's HoldClock ticks it; the continuity into the bag is a CSS
+				// view transition, no script).
+				"themes/plinth/Layout.astro",
+				"themes/plinth/HoldRibbon.astro",
+				"themes/plinth/CartView.astro",
+				"themes/plinth/CheckoutView.astro",
+				"themes/plinth/PayView.astro",
+				"themes/plinth/OrderView.astro",
+				"themes/plinth/AccountLoginView.astro",
+				"themes/plinth/AccountVerifyView.astro",
+				"themes/plinth/AccountOrdersView.astro",
+				"themes/plinth/AccountOrderView.astro",
 			]),
 		);
 	});

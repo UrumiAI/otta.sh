@@ -56,7 +56,12 @@ import {
 	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { productImage, type ProductEntryData } from "../../lib/products.js";
+import {
+	productImage,
+	productKey,
+	productPath,
+	type ProductEntryData,
+} from "../../lib/products.js";
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { CartModel } from "../../themes/contract.js";
@@ -303,7 +308,10 @@ const lineViews = lines.map((line, index) => {
 		image: content === null ? null : productImage(content),
 		/** Keys the coil (§5). Any stable per-product string; the SKU is the
 		 *  last resort so a contentless line still draws its own art. */
-		artKey: content?.slug ?? line.productId ?? line.sku,
+		artKey: content === null ? (line.productId ?? line.sku) : productKey(content),
+		/** The product's page, only when the line can be named — the same path
+		 *  its catalog card links to, off the same key as `artKey`. */
+		href: content === null ? null : productPath(content.slug, content.id),
 		money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
 		/** Only when it says something the line total does not: at qty 1 the two
 		 *  figures are the same number twice, and when the unit price is PROSE

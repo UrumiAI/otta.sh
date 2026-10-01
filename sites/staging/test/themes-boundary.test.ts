@@ -241,24 +241,32 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		expect(shell).toContain('<link rel="stylesheet" href={viewSheet} slot="head" />');
 	});
 
-	test("only a theme that renders a bag drawer opts into the chrome's cart-lines read", () => {
+	test("only a theme that renders the bag's lines in its chrome opts into the cart-lines read", () => {
 		// `ThemeModule.chrome.cartLines` makes the shell pay one cart read on every
-		// non-checkout page. A theme that sets it must actually DRAW the lines —
-		// its Layout renders a drawer from `chrome.bag` — and every theme that
-		// does not draw them must not set it (it would pay a read for nothing).
+		// non-checkout page. A theme that sets it must actually DRAW the lines — its
+		// Layout takes `chrome.bag` and it, or a theme component it imports, reads
+		// the bag's `lines` (Counter's popover drawer, Pressing's bag strip) — and
+		// every theme that does not draw them must not set it (it would pay a read
+		// for nothing). The scan goes ONE import deep (the Layout and the theme
+		// components it imports directly); a theme that read the lines two
+		// components down would need this widened.
 		for (const id of THEME_DIRS) {
 			const block = themeBlock(id);
 			const layout = read(`themes/${id}/Layout.astro`);
 			const opts = /chrome:\s*\{\s*cartLines:\s*true\s*\}/.test(block);
-			const drawer = existsSync(path.join(THEMES_DIR, id, "BagDrawer.astro"))
-				? read(`themes/${id}/BagDrawer.astro`)
-				: "";
-			const draws = /chrome\.bag\b/.test(layout) && /<div popover\b/.test(layout + drawer);
-			expect(opts, `${id}: chrome.cartLines vs drawing chrome.bag`).toBe(draws);
+			const imported = [...code(`themes/${id}/Layout.astro`).matchAll(/from\s+"\.\/(\w+)\.astro"/g)]
+				.map((match) => `themes/${id}/${match[1] ?? ""}.astro`)
+				.map((file) => code(file))
+				.join("\n");
+			const draws =
+				/chrome\.bag\b/.test(layout) &&
+				/\bbag\.lines\b/.test(code(`themes/${id}/Layout.astro`) + imported);
+			expect(opts, `${id}: chrome.cartLines vs drawing chrome.bag's lines`).toBe(draws);
 		}
 		expect(themeBlock("counter")).toMatch(/chrome:\s*\{\s*cartLines:\s*true\s*\}/);
+		expect(themeBlock("pressing")).toMatch(/chrome:\s*\{\s*cartLines:\s*true\s*\}/);
 		// Nothing else in the registry sets it.
-		expect(registry.match(/cartLines\s*:/g)).toHaveLength(1);
+		expect(registry.match(/cartLines\s*:/g)).toHaveLength(2);
 	});
 
 	test("the shell reads the bag only for an opted-in theme, off the checkout flow", () => {

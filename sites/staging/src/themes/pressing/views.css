@@ -1,0 +1,740 @@
+/**
+ * Pressing — the chrome and the three themed views (home, shop, product).
+ * Linked by `themes/pressing/Layout.astro`; tokens come from `theme.css`
+ * beside it.  Held to the page sweep (`test/page-css.test.ts`): no raw colour,
+ * no font stack, one radius (the pill), no outline, no button shape of its
+ * own — and every transition and animation lives inside
+ * `prefers-reduced-motion: no-preference`.
+ *
+ * NO BORDERS.  Colour blocks are the containers: the ultramarine page, the
+ * sleeve-blue media fields, the footer band.  The one shadow in the theme is
+ * under the disc.  Media are square-cornered; every control is a pill.
+ *
+ * THE SIGNATURE is at the foot of this file: the record slides out of its
+ * sleeve.  Its resting positions are declared FIRST, outside any media query,
+ * as the reduced-motion picture — cards with the disc half out and still, the
+ * product page with it all the way out — and the motion is layered on top for
+ * visitors who have not asked for less.
+ */
+
+/* ── Chrome ─────────────────────────────────────────────────────────────── */
+
+.pr-skip {
+	position: absolute;
+	top: 0.75rem;
+	left: 0.75rem;
+	z-index: 20;
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	padding: 0 1.25rem;
+	border-radius: var(--u-r);
+	background: var(--pr-pink);
+	color: var(--pr-on-pink);
+	font-weight: 700;
+	text-decoration: none;
+	transform: translateY(-200%);
+}
+
+.pr-skip:focus {
+	transform: none;
+}
+
+.pr-head {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0 2.25rem;
+	min-height: 4rem;
+	padding: 0 max(2rem, calc((100% - 90rem) / 2 + 2rem));
+	background: var(--pr-ground);
+}
+
+.pr-head a {
+	color: inherit;
+	text-decoration: none;
+}
+
+.pr-word {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	font-family: var(--u-display);
+	font-size: 1.375rem;
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	line-height: 1;
+	text-transform: uppercase;
+	color: var(--pr-ink);
+}
+
+.pr-nav {
+	display: flex;
+	align-items: center;
+	gap: 0 1.5rem;
+	font-size: 0.875rem;
+	font-weight: 600;
+	color: var(--pr-ink-2);
+}
+
+.pr-nav-end {
+	gap: 0 1.25rem;
+	margin-left: auto;
+}
+
+/* The text link: an underline that draws left to right on hover (220ms).
+   Drawn as a background so it can grow; `currentColor`, so it is always the
+   link's own ink. */
+.pr-line {
+	background-image: linear-gradient(currentColor, currentColor);
+	background-position: 0 100%;
+	background-repeat: no-repeat;
+	background-size: 0 2px;
+	padding-bottom: 2px;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pr-line:hover {
+	background-size: 100% 2px;
+	color: var(--pr-ink);
+}
+
+/* In the header the link box is a 44px target; the rule stays under the
+   words rather than at the foot of the box. */
+.pr-head .pr-line {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	background-position: 0 calc(100% - 0.625rem);
+}
+
+.pr-bag {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 2.75rem;
+	padding: 0 1.125rem;
+	border-radius: var(--u-r);
+	background: var(--pr-pink);
+	color: var(--pr-on-pink);
+	font-weight: 700;
+}
+
+.pr-head .pr-bag {
+	color: var(--pr-on-pink);
+}
+
+.pr-bag:hover {
+	background: var(--pr-pink-hi);
+}
+
+.pr-bag-count {
+	min-width: 0.6em;
+}
+
+.pr-main {
+	display: block;
+	max-width: 90rem;
+	margin: 0 auto;
+	padding: 0 2rem;
+}
+
+.pr-foot {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 2.5rem;
+	margin-top: 2rem;
+	padding: 3rem max(2rem, calc((100% - 90rem) / 2 + 2rem)) 3.5rem;
+	background: var(--pr-surface);
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-foot p {
+	margin: 0;
+}
+
+.pr-foot-word {
+	font-family: var(--u-display);
+	font-size: 1.25rem;
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	text-transform: uppercase;
+	color: var(--pr-ink);
+}
+
+.pr-foot-id {
+	display: grid;
+	gap: 0.25rem;
+	align-content: start;
+}
+
+.pr-foot-id .pr-foot-word {
+	margin-bottom: 0.5rem;
+}
+
+.pr-foot-h {
+	margin-bottom: 0.25rem;
+	color: var(--pr-ink);
+	font-weight: 600;
+}
+
+/* One deliberate row, like a sleeve's credits line: every link keeps a 44px
+   target without the list growing four targets tall. */
+.pr-foot-nav ul {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 1.75rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pr-foot-nav a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	background-position: 0 calc(100% - 0.625rem);
+}
+
+/* ── Shared pieces ──────────────────────────────────────────────────────── */
+
+.pr-h {
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: 2rem;
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.03em;
+	line-height: 1;
+	text-wrap: balance;
+}
+
+.pr-h-page {
+	font-size: 2.5rem;
+}
+
+.pr-quiet {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-desc {
+	max-width: 46ch;
+	margin: 0 0 1.75rem;
+	color: var(--pr-ink-2);
+	text-wrap: pretty;
+}
+
+/* A title that fills its column edge to edge: `--pr-fit` is the size, in
+   container-inline units, at which this title spans the column (art.ts). It
+   never goes above 6rem, and never below 2.75rem — where a long title stops
+   shrinking and wraps instead. */
+.pr-fitbox {
+	container-type: inline-size;
+	min-width: 0;
+}
+
+.pr-fit {
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: clamp(2.75rem, calc(var(--pr-fit, 10) * 1cqi), 6rem);
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.03em;
+	line-height: 0.9;
+	overflow-wrap: break-word;
+	text-wrap: balance;
+}
+
+.pr-fit-link {
+	color: inherit;
+	text-decoration: none;
+}
+
+.pr-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.5rem 1.5rem;
+	margin: 1.375rem 0 1.125rem;
+}
+
+.pr-price {
+	margin: 0;
+	font-size: 2.5rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	line-height: 1;
+}
+
+.pr-struck {
+	color: var(--pr-ink-2);
+	text-decoration-line: line-through;
+	text-decoration-thickness: 2px;
+}
+
+.pr-notice {
+	margin: 0 0 1.5rem;
+	padding: 1rem 1.25rem;
+	background: var(--pr-surface);
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-notice p {
+	margin: 0;
+}
+
+.pr-notice-lead {
+	color: var(--pr-sodium);
+	font-size: 0.9375rem;
+	font-weight: 700;
+}
+
+.pr-notice-error .pr-notice-lead {
+	color: var(--pr-error);
+}
+
+.pr-notice-shop {
+	margin: 2rem 0 0;
+}
+
+/* ── The record (Record.astro) ──────────────────────────────────────────── */
+
+.pr-media {
+	position: relative;
+	aspect-ratio: 1;
+	overflow: hidden;
+	background: var(--pr-surface);
+}
+
+.pr-disc,
+.pr-sleeve {
+	position: absolute;
+	top: 12%;
+	left: 6%;
+	display: block;
+	width: 76%;
+	height: auto;
+	aspect-ratio: 1;
+}
+
+.pr-sleeve-photo {
+	object-fit: cover;
+}
+
+/* Where the disc rests: `--pr-out` is how far it has slid from behind the
+   sleeve (a share of its own width), `--pr-turn` how far it has turned past
+   its seeded angle. The shadow under it is the only one in the theme. */
+.pr-disc {
+	transform: translateX(var(--pr-out, 0%)) rotate(calc(var(--pr-rot, 0deg) + var(--pr-turn, 0deg)));
+	filter: drop-shadow(0 12px 24px var(--pr-shadow));
+}
+
+.pr-media[data-dimmed] .pr-disc,
+.pr-media[data-dimmed] .pr-sleeve {
+	opacity: 0.5;
+}
+
+.pr-media-hero {
+	--pr-out: 34%;
+	--pr-turn: 30deg;
+}
+
+.pr-media-pdp {
+	--pr-out: 45%;
+	--pr-turn: 40deg;
+}
+
+.pr-media-pdp .pr-disc,
+.pr-media-pdp .pr-sleeve {
+	top: 18%;
+	left: 4%;
+	width: 64%;
+}
+
+/* Reduced motion (and the default before the motion layer below): a card's
+   record rests half out, and holds still. */
+.pr-media-card {
+	--pr-out: 22%;
+	--pr-turn: 25deg;
+}
+
+.pr-t-pink {
+	fill: var(--pr-pink);
+}
+
+.pr-t-sodium {
+	fill: var(--pr-sodium);
+}
+
+.pr-t-vellum {
+	fill: var(--pr-ink);
+}
+
+.pr-t-cobalt {
+	fill: var(--pr-cobalt);
+}
+
+.pr-t-ultra {
+	fill: var(--pr-ground);
+}
+
+.pr-t-deep {
+	fill: var(--pr-deep);
+}
+
+.pr-vinyl {
+	fill: var(--pr-vinyl);
+}
+
+.pr-groove {
+	fill: none;
+	stroke: var(--pr-ink);
+	stroke-width: 0.45;
+}
+
+.pr-sheen {
+	fill: none;
+	stroke: var(--pr-ink);
+	stroke-opacity: 0.1;
+	stroke-width: 3;
+	stroke-linecap: round;
+}
+
+.pr-label-text {
+	fill: var(--pr-ground);
+	font-family: var(--u-body);
+	font-size: 3.3px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+}
+
+.pr-band-title {
+	font-family: var(--u-display);
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.02em;
+}
+
+.pr-band-cat {
+	font-family: var(--u-body);
+	font-size: 3.4px;
+	font-weight: 600;
+}
+
+/* ── Home ───────────────────────────────────────────────────────────────── */
+
+.pr-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+	gap: 3.5rem;
+	align-items: center;
+	padding: 3.5rem 0 5rem;
+}
+
+.pr-thesis {
+	margin: 0 0 0.75rem;
+	color: var(--pr-ink-2);
+	font-size: 1.125rem;
+	font-weight: 600;
+	line-height: 1.3;
+	text-wrap: balance;
+}
+
+.pr-section {
+	padding-bottom: 4rem;
+}
+
+.pr-section-head,
+.pr-shop-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.5rem 1.5rem;
+	padding-bottom: 1.5rem;
+}
+
+.pr-shop-head {
+	padding-top: 3rem;
+	padding-bottom: 2rem;
+}
+
+.pr-section-note {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-section-link {
+	margin-left: auto;
+	color: var(--pr-ink);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+
+.pr-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 2.5rem 1.5rem;
+	margin: 0;
+	padding: 0 0 4rem;
+	list-style: none;
+}
+
+.pr-card {
+	display: block;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pr-card-title {
+	margin: 0.875rem 0 0;
+	font-family: var(--u-display);
+	font-size: 1.125rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x-card);
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+}
+
+.pr-draw {
+	background-image: linear-gradient(currentColor, currentColor);
+	background-position: 0 100%;
+	background-repeat: no-repeat;
+	background-size: 0 2px;
+}
+
+.pr-card:hover .pr-draw,
+.pr-card:focus-visible .pr-draw {
+	background-size: 100% 2px;
+}
+
+.pr-card-row {
+	margin: 0.375rem 0 0;
+}
+
+.pr-card-price {
+	font-weight: 700;
+}
+
+.pr-stock {
+	margin-top: 0.25rem;
+}
+
+/* ── Product ────────────────────────────────────────────────────────────── */
+
+.pr-pdp {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 3.5rem;
+	align-items: start;
+	padding: 3rem 0 5.5rem;
+}
+
+.pr-pdp-art {
+	position: sticky;
+	top: 5.5rem;
+}
+
+.pr-crumb {
+	margin: 0 0 1rem;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-cat {
+	margin: 0.875rem 0 0;
+	color: var(--pr-ink-2);
+	font-weight: 500;
+}
+
+.pr-buy {
+	margin: 0.5rem 0 0;
+}
+
+.pr-wide {
+	width: 100%;
+}
+
+.pr-hold {
+	margin: 0.75rem 0 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+/* Sold out takes the button's place: the outline pill, muted, inert. */
+.pr-soldout {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 3.5rem;
+	margin: 0.5rem 0 0;
+	border-radius: var(--u-r);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink-2);
+	font-weight: 700;
+}
+
+.pr-after {
+	margin: 1rem 0 0;
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+/* ── Not found / unavailable / empty ────────────────────────────────────── */
+
+.pr-missing {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 3.5rem;
+	align-items: center;
+	padding: 3.5rem 0 6rem;
+}
+
+.pr-missing .pr-h {
+	margin-bottom: 1rem;
+}
+
+/* ── Narrower ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 68.75rem) {
+	.pr-grid {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 53.75rem) {
+	.pr-head {
+		gap: 0 1rem;
+		padding: 0.625rem 1rem 0.25rem;
+	}
+
+	/* The primary nav drops to its own row under the wordmark and the bag,
+	   rather than disappearing: on a phone it is still the way to the shop. */
+	.pr-nav:not(.pr-nav-end) {
+		order: 3;
+		width: 100%;
+		margin-top: -0.5rem;
+	}
+
+	.pr-main {
+		padding: 0 1rem;
+	}
+
+	.pr-hero {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.75rem;
+		padding: 1.5rem 0 3.5rem;
+	}
+
+	.pr-hero-art {
+		order: -1;
+	}
+
+	.pr-section-head {
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	.pr-section-link {
+		margin-left: 0;
+	}
+
+	.pr-h {
+		font-size: 1.625rem;
+	}
+
+	.pr-h-page {
+		font-size: 2rem;
+	}
+
+	.pr-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1.75rem 0.875rem;
+	}
+
+	.pr-card-title {
+		font-size: 1rem;
+	}
+
+	.pr-pdp,
+	.pr-missing {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.75rem;
+		padding: 1.75rem 0 4rem;
+	}
+
+	.pr-pdp-art {
+		position: static;
+	}
+
+	.pr-foot {
+		grid-template-columns: minmax(0, 1fr);
+		padding: 2.5rem 1rem;
+	}
+}
+
+/* ── The signature: the record slides out of its sleeve ─────────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+	/* At rest a card's record is tucked in; hover or focus slides it 22% out
+	   and turns it 25° over 420ms, and it goes back in 280ms. */
+	.pr-media-card {
+		--pr-out: 0%;
+		--pr-turn: 0deg;
+	}
+
+	.pr-disc {
+		transition: transform var(--pr-dur-back) var(--pr-ease-in);
+	}
+
+	.pr-card:hover .pr-disc,
+	.pr-card:focus-visible .pr-disc {
+		--pr-out: 22%;
+		--pr-turn: 25deg;
+		transition-duration: var(--pr-dur-slide);
+		transition-timing-function: var(--pr-ease-out);
+	}
+
+	/* The product page: the record slides the whole way out once, on load. */
+	.pr-media-pdp .pr-disc {
+		animation: pr-slide-out 700ms var(--pr-ease-out) 120ms both;
+	}
+
+	@keyframes pr-slide-out {
+		from {
+			transform: translateX(0) rotate(var(--pr-rot, 0deg));
+		}
+	}
+
+	.pr-line,
+	.pr-draw {
+		transition:
+			background-size 220ms var(--pr-ease-out),
+			color 150ms ease-out;
+	}
+
+	.pr-bag {
+		transition:
+			background-color 150ms ease-out,
+			transform 100ms ease-out;
+	}
+
+	.pr-bag:active {
+		transform: scale(0.97);
+	}
+}

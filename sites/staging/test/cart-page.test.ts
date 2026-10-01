@@ -88,6 +88,21 @@ const ARM_ANCHORS: Readonly<Record<string, { terminal: string; live: string; res
 		live: 'class="b-cart"',
 		restart: 'class="b-cart-terminal-restart"',
 	},
+	"themes/jumble/CartView.astro": {
+		terminal: 'class="j-cart-terminal"',
+		live: 'class="j-cart"',
+		restart: 'class="j-cart-terminal-restart"',
+	},
+	"themes/pressing/CartView.astro": {
+		terminal: 'class="pr-cart-terminal"',
+		live: 'class="pr-cart"',
+		restart: 'class="pr-cart-terminal-restart"',
+	},
+	"themes/plinth/CartView.astro": {
+		terminal: 'class="pl-cart-terminal"',
+		live: 'class="pl-cart"',
+		restart: 'class="pl-cart-terminal-restart"',
+	},
 };
 
 /**

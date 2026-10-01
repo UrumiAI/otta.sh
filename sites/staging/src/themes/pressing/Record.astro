@@ -1,0 +1,106 @@
+---
+/**
+ * One record: the sleeve, and the disc behind it — Pressing's media panel.
+ *
+ * The panel is a 1:1 field of the sleeve blue. The sleeve is the product's
+ * image when it has one (cover-cropped, square) or a printed cover generated
+ * from its slug (`art.ts`); the disc always sits behind it, keyed to the same
+ * seed, with the title set around its label. Where the disc rests and how it
+ * moves is views.css's business — slid a little out on a card's hover or
+ * focus, all the way out on the product page, half out and still under
+ * reduced motion. `empty` draws the sleeve alone: the not-found page's record
+ * that is not there.
+ *
+ * Decorative: every SVG is `aria-hidden`. The photograph, when there is one,
+ * carries the `alt` the caller passes (empty inside a link that already names
+ * the product).
+ *
+ * Presentation only — pure over its props.
+ */
+import { pressingRecord } from "./art.js";
+
+interface Props {
+	seed: string;
+	title: string;
+	/** The catalogue number (SKU), when the page has one. */
+	catalogue?: string | null;
+	image?: string | null;
+	alt?: string;
+	/** A per-page instance name, so two renders of one product never share ids. */
+	instance: string;
+	/** `line` is a bag line's thumbnail (commerce.css): the disc a third out. */
+	size?: "card" | "hero" | "pdp" | "line";
+	/** Sleeve only, no disc. */
+	empty?: boolean;
+	dimmed?: boolean;
+}
+
+const {
+	seed,
+	title,
+	catalogue = null,
+	image = null,
+	alt = "",
+	instance,
+	size = "card",
+	empty = false,
+	dimmed = false,
+} = Astro.props;
+const art = pressingRecord(seed, title, catalogue, instance);
+const sleeve = art.sleeve;
+---
+
+<div class={`pr-media pr-media-${size}`} data-dimmed={dimmed ? "" : undefined}>
+	{
+		!empty && (
+			<svg
+				class="pr-disc"
+				style={`--pr-rot: ${art.rotation}deg`}
+				viewBox="0 0 100 100"
+				aria-hidden="true"
+				focusable="false"
+			>
+				<defs>
+					<path id={art.pathId} d="M50 38.5 a11.5 11.5 0 1 1 -0.01 0" />
+				</defs>
+				<circle class="pr-vinyl" cx="50" cy="50" r="49.5" />
+				{art.grooves.map((groove) => (
+					<circle class="pr-groove" cx="50" cy="50" r={groove.r} stroke-opacity={groove.o} />
+				))}
+				<path class="pr-sheen" d="M50 3 A47 47 0 0 1 90 28" />
+				<circle class={`pr-t-${art.label}`} cx="50" cy="50" r="16" />
+				<text class="pr-label-text">
+					<textPath href={`#${art.pathId}`}>{art.labelText}</textPath>
+				</text>
+				<circle class="pr-t-ultra" cx="50" cy="50" r="1.6" />
+			</svg>
+		)
+	}
+	{
+		image !== null ? (
+			<img class="pr-sleeve pr-sleeve-photo" src={image} alt={alt} loading={size === "card" || size === "line" ? "lazy" : undefined} decoding="async" />
+		) : (
+			<svg class="pr-sleeve" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+				<rect class={`pr-t-${sleeve.ground}`} width="100" height="100" />
+				{sleeve.shapes.map((shape) =>
+					shape.kind === "rect" ? (
+						<rect class={`pr-t-${shape.tone}`} x={shape.x} y={shape.y} width={shape.w} height={shape.h} />
+					) : shape.kind === "circle" ? (
+						<circle class={`pr-t-${shape.tone}`} cx={shape.cx} cy={shape.cy} r={shape.r} />
+					) : (
+						<path class={`pr-t-${shape.tone}`} d={shape.d} />
+					),
+				)}
+				<rect class={`pr-t-${sleeve.band}`} y="82" width="100" height="18" />
+				<text class={`pr-band-title pr-t-${sleeve.ink}`} x="6" y="94.6" font-size={sleeve.titleSize}>
+					{sleeve.title}
+				</text>
+				{sleeve.catalogue !== null && (
+					<text class={`pr-band-cat pr-t-${sleeve.ink}`} x="94" y="94" text-anchor="end">
+						{sleeve.catalogue}
+					</text>
+				)}
+			</svg>
+		)
+	}
+</div>

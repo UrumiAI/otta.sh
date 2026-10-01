@@ -1,0 +1,116 @@
+---
+/**
+ * Pressing's home: the latest record as a sleeve front, then the catalogue.
+ *
+ * The hero is two columns on the ultramarine ground. Left, the store's thesis
+ * in muted 18/600 (the page's h1), and under it the lead product's title set
+ * expanded and FITTED to the column edge to edge (`fitScale`, clamped in
+ * views.css), its price at 40px, its description and a pink pill to the
+ * record. Right, the record itself, the disc resting a third of the way out.
+ * Below, "Catalogue" and the model's own shop label, then every card 4-up.
+ *
+ * The hero pill goes to the product page rather than adding to the bag: an
+ * add needs the idempotency key the plugin mints per rendered PDP, and the
+ * home page has none — so it never posts a form it cannot key.
+ *
+ * DEGRADED: no cards (a read failed, so the page omitted the tape) leaves
+ * the thesis itself as the fitted headline over an empty sleeve, and no grid
+ * — no error box, the same rule as Tempered's tapeless hero.
+ *
+ * Presentation only — `src/pages/index.astro` builds the model.
+ */
+import type { HomeModel } from "../contract.js";
+import { fitScale } from "./art.js";
+import Card from "./Card.astro";
+import Record from "./Record.astro";
+
+interface Props {
+	model: HomeModel;
+}
+
+const { model } = Astro.props;
+const [lead] = model.cards;
+const soldOut = lead?.availability === "out_of_stock";
+const fit = `--pr-fit: ${fitScale(lead?.title ?? model.thesis)}`;
+---
+
+<section class="pr-hero" aria-labelledby="pr-hero-title">
+	<div class="pr-hero-copy pr-fitbox">
+		{
+			lead === undefined ? (
+				<Fragment>
+					<h1 id="pr-hero-title" class="pr-fit" style={fit}>
+						{model.thesis}
+					</h1>
+					<p class="pr-desc">{model.lede}</p>
+					<a class="u-btn" href={model.shopHref}>
+						{model.shopLabel}
+					</a>
+				</Fragment>
+			) : (
+				<Fragment>
+					<h1 id="pr-hero-title" class="pr-thesis">
+						{model.thesis}
+					</h1>
+					<h2 class="pr-fit" style={fit}>
+						<a href={lead.href} class="pr-fit-link">
+							{lead.title}
+						</a>
+					</h2>
+					<div class="pr-meta">
+						{lead.price !== null ? (
+							<p class:list={["pr-price u-mono", { "pr-struck": soldOut }]}>{lead.price}</p>
+						) : (
+							<p class="pr-quiet">{lead.priceNote ?? "Not for sale"}</p>
+						)}
+						{soldOut && <p class="pr-quiet">Sold out</p>}
+					</div>
+					{lead.description && <p class="pr-desc">{lead.description}</p>}
+					<a class="u-btn" href={lead.href}>
+						See {lead.title}
+					</a>
+				</Fragment>
+			)
+		}
+	</div>
+	<div class="pr-hero-art">
+		{
+			lead === undefined ? (
+				<Record seed={model.thesis} title={model.thesis} instance="hero" size="hero" empty />
+			) : (
+				<Record
+					seed={lead.slug}
+					title={lead.title}
+					image={lead.image}
+					alt={lead.title}
+					instance="hero"
+					size="hero"
+					dimmed={soldOut}
+				/>
+			)
+		}
+	</div>
+</section>
+
+{
+	model.cards.length > 0 && (
+		<section class="pr-section" aria-labelledby="pr-catalogue">
+			<div class="pr-section-head">
+				<h2 id="pr-catalogue" class="pr-h">
+					Catalogue
+				</h2>
+				<p class="pr-section-note">{model.lede}</p>
+				<a class="pr-line pr-section-link" href={model.shopHref}>
+					{model.shopLabel}
+				</a>
+			</div>
+			<ul class="pr-grid" role="list">
+				{model.cards.map((card) => (
+					<li>
+						<Card card={card} headingLevel={3} instance="home" />
+					</li>
+				))}
+			</ul>
+		</section>
+	)
+}

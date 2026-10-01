@@ -1,0 +1,63 @@
+---
+/**
+ * Jumble's order list for a signed-in customer (issue #306, ADR-0004): the
+ * casual heading with the way to sign out, then one rounded lavender row per
+ * order — the reference as the link, its state on a white pill, how many
+ * items, and the total in 800 with tabular figures. Presentation only —
+ * `src/pages/account/orders/index.astro` resolves the customer from the
+ * SESSION (never a customer id), redirects the signed-out, sets
+ * `private, no-store`, maps BUSY, and hands over finished rows.
+ */
+import type { AccountOrdersModel } from "../contract.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+---
+
+<div class="j-view">
+	<div class="j-wrap j-page">
+		<header class="j-bar">
+			<h1 class="j-title">Your orders</h1>
+			<form method="POST" action="/account/logout">
+				<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+			</form>
+		</header>
+
+		{
+			errorMessage !== null ? (
+				<div class="j-notice-slot j-narrow">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			) : rows.length === 0 ? (
+				<div class="j-empty">
+					<h2 class="j-title">No orders yet.</h2>
+					<p class="j-lede">
+						Orders you place with this email address, including as a guest, appear here.
+					</p>
+					<a class="u-btn" href="/products">
+						Browse the shop
+					</a>
+				</div>
+			) : (
+				<div class="j-orders-panel">
+					<ul class="j-orders" role="list">
+						{rows.map((row) => (
+							<li class="j-orders-row" role="listitem">
+								<a class="j-orders-ref" href={row.href}>
+									{row.id}
+								</a>
+								<span class="j-orders-state">{row.state}</span>
+								<span class="j-orders-items">{row.items}</span>
+								<span class="j-orders-total j-figures">{row.total}</span>
+							</li>
+						))}
+					</ul>
+				</div>
+			)
+		}
+	</div>
+</div>

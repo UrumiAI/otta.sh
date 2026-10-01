@@ -1,0 +1,72 @@
+---
+/**
+ * Pressing's shop: "Catalogue" set expanded at 40px with the exact count
+ * beside it when the page can prove one, then the records 4-up on 1:1 fields
+ * with 24px gutters (3-up, then 2-up, as the column narrows). No borders, no
+ * dividers — colour blocks are the only containers.
+ *
+ * Presentation only: `src/pages/products/index.astro` decides the state
+ * (unavailable / empty / list), chooses the degraded notice's lead (BUSY copy
+ * included) and maps every card.
+ */
+import type { ShopModel } from "../contract.js";
+import Card from "./Card.astro";
+import Record from "./Record.astro";
+
+interface Props {
+	model: ShopModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+	model.degradedNotice !== null && (
+		<div class="pr-notice pr-notice-shop" role="status">
+			<p class="pr-notice-lead">{model.degradedNotice.lead}</p>
+			<p>The catalogue below is complete. Check back in a moment for live prices and stock.</p>
+		</div>
+	)
+}
+
+{
+	model.state === "unavailable" ? (
+		<div class="pr-missing">
+			<Record seed="catalogue-unavailable" title="Back soon" instance="missing" size="hero" empty />
+			<div>
+				<h1 class="pr-h pr-h-page">Catalogue</h1>
+				<div class="pr-notice" role="status">
+					<p class="pr-notice-lead">The catalogue is unavailable right now.</p>
+					<p>Try again in a moment.</p>
+				</div>
+			</div>
+		</div>
+	) : model.state === "empty" ? (
+		<div class="pr-missing">
+			<Record seed="catalogue-empty" title="Your first record" instance="missing" size="hero" empty />
+			<div>
+				<h1 class="pr-h pr-h-page">Nothing pressed yet.</h1>
+				<p class="pr-desc">
+					Create a product in the admin, price it there, and it appears here with live stock.
+				</p>
+				<a class="u-btn" href={model.adminHref}>
+					Open the admin
+				</a>
+			</div>
+		</div>
+	) : (
+		<Fragment>
+			<div class="pr-shop-head">
+				<h1 class="pr-h pr-h-page">Catalogue</h1>
+				{model.countLabel !== null && <p class="pr-section-note">{model.countLabel}</p>}
+			</div>
+			<ul class="pr-grid" role="list">
+				{model.cards.map((card) => (
+					<li>
+						<Card card={card} headingLevel={2} instance="shop" />
+					</li>
+				))}
+			</ul>
+		</Fragment>
+	)
+}

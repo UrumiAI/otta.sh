@@ -1,0 +1,294 @@
+/**
+ * "Pressing" — the theme's token layer.  Linked once, by
+ * `themes/pressing/Layout.astro` (a `?url` import: only the ACTIVE theme's
+ * sheet reaches the browser).
+ *
+ * A record sleeve for an independent label: a saturated ultramarine ground
+ * (screen-printed, never black), vellum ink, and one soft sleeve pink that
+ * carries every action and the "held" state.  Sodium is the only other hue,
+ * and it means "low / expiring / degraded".  Type is Archivo alone, with the
+ * width axis as its second voice: titles expanded, body at normal width.
+ *
+ * DARK ONLY, ON PURPOSE.  The store is staged like a record shop at night and
+ * the generated disc art needs the blue, so there is no light palette and no
+ * `prefers-color-scheme` branch: the values below hold under either OS
+ * preference, and `color-scheme: dark` gives the browser's own surfaces
+ * (scrollbars, form controls, autofill) the same night.
+ *
+ * THE `--u-*` CONTRACT.  Every name Tempered's token sheet declares is defined
+ * again here, mapped onto Pressing's palette, so fallback views (e.g. 404) and
+ * shared pieces render in ultramarine, vellum and pink, in Archivo.  The
+ * mapping keeps each token's JOB:
+ *
+ *   surface                ultramarine — the page itself, where products sit
+ *   ground, panel          the lifted sleeve blue — blocks on the page
+ *   ink / mute             vellum / muted periwinkle (8:1 on the ground)
+ *   edge, hair             a periwinkle line, for form controls on fallback
+ *                          pages only (3.7:1 — Pressing's own views draw none)
+ *   straw                  the fitting (focus ring, hover rule) — sleeve pink
+ *   violet  (held)         sleeve pink — the brief's "accent / held"
+ *   bronze  (expiring)     sodium — low, expiring, degraded
+ *   tint-*                 pink / sodium / vellum: the three disc labels, so
+ *                          Tempered's coil art on a fallback page reads as one
+ *                          of Pressing's labels
+ *   r                      999px — round is the record's shape; every control
+ *                          is a pill.  Media and blocks declare no radius (0).
+ *   display / body / data  all Archivo; figures take tabular-nums
+ *
+ * The `--pr-*` names are Pressing's own vocabulary: the art palette, the
+ * motion curves, and the one shadow (under the disc, nowhere else).
+ */
+
+:root {
+	color-scheme: dark;
+
+	--u-ink: #f3eee6;
+	--u-ground: #1a2150;
+	--u-surface: #10163a;
+	--u-edge: #6970a8;
+	--u-mute: #a9aecb;
+
+	--u-straw: #ff8ac8;
+	--u-violet: #ff8ac8;
+	--u-bronze: #ffc14d;
+
+	--u-panel: #1a2150;
+	--u-tint-violet: #ff8ac8;
+	--u-tint-straw: #ffc14d;
+	--u-tint-blue: #f3eee6;
+	--u-coil-a: 0.9;
+
+	--u-r: 999px;
+	--u-hair: 1px solid var(--u-edge);
+
+	--u-display: var(--f-pressing-body, "Archivo"), ui-sans-serif, system-ui, sans-serif;
+	--u-body: var(--f-pressing-body, "Archivo"), ui-sans-serif, system-ui, sans-serif;
+	--u-data: var(--f-pressing-body, "Archivo"), ui-sans-serif, system-ui, sans-serif;
+
+	/* Pressing's own */
+	--pr-ground: #10163a; /* ultramarine */
+	--pr-surface: #1a2150; /* the sleeve blue: media, footer band, notices */
+	--pr-ink: #f3eee6; /* vellum */
+	--pr-ink-2: #a9aecb;
+	--pr-pink: #ff8ac8; /* 8.1:1 on the ground; ultramarine on it is 8.1:1 */
+	--pr-pink-hi: #ffa3d4; /* the pill's hover */
+	--pr-on-pink: #10163a;
+	--pr-sodium: #ffc14d; /* low / expiring (10.8:1) */
+	--pr-error: #ff7a6b; /* 6.9:1 */
+	--pr-cobalt: #3c4fd0; /* art only */
+	--pr-deep: #0a0f2c; /* art only */
+	--pr-vinyl: #070a20; /* the record itself */
+	--pr-shadow: rgba(5, 8, 30, 0.6); /* under the disc, and only there */
+
+	--pr-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--pr-ease-in: cubic-bezier(0.4, 0, 1, 1);
+	--pr-dur-slide: 420ms;
+	--pr-dur-back: 280ms;
+
+	/* The two widths. `font-variation-settings` rather than `font-stretch` so
+	   the axis applies whatever the @font-face descriptor says. */
+	--pr-x: "wdth" 125;
+	--pr-x-card: "wdth" 112;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	background: var(--pr-ground);
+	scrollbar-color: var(--pr-ink-2) var(--pr-ground);
+}
+
+/* Light on dark reads thin: a hair of positive tracking and 1.55 leading
+   compensate, per the brief. Body copy is never expanded. */
+body {
+	margin: 0;
+	background: var(--u-surface);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 1rem;
+	line-height: 1.55;
+	letter-spacing: 0.01em;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	caret-color: var(--pr-pink);
+	accent-color: var(--pr-pink);
+}
+
+::selection {
+	background: var(--pr-pink);
+	color: var(--pr-on-pink);
+}
+
+img,
+svg,
+video,
+canvas {
+	max-width: 100%;
+}
+
+img,
+video {
+	height: auto;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	letter-spacing: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+	color: var(--pr-ink-2);
+	opacity: 1;
+}
+
+.u-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/**
+ * The two data recipes, in Pressing's terms.  No monospace — money in mono is
+ * Tempered's signature — so "data" is Archivo with tabular figures, which is
+ * what keeps a price or a countdown from jittering as its digits change.  The
+ * label is small muted sentence case, never all caps.
+ */
+.u-mono {
+	font-family: var(--u-data);
+	font-variant-numeric: tabular-nums;
+}
+
+.u-label {
+	font-family: var(--u-data);
+	font-size: 0.8125rem;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	color: var(--u-mute);
+}
+
+/**
+ * The one button: a sleeve-pink pill, 56px, 16/700, ultramarine label (8.1:1).
+ * The second rank is the outline pill — the ONE border-like mark the theme
+ * allows, a 1.5px vellum ring drawn as an inset shadow so it never shifts
+ * layout.  Disabled reads as the brief's sold-out pill: outlined and muted.
+ */
+.u-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	min-height: 3.5rem;
+	padding: 0 2rem;
+	border: none;
+	border-radius: var(--u-r);
+	background: var(--pr-pink);
+	color: var(--pr-on-pink);
+	font-family: var(--u-body);
+	font-size: 1rem;
+	font-weight: 700;
+	line-height: 1.2;
+	letter-spacing: 0.01em;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.u-btn:hover:not(:disabled) {
+	background: var(--pr-pink-hi);
+}
+
+.u-btn:disabled {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink-2);
+	cursor: default;
+}
+
+.u-btn-ghost {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--u-ink);
+	color: var(--u-ink);
+}
+
+.u-btn-ghost:hover:not(:disabled) {
+	background: var(--u-ink);
+	color: var(--pr-ground);
+}
+
+/* Forced colours drop every box-shadow and every background fill, and with
+   them these controls' only edge (Pressing draws its rings as inset shadows,
+   its filled pills — every pill, the header bag — as a fill, never a border).
+   There, and only there, each gets a real border. It is written `transparent`
+   because forced colours repaint a border's colour with the system's own (as
+   they do for the focus ring) — so it shows exactly where the shadow or the
+   fill cannot. */
+@media (forced-colors: active) {
+	.u-btn,
+	.pr-bag {
+		border: 1.5px solid transparent;
+	}
+}
+
+/* Focus: 2px sleeve pink, 3px offset, on every interactive element. The pink
+   is 8:1 against the ground, so the ring is never lost on a dark page. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+	outline: 2px solid var(--pr-pink);
+	outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.u-btn {
+		transition:
+			background-color 150ms ease-out,
+			color 150ms ease-out,
+			transform 100ms ease-out;
+	}
+
+	/* Press: scale(.97) for 100ms. */
+	.u-btn:active:not(:disabled) {
+		transform: scale(0.97);
+	}
+}
+
+/**
+ * Reduced motion: Tempered's clamp, carried over for the fallback components a
+ * Pressing page can still render — the hold countdown keeps its exemption.
+ * (Pressing's own motion is authored inside `no-preference` in views.css and
+ * commerce.css — the bag strip's rise, its sodium crossfade — and its
+ * reduced-motion states are drawn there, still.)
+ */
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto !important;
+	}
+
+	*:not([data-motion="essential"], [data-motion="essential"] *),
+	*:not([data-motion="essential"], [data-motion="essential"] *)::before,
+	*:not([data-motion="essential"], [data-motion="essential"] *)::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}
