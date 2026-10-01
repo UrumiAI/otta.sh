@@ -41,6 +41,23 @@ export function seeOther(context: APIContext, path: string, error?: string): Res
 	return context.redirect(url.pathname + url.search, 303);
 }
 
+/**
+ * Stamp `Referrer-Policy: no-referrer` on a response to one of /checkout's own
+ * POSTs (/checkout/place, /checkout/new-cart).
+ *
+ * The POST carries `/checkout?coupon=…` as its Referer (same-origin allows
+ * it), and a 303 keeps the request's referrer — so without this, the page the
+ * redirect lands on (/checkout/pay, where js.stripe.com runs) would hold the
+ * code in `document.referrer`. A redirect response's `Referrer-Policy` replaces
+ * the request's policy for the follow-up GET (Fetch, "HTTP-redirect fetch"), so
+ * that GET carries no referrer at all. Applied to EVERY response, not just the
+ * 303s to /checkout/pay: one invariant is easier to keep than a list.
+ */
+export function withoutReferrer(response: Response): Response {
+	response.headers.set("Referrer-Policy", "no-referrer");
+	return response;
+}
+
 export function routeDispatcher(context: APIContext): PublicPluginApiRouteHandler | undefined {
 	return getPublicPluginApiRouteHandler(context.locals);
 }

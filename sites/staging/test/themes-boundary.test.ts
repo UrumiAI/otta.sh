@@ -45,12 +45,16 @@ const CODE = FILES.filter((file) => /\.(astro|ts)$/.test(file));
 const TEMPLATES = FILES.filter((file) => file.endsWith(".astro"));
 const read = (file: string): string => readFileSync(path.join(SRC, file), "utf8");
 
-/** Comments out — prose explaining a rule must be free to name what it bans. */
+/**
+ * Comments out — prose explaining a rule must be free to name what it bans.
+ * Each removed comment becomes a space, not "", so removing one can never splice
+ * its neighbours into a new comment opener that hides code from the checks.
+ */
 const code = (file: string): string =>
 	read(file)
-		.replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
-		.replace(/\/\*[\s\S]*?\*\//g, "")
-		.replace(/<!--[\s\S]*?-->/g, "")
+		.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ")
+		.replace(/\/\*[\s\S]*?\*\//g, " ")
+		.replace(/<!--[\s\S]*?-->/g, " ")
 		.replace(/^\s*\/\/.*$/gm, "");
 
 const THEME_DIRS = readdirSync(THEMES_DIR, { withFileTypes: true })

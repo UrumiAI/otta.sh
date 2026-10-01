@@ -213,15 +213,19 @@ describe("HoldClock — the client script", () => {
 		"utf8",
 	);
 
+	// Found by the same tag shape the strip below uses, so an attribute on the
+	// tag cannot leave the checks that read `script` reading an empty string.
+	const script = source.slice(source.search(/<script\b/i), source.search(/<\/script\b/i));
+
 	test("it is the script and ONLY the script — no markup of its own", () => {
 		expect(hasExecutableScript(source)).toBe(true);
+		expect(script, "the script body was not found").not.toBe("");
+		// A space, not "", so the strip cannot splice a new `<script` together.
 		const template = templateOf(source)
-			.replace(/<script>[\s\S]*?<\/script>/g, "")
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, " ")
 			.trim();
 		expect(template).toBe("");
 	});
-	const script = source.slice(source.indexOf("<script>"), source.indexOf("</script>"));
-
 	test("it is a bundled module script, not an inline one — one copy per page", () => {
 		// This is what lets it IMPORT the tick instead of restating it, which is
 		// the whole reason the assertions below can be about structure rather
