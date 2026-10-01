@@ -1,0 +1,289 @@
+---
+/**
+ * Tempered's cart (docs/theme/TEMPERED.md §6–§8): lines, not a table — media,
+ * name + SKU + the hold ribbon, then the money and the controls on the right,
+ * with the totals block bottom-right. The ribbon is the theme's signature and
+ * the reason the page has the shape it does.
+ *
+ * Presentation only: `src/pages/cart/index.astro` reads the cookie, the cart,
+ * the pricing join and the content, decides every arm (empty / degraded /
+ * terminal / live), mints the per-form idempotency keys and maps every error
+ * token to copy. This file prints the model.
+ *
+ * THE COUNTDOWN. The ribbons are `components/HoldRibbon.astro` — markup only.
+ * What keeps them ticking is `components/HoldClock.astro`, which the PAGE
+ * renders (never a view: see the contract note in `themes/contract.ts`).
+ *
+ * Styles: `commerce.css` (`cart-*`), linked by the shell whenever a Tempered
+ * commerce view renders — under any theme that has not ported this one.
+ */
+import HoldRibbon from "../../components/HoldRibbon.astro";
+import MediaPanel from "../../components/MediaPanel.astro";
+import Notice from "../../components/Notice.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import QtyField from "../../components/QtyField.astro";
+import Sum from "../../components/Sum.astro";
+import {
+	CART_CHECKED_OUT_BODY,
+	CART_CHECKED_OUT_TITLE,
+	CART_NEW_CART_CONSEQUENCE,
+	CART_NO_ORDER_LINK,
+	CART_RESUME_PURPOSE,
+} from "../../lib/cart-view.js";
+import { isUnpricedText } from "../../lib/totals.js";
+import type { CartModel } from "../contract.js";
+
+interface Props {
+	model: CartModel;
+}
+
+const {
+	summary,
+	errorMessage,
+	degraded,
+	degradedLead,
+	pricingNotice,
+	empty,
+	terminal,
+	placedOrderId,
+	lineViews,
+	sumRows,
+	totalAmount,
+	partialNote,
+} = Astro.props.model;
+---
+
+<header class="cart-head">
+	{summary !== null && <p class="u-label cart-summary">{summary}</p>}
+	<h1 class="cart-title">Cart</h1>
+</header>
+
+{/* §4's degraded surface, on all three of this view's banners. They were the
+    last pre-theme panels on the site — a pale yellow box whose ink came from
+    the transitional global sheet increment 6 deletes.
+
+    WRAPPED rather than handed a class: a page's scoped selector cannot reach
+    a component's root, so spacing around one lives on an element this view
+    owns (see src/lib/rest-props.ts). */}
+{errorMessage !== null && (
+	<div class="cart-notice-slot">
+		<Notice>{errorMessage}</Notice>
+	</div>
+)}
+{degraded && (
+	/* §10: the old copy named an internal — "the cart service is temporarily
+	   unavailable" is the shape of our deployment, not a fact about the
+	   shopper's cart. (The apology in it was a second, smaller thing; the
+	   naming is what §10 bans.) What a shopper needs instead is which of
+	   their things is affected and what to do.
+
+	   And ONLY that. "Nothing in it has changed" was the second sentence
+	   until a reviewer pointed out that this banner also flies after a
+	   mutation that succeeded and a read that failed, and that holds lapse
+	   on a clock the outage does not stop — so the page would be vouching
+	   for a cart it just admitted it cannot see. What is certainly true is
+	   the narrower thing: this failed read changed nothing. */
+	<div class="cart-notice-slot">
+		<Notice lead={degradedLead}>
+			We haven't changed anything — try again in a moment.
+		</Notice>
+	</div>
+)}
+{/* Not over the terminal panel: it shows neither prices nor holds, so
+    "quantities and holds are still exact" is a banner about a page that
+    is not on screen. */}
+{pricingNotice && (
+	/* The mockup's own degraded-CART copy, minus its closing clause ("you'll
+	   see the full total at checkout"). That is a promise this view cannot
+	   keep: with the pricing join down, /checkout answers on the same service
+	   and 303s straight back here. The two facts that ARE true — the
+	   quantities and the holds — are what it says.
+
+	   "Totals", not "Prices": the mockup writes a different lead per surface
+	   and this is the cart's. The catalog frame says "Prices are unavailable
+	   right now" because a catalog shows prices; a cart shows a total, which
+	   is the number the shopper is here for and the one that is missing. */
+	<div class="cart-notice-slot">
+		<Notice lead="Totals are unavailable right now.">
+			Your quantities and your holds are still exact.
+		</Notice>
+	</div>
+)}
+
+{
+	empty ? (
+		/* §8: "an empty screen is an invitation to act". The mockup's own
+		   empty-cart frame — a display-face line, one sentence saying what
+		   this store does for you, and a way out. Suppressed when the read
+		   was DEGRADED: a cart we could not reach is not an empty cart, and
+		   the banner above is already saying so. */
+		!degraded && (
+			<div class="cart-empty">
+				<h2 class="cart-empty-title">Nothing held yet.</h2>
+				<p>
+					Your cart is empty. Pick something and we'll hold the stock while you decide.
+				</p>
+				<a href="/products" class="u-btn u-btn-ghost">
+					Browse products
+				</a>
+			</div>
+		)
+	) : terminal ? (
+		/* Issue #110's panel. A RECORD of what left, not a workspace: name
+		   and quantity per line and nothing else — no money (the figures were
+		   a live join and this cart can no longer be ordered at any price),
+		   no hold ribbon (the reservations were adopted by the order; a
+		   ticking "held for 12:04" over them is the same lie in a different
+		   font), and no update/remove forms (every one of them answers
+		   CART_CHECKED_OUT).
+
+		   The order of the arms is load-bearing: EMPTY wins over terminal, so
+		   a checked-out cart that somehow carries no lines still gets the
+		   invitation rather than a panel about nothing. */
+		<div class="cart-terminal">
+			<h2 class="cart-terminal-title">{CART_CHECKED_OUT_TITLE}</h2>
+			<p class="cart-terminal-body">{CART_CHECKED_OUT_BODY}</p>
+
+			{/* Title AND sku, by the live arm's own rule (`.cart-line-id`): the title
+			    only when this store can name the line, the SKU always. A buyer
+			    who cannot reach their order — which is the whole reason case B
+			    exists — needs something to match against the confirmation they
+			    were sent, and `/orders/<id>` renders a SKU column. */}
+			<ul class="cart-terminal-lines" role="list">
+				{lineViews.map((view) => (
+					<li class="cart-terminal-line" role="listitem">
+						<span class="cart-terminal-id">
+							{view.title !== null && <span class="cart-terminal-name">{view.title}</span>}
+							<span class="u-mono cart-terminal-sku">{view.line.sku}</span>
+						</span>
+						<span class="u-mono cart-terminal-qty">Qty {view.line.qty}</span>
+					</li>
+				))}
+			</ul>
+
+			<div class="cart-terminal-actions">
+				{/* CASE A — the cart names the order it became, which is now the
+				    ordinary answer for any cart checked out through this service.
+				    No /checkout link here: the order page is the better door (it
+				    knows the order's actual state) and it offers "Complete
+				    payment" itself when that applies — which is also why a
+				    stamped-but-unpaid cart may land here safely. */}
+				{placedOrderId !== null && (
+					<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="u-btn">View your order</a>
+				)}
+
+				{/* CASE B — the cart names no order. Uncommon now, and kept
+				    deliberately: a cart checked out before `carts.order_id`
+				    existed carries NULL forever, and so would a wire that stopped
+				    emitting the field. Without this arm those carts get a panel
+				    with no primary action at all, which is worse than the link
+				    below. The link is the checkout itself, worded as a return
+				    rather than a demand, with its purpose said out loud — a buyer
+				    who has already paid needs to be able to decide this is not
+				    for them, and "Check out" / "Complete payment" would tell them
+				    they still owe money. */}
+				{placedOrderId === null && (
+					<div class="cart-terminal-resume">
+						<a href="/checkout" class="u-btn">Return to this checkout</a>
+						<p class="cart-terminal-note">{CART_RESUME_PURPOSE}</p>
+						<p class="cart-terminal-note">{CART_NO_ORDER_LINK}</p>
+					</div>
+				)}
+
+				{/* SECOND rank in both cases, and it says what it costs before
+				    it is clicked: /checkout/new-cart clears the checkout stash
+				    too, so a payment still in flight loses its client secret. */}
+				<div class="cart-terminal-restart">
+					<form method="POST" action="/checkout/new-cart">
+						<button type="submit" class="u-btn u-btn-ghost">Start a new cart</button>
+					</form>
+					<p class="cart-terminal-note">{CART_NEW_CART_CONSEQUENCE}</p>
+				</div>
+			</div>
+		</div>
+	) : (
+		<div class="cart-main">
+			{/* A LIST, because it is one: the old table gave a screen reader
+			    "row 2 of 3" for free and the flat stack that replaced it gave
+			    nothing. Both roles are redundant markup that is not redundant
+			    in practice, and they answer two SEPARATE WebKit behaviours: it
+			    drops list semantics from a list styled `list-style: none`
+			    (this one is), and it drops ITEM semantics from an `<li>` whose
+			    `display` is not `list-item` (`.cart-line` is `display: grid`).
+			    Either one alone announces a list of nothing. */}
+			<ul class="cart-lines" role="list">
+				{lineViews.map((view) => (
+					<li class="cart-line" role="listitem">
+						{/* Square at this size (§8: the cart is the 1/1 crop). */}
+						<MediaPanel
+							slug={view.artKey}
+							index={view.index}
+							image={view.image}
+							alt={view.title ?? ""}
+							ratio="1"
+						/>
+						<div class="cart-line-main">
+							<div class="cart-line-id">
+								{view.title !== null && <span class="cart-line-name">{view.title}</span>}
+								<span class="u-mono cart-line-sku">{view.line.sku}</span>
+							</div>
+							{/* The signature (§6). The component owns the countdown, the
+							    three states, the released line's next step and the no-JS
+							    absolute expiry — this view only hands it the line's own
+							    `expiresAt`, and a line that never took a reservation
+							    renders no ribbon at all. */}
+							<HoldRibbon expiresAt={view.line.expiresAt} />
+						</div>
+						<div class="cart-line-right">
+							<span class="cart-line-money">
+								{isUnpricedText(view.money) ? (
+									<span class="u-mono cart-unpriced">{view.money}</span>
+								) : (
+									<PriceTag formatted={view.money} />
+								)}
+								{view.each !== null && <span class="u-mono cart-each">{view.each}</span>}
+							</span>
+							<form method="POST" action="/cart/update" class="cart-line-actions">
+								<input type="hidden" name="lineId" value={view.line.lineId} />
+								<input type="hidden" name="idempotencyKey" value={view.updateKey} />
+								<QtyField
+									value={view.line.qty}
+									size="sm"
+									label={`Quantity, ${view.name}`}
+									hideLabel
+								/>
+								<button type="submit" class="cart-link-btn">
+									Update<span class="u-sr-only"> {view.name}</span>
+								</button>
+							</form>
+							<form method="POST" action="/cart/remove">
+								<input type="hidden" name="lineId" value={view.line.lineId} />
+								<input type="hidden" name="idempotencyKey" value={view.removeKey} />
+								<button type="submit" class="cart-link-btn">
+									Remove<span class="u-sr-only"> {view.name}</span>
+								</button>
+							</form>
+						</div>
+					</li>
+				))}
+			</ul>
+
+			<div class="cart-totals">
+				<Sum rows={sumRows} total={totalAmount} footnote={partialNote} />
+			</div>
+
+			<div class="cart-foot">
+				<a href="/checkout" class="u-btn">
+					Check out
+				</a>
+				{/* §7, and the reason it says both halves: the figures above are a
+				    LIVE join, not a snapshot the cart is holding, and the ribbon
+				    beside them reserves STOCK — a hold is not a price lock. Saying
+				    only "confirmed at checkout" beside a countdown invites exactly
+				    the reading the hold does not support. */}
+				<p>Prices are live and may change; your total is confirmed at checkout.</p>
+			</div>
+		</div>
+	)
+}
+

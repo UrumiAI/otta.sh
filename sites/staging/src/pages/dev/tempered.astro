@@ -38,6 +38,7 @@ import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@otta-sh/plugin";
 if (!import.meta.env.DEV) return new Response(null, { status: 404 });
 
 const [
+	{ default: HoldClock },
 	{ default: HoldRibbon },
 	{ default: Ledger },
 	{ default: MediaPanel },
@@ -51,6 +52,7 @@ const [
 	{ default: StockRule },
 	{ default: Sum },
 ] = await Promise.all([
+	import("../../components/HoldClock.astro"),
 	import("../../components/HoldRibbon.astro"),
 	import("../../components/Ledger.astro"),
 	import("../../components/MediaPanel.astro"),
@@ -195,6 +197,9 @@ const CONFIGURED = [
 				<HoldRibbon expiresAt={null} />
 			</div>
 		</div>
+		{/* The ribbons above are markup; this is what makes them tick — the
+		    same script the cart page renders (ADR-0012's one pair). */}
+		<HoldClock />
 	</section>
 
 	<section id="steps">

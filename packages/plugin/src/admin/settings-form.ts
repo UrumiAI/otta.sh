@@ -26,6 +26,12 @@ import type {
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
 import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
+import {
+	currentStoreTheme,
+	DEFAULT_STORE_THEME,
+	STORE_THEMES,
+	type StoreTheme,
+} from "./store-themes.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -73,6 +79,13 @@ export const SETTINGS_PAGE: AdminPageConfig = {
 /** The kv key for the cosmetic store display name (`settings:*` = the em-dash
  *  convention for user-configurable prefs shown in admin UI). */
 export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
+
+/** The kv key for the storefront theme id (one of the site's baked
+ *  `__OTTA_STORE_THEMES__` ids — see `store-themes.ts`). */
+export const STORE_THEME_KEY = "settings:storeTheme";
+
+/** The Store group's theme save action. */
+const SAVE_THEME_ACTION = "save-theme";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -282,6 +295,12 @@ async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, S
  *  handler invocation (INC-15). */
 interface SettingsPageState {
 	displayName: string;
+	/** The themes the site offers, `undefined` when it baked none (then the
+	 *  Store group renders no theme picker). */
+	storeThemes: readonly StoreTheme[] | undefined;
+	/** The theme the picker shows — always one the site offers; see
+	 *  {@link currentStoreTheme}. Meaningless when `storeThemes` is absent. */
+	storeTheme: string;
 	/** INC-C3: per payment secret, "is it set" + its save generation, keyed by kv
 	 *  key. NEVER the values — see {@link readPaymentSecretState}. */
 	paymentSecrets: Map<string, SecretRenderState>;
@@ -313,20 +332,31 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * were redundant re-reads). With both tokens gone — the commerce service they
  * authenticated to is gone — there is nothing left to derive from a
  * caller-supplied argument, so this reads everything itself: the display name,
- * the payment-secret state, and the plain payment settings, three concurrent
- * gets.
+ * the payment-secret state, the plain payment settings and — only when the site
+ * offers themes — the store theme: four concurrent gets, one conditional.
  */
-async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings] = await Promise.all([
+async function readPageState(
+	ctx: PluginContext,
+	storeThemes: readonly StoreTheme[] | undefined,
+): Promise<SettingsPageState> {
+	const [displayName, storedTheme, paymentSecrets, plainSettings] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+		// FAIL-SOFT too, and only read when the site offers themes at all: a kv
+		// blip shows the default theme rather than taking the screen down.
+		storeThemes === undefined
+			? Promise.resolve(null)
+			: ctx.kv.get<string>(STORE_THEME_KEY).catch(() => null),
 		readPaymentSecretState(ctx),
 		readPlainSettings(ctx),
 	]);
 	return {
 		plainSettings,
 		displayName: displayName ?? "",
+		storeThemes,
+		storeTheme:
+			storeThemes === undefined ? DEFAULT_STORE_THEME : currentStoreTheme(storeThemes, storedTheme),
 		paymentSecrets,
 	};
 }
@@ -362,6 +392,7 @@ async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
  *  NO `page` — is routed here, not to Reports). */
 export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
+	SAVE_THEME_ACTION,
 	"save-operational",
 	// INC-C3: the four payment/email secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
@@ -416,7 +447,22 @@ export interface SettingsFormInput {
 	idempotencyKey?: unknown;
 }
 
-export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
+export interface SettingsFormOptions {
+	/** The themes the site offers. Defaults to the baked `__OTTA_STORE_THEMES__`
+	 *  list ({@link STORE_THEMES}); a seam for tests, not a host knob. */
+	storeThemes?: readonly StoreTheme[] | undefined;
+}
+
+export function createSettingsFormHandler(
+	options: SettingsFormOptions = {},
+): RouteHandler<SettingsFormInput> {
+	const storeThemes = "storeThemes" in options ? options.storeThemes : STORE_THEMES;
+	// Every render on this screen reads the same theme list.
+	const renderPage = (
+		ctx: PluginContext,
+		client: ReportingSettingsSurface,
+		notice?: Notice,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, storeThemes, notice);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -466,6 +512,39 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			return {
 				...page,
 				toast: { message: "Display name saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
+		// -- kv save path: store theme ------------------------------------------------
+		// Only an id the SITE offers is ever stored — the plugin hard-codes none.
+		// With no baked list (sandbox, other hosts) every submit is refused: there
+		// is no picker to have submitted it, and nothing to validate against. The
+		// notice names the field, never the rejected value.
+		if (action === SAVE_THEME_ACTION) {
+			const raw = input.values?.storeTheme;
+			const chosen =
+				typeof raw === "string" ? storeThemes?.find((theme) => theme.id === raw) : undefined;
+			if (chosen === undefined) {
+				return renderPage(ctx, client, {
+					variant: "error",
+					title: "Store theme not saved",
+					description:
+						storeThemes === undefined
+							? "Store themes come from the site build — offer them there to choose one here. Nothing was saved."
+							: "That is not one of the themes this site offers. Nothing was saved.",
+				});
+			}
+			// A kv write that THROWS falls to the route's generic error path, as
+			// save-display's does — never a "saved" toast for a write that failed.
+			await ctx.kv.set(STORE_THEME_KEY, chosen.id);
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: "Store theme saved",
+				description: `Store theme set to ${chosen.label}. It goes live on the next page load.`,
+			});
+			return {
+				...page,
+				toast: { message: "Theme saved — live on the next page load", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -580,7 +659,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// service call that would need a token attached.
 			const result = await client.updateSettings(patch, { idempotencyKey: key });
 			// This branch writes no display name, so a fresh read here is current.
-			const state = await readPageState(ctx);
+			const state = await readPageState(ctx, storeThemes);
 			if (!result.ok) {
 				// WHY THE SAVE FAILED, from the STRUCTURAL field first. `reason` is
 				// stated by every tier that can say why; `status` is the HTTP tier's
@@ -670,12 +749,13 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
  * §12.6's listing implied — that is the N-1 defect this fixes; E-1's
  * primary/secondary split is the rule, and it wins.
  */
-async function renderPage(
+async function renderSettingsPage(
 	ctx: PluginContext,
 	client: ReportingSettingsSurface,
+	storeThemes: readonly StoreTheme[] | undefined,
 	notice?: Notice,
 ): Promise<BlockResponse> {
-	const state = await readPageState(ctx);
+	const state = await readPageState(ctx, storeThemes);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
@@ -745,6 +825,8 @@ function extractOperationalPatch(
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
+	storeThemes: readonly StoreTheme[] | undefined;
+	storeTheme: string;
 	/** What the "Checkout & holds" FORM prefills from — on a rejected save this
 	 *  carries the ATTEMPTED values over the stored ones (J6), so the operator can
 	 *  correct what they typed. */
@@ -767,7 +849,7 @@ function buildSettingsBlocks(args: {
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
-		storeGroup(args.displayName),
+		storeGroup(args.displayName, args.storeThemes, args.storeTheme),
 		checkoutGroup(args.settings, args.persisted),
 		paymentsGroup(args.paymentSecrets, args.plainSettings),
 	);
@@ -817,8 +899,15 @@ function valueLabel(prefix: string, values: readonly string[]): string {
 /** The Store group's label carries the name itself, so the one thing this group
  *  holds is readable closed. An unset name says so — never a blank tail after
  *  the dash, which would read as a rendering fault rather than as "not set". */
-function storeGroupLabel(displayName: string): string {
-	return valueLabel("Store", [displayName.length > 0 ? displayName : "no display name"]);
+function storeGroupLabel(
+	displayName: string,
+	storeThemes: readonly StoreTheme[] | undefined,
+	storeTheme: string,
+): string {
+	const name = displayName.length > 0 ? displayName : "no display name";
+	if (storeThemes === undefined) return valueLabel("Store", [name]);
+	const theme = storeThemes.find((entry) => entry.id === storeTheme)?.label ?? storeTheme;
+	return valueLabel("Store", [name, theme]);
 }
 
 /** The PERSISTED operational values, closed: "Checkout & holds — 15 min hold ·
@@ -834,11 +923,15 @@ function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): str
 	]);
 }
 
-function storeGroup(displayName: string): AccordionBlock {
+function storeGroup(
+	displayName: string,
+	storeThemes: readonly StoreTheme[] | undefined,
+	storeTheme: string,
+): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:store",
-		label: storeGroupLabel(displayName),
+		label: storeGroupLabel(displayName, storeThemes, storeTheme),
 		default_open: false, // INC-15: the label carries the value; see buildSettingsBlocks
 		blocks: [
 			carriedForm({
@@ -856,8 +949,43 @@ function storeGroup(displayName: string): AccordionBlock {
 					submit: { label: "Save display name", action_id: "save-display" },
 				},
 			}),
+			// Only when the site offers themes: no list, no picker (the sandbox
+			// bundle and other hosts bake none — see `store-themes.ts`).
+			...(storeThemes === undefined ? [] : [storeThemeForm(storeThemes, storeTheme)]),
 		],
 	};
+}
+
+/**
+ * The "Store theme" picker, its options straight from the site's baked list.
+ *
+ * A `radio`, not a `select`: EmDash's select element (`@emdash-cms/blocks`
+ * `elements/select.tsx`) hands Kumo's `Select` its options as children with no
+ * `items`/`renderValue`, so the closed trigger shows the raw id (`tempered`), not
+ * the label (R-17a). Radio rows caption each option with its label. A `combobox`
+ * would show the label too, but a prefilled one can be cleared to `null` (F-6).
+ * The radio is prefilled safely: R-12a's display/submit divergence applies to it
+ * too, but `carriedForm` keys the form on its `initial_value` (the prefill
+ * digest in `block_id`), so a new stored theme remounts the form rather than
+ * leaving the old value behind the new one.
+ */
+function storeThemeForm(storeThemes: readonly StoreTheme[], storeTheme: string): FormBlock {
+	return carriedForm({
+		namespace: "settings:store-theme",
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "radio",
+					action_id: "storeTheme",
+					label: "Store theme",
+					options: storeThemes.map((theme) => ({ value: theme.id, label: theme.label })),
+					initial_value: storeTheme,
+				},
+			],
+			submit: { label: "Save store theme", action_id: SAVE_THEME_ACTION },
+		},
+	});
 }
 
 function checkoutGroup(

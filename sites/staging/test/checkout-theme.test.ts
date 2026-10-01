@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { hasExecutableScript, splitAstro, templateOf } from "./astro-source.js";
+import { viewCases } from "./theme-views.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
@@ -39,22 +40,32 @@ const PAY = read("pages/checkout/pay.astro");
 const ORDER = read("pages/orders/[orderId].astro");
 const POLL_RIBBON = read("components/PollRibbon.astro");
 
-describe("the /checkout form contract", () => {
+/**
+ * Since Phase 3 the review's and the confirmation's MARKUP is a theme view —
+ * each theme's own, or Tempered's when it has not ported one (see
+ * `theme-views.ts`). `REVIEW` and `ORDER` stay the PAGES, which keep every
+ * decision; the markup pins below sweep every theme's view with the assertions
+ * they always had.
+ */
+const REVIEW_VIEWS = viewCases("checkout");
+const ORDER_VIEWS = viewCases("order");
+
+describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { source: VIEW }) => {
 	test("posts to the place endpoint, by POST", () => {
-		expect(REVIEW).toMatch(/<form[^>]*method="POST"[^>]*action="\/checkout\/place"/);
+		expect(VIEW).toMatch(/<form[^>]*method="POST"[^>]*action="\/checkout\/place"/);
 	});
 
 	test("carries the summary's idempotency key as a hidden field", () => {
 		// STABLE per cart. Without it `place.ts` 400s; invented per render, a
 		// reload mints a second order that the CART_CHECKED_OUT fence then
 		// rejects, stranding the buyer.
-		expect(REVIEW).toMatch(
+		expect(VIEW).toMatch(
 			/<input[^>]*type="hidden"[^>]*name="idempotencyKey"[^>]*value=\{summary\.idempotencyKey\}/,
 		);
 	});
 
 	test("the email is required, typed, and the buyerRef the service stores", () => {
-		const field = /<input[\s\S]{0,220}?name="email"[\s\S]{0,220}?\/>/.exec(REVIEW)?.[0] ?? "";
+		const field = /<input[\s\S]{0,220}?name="email"[\s\S]{0,220}?\/>/.exec(VIEW)?.[0] ?? "";
 		expect(field).toContain('type="email"');
 		expect(field).toContain("required");
 		expect(field).toContain('autocomplete="email"');
@@ -63,8 +74,8 @@ describe("the /checkout form contract", () => {
 	test("the email's hint is DESCRIBED, not part of the field's name", () => {
 		// Nested inside the <label> its ~25 words join the accessible name and
 		// are read out on every focus.
-		expect(REVIEW).toMatch(/aria-describedby="email-note"/);
-		expect(REVIEW).toMatch(/id="email-note"/);
+		expect(VIEW).toMatch(/aria-describedby="email-note"/);
+		expect(VIEW).toMatch(/id="email-note"/);
 	});
 
 	/** ADR-0009's ship-to, exactly as `place.ts` reads it off the FormData. The
@@ -82,7 +93,7 @@ describe("the /checkout form contract", () => {
 	test.each(ADDRESS)("the ship-to field %s is present with autocomplete=%s", (name, complete) => {
 		// The typed field, not a hidden echo of the priced destination.
 		const field =
-			[...REVIEW.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, "g"))]
+			[...VIEW.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, "g"))]
 				.map((m) => m[0])
 				.find((tag) => !tag.includes('type="hidden"')) ?? "";
 		expect(field, `${name} is missing`).not.toBe("");
@@ -90,8 +101,8 @@ describe("the /checkout form contract", () => {
 	});
 
 	test("the country is a SELECT of ISO codes with an empty placeholder — never free text (ADR-0021)", () => {
-		expect(REVIEW).not.toMatch(/<input[^>]*name="country"[^>]*autocomplete="country-name"/);
-		const selects = [...REVIEW.matchAll(/<select[^>]*name="country"[^>]*>[\s\S]*?<\/select>/g)].map(
+		expect(VIEW).not.toMatch(/<input[^>]*name="country"[^>]*autocomplete="country-name"/);
+		const selects = [...VIEW.matchAll(/<select[^>]*name="country"[^>]*>[\s\S]*?<\/select>/g)].map(
 			(m) => m[0],
 		);
 		expect(selects.length, "no country select").toBeGreaterThan(0);
@@ -105,22 +116,33 @@ describe("the /checkout form contract", () => {
 	test("the address block is one answer in eight boxes, and says so", () => {
 		// `place.ts` treats the five required fields as ALL-OR-NOTHING, so the
 		// grouping is semantic, not decorative.
-		expect(REVIEW).toContain("<fieldset");
-		expect(REVIEW).toContain("<legend");
+		expect(VIEW).toContain("<fieldset");
+		expect(VIEW).toContain("<legend");
 	});
 
 	test("no payable-looking button when the store has no publishable key", () => {
-		expect(REVIEW).toContain("STRIPE_PUBLISHABLE_KEY");
-		expect(REVIEW).toMatch(/paymentConfigured \?/);
+		expect(VIEW).toMatch(/paymentConfigured \?/);
 	});
 
 	test("both totals-bearing panels are real headings, not styled spans", () => {
 		// The eyebrow is a TREATMENT. Losing the <h2> costs screen-reader
 		// heading navigation and shows up in no screenshot.
-		expect(REVIEW).toMatch(/<h2 class="u-label head-label">Your details<\/h2>/);
-		expect(REVIEW).toMatch(/<h2 class="u-label head-label">Your order<\/h2>/);
-		expect(ORDER).toMatch(/<h2 class="u-label head-label">Items<\/h2>/);
-		expect(ORDER).toMatch(/<h2 class="u-label head-label">Totals<\/h2>/);
+		expect(VIEW).toMatch(/<h2 class="u-label [\w-]*head-label">Your details<\/h2>/);
+		expect(VIEW).toMatch(/<h2 class="u-label [\w-]*head-label">Your order<\/h2>/);
+	});
+});
+
+describe("the /checkout page keeps the decisions the review prints", () => {
+	test("no payable-looking button when the store has no publishable key", () => {
+		expect(REVIEW).toContain("STRIPE_PUBLISHABLE_KEY");
+		expect(REVIEW).toContain("paymentConfigured");
+	});
+});
+
+describe.each(ORDER_VIEWS)("the confirmation's panels — %s", (_label, { source: VIEW }) => {
+	test("both totals-bearing panels are real headings, not styled spans", () => {
+		expect(VIEW).toMatch(/<h2 class="u-label [\w-]*head-label">Items<\/h2>/);
+		expect(VIEW).toMatch(/<h2 class="u-label [\w-]*head-label">Totals<\/h2>/);
 	});
 });
 
@@ -129,8 +151,8 @@ describe("the /checkout form contract", () => {
  * `GET /checkout?coupon=` (decision D2), a SIBLING of the place form: nested, its
  * submit would post the place form's fields instead.
  */
-describe("/checkout — the coupon", () => {
-	const TEMPLATE = templateOf(REVIEW);
+describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source: VIEW }) => {
+	const TEMPLATE = templateOf(VIEW);
 	const COUPON_FORM =
 		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ??
 		"";
@@ -151,40 +173,31 @@ describe("/checkout — the coupon", () => {
 	});
 
 	test("the place form carries a hidden couponCode bound to summary.selection.couponCode", () => {
-		expect(REVIEW).toMatch(
+		expect(VIEW).toMatch(
 			/<input[^>]*type="hidden"[^>]*name="couponCode"[^>]*value=\{summary\.selection\.couponCode\}/,
 		);
 	});
 
-	test("the page passes the coupon into the summary dispatch", () => {
-		expect(REVIEW).toContain("readCouponParam(Astro.url)");
-		expect(REVIEW).toMatch(
-			/\{\s*cartId,\s*locale: SITE_LOCALE,\s*\.\.\.\(coupon\.couponCode !== undefined/,
-		);
-	});
-
 	test("the coupon form is hidden once the cart has become an order", () => {
-		expect(REVIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
+		expect(VIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
 	});
 
 	test("an ENDED checkout offers no pay button — only the way to a new cart", () => {
-		expect(REVIEW).toContain('phase === "ended"');
-		expect(REVIEW).toMatch(/!ended && \(\s*<form[^>]*action="\/checkout\/place"/);
+		expect(VIEW).toMatch(/!ended && \(\s*<form[^>]*action="\/checkout\/place"/);
 	});
 
 	test("the LOCKED review hides the delivery-address block — the order's ship-to is fixed", () => {
 		// The same-key place replays the existing order and re-prices nothing, so an
 		// address typed here would be silently dropped. The email stays: place.ts
 		// requires it. A digital-only cart has no address block either.
-		expect(REVIEW).toContain("const showAddress = locked === null && summary.requiresShipping;");
-		expect(REVIEW).toMatch(/showAddress && \(\s*<fieldset class="group">/);
-		expect(REVIEW).not.toMatch(
-			/locked === null && \(\s*<div class="field">\s*<label class="u-label" for="email">/,
+		expect(VIEW).toMatch(/showAddress && \(\s*<fieldset\b/);
+		expect(VIEW).not.toMatch(
+			/locked === null && \(\s*<div class="[\w-]*field">\s*<label class="u-label" for="email">/,
 		);
 	});
 
 	test("the lock notice says the coupon AND the delivery address can no longer be changed", () => {
-		expect(REVIEW).toContain(
+		expect(VIEW).toContain(
 			"Its coupon and delivery address can no longer be changed. To change them, start a new cart.",
 		);
 	});
@@ -193,9 +206,9 @@ describe("/checkout — the coupon", () => {
 	// #305 part 2": the delivery form now sends a method, so the summary can refuse
 	// one — and the notice lives IN that form, beside the choice it explains.
 	test("the shipping-method notice is live, inside the delivery form", () => {
-		expect(REVIEW).not.toMatch(/unreachable until #305 part 2/);
-		const delivery =
-			/<form[^>]*class="delivery"[\s\S]*?<\/form>/.exec(templateOf(REVIEW))?.[0] ?? "";
+		expect(VIEW).not.toMatch(/unreachable until #305 part 2/);
+		const delivery = /<form[^>]*id="delivery"[\s\S]*?<\/form>/.exec(templateOf(VIEW))?.[0] ?? "";
+		expect(delivery, "no delivery form").not.toBe("");
 		expect(delivery).toContain("shippingError !== null");
 	});
 
@@ -208,7 +221,7 @@ describe("/checkout — the coupon", () => {
 	 */
 	test("the ENDED notice makes NO claim about a charge, and links to the order", () => {
 		const notice =
-			/<Notice lead="This checkout has ended\.">[\s\S]*?<\/Notice>/.exec(templateOf(REVIEW))?.[0] ??
+			/<Notice lead="This checkout has ended\.">[\s\S]*?<\/Notice>/.exec(templateOf(VIEW))?.[0] ??
 			"";
 		expect(notice, "no ended notice").not.toBe("");
 		expect(notice).not.toMatch(/charged|no charge/i);
@@ -228,7 +241,7 @@ describe("/checkout — the coupon", () => {
 	 * unchanged") would be wrong on both counts there.
 	 */
 	test("locked + payment not configured renders the LOCKED variant, with no money or cart claim", () => {
-		const template = templateOf(REVIEW);
+		const template = templateOf(VIEW);
 		const payment = template.indexOf("paymentConfigured ?");
 		const fork = template.indexOf(") : locked !== null ? (", payment);
 		expect(payment, "no paymentConfigured branch").toBeGreaterThan(-1);
@@ -246,9 +259,28 @@ describe("/checkout — the coupon", () => {
 			"This order can't be placed. Nothing has been charged and your cart is unchanged.",
 		);
 	});
-
+});
+describe("/checkout — the coupon: the page's half", () => {
+	test("the page passes the coupon into the summary dispatch", () => {
+		expect(REVIEW).toContain("readCouponParam(Astro.url)");
+		expect(REVIEW).toMatch(
+			/\{\s*cartId,\s*locale: SITE_LOCALE,\s*\.\.\.\(coupon\.couponCode !== undefined/,
+		);
+	});
 	test("the coupon in the URL never leaks through a Referer", () => {
 		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+	});
+
+	test("an ENDED checkout is decided from the locked order's phase", () => {
+		expect(REVIEW).toContain('phase === "ended"');
+	});
+
+	test("the LOCKED review's address block is decided here — the order's ship-to is fixed", () => {
+		expect(REVIEW).toContain("const showAddress = locked === null && summary.requiresShipping;");
+	});
+
+	test("the retired 'unreachable' note stays retired on the page too", () => {
+		expect(REVIEW).not.toMatch(/unreachable until #305 part 2/);
 	});
 });
 
@@ -258,10 +290,10 @@ describe("/checkout — the coupon", () => {
  * `GET /checkout?country=&region=&method=` (only coarse codes and an opaque id in
  * the URL), and offers the matched zone's options as radios.
  */
-describe("/checkout — delivery (ADR-0021)", () => {
-	const TEMPLATE = templateOf(REVIEW);
+describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label, { source: VIEW }) => {
+	const TEMPLATE = templateOf(VIEW);
 	const DELIVERY =
-		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*class="delivery"[^>]*>[\s\S]*?<\/form>/.exec(
+		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*id="delivery"[^>]*>[\s\S]*?<\/form>/.exec(
 			TEMPLATE,
 		)?.[0] ?? "";
 	const PLACE =
@@ -272,14 +304,11 @@ describe("/checkout — delivery (ADR-0021)", () => {
 		const coupon = TEMPLATE.indexOf('name="coupon"');
 		expect(coupon).toBeLessThan(TEMPLATE.indexOf(DELIVERY));
 		expect(TEMPLATE.indexOf(DELIVERY)).toBeLessThan(TEMPLATE.indexOf(PLACE));
-		expect(PLACE).not.toContain('class="delivery"');
+		expect(PLACE).not.toContain('id="delivery"');
 	});
 
 	test("it is shown only for an unlocked cart that ships, in a store with zones", () => {
-		expect(REVIEW).toContain(
-			'const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";',
-		);
-		expect(REVIEW).toMatch(/showDelivery && \(\s*<form[^>]*class="delivery"/);
+		expect(VIEW).toMatch(/showDelivery && \(\s*<form[^>]*id="delivery"/);
 	});
 
 	test("it asks for a country (select) and a region CODE, and echoes the priced destination as fromCountry/fromRegion", () => {
@@ -312,9 +341,16 @@ describe("/checkout — delivery (ADR-0021)", () => {
 
 	test("the coupon form carries the delivery selection, so applying a coupon keeps it", () => {
 		const coupon =
-			/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*class="coupon"[^>]*>[\s\S]*?<\/form>/.exec(
-				TEMPLATE,
-			)?.[0] ?? "";
+			[
+				...TEMPLATE.matchAll(
+					/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/g,
+				),
+			]
+				.map((m) => m[0])
+				.find(
+					(form) => /<input[^>]*name="coupon"[^>]*>/.test(form) && !form.includes('id="delivery"'),
+				) ?? "";
+		expect(coupon, "no coupon form").not.toBe("");
 		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="country"/);
 		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="method"/);
 	});
@@ -339,15 +375,25 @@ describe("/checkout — delivery (ADR-0021)", () => {
 		const button = PLACE.indexOf("Continue to payment");
 		expect(gate, "no readyToPlace gate").toBeGreaterThan(-1);
 		expect(gate).toBeLessThan(button);
-		expect(REVIEW).toContain("Choose where we're delivering above to continue.");
 		expect(PLACE).toContain("<Notice>{notReadyCopy}</Notice>");
 	});
 
 	test("a LOCKED review shows no delivery form, no radios, no address block — and still the pay button when readyToPlace", () => {
 		// showDelivery / showAddress both require `locked === null` (above); the
 		// submit's gate is readyToPlace, which the plugin sets from phase === payable.
-		expect(REVIEW).not.toMatch(/locked !== null && \(\s*<form[^>]*class="delivery"/);
-		expect(REVIEW).toContain("start a new cart");
+		expect(VIEW).not.toMatch(/locked !== null && \(\s*<form[^>]*id="delivery"/);
+		expect(VIEW).toContain("start a new cart");
+	});
+});
+describe("/checkout — delivery (ADR-0021): the page's half", () => {
+	test("the delivery form is shown only for an unlocked cart that ships, in a store with zones", () => {
+		expect(REVIEW).toContain(
+			'const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";',
+		);
+	});
+
+	test("the not-ready copy is the page's", () => {
+		expect(REVIEW).toContain("Choose where we're delivering above to continue.");
 	});
 
 	test("the page prices the destination and the method it read off its own URL", () => {
@@ -355,7 +401,6 @@ describe("/checkout — delivery (ADR-0021)", () => {
 		expect(REVIEW).toContain("readMethodParam(Astro.url)");
 		expect(REVIEW).toMatch(/destinationRead\.methodDropped \? undefined/);
 	});
-
 	// Country names and money must read in the SAME language: one site locale,
 	// passed to the summary (which formats the money) and to the country labels.
 	test("the country labels use the site locale the summary formats money in — never a hard-coded one", () => {
@@ -363,7 +408,6 @@ describe("/checkout — delivery (ADR-0021)", () => {
 		expect(REVIEW).not.toMatch(/countryOptions\("[a-z]/);
 		expect(REVIEW).toMatch(/cartId,\s*locale: SITE_LOCALE,/);
 	});
-
 	test("the totals footnote says WHY the total is incomplete (uncalculatedReason)", () => {
 		expect(REVIEW).toMatch(/checkoutFootnote\(\s*summary\.uncalculatedReason/);
 	});
@@ -511,24 +555,12 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 		expect(POLL_RIBBON).toContain("<script");
 	});
 
-	test("the confirmation page uses it, and not the scripted countdown", () => {
-		expect(ORDER).toContain("components/PollRibbon.astro");
+	test("the confirmation page imports no scripted countdown", () => {
 		expect(ORDER).not.toContain("components/HoldRibbon.astro");
+		expect(ORDER).not.toContain("components/HoldClock.astro");
 	});
 
-	test("the step track is not drawn for an order that does not exist", () => {
-		// It claims Cart → Details → Payment are behind you. On a 404 or a 503
-		// that is a journey the visitor never made.
-		const { body } = splitAstro(ORDER);
-		const notFoundBranch = body.slice(
-			body.indexOf("order === null || stamp === null ?"),
-			body.indexOf("Browse products"),
-		);
-		expect(notFoundBranch).not.toContain("<StepTrack");
-		expect(body).toContain("<StepTrack");
-	});
-
-	test("every state with nowhere to go offers the new-cart door", () => {
+	test("every state with nowhere to go offers the new-cart door — decided here", () => {
 		// `failed` included: its cart is `checked_out`, so /checkout answers
 		// CART_CHECKED_OUT and 303s to /cart. A "Back to checkout" link there is
 		// a walk into an error page.
@@ -536,7 +568,6 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 			/const deadEnd =[\s\S]{0,160}?state === "expired"[\s\S]{0,80}?state === "cancelled"[\s\S]{0,80}?state === "failed"/,
 		);
 		expect(ORDER).not.toContain("Back to checkout");
-		expect(ORDER).toContain('action="/checkout/new-cart"');
 	});
 
 	test("the receipt names what was bought, not only its SKU", () => {
@@ -549,5 +580,69 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 
 	test("the total reads Paid once the order settled, by MAP not comparison", () => {
 		expect(ORDER).toContain('const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };');
+	});
+});
+
+describe.each(ORDER_VIEWS)("/orders/<id> — the view %s", (_label, { source: VIEW }) => {
+	test("the confirmation uses the script-free PollRibbon, and not the scripted countdown", () => {
+		expect(VIEW).toContain("components/PollRibbon.astro");
+		expect(VIEW).not.toContain("components/HoldRibbon.astro");
+		expect(VIEW).not.toContain("components/HoldClock.astro");
+	});
+
+	test("the step track is not drawn for an order that does not exist", () => {
+		// It claims Cart → Details → Payment are behind you. On a 404 or a 503
+		// that is a journey the visitor never made.
+		const { body } = splitAstro(VIEW);
+		const notFoundBranch = body.slice(
+			body.indexOf("order === null || stamp === null ?"),
+			body.indexOf("Browse products"),
+		);
+		expect(body.indexOf("order === null || stamp === null ?"), "no not-found arm").toBeGreaterThan(
+			-1,
+		);
+		expect(notFoundBranch).not.toContain("<StepTrack");
+		expect(body).toContain("<StepTrack");
+	});
+
+	test("every state with nowhere to go offers the new-cart door", () => {
+		expect(VIEW).not.toContain("Back to checkout");
+		expect(VIEW).toContain('action="/checkout/new-cart"');
+	});
+});
+
+/**
+ * The pay step's frame is a theme view since Phase 3; the money path is not.
+ * The Stripe mount, the pay button, the `<noscript>` and the script stay in
+ * `pages/checkout/pay.astro` (ADR-0012 decision 2) and reach the view as the
+ * `payment` slot.
+ */
+describe.each(viewCases("pay"))(
+	"/checkout/pay — the view %s frames the page's payment slot",
+	(_label, { source: VIEW }) => {
+		test("it renders the page's `payment` slot exactly once", () => {
+			expect(templateOf(VIEW).match(/<slot name="payment" \/>/g) ?? []).toHaveLength(1);
+		});
+
+		test("nothing of the money path is in the view", () => {
+			expect(hasExecutableScript(VIEW)).toBe(false);
+			expect(VIEW).not.toContain("js.stripe.com");
+			expect(VIEW).not.toMatch(/client_?secret|clientSecret/i);
+			expect(VIEW).not.toContain("payment-element");
+			expect(VIEW).not.toContain("payment-submit");
+		});
+	},
+);
+
+describe("/checkout/pay — the page keeps the money path and hands it to the view", () => {
+	test("the mount, the button and the script are all inside the page's `payment` slot", () => {
+		const { body } = splitAstro(PAY);
+		const slot = /<Fragment slot="payment">([\s\S]*?)<\/Fragment>/.exec(body)?.[1] ?? "";
+		expect(slot, "no payment slot on the page").not.toBe("");
+		expect(slot).toContain('id="payment-element"');
+		expect(slot).toContain('id="payment-submit"');
+		expect(slot).toContain("<noscript>");
+		expect(slot).toContain('<script is:inline src="https://js.stripe.com/v3/"></script>');
+		expect(body).toMatch(/<Storefront[^>]*view="pay"/);
 	});
 });

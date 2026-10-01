@@ -18,14 +18,16 @@
  *    every theme statically, so either would ship one theme's CSS on every
  *    theme's pages. A theme's Layout LINKS its sheets through `?url`.
  *
- * And the registry is held to the manifest, which is the single theme list.
+ * And the registry is held to the manifest, which is the single theme list
+ * (the admin's options come from it via the `__OTTA_STORE_THEMES__` define).
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { DEFAULT_THEME_ID, isThemeId, STORE_THEMES } from "../src/themes/manifest.js";
 import { THEMES } from "../src/themes/registry.js";
+import { COMMERCE_VIEW_FILES } from "./theme-views.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const THEMES_DIR = path.join(SRC, "themes");
@@ -64,6 +66,7 @@ test("the sweep found the themes — an empty list would pass every case below",
 			"themes/tempered/HomeView.astro",
 			"themes/tempered/ShopView.astro",
 			"themes/tempered/ProductView.astro",
+			...Object.values(COMMERCE_VIEW_FILES).map((file) => `themes/tempered/${file}`),
 		]),
 	);
 	expect(CODE).toEqual(expect.arrayContaining(["themes/registry.ts", "themes/resolve.ts"]));
@@ -132,7 +135,13 @@ describe("the theme list has one source", () => {
 		expect(THEME_DIRS).toEqual(STORE_THEMES.map((theme) => theme.id).toSorted());
 	});
 
-	test("the manifest is pure data — it may import nothing", () => {
+	test("astro.config.ts bakes the manifest into __OTTA_STORE_THEMES__ rather than a copy", () => {
+		const config = readFileSync(path.resolve(SRC, "../astro.config.ts"), "utf8");
+		expect(config).toContain('import { STORE_THEMES } from "./src/themes/manifest.js"');
+		expect(config).toMatch(/__OTTA_STORE_THEMES__:\s*JSON\.stringify\(\s*STORE_THEMES\.map\(/);
+	});
+
+	test("the manifest is pure data — astro.config imports it, so it may import nothing", () => {
 		expect(code("themes/manifest.ts")).not.toMatch(/^\s*import\s/m);
 	});
 });
@@ -187,5 +196,48 @@ describe("every theme's theme.css defines the --u-* contract", () => {
 
 	test.each(THEME_DIRS)("%s", (id) => {
 		expect(declared(read(`themes/${id}/theme.css`))).toEqual(expect.arrayContaining(CONTRACT));
+	});
+});
+
+/**
+ * The commerce views (Phase 3). Tempered ships all eight and is every theme's
+ * fallback; any other theme wires a view exactly when it ships the file for it.
+ * `test/theme-views.ts` resolves "which file renders X for theme Y" from the
+ * files on disk for the source-pin suites — this is what keeps that resolution
+ * equal to the registry's.
+ */
+describe("the commerce views — the registry wires exactly what is on disk", () => {
+	const registry = read("themes/registry.ts");
+	const themeBlock = (id: string): string =>
+		new RegExp(`const ${id} = \\{([\\s\\S]*?)\\n\\} satisfies`).exec(registry)?.[1] ?? "";
+
+	test("Tempered ships every commerce view", () => {
+		for (const file of Object.values(COMMERCE_VIEW_FILES)) {
+			expect(existsSync(path.join(THEMES_DIR, "tempered", file)), file).toBe(true);
+		}
+	});
+
+	test.each(THEME_DIRS)("%s wires a commerce view if and only if it ships the file", (id) => {
+		const block = themeBlock(id);
+		expect(block, `no \`const ${id} = { … } satisfies\` in registry.ts`).not.toBe("");
+		for (const [key, file] of Object.entries(COMMERCE_VIEW_FILES)) {
+			const ships = existsSync(path.join(THEMES_DIR, id, file));
+			expect(new RegExp(`\\b${key}:`).test(block), `${id}: views.${key} vs ${file}`).toBe(ships);
+		}
+	});
+
+	test("an unported view falls back to Tempered's, and its sheet comes with it", () => {
+		// `viewFor` is the fallback; `fallbackSheetFor` links Tempered's
+		// commerce sheet whenever the view about to render IS Tempered's —
+		// under Tempered or under a theme that has not ported it — and never
+		// through a side-effect import.
+		expect(registry).toContain("return theme.views[view] ?? tempered.views[view];");
+		expect(registry).toContain('import temperedCommerceHref from "./tempered/commerce.css?url";');
+		expect(registry).toMatch(
+			/viewFor\(theme, view\) === tempered\.views\[view\] \? temperedCommerceHref : null/,
+		);
+		const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
+		expect(shell).toContain("fallbackSheetFor(theme, props.view)");
+		expect(shell).toContain('<link rel="stylesheet" href={viewSheet} slot="head" />');
 	});
 });

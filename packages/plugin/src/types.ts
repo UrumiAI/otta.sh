@@ -502,7 +502,8 @@ export interface ButtonElement {
 /** Discriminated union — a subset of em-dash's 12-member `Element`
  *  (`packages/blocks/src/types.ts`); `checkbox`, `radio`, `repeater`,
  *  `media_picker` and `secret_input` (which has its own field spec below) are
- *  supported by the renderer but nothing in Otta emits them as elements. */
+ *  supported by the renderer but nothing in Otta emits them as elements
+ *  (`radio` appears only as a form field, {@link RadioFieldSpec}). */
 export type Element =
 	| TextInputElement
 	| NumberInputElement
@@ -717,6 +718,21 @@ export interface SelectFieldSpec {
 	options: SelectOption[];
 	initial_value?: string;
 }
+/** A `radio` form field (em-dash `RadioElement`; `elements/radio.tsx` renders a
+ *  `Radio.Group` with each option's LABEL as its row caption). Use it for a short,
+ *  prefilled closed set whose ids are not operator-facing words: a `select`'s
+ *  trigger shows the raw VALUE (R-17a), and a prefilled `combobox` can be cleared
+ *  to `null` (F-6). A radio syncs its display from `initial_value` the way R-12a
+ *  describes, so emit it only through `carriedForm`, which keys the form on the
+ *  prefill and remounts it when the value changes. The Settings "Store theme"
+ *  picker is the one user. */
+export interface RadioFieldSpec {
+	type: "radio";
+	action_id: string;
+	label: string;
+	options: SelectOption[];
+	initial_value?: string;
+}
 /** A `date_input` form field (em-dash `DateInputElement`,
  *  `packages/blocks/src/types.ts:74-80`) — the Orders filter from/to bounds
  *  (MOD-8). */
@@ -762,6 +778,7 @@ export interface FormBlock extends CarrierBlockBase {
 			| FormFieldSpec
 			| SecretInputFieldSpec
 			| SelectFieldSpec
+			| RadioFieldSpec
 			| DateFieldSpec
 			| ToggleElement
 			| ComboboxElement
