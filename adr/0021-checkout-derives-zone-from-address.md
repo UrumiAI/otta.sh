@@ -7,6 +7,9 @@
   decides the zone) and its zone/address-divergence consequence (divergence can no longer happen).
   Supersedes #73's "regions are opaque config the engine never reads".
 - Issue: #305 part 2 (part 1: the coupon and the shipping method reach the quote and the order).
+- Amended: 2026-09-30 — **Decision 9's referrer clause only**: `/checkout` sends `same-origin`, not
+  `no-referrer`, and the responses to its own POSTs send `no-referrer`. See "Amended 2026-09-30"
+  at the end of this record.
 
 ## Context
 
@@ -95,7 +98,8 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
    the country prefix stripped: `ca` = `CA` = `US-CA`). Only the coarse country, a region code,
    the opaque method id, the coupon code and an error token ever go in a URL; never a name,
    street, city, postcode, phone or email (`checkoutPath` knows no other key). `/checkout` sends
-   `no-referrer`.
+   `no-referrer`. *(Amended 2026-09-30: it sends `same-origin`, and its POSTs' responses send
+   `no-referrer` — see the end of this record.)*
 10. **Overlaps.** The admin refuses a code another zone already lists, naming that zone. If one
     slips through (a zone written before this rule), the lowest zone id wins and the tie is logged
     with zone ids and the matched code only (`{ zoneId, ambiguousWith, matchedRegion }`).
@@ -134,3 +138,31 @@ The buyer picks the zone; accept the client's zone and cross-check it; fuzzy reg
 to the country zone when a subdivision zone exists; shape-only subdivision codes (no membership);
 subdivision hierarchy; wildcard zones; postcode matching; fetching CLDR at generation time only
 (the generator test could not re-derive the file offline).
+
+## Amended 2026-09-30 — Decision 9's referrer clause, and only that clause
+
+Everything above is left as written except the pointer in Decision 9. The rest of Decision 9 —
+which keys may ride a URL, and that no personal data ever does — is unchanged.
+
+- **`/checkout` sends `Referrer-Policy: same-origin`, not `no-referrer`.** Under `no-referrer`,
+  browsers send `Origin: null` on the page's own form POSTs (Fetch's "append a request `Origin`
+  header" sets it to `null` when the policy is `no-referrer`). The site's origin guard
+  (`src/lib/origin-guard.ts`) correctly reads `null` as cross-site, so `/checkout/place` and
+  `/checkout/new-cart` answered 403 and no order could be placed from a browser. This is the bug
+  #329 fixed on `/account/verify`. `same-origin` still sends no Referer to any other origin, so
+  the coupon never leaves on an outbound link or any cross-origin request. The policy is also sent
+  as a **response header**, as defence in depth: it covers every subresource fetched before the
+  parser reaches the `<meta>` (which arrives through the head slot, after the layout's preloads).
+- **The responses to `/checkout`'s own POSTs send `Referrer-Policy: no-referrer`.** Under
+  `same-origin` those POSTs carry the full `/checkout?coupon=…` URL as their Referer, and a 303
+  keeps the request's referrer, so the page the redirect lands on — `/checkout/pay`, where
+  js.stripe.com runs — would hold the code in `document.referrer`. A redirect response's
+  `Referrer-Policy` replaces the policy for the follow-up request, so every response from
+  `/checkout/place` and `/checkout/new-cart` carries `no-referrer` and the redirected GET carries
+  no referrer at all. It is on every response rather than only the 303 to `/checkout/pay`, so no
+  path can forget it.
+
+ADR-0012's `no-referrer` for the order page (Decision 6, the client secret) is not changed here.
+The same `Origin: null` rule is why the order page's dead-end door ("Go to your cart") is a GET
+link to `/cart` (which is not `no-referrer` and offers the `POST /checkout/new-cart` for the
+checked-out cart) rather than a form on the order page itself.

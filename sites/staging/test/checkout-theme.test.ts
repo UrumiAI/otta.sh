@@ -37,6 +37,7 @@ function shown(source: string): string {
 }
 const PAY = read("pages/checkout/pay.astro");
 const ORDER = read("pages/orders/[orderId].astro");
+const CART = read("pages/cart/index.astro");
 const POLL_RIBBON = read("components/PollRibbon.astro");
 
 describe("the /checkout form contract", () => {
@@ -247,8 +248,21 @@ describe("/checkout — the coupon", () => {
 		);
 	});
 
-	test("the coupon in the URL never leaks through a Referer", () => {
-		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+	test("the coupon in the URL never leaks through a Referer to another host", () => {
+		// `same-origin`, NOT `no-referrer`: under `no-referrer` a browser sends
+		// `Origin: null` on the page's own POST to /checkout/place, the origin
+		// guard 403s it, and no order can be placed (pinned in a real browser by
+		// e2e/checkout-place.spec.ts).
+		expect(REVIEW).toContain('<meta name="referrer" content="same-origin" slot="head" />');
+		expect(REVIEW).not.toContain('content="no-referrer"');
+	});
+
+	test("the policy is also a response HEADER, not only the meta", () => {
+		// The meta arrives through `<slot name="head">`, after the layout's font
+		// preloads; a fetch the parser starts before it would not see the meta.
+		expect(splitAstro(REVIEW).frontmatter).toContain(
+			'Astro.response.headers.set("Referrer-Policy", "same-origin");',
+		);
 	});
 });
 
@@ -536,7 +550,27 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 			/const deadEnd =[\s\S]{0,160}?state === "expired"[\s\S]{0,80}?state === "cancelled"[\s\S]{0,80}?state === "failed"/,
 		);
 		expect(ORDER).not.toContain("Back to checkout");
-		expect(ORDER).toContain('action="/checkout/new-cart"');
+		expect(templateOf(ORDER)).toMatch(
+			/\{deadEnd && \(\s*<a class="u-btn u-btn-ghost" href="\/cart">\s*Go to your cart\s*<\/a>/,
+		);
+	});
+
+	test("the order page's door is a GET link: it has NO form, because it is no-referrer", () => {
+		// The page stays `no-referrer` (ADR-0012 decision 6 — its URL can hold
+		// the client secret). Under that policy browsers send `Origin: null` on
+		// the page's own POSTs and the origin guard 403s them, so any form here —
+		// the old `POST /checkout/new-cart` above all — is dead on arrival.
+		expect(ORDER).toMatch(/<meta name="referrer" content="no-referrer" slot="head" \/>/);
+		expect(templateOf(ORDER)).not.toMatch(/<form\b/i);
+		expect(ORDER).not.toContain('action="/checkout/new-cart"');
+	});
+
+	test("/cart, where the link lands, is NOT no-referrer and offers the new-cart POST", () => {
+		// The terminal (checked_out) cart is exactly the dead-end order's cart,
+		// and its panel carries the same door (pinned in cart-page.test.ts). The
+		// page must keep sending a real Origin, or that door dies the same way.
+		expect(CART).not.toMatch(/name="referrer"/);
+		expect(CART).toContain('<form method="POST" action="/checkout/new-cart">');
 	});
 
 	test("the receipt names what was bought, not only its SKU", () => {
