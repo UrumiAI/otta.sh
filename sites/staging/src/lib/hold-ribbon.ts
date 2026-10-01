@@ -3,7 +3,8 @@
  *
  * `hold.ts` is the SERVER's answer — the first render, and what a browser with
  * no JavaScript is left holding. This module is the same arithmetic run once a
- * second in the browser, and it lives outside `HoldRibbon.astro` for one
+ * second in the browser (driven by `HoldClock.astro`, the countdown's script,
+ * over whatever ribbon markup the theme drew), and it lives outside it for one
  * reason: three of its behaviours are load-bearing, none of them is visible in
  * a screenshot, and none of them can be pinned by reading the script's source
  * text for a substring.
@@ -39,6 +40,11 @@ export interface HoldFrame {
 	label: string;
 	/** `mm:ss`. */
 	clock: string;
+	/** Whole seconds left, and whole minutes left (both floored, never below
+	 *  zero) — for a theme that states the time in words ("14 min left",
+	 *  "42 sec") rather than as a clock. */
+	secondsLeft: number;
+	minutesLeft: number;
 	/** The `--pct` custom property's value, rounded the way the server rounds
 	 *  it so the first client frame does not rewrite the markup for nothing. */
 	fill: string;
@@ -73,6 +79,8 @@ export function holdFrame(
 		state,
 		label: HOLD_LABELS[state],
 		clock: holdClock(left),
+		secondsLeft: left,
+		minutesLeft: Math.floor(left / 60),
 		// Clamped: a hold longer than the window the page assumed must not draw
 		// a fill wider than its track.
 		fill: `${Math.min(100, (left / windowSeconds) * 100).toFixed(1)}%`,

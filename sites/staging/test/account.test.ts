@@ -41,6 +41,7 @@ import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.j
 import { POST as LOGOUT_POST } from "../src/pages/account/logout.js";
 import { POST as VERIFY_CONFIRM_POST } from "../src/pages/account/verify/confirm.js";
 import { splitAstro, templateOf } from "./astro-source.js";
+import { viewCases } from "./theme-views.js";
 
 const SITE = "http://localhost:4321";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -391,7 +392,6 @@ describe("account pages — source-level guarantees", () => {
 		expect(frontmatter).not.toContain("ACCOUNT_LOGIN_VERIFY_ROUTE");
 		expect(frontmatter).not.toContain("dispatchOttaRoute");
 		const template = templateOf(source);
-		expect(template).toMatch(/<form[^>]*method="POST"[^>]*action="\/account\/verify\/confirm"/);
 		// `same-origin`, NOT `no-referrer`: under `no-referrer` a browser sends
 		// `Origin: null` on this page's own form POST, the origin guard reads that
 		// as cross-site, and every login 403s at /account/verify/confirm. That was
@@ -425,6 +425,32 @@ describe("account pages — source-level guarantees", () => {
 	test("the login page shows the generic notice and posts to the request endpoint", () => {
 		const source = page("account/login/index.astro");
 		expect(splitAstro(source).frontmatter).toContain("LOGIN_LINK_SENT_COPY");
+	});
+});
+
+/**
+ * The forms moved into the theme views (Phase 3): every theme's sign-in and
+ * verify view — its own, or Tempered's fallback — carries the same POST forms
+ * the endpoints read.
+ */
+describe.each(viewCases("accountVerify"))("the verify view %s", (_label, { source }) => {
+	test("renders the confirm POST form — the GET redeems nothing", () => {
+		expect(templateOf(source)).toMatch(
+			/<form[^>]*method="POST"[^>]*action="\/account\/verify\/confirm"/,
+		);
+		expect(templateOf(source)).toMatch(
+			/<input type="hidden" name="challenge" value=\{challenge\} \/>/,
+		);
+		expect(templateOf(source)).toMatch(/<input type="hidden" name="token" value=\{token\} \/>/);
+	});
+
+	test("sets no referrer policy of its own — `same-origin` is the page's, in <head>", () => {
+		expect(source).not.toContain('name="referrer"');
+	});
+});
+
+describe.each(viewCases("accountLogin"))("the sign-in view %s", (_label, { source }) => {
+	test("posts to the request endpoint", () => {
 		expect(templateOf(source)).toMatch(
 			/<form[^>]*method="POST"[^>]*action="\/account\/login\/request"/,
 		);

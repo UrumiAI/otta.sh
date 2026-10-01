@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
-  "Amendment (2026-07-28)" under Decision.
+  "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).
 
 ## Context
 
@@ -94,6 +94,10 @@ names the order and its 15-minute hold — not a broken form.
 
   1. `/checkout/pay` — Stripe Elements (decision 1);
   2. `/cart` — and only through `HoldRibbon.astro`, whose ~15 lines drive the §6 countdown.
+     (2026-09-30: the same script, renamed not widened — it now lives alone in
+     `HoldClock.astro`, split from the ribbon's markup so each storefront theme's cart view
+     can draw its own ribbon while `/cart` itself renders the one script; see ADR-0024.
+     The fence's pair is `cart/index.astro → HoldClock.astro`.)
 
   Nowhere else, and nothing else. Every other page and **every** mutation stays a
   server-rendered `<form method="POST">` → 303.

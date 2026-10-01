@@ -12,13 +12,13 @@
  * about products that sold out or pages that moved.
  *
  * No `cartCount` and no `currency`: this page makes no commerce call, and
- * absence is meaningful in both props (see Base.astro) — a bare "Cart" is
+ * absence is meaningful in both props (see layouts/Storefront.astro) — a bare "Cart" is
  * honest here, "Cart (0)" would not be.
  */
-import Base from "../layouts/Base.astro";
+import Storefront from "../layouts/Storefront.astro";
 ---
 
-<Base title="Page not found">
+<Storefront title="Page not found">
 	<div class="empty">
 		<h1 class="empty-title">Page not found.</h1>
 		{/* Both sentences state what THIS page knows, and it knows exactly one
@@ -38,7 +38,7 @@ import Base from "../layouts/Base.astro";
 			<a class="home" href="/">Go to the home page</a>
 		</div>
 	</div>
-</Base>
+</Storefront>
 
 <style>
 	/* §8's empty state, and the same block the PDP and the shop page use: an

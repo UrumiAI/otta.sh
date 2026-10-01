@@ -1,7 +1,7 @@
 /**
  * The "Tempered" token layer (docs/theme/TEMPERED.md §2–§3).
  *
- * `src/styles/tokens.css` is the single place a colour or a font stack is
+ * `src/themes/tempered/theme.css` (formerly `src/styles/tokens.css`) is the single place a colour or a font stack is
  * allowed to be written down; every page reads the custom properties. These
  * are source-text pins (same cheap pattern as base-layout-favicon.test.ts) —
  * they exist to catch the two failures that are invisible in a screenshot:
@@ -19,7 +19,7 @@ import { describe, expect, test } from "vitest";
 
 const TOKENS_PATH = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
-	"../src/styles/tokens.css",
+	"../src/themes/tempered/theme.css",
 );
 
 const source = readFileSync(TOKENS_PATH, "utf8");

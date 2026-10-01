@@ -1,7 +1,15 @@
 /**
  * "Tempered" — the theme's token layer.  Spec: docs/theme/TEMPERED.md §2–§3.
- * Imported once, by src/layouts/Base.astro.  No page declares a raw colour or
+ * Linked once, by `themes/tempered/Layout.astro` (a `?url` import, so only the
+ * ACTIVE theme's sheet reaches the browser).  No page declares a raw colour or
  * a font stack of its own.
+ *
+ * THE `--u-*` CONTRACT.  The custom-property names below are no longer
+ * Tempered's private vocabulary: they are the contract every theme's
+ * `theme.css` must define (`test/themes-boundary.test.ts`).  The pages that no
+ * theme has ported yet — cart, checkout, pay, orders, account, 404 — style
+ * themselves with nothing but these names, so an unported page renders in the
+ * active theme's colours and faces rather than in Tempered's.
  *
  * An otta is a ribbon of spring steel.  Heat spring steel and it runs through
  * straw → bronze → violet → deep blue — an ORDERED scale — and the store has
@@ -12,11 +20,10 @@
  * button background, which is what keeps every interactive element at full
  * text contrast.
  *
- * Increment 1 of the theme rollout shipped THIS FILE plus the layout chrome,
- * and increments 3–6 moved every page onto it.  The rollout's transitional
- * sheet (`legacy-bridge.css`) is gone with increment 6; this is now the only
- * unscoped stylesheet on the site, and the only place a colour, a face, a
- * radius or the button shape is written down.
+ * This and `views.css` beside it are the only unscoped stylesheets on a
+ * Tempered page; this one is the only place a colour, a face, a radius or the
+ * button shape is written down.  (It was `src/styles/tokens.css` until the
+ * theme system; the rules are unchanged.)
  */
 
 :root {
@@ -47,8 +54,9 @@
 	--u-hair: 1px solid var(--u-edge); /* the only divider in the theme */
 
 	/**
-	 * The three faces.  `--u-face-*` is what Astro's font API defines (see
-	 * `fonts` in astro.config.ts and the <Font> tags in Base.astro): it
+	 * The three faces.  `--f-tempered-*` is what Astro's font API defines (see
+	 * `fonts` in astro.config.ts and the <Font> tags in this theme's
+	 * Layout.astro — namespaced per theme so two themes' faces never collide): it
 	 * resolves to Astro's build-hashed family name PLUS its metric-adjusted
 	 * local fallback, which is what stops the swap from shifting layout.
 	 * Reading it through `var()` is therefore the only way to get the
@@ -57,9 +65,9 @@
 	 * locally-installed copy is better than nothing.  Neither branch is a CDN
 	 * lookup.
 	 */
-	--u-display: var(--u-face-display, "Bricolage Grotesque"), ui-sans-serif, sans-serif;
-	--u-body: var(--u-face-body, "Schibsted Grotesk"), ui-sans-serif, system-ui, sans-serif;
-	--u-data: var(--u-face-data, "Martian Mono"), ui-monospace, monospace;
+	--u-display: var(--f-tempered-display, "Bricolage Grotesque"), ui-sans-serif, sans-serif;
+	--u-body: var(--f-tempered-body, "Schibsted Grotesk"), ui-sans-serif, system-ui, sans-serif;
+	--u-data: var(--f-tempered-data, "Martian Mono"), ui-monospace, monospace;
 }
 
 /**

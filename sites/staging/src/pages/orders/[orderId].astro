@@ -31,24 +31,19 @@
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
  * manual link: no JS, no busy loop. The sweeping ribbon beside the count is a
  * CSS animation on a page that reloads itself, which is why it comes from
- * `PollRibbon` and NOT from `HoldRibbon` — the latter ships a bundled script
- * for its countdown, and Astro emits a component's script whenever that
- * component renders, so importing it here would have put ~1 kB of client JS on
- * a page specified to carry none. `checkout-client-js.test.ts` now scans
- * component imports for exactly that.
+ * `PollRibbon` and NOT from the cart's countdown — whose script
+ * (`HoldClock.astro`) Astro emits wherever it renders, so it would have put
+ * ~1 kB of client JS on a page specified to carry none. The markup is the
+ * theme's `OrderView` since Phase 3, and `checkout-client-js.test.ts` walks
+ * page → shell → registry → every view for exactly that.
  */
 import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
-import Ledger from "../../components/Ledger.astro";
-import Notice from "../../components/Notice.astro";
-import PollRibbon from "../../components/PollRibbon.astro";
-import StateStamp from "../../components/StateStamp.astro";
-import StepTrack from "../../components/StepTrack.astro";
-import Sum from "../../components/Sum.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
+import type { OrderModel } from "../../themes/contract.js";
 
 const { orderId } = Astro.params;
 
@@ -184,226 +179,40 @@ const sumRows =
 				{ label: "Shipping", amount: order.totals.shipping },
 				{ label: "Tax", amount: order.totals.tax },
 			];
+/**
+ * The model. Everything the view prints is decided above — including the
+ * failure sentence, so BUSY / not-found / unavailable stay the page's call.
+ * `returnedFromStripe` is NOT in it: only the copy it chose is.
+ */
+const model: OrderModel = {
+	order,
+	stamp,
+	failureMessage: busy
+		? cartErrorMessage(BUSY)
+		: result !== null && !result.ok && "reason" in result
+			? cartErrorMessage(result.reason)
+			: cartErrorMessage("SERVICE_UNAVAILABLE"),
+	shouldPoll,
+	pollHop: pollAttempt + 1,
+	pollMax: MAX_POLLS,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	canResume,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	totalLabel: order === null ? "Total" : (TOTAL_LABEL[order.state] ?? "Total"),
+};
 ---
 
 {/* The order names its own currency; a failed read names none (§7). */}
-<Base
+<Storefront
+	view="order"
+	model={model}
 	title={order === null ? "Order" : `Order ${order.id}`}
 	currency={order?.currency ?? null}
 >
 	<meta name="referrer" content="no-referrer" slot="head" />
 	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
-
-	{
-		order === null || stamp === null ? (
-			<>
-				{/* NO step track here. It says Cart and Details and Payment are
-				    behind you, and for an order that does not exist — a mistyped
-				    link, someone else's reference, a service that is down — that
-				    is a journey the visitor never made. */}
-				<h1 class="title">Order</h1>
-				<div class="alert">
-					<Notice>
-						{busy
-							? cartErrorMessage(BUSY)
-							: result !== null && !result.ok && "reason" in result
-								? cartErrorMessage(result.reason)
-								: cartErrorMessage("SERVICE_UNAVAILABLE")}
-					</Notice>
-				</div>
-				<p class="back">
-					<a href="/products">Browse products</a>
-				</p>
-			</>
-		) : (
-			<>
-				{/* Wrapped rather than given a class: a page's scoped selector
-				    cannot reach a component's root (src/lib/rest-props.ts), so the
-				    spacing around one lives on an element the page owns. */}
-				<div class="steps"><StepTrack current="order" /></div>
-
-				<StateStamp
-					state={order.state}
-					headline={stamp.headline}
-					body={stamp.body}
-					reference={order.id}
-				>
-					{/* The hold ribbon's grammar, running indeterminate and
-					    SCRIPT-FREE: there is no duration to drain against, so the
-					    count carries the information and the sweep says only
-					    "still working". */}
-					{shouldPoll && (
-						<div class="poll">
-							<PollRibbon poll={pollAttempt + 1} pollMax={MAX_POLLS} />
-						</div>
-					)}
-				</StateStamp>
-
-				<p class="keep">Keep this link to check its status.</p>
-
-				{hasActions && (
-					<div class="actions">
-						{canCheckAgain && (
-							<a class="u-btn u-btn-ghost" href={nextPollUrl}>
-								Check again
-							</a>
-						)}
-						{canResume && (
-							<a class="u-btn u-btn-ghost" href="/checkout">
-								Complete payment
-							</a>
-						)}
-						{deadEnd && (
-							<form method="POST" action="/checkout/new-cart">
-								<button type="submit" class="u-btn u-btn-ghost">
-									Start a new cart
-								</button>
-							</form>
-						)}
-					</div>
-				)}
-
-				<div class="cols">
-					<section class="panel">
-						<div class="panel-head">
-							<h2 class="u-label head-label">Items</h2>
-						</div>
-						<Ledger rows={ledgerRows} />
-						{order.fulfillment !== null && (
-							<p class="ship">
-								Shipped with {order.fulfillment.carrier} — tracking{" "}
-								<span class="u-mono">{order.fulfillment.trackingNumber}</span>
-							</p>
-						)}
-					</section>
-
-					<section class="panel">
-						<div class="panel-head">
-							<h2 class="u-label head-label">Totals</h2>
-						</div>
-						<Sum
-							rows={sumRows}
-							total={order.totals.total}
-							totalLabel={TOTAL_LABEL[order.state] ?? "Total"}
-							excludesUncalculated={order.totals.totalExcludesUncalculated}
-						/>
-					</section>
-				</div>
-			</>
-		)
-	}
-</Base>
-
-<style>
-	.steps {
-		margin-bottom: 2rem;
-	}
-
-	.title {
-		font-family: var(--u-display);
-		font-variation-settings: "wdth" 78, "opsz" 48;
-		font-weight: 700;
-		font-size: clamp(1.75rem, 4vw, 2.25rem);
-		letter-spacing: -0.025em;
-		line-height: 1;
-		margin: 0 0 1.5rem;
-	}
-
-	.alert {
-		margin-bottom: 1.5rem;
-	}
-
-	/* The stamp is a flex column with `align-items: flex-start`, so a wrapper
-	   shrinks to its content — which would leave the sweeping track only as wide
-	   as "CHECKING 1 OF 8". §6 gives the ribbon a 22rem measure; this is what
-	   lets it have one. */
-	.poll {
-		width: 100%;
-		max-width: 22rem;
-		margin-top: 0.375rem;
-	}
-
-	.keep {
-		margin: 0.75rem 0 0;
-		font-size: 0.75rem;
-		color: var(--u-mute);
-	}
-
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.75rem;
-		margin-top: 1.5rem;
-	}
-	.actions form {
-		margin: 0;
-	}
-
-	/* §8: items and totals, side by side under the stamp. */
-	.cols {
-		display: grid;
-		grid-template-columns: 1.15fr 1fr;
-		gap: 3rem;
-		align-items: start;
-		margin-top: 2.5rem;
-	}
-
-	.panel {
-		display: flex;
-		flex-direction: column;
-		gap: 1.25rem;
-		min-width: 0;
-	}
-
-	.panel-head {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		padding-bottom: 0.75rem;
-		border-bottom: var(--u-hair);
-	}
-	/* A real <h2> wearing the eyebrow treatment — styling, not a demotion, so
-	   screen-reader heading navigation still works. `.u-label` (tokens.css)
-	   already beats the UA sheet on size and weight; the margin is all that is
-	   left to undo. */
-	.head-label {
-		margin: 0;
-		color: var(--u-ink);
-	}
-
-	.ship {
-		margin: 0;
-		font-size: 0.8125rem;
-		color: var(--u-mute);
-	}
-	.ship .u-mono {
-		font-size: 0.75rem;
-		color: var(--u-ink);
-		overflow-wrap: anywhere;
-	}
-
-	/* GHOST ONLY, and that is this page's decision rather than the shape's:
-	   nothing here is a primary action — the order is already placed, and every
-	   control is a way out rather than a way on (§2). This page used to say so
-	   by redefining `.btn` as a ghost, which meant `class="btn"` here and
-	   `class="btn"` on the PDP drew two different buttons. It now says it by
-	   writing `.u-btn .u-btn-ghost` on all three controls (tokens.css). */
-
-	.back {
-		margin: 2rem 0 0;
-		font-size: 0.8125rem;
-	}
-	.back a {
-		color: var(--u-mute);
-	}
-	.back a:hover {
-		color: var(--u-ink);
-	}
-
-	@media (max-width: 54rem) {
-		.cols {
-			grid-template-columns: 1fr;
-			gap: 2.5rem;
-		}
-	}
-</style>
+</Storefront>

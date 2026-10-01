@@ -1,0 +1,59 @@
+---
+/**
+ * Tempered's pay step — the FRAME around the card fields (docs/theme/TEMPERED.md
+ * §8, §9): the step track, a narrow single column, the trust line, and the way
+ * back to the order.
+ *
+ * WHAT IS NOT HERE, AND MUST NOT BE. The Stripe mount, the pay button, the
+ * `<noscript>` explanation and Stripe's script live in
+ * `src/pages/checkout/pay.astro` — the one page ADR-0012 lets carry client
+ * JavaScript and a third-party origin — and arrive here as the `payment` slot.
+ * A view is reached through the theme registry, which every page imports, so a
+ * script in a view would ship to every page; the fence in
+ * `checkout-client-js.test.ts` holds that. This view renders the slot exactly
+ * once, after the trust line, and only when the page says payment is
+ * configured.
+ *
+ * Styles: `commerce.css` (`pay-*`). The mount box and the error line are styled
+ * by the page, which owns those elements.
+ */
+import Notice from "../../components/Notice.astro";
+import StepTrack from "../../components/StepTrack.astro";
+import type { PayModel } from "../contract.js";
+
+interface Props {
+	model: PayModel;
+}
+
+const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
+---
+
+{/* Wrapped rather than given a class: a view cannot style a component's root
+    (src/lib/rest-props.ts), so the spacing around one lives on an element the
+    view owns. */}
+<div class="pay-steps"><StepTrack current="payment" /></div>
+<h1 class="pay-title">Payment</h1>
+
+{
+	!paymentConfigured ? (
+		<Notice lead={notConfiguredLead}>
+			This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
+		</Notice>
+	) : (
+		<div class="pay-main">
+			{/* A sentence, not a badge (§10). The straw mark is the same fitting
+			    the wordmark and the focus ring use. */}
+			<p class="pay-trust">
+				<span class="pay-trust-mark" aria-hidden="true" />
+				<span>
+					Your card details are handled directly by our payment provider and never reach this
+					site.
+				</span>
+			</p>
+
+			<slot name="payment" />
+		</div>
+	)
+}
+
+<p class="pay-back"><a href={orderPath}>View your order</a></p>

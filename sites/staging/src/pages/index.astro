@@ -15,14 +15,15 @@
  * they click through.
  *
  * The rows, the counts and the headline fallbacks are `src/lib/tape.ts`, which
- * is where their honesty rules are unit-tested. This page is the read and the
- * layout.
+ * is where their honesty rules are unit-tested. This page is the reads and the
+ * model; the MARKUP is the active theme's home view (`src/themes/<id>/
+ * HomeView.astro`, via the Storefront shell), which renders only what the model
+ * below hands it.
  */
 import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@otta-sh/plugin";
 import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
-import PriceTag from "../components/PriceTag.astro";
-import Base from "../layouts/Base.astro";
+import Storefront from "../layouts/Storefront.astro";
 import { toCmsProductContent, type ProductEntryData } from "../lib/products.js";
 import {
 	exactCount,
@@ -35,6 +36,7 @@ import {
 	type StoreSettings,
 } from "../lib/tape.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../lib/otta-api.js";
+import type { HomeModel } from "../themes/contract.js";
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -63,8 +65,8 @@ try {
  *
  * The claim this scopes to: THIS PAGE's frontmatter has no unguarded read, so a
  * dead content store costs it the tape and the store's own name, not the
- * response. The layout around it reads settings on its own account (see
- * `Base.astro`) and is not this page's to guarantee.
+ * response. The shell around it reads settings on its own account (see
+ * `layouts/Storefront.astro`) and is not this page's to guarantee.
  */
 let entries: readonly { data: unknown }[] | null = null;
 let hasMore: boolean | undefined;
@@ -116,202 +118,23 @@ const lede =
 		? "Everything in the shop, with what it costs and what's on the shelf right now."
 		: "Everything in the shop, on one page.";
 const shopLabel = shopLinkLabel(count);
+
+/* The degraded rule rides the model: no rows ⇒ the view renders no tape, and
+   no error box either — that is the catalog page's job. */
+const model: HomeModel = {
+	thesis,
+	lede,
+	shopHref: "/products",
+	shopLabel,
+	rows,
+	count,
+};
 ---
 
-<Base title={storeTitle(settings)} description={storeDescription(settings)} currency={currency}>
-	<div class="hero">
-		<div class="thesis">
-			<h1 class="title">{thesis}</h1>
-			<p class="lede">{lede}</p>
-			<div>
-				<a class="u-btn" href="/products">{shopLabel}</a>
-			</div>
-		</div>
-
-		{
-			rows.length > 0 && (
-				<div class="tape">
-					{/* Three labelled columns of facts IS a table, and the theme
-					    draws it with hairlines rather than a `<table>` because the
-					    hero column has to reflow to one column on a phone. The
-					    roles put the structure back for a screen reader at zero
-					    visual cost. They live on an inner element, not on `.tape`:
-					    a `role="table"` may only contain rows, and the foot below
-					    is a caption-ish aside that is not one. */}
-					<div class="rows" role="table" aria-label="Items, prices and stock">
-						<div class="row row-head" role="row">
-							{/* `Stock`, not `In stock`: the cells below hold the WORDS
-							    "In stock" and "Sold out", and a column headed with one
-							    of its own values reads as a claim about the column.
-							    Same label as the PDP's spec ledger. */}
-							{/* `stock-head`, not `stock`: the column heading is an
-							    eyebrow label and keeps `.u-label`'s size — it only
-							    borrows the data column's alignment. */}
-							<span class="u-label" role="columnheader">
-								Item
-							</span>
-							<span class="u-label" role="columnheader">
-								Price
-							</span>
-							<span class="u-label stock-head" role="columnheader">
-								Stock
-							</span>
-						</div>
-						{rows.map((row) => (
-							<div class="row" role="row">
-								<span class="u-mono item" role="cell">
-									{row.item}
-								</span>
-								{/* The component, not a copy of it: the tape and the
-								    catalog card must not disagree about the same
-								    product, and the hand-rolled span had already
-								    drifted: PriceTag pins `white-space: nowrap` so a
-								    figure cannot break across two lines when a
-								    column narrows, and the copy of it did not. The
-								    sold-out strike arrives with the component too. */}
-								<PriceTag
-									formatted={row.price}
-									size="sm"
-									soldOut={row.soldOut}
-									role="cell"
-								/>
-								<span
-									class="u-mono stock"
-									role="cell"
-									data-sold-out={row.soldOut ? "" : undefined}
-								>
-									{row.stock}
-								</span>
-							</div>
-						))}
-					</div>
-					<p class="tape-foot">Stock updates as people buy.</p>
-				</div>
-			)
-		}
-	</div>
-</Base>
-
-<style>
-	/* §8: asymmetric, ~1.15fr / 1fr — the copy leads and the tape answers. */
-	.hero {
-		display: grid;
-		grid-template-columns: 1.15fr 1fr;
-		gap: 3.5rem;
-		align-items: start;
-		padding-block: 1.5rem 1rem;
-	}
-
-	.thesis {
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		/* Lets the column shrink inside the grid instead of setting the page's
-		   minimum width from a long CMS-authored line. */
-		min-width: 0;
-	}
-
-	/* §3: the display face set narrow, and the biggest type in the theme. */
-	.title {
-		font-family: var(--u-display);
-		font-variation-settings: "wdth" 78, "opsz" 48;
-		font-weight: 700;
-		font-size: clamp(2.25rem, 6.5vw, 4.25rem);
-		letter-spacing: -0.025em;
-		line-height: 1;
-		margin: 0;
-		text-wrap: balance;
-		overflow-wrap: break-word;
-	}
-
-	.lede {
-		margin: 0;
-		max-width: 32ch;
-		color: var(--u-mute);
-		font-size: 1rem;
-	}
-
-	/* The tape: hairline rows, three mono columns, no box (§2). */
-	.tape {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	/* The `role="table"` element. Same stacking the rows had as direct children
-	   of `.tape` — the role needed a box of its own, not a different layout. */
-	.rows {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	.row {
-		display: grid;
-		/* `minmax(0, …)` so a long sku wraps inside its cell rather than
-		   widening the row — §11's no-horizontal-scroll rule. */
-		grid-template-columns: minmax(0, 1fr) auto 5.5rem;
-		gap: 1.25rem;
-		align-items: baseline;
-		padding-block: 0.95rem;
-		border-bottom: var(--u-hair);
-	}
-	.row:first-child {
-		border-top: var(--u-hair);
-	}
-
-	.row-head {
-		padding-bottom: 0.5rem;
-		border-bottom: none;
-	}
-
-	.item {
-		font-size: 0.75rem;
-		overflow-wrap: anywhere;
-	}
-
-	/* No `.price` rule here: the price cell is `<PriceTag size="sm">`, and its
-	   size, weight and sold-out treatment are the component's. A page cannot
-	   reach a component's root anyway (Astro scopes each component's CSS to its
-	   own hash — see src/lib/rest-props.ts), so a rule here would be dead. */
-
-	/* Right-aligned and tabular, so the column reads as a column. */
-	.stock,
-	.stock-head {
-		text-align: right;
-	}
-	.stock {
-		font-size: 0.8125rem;
-	}
-
-	/* Sold out is ONE signal, and PriceTag carries it: the mute plus a 1px
-	   strike. The stock cell only mutes — striking the words "Sold out" would
-	   say the fact itself no longer holds. */
-	.stock[data-sold-out] {
-		color: var(--u-mute);
-	}
-
-	.tape-foot {
-		margin: 0;
-		padding-top: 0.75rem;
-		color: var(--u-mute);
-		font-size: 0.75rem;
-	}
-
-	/* The shop link is `.u-btn` (tokens.css) — §2's one button shape, written
-	   down once instead of copied into every page that has a button. */
-
-	@media (max-width: 52rem) {
-		.hero {
-			grid-template-columns: 1fr;
-			gap: 2.5rem;
-		}
-	}
-
-	@media (max-width: 26rem) {
-		.row {
-			grid-template-columns: minmax(0, 1fr) auto 4.75rem;
-			gap: 0.75rem;
-		}
-	}
-</style>
+<Storefront
+	view="home"
+	model={model}
+	title={storeTitle(settings)}
+	description={storeDescription(settings)}
+	currency={currency}
+/>

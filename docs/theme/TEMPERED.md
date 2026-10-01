@@ -32,7 +32,8 @@ Three rules fall out, and everything else follows from them:
 
 ## 2. Tokens
 
-Define once in `src/styles/tokens.css`, imported by `Base.astro`. Every page reads these —
+Define once in `src/themes/tempered/theme.css`, linked by `src/themes/tempered/Layout.astro`
+(was `src/styles/tokens.css` / `Base.astro` before the theme system). Every page reads these —
 no page declares a raw colour or a font stack of its own.
 
 ### Light (default)
@@ -151,7 +152,8 @@ Build these in `src/components/`. Each renders one view-model field group and no
 | `PriceTag` | Mono, tabular. Struck + muted when sold out |
 | `StockRule` | A short 2px rule + mono caps. Solid when in stock, dashed when sold out. **Not** a coloured badge. **Words, not a figure** — see below |
 | `HoldRibbon` | §6 — the signature |
-| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carries a bundled `<script>`, and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
+| `HoldClock` | §6's countdown SCRIPT, split from `HoldRibbon` (which is markup only) so a theme's cart view can draw the ribbon while `/cart` renders the one script (ADR-0012's single pair) |
+| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
 | `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring |
 | `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. `/checkout` omits it — the row is still a cart line, the wire carries no title, and the shopper picked the thing a moment ago. `/orders/<id>` passes it, because there the same block is a **receipt** and the title is the purchase-time snapshot the order froze |
 | `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline |
@@ -339,5 +341,6 @@ Not optional, and not worth announcing in the UI:
 - Both themes carry equal care — dark is not a naive inversion, and the accent works on both
   grounds.
 - Text contrast meets AA. Straw is never a text-on-fill colour.
-- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in `Base.astro`. Keep it
+- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in every theme's `Layout.astro`
+  (was `Base.astro`). Keep it
   inline; redraw the mark as the coil.

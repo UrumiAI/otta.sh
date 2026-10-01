@@ -1,5 +1,5 @@
 /**
- * Nav helpers for the site chrome (src/layouts/Base.astro).
+ * Nav helpers for the site chrome (src/layouts/Storefront.astro builds the nav).
  *
  * The primary menu is CMS-authored, so the layout cannot assume any particular
  * spelling of a URL: it has to RECOGNISE the cart entry rather than be told
