@@ -6,9 +6,8 @@
  *  1. THE RULES, against an injected reader: unknown, absent, malformed and
  *     throwing all land on Tempered; the `?theme=` override exists in dev only.
  *  2. THE ROUND TRIP, against the real host. The plugin's Settings "Store
- *     theme" radio (the plugin change that follows this one) will save the
- *     theme the way every Otta setting is saved — plugin kv,
- *     `ctx.kv.set("settings:storeTheme", id)` — and the site reads it with
+ *     theme" radio saves the theme the way every Otta setting is saved — plugin
+ *     kv, `ctx.kv.set("settings:storeTheme", id)` — and the site reads it with
  *     EmDash's `getPluginSetting("otta", "storeTheme")`. Those two only meet if
  *     EmDash's kv prefix (`plugin:<id>:`) and `getPluginSetting`'s options-row
  *     name (`plugin:<id>:settings:<key>`) agree. That is asserted here, not

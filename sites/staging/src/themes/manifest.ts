@@ -1,10 +1,15 @@
 /**
  * THE theme list — the single source of which storefront themes exist.
  *
- * Pure data, deliberately: no `.astro` import, no IO, so a build config can
- * import it as safely as the site can. `registry.ts` maps each id to its
- * components, and `themes-boundary.test.ts` holds the registry to exactly this
- * list.
+ * Pure data, deliberately: no `.astro` import, no IO. Two consumers read it and
+ * they must not be able to disagree:
+ *
+ *  - `astro.config.ts` bakes it into the build as the Vite define
+ *    `__OTTA_STORE_THEMES__` (JSON `[{ id, label }]`), which is how the plugin's
+ *    admin Settings radio learns the options without hard-coding a theme list
+ *    of its own;
+ *  - `registry.ts` maps each id to its components, and
+ *    `themes-boundary.test.ts` holds the registry to exactly this list.
  *
  * A theme is added HERE when it is built, not before: listing an id the
  * registry cannot render would put an option in the admin that silently falls
