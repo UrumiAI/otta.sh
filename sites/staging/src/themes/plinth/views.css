@@ -1,0 +1,708 @@
+/**
+ * Plinth — the chrome and the three themed views (home, shop, product).
+ * Linked by `themes/plinth/Layout.astro`; tokens come from `theme.css` beside
+ * it.  Held to the page sweep (`test/page-css.test.ts`): no raw colour, no
+ * font stack, one radius, no outline, no button shape of its own — and every
+ * transition and animation lives inside `prefers-reduced-motion:
+ * no-preference`, which is also where the view-transition names are applied.
+ *
+ * NO RULES.  Not one border or divider below: stone is the only container,
+ * and space does the rest.
+ *
+ * Scale: 12.5 / 14 / 16 / 22 / 44px.  Nothing but the home statement is larger
+ * than 22px.
+ */
+
+/* ── Chrome ─────────────────────────────────────────────────────────────── */
+
+.pl-skip {
+	position: absolute;
+	top: 0.75rem;
+	left: 0.75rem;
+	z-index: 20;
+	padding: 0.75rem 1rem;
+	background: var(--u-ink);
+	color: var(--pl-on-ink);
+	transform: translateY(-200%);
+}
+
+.pl-skip:focus {
+	transform: none;
+}
+
+.pl-head {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0 2.5rem;
+	min-height: 4.5rem;
+	padding: 0 max(2.5rem, calc((100% - 90rem) / 2 + 2.5rem));
+	background: var(--u-surface);
+}
+
+.pl-head a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pl-word {
+	font-weight: 500;
+	letter-spacing: -0.01em;
+}
+
+.pl-nav {
+	display: flex;
+	gap: 1.75rem;
+	color: var(--u-mute);
+}
+
+.pl-nav a:hover {
+	color: var(--u-ink);
+}
+
+.pl-nav-end {
+	margin-left: auto;
+}
+
+.pl-nav .pl-bag {
+	color: var(--u-ink);
+	white-space: pre;
+}
+
+.pl-count {
+	display: inline-block;
+	min-width: 0.6em;
+}
+
+.pl-main {
+	display: block;
+	max-width: 90rem;
+	margin: 0 auto;
+	padding: 0 2.5rem;
+}
+
+.pl-foot {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 2rem;
+	padding: 10rem max(2.5rem, calc((100% - 90rem) / 2 + 2.5rem)) 3rem;
+	color: var(--u-mute);
+	font-size: 0.875rem;
+}
+
+.pl-foot p {
+	margin: 0;
+}
+
+.pl-foot-word {
+	margin-bottom: 0.375rem;
+	color: var(--u-ink);
+	font-weight: 500;
+}
+
+/* One row of links, not a stacked column: every link keeps a 44px target
+   without the column growing four targets tall. */
+.pl-foot-nav {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 1.75rem;
+	justify-self: end;
+	align-self: start;
+	margin-top: -0.75rem;
+}
+
+.pl-foot-nav a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pl-foot-nav a:hover {
+	color: var(--u-ink);
+}
+
+/* ── Shared pieces ──────────────────────────────────────────────────────── */
+
+.pl-h {
+	margin: 0 0 0.75rem;
+	font-size: 1.375rem;
+	font-weight: 500;
+	line-height: 1.3;
+	letter-spacing: -0.01em;
+}
+
+.pl-link {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 5px;
+}
+
+.pl-link:hover {
+	text-decoration-thickness: 2px;
+}
+
+.pl-quiet {
+	color: var(--u-mute);
+	font-weight: 400;
+}
+
+.pl-empty-copy {
+	max-width: 46ch;
+	margin: 0 0 1.5rem;
+	color: var(--u-mute);
+}
+
+.pl-empty {
+	padding: 6rem 0 0;
+}
+
+/* Degraded / error: tone, not a box with a border.  The lead carries the
+   state's colour; the second sentence stays muted ink. */
+.pl-notice {
+	max-width: 46rem;
+	margin: 0 0 2rem;
+	padding: 1rem 1.25rem;
+	background: var(--pl-stone);
+	color: var(--u-mute);
+	font-size: 0.875rem;
+}
+
+.pl-notice p {
+	margin: 0;
+}
+
+.pl-notice-lead {
+	color: var(--pl-low);
+	font-weight: 500;
+}
+
+.pl-notice-error .pl-notice-lead {
+	color: var(--pl-error);
+}
+
+.pl-notice-shop {
+	margin-top: 3rem;
+	margin-bottom: 0;
+}
+
+/* ── Media: an object on stone ─────────────────────────────────────────── */
+
+.pl-media {
+	position: relative;
+	aspect-ratio: 4 / 5;
+	overflow: hidden;
+	background: var(--pl-stone);
+}
+
+.pl-media > img,
+.pl-media svg {
+	position: absolute;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* Contain-fit on stone: no object is ever cropped. */
+.pl-media > img,
+.pl-hero-art > img {
+	object-fit: contain;
+}
+
+.pl-media[data-sold-out] > img,
+.pl-media[data-sold-out] svg {
+	opacity: 0.6;
+}
+
+.pl-media-alt {
+	position: absolute;
+	inset: 0;
+	opacity: 0;
+}
+
+/* The empty plinth's title, in ink at 16px in the lower left. */
+.pl-media-name {
+	position: absolute;
+	left: 1.25rem;
+	right: 1.25rem;
+	bottom: 1rem;
+	color: var(--u-ink);
+	font-weight: 500;
+}
+
+.pl-art .pl-bg {
+	fill: var(--pl-stone);
+}
+
+.pl-art .pl-ped {
+	fill: var(--pl-ped);
+}
+
+.pl-art .pl-ped2 {
+	fill: var(--pl-ped-2);
+}
+
+.pl-art .pl-ped3 {
+	fill: var(--pl-ped);
+}
+
+.pl-art .pl-o {
+	fill: var(--pl-obj);
+}
+
+.pl-art .pl-l {
+	fill: var(--pl-obj-lite);
+}
+
+.pl-art .pl-st {
+	stroke: var(--pl-obj);
+}
+
+.pl-art .pl-sh {
+	fill: var(--pl-obj);
+	opacity: 0.13;
+}
+
+.pl-art .pl-stone {
+	fill: var(--pl-stone);
+}
+
+.pl-art .pl-in {
+	fill: var(--pl-obj);
+	opacity: 0.55;
+}
+
+.pl-art .pl-glow {
+	fill: var(--pl-stone);
+	opacity: 0.35;
+}
+
+/* ── Card ──────────────────────────────────────────────────────────────── */
+
+.pl-card {
+	display: block;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pl-card:hover .pl-media-alt,
+.pl-card:focus-visible .pl-media-alt {
+	opacity: 1;
+}
+
+.pl-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+	margin-top: 0.875rem;
+	font-weight: 500;
+}
+
+.pl-card-title {
+	margin: 0;
+	font-size: 1rem;
+	font-weight: 500;
+	line-height: 1.5;
+}
+
+.pl-price,
+.pl-row .pl-quiet {
+	white-space: nowrap;
+}
+
+/* ── Home ──────────────────────────────────────────────────────────────── */
+
+.pl-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	min-height: clamp(26rem, 52vw, 41rem);
+	background: var(--pl-stone);
+}
+
+.pl-hero-copy {
+	align-self: end;
+	padding: 3rem;
+}
+
+.pl-statement {
+	max-width: 12ch;
+	margin: 0 0 1rem;
+	font-size: 2.75rem;
+	font-weight: 300;
+	line-height: 1.1;
+	letter-spacing: -0.02em;
+}
+
+.pl-hero-lede {
+	max-width: 34ch;
+	margin: 0 0 1rem;
+	color: var(--u-mute);
+}
+
+.pl-hero-art {
+	position: relative;
+	min-height: 18rem;
+}
+
+.pl-hero-art > img,
+.pl-hero-art svg {
+	position: absolute;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* The offset 2-up: a gallery hang, the right column dropped. */
+.pl-feature {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 3rem;
+	padding-top: 6rem;
+}
+
+.pl-feature > :nth-child(2) {
+	margin-top: 7.5rem;
+}
+
+/* ── Shop ──────────────────────────────────────────────────────────────── */
+
+.pl-shop-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+	padding: 4.5rem 0 1.75rem;
+}
+
+.pl-shop-head .pl-h {
+	margin: 0;
+}
+
+.pl-count-label {
+	margin: 0;
+	color: var(--u-mute);
+	font-size: 0.875rem;
+}
+
+.pl-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 3.5rem 3rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+/* ── Product ───────────────────────────────────────────────────────────── */
+
+.pl-pdp {
+	display: grid;
+	grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+	gap: 4rem;
+	align-items: start;
+	padding-top: 1.5rem;
+}
+
+.pl-gallery {
+	display: grid;
+	gap: 1rem;
+}
+
+.pl-info {
+	position: sticky;
+	top: 6rem;
+	padding-top: 0.5rem;
+}
+
+.pl-crumb {
+	margin: -0.75rem 0 0.5rem;
+	color: var(--u-mute);
+	font-size: 0.875rem;
+}
+
+.pl-crumb a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	color: inherit;
+	text-decoration: none;
+}
+
+.pl-crumb a:hover {
+	color: var(--u-ink);
+}
+
+.pl-pdp-title {
+	/* Tight to the words, so the title's snapshot morphs from the card's. */
+	width: fit-content;
+	max-width: 100%;
+	margin: 0;
+	font-size: 1.375rem;
+	font-weight: 500;
+	line-height: 1.3;
+	letter-spacing: -0.01em;
+}
+
+.pl-pdp-price {
+	margin: 0.25rem 0 1.5rem;
+	font-weight: 500;
+}
+
+.pl-desc {
+	max-width: 60ch;
+	margin: 0 0 2rem;
+}
+
+/* The form is transparent to layout, so the phone's sticky bar is held by the
+   whole info column rather than by a form one button tall. */
+.pl-buy {
+	display: contents;
+}
+
+.pl-add {
+	width: 100%;
+}
+
+.pl-hold {
+	margin: 1rem 0 0;
+	color: var(--u-mute);
+	font-size: 0.875rem;
+}
+
+.pl-after {
+	margin: 1.5rem 0 0;
+}
+
+.pl-ref {
+	margin: 2rem 0 0;
+	color: var(--u-mute);
+	font-size: 0.78125rem;
+}
+
+.pl-missing {
+	display: grid;
+	grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+	gap: 4rem;
+	align-items: end;
+	padding-top: 1.5rem;
+}
+
+.pl-missing-art {
+	position: relative;
+	aspect-ratio: 4 / 5;
+	max-width: 26rem;
+	background: var(--pl-stone);
+}
+
+.pl-missing-art svg {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+/* ── Phone ─────────────────────────────────────────────────────────────── */
+
+@media (max-width: 53.75rem) {
+	.pl-head {
+		gap: 0 1rem;
+		padding: 0 1rem;
+	}
+
+	.pl-nav {
+		gap: 1rem;
+	}
+
+	.pl-main {
+		padding: 0 1rem;
+	}
+
+	.pl-foot {
+		grid-template-columns: minmax(0, 1fr);
+		padding: 6rem 1rem 2rem;
+	}
+
+	.pl-foot-nav {
+		justify-self: start;
+	}
+
+	.pl-hero {
+		grid-template-columns: minmax(0, 1fr);
+		min-height: 0;
+	}
+
+	.pl-hero-art {
+		aspect-ratio: 4 / 5;
+		min-height: 0;
+	}
+
+	.pl-hero-copy {
+		order: 2;
+		padding: 0 1.25rem 1.75rem;
+	}
+
+	.pl-statement {
+		font-size: 2.125rem;
+	}
+
+	.pl-feature {
+		gap: 1rem;
+		padding-top: 3.5rem;
+	}
+
+	.pl-feature > :nth-child(2) {
+		margin-top: 4rem;
+	}
+
+	.pl-row {
+		flex-direction: column;
+		gap: 0;
+		font-size: 0.9375rem;
+	}
+
+	.pl-card-title {
+		font-size: 0.9375rem;
+	}
+
+	.pl-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 2rem 1rem;
+	}
+
+	.pl-shop-head {
+		padding-top: 3rem;
+	}
+
+	.pl-pdp {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.5rem;
+		padding-top: 1rem;
+	}
+
+	/* A horizontal strip that snaps per image. */
+	.pl-gallery {
+		display: flex;
+		gap: 0.5rem;
+		margin: 0 -1rem;
+		padding: 0 1rem;
+		overflow-x: auto;
+		scroll-snap-type: x mandatory;
+		scrollbar-width: none;
+	}
+
+	.pl-gallery > * {
+		flex: 0 0 86%;
+		scroll-snap-align: center;
+	}
+
+	.pl-gallery > :only-child {
+		flex-basis: 100%;
+	}
+
+	.pl-info {
+		position: static;
+		padding-bottom: 0.5rem;
+	}
+
+	/* The review fix: an OPAQUE bar stuck to the bottom safe area, a 20px fade
+	   above it, so text scrolls behind a solid bar instead of showing through a
+	   floating button. At rest and at the end of the page it sits in flow and
+	   covers nothing. The page keeps focus clear of it the way it keeps focus
+	   clear of the header: scrolling a control into view stops above the bar. */
+	html:has(.pl-buybar) {
+		scroll-padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+	}
+
+	.pl-buybar {
+		position: sticky;
+		bottom: 0;
+		z-index: 3;
+		margin: 0 -1rem;
+		padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+		background: var(--u-surface);
+	}
+
+	.pl-buybar::before {
+		content: "";
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 100%;
+		height: 1.25rem;
+		background: linear-gradient(to bottom, transparent, var(--u-surface));
+		pointer-events: none;
+	}
+
+	.pl-missing {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 2rem;
+	}
+
+	.pl-missing-art {
+		max-width: 16rem;
+	}
+}
+
+/* ── Motion — all of it, and only when the visitor has not asked for less ── */
+
+@media (prefers-reduced-motion: no-preference) {
+	/* THE SIGNATURE: card → product page.  The card's media and title and the
+	   product page's first panel and title carry the same per-product names
+	   (set inline as --pl-vt-*), so the cross-document transition grows the
+	   object into place.  The bag carries it on: each bag line's picture and
+	   title wear their product's names too (`continuity.ts`, one per page), so
+	   "Add to bag" lands the object in its line and a line opens back into its
+	   product page.  Only here: under reduced motion no element is named and the
+	   page simply crossfades (theme.css). */
+	.pl-vt-media {
+		view-transition-name: var(--pl-vt-media, none);
+	}
+
+	.pl-vt-title {
+		view-transition-name: var(--pl-vt-title, none);
+	}
+
+	/* The chrome holds still while the page changes under it — bag, checkout,
+	   payment, order read as one calm crossfade of the content, not a reload. */
+	.pl-head {
+		view-transition-name: pl-head;
+	}
+
+	::view-transition-group(*) {
+		animation-duration: 460ms;
+		animation-timing-function: var(--pl-ease);
+	}
+
+	::view-transition-old(root),
+	::view-transition-new(root) {
+		animation-duration: 280ms;
+	}
+
+	/* Hover: crossfade to the detail, 280ms. No scale, no lift. */
+	.pl-media-alt {
+		transition: opacity 280ms ease-out;
+	}
+
+	/* Press: a 2% give, 90ms. */
+	.pl-card .pl-media {
+		transition: transform 90ms ease-out;
+	}
+
+	.pl-card:active .pl-media {
+		transform: scale(0.98);
+	}
+}

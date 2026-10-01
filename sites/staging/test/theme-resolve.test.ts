@@ -17,7 +17,8 @@
  *     own request context, which is how `getDb()` finds the database at runtime.
  *
  * The manifest is widened by ONE test-only id (`fixture`) so a non-default
- * choice can be told apart from the fallback; Phase 1 registers Tempered alone.
+ * choice can be told apart from the fallback by an id no real theme will ever
+ * take, whichever themes the build ships (all six do now).
  */
 import Database from "better-sqlite3";
 import { createPluginManager, definePlugin, OptionsRepository, runWithContext } from "emdash";

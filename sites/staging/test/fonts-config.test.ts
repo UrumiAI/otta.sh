@@ -47,6 +47,7 @@ describe("astro.config fonts", () => {
 			"--f-batch-display",
 			"--f-counter-sans",
 			"--f-jumble-sans",
+			"--f-plinth-body",
 			"--f-pressing-body",
 			"--f-tempered-body",
 			"--f-tempered-data",
@@ -199,6 +200,27 @@ function expectOflBeside(font: VendoredFont): void {
 		).toContain("SIL Open Font License");
 	}
 }
+
+/** Plinth: ONE face — small type, big objects. */
+describe("Plinth's Host Grotesk (vendored)", () => {
+	const hostGrotesk = vendored("--f-plinth-body");
+	const variant = hostGrotesk.options.variants[0];
+
+	test("is Host Grotesk, from the local provider, as one variable variant", () => {
+		expect(hostGrotesk.name).toBe("Host Grotesk");
+		expect(hostGrotesk.provider.name).toBe("local");
+		expect(hostGrotesk.options.variants).toHaveLength(1);
+		// 300 is the home statement; 400/500 everything else.
+		expect(variant?.weight).toBe("300 800");
+		expect(variant?.style).toBe("normal");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(hostGrotesk));
+});
 
 /** Pressing: ONE family, Archivo; its second voice is the width axis. */
 describe("Pressing's Archivo (vendored)", () => {

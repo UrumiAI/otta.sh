@@ -98,6 +98,11 @@ const ARM_ANCHORS: Readonly<Record<string, { terminal: string; live: string; res
 		live: 'class="pr-cart"',
 		restart: 'class="pr-cart-terminal-restart"',
 	},
+	"themes/plinth/CartView.astro": {
+		terminal: 'class="pl-cart-terminal"',
+		live: 'class="pl-cart"',
+		restart: 'class="pl-cart-terminal-restart"',
+	},
 };
 
 /**

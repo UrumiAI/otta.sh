@@ -295,6 +295,13 @@ export interface CartLineModel {
 	image: string | null;
 	/** Keys the coil art. */
 	artKey: string;
+	/**
+	 * The product's own page (`lib/products.ts`'s `productPath`), or `null` when
+	 * this store cannot name the line — for a view that links a line back to its
+	 * object (Plinth's bag, whose picture carries the product's view-transition
+	 * name back to the product page).
+	 */
+	href: string | null;
 	/** The line total, or its honest prose ("Priced at checkout"). */
 	money: string;
 	/** "$6.00 each", only when it says something the line total does not. */
