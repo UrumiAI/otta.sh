@@ -141,11 +141,34 @@ describe("the __OTTA_STORE_THEMES__ define", () => {
 		["a label over 40 chars", [{ id: "tempered", label: "x".repeat(41) }]],
 		["a non-string label", [{ id: "tempered", label: 7 }]],
 		["one bad entry among good ones", [...THEMES, { id: "", label: "Blank" }]],
+		["the reserved preview-exit id", [{ id: "off", label: "Off" }]],
+		["an empty description", [{ id: "tempered", label: "Tempered", description: "" }]],
+		[
+			"a description over 160 chars",
+			[{ id: "tempered", label: "Tempered", description: "x".repeat(161) }],
+		],
+		["an absolute-URL preview", [{ id: "tempered", label: "T", preview: "https://x.test/a.webp" }]],
+		["a protocol-relative preview", [{ id: "tempered", label: "T", preview: "//x.test/a.webp" }]],
+		["a relative preview", [{ id: "tempered", label: "T", preview: "theme-previews/a.webp" }]],
+		["a traversing preview", [{ id: "tempered", label: "T", preview: "/a/../b.webp" }]],
+		["a preview with a query", [{ id: "tempered", label: "T", preview: "/a.webp?x=1" }]],
+		["a javascript: preview", [{ id: "tempered", label: "T", preview: "javascript:alert(1)" }]],
+		["a non-image preview", [{ id: "tempered", label: "T", preview: "/theme-previews/a.svg" }]],
 	])("resolveStoreThemes treats %s as absent", (_name, raw) => {
 		expect(resolveStoreThemes(raw)).toBeUndefined();
 	});
 
-	test("resolveStoreThemes keeps only {id, label}, dropping any extra keys", () => {
+	test("resolveStoreThemes keeps a description and a same-origin preview path", () => {
+		const entry = {
+			id: "plinth",
+			label: "Plinth",
+			description: "Gallery-quiet, one product at a time.",
+			preview: "/theme-previews/plinth.webp",
+		};
+		expect(resolveStoreThemes([entry])).toEqual([entry]);
+	});
+
+	test("resolveStoreThemes drops unknown keys", () => {
 		expect(resolveStoreThemes([{ id: "batch", label: "Batch", css: "evil" }])).toEqual([
 			{ id: "batch", label: "Batch" },
 		]);

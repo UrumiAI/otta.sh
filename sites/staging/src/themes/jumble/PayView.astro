@@ -1,0 +1,50 @@
+---
+/**
+ * Jumble's pay step — the SURROUNDINGS of the card fields: the step pills, the
+ * casual title, and one lavender field carrying a sentence about where the card
+ * details go, the payment slot, and the way back to the order.
+ *
+ * WHAT IS NOT HERE, AND MUST NOT BE. The Stripe mount, the pay button, the
+ * `<noscript>` explanation and Stripe's script are `src/pages/checkout/pay.astro`'s
+ * — the one page ADR-0012 lets carry client JavaScript and a third-party origin
+ * — and arrive as the `payment` slot, rendered exactly once, and only when the
+ * page says payment is configured. The pay button is the page's `.u-btn`, so it
+ * is the same royal pill (Sun by night-light) as every other action.
+ */
+import type { PayModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import StepTrack from "./StepTrack.astro";
+
+interface Props {
+	model: PayModel;
+}
+
+const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
+---
+
+<div class="j-view">
+	<div class="j-wrap j-page j-pay">
+		<div class="j-co-steps"><StepTrack current="payment" /></div>
+		<h1 class="j-title j-co-title">Payment</h1>
+
+		{
+			!paymentConfigured ? (
+				<div class="j-narrow">
+					<Notice lead={notConfiguredLead}>
+						This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
+					</Notice>
+				</div>
+			) : (
+				<div class="j-panel j-pay-panel">
+					<p class="j-pay-trust">
+						Your card details go straight to our payment provider and never reach this site.
+					</p>
+
+					<slot name="payment" />
+				</div>
+			)
+		}
+
+		<p class="j-co-back"><a class="j-link" href={orderPath}>View your order</a></p>
+	</div>
+</div>

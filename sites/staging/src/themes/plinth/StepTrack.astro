@@ -1,0 +1,33 @@
+---
+/**
+ * Where the shopper is in checkout, as Plinth says it: four words in a row,
+ * nothing drawn around them. The step you are on is ink with the 2px underline
+ * the product page gives a selected finish; the steps behind you are ink, the
+ * ones ahead muted. The steps and their order are the shared `CHECKOUT_STEPS`
+ * (the list every theme's track draws), so no theme can invent a step. A real
+ * ordered list, with `aria-current="step"` on the one you are on.
+ */
+import { CHECKOUT_STEPS, type CheckoutStep } from "../../components/StepTrack.astro";
+
+interface Props {
+	current: CheckoutStep;
+}
+
+const { current } = Astro.props;
+const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
+---
+
+<ol class="pl-steps" role="list" aria-label="Checkout progress">
+	{
+		CHECKOUT_STEPS.map((step, index) => (
+			<li
+				class="pl-step"
+				data-done={index < currentIndex ? "" : undefined}
+				aria-current={index === currentIndex ? "step" : undefined}
+			>
+				{step.label}
+				{index < currentIndex && <span class="u-sr-only">, completed</span>}
+			</li>
+		))
+	}
+</ol>

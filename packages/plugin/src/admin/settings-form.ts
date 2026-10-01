@@ -26,12 +26,8 @@ import type {
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
 import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
-import {
-	currentStoreTheme,
-	DEFAULT_STORE_THEME,
-	STORE_THEMES,
-	type StoreTheme,
-} from "./store-themes.js";
+import { readStoreThemeId, saveStoreTheme, STORE_THEME_KEY } from "./store-theme-kv.js";
+import { DEFAULT_STORE_THEME, STORE_THEMES, type StoreTheme } from "./store-themes.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -80,9 +76,9 @@ export const SETTINGS_PAGE: AdminPageConfig = {
  *  convention for user-configurable prefs shown in admin UI). */
 export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
 
-/** The kv key for the storefront theme id (one of the site's baked
- *  `__OTTA_STORE_THEMES__` ids — see `store-themes.ts`). */
-export const STORE_THEME_KEY = "settings:storeTheme";
+/** The kv key for the storefront theme id. Defined with the setting's one
+ *  write path in `store-theme-kv.ts`; re-exported where it always lived. */
+export { STORE_THEME_KEY };
 
 /** The Store group's theme save action. */
 const SAVE_THEME_ACTION = "save-theme";
@@ -299,7 +295,7 @@ interface SettingsPageState {
 	 *  Store group renders no theme picker). */
 	storeThemes: readonly StoreTheme[] | undefined;
 	/** The theme the picker shows — always one the site offers; see
-	 *  {@link currentStoreTheme}. Meaningless when `storeThemes` is absent. */
+	 *  {@link readStoreThemeId}. Meaningless when `storeThemes` is absent. */
 	storeTheme: string;
 	/** INC-C3: per payment secret, "is it set" + its save generation, keyed by kv
 	 *  key. NEVER the values — see {@link readPaymentSecretState}. */
@@ -339,15 +335,16 @@ async function readPageState(
 	ctx: PluginContext,
 	storeThemes: readonly StoreTheme[] | undefined,
 ): Promise<SettingsPageState> {
-	const [displayName, storedTheme, paymentSecrets, plainSettings] = await Promise.all([
+	const [displayName, storeTheme, paymentSecrets, plainSettings] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		// FAIL-SOFT too, and only read when the site offers themes at all: a kv
-		// blip shows the default theme rather than taking the screen down.
+		// FAIL-SOFT too (inside `readStoreThemeId`), and only read when the site
+		// offers themes at all: a kv blip shows the default theme rather than
+		// taking the screen down.
 		storeThemes === undefined
-			? Promise.resolve(null)
-			: ctx.kv.get<string>(STORE_THEME_KEY).catch(() => null),
+			? Promise.resolve(DEFAULT_STORE_THEME)
+			: readStoreThemeId(ctx, storeThemes),
 		readPaymentSecretState(ctx),
 		readPlainSettings(ctx),
 	]);
@@ -355,8 +352,7 @@ async function readPageState(
 		plainSettings,
 		displayName: displayName ?? "",
 		storeThemes,
-		storeTheme:
-			storeThemes === undefined ? DEFAULT_STORE_THEME : currentStoreTheme(storeThemes, storedTheme),
+		storeTheme,
 		paymentSecrets,
 	};
 }
@@ -521,22 +517,22 @@ export function createSettingsFormHandler(
 		// is no picker to have submitted it, and nothing to validate against. The
 		// notice names the field, never the rejected value.
 		if (action === SAVE_THEME_ACTION) {
-			const raw = input.values?.storeTheme;
-			const chosen =
-				typeof raw === "string" ? storeThemes?.find((theme) => theme.id === raw) : undefined;
-			if (chosen === undefined) {
+			// The ONE write path, shared with the React Themes screen's Activate.
+			// A kv write that THROWS propagates out of it to the route's generic
+			// error path, as save-display's does — never a "saved" toast for a
+			// write that failed.
+			const saved = await saveStoreTheme(ctx, storeThemes, input.values?.storeTheme);
+			if (!saved.ok) {
 				return renderPage(ctx, client, {
 					variant: "error",
 					title: "Store theme not saved",
 					description:
-						storeThemes === undefined
+						saved.reason === "no-themes"
 							? "Store themes come from the site build — offer them there to choose one here. Nothing was saved."
 							: "That is not one of the themes this site offers. Nothing was saved.",
 				});
 			}
-			// A kv write that THROWS falls to the route's generic error path, as
-			// save-display's does — never a "saved" toast for a write that failed.
-			await ctx.kv.set(STORE_THEME_KEY, chosen.id);
+			const chosen = saved.theme;
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Store theme saved",

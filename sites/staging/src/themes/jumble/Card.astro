@@ -1,0 +1,45 @@
+---
+/**
+ * One product in a Jumble grid (brief "Layout (c)"): the product on its square
+ * colour field (radius 28), then the title in casual 800 and the price in 800
+ * with tabular figures across one baseline, and one muted line of description
+ * under them. No border and no shadow: the field does all the grouping.
+ *
+ * "Sold out" (the explicit token, never `!inStock`) is a light pill on the
+ * field's corner, the field goes 40% grey and the price is struck. A product
+ * with no live price shows the page's note where the price would be.
+ *
+ * Motion (theme.css, reduced-motion aware): on hover or focus the toy tilts
+ * −2° on the brief's one overshoot curve, and the title eases from half
+ * casual to fully casual.
+ */
+import type { ShopCard } from "../contract.js";
+import Field from "./Field.astro";
+
+interface Props {
+	card: ShopCard;
+	/** 3 under a section heading (home), 2 directly under the page's h1 (shop). */
+	headingLevel?: 2 | 3;
+}
+
+const { card, headingLevel = 2 } = Astro.props;
+const soldOut = card.availability === "out_of_stock";
+const note = card.price === null ? (card.priceNote ?? "Not for sale right now") : null;
+const Heading = headingLevel === 3 ? "h3" : "h2";
+---
+
+<a class="j-card" href={card.href}>
+	<Field seed={card.slug} image={card.image} dimmed={soldOut}>
+		{soldOut && <span class="j-sold">Sold out</span>}
+	</Field>
+	<div class="j-card-row">
+		<Heading class="j-card-title">{card.title}</Heading>
+		{
+			card.price !== null && (
+				<p class="j-card-price j-figures">{soldOut ? <s>{card.price}</s> : card.price}</p>
+			)
+		}
+	</div>
+	{note !== null && <p class="j-card-meta">{note}</p>}
+	{note === null && card.description && <p class="j-card-meta">{card.description}</p>}
+</a>

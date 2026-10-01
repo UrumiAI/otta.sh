@@ -1,0 +1,125 @@
+---
+/**
+ * Counter's order confirmation: the order's OWN state first, as a plain
+ * headline with its reference beside it — the most important thing on the page
+ * — then what you can do next, then the items and the totals.
+ *
+ * Presentation only: `src/pages/orders/[orderId].astro` reads the order,
+ * deletes the checkout stash, sets 404/503, picks the copy for the order's
+ * state, and runs the bounded meta-refresh poll (the `<meta>` tags are the
+ * page's, and so is `no-referrer`). Stripe's redirect parameters never reach
+ * this file: the page reads them to choose between two copy variants and hands
+ * over only the words (`checkout-client-js.test.ts` 10c sweeps this view).
+ * Nothing here decides the order is paid — `stamp` and `totalLabel` are the
+ * page's answers.
+ *
+ * ZERO client JavaScript (ADR-0012): the "still checking" line is the shared,
+ * script-free `PollRibbon`, never the cart's countdown.
+ */
+import PollRibbon from "../../components/PollRibbon.astro";
+import type { OrderModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Receipt from "./Receipt.astro";
+import StepTrack from "./StepTrack.astro";
+import Totals from "./Totals.astro";
+
+interface Props {
+	model: OrderModel;
+}
+
+const {
+	order,
+	stamp,
+	failureMessage,
+	shouldPoll,
+	pollHop,
+	pollMax,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	canResume,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	totalLabel,
+} = Astro.props.model;
+---
+
+{
+	order === null || stamp === null ? (
+		<div class="c-empty">
+			{/* No step track: it would claim a journey (bag, details, payment)
+			    the visitor never made for an order that does not exist. */}
+			<h1 class="c-h1">Order</h1>
+			<div class="c-order-alert">
+				<Notice tone="error">{failureMessage}</Notice>
+			</div>
+			<div class="c-acts">
+				<a class="u-btn u-btn-ghost" href="/products">
+					Browse products
+				</a>
+			</div>
+		</div>
+	) : (
+		<>
+			<div class="c-co-steps"><StepTrack current="order" /></div>
+
+			<header class="c-order-head" data-state={order.state}>
+				<p class="c-order-ref">
+					Order <span class="c-order-id">{order.id}</span>
+				</p>
+				<h1 class="c-order-title">{stamp.headline}</h1>
+				{stamp.body !== null && <p class="c-order-body">{stamp.body}</p>}
+				{shouldPoll && (
+					<div class="c-order-poll">
+						<PollRibbon poll={pollHop} pollMax={pollMax} />
+					</div>
+				)}
+				<p class="c-order-keep">Keep this link to check its status.</p>
+			</header>
+
+			{hasActions && (
+				<div class="c-acts c-order-actions">
+					{canResume && (
+						<a class="u-btn" href="/checkout">
+							Complete payment
+						</a>
+					)}
+					{canCheckAgain && (
+						<a class="u-btn u-btn-ghost" href={nextPollUrl}>
+							Check again
+						</a>
+					)}
+					{deadEnd && (
+						<a class="u-btn u-btn-ghost" href="/cart">
+							Go to your cart
+						</a>
+					)}
+				</div>
+			)}
+
+			<div class="c-order-cols">
+				<section class="c-order-panel">
+					<h2 class="u-label c-order-head-label">Items</h2>
+					<Receipt rows={ledgerRows} />
+					{order.fulfillment !== null && (
+						<p class="c-order-ship">
+							Shipped with {order.fulfillment.carrier}, tracking{" "}
+							<span class="c-order-id">{order.fulfillment.trackingNumber}</span>
+						</p>
+					)}
+				</section>
+
+				<section class="c-order-panel c-order-sum">
+					<h2 class="u-label c-order-head-label">Totals</h2>
+					<Totals
+						rows={sumRows}
+						total={order.totals.total}
+						totalLabel={totalLabel}
+						excludesUncalculated={order.totals.totalExcludesUncalculated}
+					/>
+				</section>
+			</div>
+		</>
+	)
+}

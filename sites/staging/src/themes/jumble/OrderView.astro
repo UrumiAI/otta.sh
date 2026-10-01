@@ -1,0 +1,130 @@
+---
+/**
+ * Jumble's order confirmation: the order's head on the Sun field (the one field
+ * that carries words, indigo on Sun in both modes), centred — the reference in
+ * small type, then the order's OWN state as the largest casual 900 on the page,
+ * the body, and what you can do next as pills. Beneath it, two lavender
+ * fields — the items and the totals.
+ *
+ * No hop and no celebration here: the toy hopping into the bag is the theme's
+ * one authored moment, and the headline is the page's answer about the order's
+ * state (a "Paid" the page did not say would be the theme deciding it).
+ *
+ * Presentation only: `src/pages/orders/[orderId].astro` reads the order,
+ * deletes the checkout stash, sets 404/503, picks the copy for the order's
+ * state, and runs the bounded meta-refresh poll (the `<meta>` tags are the
+ * page's, and so is `no-referrer`). Stripe's redirect parameters never reach
+ * this file: the page reads them to choose between two copy variants and hands
+ * over only the words (`checkout-client-js.test.ts` 10c sweeps this view).
+ *
+ * ZERO client JavaScript (ADR-0012): the "still checking" line is the shared,
+ * script-free `PollRibbon`, never the bag's countdown.
+ */
+import PollRibbon from "../../components/PollRibbon.astro";
+import type { OrderModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Receipt from "./Receipt.astro";
+import StepTrack from "./StepTrack.astro";
+import Totals from "./Totals.astro";
+
+interface Props {
+	model: OrderModel;
+}
+
+const {
+	order,
+	stamp,
+	failureMessage,
+	shouldPoll,
+	pollHop,
+	pollMax,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	canResume,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	totalLabel,
+} = Astro.props.model;
+---
+
+<div class="j-view">
+	<div class="j-wrap j-page j-order-page">
+		{
+			order === null || stamp === null ? (
+				<div class="j-empty">
+					{/* No step track: it would claim a journey (bag, details, payment)
+					    the visitor never made for an order that does not exist. */}
+					<h1 class="j-title">Order</h1>
+					<div class="j-order-alert">
+						<Notice tone="error">{failureMessage}</Notice>
+					</div>
+					<a class="u-btn u-btn-ghost" href="/products">
+						Browse products
+					</a>
+				</div>
+			) : (
+				<>
+					<div class="j-co-steps"><StepTrack current="order" /></div>
+
+					<header class="j-sunfield j-order-head" data-state={order.state}>
+						<p class="j-order-ref">
+							Order <span class="j-order-id">{order.id}</span>
+						</p>
+						<h1 class="j-title j-order-title">{stamp.headline}</h1>
+						{stamp.body !== null && <p class="j-order-body">{stamp.body}</p>}
+						{shouldPoll && (
+							<div class="j-order-poll">
+								<PollRibbon poll={pollHop} pollMax={pollMax} />
+							</div>
+						)}
+						{hasActions && (
+							<div class="j-order-actions">
+								{canResume && (
+									<a class="u-btn j-royal" href="/checkout">
+										Complete payment
+									</a>
+								)}
+								{canCheckAgain && (
+									<a class="u-btn u-btn-ghost" href={nextPollUrl}>
+										Check again
+									</a>
+								)}
+								{deadEnd && (
+									<a class="u-btn u-btn-ghost" href="/cart">
+										Go to your cart
+									</a>
+								)}
+							</div>
+						)}
+						<p class="j-order-keep">Keep this link to check its status.</p>
+					</header>
+
+					<div class="j-order-cols">
+						<section class="j-panel j-order-panel">
+							<h2 class="u-label j-panel-head-label">Items</h2>
+							<Receipt rows={ledgerRows} />
+							{order.fulfillment !== null && (
+								<p class="j-order-ship">
+									Shipped with {order.fulfillment.carrier}, tracking{" "}
+									<span class="j-order-id">{order.fulfillment.trackingNumber}</span>
+								</p>
+							)}
+						</section>
+
+						<section class="j-panel j-order-panel">
+							<h2 class="u-label j-panel-head-label">Totals</h2>
+							<Totals
+								rows={sumRows}
+								total={order.totals.total}
+								totalLabel={totalLabel}
+								excludesUncalculated={order.totals.totalExcludesUncalculated}
+							/>
+						</section>
+					</div>
+				</>
+			)
+		}
+	</div>
+</div>

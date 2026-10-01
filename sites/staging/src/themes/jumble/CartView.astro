@@ -1,0 +1,252 @@
+---
+/**
+ * Jumble's bag page (theme-briefs.md §4): each line is a rounded lavender
+ * field with the product standing on its own crayon square, its name in casual
+ * 800, the money in 800 with tabular figures, the quantity and the Sun hold
+ * pill that drains. Beside the lines (below them on a phone) the summary sits
+ * on the Sun field — the one field that carries words — with the royal
+ * "Check out" pill.
+ *
+ * THE HOP. On add — the render the add (or a quantity change) lands on, when
+ * the newest live hold (`hop.ts`) was taken moments ago (`isFreshHold`,
+ * `lib/hold.ts`) — that line sends a small copy of its picture up to the
+ * header bag: x linear, y on the brief's wind-up curve, 560ms; then the bag
+ * squashes and its badge pops. A reload, a revisit or a change to another line
+ * draws no copy, so nothing hops and the badge simply stands. CSS only
+ * (`commerce.css`), anchored to the line's picture and the header bag, and
+ * there is exactly ONE flying element per view. It is `aria-hidden`, fixed
+ * (so nothing reflows), fades out as it lands, and never takes a click. Under
+ * reduced motion it is never drawn; the badge pulses for 150ms instead.
+ *
+ * `/cart` is the one page that COUNTS DOWN: each line's pill carries the
+ * contract's `data-hold*` hooks, and `components/HoldClock.astro`, which the
+ * PAGE renders, keeps them current. No script lives in a view (ADR-0012).
+ *
+ * Presentation only: `src/pages/cart/index.astro` decides every arm (empty /
+ * degraded / terminal / live), mints the per-form keys, and composes every
+ * money string. The arms are written in the page's order — empty, terminal,
+ * live — and a degraded read is never drawn as an empty bag.
+ */
+import {
+	CART_CHECKED_OUT_BODY,
+	CART_CHECKED_OUT_TITLE,
+	CART_NEW_CART_CONSEQUENCE,
+	CART_NO_ORDER_LINK,
+	CART_RESUME_PURPOSE,
+} from "../../lib/cart-view.js";
+import { isFreshHold } from "../../lib/hold.js";
+import { isUncalculated, isUnpricedText, sumRowText } from "../../lib/totals.js";
+import type { CartModel } from "../contract.js";
+import Field from "./Field.astro";
+import HoldRibbon from "./HoldRibbon.astro";
+import { hopLineId } from "./hop.js";
+import Notice from "./Notice.astro";
+import QtyInput from "./QtyInput.astro";
+
+interface Props {
+	model: CartModel;
+}
+
+const {
+	summary,
+	errorMessage,
+	degraded,
+	degradedLead,
+	pricingNotice,
+	empty,
+	terminal,
+	placedOrderId,
+	lineViews,
+	sumRows,
+	partialNote,
+} = Astro.props.model;
+
+/* The one line that hops into the bag: the newest live hold, and only on add
+   (a hold taken in the last few seconds) — never on a later render of it. One
+   clock for both reads, so they cannot disagree about the same instant.
+   Accepted, and bounded by the grace: removing or updating ANOTHER line within
+   15s of an add renders the just-added line fresh again, so it hops again. */
+const now = new Date();
+const newestId = hopLineId(lineViews.map((view) => view.line), now);
+const newest = lineViews.find((view) => view.line.lineId === newestId) ?? null;
+const hopView = newest !== null && isFreshHold(newest.line.expiresAt, now) ? newest : null;
+const hopId = hopView?.line.lineId ?? null;
+
+/* The subtotal leads the summary. Any further row that carries a FIGURE is
+   listed under it; a prose row ("Shipping: At checkout") is already said, in
+   full, by the summary's shipping-and-tax line, so it is not said twice. */
+const [lead, ...others] = sumRows;
+const figureRows = others.filter((row) => !isUncalculated(row.amount));
+---
+
+<div class="j-view">
+	<div class="j-wrap j-page">
+		<header class="j-bar">
+			<h1 class="j-title">Your bag</h1>
+			{summary !== null && <p class="j-bar-meta">{summary}</p>}
+		</header>
+
+		{
+			errorMessage !== null && (
+				<div class="j-notice-slot j-narrow">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			)
+		}
+		{
+			degraded && (
+				<div class="j-notice-slot j-narrow">
+					<Notice lead={degradedLead}>We haven't changed anything. Try again in a moment.</Notice>
+				</div>
+			)
+		}
+		{
+			pricingNotice && (
+				<div class="j-notice-slot j-narrow">
+					<Notice lead="Totals are unavailable right now.">
+						Your quantities and your holds are still exact.
+					</Notice>
+				</div>
+			)
+		}
+
+		{
+			empty ? (
+				!degraded && (
+					<div class="j-empty j-bag-empty">
+						<Field class="j-empty-toy" seed="an-empty-bag" image={null} field={5} />
+						<h2 class="j-title">Your bag is empty.</h2>
+						<p>Anything you put in it is held for you while you check out.</p>
+						<a href="/products" class="u-btn">
+							Browse the shop
+						</a>
+					</div>
+				)
+			) : terminal ? (
+				<div class="j-cart-terminal">
+					<div class="j-panel j-terminal-panel">
+						<h2 class="j-panel-title">{CART_CHECKED_OUT_TITLE}</h2>
+						<p class="j-terminal-body">{CART_CHECKED_OUT_BODY}</p>
+
+						<ul class="j-receipt j-terminal-lines" role="list">
+							{lineViews.map((view) => (
+								<li class="j-receipt-line" role="listitem">
+									<span class="j-receipt-id">
+										{view.title !== null && <span class="j-receipt-name">{view.title}</span>}
+										<span class="j-receipt-meta">{view.line.sku}</span>
+									</span>
+									<span class="j-receipt-meta">Qty {view.line.qty}</span>
+								</li>
+							))}
+						</ul>
+
+						<div class="j-terminal-actions">
+							{placedOrderId !== null && (
+								<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="u-btn">View your order</a>
+							)}
+
+							{placedOrderId === null && (
+								<div class="j-terminal-resume">
+									<a href="/checkout" class="u-btn">Return to this checkout</a>
+									<p class="j-terminal-note">{CART_RESUME_PURPOSE}</p>
+									<p class="j-terminal-note">{CART_NO_ORDER_LINK}</p>
+								</div>
+							)}
+
+							<div class="j-cart-terminal-restart">
+								<form method="POST" action="/checkout/new-cart">
+									<button type="submit" class="u-btn u-btn-ghost">Start a new cart</button>
+								</form>
+								<p class="j-terminal-note">{CART_NEW_CART_CONSEQUENCE}</p>
+							</div>
+						</div>
+					</div>
+				</div>
+			) : (
+				<div class="j-cart">
+					<ul class="j-cart-lines" role="list">
+						{lineViews.map((view) => (
+							<li class="j-cart-line" role="listitem">
+								<div class="j-cart-pic" data-hop={view.line.lineId === hopId ? "" : undefined}>
+									<Field seed={view.artKey} image={view.image} eager={view.index < 3} />
+								</div>
+								<div class="j-cart-body">
+									<div class="j-cart-top">
+										<div class="j-cart-id">
+											<p class="j-cart-name">{view.title ?? view.line.sku}</p>
+											{view.title !== null && <p class="j-cart-sku">{view.line.sku}</p>}
+										</div>
+										<div class="j-cart-money">
+											{isUnpricedText(view.money) ? (
+												<span class="j-cart-prose">{view.money}</span>
+											) : (
+												<span class="j-cart-price j-figures">{view.money}</span>
+											)}
+											{view.each !== null && <span class="j-cart-each j-figures">{view.each}</span>}
+										</div>
+									</div>
+									<HoldRibbon expiresAt={view.line.expiresAt} />
+									<div class="j-cart-ctl">
+										<form method="POST" action="/cart/update" class="j-cart-update">
+											<input type="hidden" name="lineId" value={view.line.lineId} />
+											<input type="hidden" name="idempotencyKey" value={view.updateKey} />
+											<QtyInput value={view.line.qty} label={`Quantity, ${view.name}`} />
+											<button type="submit" class="j-textcontrol">
+												Update<span class="u-sr-only"> {view.name}</span>
+											</button>
+										</form>
+										<form method="POST" action="/cart/remove">
+											<input type="hidden" name="lineId" value={view.line.lineId} />
+											<input type="hidden" name="idempotencyKey" value={view.removeKey} />
+											<button type="submit" class="j-textcontrol">
+												Remove<span class="u-sr-only"> {view.name}</span>
+											</button>
+										</form>
+									</div>
+								</div>
+							</li>
+						))}
+					</ul>
+
+					<aside class="j-sunfield j-cart-sum" aria-labelledby="j-cart-sum-title">
+						<h2 class="j-panel-title" id="j-cart-sum-title">
+							Summary
+						</h2>
+						{lead !== undefined && (
+							<p class="j-sub" data-prose={isUncalculated(lead.amount) ? "" : undefined}>
+								<span>{lead.label}</span>
+								<span class="j-sub-figure j-figures">{sumRowText(lead)}</span>
+							</p>
+						)}
+						{figureRows.map((row) => (
+							<p class="j-sub j-sub-minor">
+								<span>{row.label}</span>
+								<span class="j-figures">{sumRowText(row)}</span>
+							</p>
+						))}
+						{partialNote !== null && <p class="j-sub-note">{partialNote}</p>}
+						<p class="j-sub-note">Shipping and tax are worked out at checkout.</p>
+						<a href="/checkout" class="u-btn j-royal j-cart-go">
+							Check out
+						</a>
+						<p class="j-sub-fine">
+							Prices are live and may change; your total is confirmed at checkout.
+						</p>
+					</aside>
+
+					{/* The hop: a copy of the newest line's picture, flying to the
+					    header bag. Decoration only — hidden from assistive tech,
+					    never clickable, and not drawn at all under reduced motion.
+					    Not eager: it is the line's own picture, already loading. */}
+					{hopView !== null && (
+						<div class="j-hop" aria-hidden="true">
+							<div class="j-hop-toy">
+								<Field seed={hopView.artKey} image={hopView.image} />
+							</div>
+						</div>
+					)}
+				</div>
+			)
+		}
+	</div>
+</div>

@@ -36,7 +36,7 @@
 export interface ConsoleScreen {
 	/** Human name, used as the test title. */
 	readonly name: string;
-	/** The increment that migrated it — for the reader of a failing run. */
+	/** The increment that added it — for the reader of a failing run. */
 	readonly increment: string;
 	/** `adminPages[].path` on the `otta-console` descriptor. */
 	readonly path: string;
@@ -72,11 +72,14 @@ export interface ConsoleScreen {
  * Kit inventory is down to six.
  *
  * INC-21 ADDS PRICING & INVENTORY, and INC-R3 retired its original too — so both
- * entries below have replaced the screen they were migrated from, and the Block
+ * of those entries have replaced the screen they were migrated from, and the Block
  * Kit inventory is down to FIVE. Tax, Shipping and Settings stay Block Kit
  * permanently (ADR-0014 Decision 6) and must never appear here; Reports and
  * Coupons are a ruling the user has not made (D3), so adding either is out of
  * scope until they do.
+ *
+ * INC-26 ADDS THEMES, the first entry with no Block Kit original (ADR-0014's
+ * amendment of 2026-09-30), so it moves the Block Kit inventory not at all.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -111,6 +114,19 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// ROLE, which is unique; reviving a suffix to disambiguate a TEXT match
 		// would be fixing the wrong file.
 		heading: /^Pricing & inventory$/,
+	},
+	{
+		// Not a migration — the first console screen with no Block Kit original
+		// (its fallback, the Settings "Store theme" radio, stays). It is gated here
+		// anyway because this registry is the ONE list every console page must be
+		// on (`site-config.test.ts`); "migrated" is this list's history, not a
+		// condition of entry. Its increment is INC-26, made under ADR-0014's
+		// amendment of 2026-09-30; the harness accepts only an `INC-NN` id.
+		name: "Themes",
+		increment: "INC-26",
+		path: "/themes",
+		// The H1 alone: the theme count is a sibling badge, not part of the heading.
+		heading: /^Themes$/,
 	},
 ];
 

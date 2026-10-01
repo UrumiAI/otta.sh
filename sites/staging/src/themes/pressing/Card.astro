@@ -1,0 +1,45 @@
+---
+/**
+ * One Pressing card: the record on its 1:1 field, then the title at 18/700
+ * slightly expanded, then the price.
+ *
+ * THE SIGNATURE lives here: hover or keyboard-focus the card and the disc
+ * slides 22% out from behind the sleeve and turns 25° (420ms, back in 280ms).
+ * It is all views.css — no script — and under reduced motion the disc simply
+ * rests half out, still.
+ *
+ * Stock: sold out strikes the price (2px) and says so in muted ink; "In stock"
+ * is never said — it is the default and stating it is noise.
+ *
+ * Presentation only: every value is the page's (`ShopCard`).
+ */
+import type { ShopCard } from "../contract.js";
+import Record from "./Record.astro";
+
+interface Props {
+	card: ShopCard;
+	/** Heading level of the title — the grid is a list under the page's heading. */
+	headingLevel?: 2 | 3;
+	/** Page-unique prefix for the art's ids. */
+	instance?: string;
+}
+
+const { card, headingLevel = 3, instance = "card" } = Astro.props;
+const Heading = headingLevel === 2 ? "h2" : "h3";
+const soldOut = card.availability === "out_of_stock";
+---
+
+<a class="pr-card" href={card.href}>
+	<Record seed={card.slug} title={card.title} image={card.image} instance={instance} dimmed={soldOut} />
+	<Heading class="pr-card-title"><span class="pr-draw">{card.title}</span></Heading>
+	<p class="pr-card-row">
+		{
+			card.price !== null ? (
+				<span class:list={["pr-card-price u-mono", { "pr-struck": soldOut }]}>{card.price}</span>
+			) : (
+				<span class="pr-quiet">{card.priceNote ?? "Not for sale"}</span>
+			)
+		}
+	</p>
+	{soldOut && <p class="pr-stock pr-quiet">Sold out</p>}
+</a>

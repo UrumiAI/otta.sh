@@ -1,0 +1,73 @@
+---
+/**
+ * Counter's shop (brief "Layout (c)"): the title with its count on the far
+ * side of the same line, then a 4-up grid (2-up on a phone) of chrome-less
+ * two-line cards (`Card.astro`).
+ *
+ * The brief's category chips, sort menu and hover "Quick add" are not drawn:
+ * the catalog has no categories and no sort to offer yet, and a quick add
+ * needs a per-card cart form the shop model does not carry. They arrive with
+ * the data, not before it.
+ *
+ * Presentation only: `src/pages/products/index.astro` reads the catalog,
+ * decides which of the three states this is, chooses the degraded notice's
+ * lead (BUSY copy included) and maps every card.
+ */
+import type { ShopModel } from "../contract.js";
+import Card from "./Card.astro";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: ShopModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+	model.degradedNotice !== null && (
+		<div class="c-notice-slot">
+			<Notice lead={model.degradedNotice.lead}>
+				The catalog below is complete — check back in a moment for live figures.
+			</Notice>
+		</div>
+	)
+}
+
+{
+	model.state === "unavailable" ? (
+		/* Not the empty state: an outage is not a statement about the shop. */
+		<>
+			<div class="c-bar c-bar-top">
+				<h1 class="c-h1">Shop</h1>
+			</div>
+			<div class="c-notice-slot">
+				<Notice lead="The catalog is unavailable right now.">Try again in a moment.</Notice>
+			</div>
+		</>
+	) : model.state === "empty" ? (
+		<div class="c-empty">
+			<h1 class="c-h1">No products yet.</h1>
+			<p class="c-empty-copy">
+				Create a product in the admin, price it there, and it appears here with live stock.
+			</p>
+			<div class="c-acts">
+				<a class="u-btn u-btn-ghost" href={model.adminHref}>
+					Open the admin
+				</a>
+			</div>
+		</div>
+	) : (
+		<>
+			<div class="c-bar c-bar-top">
+				<h1 class="c-h1">Shop</h1>
+				{model.countLabel !== null && <p class="c-bar-meta">{model.countLabel}</p>}
+			</div>
+			<div class="c-grid">
+				{model.cards.map((card) => (
+					<Card card={card} />
+				))}
+			</div>
+		</>
+	)
+}

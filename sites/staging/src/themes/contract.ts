@@ -55,6 +55,66 @@ export interface ChromeModel {
 	/** The currency CODE the page quoted, or `null` when it quoted none (§7). */
 	currency: string | null;
 	themeId: ThemeId;
+	/**
+	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer,
+	 * a strip).
+	 * `null` unless the active theme opts in ({@link ThemeChromeNeeds}) AND this
+	 * page is one the bag is drawn on — never on the checkout flow (`/cart`,
+	 * `/checkout`, `/checkout/pay`, `/orders/<id>`), which is its own summary.
+	 */
+	bag: BagModel | null;
+}
+
+/**
+ * One line of the chrome's bag. Same honesty rules as the cart page's line
+ * ({@link CartLineModel}), whose composition it reuses: money is the live
+ * join's `formatted` or honest prose, the name falls back to the SKU.
+ */
+export interface BagLineModel {
+	lineId: string;
+	sku: string;
+	qty: number;
+	/** The display name, or `null` when this store cannot name the line. */
+	title: string | null;
+	/** What a screen reader calls the line — the title, else the SKU. Never null. */
+	name: string;
+	image: string | null;
+	/** Keys the generated art. */
+	artKey: string;
+	/** The line total, or its honest prose ("Priced at checkout"). */
+	money: string;
+	/**
+	 * The line's hold as STATIC wall-clock copy — there is no countdown script
+	 * outside `/cart` (ADR-0012). `null` when the line took no reservation.
+	 */
+	hold: { state: "held" | "expiring" | "released"; text: string } | null;
+	/**
+	 * The wire line's own `expiresAt`, verbatim (as `CartLineModel.line` carries
+	 * it) — for a chrome that states ONE hold for the whole bag (Pressing's
+	 * strip: the one that runs out first) and so must compare them. Rendered only
+	 * as static wall-clock copy (`lib/hold.ts`'s `wallClock`), never counted.
+	 */
+	expiresAt: string | null;
+	/** One fresh key per rendered form: the update form (both steppers) and remove. */
+	updateKey: string;
+	removeKey: string;
+}
+
+export interface BagModel {
+	/**
+	 * `lines` — draw them; `empty` — no cart or no lines; `checkedOut` — the cart
+	 * became an order (issue #110: its lines are the order's now); `unreadable`
+	 * — the read failed or answered BUSY. The chrome FAILS SOFT on the last one:
+	 * the page still renders, and the bag offers the way to `/cart` instead.
+	 */
+	state: "lines" | "empty" | "checkedOut" | "unreadable";
+	/** Units — the badge's number. `null` unless `state` is `lines` or `empty`. */
+	count: number | null;
+	lines: readonly BagLineModel[];
+	/** The subtotal (live join) or its prose — never a figure the store did not quote. */
+	subtotal: string | null;
+	/** Some line carries no figure, so the subtotal is short of it. */
+	partial: boolean;
 }
 
 // ── Home ──────────────────────────────────────────────────────────────────
@@ -70,6 +130,15 @@ export interface HomeModel {
 	rows: readonly TapeRow[];
 	/** The exact catalog size, or `null` when the page cannot state one. */
 	count: number | null;
+	/**
+	 * The fetched window as catalog cards, in catalog order — for a theme whose
+	 * home leads with cards rather than a tape (Tempered's home does not read
+	 * it). Same shape and same honesty rules as the shop's
+	 * cards. Same degraded rule as `rows`: empty exactly when `rows` is (either
+	 * read failed, or answered BUSY), so no theme can show a card the tape
+	 * would omit; each home then renders its hero alone.
+	 */
+	cards: readonly ShopCard[];
 }
 
 // ── Shop ──────────────────────────────────────────────────────────────────
@@ -226,6 +295,13 @@ export interface CartLineModel {
 	image: string | null;
 	/** Keys the coil art. */
 	artKey: string;
+	/**
+	 * The product's own page (`lib/products.ts`'s `productPath`), or `null` when
+	 * this store cannot name the line — for a view that links a line back to its
+	 * object (Plinth's bag, whose picture carries the product's view-transition
+	 * name back to the product page).
+	 */
+	href: string | null;
 	/** The line total, or its honest prose ("Priced at checkout"). */
 	money: string;
 	/** "$6.00 each", only when it says something the line total does not. */
@@ -414,10 +490,28 @@ export interface ThemeViews {
 	accountOrder: AstroComponent<{ model: AccountOrderModel }>;
 }
 
+/**
+ * What a theme's CHROME asks the shell for, beyond the defaults — opt-in, so
+ * no theme makes every page pay for a read only one theme draws.
+ *
+ * `cartLines`: this theme's chrome shows the cart's LINES outside `/cart` (a
+ * drawer, a strip), not just the count. The shell (`layouts/Storefront.astro`)
+ * then makes ONE guarded cart read (`lib/bag.ts`) on the pages that draw the
+ * bag, and hands it over as `ChromeModel.bag` — no other theme pays it. It
+ * fails soft (an unreadable or BUSY read is `state: "unreadable"`, never an
+ * error page or a 503), skips the checkout flow, and states holds as STATIC
+ * wall-clock copy — the countdown script is `/cart`'s alone.
+ */
+export interface ThemeChromeNeeds {
+	cartLines?: boolean;
+}
+
 export interface ThemeModule {
 	id: ThemeId;
 	/** Owns <html>, <head> (its own fonts + stylesheet) and the chrome. */
 	Layout: AstroComponent<{ chrome: ChromeModel }>;
 	/** Partial: an unported view falls back to Tempered's, in THIS theme's tokens. */
 	views: Partial<ThemeViews>;
+	/** Opt-in chrome capabilities — see {@link ThemeChromeNeeds}. */
+	chrome?: ThemeChromeNeeds;
 }

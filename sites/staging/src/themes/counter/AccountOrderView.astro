@@ -1,0 +1,72 @@
+---
+/**
+ * Counter's view of one of a signed-in customer's orders (issue #306). The lines
+ * are the purchase-time snapshot — title and price as bought — which is what a
+ * receipt must show. Presentation only — `src/pages/account/orders/[id].astro`
+ * reads through the session route (NOT_FOUND for an order that is not theirs,
+ * the same answer as for one that does not exist), sets the status and the
+ * no-store header, and formats every figure.
+ */
+import { isUnpricedText } from "../../lib/totals.js";
+import type { AccountOrderModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Price from "./Price.astro";
+import Receipt from "./Receipt.astro";
+
+interface Props {
+	model: AccountOrderModel;
+}
+
+const { order, errorMessage } = Astro.props.model;
+---
+
+<nav class="c-crumb" aria-label="Breadcrumb">
+	<a href="/account/orders">Your orders</a>
+	<span aria-hidden="true">/</span>
+	<span aria-current="page">{order === null ? "Order" : order.id}</span>
+</nav>
+
+{
+	order === null ? (
+		<div class="c-acct">
+			<h1 class="c-h1">Order</h1>
+			<div class="c-notice-slot c-acct-gap">
+				<Notice tone="error">{errorMessage}</Notice>
+			</div>
+		</div>
+	) : (
+		<>
+			<header class="c-order-head">
+				<p class="c-order-ref">
+					Order <span class="c-order-id">{order.id}</span>
+				</p>
+				<h1 class="c-order-title">{order.state}</h1>
+			</header>
+
+			<div class="c-order-cols">
+				<section class="c-order-panel">
+					<h2 class="u-label c-order-head-label">Items</h2>
+					<Receipt rows={order.ledgerRows} />
+				</section>
+
+				<section class="c-order-panel c-order-sum">
+					<h2 class="u-label c-order-head-label">Totals</h2>
+					<dl class="c-totals">
+						{order.totals.map((row) => (
+							<div class="c-totals-row" data-prose={isUnpricedText(row.value) ? "" : undefined}>
+								<dt>{row.label}</dt>
+								<dd>{isUnpricedText(row.value) ? row.value : <Price formatted={row.value} />}</dd>
+							</div>
+						))}
+						<div class="c-totals-row c-totals-grand">
+							<dt>Total</dt>
+							<dd>
+								<Price formatted={order.total} />
+							</dd>
+						</div>
+					</dl>
+				</section>
+			</div>
+		</>
+	)
+}

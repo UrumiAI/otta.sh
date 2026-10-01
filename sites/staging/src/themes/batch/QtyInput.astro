@@ -1,0 +1,20 @@
+---
+/**
+ * A quantity field in Batch's print (brief "Shape and surface"): the 1.5px ink
+ * stroke the brief keeps for inputs and tick boxes, and the control radius. The
+ * label is a real `<label>` around the input, visually hidden in a bag row —
+ * name the product in it ("Quantity, Mug") so the fields on a page are
+ * distinguishable. Posts as `qty`, which is what `/cart/update` reads.
+ */
+interface Props {
+	value: number;
+	label: string;
+}
+
+const { value, label } = Astro.props;
+---
+
+<label class="b-qtyin">
+	<span class="u-sr-only">{label}</span>
+	<input class="b-field" type="number" name="qty" value={value} min="1" inputmode="numeric" required />
+</label>

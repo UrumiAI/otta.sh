@@ -1,0 +1,50 @@
+---
+/**
+ * Batch's pay step — the LABEL around the card fields: the printed tick-box
+ * track, the heading on the kraft, and one label carrying a sentence about
+ * where the card details go, the payment slot, and the way back to the order.
+ *
+ * WHAT IS NOT HERE, AND MUST NOT BE. The Stripe mount, the pay button, the
+ * `<noscript>` explanation and Stripe's script are `src/pages/checkout/pay.astro`'s
+ * — the one page ADR-0012 lets carry client JavaScript and a third-party origin
+ * — and arrive as the `payment` slot, rendered exactly once, and only when the
+ * page says payment is configured. The pay button is the page's `.u-btn`, so it
+ * is the same roaster-green action as every other.
+ */
+import type { PayModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import StepTrack from "./StepTrack.astro";
+
+interface Props {
+	model: PayModel;
+}
+
+const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
+---
+
+<div class="b-view">
+	<div class="b-wrap b-page b-pay">
+		<div class="b-co-steps"><StepTrack current="payment" /></div>
+		<h1 class="b-h1 b-co-title">Payment</h1>
+
+		{
+			!paymentConfigured ? (
+				<div class="b-narrow">
+					<Notice lead={notConfiguredLead}>
+						This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
+					</Notice>
+				</div>
+			) : (
+				<div class="b-label b-pay-label">
+					<p class="b-pay-trust">
+						Your card details go straight to our payment provider and never reach this site.
+					</p>
+
+					<slot name="payment" />
+				</div>
+			)
+		}
+
+		<p class="b-co-back"><a class="b-link" href={orderPath}>View your order</a></p>
+	</div>
+</div>

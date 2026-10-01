@@ -24,6 +24,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+/** Themes with no light palette at all: their UA surfaces are dark, always. */
+const DARK_ONLY: ReadonlySet<string> = new Set(["pressing"]);
 const SHELL_PATH = path.join(SRC, "layouts/Storefront.astro");
 const TEMPERED_LAYOUT_PATH = path.join(SRC, "themes/tempered/Layout.astro");
 
@@ -200,10 +202,23 @@ describe("the chrome — prop contract (shell) and markup (every theme)", () => 
 
 	test.each(THEME_LAYOUTS)(
 		"%s: the dark palette is advertised to the UA so form controls follow it",
-		(_id, source) => {
-			expect(markupOf(source)).toMatch(/<meta\s+name="color-scheme"\s+content="light dark"\s*\/?>/);
+		(id, source) => {
+			// "light dark" for a theme with both palettes; "dark" alone for the
+			// theme that is dark ONLY by design (Pressing) — it has no light
+			// palette for the UA to switch to. Keyed per theme, so no theme can
+			// drift to the other value unnoticed.
+			const expected = DARK_ONLY.has(id) ? "dark" : "light dark";
+			expect(markupOf(source)).toMatch(
+				new RegExp(`<meta\\s+name="color-scheme"\\s+content="${expected}"\\s*\\/?>`),
+			);
 		},
 	);
+
+	test.each([...DARK_ONLY])("%s's sheet sets color-scheme: dark, whatever the OS prefers", (id) => {
+		const sheet = readFileSync(path.join(SRC, "themes", id, "theme.css"), "utf8");
+		expect(sheet).toMatch(/:root\s*\{[^}]*color-scheme:\s*dark;/);
+		expect(sheet).not.toMatch(/color-scheme:\s*light/);
+	});
 
 	test("Tempered's three faces are loaded through Astro's font API, never a CDN at runtime", () => {
 		// Astro exposes the font API's <Font> component from `astro:assets`.

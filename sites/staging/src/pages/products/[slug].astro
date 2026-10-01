@@ -36,7 +36,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { holdNote } from "../../lib/hold.js";
-import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { ProductModel, ProductPurchase } from "../../themes/contract.js";
 
@@ -144,7 +144,7 @@ const error = Astro.url.searchParams.get("error");
    and a PDP has no list to hold a position in, so it falls back to the slug's
    own hash (see `buildCoil`). The geometry is the product's; the tint belongs
    to the page. */
-const art = content !== null ? (content.slug ?? content.id) : "";
+const art = content !== null ? productKey(content) : "";
 const image = product?.images?.[0] ?? content?.images?.[0] ?? null;
 const purchasable = product?.purchasable === true && product.price !== null;
 const inStock = product?.availability === "in_stock";

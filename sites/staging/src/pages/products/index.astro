@@ -31,7 +31,7 @@ import {
 import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
-import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { exactCount, itemCountLabel } from "../../lib/tape.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -113,8 +113,8 @@ const model: ShopModel = {
 			: null,
 	countLabel,
 	cards: cards.map((product) => ({
-		href: product.url ?? `/products/${product.slug ?? product.id}`,
-		slug: product.slug ?? product.id,
+		href: product.url ?? `/products/${productKey(product)}`,
+		slug: productKey(product),
 		title: product.title,
 		description: product.description ?? null,
 		image: product.images?.[0] ?? null,

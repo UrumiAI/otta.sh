@@ -1,0 +1,66 @@
+---
+/**
+ * Plinth's order list for a signed-in customer (issue #306, ADR-0004): the
+ * heading with the way to sign out as a quiet text control, then the orders as
+ * lines — the reference as the link, its state, how many items, and the total
+ * at the right, the card's line again. No rules; rows are held apart by space.
+ * Presentation only — `src/pages/account/orders/index.astro` resolves the
+ * customer from the SESSION (never a customer id), redirects the signed-out,
+ * sets `private, no-store`, maps BUSY, and hands over finished rows.
+ */
+import type { AccountOrdersModel } from "../contract.js";
+import { plinthArt } from "./art.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+const emptyPlinth = plinthArt("nothing-here", "").svg;
+---
+
+<div class="pl-co pl-orders-page">
+	<header class="pl-cv-head">
+		<h1 class="pl-h pl-cv-title">Your orders</h1>
+		<form method="POST" action="/account/logout">
+			<button type="submit" class="pl-textctl">Sign out</button>
+		</form>
+	</header>
+
+	{
+		errorMessage !== null ? (
+			<div class="pl-cv-notice">
+				<Notice tone="error">{errorMessage}</Notice>
+			</div>
+		) : rows.length === 0 ? (
+			<div class="pl-missing pl-bag-empty">
+				<div class="pl-missing-art" aria-hidden="true">
+					<Fragment set:html={emptyPlinth} />
+				</div>
+				<div>
+					<h2 class="pl-h">No orders yet.</h2>
+					<p class="pl-empty-copy">
+						Orders you place with this email address, including as a guest, appear here.
+					</p>
+					<a class="pl-link" href="/products">
+						See the objects
+					</a>
+				</div>
+			</div>
+		) : (
+			<ul class="pl-orders" role="list">
+				{rows.map((row) => (
+					<li class="pl-orders-row" role="listitem">
+						<a class="pl-orders-ref" href={row.href}>
+							{row.id}
+						</a>
+						<span class="pl-orders-state">{row.state}</span>
+						<span class="pl-orders-items">{row.items}</span>
+						<span class="pl-orders-total u-mono">{row.total}</span>
+					</li>
+				))}
+			</ul>
+		)
+	}
+</div>

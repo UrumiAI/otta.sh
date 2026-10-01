@@ -1,0 +1,45 @@
+---
+/**
+ * Counter's line list for a review or a receipt: name over "SKU, Qty 2" on the
+ * left, the money on the right. The money is the page's string (the line total,
+ * or honest prose), passed through `moneyCellText` so no cell can print a bare
+ * dash (§7); prose is set quieter, decided by the value — never by a flag.
+ */
+import { isUnpricedText, moneyCellText } from "../../lib/totals.js";
+import type { LedgerLine } from "../contract.js";
+import Price from "./Price.astro";
+
+interface Props {
+	rows: readonly LedgerLine[];
+}
+
+const { rows } = Astro.props;
+const cells = rows.map((row) => {
+	const money = moneyCellText(row.money);
+	return {
+		sku: row.sku,
+		qty: row.qty,
+		title: row.title !== undefined && row.title !== "" ? row.title : null,
+		money,
+		prose: isUnpricedText(money),
+	};
+});
+---
+
+<ul class="c-receipt" role="list">
+	{
+		cells.map((cell) => (
+			<li class="c-receipt-line" role="listitem">
+				<span class="c-receipt-id">
+					<span class="c-receipt-name">{cell.title ?? cell.sku}</span>
+					<span class="c-receipt-meta">
+						{cell.title !== null && <>{cell.sku}, </>}Qty {cell.qty}
+					</span>
+				</span>
+				<span class="c-receipt-money" data-prose={cell.prose ? "" : undefined}>
+					{cell.prose ? cell.money : <Price formatted={cell.money} />}
+				</span>
+			</li>
+		))
+	}
+</ul>

@@ -1,0 +1,139 @@
+---
+/**
+ * Pressing's product page: the record on the left, the sleeve front on the
+ * right.
+ *
+ * Desktop is 6/12 + 6/12. The media is the 1:1 field with the disc slid
+ * almost all the way out (45%, turned 40°) — it arrives there once on load,
+ * 700ms, and under reduced motion it is simply there. The info column sets
+ * the title expanded and FITTED to its width (`fitScale`), the catalogue
+ * number (the SKU) under it, the price at 40px expanded, the description in
+ * muted body copy, then one full-width pink pill. Sold out strikes the price
+ * and puts a muted, outlined, non-interactive pill where the button was.
+ * Phone: one column, record first; the title still fills the width.
+ *
+ * Presentation only: `src/pages/products/[slug].astro` owns the reads, the
+ * 404/503 status, BUSY, the error token, the idempotency key and the return
+ * path. The form's hidden fields are the shared `AddToCartFields`, so this
+ * theme cannot change what `/cart/add` receives.
+ */
+import AddToCartFields from "../../forms/AddToCartFields.astro";
+import type { ProductModel } from "../contract.js";
+import { fitScale } from "./art.js";
+import Record from "./Record.astro";
+
+interface Props {
+	model: ProductModel;
+}
+
+const { model } = Astro.props;
+const ok = model.state === "ok" ? model : null;
+const purchase = ok?.purchase ?? null;
+const fit = ok === null ? undefined : `--pr-fit: ${fitScale(ok.title)}`;
+---
+
+{
+	ok === null ? (
+		/* Not found and unavailable are two different facts wearing one quiet
+		   surface: an empty sleeve, a line, a way back. The unavailable case
+		   says what to do; neither guesses at why. */
+		<div class="pr-missing">
+			<Record seed="nothing-here" title={model.state === "unavailable" ? "Back soon" : "Not found"} instance="missing" size="hero" empty />
+			<div>
+				<h1 class="pr-h pr-h-page">
+					{model.state === "unavailable" ? "This record is unavailable." : "Nothing in this sleeve."}
+				</h1>
+				<p class="pr-desc">
+					{model.state === "unavailable"
+						? "The shop could not be read just now. Try again in a moment."
+						: "There is no product at this address. It may have moved, or the link is mistyped."}
+				</p>
+				<a class="u-btn" href="/products">
+					Back to the catalogue
+				</a>
+			</div>
+		</div>
+	) : (
+		<div class="pr-pdp">
+			<div class="pr-pdp-art">
+				<Record
+					seed={ok.art}
+					title={ok.title}
+					catalogue={purchase?.sku ?? null}
+					image={ok.image}
+					alt={ok.title}
+					instance="pdp"
+					size="pdp"
+					dimmed={ok.dimmed}
+				/>
+			</div>
+
+			<div class="pr-pdp-info pr-fitbox">
+				<p class="pr-crumb">
+					<a class="pr-line" href="/products">
+						Catalogue
+					</a>
+				</p>
+				<h1 class="pr-fit" style={fit}>
+					{ok.title}
+				</h1>
+				{purchase !== null && purchase.sku !== null && (
+					<p class="pr-cat">
+						<span class="u-sr-only">Catalogue number </span>
+						{purchase.sku}
+					</p>
+				)}
+
+				{purchase !== null && (
+					<div class="pr-meta">
+						<p class:list={["pr-price u-mono", { "pr-struck": purchase.priceStruck }]}>
+							{purchase.priceFormatted}
+						</p>
+						{purchase.soldOut && <p class="pr-quiet">Sold out</p>}
+					</div>
+				)}
+
+				{ok.degradedLead !== null && (
+					<div class="pr-notice" role="status">
+						<p class="pr-notice-lead">{ok.degradedLead}</p>
+						<p>Check back in a moment. Everything else on this page is up to date.</p>
+					</div>
+				)}
+				{ok.errorMessage !== null && (
+					<div class="pr-notice pr-notice-error" role="alert">
+						<p class="pr-notice-lead">{ok.errorMessage}</p>
+					</div>
+				)}
+
+				{ok.description && <p class="pr-desc">{ok.description}</p>}
+
+				{purchase !== null && purchase.addToCart !== null && (
+					<form class="pr-buy" method="POST" action="/cart/add">
+						<AddToCartFields fields={purchase.addToCart} />
+						<button class="u-btn pr-wide" type="submit">
+							Add to bag
+						</button>
+						<p class="pr-hold">{purchase.holdNote}</p>
+					</form>
+				)}
+
+				{purchase !== null && purchase.soldOut && (
+					<Fragment>
+						<p class="pr-soldout pr-wide" aria-hidden="true">
+							Sold out
+						</p>
+						<p class="pr-after">
+							<a class="pr-line" href="/products">
+								See what's still in stock
+							</a>
+						</p>
+					</Fragment>
+				)}
+
+				{ok.showNotForSale && (
+					<p class="pr-quiet pr-after">Not currently available for purchase</p>
+				)}
+			</div>
+		</div>
+	)
+}

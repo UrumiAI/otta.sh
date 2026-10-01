@@ -314,6 +314,9 @@ importers:
       kysely:
         specifier: 'catalog:'
         version: 0.29.3
+      sharp:
+        specifier: ^0.35.4
+        version: 0.35.4(@types/node@26.1.1)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

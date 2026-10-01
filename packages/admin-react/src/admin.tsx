@@ -36,6 +36,7 @@
 import type { PluginAdminExports } from "emdash";
 import { OrdersScreen } from "./orders/orders-screen.js";
 import { ProductsScreen } from "./products/products-screen.js";
+import { ThemesScreen } from "./themes/themes-screen.js";
 
 /**
  * EmDash types `PluginAdminExports["pages"]` as `Record<string, JSX.Element>`
@@ -44,11 +45,12 @@ import { ProductsScreen } from "./products/products-screen.js";
  * shipped `@emdash-cms/plugin-forms` has the same mismatch and casts too.
  *
  * EVERY KEY MUST EQUAL THE `path` OF THE MATCHING ENTRY in
- * `OTTA_CONSOLE_ADMIN_PAGES` (`./index.ts`) — `ORDERS_PAGE.path` and
- * `PRODUCTS_PAGE.path` — or the sidebar drops the entry without an error;
+ * `OTTA_CONSOLE_ADMIN_PAGES` (`./index.ts`) — `ORDERS_PAGE.path`,
+ * `PRODUCTS_PAGE.path` and `THEMES_PAGE.path` — or the sidebar drops the entry without an error;
  * `test/console-plugin.test.ts` pins the two lists together in both directions.
  */
 export const pages = {
 	"/orders": OrdersScreen,
 	"/products": ProductsScreen,
+	"/themes": ThemesScreen,
 } as unknown as PluginAdminExports["pages"];

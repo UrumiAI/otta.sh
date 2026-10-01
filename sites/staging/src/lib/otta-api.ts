@@ -226,6 +226,21 @@ export async function dispatchOttaRoute<TResult>(
 	return dispatchOnce<TResult>(handler, route, input, baseUrl, headers);
 }
 
+/**
+ * {@link dispatchOttaRoute} WITHOUT the automatic BUSY retry: one dispatch, and
+ * a BUSY answer goes straight back to the caller. For a read whose caller fails
+ * soft anyway (the chrome's bag, `lib/bag.ts`): a retry there would only add a
+ * jittered pause and a second read to a page that answers without it.
+ */
+export function dispatchOttaRouteOnce<TResult>(
+	handler: PublicPluginApiRouteHandler | undefined,
+	route: string,
+	input: unknown,
+	baseUrl: URL,
+): Promise<TResult | null> {
+	return dispatchOnce<TResult>(handler, route, input, baseUrl, {});
+}
+
 async function dispatchOnce<TResult>(
 	handler: PublicPluginApiRouteHandler | undefined,
 	route: string,

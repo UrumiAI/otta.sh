@@ -1,0 +1,68 @@
+---
+/**
+ * Counter's hold, on `/cart` (brief "Stock, variants and holds"): a clock and
+ * one plain sentence per line — "Held for you for 14:32". Under a minute it
+ * turns ochre and asks the shopper to check out; at zero it says the hold was
+ * released and what to do.
+ *
+ * MARKUP ONLY — the same contract Tempered's ribbon draws (`themes/contract.ts`,
+ * "THE HOLD COUNTDOWN'S MARKUP CONTRACT"). `components/HoldClock.astro`, which
+ * the `/cart` PAGE renders, finds `[data-hold]` and rewrites `data-state`,
+ * `[data-hold-label]`, `[data-hold-clock]`, `[data-hold-note]` and
+ * `[data-hold-announce]` once a second. It is theme-agnostic, so the sentence
+ * is assembled around what it writes rather than by it:
+ *
+ *  - WITHOUT JavaScript the clock holds the ABSOLUTE expiry ("14:10:32 UTC", the
+ *    value that stays true), and the label carries a trailing " until" — so the
+ *    line reads "Held for you until 14:10:32 UTC".
+ *  - On its first tick the script replaces the label's text, which drops that
+ *    child; theme.css then supplies " for" (or " in", under a minute) through
+ *    `:has()`, and the clock becomes mm:ss — "Held for you for 14:32".
+ *
+ * The countdown is information, so it keeps ticking under reduced motion
+ * (`data-motion="essential"`); nothing in it animates anyway.
+ */
+import {
+	HOLD_RELEASED_NEXT_STEP,
+	HOLD_WINDOW_SECONDS,
+	absoluteExpiry,
+	holdView,
+} from "../../lib/hold.js";
+
+interface Props {
+	/** The line's own `expiresAt`; `null` (no reservation taken) renders nothing. */
+	expiresAt: string | null;
+}
+
+const { expiresAt } = Astro.props;
+const view = holdView(expiresAt, new Date(), HOLD_WINDOW_SECONDS);
+const expiry = absoluteExpiry(expiresAt);
+const joiner = view === null ? "" : view.state === "held" ? " until" : " at";
+---
+
+{
+	view !== null && (
+		<div
+			class="c-holdline"
+			data-hold
+			data-state={view.state}
+			data-expires={expiresAt}
+			data-window={HOLD_WINDOW_SECONDS}
+			data-motion="essential"
+		>
+			<p class="c-holdline-row" role="timer">
+				<svg class="c-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+					<circle cx="12" cy="12" r="8" />
+					<path d="M12 8v4l2.5 2" />
+				</svg>
+				<span>
+					<span class="c-holdline-label" data-hold-label>{view.label}{view.state !== "released" && <span class="c-holdline-join">{joiner}</span>}</span>{" "}<span class="c-holdline-clock" data-hold-clock>{expiry}</span><span class="c-holdline-keep">. Check out to keep it.</span>
+				</span>
+			</p>
+			<span class="u-sr-only" data-hold-announce aria-live="polite" />
+			<p class="c-holdline-note" data-hold-note hidden={view.state !== "released"}>
+				{HOLD_RELEASED_NEXT_STEP}
+			</p>
+		</div>
+	)
+}

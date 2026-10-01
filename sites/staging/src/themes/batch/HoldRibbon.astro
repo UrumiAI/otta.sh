@@ -1,0 +1,97 @@
+---
+/**
+ * Batch's hold, on `/cart` (brief "Hold"): a roaster-green rubber stamp that
+ * reads "Set aside for you until 4:52 pm UTC", and beneath it, in small Karla,
+ * the time left in words — "14 min left". Under five minutes that line becomes
+ * "Check out soon, we release it at 4:52 pm UTC"; under a minute it counts the
+ * seconds. Released, the stamp is printed in muted ink and reads "Released",
+ * and the next step appears beneath it.
+ *
+ * ONE STAMP PER VIEW (brief "Never"). Only the line the page stamps (`stamped`,
+ * the newest live hold — `stamp.ts`) is drawn as the stamp. It LANDS only ON
+ * ADD — when that hold was just taken (`isFreshHold`, `lib/hold.ts`), i.e. on
+ * the render the add (or a quantity change) redirects to, not on a reload, a
+ * revisit or a change to another line: the brief's scale 1.3 → 1, opacity, 2px
+ * blur, settling to its seeded tilt in 240ms and the ink settling over 120ms
+ * more — a CSS animation in `commerce.css`, so no script. Under reduced motion
+ * it is the final stamp after a 120ms fade. Otherwise the stamp is simply
+ * there. Every other line prints the same words plainly, in green.
+ *
+ * MARKUP ONLY — the contract in `themes/contract.ts` ("THE HOLD COUNTDOWN'S
+ * MARKUP CONTRACT"). `components/HoldClock.astro`, which the `/cart` PAGE
+ * renders, rewrites `data-state`, `data-minutes`, `[data-hold-minutes]`,
+ * `[data-hold-seconds]`, `[data-hold-note]` and `[data-hold-announce]` once a
+ * second; `commerce.css` switches the words on `data-state` and `data-minutes`.
+ *
+ *  - THE STAMP'S TIME IS FIXED TEXT, and stays true: the expiry as a wall clock,
+ *    floored to the minute, in UTC — the server cannot know the shopper's zone
+ *    (`wallClock`, `lib/hold.ts`).
+ *  - WITHOUT JavaScript nothing would keep "14 min left" true, so the count
+ *    ships inside a marker element the script's first write replaces;
+ *    `commerce.css` keeps the count line invisible (its space reserved) while
+ *    the marker is still there. The stamp alone is left, and it is true.
+ *  - The countdown is information, so it keeps running under reduced motion
+ *    (`data-motion="essential"`); only the landing is decoration.
+ */
+import {
+	HOLD_RELEASED_NEXT_STEP,
+	HOLD_WINDOW_SECONDS,
+	holdView,
+	isFreshHold,
+	wallClock,
+} from "../../lib/hold.js";
+import { stampTilt } from "./art.js";
+
+interface Props {
+	/** The line's own `expiresAt`; `null` (no reservation taken) renders nothing. */
+	expiresAt: string | null;
+	/** Seeds the stamp's tilt (−4° to −1°) — the line's id, so it is stable. */
+	seed: string;
+	/** This line is the one the view stamps: drawn as the stamp, and it lands. */
+	stamped: boolean;
+}
+
+const { expiresAt, seed, stamped } = Astro.props;
+const now = new Date();
+const view = holdView(expiresAt, now, HOLD_WINDOW_SECONDS);
+/* The stamp lands on add only; on any later render it is simply there. */
+const lands = stamped && isFreshHold(expiresAt, now, HOLD_WINDOW_SECONDS);
+const until = expiresAt === null ? null : wallClock(expiresAt);
+const minutes = view === null ? 0 : Math.floor(view.secondsLeft / 60);
+---
+
+{
+	view !== null && until !== null && (
+		<div
+			class="b-held"
+			data-hold
+			data-state={view.state}
+			data-expires={expiresAt}
+			data-window={HOLD_WINDOW_SECONDS}
+			data-minutes={minutes}
+			data-stamped={stamped ? "" : undefined}
+			data-lands={lands ? "" : undefined}
+			data-motion="essential"
+		>
+			<p class="b-held-mark" style={stamped ? `--b-tilt: ${stampTilt(seed)}deg` : undefined}>
+				<span class="b-held-ink">
+					<span class="b-held-set">Set aside for you until {until}</span>
+					<span class="b-held-gone">Released</span>
+				</span>
+			</p>
+			<p class="b-held-left" role="timer">
+				<span class="b-held-mins">
+					<span data-hold-minutes><span class="b-held-nojs">{minutes}</span></span> min left
+				</span>
+				<span class="b-held-soon">Check out soon, we release it at {until}</span>
+				<span class="b-held-secs">
+					Check out now, we release it in <span data-hold-seconds>{view.secondsLeft}</span> sec
+				</span>
+			</p>
+			<span class="u-sr-only" data-hold-announce aria-live="polite" />
+			<p class="b-held-note" data-hold-note hidden={view.state !== "released"}>
+				{HOLD_RELEASED_NEXT_STEP}
+			</p>
+		</div>
+	)
+}
