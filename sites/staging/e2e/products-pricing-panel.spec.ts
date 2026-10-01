@@ -27,10 +27,14 @@ const LIST_URL = `${ADMIN_BASE_PATH}/content/products`;
 
 async function openList(page: Page): Promise<void> {
 	await page.goto(LIST_URL);
+	// On a fresh database EmDash greets the first admin with a modal that opens
+	// a moment AFTER the shell boots, and hides the list from the accessibility
+	// tree while it is up. Wait for whichever comes first, then clear it.
+	const price = page.getByRole("columnheader", { name: "Price" });
+	const greeting = page.getByRole("dialog", { name: /Welcome to EmDash/i });
+	await expect(price.or(greeting)).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
 	await dismissWelcomeDialog(page);
-	await expect(page.getByRole("columnheader", { name: "Price" })).toBeVisible({
-		timeout: ADMIN_SHELL_TIMEOUT_MS,
-	});
+	await expect(price).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
 }
 
 test.describe("pricing and stock live in the products collection", () => {
