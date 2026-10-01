@@ -32,8 +32,6 @@ import {
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
 import { forgetSummaries } from "./pricing-columns.js";
-
-const SHIPPING_FIELDS: readonly DraftField[] = ["weightGrams", "lengthMm", "widthMm", "heightMm"];
 import { usePricingStyles } from "./pricing-styles.js";
 import {
 	CURRENCY_CHOICES,
@@ -41,6 +39,7 @@ import {
 	isDraftDirty,
 	marginSummary,
 	mergeDraft,
+	SIZE_FIELDS,
 	salePreview,
 	savePayload,
 	stockStatus,
@@ -307,7 +306,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			setTouched(new Set(Object.keys(allProblems) as DraftField[]));
 			setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
 			// A problem inside the folded Shipping & tax section must be seen.
-			if (SHIPPING_FIELDS.some((field) => allProblems[field] !== undefined)) setShippingOpen(true);
+			if ([...SIZE_FIELDS].some((field) => allProblems[field] !== undefined)) setShippingOpen(true);
 			// Take the merchant to the first problem rather than leaving them to hunt
 			// for it in a column they may have scrolled.
 			requestAnimationFrame(() => {

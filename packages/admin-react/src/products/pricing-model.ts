@@ -105,6 +105,8 @@ function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
 		// The currency only travels WITH a price: picked on its own for a product
 		// that has none, the save would send nothing, so it is not a change.
 		if (field === "currency" && draft.price.trim().length === 0) return false;
+		// Nor is a weight or size typed before switching to digital: it is not sent.
+		if (draft.productKind === "digital" && SIZE_FIELDS.has(field)) return false;
 		return canonical(field, saved[field]) !== canonical(field, draft[field]);
 	});
 }
@@ -148,10 +150,16 @@ function money(value: string): number | null | "invalid" {
 	return parseMinorUnitsInput(trimmed, { allowZero: false }) ?? "invalid";
 }
 
+/** Weight and size: hidden, unchecked and unsent for a digital product. */
+export const SIZE_FIELDS: ReadonlySet<DraftField> = new Set<DraftField>([
+	"weightGrams",
+	"lengthMm",
+	"widthMm",
+	"heightMm",
+]);
+
 /** Fields the plugin's save reads as "keep" when sent blank — so a blank one
  *  over a stored value would answer "Saved" and change nothing. */
-const SIZE_FIELDS = new Set<DraftField>(["weightGrams", "lengthMm", "widthMm", "heightMm"]);
-
 const UNCLEARABLE: ReadonlyArray<readonly [DraftField, (p: ProductRecord) => boolean, string]> = [
 	[
 		"price",

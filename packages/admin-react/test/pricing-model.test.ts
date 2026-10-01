@@ -185,6 +185,8 @@ describe("a digital product ships nothing", () => {
 		const draft = { ...draftFromRecord(record), weightGrams: "", lengthMm: "abc" };
 		expect(validateDraft(draft, record)).toEqual({});
 		expect(savePayload(record, draft)).toMatchObject({ weightGrams: "", lengthMm: "" });
+		// Not a change either, so the panel never says "Saved" for something it dropped.
+		expect(isDraftDirty(draftFromRecord(record), draft)).toBe(false);
 	});
 });
 
