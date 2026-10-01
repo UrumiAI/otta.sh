@@ -275,6 +275,7 @@ storefront themes — a grid of screenshot cards with the active theme first und
 bar, an **Activate** button on every other card, and a **Live preview** that frames the real
 storefront in that theme in a full-screen overlay (desktop / tablet / phone widths, Esc to close,
 "Open in new tab"). The maintainer asked for it in these terms and chose React over Block Kit for it.
+The work is increment **INC-26**.
 
 **Why it cannot be Block Kit.** Not preference — the screen needs things Block Kit does not have:
 
