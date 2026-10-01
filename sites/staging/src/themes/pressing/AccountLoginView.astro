@@ -1,0 +1,59 @@
+---
+/**
+ * Pressing's sign-in (issue #306, ADR-0004), laid out like the not-found page:
+ * a record on the left — a sleeve printed with "Sign in", its disc a third of
+ * the way out, still — and on the right "Sign in" set expanded, one pill email
+ * field, magic link only, one pink pill. On a phone the record shrinks above
+ * the form.
+ *
+ * Presentation only — `src/pages/account/login/index.astro` sets the no-store
+ * header, reads `?sent` / `?error`, and hands over the copy. The `sent` notice
+ * is the SAME sentence for every address, so the page is not an account
+ * oracle; a theme may restyle it and must not vary it.
+ */
+import type { AccountLoginModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Record from "./Record.astro";
+
+interface Props {
+	model: AccountLoginModel;
+}
+
+const { sent, sentCopy, errorMessage } = Astro.props.model;
+---
+
+<div class="pr-page pr-acct">
+	<div class="pr-acct-art">
+		<Record seed="members" title="Sign in" instance="acct" size="hero" />
+	</div>
+	<div class="pr-acct-body">
+		<h1 class="pr-display">Sign in</h1>
+		<p class="pr-desc">
+			We'll email you a link that signs you in, no password. Orders you placed as a guest with the
+			same address appear in your account once you sign in.
+		</p>
+
+		{
+			sent && (
+				<div class="pr-slot">
+					<Notice lead="Check your inbox.">{sentCopy}</Notice>
+				</div>
+			)
+		}
+		{
+			errorMessage !== null && (
+				<div class="pr-slot">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			)
+		}
+
+		<form method="POST" action="/account/login/request" class="pr-acct-form">
+			<div class="pr-co-field">
+				<label class="pr-flabel" for="email">Email</label>
+				<input type="email" id="email" name="email" required autocomplete="email" />
+			</div>
+			<button type="submit" class="u-btn pr-wide">Email me a sign-in link</button>
+		</form>
+	</div>
+</div>

@@ -49,6 +49,30 @@ import JumblePayView from "./jumble/PayView.astro";
 import JumbleProductView from "./jumble/ProductView.astro";
 import JumbleShopView from "./jumble/ShopView.astro";
 import type { ThemeId } from "./manifest.js";
+import PlinthAccountLoginView from "./plinth/AccountLoginView.astro";
+import PlinthAccountOrdersView from "./plinth/AccountOrdersView.astro";
+import PlinthAccountOrderView from "./plinth/AccountOrderView.astro";
+import PlinthAccountVerifyView from "./plinth/AccountVerifyView.astro";
+import PlinthCartView from "./plinth/CartView.astro";
+import PlinthCheckoutView from "./plinth/CheckoutView.astro";
+import PlinthHomeView from "./plinth/HomeView.astro";
+import PlinthLayout from "./plinth/Layout.astro";
+import PlinthOrderView from "./plinth/OrderView.astro";
+import PlinthPayView from "./plinth/PayView.astro";
+import PlinthProductView from "./plinth/ProductView.astro";
+import PlinthShopView from "./plinth/ShopView.astro";
+import PressingAccountLoginView from "./pressing/AccountLoginView.astro";
+import PressingAccountOrdersView from "./pressing/AccountOrdersView.astro";
+import PressingAccountOrderView from "./pressing/AccountOrderView.astro";
+import PressingAccountVerifyView from "./pressing/AccountVerifyView.astro";
+import PressingCartView from "./pressing/CartView.astro";
+import PressingCheckoutView from "./pressing/CheckoutView.astro";
+import PressingHomeView from "./pressing/HomeView.astro";
+import PressingLayout from "./pressing/Layout.astro";
+import PressingOrderView from "./pressing/OrderView.astro";
+import PressingPayView from "./pressing/PayView.astro";
+import PressingProductView from "./pressing/ProductView.astro";
+import PressingShopView from "./pressing/ShopView.astro";
 import TemperedAccountLoginView from "./tempered/AccountLoginView.astro";
 import TemperedAccountOrdersView from "./tempered/AccountOrdersView.astro";
 import TemperedAccountOrderView from "./tempered/AccountOrderView.astro";
@@ -79,6 +103,48 @@ const tempered = {
 		accountOrders: TemperedAccountOrdersView,
 		accountOrder: TemperedAccountOrderView,
 	},
+} satisfies ThemeModule & { views: ThemeViews };
+
+/** Every view its own. No drawer and no strip, so no chrome cart read: the bag
+ *  is `/cart`, where each line carries its product's view-transition name. */
+const plinth = {
+	id: "plinth",
+	Layout: PlinthLayout,
+	views: {
+		home: PlinthHomeView,
+		shop: PlinthShopView,
+		product: PlinthProductView,
+		cart: PlinthCartView,
+		checkout: PlinthCheckoutView,
+		pay: PlinthPayView,
+		order: PlinthOrderView,
+		accountLogin: PlinthAccountLoginView,
+		accountVerify: PlinthAccountVerifyView,
+		accountOrders: PlinthAccountOrdersView,
+		accountOrder: PlinthAccountOrderView,
+	},
+} satisfies ThemeModule & { views: ThemeViews };
+
+/** Every view its own, and a chrome that draws the bag's lines outside `/cart`
+ *  — the bag strip at the foot of every browsing page, stating the hold that
+ *  runs out first — so it pays the shell's bag read, as Counter's drawer does. */
+const pressing = {
+	id: "pressing",
+	Layout: PressingLayout,
+	views: {
+		home: PressingHomeView,
+		shop: PressingShopView,
+		product: PressingProductView,
+		cart: PressingCartView,
+		checkout: PressingCheckoutView,
+		pay: PressingPayView,
+		order: PressingOrderView,
+		accountLogin: PressingAccountLoginView,
+		accountVerify: PressingAccountVerifyView,
+		accountOrders: PressingAccountOrdersView,
+		accountOrder: PressingAccountOrderView,
+	},
+	chrome: { cartLines: true },
 } satisfies ThemeModule & { views: ThemeViews };
 
 /** Every view its own. No drawer, so no chrome cart read: the bag is `/cart`. */
@@ -120,8 +186,8 @@ const jumble = {
 	},
 } satisfies ThemeModule & { views: ThemeViews };
 
-/** Every view its own, and the one theme whose chrome draws the cart's lines
- *  (the bag drawer) — so the one theme that pays the shell's bag read. */
+/** Every view its own, and a chrome that draws the cart's lines (the bag
+ *  drawer) — so, with Pressing, a theme that pays the shell's bag read. */
 const counter = {
 	id: "counter",
 	Layout: CounterLayout,
@@ -144,6 +210,8 @@ const counter = {
 /** Every theme the manifest lists, and nothing else (held equal by test). */
 export const THEMES: Readonly<Record<ThemeId, ThemeModule>> = {
 	tempered,
+	plinth,
+	pressing,
 	batch,
 	jumble,
 	counter,

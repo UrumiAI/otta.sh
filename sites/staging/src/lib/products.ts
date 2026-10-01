@@ -15,11 +15,22 @@ export interface ProductEntryData {
 	images?: { src?: string; url?: string } | null;
 }
 
+/**
+ * A product's own identity key: its slug, or its id when it has none. ONE
+ * rule, because several things must agree on it — the catalog card's `slug`,
+ * the product page's `art`, a bag line's `artKey` and every product path —
+ * and a theme that ties them together (Plinth's card → product → bag morph
+ * names all three alike) breaks silently the day one of them drifts.
+ */
+export function productKey(entry: { readonly slug?: string | null; readonly id: string }): string {
+	return entry.slug ?? entry.id;
+}
+
 /** The id fallback for null-slug entries is valid: em-dash's live loader
  *  resolves entries with `WHERE (c.slug = :id OR c.id = :id)` (loadEntry,
  *  packages/core/src/loader.ts) — getEmDashEntry accepts either. */
 export function productPath(slug: string | null, id: string): string {
-	return `/products/${slug ?? id}`;
+	return `/products/${productKey({ slug, id })}`;
 }
 
 /**

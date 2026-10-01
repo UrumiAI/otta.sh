@@ -1,0 +1,56 @@
+---
+/**
+ * Plinth's sign-in (issue #306, ADR-0004): the empty-bag composition — a bare
+ * plinth on stone, and beside its foot a narrow column: the heading at 22px,
+ * one muted paragraph, one email well and one ink button, magic link only. Presentation only — `src/pages/account/login/index.astro`
+ * sets the no-store header, reads `?sent` / `?error`, and hands over the copy.
+ * The `sent` notice is the SAME sentence for every address, so the page is not
+ * an account oracle; a theme may restyle it and must not vary it.
+ */
+import type { AccountLoginModel } from "../contract.js";
+import { plinthArt } from "./art.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountLoginModel;
+}
+
+const { sent, sentCopy, errorMessage } = Astro.props.model;
+const emptyPlinth = plinthArt("nothing-here", "").svg;
+---
+
+<div class="pl-missing pl-acct">
+	<div class="pl-missing-art" aria-hidden="true">
+		<Fragment set:html={emptyPlinth} />
+	</div>
+	<div class="pl-acct-words">
+		<h1 class="pl-h">Sign in</h1>
+		<p class="pl-cv-lede">
+			We'll email you a link that signs you in, no password. Orders you placed as a guest with the
+			same address appear in your account once you sign in.
+		</p>
+
+		{
+			sent && (
+				<div class="pl-co-notice-slot">
+					<Notice lead="Check your inbox.">{sentCopy}</Notice>
+				</div>
+			)
+		}
+		{
+			errorMessage !== null && (
+				<div class="pl-co-notice-slot">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			)
+		}
+
+		<form method="POST" action="/account/login/request" class="pl-acct-form">
+			<div class="pl-co-field">
+				<label class="pl-flabel" for="email">Email</label>
+				<input type="email" id="email" name="email" required autocomplete="email" />
+			</div>
+			<button type="submit" class="u-btn pl-go">Email me a sign-in link</button>
+		</form>
+	</div>
+</div>

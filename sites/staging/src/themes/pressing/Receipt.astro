@@ -1,0 +1,52 @@
+---
+/**
+ * Pressing's line list for a review or a receipt: a small disc (`Disc.astro`,
+ * seeded by the SKU — a receipt line carries no picture), the name at 700,
+ * slightly expanded, with the catalogue number and quantity under it in muted
+ * body text, and the money on the right in tabular figures. The money is the
+ * page's string (the line total, or honest prose), passed through
+ * `moneyCellText` so no cell can print a bare dash (§7); prose is set quieter,
+ * decided by the value — never by a flag.
+ *
+ * The name is the purchase-time title where the model carries one (a
+ * receipt); the checkout review's lines carry none, so they read by their SKU.
+ */
+import { isUnpricedText, moneyCellText } from "../../lib/totals.js";
+import type { LedgerLine } from "../contract.js";
+import Disc from "./Disc.astro";
+
+interface Props {
+	rows: readonly LedgerLine[];
+}
+
+const { rows } = Astro.props;
+const cells = rows.map((row) => {
+	const money = moneyCellText(row.money);
+	return {
+		sku: row.sku,
+		qty: row.qty,
+		title: row.title !== undefined && row.title !== "" ? row.title : null,
+		money,
+		prose: isUnpricedText(money),
+	};
+});
+---
+
+<ul class="pr-receipt" role="list">
+	{
+		cells.map((cell) => (
+			<li class="pr-receipt-line" role="listitem">
+				<Disc seed={cell.sku} />
+				<span class="pr-receipt-id">
+					<span class="pr-receipt-name">{cell.title ?? cell.sku}</span>
+					<span class="pr-receipt-meta">
+						{cell.title !== null && <>{cell.sku}, </>}Qty {cell.qty}
+					</span>
+				</span>
+				<span class="pr-receipt-money u-mono" data-prose={cell.prose ? "" : undefined}>
+					{cell.money}
+				</span>
+			</li>
+		))
+	}
+</ul>

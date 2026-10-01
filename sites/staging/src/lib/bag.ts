@@ -1,8 +1,9 @@
 /**
  * The chrome's bag — the cart's lines, read for a theme whose CHROME draws them
- * outside `/cart` (Counter's drawer). Opt-in: `layouts/Storefront.astro` calls
- * this only when the active theme sets `chrome.cartLines`, and never on the
- * checkout flow, so no other theme and no other page pays for it.
+ * outside `/cart` (Counter's drawer, Pressing's bag strip). Opt-in:
+ * `layouts/Storefront.astro` calls this only when the active theme sets
+ * `chrome.cartLines`, and never on the checkout flow, so no other theme and no
+ * other page pays for it.
  *
  * ONE cart read (the same public `storefront/cart/read` `/cart` makes) and, when
  * the cart has lines, ONE batched, request-cached content read for their names
@@ -42,7 +43,7 @@ import {
 } from "./cart-view.js";
 import { holdView, wallClock } from "./hold.js";
 import { dispatchOttaRouteOnce } from "./otta-api.js";
-import { productImage, type ProductEntryData } from "./products.js";
+import { productImage, productKey, type ProductEntryData } from "./products.js";
 
 /** The cart page's bound, for the cart page's reason (`cart/index.astro`). */
 export const BAG_CONTENT_ID_CAP = 50;
@@ -124,9 +125,10 @@ export async function readBag(request: BagRequest): Promise<BagModel> {
 			title: content?.title ?? null,
 			name: content?.title ?? line.sku,
 			image: content === null ? null : productImage(content),
-			artKey: content?.slug ?? line.productId ?? line.sku,
+			artKey: content === null ? (line.productId ?? line.sku) : productKey(content),
 			money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
 			hold: bagHold(line.expiresAt, now),
+			expiresAt: line.expiresAt,
 			updateKey: crypto.randomUUID(),
 			removeKey: crypto.randomUUID(),
 		};

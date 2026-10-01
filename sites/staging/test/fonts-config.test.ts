@@ -47,6 +47,8 @@ describe("astro.config fonts", () => {
 			"--f-batch-display",
 			"--f-counter-sans",
 			"--f-jumble-sans",
+			"--f-plinth-body",
+			"--f-pressing-body",
 			"--f-tempered-body",
 			"--f-tempered-data",
 			"--f-tempered-display",
@@ -198,6 +200,48 @@ function expectOflBeside(font: VendoredFont): void {
 		).toContain("SIL Open Font License");
 	}
 }
+
+/** Plinth: ONE face — small type, big objects. */
+describe("Plinth's Host Grotesk (vendored)", () => {
+	const hostGrotesk = vendored("--f-plinth-body");
+	const variant = hostGrotesk.options.variants[0];
+
+	test("is Host Grotesk, from the local provider, as one variable variant", () => {
+		expect(hostGrotesk.name).toBe("Host Grotesk");
+		expect(hostGrotesk.provider.name).toBe("local");
+		expect(hostGrotesk.options.variants).toHaveLength(1);
+		// 300 is the home statement; 400/500 everything else.
+		expect(variant?.weight).toBe("300 800");
+		expect(variant?.style).toBe("normal");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(hostGrotesk));
+});
+
+/** Pressing: ONE family, Archivo; its second voice is the width axis. */
+describe("Pressing's Archivo (vendored)", () => {
+	const archivo = vendored("--f-pressing-body");
+	const variant = archivo.options.variants[0];
+
+	test("is Archivo, from the local provider, as one variable variant", () => {
+		expect(archivo.name).toBe("Archivo");
+		expect(archivo.provider.name).toBe("local");
+		expect(archivo.options.variants).toHaveLength(1);
+		expect(variant?.weight).toBe("100 900");
+		// The width axis IS the theme's second voice (titles at wdth 125).
+		expect(variant?.stretch).toBe("62% 125%");
+	});
+
+	test("the file is a woff2 that carries a prep program, so it is never autohinted", () => {
+		expectHintedWoff2(variant?.src[0], ["prep", "gvar", "HVAR", "GPOS"]);
+	});
+
+	test("ships with its OFL licence beside it", () => expectOflBeside(archivo));
+});
 
 /** Batch: a letterpress slab for titles and prices, a grotesque to read. */
 describe("Batch's Zilla Slab and Karla (vendored)", () => {

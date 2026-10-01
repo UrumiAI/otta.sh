@@ -1,7 +1,8 @@
 /**
  * The chrome's bag (`lib/bag.ts`) — the one cart read a theme whose chrome
- * draws the cart's lines opts into — the forms it posts to `/cart/update` and
- * `/cart/remove`, and the caching rule for a page that drew it.
+ * draws the cart's lines (Counter's drawer, Pressing's bag strip) opts into —
+ * the forms it posts to `/cart/update` and `/cart/remove`, and the caching
+ * rule for a page that drew it.
  *
  * The contract under test is FAIL SOFT: the bag decorates a page with its own
  * job, so no answer from the cart read — BUSY, a failure, a throw, a gone cart
@@ -232,7 +233,9 @@ describe("the bag's hold copy is static wall-clock time", () => {
 
 describe("only a theme that draws the bag pays for the read", () => {
 	test.each(STORE_THEMES.map((theme) => theme.id))("%s", (id) => {
-		expect(themeFor(id).chrome?.cartLines === true).toBe(id === "counter");
+		// Counter's drawer and Pressing's bag strip draw the lines; every other
+		// theme's chrome shows a count at most and must not pay the read.
+		expect(themeFor(id).chrome?.cartLines === true).toBe(id === "counter" || id === "pressing");
 	});
 
 	test("the read lives in lib/bag.ts, which never marks a response BUSY", () => {
