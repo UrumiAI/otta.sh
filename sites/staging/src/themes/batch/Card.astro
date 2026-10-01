@@ -1,0 +1,61 @@
+---
+/**
+ * One product in a Batch grid (brief "Layout (c)"): the bag at 3:4, square
+ * cornered, and its printed label overlapping the picture's bottom edge by
+ * 32px — the title in slab, one line of notes, the price in slab. The label's
+ * text block is centred; it is the only centred text in the theme.
+ *
+ * "Sold out" (the explicit token, never `!inStock`) is a muted rubber stamp
+ * laid across the picture at a seeded tilt, and the price under it is struck.
+ * A product with no live price shows the page's note where the price would be.
+ *
+ * The price is shown ALONE ("$18.00"): the brief sets price and weight
+ * together ("£14 for 250 g"), but the store carries no weight, and the theme
+ * prints no figure the store did not hand it.
+ *
+ * Motion (theme.css, reduced-motion aware): on hover or focus the label rises
+ * 4px and its shadow deepens.
+ */
+import type { ShopCard } from "../contract.js";
+import Art from "./Art.astro";
+import { stampTilt } from "./art.js";
+
+interface Props {
+	card: ShopCard;
+	/** 3 under a section heading (home), 2 directly under the page's h1 (shop). */
+	headingLevel?: 2 | 3;
+	/** Keeps the art's ids unique when the product is also drawn elsewhere. */
+	artId?: string;
+}
+
+const { card, headingLevel = 2, artId = "card" } = Astro.props;
+const soldOut = card.availability === "out_of_stock";
+const note = card.price === null ? (card.priceNote ?? "Not for sale right now") : null;
+const Heading = headingLevel === 3 ? "h3" : "h2";
+---
+
+<a class="b-card" href={card.href}>
+	<div class="b-media" data-sold-out={soldOut ? "" : undefined}>
+		<Art seed={card.slug} title={card.title} image={card.image} id={artId} />
+		{
+			soldOut && (
+				<span class="b-stamp" data-tone="muted" style={`--b-tilt: ${stampTilt(card.slug)}deg`}>
+					<span class="b-stamp-ink">Sold out</span>
+				</span>
+			)
+		}
+	</div>
+	<div class="b-label b-card-label">
+		<Heading class="b-card-title">{card.title}</Heading>
+		{card.description && <p class="b-card-notes">{card.description}</p>}
+		{
+			card.price !== null ? (
+				<p class="b-card-price b-figures">
+					{soldOut ? <s>{card.price}</s> : card.price}
+				</p>
+			) : (
+				<p class="b-card-note">{note}</p>
+			)
+		}
+	</div>
+</a>

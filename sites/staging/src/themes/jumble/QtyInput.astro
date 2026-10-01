@@ -1,0 +1,20 @@
+---
+/**
+ * A quantity field in Jumble's hand: a white well with the input radius and no
+ * stroke (Jumble draws no borders), the number in casual 800. The label is a
+ * real `<label>` around the input, visually hidden in a bag row — name the
+ * product in it ("Quantity, Mug") so the fields on a page are
+ * distinguishable. Posts as `qty`, which is what `/cart/update` reads.
+ */
+interface Props {
+	value: number;
+	label: string;
+}
+
+const { value, label } = Astro.props;
+---
+
+<label class="j-qtyin">
+	<span class="u-sr-only">{label}</span>
+	<input class="j-figures" type="number" name="qty" value={value} min="1" inputmode="numeric" required />
+</label>

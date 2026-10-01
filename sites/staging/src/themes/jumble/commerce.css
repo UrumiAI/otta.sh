@@ -1,0 +1,1514 @@
+/**
+ * Jumble — the commerce views (theme-briefs.md §4): the bag, the checkout,
+ * the pay step's surroundings, the order confirmation and the account pages,
+ * with the draining Sun hold pill and the theme's one authored moment, the toy
+ * hopping into the bag. Linked by `themes/jumble/Layout.astro` through a `?url`
+ * import beside `theme.css` and `views.css`.
+ *
+ * THE SAME GRAMMAR AS THE SHOP. White ground, indigo ink, no borders and no
+ * hard shadows: rounded colour fields do all the grouping. Things you do sit on
+ * the lavender surface (a bag line, the details form, a sign-in); the one thing
+ * a page is ABOUT sits on the Sun field — the bag's summary, the order you are
+ * placing, the order you placed — because Sun is the only field allowed to
+ * carry words, and they are indigo on it in both modes. Titles are casual 900,
+ * money is 800 with tabular figures (`.j-figures`), reading text is linear.
+ *
+ * Held to `test/page-css.test.ts` like every theme's view sheet: every colour,
+ * face and corner is a token from theme.css, no focus ring is restyled, no
+ * border is drawn. Everything that moves is at the bottom, inside
+ * `prefers-reduced-motion: no-preference`; its reduced-motion variant (a 150ms
+ * badge pulse, an opacity flash) is inside `reduce`.
+ */
+
+/* ── Page frame ───────────────────────────────────────────────────────── */
+
+.j-page {
+	padding-top: 2.25rem;
+	padding-bottom: 5.5rem;
+}
+
+.j-narrow {
+	max-width: 44rem;
+}
+
+.j-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem 1.5rem;
+	margin-bottom: 2rem;
+}
+
+.j-bar form {
+	margin: 0;
+}
+
+/* "3 items" — a little counter on the floor beside the title. */
+.j-bar-meta {
+	margin: 0;
+	padding: 0.25rem 0.875rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-surface);
+	font-size: 0.9375rem;
+	font-weight: 750;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.5;
+}
+
+/* Casual 900 — the page's one big word. 1.08, not tighter: Recursive's casual
+   900 has deep descenders and tall caps, and a two-line order headline must
+   not let a "g" meet the cap below it. */
+.j-title {
+	margin: 0;
+	font-size: clamp(2.375rem, 4.6vw, 3.5rem);
+	font-weight: 900;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.08;
+	letter-spacing: -0.02em;
+	text-wrap: balance;
+}
+
+/* A panel's heading. The views give it the shared `.u-label` (the pinned
+   "real heading" shape every theme's panels share); Jumble sets it as a
+   casual title, not a small line, from its own context class. */
+.j-panel-title,
+.j-order-panel .j-panel-head-label,
+.j-co-panel .j-co-head-label {
+	margin: 0;
+	color: var(--j-ink);
+	font-size: 1.375rem;
+	font-weight: 850;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.2;
+	letter-spacing: -0.01em;
+}
+
+.j-lede {
+	max-width: 40ch;
+	margin: 0;
+	color: var(--j-ink-2);
+	text-wrap: pretty;
+}
+
+.j-centre {
+	text-align: center;
+}
+
+.j-centre .j-lede {
+	margin-inline: auto;
+}
+
+/* The lavender field: things you DO. */
+.j-panel {
+	padding: 2rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-surface);
+}
+
+/* The Sun field: the thing the page is ABOUT. Words on it are indigo in both
+   modes (10.9:1 on Sun, over 8:1 on night-light Sun); the quieter ones take
+   the on-Sun muted ink. Re-pointing the two ink tokens here is what lets the
+   receipt and totals below read correctly on either field. */
+.j-sunfield {
+	--j-ink: var(--j-on-sun);
+	--j-ink-2: var(--j-on-sun-2);
+	--j-focus: var(--j-on-sun);
+
+	padding: 2rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-f5);
+	color: var(--j-on-sun);
+}
+
+/* A notice on a field sits on the ground (a surface on a surface is no
+   notice). On Sun it takes the light tag, since its words are indigo there. */
+.j-panel .j-notice,
+.j-empty .j-notice {
+	background: var(--j-ground);
+}
+
+.j-sunfield .j-notice {
+	background: var(--j-tag);
+}
+
+.j-panel .j-notice-slot,
+.j-acct .j-notice-slot {
+	margin: 0;
+}
+
+/* ── The step pills ───────────────────────────────────────────────────── */
+
+.j-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.j-step {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	min-height: 2.25rem;
+	padding: 0 1rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-surface);
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	font-weight: 750;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.2;
+}
+
+.j-step[data-done] {
+	background: var(--j-step-done);
+	box-shadow: inset 0 0 0 2px var(--j-step-done-ring);
+	color: var(--j-step-done-ink);
+}
+
+.j-step[aria-current="step"] {
+	background: var(--j-accent);
+	color: var(--j-on-accent);
+}
+
+.j-step-tick {
+	width: 1rem;
+	height: 1rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.j-co-steps {
+	margin-bottom: 1.25rem;
+}
+
+.j-co-title {
+	margin-bottom: 2rem;
+}
+
+/* ── The bag ──────────────────────────────────────────────────────────── */
+
+.j-bag-empty {
+	margin-top: 1rem;
+}
+
+.j-empty .j-title {
+	font-size: 2.25rem;
+}
+
+.j-empty-toy {
+	width: 7.5rem;
+	margin-bottom: 0.5rem;
+	border-radius: var(--j-r-media);
+}
+
+.j-cart {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+	align-items: start;
+	gap: 2rem;
+}
+
+.j-cart-lines {
+	display: grid;
+	gap: 1rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+/* A line: a lavender field, the product on its own crayon square inside it
+   (18px inside 28px, which is the 10px of padding between them). */
+.j-cart-line {
+	display: grid;
+	grid-template-columns: 8.5rem minmax(0, 1fr);
+	align-items: start;
+	gap: 1.5rem;
+	padding: 0.625rem 1.5rem 0.625rem 0.625rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-surface);
+}
+
+.j-cart-pic .j-field {
+	border-radius: var(--j-r-media);
+}
+
+.j-cart-body {
+	min-width: 0;
+	padding: 0.875rem 0 0.5rem;
+}
+
+.j-cart-top {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.75rem 1.25rem;
+}
+
+.j-cart-id {
+	min-width: 0;
+}
+
+.j-cart-name {
+	margin: 0;
+	font-size: 1.3125rem;
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.2;
+	overflow-wrap: anywhere;
+}
+
+.j-cart-sku {
+	margin: 0.125rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+}
+
+.j-cart-money {
+	display: grid;
+	flex: none;
+	justify-items: end;
+	text-align: right;
+}
+
+.j-cart-price {
+	font-size: 1.375rem;
+	font-weight: 800;
+	line-height: 1.2;
+}
+
+.j-cart-each {
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.j-cart-prose {
+	max-width: 14ch;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	line-height: 1.35;
+}
+
+.j-cart-ctl {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	margin-top: 1rem;
+}
+
+.j-cart-ctl form {
+	margin: 0;
+}
+
+.j-cart-update {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+/* The quantity: a white well, no stroke (Jumble draws none). */
+.j-qtyin input {
+	width: 4.5rem;
+	min-height: 2.75rem;
+	padding: 0 0.5rem 0 1rem;
+	border: 0;
+	border-radius: var(--j-r-input);
+	background: var(--j-ground);
+	color: var(--j-ink);
+	font-family: var(--u-body);
+	font-size: 1.0625rem;
+	font-weight: 800;
+}
+
+/* Update / Remove: words you can press, a pill only on hover. */
+.j-textcontrol {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	padding: 0 0.875rem;
+	border: 0;
+	border-radius: var(--j-r-pill);
+	background: transparent;
+	color: var(--j-ink);
+	font-family: var(--u-body);
+	font-size: 0.9375rem;
+	font-weight: 750;
+	font-variation-settings: "CASL" 1;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.j-textcontrol:hover {
+	background: var(--j-ground);
+}
+
+/* ── The hold: a Sun pill that drains ─────────────────────────────────── */
+
+.j-held {
+	display: grid;
+	gap: 0.375rem;
+	margin-top: 0.875rem;
+}
+
+.j-held-pill {
+	--j-held-track: var(--j-hold-track);
+	--j-held-fill: var(--j-hold-fill);
+	--j-held-digits: var(--j-hold-digits);
+	--j-held-ring: var(--j-hold-ring);
+
+	position: relative;
+	isolation: isolate;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	width: min(100%, 22rem);
+	min-height: 2.75rem;
+	margin: 0;
+	padding: 0 1.125rem;
+	overflow: hidden;
+	border-radius: var(--j-r-pill);
+	background: var(--j-held-track);
+	color: var(--j-hold-ink);
+	font-size: 0.9375rem;
+	font-weight: 750;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.2;
+}
+
+/* The night-light ring (brief review fix) sits OVER the fill, so the drained
+   and the full halves of the pill carry the same edge. */
+.j-held-pill::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: var(--j-r-pill);
+	box-shadow: inset 0 0 0 2px var(--j-held-ring);
+	pointer-events: none;
+}
+
+/* Drains toward the left: the full part is what is still yours. */
+.j-held-fill {
+	position: absolute;
+	inset: 0 auto 0 0;
+	z-index: -1;
+	width: var(--pct, 100%);
+	background: var(--j-held-fill);
+}
+
+.j-held-label {
+	min-width: 0;
+}
+
+.j-held-clock {
+	flex: none;
+	color: var(--j-held-digits);
+	font-size: 1.0625rem;
+	font-weight: 800;
+	white-space: nowrap;
+}
+
+.j-held-note {
+	margin: 0;
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+	line-height: 1.45;
+}
+
+/* Under a minute: tangerine (the wiggle is at the bottom, with the motion). */
+.j-held[data-state="expiring"] .j-held-pill {
+	--j-held-track: var(--j-hold-track-late);
+	--j-held-fill: var(--j-hold-fill-late);
+	--j-held-digits: var(--j-hold-digits-late);
+	--j-held-ring: var(--j-hold-ring-late);
+}
+
+/* Released: the Sun goes out. A plain ground pill that says so, and the next
+   step beneath it. */
+.j-held[data-state="released"] .j-held-pill {
+	--j-held-track: var(--j-ground);
+	--j-held-ring: transparent;
+
+	color: var(--j-ink-2);
+}
+
+.j-held[data-state="released"] .j-held-fill,
+.j-held[data-state="released"] .j-held-clock {
+	display: none;
+}
+
+/* ── The summary, on Sun ──────────────────────────────────────────────── */
+
+.j-cart-sum {
+	position: sticky;
+	top: 6rem;
+	display: grid;
+	gap: 0.75rem;
+	padding: 1.75rem 1.75rem 1.5rem;
+}
+
+.j-cart-sum .j-panel-title {
+	margin-bottom: 0.25rem;
+}
+
+.j-sub {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+	margin: 0;
+	font-weight: 700;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-sub-figure {
+	font-size: 1.75rem;
+	font-weight: 850;
+	line-height: 1.15;
+}
+
+.j-sub[data-prose] .j-sub-figure {
+	font-size: 1rem;
+	font-weight: 600;
+	font-variation-settings: "CASL" 0;
+}
+
+.j-sub-minor {
+	font-size: 0.9375rem;
+	font-weight: 650;
+}
+
+.j-sub-note {
+	margin: 0;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	line-height: 1.45;
+}
+
+.j-sub-fine {
+	margin: 0;
+	color: var(--j-ink-2);
+	font-size: 0.8125rem;
+	line-height: 1.45;
+}
+
+.j-cart-go {
+	width: 100%;
+	margin-top: 0.5rem;
+}
+
+/* ── The checked-out bag ──────────────────────────────────────────────── */
+
+.j-terminal-panel {
+	display: grid;
+	gap: 1rem;
+	max-width: 44rem;
+}
+
+.j-terminal-body {
+	max-width: 52ch;
+	margin: 0;
+}
+
+.j-terminal-panel .j-terminal-lines {
+	padding: 1rem 1.25rem;
+	border-radius: var(--j-r-input);
+	background: var(--j-ground);
+}
+
+.j-terminal-actions {
+	display: grid;
+	justify-items: start;
+	gap: 1.25rem;
+	margin-top: 0.5rem;
+}
+
+.j-terminal-resume,
+.j-cart-terminal-restart {
+	display: grid;
+	justify-items: start;
+	gap: 0.5rem;
+}
+
+.j-cart-terminal-restart form {
+	margin: 0;
+}
+
+.j-terminal-note {
+	max-width: 52ch;
+	margin: 0;
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+	line-height: 1.45;
+}
+
+/* ── Receipts and totals ──────────────────────────────────────────────── */
+
+.j-receipt {
+	display: grid;
+	gap: 0.875rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.j-receipt-line {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.j-receipt-id {
+	display: grid;
+	min-width: 0;
+}
+
+.j-receipt-name {
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+	line-height: 1.3;
+	overflow-wrap: anywhere;
+}
+
+.j-receipt-meta {
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+}
+
+.j-receipt-money {
+	flex: none;
+	font-size: 1.125rem;
+	font-weight: 800;
+}
+
+.j-receipt-money[data-prose] {
+	max-width: 16ch;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	font-weight: 500;
+	font-variation-settings: "CASL" 0;
+	text-align: right;
+}
+
+.j-totals {
+	display: grid;
+	gap: 0.5rem;
+	margin: 1.5rem 0 0;
+}
+
+.j-totals-row {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.j-totals-row dt {
+	font-weight: 600;
+}
+
+.j-totals-row dd {
+	margin: 0;
+	font-weight: 800;
+}
+
+.j-totals-row[data-prose] dd {
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	font-weight: 500;
+	font-variation-settings: "CASL" 0;
+	text-align: right;
+}
+
+.j-totals-grand {
+	margin-top: 0.625rem;
+	font-size: 1.5rem;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-totals-grand dt {
+	font-weight: 850;
+}
+
+.j-totals-grand dd {
+	font-weight: 900;
+}
+
+.j-totals-note {
+	margin: 0.75rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.8125rem;
+	line-height: 1.45;
+}
+
+/* ── Checkout ─────────────────────────────────────────────────────────── */
+
+.j-co-notice-slot {
+	max-width: 44rem;
+	margin-bottom: 1.5rem;
+}
+
+.j-co-restart {
+	margin: 0 0 2rem;
+}
+
+.j-co-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+	align-items: start;
+	gap: 2rem;
+}
+
+.j-co-panel {
+	display: grid;
+	gap: 2rem;
+	min-width: 0;
+}
+
+.j-co-summary {
+	position: sticky;
+	top: 6rem;
+	gap: 0;
+}
+
+.j-co-summary .j-co-panel-head {
+	margin-bottom: 1.25rem;
+}
+
+.j-co-summary .j-notice {
+	margin-bottom: 1.25rem;
+}
+
+.j-co-coupon,
+.j-co-delivery,
+.j-co-details,
+.j-acct-form {
+	display: grid;
+	gap: 1.5rem;
+	margin: 0;
+}
+
+.j-co-field {
+	display: grid;
+	gap: 0.375rem;
+	min-width: 0;
+}
+
+.j-flabel {
+	font-size: 0.9375rem;
+	font-weight: 700;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-co-req {
+	margin-left: 0.375rem;
+	color: var(--j-ink-2);
+	font-size: 0.8125rem;
+	font-weight: 500;
+	font-variation-settings: "CASL" 0;
+}
+
+.j-co-note {
+	color: var(--j-ink-2);
+	font-size: 0.8125rem;
+	line-height: 1.45;
+}
+
+p.j-co-note {
+	margin: 0;
+}
+
+/* A field: a white well with the input radius — never a stroke. */
+.j-co-field :is(input, select) {
+	width: 100%;
+	min-height: 3.25rem;
+	padding: 0 1rem;
+	border: 0;
+	border-radius: var(--j-r-input);
+	background: var(--j-ground);
+	color: var(--j-ink);
+	font-family: var(--u-body);
+	font-size: 1.0625rem;
+}
+
+/* …but a white well on the lavender panel is 1.1:1 — no visible edge, and
+   WCAG 1.4.11 asks 3:1 of a control's boundary. So each well (and the bag's
+   quantity well) carries a 1.5px INSET ring in muted ink: 6.2:1 on the panel
+   light, 7.6:1 dark. An inset shadow, not a border — the well keeps its size
+   and Jumble still draws no stroke. (The coupon's Apply pill beside it gets
+   the same ring in theme.css, where the pill's shape lives.) */
+.j-co-field :is(input, select),
+.j-qtyin input {
+	box-shadow: inset 0 0 0 1.5px var(--j-ink-2);
+}
+
+.j-co-field select {
+	padding-right: 0.5rem;
+}
+
+.j-co-field select option {
+	background: var(--j-ground);
+	color: var(--j-ink);
+}
+
+.j-co-field .j-notice {
+	margin-top: 0.375rem;
+}
+
+.j-co-coupon-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 0.625rem;
+}
+
+.j-co-fields {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 1.125rem 1.25rem;
+}
+
+.j-co-span2 {
+	grid-column: 1 / -1;
+}
+
+.j-co-group {
+	display: grid;
+	gap: 1.125rem;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.j-co-group > legend {
+	margin-bottom: 1rem;
+	padding: 0;
+}
+
+.j-co-group-note a,
+.j-co-note a {
+	font-weight: 650;
+}
+
+/* Delivery options: white pills; the chosen one lights up Sun. */
+.j-co-methods {
+	display: grid;
+	gap: 0.5rem;
+}
+
+.j-co-method {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.75rem;
+	min-height: 3.25rem;
+	padding: 0.5rem 1.25rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-ground);
+	font-weight: 650;
+	cursor: pointer;
+}
+
+.j-co-method:has(input:checked) {
+	background: var(--j-sun);
+	color: var(--j-on-sun);
+}
+
+.j-co-method input {
+	width: 1.125rem;
+	height: 1.125rem;
+	margin: 0;
+}
+
+.j-co-method-price {
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-co-delivery-line {
+	font-size: 0.9375rem;
+}
+
+.j-co-go {
+	width: 100%;
+}
+
+.j-co-back {
+	margin: 2rem 0 0;
+}
+
+/* ── Pay ──────────────────────────────────────────────────────────────── */
+
+.j-pay-panel {
+	display: grid;
+	gap: 1.25rem;
+	max-width: 36rem;
+}
+
+.j-pay-trust {
+	margin: 0;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+}
+
+.j-pay-panel #payment-form {
+	display: grid;
+	gap: 1rem;
+	margin: 0;
+}
+
+/* The page's mount box, as a white well on the lavender field. (Three
+   classes deep so it wins over the page's own scoped rule.) */
+.j-pay .j-pay-panel .mount {
+	border: 0;
+	border-radius: var(--j-r-input);
+	background: var(--j-ground);
+}
+
+/* The page's own error line (its script writes it) keeps its words but loses
+   the dashed rules: red on a white well, like every Jumble error. */
+.j-pay .j-pay-panel .pay-error {
+	padding: 0.875rem 1.125rem;
+	border: 0;
+	border-radius: var(--j-r-input);
+	background: var(--j-ground);
+	color: var(--j-error);
+	font-size: 0.9375rem;
+	font-weight: 600;
+}
+
+/* The page's pay button (its slot) is the full-width pill here too. */
+.j-pay-panel #payment-form .u-btn {
+	width: 100%;
+}
+
+/* ── Order ────────────────────────────────────────────────────────────── */
+
+.j-order-head {
+	display: grid;
+	justify-items: center;
+	gap: 0.875rem;
+	padding: 3rem 2rem 2.5rem;
+	text-align: center;
+}
+
+.j-order-ref {
+	margin: 0;
+	padding: 0.25rem 0.875rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-tag);
+	font-size: 0.9375rem;
+	font-weight: 700;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-order-id {
+	overflow-wrap: anywhere;
+}
+
+.j-order-title {
+	max-width: 18ch;
+}
+
+.j-order-body {
+	max-width: 48ch;
+	margin: 0;
+	text-wrap: pretty;
+}
+
+/* The shared, script-free poll line, in indigo on Sun. */
+.j-order-poll {
+	--u-violet: var(--j-royal);
+	--u-edge: color-mix(in srgb, var(--j-on-sun) 20%, transparent);
+
+	width: min(100%, 16rem);
+	margin-top: 0.5rem;
+}
+
+.j-order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 0.75rem;
+	margin-top: 0.5rem;
+}
+
+.j-order-actions form {
+	margin: 0;
+}
+
+.j-order-keep {
+	margin: 0.25rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.875rem;
+}
+
+.j-order-alert {
+	width: 100%;
+	text-align: left;
+}
+
+.j-order-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+	align-items: start;
+	gap: 1.5rem;
+	margin-top: 1.5rem;
+}
+
+.j-order-panel .j-panel-head-label {
+	margin-bottom: 1.25rem;
+}
+
+.j-order-panel .j-totals {
+	margin-top: 0;
+}
+
+.j-order-ship {
+	margin: 1.25rem 0 0;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+}
+
+/* ── Account ──────────────────────────────────────────────────────────── */
+
+.j-acct {
+	display: grid;
+	gap: 1.5rem;
+	max-width: 32rem;
+	margin: 0.5rem auto 0;
+	padding: 2.5rem 2.25rem;
+}
+
+.j-acct-toy {
+	width: 6.5rem;
+	margin: 0 auto 1.25rem;
+	border-radius: var(--j-r-media);
+}
+
+.j-acct .j-title {
+	font-size: 2.75rem;
+}
+
+.j-acct .j-lede {
+	margin-top: 0.75rem;
+}
+
+.j-crumb {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	margin-bottom: 1.25rem;
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+	font-weight: 650;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-crumb a {
+	color: var(--j-ink);
+	text-underline-offset: 0.3em;
+}
+
+.j-crumb [aria-current] {
+	overflow-wrap: anywhere;
+}
+
+.j-orders {
+	display: grid;
+	gap: 0.75rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.j-orders-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) auto minmax(0, 0.7fr) minmax(6rem, auto);
+	align-items: center;
+	gap: 0.5rem 1.25rem;
+	min-height: 4.5rem;
+	padding: 0.75rem 1.75rem;
+	border-radius: var(--j-r-field);
+	background: var(--j-surface);
+}
+
+.j-orders-ref {
+	min-width: 0;
+	font-weight: 800;
+	font-variation-settings: "CASL" 1;
+	overflow-wrap: anywhere;
+	text-decoration-line: underline;
+	text-decoration-color: transparent;
+	text-decoration-thickness: 3px;
+	text-underline-offset: 0.3em;
+}
+
+.j-orders-ref:hover {
+	text-decoration-color: var(--j-f5);
+}
+
+.j-orders-state {
+	justify-self: start;
+	padding: 0.25rem 0.875rem;
+	border-radius: var(--j-r-pill);
+	background: var(--j-ground);
+	font-size: 0.875rem;
+	font-weight: 750;
+	font-variation-settings: "CASL" 1;
+}
+
+.j-orders-items {
+	color: var(--j-ink-2);
+	font-size: 0.9375rem;
+}
+
+.j-orders-total {
+	justify-self: end;
+	font-size: 1.25rem;
+	font-weight: 800;
+}
+
+/* ── The hop ─────────────────────────────────────────────────────────────
+   The flying copy is in the markup only on add (a hold just taken), and is
+   drawn only where the motion block at the bottom says so — and only when the
+   header has a bag to land in. Anywhere else it is nothing. */
+
+.j-hop {
+	display: none;
+}
+
+/* ── Tablet ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 60rem) {
+	.j-cart,
+	.j-co-cols,
+	.j-order-cols {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.j-cart-sum,
+	.j-co-summary {
+		position: static;
+	}
+}
+
+/* ── Phone ────────────────────────────────────────────────────────────── */
+
+@media (max-width: 45rem) {
+	.j-page {
+		padding-top: 1.25rem;
+		padding-bottom: 4rem;
+	}
+
+	.j-bar {
+		margin-bottom: 1.25rem;
+	}
+
+	.j-panel,
+	.j-sunfield {
+		padding: 1.5rem 1.25rem;
+	}
+
+	.j-step {
+		gap: 0.25rem;
+		min-height: 2rem;
+		padding: 0 0.75rem;
+		font-size: 0.8125rem;
+	}
+
+	.j-step-tick {
+		width: 0.875rem;
+		height: 0.875rem;
+	}
+
+	.j-co-title {
+		margin-bottom: 1.25rem;
+	}
+
+	.j-empty .j-title {
+		font-size: 1.875rem;
+	}
+
+	.j-cart-lines {
+		gap: 0.75rem;
+	}
+
+	/* The picture and the words share the first row; the pill and the
+	   controls take the whole width beneath them. */
+	.j-cart-line {
+		grid-template-columns: 5.75rem minmax(0, 1fr);
+		gap: 0 0.875rem;
+		padding: 0.5rem 0.75rem 0.625rem 0.5rem;
+	}
+
+	.j-cart-body {
+		display: contents;
+	}
+
+	.j-cart-top {
+		flex-direction: column;
+		align-self: center;
+		gap: 0.25rem;
+		padding: 0.25rem 0;
+	}
+
+	.j-cart-line .j-held,
+	.j-cart-ctl {
+		grid-column: 1 / -1;
+	}
+
+	.j-cart-line .j-held {
+		margin-top: 0.625rem;
+		padding-inline: 0.25rem;
+	}
+
+	.j-held-pill {
+		width: 100%;
+	}
+
+	.j-cart-name {
+		font-size: 1.125rem;
+	}
+
+	.j-cart-money {
+		justify-items: start;
+		text-align: left;
+	}
+
+	.j-cart-price {
+		font-size: 1.1875rem;
+	}
+
+	.j-held-pill {
+		gap: 0.5rem;
+		min-height: 2.5rem;
+		padding: 0 0.875rem;
+		font-size: 0.875rem;
+	}
+
+	.j-held-clock {
+		font-size: 0.9375rem;
+	}
+
+	.j-cart-ctl {
+		gap: 0.25rem;
+		margin-top: 0.5rem;
+		padding-inline: 0.25rem;
+	}
+
+	.j-qtyin input {
+		width: 4rem;
+	}
+
+	.j-cart-sum {
+		padding: 1.5rem 1.25rem 1.25rem;
+	}
+
+	.j-co-cols {
+		gap: 1.25rem;
+	}
+
+	.j-co-panel {
+		gap: 1.5rem;
+	}
+
+	.j-co-fields {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.j-co-method {
+		padding: 0.5rem 1rem;
+	}
+
+	.j-order-head {
+		padding: 2rem 1.25rem 1.75rem;
+	}
+
+	.j-order-ref {
+		border-radius: var(--j-r-input);
+		font-size: 0.875rem;
+	}
+
+	.j-acct {
+		padding: 2rem 1.25rem;
+	}
+
+	.j-acct .j-title {
+		font-size: 2.25rem;
+	}
+
+	.j-acct-toy {
+		width: 5.5rem;
+	}
+
+	.j-orders-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		padding: 0.875rem 1.25rem;
+	}
+
+	.j-orders-total {
+		grid-row: 1;
+		grid-column: 2;
+	}
+
+	.j-orders-state {
+		grid-column: 1;
+	}
+
+	.j-orders-items {
+		grid-column: 2;
+		justify-self: end;
+	}
+}
+
+/* ── Motion — the hop, the pill, the press ───────────────────────────────
+ *
+ * THE HOP (the theme's one authored moment, brief "Signature: hop to the
+ * bag"). No script: the bag page draws a copy of the newest line's picture
+ * (`.j-hop`, one per view), and CSS anchor positioning ties its two ends to
+ * real boxes — the line's picture (`--j-hop-from`) and the header bag
+ * (`--j-bag`) — so it flies between wherever those actually are, at any width.
+ * Two animations on one element split the arc the brief asks for: `left` runs
+ * linear, `top` runs on `cubic-bezier(.3,-.5,.7,1)` — a little wind-up dip,
+ * then the leap — over 560ms, while the copy shrinks to the badge's size and
+ * fades as it lands. The start is clamped to the top three quarters of the
+ * viewport, so a line drawn below the fold still hops from somewhere visible.
+ * Then the bag squashes (1.15, then 0.94, then 1, 260ms on the one overshoot
+ * curve) and the badge pops in with the count. It ends where it began:
+ * transparent, fixed, and taking no clicks — nothing covers the page after.
+ *
+ * A browser without anchor positioning draws no copy and no squash; the bag
+ * page is the same page without the flourish. A header with no bag (a menu
+ * with no cart link) has nothing to land in, so no copy is drawn there either
+ * (`body:has(.j-bag)`), rather than one flying to an anchor that is not there.
+ *
+ * THE PROBE'S LIMIT. `@supports` can only ask whether `anchor()` parses in a
+ * declaration (`top: anchor(--j-probe top)`); it cannot ask whether a browser
+ * also resolves `anchor()` inside `@keyframes`, which the flight's two ends
+ * rely on. A browser that has the first but not the second would fly the copy
+ * from its resting place on the badge — still transparent-at-rest, still
+ * taking no clicks, so the worst case is a flourish that does not travel.
+ *
+ * THE PILL drains continuously (a 1s linear width to match the once-a-second
+ * tick), and under a minute it wiggles once, ±3° in 400ms. The hold root is
+ * `data-motion="essential"`, which exempts it from theme.css's reduced-motion
+ * clamp — so under reduced motion NOTHING here eases it: the fill steps each
+ * second and the tangerine turn happens without the wiggle.
+ */
+@media (prefers-reduced-motion: no-preference) {
+	.j-held-fill {
+		transition:
+			width 1s linear,
+			background-color 300ms var(--j-ease-out);
+	}
+
+	.j-held[data-state="expiring"] .j-held-pill {
+		animation: j-wiggle 400ms var(--j-ease-out) 1;
+	}
+
+	@keyframes j-wiggle {
+		0%,
+		100% {
+			rotate: 0deg;
+		}
+
+		20% {
+			rotate: -3deg;
+		}
+
+		45% {
+			rotate: 3deg;
+		}
+
+		70% {
+			rotate: -1.5deg;
+		}
+	}
+
+	.j-textcontrol {
+		transition:
+			scale var(--j-dur-press) var(--j-ease-out),
+			background-color 150ms var(--j-ease-out);
+	}
+
+	.j-textcontrol:active {
+		scale: 0.96;
+	}
+
+	@supports (anchor-name: --j-probe) and (top: anchor(--j-probe top)) {
+		.j-bag {
+			anchor-name: --j-bag;
+		}
+
+		.j-cart-pic[data-hop] {
+			anchor-name: --j-hop-from;
+		}
+
+		/* At rest (before and after the flight) it sits ON the badge, invisible. */
+		body:has(.j-bag) .j-hop {
+			display: block;
+			position: fixed;
+			z-index: 30;
+			top: anchor(--j-bag center);
+			left: calc(anchor(--j-bag right) - 1.375rem);
+			width: 7.25rem;
+			height: 7.25rem;
+			translate: -50% -50%;
+			pointer-events: none;
+			animation:
+				j-hop-x 560ms linear 220ms both,
+				j-hop-y 560ms cubic-bezier(0.3, -0.5, 0.7, 1) 220ms both;
+		}
+
+		.j-hop-toy {
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+			border-radius: var(--j-r-media);
+			box-shadow: var(--j-fly);
+			opacity: 0;
+			animation: j-hop-shrink 560ms linear 220ms both;
+		}
+
+		.j-hop-toy .j-field {
+			height: 100%;
+			border-radius: var(--j-r-media);
+		}
+
+		/* A phone's line picture is smaller; the copy starts at its size. */
+		@media (max-width: 45rem) {
+			body:has(.j-bag) .j-hop {
+				width: 5.5rem;
+				height: 5.5rem;
+			}
+		}
+
+		@keyframes j-hop-x {
+			from {
+				left: anchor(--j-hop-from center);
+			}
+
+			to {
+				left: calc(anchor(--j-bag right) - 1.375rem);
+			}
+		}
+
+		@keyframes j-hop-y {
+			from {
+				top: min(anchor(--j-hop-from center), 75vh);
+			}
+
+			to {
+				top: anchor(--j-bag center);
+			}
+		}
+
+		/* Lifts off at full size, a touch of turn in the air, lands badge-sized. */
+		@keyframes j-hop-shrink {
+			0% {
+				opacity: 0;
+				scale: 1;
+				rotate: 0deg;
+			}
+
+			6% {
+				opacity: 1;
+				scale: 1.04;
+			}
+
+			50% {
+				rotate: -8deg;
+			}
+
+			86% {
+				opacity: 1;
+			}
+
+			100% {
+				opacity: 0;
+				scale: 0.22;
+				rotate: 0deg;
+			}
+		}
+
+		/* The bag catches it: squash, then settle. */
+		body:has(.j-hop) .j-bag {
+			animation: j-bag-squash 260ms var(--j-ease-toy) 760ms;
+		}
+
+		@keyframes j-bag-squash {
+			0% {
+				scale: 1;
+			}
+
+			35% {
+				scale: 1.15;
+			}
+
+			70% {
+				scale: 0.94;
+			}
+
+			100% {
+				scale: 1;
+			}
+		}
+
+		/* The count arrives with the toy. */
+		body:has(.j-hop) .j-badge {
+			animation: j-badge-pop 320ms var(--j-ease-toy) 740ms backwards;
+		}
+
+		@keyframes j-badge-pop {
+			from {
+				opacity: 0;
+				scale: 0.3;
+			}
+
+			to {
+				opacity: 1;
+				scale: 1;
+			}
+		}
+	}
+}
+
+/* Reduced motion: no flight, no squash, no tilt, no wiggle — the badge pulses
+   once instead (brief). A ring the badge's own colour is lit at first render
+   and fades out: opacity only, 150ms lit then 150ms out. The badge is
+   `data-motion="essential"` (Layout.astro) purely so theme.css's clamp lets
+   this fade through. */
+body:has(.j-hop) .j-badge {
+	position: relative;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	body:has(.j-hop) .j-badge::after {
+		content: "";
+		position: absolute;
+		inset: -0.25rem;
+		border-radius: var(--j-r-pill);
+		box-shadow: 0 0 0 0.25rem var(--j-badge);
+		opacity: 0;
+		transition: opacity 150ms ease-out 150ms;
+		pointer-events: none;
+	}
+
+	@starting-style {
+		body:has(.j-hop) .j-badge::after {
+			opacity: 1;
+		}
+	}
+}

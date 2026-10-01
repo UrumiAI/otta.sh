@@ -1,0 +1,73 @@
+---
+/**
+ * Pressing's view of one of a signed-in customer's orders (issue #306): the
+ * reference as a ringed pill and the state set big and expanded, then the lines
+ * as bought (the purchase-time snapshot — title and price — which is what a
+ * receipt must show, each with its small disc) and the totals, on sleeve-blue
+ * blocks. Presentation only — `src/pages/account/orders/[id].astro` reads
+ * through the session route (NOT_FOUND for an order that is not theirs, the
+ * same answer as for one that does not exist), sets the status and the
+ * no-store header, and formats every figure.
+ */
+import { isUnpricedText } from "../../lib/totals.js";
+import type { AccountOrderModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Receipt from "./Receipt.astro";
+
+interface Props {
+	model: AccountOrderModel;
+}
+
+const { order, errorMessage } = Astro.props.model;
+---
+
+<div class="pr-page pr-order">
+	<nav class="pr-crumb pr-order-crumb" aria-label="Breadcrumb">
+		<a class="pr-line" href="/account/orders">Your orders</a>
+		<span aria-hidden="true">/</span>
+		<span aria-current="page">{order === null ? "Order" : order.id}</span>
+	</nav>
+
+	{
+		order === null ? (
+			<div class="pr-order-missing">
+				<h1 class="pr-display">Order</h1>
+				<div class="pr-slot">
+					<Notice tone="error">{errorMessage}</Notice>
+				</div>
+			</div>
+		) : (
+			<>
+				<header class="pr-order-head">
+					<p class="pr-order-ref">
+						Order <span class="pr-order-id u-mono">{order.id}</span>
+					</p>
+					<h1 class="pr-display pr-order-title">{order.state}</h1>
+				</header>
+
+				<div class="pr-order-cols">
+					<section class="pr-block">
+						<h2 class="u-label pr-block-head-label">Items</h2>
+						<Receipt rows={order.ledgerRows} />
+					</section>
+
+					<section class="pr-block">
+						<h2 class="u-label pr-block-head-label">Totals</h2>
+						<dl class="pr-totals">
+							{order.totals.map((row) => (
+								<div class="pr-totals-row" data-prose={isUnpricedText(row.value) ? "" : undefined}>
+									<dt>{row.label}</dt>
+									<dd class="u-mono">{row.value}</dd>
+								</div>
+							))}
+							<div class="pr-totals-row pr-totals-grand">
+								<dt>Total</dt>
+								<dd class="u-mono">{order.total}</dd>
+							</div>
+						</dl>
+					</section>
+				</div>
+			</>
+		)
+	}
+</div>

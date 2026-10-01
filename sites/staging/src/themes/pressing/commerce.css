@@ -1,0 +1,1338 @@
+/**
+ * Pressing — the commerce views (bag, checkout, pay, order, account) and the
+ * BAG STRIP, the theme's hold visual.  Linked by `themes/pressing/Layout.astro`;
+ * tokens come from `theme.css`, and the shared pieces (`.pr-h`, `.pr-desc`,
+ * `.pr-notice`, `.pr-line`, the record) from `views.css`.  Held to the page
+ * sweep (`test/page-css.test.ts`): no raw colour, no font stack, the pill as
+ * the one radius, no outline, no button shape of its own — and every
+ * transition and animation lives inside a `prefers-reduced-motion` block.
+ *
+ * THE GRAMMAR, as in the catalogue: colour blocks are the containers (the
+ * ultramarine page, sleeve-blue blocks), square-cornered; every control is a
+ * pill; the one outline mark is a 1.5px ring drawn as an inset shadow, so it
+ * never shifts layout; the only shadow is under a disc.  Titles are Archivo
+ * expanded 800 at line-height .9 and set BIG; body copy is never expanded;
+ * figures take the tabular recipe (`.u-mono`), so money and the countdown
+ * never jitter.
+ *
+ * CONTRAST (WCAG AA, text; measured): on the ground #10163A — vellum 15.2:1,
+ * muted 8.0, pink 8.1, sodium 10.8, coral 6.9; on the surface #1A2150 —
+ * vellum 13.2, muted 7.0, pink 7.1, sodium 9.4, coral 6.0; ultramarine on
+ * pink 8.1 and on sodium 10.8; sodium on ultramarine 10.8.  Pink is never a
+ * field under body text — it is the action and the "held" mark.
+ */
+
+:root {
+	/* The strip's height — the body reserves exactly this (plus the safe-area
+	   inset) while a strip is on the page, so it never covers the footer. */
+	--pr-strip-h: 5rem;
+}
+
+/* ── Page frame ─────────────────────────────────────────────────────────── */
+
+.pr-page {
+	padding: 3rem 0 5rem;
+}
+
+.pr-page-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.75rem 1.75rem;
+	margin-bottom: 2.5rem;
+}
+
+.pr-page-meta {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 1.125rem;
+	font-weight: 600;
+}
+
+.pr-page-aside {
+	margin: 0 0 0 auto;
+	align-self: center;
+}
+
+/* The page's title: expanded 800 at line-height .9, big — the sleeve front.
+   `overflow-wrap` is the last resort that keeps a long word from pushing the
+   page sideways on a phone; the sizes are chosen so it never has to. */
+.pr-display {
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: clamp(2.75rem, 7vw, 5.5rem);
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.03em;
+	line-height: 0.9;
+	overflow-wrap: break-word;
+	text-wrap: balance;
+}
+
+.pr-slot {
+	max-width: 46rem;
+}
+
+.pr-slot .pr-notice {
+	margin-bottom: 1.75rem;
+}
+
+.pr-note-body {
+	margin: 0;
+}
+
+.pr-note-body a,
+.pr-notice a {
+	color: var(--pr-ink);
+	font-weight: 600;
+	text-underline-offset: 0.2em;
+}
+
+/* A block of the sleeve-blue surface: the theme's container. */
+.pr-block {
+	padding: 1.75rem;
+	background: var(--pr-surface);
+}
+
+.pr-block-title,
+.pr-block-head-label {
+	margin: 0 0 1.25rem;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+}
+
+/* ── The step pills ─────────────────────────────────────────────────────── */
+
+.pr-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pr-step {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	min-height: 2.25rem;
+	padding: 0 1rem;
+	border-radius: var(--u-r);
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-step[data-done] {
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink);
+	color: var(--pr-ink);
+}
+
+.pr-step[aria-current="step"] {
+	background: var(--pr-pink);
+	color: var(--pr-on-pink);
+	font-weight: 700;
+}
+
+.pr-step-tick {
+	width: 0.875rem;
+	height: 0.875rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.pr-co-steps {
+	margin-bottom: 1.75rem;
+}
+
+/* ── The bag ────────────────────────────────────────────────────────────── */
+
+.pr-cart {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(19rem, 25rem);
+	align-items: start;
+	gap: 2rem;
+}
+
+.pr-baglines {
+	display: grid;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+/* One line: a sleeve-blue block with the record standing on it. The record's
+   own field is the same blue, so the sleeve and its disc sit on the block. */
+.pr-bagline {
+	display: grid;
+	grid-template-columns: 9.5rem minmax(0, 1fr);
+	gap: 1.5rem;
+	align-items: start;
+	padding: 1.25rem 1.5rem 1.25rem 1.25rem;
+	background: var(--pr-surface);
+}
+
+.pr-bagline-art {
+	min-width: 0;
+}
+
+/* The line's record: the disc a third of the way out and turned, still. */
+.pr-media-line {
+	--pr-out: 28%;
+	--pr-turn: 18deg;
+}
+
+.pr-media-line .pr-disc,
+.pr-media-line .pr-sleeve {
+	top: 14%;
+	left: 2%;
+	width: 70%;
+}
+
+.pr-bagline-body {
+	display: grid;
+	gap: 0.875rem;
+	min-width: 0;
+	padding-top: 0.25rem;
+}
+
+.pr-bagline-top {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 0.5rem 1.5rem;
+}
+
+.pr-bagline-id {
+	min-width: 0;
+}
+
+.pr-bagline-name {
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: 1.5rem;
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.02em;
+	line-height: 1;
+	overflow-wrap: break-word;
+}
+
+.pr-bagline-cat {
+	margin: 0.375rem 0 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 500;
+}
+
+.pr-bagline-money {
+	display: grid;
+	justify-items: end;
+	gap: 0.125rem;
+	text-align: right;
+}
+
+.pr-bagline-price {
+	font-size: 1.5rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	line-height: 1;
+}
+
+.pr-bagline-each,
+.pr-bagline-prose {
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-bagline-ctl {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem 1.25rem;
+}
+
+.pr-bagline-update {
+	display: flex;
+	align-items: center;
+	gap: 0.625rem;
+	margin: 0;
+}
+
+.pr-bagline-ctl form {
+	margin: 0;
+}
+
+/* The quantity: a small ringed pill. */
+.pr-qty input {
+	width: 4.75rem;
+	min-height: 2.75rem;
+	padding: 0 0.5rem 0 1rem;
+	border: 0;
+	border-radius: var(--u-r);
+	background: var(--pr-ground);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink);
+	font-size: 1rem;
+	font-weight: 700;
+}
+
+/* Update and Remove: words with the drawing underline, each a 44px target. */
+.pr-textctl {
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+	padding: 0;
+	border: 0;
+	background: none;
+	background-image: linear-gradient(currentColor, currentColor);
+	background-position: 0 calc(100% - 0.625rem);
+	background-repeat: no-repeat;
+	background-size: 0 2px;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.pr-textctl:hover {
+	background-size: 100% 2px;
+	color: var(--pr-ink);
+}
+
+/* ── The line's hold chip ───────────────────────────────────────────────── */
+
+.pr-held {
+	display: grid;
+	justify-items: start;
+	gap: 0.375rem;
+}
+
+.pr-held-chip {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0.375rem 0.875rem;
+	border-radius: var(--u-r);
+	box-shadow: inset 0 0 0 1.5px var(--pr-pink);
+	color: var(--pr-pink);
+	font-size: 0.8125rem;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.pr-held-clock {
+	font-weight: 700;
+}
+
+.pr-held[data-state="expiring"] .pr-held-chip {
+	box-shadow: inset 0 0 0 1.5px var(--pr-sodium);
+	color: var(--pr-sodium);
+}
+
+.pr-held[data-state="released"] .pr-held-chip {
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink-2);
+}
+
+/* Released: the words say it; a "00:00" beside them would be noise. */
+.pr-held[data-state="released"] .pr-held-clock {
+	display: none;
+}
+
+.pr-held-note {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+}
+
+/* ── The summary ────────────────────────────────────────────────────────── */
+
+.pr-cart-sum {
+	position: sticky;
+	top: 5.5rem;
+	display: grid;
+	gap: 0.75rem;
+}
+
+.pr-cart-sum .pr-block-title {
+	margin-bottom: 0.25rem;
+}
+
+.pr-sub {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 0.25rem 1rem;
+	margin: 0;
+}
+
+.pr-sub-label {
+	font-weight: 600;
+}
+
+/* The subtotal at the price size: 40px, expanded, tabular. */
+.pr-sub-figure {
+	font-size: 2.5rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	line-height: 1;
+}
+
+.pr-sub[data-prose] .pr-sub-figure {
+	color: var(--pr-ink-2);
+	font-size: 1rem;
+	font-weight: 600;
+	font-variation-settings: normal;
+	letter-spacing: 0.01em;
+}
+
+.pr-sub-minor {
+	color: var(--pr-ink-2);
+	font-size: 0.9375rem;
+}
+
+.pr-sub-note,
+.pr-sub-fine {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-cart-sum .u-btn {
+	margin-top: 0.75rem;
+}
+
+.pr-sub-fine {
+	font-size: 0.8125rem;
+}
+
+/* ── The empty bag, the checked-out bag ─────────────────────────────────── */
+
+.pr-bag-empty {
+	padding-top: 0;
+}
+
+.pr-terminal {
+	display: grid;
+	gap: 1.25rem;
+	max-width: 46rem;
+	padding: 2.25rem;
+}
+
+.pr-terminal-body,
+.pr-terminal-note {
+	margin: 0;
+	color: var(--pr-ink-2);
+}
+
+.pr-terminal-note {
+	font-size: 0.875rem;
+}
+
+.pr-terminal-actions,
+.pr-terminal-resume,
+.pr-cart-terminal-restart {
+	display: grid;
+	justify-items: start;
+	gap: 0.75rem;
+}
+
+.pr-terminal-actions {
+	gap: 1.5rem;
+	margin-top: 0.5rem;
+}
+
+.pr-cart-terminal-restart form {
+	margin: 0;
+}
+
+/* ── Receipts and totals ────────────────────────────────────────────────── */
+
+.pr-receipt {
+	display: grid;
+	gap: 1rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pr-receipt-line {
+	display: grid;
+	grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.875rem;
+}
+
+/* The small disc: turned to its seeded angle, the theme's one shadow under it. */
+.pr-disc-sm {
+	display: block;
+	width: 2.75rem;
+	height: 2.75rem;
+	transform: rotate(var(--pr-rot, 0deg));
+	filter: drop-shadow(0 6px 10px var(--pr-shadow));
+}
+
+.pr-receipt-id {
+	display: grid;
+	gap: 0.125rem;
+	min-width: 0;
+}
+
+.pr-receipt-name {
+	font-family: var(--u-display);
+	font-size: 1rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x-card);
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+	overflow-wrap: break-word;
+}
+
+.pr-receipt-meta {
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+}
+
+.pr-receipt-money {
+	font-weight: 700;
+	text-align: right;
+}
+
+.pr-receipt-money[data-prose] {
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-totals {
+	display: grid;
+	gap: 0.625rem;
+	margin: 1.75rem 0 0;
+}
+
+.pr-totals-row {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 0.25rem 1rem;
+}
+
+.pr-totals-row dt {
+	color: var(--pr-ink-2);
+	font-size: 0.9375rem;
+}
+
+.pr-totals-row dd {
+	margin: 0;
+	font-weight: 700;
+}
+
+.pr-totals-row[data-prose] dd {
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-totals-grand {
+	margin-top: 0.75rem;
+}
+
+.pr-totals-grand dt {
+	color: var(--pr-ink);
+	font-size: 1rem;
+	font-weight: 700;
+}
+
+.pr-totals-grand dd {
+	font-size: 2.5rem;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.01em;
+	line-height: 1;
+}
+
+.pr-totals-grand[data-prose] dd {
+	font-size: 1rem;
+	font-variation-settings: normal;
+	letter-spacing: 0.01em;
+}
+
+.pr-totals-note {
+	margin: 0.75rem 0 0;
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+}
+
+/* ── Checkout ───────────────────────────────────────────────────────────── */
+
+.pr-co-title {
+	margin-bottom: 2.5rem;
+}
+
+.pr-co-notice-slot {
+	max-width: 46rem;
+}
+
+.pr-co-notice-slot .pr-notice {
+	margin-bottom: 1.5rem;
+}
+
+.pr-co-restart {
+	margin: 0 0 2rem;
+}
+
+.pr-co-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.25fr) minmax(19rem, 1fr);
+	align-items: start;
+	gap: 3rem;
+}
+
+.pr-co-panel {
+	display: grid;
+	gap: 2.25rem;
+	min-width: 0;
+}
+
+.pr-co-summary {
+	position: sticky;
+	top: 5.5rem;
+	gap: 0;
+}
+
+.pr-co-panel-head {
+	margin-bottom: -0.75rem;
+}
+
+.pr-co-summary .pr-co-panel-head {
+	margin-bottom: 1.25rem;
+}
+
+.pr-co-summary .pr-notice {
+	padding: 0 0 1rem;
+}
+
+/* The section heads use the shared `.u-label`: muted 13/600 sentence case. */
+.pr-co-head-label {
+	margin: 0;
+	font-size: 0.875rem;
+}
+
+.pr-co-coupon,
+.pr-co-delivery,
+.pr-co-details,
+.pr-acct-form {
+	display: grid;
+	gap: 1.5rem;
+	margin: 0;
+}
+
+.pr-co-field {
+	display: grid;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.pr-flabel {
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-co-req {
+	margin-left: 0.375rem;
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+	font-weight: 500;
+}
+
+.pr-co-note {
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+	line-height: 1.45;
+}
+
+p.pr-co-note {
+	margin: 0;
+}
+
+.pr-co-note a,
+.pr-co-group-note a {
+	color: var(--pr-ink);
+	font-weight: 600;
+	text-underline-offset: 0.2em;
+}
+
+/* A field: a pill with the 1.5px ring — the theme's one outline mark. */
+.pr-co-field :is(input, select) {
+	width: 100%;
+	min-height: 3.25rem;
+	padding: 0 1.25rem;
+	border: 0;
+	border-radius: var(--u-r);
+	background: var(--pr-ground);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink);
+	font-family: var(--u-body);
+	font-size: 1rem;
+}
+
+.pr-co-field :is(input, select):hover {
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink);
+}
+
+.pr-co-field select {
+	padding-right: 0.75rem;
+}
+
+.pr-co-field select option {
+	background: var(--pr-ground);
+	color: var(--pr-ink);
+}
+
+.pr-co-field .pr-notice {
+	margin: 0.25rem 0 0;
+}
+
+.pr-co-coupon-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 0.625rem;
+}
+
+.pr-co-fields {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 1.25rem;
+}
+
+.pr-co-span2 {
+	grid-column: 1 / -1;
+}
+
+.pr-co-group {
+	display: grid;
+	gap: 1.25rem;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.pr-co-group > legend {
+	margin-bottom: 1rem;
+	padding: 0;
+}
+
+/* Delivery options: ringed pills, like the format chips; the chosen one fills
+   vellum with ultramarine words. */
+.pr-co-methods {
+	display: grid;
+	gap: 0.5rem;
+}
+
+.pr-co-method {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.75rem;
+	min-height: 3.25rem;
+	padding: 0.5rem 1.375rem;
+	border-radius: var(--u-r);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.pr-co-method:has(input:checked) {
+	background: var(--pr-ink);
+	box-shadow: none;
+	color: var(--pr-ground);
+}
+
+.pr-co-method input {
+	width: 1.125rem;
+	height: 1.125rem;
+	margin: 0;
+}
+
+.pr-co-method-price {
+	font-weight: 700;
+}
+
+.pr-co-delivery-line {
+	font-size: 0.9375rem;
+}
+
+.pr-co-go {
+	width: 100%;
+}
+
+.pr-co-back {
+	margin: 2.5rem 0 0;
+	font-size: 0.9375rem;
+	font-weight: 600;
+}
+
+/* ── Pay ────────────────────────────────────────────────────────────────── */
+
+.pr-pay-block {
+	display: grid;
+	gap: 1.25rem;
+	max-width: 38rem;
+}
+
+.pr-pay-trust {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.9375rem;
+}
+
+.pr-pay-block #payment-form {
+	display: grid;
+	gap: 1rem;
+	margin: 0;
+}
+
+/* The page's mount box: a ground-blue well on the surface block. (Three
+   classes deep so it wins over the page's own scoped rule.) */
+.pr-pay .pr-pay-block .mount {
+	border: 0;
+	border-radius: 0;
+	background: var(--pr-ground);
+}
+
+/* The page's own error line (its script writes it) keeps its words: coral on
+   the ground, like every Pressing error. */
+.pr-pay .pr-pay-block .pay-error {
+	padding: 0.875rem 1.125rem;
+	border: 0;
+	background: var(--pr-ground);
+	color: var(--pr-error);
+	font-size: 0.9375rem;
+	font-weight: 600;
+}
+
+.pr-pay-block #payment-form .u-btn {
+	width: 100%;
+}
+
+/* ── Order ──────────────────────────────────────────────────────────────── */
+
+.pr-order-head {
+	display: grid;
+	justify-items: start;
+	gap: 1.25rem;
+	padding: 1rem 0 3rem;
+}
+
+/* The reference: a ringed pill, the catalogue number of the order. */
+.pr-order-ref {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0.375rem 1rem;
+	border-radius: var(--u-r);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+
+.pr-order-id {
+	color: var(--pr-ink);
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+
+.pr-order-title {
+	max-width: 14em;
+	font-size: clamp(2.75rem, 6.5vw, 5.5rem);
+}
+
+.pr-order-body {
+	max-width: 46ch;
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 1.125rem;
+}
+
+.pr-order-poll {
+	width: min(100%, 28rem);
+}
+
+.pr-order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+}
+
+.pr-order-actions form {
+	margin: 0;
+}
+
+.pr-order-keep {
+	margin: 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-order-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+	align-items: start;
+	gap: 0.5rem;
+}
+
+.pr-order-cols .pr-totals {
+	margin-top: 0;
+}
+
+.pr-order-ship {
+	margin: 1.5rem 0 0;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-order-missing {
+	display: grid;
+	justify-items: start;
+	gap: 1.5rem;
+	padding: 1rem 0 2rem;
+}
+
+.pr-order-missing .pr-slot {
+	width: 100%;
+}
+
+.pr-order-missing .pr-notice {
+	margin: 0;
+}
+
+.pr-order-crumb {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin: 0 0 1.5rem;
+}
+
+/* ── Account ────────────────────────────────────────────────────────────── */
+
+.pr-acct {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 3.5rem;
+	align-items: center;
+}
+
+.pr-acct-body {
+	display: grid;
+	gap: 1.5rem;
+	max-width: 32rem;
+}
+
+.pr-acct-body .pr-desc,
+.pr-acct-body .pr-notice {
+	margin: 0;
+}
+
+.pr-acct-body .pr-slot .pr-notice {
+	margin: 0;
+}
+
+.pr-orders {
+	display: grid;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pr-orders-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 0.7fr) auto;
+	align-items: center;
+	gap: 0.75rem 1.5rem;
+	padding: 1.25rem 1.5rem;
+	background: var(--pr-surface);
+}
+
+.pr-orders-ref {
+	color: var(--pr-ink);
+	font-weight: 700;
+	overflow-wrap: anywhere;
+	text-underline-offset: 0.2em;
+}
+
+.pr-orders-state {
+	justify-self: start;
+	padding: 0.25rem 0.875rem;
+	border-radius: var(--u-r);
+	box-shadow: inset 0 0 0 1.5px var(--pr-ink-2);
+	color: var(--pr-ink-2);
+	font-size: 0.8125rem;
+	font-weight: 600;
+}
+
+.pr-orders-items {
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+}
+
+.pr-orders-total {
+	font-size: 1.25rem;
+	font-weight: 700;
+	font-variation-settings: var(--pr-x);
+	text-align: right;
+}
+
+.pr-orders-empty {
+	display: grid;
+	justify-items: start;
+	gap: 1rem;
+	max-width: 36rem;
+}
+
+.pr-orders-empty .pr-desc {
+	margin: 0 0 0.5rem;
+}
+
+/* ── The bag strip ──────────────────────────────────────────────────────── */
+
+/* While a strip is on the page, the page reserves its height (and the safe
+   area under it), so the strip never covers the page's last line or the
+   footer — at the end of the page it rests over this space, not over them,
+   with a line of the ground between it and the footer's band of the same
+   blue. */
+body:has(.pr-strip) {
+	padding-bottom: calc(var(--pr-strip-h) + 0.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+.pr-strip {
+	position: fixed;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	z-index: 15;
+	isolation: isolate;
+	padding-bottom: env(safe-area-inset-bottom, 0px);
+	background: var(--pr-surface);
+	color: var(--pr-ink);
+}
+
+/* Under a minute the ground turns sodium: an opacity layer, crossfaded in the
+   motion block below. */
+.pr-strip::before {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: var(--pr-sodium);
+	content: "";
+	opacity: 0;
+}
+
+.pr-strip-in {
+	display: flex;
+	align-items: center;
+	gap: 1.5rem;
+	box-sizing: border-box;
+	height: var(--pr-strip-h);
+	padding: 0 max(2rem, calc((100% - 90rem) / 2 + 2rem));
+	padding-left: max(2rem, calc((100% - 90rem) / 2 + 2rem), env(safe-area-inset-left, 0px));
+	padding-right: max(2rem, calc((100% - 90rem) / 2 + 2rem), env(safe-area-inset-right, 0px));
+}
+
+.pr-strip-label {
+	flex: none;
+	margin: 0;
+	font-size: 1rem;
+	font-weight: 600;
+	line-height: 1.2;
+}
+
+/* The countdown: 56px, expanded 800, tabular (`.u-mono`) — so the width never
+   jitters as the digits change. */
+.pr-strip-clock {
+	flex: none;
+	margin: 0;
+	font-family: var(--u-display);
+	font-size: 3.5rem;
+	font-weight: 800;
+	font-variation-settings: var(--pr-x);
+	letter-spacing: -0.02em;
+	line-height: 1;
+	white-space: nowrap;
+}
+
+/* "pm UTC" beside the no-script wall clock, small, so it fits a phone. */
+.pr-strip-unit {
+	font-family: var(--u-body);
+	font-size: 1rem;
+	font-weight: 600;
+	font-variation-settings: normal;
+	letter-spacing: 0.01em;
+}
+
+.pr-strip-count {
+	font-size: 2.5rem;
+}
+
+.pr-strip-what {
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	color: var(--pr-ink-2);
+	font-size: 0.875rem;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pr-strip-go {
+	flex: none;
+	min-height: 3rem;
+	margin-left: auto;
+}
+
+.pr-strip[data-state="expiring"]::before {
+	opacity: 1;
+}
+
+.pr-strip[data-state="expiring"],
+.pr-strip[data-state="expiring"] .pr-strip-what {
+	color: var(--pr-on-pink);
+}
+
+.pr-strip[data-state="expiring"] .pr-strip-go {
+	background: var(--pr-on-pink);
+	color: var(--pr-sodium);
+}
+
+.pr-strip[data-state="released"] .pr-strip-clock,
+.pr-strip[data-state="none"] .pr-strip-clock {
+	color: var(--pr-ink-2);
+}
+
+.pr-strip[data-state="released"] .pr-strip-what:not(.pr-strip-note) {
+	display: none;
+}
+
+.pr-strip-note[hidden] {
+	display: none;
+}
+
+/* ── Narrower ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 68.75rem) {
+	.pr-cart,
+	.pr-co-cols {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.pr-cart-sum,
+	.pr-co-summary {
+		position: static;
+	}
+
+	.pr-cart-sum {
+		max-width: 32rem;
+	}
+}
+
+@media (max-width: 53.75rem) {
+	:root {
+		--pr-strip-h: 3.5rem;
+	}
+
+	.pr-page {
+		padding: 1.75rem 0 3.5rem;
+	}
+
+	.pr-page-head {
+		margin-bottom: 1.75rem;
+	}
+
+	.pr-display {
+		font-size: clamp(2.5rem, 12vw, 3.5rem);
+	}
+
+	.pr-order-title {
+		font-size: clamp(2.25rem, 10.5vw, 3.25rem);
+	}
+
+	.pr-bagline {
+		grid-template-columns: 5.5rem minmax(0, 1fr);
+		gap: 0.875rem;
+		padding: 0.875rem;
+	}
+
+	.pr-bagline-name {
+		font-size: 1.125rem;
+	}
+
+	.pr-bagline-price {
+		font-size: 1.125rem;
+	}
+
+	.pr-block {
+		padding: 1.25rem;
+	}
+
+	.pr-terminal {
+		padding: 1.5rem 1.25rem;
+	}
+
+	.pr-co-title {
+		margin-bottom: 1.75rem;
+	}
+
+	.pr-co-fields {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.pr-order-cols {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.pr-order-head {
+		padding-bottom: 2rem;
+	}
+
+	.pr-page-aside {
+		margin-left: 0;
+	}
+
+	.pr-acct {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.5rem;
+	}
+
+	.pr-acct-art {
+		width: min(100%, 13rem);
+	}
+
+	.pr-orders-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		padding: 1rem 1.125rem;
+	}
+
+	.pr-orders-items {
+		grid-column: 1;
+	}
+
+	.pr-orders-total {
+		grid-column: 2;
+		grid-row: 1 / span 2;
+	}
+
+	/* The strip on a phone: 56px, the countdown at 32px, the label on two
+	   short lines, what is set aside left to the bag page. */
+	.pr-strip-in {
+		gap: 0.75rem;
+		padding-left: max(1rem, env(safe-area-inset-left, 0px));
+		padding-right: max(1rem, env(safe-area-inset-right, 0px));
+	}
+
+	.pr-strip-label {
+		max-width: 5.5em;
+		font-size: 0.8125rem;
+	}
+
+	.pr-strip-clock {
+		font-size: 2rem;
+	}
+
+	.pr-strip-unit {
+		font-size: 0.75rem;
+	}
+
+	.pr-strip-count {
+		font-size: 1.5rem;
+	}
+
+	.pr-strip-what {
+		display: none;
+	}
+
+	.pr-strip-go {
+		min-height: 2.5rem;
+		padding: 0 1.125rem;
+		font-size: 0.875rem;
+	}
+}
+
+/* ── Motion: the strip rises, the ground crossfades, the controls draw ─────
+   The strip's resting place is declared above; the rise is layered on for a
+   visitor who has not asked for less. Under reduced motion the strip is simply
+   there, the ground turns sodium in one step with its words (never a state in
+   between), and the digits keep ticking — HoldClock's countdown is
+   information, not decoration. */
+
+@media (prefers-reduced-motion: no-preference) {
+	.pr-strip[data-rise] {
+		animation: pr-strip-rise 360ms var(--pr-ease-out) both;
+	}
+
+	@keyframes pr-strip-rise {
+		from {
+			transform: translateY(100%);
+		}
+	}
+
+	/* The ground crossfades over 300ms; the words switch in ONE step at the
+	   midpoint, where either ink reads on the half-mixed ground — fading them
+	   too would pass both through the ground's own colour. */
+	.pr-strip::before {
+		transition: opacity 300ms ease-out;
+	}
+
+	.pr-strip,
+	.pr-strip-what {
+		transition: color 0s linear 150ms;
+	}
+
+	.pr-strip-go {
+		transition:
+			background-color 300ms ease-out,
+			color 0s linear 150ms,
+			transform 100ms ease-out;
+	}
+
+	.pr-textctl {
+		transition:
+			background-size 220ms var(--pr-ease-out),
+			color 150ms ease-out;
+	}
+}
+
+/* ── Forced colours ───────────────────────────────────────────────────────
+   Forced colours drop box-shadows, and the inset rings above are these
+   controls' only edge: the quantity and checkout wells, the delivery choices,
+   the hold chip and the done step; fills go too, and the current step and the
+   strip's "Check out" are a fill. There, and only there, each gets a real
+   border, written `transparent` because forced colours repaint it in the
+   system's colour (theme.css does the same for every pill and the header bag). */
+@media (forced-colors: active) {
+	.pr-qty input,
+	.pr-co-field :is(input, select),
+	.pr-co-method,
+	.pr-held-chip,
+	.pr-step[data-done],
+	.pr-step[aria-current="step"],
+	.pr-strip-go {
+		border: 1.5px solid transparent;
+	}
+}

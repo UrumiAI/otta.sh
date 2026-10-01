@@ -24,7 +24,7 @@ import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } fro
 import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../layouts/Storefront.astro";
-import { toCmsProductContent, type ProductEntryData } from "../lib/products.js";
+import { productKey, toCmsProductContent, type ProductEntryData } from "../lib/products.js";
 import {
 	exactCount,
 	shopLinkLabel,
@@ -117,8 +117,8 @@ const cards: HomeModel["cards"] =
 	rows.length === 0 || view === null
 		? []
 		: view.map((product) => ({
-				href: product.url ?? `/products/${product.slug ?? product.id}`,
-				slug: product.slug ?? product.id,
+				href: product.url ?? `/products/${productKey(product)}`,
+				slug: productKey(product),
 				title: product.title,
 				description: product.description ?? null,
 				image: product.images?.[0] ?? null,

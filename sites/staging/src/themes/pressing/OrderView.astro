@@ -1,0 +1,130 @@
+---
+/**
+ * Pressing's order confirmation: the order's own state as the biggest type on
+ * the page — expanded 800, like a sleeve front — with the reference above it
+ * as a ringed pill, the body, and what you can do next as pills. Beneath, two
+ * blocks of the sleeve-blue surface: the items (each with its small disc) and
+ * the totals, the total at the price size.
+ *
+ * No slide and no celebration here: the record sliding out of its sleeve is the
+ * theme's one authored moment, and the headline is the page's answer about the
+ * order's state (a "Paid" the page did not say would be the theme deciding it).
+ *
+ * Presentation only: `src/pages/orders/[orderId].astro` reads the order,
+ * deletes the checkout stash, sets 404/503, picks the copy for the order's
+ * state, and runs the bounded meta-refresh poll (the `<meta>` tags are the
+ * page's, and so is `no-referrer`). Stripe's redirect parameters never reach
+ * this file: the page reads them to choose between two copy variants and hands
+ * over only the words (`checkout-client-js.test.ts` 10c sweeps this view).
+ *
+ * ZERO client JavaScript (ADR-0012): the "still checking" line is the shared,
+ * script-free `PollRibbon`, never the bag's countdown.
+ */
+import PollRibbon from "../../components/PollRibbon.astro";
+import type { OrderModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Receipt from "./Receipt.astro";
+import StepTrack from "./StepTrack.astro";
+import Totals from "./Totals.astro";
+
+interface Props {
+	model: OrderModel;
+}
+
+const {
+	order,
+	stamp,
+	failureMessage,
+	shouldPoll,
+	pollHop,
+	pollMax,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	canResume,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	totalLabel,
+} = Astro.props.model;
+---
+
+<div class="pr-page pr-order">
+	{
+		order === null || stamp === null ? (
+			<div class="pr-order-missing">
+				{/* No step track: it would claim a journey (bag, details, payment)
+				    the visitor never made for an order that does not exist. */}
+				<h1 class="pr-display">Order</h1>
+				<div class="pr-slot">
+					<Notice tone="error">{failureMessage}</Notice>
+				</div>
+				<a class="u-btn u-btn-ghost" href="/products">
+					Browse products
+				</a>
+			</div>
+		) : (
+			<>
+				<div class="pr-co-steps"><StepTrack current="order" /></div>
+
+				<header class="pr-order-head" data-state={order.state}>
+					<p class="pr-order-ref">
+						Order <span class="pr-order-id u-mono">{order.id}</span>
+					</p>
+					<h1 class="pr-display pr-order-title">{stamp.headline}</h1>
+					{stamp.body !== null && <p class="pr-order-body">{stamp.body}</p>}
+					{shouldPoll && (
+						<div class="pr-order-poll">
+							<PollRibbon poll={pollHop} pollMax={pollMax} />
+						</div>
+					)}
+					{hasActions && (
+						<div class="pr-order-actions">
+							{canResume && (
+								<a class="u-btn" href="/checkout">
+									Complete payment
+								</a>
+							)}
+							{canCheckAgain && (
+								<a class="u-btn u-btn-ghost" href={nextPollUrl}>
+									Check again
+								</a>
+							)}
+							{deadEnd && (
+								<form method="POST" action="/checkout/new-cart">
+									<button type="submit" class="u-btn u-btn-ghost">
+										Start a new cart
+									</button>
+								</form>
+							)}
+						</div>
+					)}
+					<p class="pr-order-keep">Keep this link to check its status.</p>
+				</header>
+
+				<div class="pr-order-cols">
+					<section class="pr-block">
+						<h2 class="u-label pr-block-head-label">Items</h2>
+						<Receipt rows={ledgerRows} />
+						{order.fulfillment !== null && (
+							<p class="pr-order-ship">
+								Shipped with {order.fulfillment.carrier}, tracking{" "}
+								<span class="pr-order-id u-mono">{order.fulfillment.trackingNumber}</span>
+							</p>
+						)}
+					</section>
+
+					<section class="pr-block">
+						<h2 class="u-label pr-block-head-label">Totals</h2>
+						<Totals
+							rows={sumRows}
+							total={order.totals.total}
+							totalLabel={totalLabel}
+							excludesUncalculated={order.totals.totalExcludesUncalculated}
+						/>
+					</section>
+				</div>
+			</>
+		)
+	}
+</div>

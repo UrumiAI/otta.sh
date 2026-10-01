@@ -1,0 +1,38 @@
+---
+/**
+ * Where the shopper is in checkout, as Jumble draws it: four pills in a row —
+ * the steps behind you on Sun with a tick, the one you are on in the action
+ * colour, the ones ahead on the lavender surface. No lines join them (Jumble
+ * draws none); the row reads as counters laid out on the floor. The steps and
+ * their order are the shared `CHECKOUT_STEPS` (the list every theme's track
+ * draws), so no theme can invent a step. A real ordered list, with
+ * `aria-current="step"` on the one you are on; the ticks are decoration.
+ */
+import { CHECKOUT_STEPS, type CheckoutStep } from "../../components/StepTrack.astro";
+
+interface Props {
+	current: CheckoutStep;
+}
+
+const { current } = Astro.props;
+const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
+---
+
+<ol class="j-steps" role="list" aria-label="Checkout progress">
+	{
+		CHECKOUT_STEPS.map((step, index) => (
+			<li
+				class="j-step"
+				data-done={index < currentIndex ? "" : undefined}
+				aria-current={index === currentIndex ? "step" : undefined}
+			>
+				{index < currentIndex && (
+					<svg class="j-step-tick" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+						<path d="M3.5 8.5l3 3 6-7" />
+					</svg>
+				)}
+				{step.label}
+			</li>
+		))
+	}
+</ol>
