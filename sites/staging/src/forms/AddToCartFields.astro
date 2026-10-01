@@ -1,0 +1,30 @@
+---
+/**
+ * The hidden-field contract `/cart/add` reads (src/pages/cart/add.ts), in one
+ * place so no theme can restyle the add-to-cart form and quietly change what
+ * it posts.
+ *
+ *  - `sku`, `productId` — the line to add; `productId` is the CMS content id the
+ *    created cart line must carry or it can never be priced (issue #80);
+ *  - `idempotencyKey` — the PLUGIN's, minted fresh per rendered PDP, so a
+ *    double-submit of one rendered form replays instead of duplicating while a
+ *    reload mints a new key. Never minted here or by a theme;
+ *  - `returnTo` — where an error sends the shopper back to. `/cart/add` still
+ *    runs it through `safeReturnPath`; the page computes it.
+ *
+ * A theme renders the <form>, the quantity field and the button around these —
+ * the visible parts are presentation, these are behaviour.
+ */
+import type { AddToCartModel } from "../themes/contract.js";
+
+interface Props {
+	fields: AddToCartModel;
+}
+
+const { fields } = Astro.props;
+---
+
+<input type="hidden" name="sku" value={fields.sku} />
+<input type="hidden" name="productId" value={fields.productId} />
+<input type="hidden" name="idempotencyKey" value={fields.idempotencyKey} />
+<input type="hidden" name="returnTo" value={fields.returnTo} />

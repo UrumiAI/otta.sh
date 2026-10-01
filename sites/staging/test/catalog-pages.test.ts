@@ -22,6 +22,13 @@
  *
  * Rendered behaviour (layout, focus rings, the dark palette) is verified in a
  * workerd preview with screenshots, and is not what this file is for.
+ *
+ * THE THEME SPLIT. Since the theme system, each catalog page is two files: the
+ * PAGE (`src/pages/…`) makes every read and every decision and builds a model;
+ * the VIEW (`src/themes/tempered/{Home,Shop,Product}View.astro`) renders it,
+ * styled from `themes/tempered/views.css`. Every assertion below kept its
+ * intent and moved to whichever half now holds the thing it pins: decisions to
+ * the page, markup to the view, CSS to the sheet.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -35,14 +42,29 @@ const read = (relative: string): string => readFileSync(path.join(PAGES, relativ
 const HOME = read("index.astro");
 const PLP = read("products/index.astro");
 const PDP = read("products/[slug].astro");
+const TEMPERED = path.resolve(HERE, "../src/themes/tempered");
+const readView = (name: string): string => readFileSync(path.join(TEMPERED, name), "utf8");
+const HOME_VIEW = readView("HomeView.astro");
+const SHOP_VIEW = readView("ShopView.astro");
+const PDP_VIEW = readView("ProductView.astro");
+/** The CSS those three views (and the chrome) render with. */
+const VIEWS_CSS = readView("views.css");
+const ADD_TO_CART_FIELDS = readFileSync(
+	path.resolve(HERE, "../src/forms/AddToCartFields.astro"),
+	"utf8",
+);
 const TAPE_SOURCE = readFileSync(path.resolve(HERE, "../src/lib/tape.ts"), "utf8");
 const SEED = readFileSync(path.resolve(HERE, "../seed/seed.json"), "utf8");
 
-/** The pages increment 3 moved onto the token layer. Increments 4–6 add theirs. */
+/** The pages increment 3 moved onto the token layer, and the views that now
+ *  render them. Increments 4–6 add theirs. */
 const MIGRATED: ReadonlyArray<readonly [string, string]> = [
 	["index.astro", HOME],
 	["products/index.astro", PLP],
 	["products/[slug].astro", PDP],
+	["themes/tempered/HomeView.astro", HOME_VIEW],
+	["themes/tempered/ShopView.astro", SHOP_VIEW],
+	["themes/tempered/ProductView.astro", PDP_VIEW],
 ];
 
 /**
@@ -87,25 +109,41 @@ function shopperCopy(file: string, source: string): string {
 		.join("\n");
 }
 
-/** A page's `<style>` blocks, comments stripped — prose about a colour is not
- *  a colour. Mirrors `component-css.test.ts`, which sweeps components only. */
-function declarations(text: string): string {
-	return [...text.matchAll(/<style>([\s\S]*?)<\/style>/g)]
-		.map((match) => match[1] ?? "")
-		.join("\n")
-		.replace(/\/\*[\s\S]*?\*\//g, "");
+/** The views' sheet, comments stripped — prose about a colour is not a colour.
+ *  Mirrors `component-css.test.ts`, which sweeps components only. */
+const declarations = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** One section of views.css, by its banner (`── Home`, `── Shop`, `── Product`). */
+function section(name: string): string {
+	const start = VIEWS_CSS.indexOf(`/* ── ${name}`);
+	expect(start, `no ${name} section in views.css`).toBeGreaterThanOrEqual(0);
+	const next = VIEWS_CSS.indexOf("/* ── ", start + 1);
+	return VIEWS_CSS.slice(start, next === -1 ? undefined : next);
 }
 
-describe("§2/§3 — the pages read the token layer and write no vocabulary of their own", () => {
-	test.each(MIGRATED)("%s declares no raw colour", (_file, source) => {
-		const css = declarations(source);
-		expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-		expect(css).not.toMatch(/\b(rgb|rgba|hsl|hsla|oklch)\(/);
+/** Each catalog view's CSS, which used to be its page's `<style>` block. */
+const VIEW_SHEETS: ReadonlyArray<readonly [string, string]> = [
+	["home", section("Home")],
+	["shop", section("Shop")],
+	["product", section("Product")],
+];
+
+describe("§2/§3 — the catalog views read the token layer and write no vocabulary of their own", () => {
+	test.each(MIGRATED)(
+		"%s carries no <style> block — its CSS lives in views.css",
+		(_file, source) => {
+			expect(source).not.toMatch(/<style[\s>]/);
+		},
+	);
+
+	test.each(VIEW_SHEETS)("the %s view declares no raw colour", (_view, css) => {
+		expect(declarations(css)).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+		expect(declarations(css)).not.toMatch(/\b(rgb|rgba|hsl|hsla|oklch)\(/);
 	});
 
-	test.each(MIGRATED)("%s names no font family of its own", (_file, source) => {
+	test.each(VIEW_SHEETS)("the %s view names no font family of its own", (_view, css) => {
 		// `font-family: var(--u-display)` is the only legal form.
-		const families = [...declarations(source).matchAll(/font-family:([^;]*);/g)].map(
+		const families = [...declarations(css).matchAll(/font-family:([^;]*);/g)].map(
 			([, value = ""]) => value,
 		);
 		expect(families.length).toBeGreaterThan(0);
@@ -114,8 +152,8 @@ describe("§2/§3 — the pages read the token layer and write no vocabulary of 
 		}
 	});
 
-	test.each(MIGRATED)("%s uses the theme's one radius", (_file, source) => {
-		const radii = [...declarations(source).matchAll(/border-radius:([^;]*);/g)].map(
+	test.each(VIEW_SHEETS)("the %s view uses the theme's one radius", (_view, css) => {
+		const radii = [...declarations(css).matchAll(/border-radius:([^;]*);/g)].map(
 			([, value = ""]) => value,
 		);
 		for (const value of radii) {
@@ -123,10 +161,10 @@ describe("§2/§3 — the pages read the token layer and write no vocabulary of 
 		}
 	});
 
-	test.each(MIGRATED)("%s does not restyle the global focus ring", (_file, source) => {
-		// §11's ring is one rule in tokens.css. A page that writes its own is how
+	test.each(VIEW_SHEETS)("the %s view does not restyle the global focus ring", (_view, css) => {
+		// §11's ring is one rule in theme.css. A view that writes its own is how
 		// a store ends up with two.
-		expect(declarations(source)).not.toMatch(/:focus(-visible)?\s*\{/);
+		expect(declarations(css)).not.toMatch(/:focus(-visible)?\s*\{/);
 	});
 
 	test.each(MIGRATED)("%s carries no legacy `.notice` panel", (_file, source) => {
@@ -162,8 +200,9 @@ describe("§7 — no page assembles money", () => {
 	});
 
 	test("the PDP hands PriceTag the formatted string, not an amount", () => {
-		expect(PDP).toMatch(/<PriceTag[\s\S]{0,200}formatted=\{product\.price\.formatted\}/);
-		expect(PDP).not.toMatch(/<PriceTag[\s\S]{0,200}amount=/);
+		expect(PDP).toContain("priceFormatted: product.price.formatted");
+		expect(PDP_VIEW).toMatch(/<PriceTag[\s\S]{0,200}formatted=\{model\.purchase\.priceFormatted\}/);
+		expect(PDP_VIEW).not.toMatch(/<PriceTag[\s\S]{0,200}amount=/);
 	});
 });
 
@@ -172,11 +211,14 @@ describe("§8 — the home hero and its degraded rule", () => {
 		// The whole degraded contract in one line: no rows ⇒ no tape. The page
 		// used to make no commerce call at all, and it must still render a
 		// complete hero when the commerce service is unreachable.
-		expect(HOME).toMatch(/rows\.length > 0 &&/);
+		expect(HOME_VIEW).toMatch(/rows\.length > 0 &&/);
+		// …and the page hands over the rows it has, and nothing else.
+		expect(HOME).toContain("const rows = tapeRows(view)");
 	});
 
 	test("a degraded home shows NO error box — that is the catalog page's job", () => {
 		expect(HOME).not.toContain("Notice");
+		expect(HOME_VIEW).not.toContain("Notice");
 	});
 
 	test("the hero reads the same catalog the shop page reads", () => {
@@ -215,25 +257,25 @@ describe("§8 — the home hero and its degraded rule", () => {
 		// and the copy had already drifted — PriceTag pins `white-space: nowrap`
 		// and the hand-rolled span did not, so a figure could break across two
 		// lines in the narrow hero column. One component, one treatment.
-		expect(HOME).toMatch(/<PriceTag[\s\S]{0,200}formatted=\{row\.price\}/);
-		expect(HOME).toMatch(/<PriceTag[\s\S]{0,200}soldOut=\{row\.soldOut\}/);
+		expect(HOME_VIEW).toMatch(/<PriceTag[\s\S]{0,200}formatted=\{row\.price\}/);
+		expect(HOME_VIEW).toMatch(/<PriceTag[\s\S]{0,200}soldOut=\{row\.soldOut\}/);
 		// And the duplicated rules are gone with it: the price cell's size,
-		// weight and strike are the component's, and a page cannot reach a
+		// weight and strike are the component's, and a view cannot reach a
 		// component's root anyway (see src/lib/rest-props.ts).
-		expect(declarations(HOME)).not.toMatch(/\.price\b/);
+		expect(declarations(section("Home"))).not.toMatch(/\.[\w-]*price\b/);
 	});
 
 	test("the tape carries table semantics — it IS a table, drawn in hairlines", () => {
 		// Three labelled columns of facts. The theme draws them with divs so the
 		// hero can reflow to one column on a phone; the roles put the structure
 		// back for a screen reader at no visual cost.
-		expect(HOME).toMatch(/role="table"/);
-		expect(HOME.match(/role="row"/g)?.length).toBe(2); // the head row and the mapped one
-		expect(HOME.match(/role="columnheader"/g)?.length).toBe(3);
-		expect(HOME.match(/role="cell"/g)?.length).toBe(3);
+		expect(HOME_VIEW).toMatch(/role="table"/);
+		expect(HOME_VIEW.match(/role="row"/g)?.length).toBe(2); // the head row and the mapped one
+		expect(HOME_VIEW.match(/role="columnheader"/g)?.length).toBe(3);
+		expect(HOME_VIEW.match(/role="cell"/g)?.length).toBe(3);
 		// The foot is a note, not a row, so it sits OUTSIDE the table element —
 		// a `role="table"` may only contain rows.
-		expect(HOME).toMatch(/<\/div>\s*<p class="tape-foot">/);
+		expect(HOME_VIEW).toMatch(/<\/div>\s*<p class="home-tape-foot">/);
 	});
 
 	test("the hero fetches a hero-sized window, not the whole page cap", () => {
@@ -247,16 +289,18 @@ describe("§8 — the home hero and its degraded rule", () => {
 
 describe("the catalog grid", () => {
 	test("cards get their grid position, so the coil tints cycle (§5)", () => {
-		expect(PLP).toMatch(/<ProductCard[\s\S]{0,200}index=\{index\}/);
+		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,200}index=\{index\}/);
 	});
 
 	test("a card with no live price gets `null`, not a figure and not a zero", () => {
-		expect(PLP).toMatch(/price=\{[\s\S]{0,160}: null\s*\}/);
+		expect(PLP).toMatch(/price:\s*product\.purchasable[\s\S]{0,120}: null,/);
+		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,400}price=\{card\.price\}/);
 	});
 
 	test("the degraded catalog still renders every product, content-only", () => {
 		expect(PLP).toContain("purchasable: false");
-		expect(PLP).toContain("<Notice");
+		expect(PLP).toMatch(/degradedNotice:\s*view === null && items\.length > 0/);
+		expect(SHOP_VIEW).toContain("<Notice");
 	});
 
 	test("a degraded card says the price is UNKNOWN, not that the product is retired", () => {
@@ -264,7 +308,8 @@ describe("the catalog grid", () => {
 		// which is true of an unpriced product and false under a banner promising
 		// the catalog is complete. The degraded branch overrides it.
 		expect(PLP).toContain('"Price unavailable right now"');
-		expect(PLP).toMatch(/<ProductCard[\s\S]{0,400}priceNote=\{priceNote\}/);
+		expect(PLP).toMatch(/cards: cards\.map\([\s\S]{0,600}\bpriceNote,/);
+		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,400}priceNote=\{card\.priceNote\}/);
 	});
 
 	test("the eyebrow states a count only when the count is exact", () => {
@@ -272,13 +317,14 @@ describe("the catalog grid", () => {
 		// and never "48 items". `exactCount` owns the rule; the page must not
 		// print `items.length` behind its back.
 		expect(PLP).toContain("exactCount(entries.length, PLP_PAGE_SIZE_CAP, hasMore)");
-		expect(PLP).toMatch(/countLabel !== null && </);
+		expect(SHOP_VIEW).toMatch(/model\.countLabel !== null && </);
 		expect(PLP).not.toMatch(/\$\{count\}\s*items/);
 	});
 
 	test("the empty catalog is a designed state with a next move", () => {
-		expect(PLP).toContain("No products yet.");
-		expect(PLP).toContain("/_emdash/admin");
+		expect(SHOP_VIEW).toContain("No products yet.");
+		expect(SHOP_VIEW).toContain("href={model.adminHref}");
+		expect(PLP).toContain('adminHref: "/_emdash/admin"');
 	});
 
 	test("a CONTENT outage is read from `error`, not inferred from zero entries", () => {
@@ -291,53 +337,64 @@ describe("the catalog grid", () => {
 	});
 
 	test("the outage branch is checked BEFORE the empty state, and wins", () => {
-		// Order is the whole fix: both branches see zero entries.
-		expect(PLP.indexOf("catalogUnavailable ? (")).toBeGreaterThan(-1);
-		expect(PLP.indexOf("catalogUnavailable ? (")).toBeLessThan(
-			PLP.indexOf("items.length === 0 ? ("),
-		);
+		// Order is the whole fix: both branches see zero entries. The page
+		// decides it; the view renders the outage branch first as well.
+		expect(PLP).toMatch(/catalogUnavailable\s*\?\s*"unavailable"\s*:\s*items\.length === 0/);
+		const outage = SHOP_VIEW.indexOf('model.state === "unavailable" ? (');
+		expect(outage).toBeGreaterThan(-1);
+		expect(outage).toBeLessThan(SHOP_VIEW.indexOf('model.state === "empty" ? ('));
 	});
 
 	test("the outage says what happened and what to do — no apology, no admin link", () => {
 		// §10. The operator's next move ("create a product in the admin") is the
 		// wrong instruction for a shopper and the wrong diagnosis of an outage.
-		expect(PLP).toContain("The catalog is unavailable right now.");
-		expect(PLP).toContain("Try again in a moment.");
-		const copy = shopperCopy("products/index.astro", PLP);
+		expect(SHOP_VIEW).toContain("The catalog is unavailable right now.");
+		expect(SHOP_VIEW).toContain("Try again in a moment.");
+		const copy = shopperCopy("ShopView.astro", SHOP_VIEW);
 		expect(copy).not.toMatch(/sorry|apolog/i);
 		// Rendered once, in the branch that is not the outage.
-		expect(copy.match(/_emdash\/admin/g)).toHaveLength(1);
+		expect(copy.match(/model\.adminHref/g)).toHaveLength(1);
+		expect(PLP.match(/_emdash\/admin/g)).toHaveLength(1);
 	});
 });
 
 describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 	test("it still posts the four fields /cart/add reads", () => {
-		expect(PDP).toMatch(/method="POST"\s+action="\/cart\/add"/);
+		expect(PDP_VIEW).toMatch(/method="POST"\s+action="\/cart\/add"/);
+		// The fields are the SHARED contract every theme's form renders, so no
+		// theme can change what the endpoint receives.
+		expect(PDP_VIEW).toMatch(
+			/<form[\s\S]*?<AddToCartFields fields=\{model\.purchase\.addToCart\} \/>/,
+		);
 		for (const field of ["sku", "productId", "idempotencyKey", "returnTo"]) {
-			expect(PDP, `${field} is no longer posted`).toMatch(
+			expect(ADD_TO_CART_FIELDS, `${field} is no longer posted`).toMatch(
 				new RegExp(`name="${field}"\\s+value=\\{`),
 			);
+			expect(PDP, `the page no longer supplies ${field}`).toMatch(new RegExp(`\\b${field}:`));
 		}
 	});
 
 	test("the quantity field still posts `qty`, minimum one", () => {
-		expect(PDP).toMatch(/<QtyField[^>]*name="qty"/);
-		expect(PDP).toMatch(/<QtyField[^>]*min=\{1\}/);
+		expect(PDP_VIEW).toMatch(/<QtyField[^>]*name="qty"/);
+		expect(PDP_VIEW).toMatch(/<QtyField[^>]*min=\{1\}/);
 	});
 
 	test("the idempotency key is the plugin's, never minted here", () => {
 		// Freshly minted per rendered PDP by the plugin: a double-submit of ONE
 		// rendered form replays, a reload does not.
-		expect(PDP).toContain("addToCart.idempotencyKey");
-		expect(PDP).not.toMatch(/randomUUID|crypto\./);
+		expect(PDP).toContain("idempotencyKey: addToCart.idempotencyKey");
+		for (const source of [PDP, PDP_VIEW, ADD_TO_CART_FIELDS]) {
+			expect(source).not.toMatch(/randomUUID|crypto\./);
+		}
 	});
 
 	test("the form only exists for a product that is actually in stock", () => {
-		expect(PDP).toMatch(/addToCart && inStock &&/);
+		expect(PDP).toMatch(/addToCart && inStock\s*\?/);
+		expect(PDP_VIEW).toMatch(/model\.purchase\.addToCart !== null &&/);
 	});
 
 	test("a sold-out PDP is not a dead end — it offers a way on", () => {
-		expect(PDP).toMatch(/soldOut && \([\s\S]{0,400}href="\/products"/);
+		expect(PDP_VIEW).toMatch(/soldOut && \([\s\S]{0,400}href="\/products"/);
 	});
 
 	test("the sold-out block says it ONCE, and the ledger is where it is said", () => {
@@ -349,14 +406,15 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		//
 		// The RENDERED copy, not the source: the comment above that block
 		// explains this rule and necessarily quotes the phrasing it bans.
-		expect(shopperCopy("products/[slug].astro", PDP)).not.toMatch(/out of stock/i);
+		expect(shopperCopy("ProductView.astro", PDP_VIEW)).not.toMatch(/out of stock/i);
 	});
 
 	test("sold out DIMS the art; degraded and unpriced do not", () => {
 		// `soldOut` is the explicit token, never `!inStock`: a degraded page does
 		// not know the stock, and dimming its art would state a fact it lacks.
 		expect(PDP).toContain('const soldOut = product?.availability === "out_of_stock"');
-		expect(PDP).toMatch(/<MediaPanel[\s\S]{0,200}dimmed=\{soldOut\}/);
+		expect(PDP).toMatch(/dimmed: soldOut,/);
+		expect(PDP_VIEW).toMatch(/<MediaPanel[\s\S]{0,200}dimmed=\{model\.dimmed\}/);
 	});
 
 	test("the not-found page states the fact and speculates about nothing", () => {
@@ -364,11 +422,11 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		// page has no record of — it may never have existed, and telling a
 		// shopper who followed a live link that the thing is gone is worse than
 		// telling them nothing.
-		expect(PDP).toContain("Nothing here under that address.");
-		const copy = shopperCopy("products/[slug].astro", PDP);
+		expect(PDP_VIEW).toContain("Nothing here under that address.");
+		const copy = shopperCopy("ProductView.astro", PDP_VIEW);
 		expect(copy).not.toMatch(/may have|might have|probably|perhaps/i);
 		// Still a door out, which is what the empty state is for (§8).
-		expect(PDP).toMatch(/Product not found\.[\s\S]{0,600}href="\/products"/);
+		expect(PDP_VIEW).toMatch(/Product not found\.[\s\S]{0,600}href="\/products"/);
 	});
 
 	test("the hold note states the EFFECTIVE hold window the route reports, not a hard-coded figure (issue #127)", () => {
@@ -380,9 +438,12 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(
 			/const cartHoldMinutes = result !== null && result\.ok \? result\.cartHoldMinutes/,
 		);
-		expect(PDP).toMatch(/<p class="hold-note">\s*\{holdNote\(cartHoldMinutes\)\}/);
-		expect(PDP).not.toContain("holds one in stock for 15 minutes");
-		expect(PDP).not.toContain("CART_HOLD_TTL_MS");
+		expect(PDP).toMatch(/holdNote: holdNote\(cartHoldMinutes\)/);
+		expect(PDP_VIEW).toMatch(/<p class="pdp-hold-note">\s*\{model\.purchase\.holdNote\}/);
+		for (const source of [PDP, PDP_VIEW]) {
+			expect(source).not.toContain("holds one in stock for 15 minutes");
+			expect(source).not.toContain("CART_HOLD_TTL_MS");
+		}
 	});
 });
 

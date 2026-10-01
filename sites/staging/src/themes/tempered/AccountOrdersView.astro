@@ -1,0 +1,52 @@
+---
+/**
+ * Tempered's order list for a signed-in customer (issue #306, ADR-0004).
+ * Presentation only — `src/pages/account/orders/index.astro` resolves the
+ * customer from the SESSION (never a customer id), redirects the signed-out,
+ * sets `private, no-store`, maps BUSY, and hands over finished rows.
+ *
+ * Styles: `commerce.css` (`account-orders-*`).
+ */
+import Notice from "../../components/Notice.astro";
+import type { AccountOrdersModel } from "../contract.js";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+---
+
+<div class="account-orders-head-row">
+	<h1 class="account-orders-title">Your orders</h1>
+	<form method="POST" action="/account/logout">
+		<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+	</form>
+</div>
+
+{
+	errorMessage !== null ? (
+		<div class="account-orders-notice-slot" role="alert">
+			<Notice>{errorMessage}</Notice>
+		</div>
+	) : rows.length === 0 ? (
+		<p class="account-orders-empty">
+			No orders yet. Orders you place with this email address — including as a guest — appear
+			here. <a href="/products">Browse products</a>
+		</p>
+	) : (
+		<ul class="account-orders-list">
+			{rows.map((row) => (
+				<li class="account-orders-row">
+					<a class="account-orders-ref u-mono" href={row.href}>
+						{row.id}
+					</a>
+					<span class="account-orders-state">{row.state}</span>
+					<span class="account-orders-items">{row.items}</span>
+					<span class="account-orders-total u-mono">{row.total}</span>
+				</li>
+			))}
+		</ul>
+	)
+}
+

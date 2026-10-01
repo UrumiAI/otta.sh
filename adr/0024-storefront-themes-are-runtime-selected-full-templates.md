@@ -1,0 +1,147 @@
+# 0024. Storefront themes are runtime-selected full templates over shared page logic
+
+- Status: accepted
+- Date: 2026-09-29
+- Refines: [ADR-0003](./0003-storefront-plugin-routes.md) — "the theme owns markup" becomes "the
+  **active** theme owns markup". Its route shape, its JSON view models and its rule that storefront
+  intelligence stays out of the markup layer are unchanged. Builds on
+  [ADR-0006](./0006-trusted-in-process-deployment.md) (the site's origin guard and cookie shim) and
+  [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) (the client-JS fence).
+
+## Context
+
+`sites/staging` ships one look, Tempered (`docs/theme/TEMPERED.md`). A merchant who wants a different
+storefront today has to fork the site. We want several finished storefronts a merchant can switch
+between from the admin, with no rebuild and no redeploy.
+
+A palette swap is not enough. The five new designs differ in layout, not just colour: Plinth has no
+dividers and stacks images beside a sticky buy column, Pressing puts a sticky countdown strip under
+the page, Batch overlaps a label on the photo, Counter has the only overlay cart. So a theme has to own
+per-page markup and layout, not only tokens.
+
+Three facts about the platform shape how that can work:
+
+- **Plugin kv is readable from SSR.** EmDash prefixes a plugin's kv keys with `plugin:<id>:`, and
+  exports `getPluginSetting(pluginId, key)`, which reads the options row
+  `plugin:<id>:settings:<key>`. A plugin write of `settings:storeTheme` should therefore be readable on
+  the site as `getPluginSetting("otta", "storeTheme")`. The infrastructure change proves this with a
+  test against the real host before anything relies on it, and that round trip stays pinned by
+  `sites/staging/test/theme-resolve.test.ts`.
+- **Astro links CSS from the static import graph.** A registry that statically imports every theme's
+  `.astro` files would link every theme's `<style>` blocks on every page, whichever theme is active.
+- **The page files already carry logic that must not fork**: `isBusyResult` + `markBusy`, 404/503
+  status, `safeReturnPath`/`sameSitePath`, the origin guard, and the cart and checkout cookies. Six
+  copies of that is six chances to drop a CSRF check.
+
+Options considered: build-time theme selection (a rebuild per switch, which is what we want to
+avoid); CSS-only themes over one markup (cannot express the layouts above); and runtime-selected full
+templates over shared page logic (this record).
+
+## Decision
+
+**1. A theme is a full template, selected at runtime.** Each theme supplies a `Layout` and a view per
+page (home, shop, product, cart, checkout, pay, order, and the account login, verify, orders and order
+views), plus its own stylesheets and fonts. A theme lands whole: one change brings every one of its
+views. They live in `sites/staging/src/themes/<id>/`. A `registry.ts` maps each `ThemeId` to its
+`ThemeModule`. One shared shell, `src/layouts/Storefront.astro`, resolves the active theme and renders
+`<theme.Layout chrome={…}><View model={…}/></theme.Layout>`, with `data-theme-id` on `<html>`.
+
+**2. The merchant picks the theme in the admin.** The plugin's Settings page gets a "Store theme"
+radio group in the Store group — a radio, not a `select`, because EmDash's select trigger shows the
+raw option id rather than its label. It is saved to plugin kv `settings:storeTheme`, and the toast
+says it goes live on the next page load. An unknown id is refused and the form re-renders with an
+error notice.
+
+**3. The site reads it per request, and failure means Tempered.** `themes/resolve.ts` does one guarded
+read (`getPluginSetting` inside `try`/`catch`), memoized on `Astro.locals`, so a request pays for at
+most one read however many components ask. An absent value, an unknown id or a failed read all resolve
+to `tempered`. A theme setting can never take the storefront down.
+
+**4. A dev-only `?theme=<id>` override** exists for screenshots and e2e. It is honoured only when
+`import.meta.env.DEV` is true and is absent from production builds.
+
+**5. The plugin still does not know which themes exist.** It serves JSON view models exactly as
+ADR-0003 says and hard-codes no theme id. The site owns `themes/manifest.ts` (pure `[{id, label}]`
+data, no `.astro` imports) and hands it to the plugin at build time through a Vite define,
+`__OTTA_STORE_THEMES__`, the same pattern as `__OTTA_EMAIL_API_URL__`. The plugin reads it behind a
+`typeof` guard and a shape check. On a host that does not define it (the sandbox, other sites), no
+theme picker is rendered and `save-theme` is rejected.
+
+**6. Page logic is single-sourced; views are presentation only.** Data loading, busy handling, 404/503,
+return-path safety, the origin guard and cookies stay in the page files, and the `.ts` endpoints are
+untouched. Pages compute every value a view shows, including BUSY copy, into typed models
+(`ChromeModel`, `HomeModel`, `ShopModel`, `ProductModel`, later cart/checkout models) defined in
+`themes/contract.ts`. A theme view never reads `Astro.url`, cookies, cart ids or `Astro.response`,
+never redirects, and never imports `lib/otta-api`, `origin-guard`, `cart-cookie` or `checkout-cookie`.
+A sweep test over `src/themes/**` enforces this. The `busy.test.ts` sweep keeps covering every page.
+
+**7. A missing view falls back to Tempered under the active theme's tokens.** Every theme ships all
+of its views (Decision 1); the fallback is a safety rule, not a phase plan. `ThemeModule.views` is
+partial: `theme.views.X ?? tempered.views.X`. Today's `--u-*` custom properties become the token
+contract every theme's `theme.css` must define, so a view a theme does not supply still renders in
+that theme's colours and fonts. The design briefs' `--o-*` names are theme-internal and map onto `--u-*`.
+
+**8. Only the active theme's CSS and fonts reach the page.** Theme `.astro` files contain no `<style>`
+blocks and no side-effect CSS imports. Each `Layout` links its own sheets
+(`theme.css` plus its views/commerce sheets, each through `import href from "./….css?url"` →
+`<link rel="stylesheet" href={href}>`). Every font family is declared once in `astro.config.ts` under
+a namespaced variable, `--f-<id>-<role>` (e.g. `--f-tempered-display`, `--f-tempered-body`).
+Each `Layout` emits only its own `<Font … preload>`, and its `theme.css` maps those onto the shared
+names. Exception for the infrastructure change: Tempered's existing hash-scoped component `<style>`
+blocks in `src/components/*` may stay; only its global `:root` tokens move to
+`themes/tempered/theme.css`.
+
+**9. Motion policy.** Each theme gets exactly one authored signature moment and no page-wide scroll
+reveals. All motion sits inside `@media (prefers-reduced-motion: no-preference)`, and every signature
+has a stated reduced-motion form. Where a theme wants page-to-page continuity, it uses cross-document
+view transitions (`@view-transition { navigation: auto }`). There is no client router. Any small
+per-theme script must be justified and pass ADR-0012's client-JS fence (`checkout-client-js.test.ts`,
+widened to cover `src/themes` and `src/forms`).
+
+**10. The theme ids are fixed:**
+
+- `tempered` — the default and the fallback: today's look, hairlines, money in mono, the draining
+  hold ribbon.
+- `plinth` — minimal gallery for design objects: no dividers, monochrome (ochre only for warnings),
+  small type, and a view-transition morph from card to product page.
+- `pressing` — record-label drops, dark only: ultramarine with sleeve pink, expanded display type,
+  a disc that slides out of its sleeve, and a sticky countdown strip.
+- `batch` — specialty roaster: kraft ground, slab labels, roaster green, and a stamp that lands
+  on add.
+- `jumble` — wooden toys: bright colour fields, casual Recursive type, and the added item hopping
+  to the bag.
+- `counter` — the general-purpose shop: one swappable brand colour used only for actions, a
+  comfortable scale, and the only overlay cart (a drawer).
+
+Adding a seventh theme means a new directory, a manifest entry and a registry entry. It does not need
+a new ADR unless it breaks one of the rules above.
+
+## Consequences
+
+- **One extra D1 read per storefront request** (the options row), bounded to one by the per-request
+  memo. It fails soft to Tempered, so a slow or failing options table costs latency, never an error
+  page.
+- **Screenshot suites multiply per theme.** The infrastructure change records a Playwright baseline of
+  today's Tempered (375 and 1280 wide, light and dark, seeded demo data) and must match it with
+  `maxDiffPixels: 0` after the refactor. Every later theme PR brings its own set via `?theme=`. Markup
+  rules that apply to every theme become `test.each(themes)` sweeps.
+- **The Worker bundle grows by each theme's server code.** Every theme's views are statically imported
+  by the registry, so they all ship in the Worker even though only one renders. CSS and fonts do not
+  grow the page (Decision 8). Acceptable at six themes; revisit if the list grows much further.
+- **Edge caching must key on theme.** Storefront HTML is not edge-cached today (SSR responses carry no
+  cacheable headers; ADR-0003's `private, no-store` covers the plugin route JSON, not these pages). If
+  it ever is, the cache key must include the active theme, or a theme switch must purge it. Otherwise
+  buyers see the old theme after a switch.
+- **The theme list is a build-time fact.** Adding or removing a theme is a site rebuild. Switching
+  between built themes is not. A stored id that a later build drops falls back to Tempered, not to an
+  error.
+- **Existing tests change deliberately, not silently.** `page-css` (which asserts `styles/` holds only
+  `tokens.css`), `fonts-config`, `tokens-css`, `base-layout*` and `checkout-client-js` are updated in
+  the PR that moves what they assert, with the reason in that PR.
+- **Delivery order.** This record first. Then `[Site]` infrastructure that moves Tempered into it
+  with no visual change (baseline first, then refactor, then pixel and rendered-HTML diffs); then
+  `[Site]` commerce views, so the cart, checkout, pay, order and account pages render through the
+  theme too, still Tempered only; then the admin `[Plugin]` — the Settings "Store theme" radio, and a
+  Themes screen; then one `[Site]` change per theme carrying its layout, every view, `theme.css`,
+  fonts and signature motion. No theme ships with views missing; Decision 7's Tempered fallback stays
+  as the safety rule.

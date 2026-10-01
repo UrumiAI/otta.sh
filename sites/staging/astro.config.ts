@@ -16,6 +16,7 @@ import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
+import { STORE_THEMES } from "./src/themes/manifest.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
  *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
@@ -126,9 +127,12 @@ export default defineConfig({
 	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED from files
 	 * checked in under `src/fonts/<family>/` (each with its SIL OFL beside it).
 	 * Astro serves them from this origin, so a shopper's browser never talks to
-	 * fonts.googleapis.com or fonts.gstatic.com. `src/styles/tokens.css` reads
-	 * the `--u-face-*` variables these declare; `src/layouts/Base.astro` emits
-	 * the <Font> tags.
+	 * fonts.googleapis.com or fonts.gstatic.com. Variables are namespaced per
+	 * theme (`--f-<themeId>-<role>`) so two themes' faces never collide:
+	 * `src/themes/tempered/theme.css` maps the `--f-tempered-*` variables these
+	 * declare onto the shared `--u-display` / `--u-body` / `--u-data` names, and
+	 * `src/themes/tempered/Layout.astro` emits the <Font> tags — only the ACTIVE
+	 * theme's Layout emits its own.
 	 *
 	 * VENDORED, not the Google provider, and the reason is measured, not taste.
 	 * Astro's Google provider (unifont) fetches css2 with a pinned macOS
@@ -159,7 +163,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.local(),
 			name: "Bricolage Grotesque",
-			cssVariable: "--u-face-display",
+			cssVariable: "--f-tempered-display",
 			options: {
 				variants: [
 					{
@@ -176,7 +180,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.local(),
 			name: "Schibsted Grotesk",
-			cssVariable: "--u-face-body",
+			cssVariable: "--f-tempered-body",
 			options: {
 				variants: [
 					{
@@ -192,7 +196,7 @@ export default defineConfig({
 		{
 			provider: fontProviders.local(),
 			name: "Martian Mono",
-			cssVariable: "--u-face-data",
+			cssVariable: "--f-tempered-data",
 			options: {
 				variants: [
 					{
@@ -229,6 +233,12 @@ export default defineConfig({
 			// guard and `hostnameOf` read as "this provider is unconfigured".
 			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
 			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
+			// The storefront themes this build ships, as JSON `[{ id, label }]`,
+			// for the plugin's admin Settings "Store theme" radio (plugin kv
+			// `settings:storeTheme`). `src/themes/manifest.ts` is the SINGLE
+			// source — the site's registry is held equal to it by test — so the
+			// admin can never offer a theme this build cannot render.
+			__OTTA_STORE_THEMES__: JSON.stringify(STORE_THEMES.map(({ id, label }) => ({ id, label }))),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines

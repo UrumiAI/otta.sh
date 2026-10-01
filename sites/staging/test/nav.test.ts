@@ -43,8 +43,9 @@ describe("cartCountLabel", () => {
 
 /**
  * The nav the layout substitutes when the content store cannot be reached
- * (`Base.astro`, guarded in increment 6). Its whole justification is that these
- * links resolve when nothing else does — so the thing worth testing is that
+ * (the guard lives in `layouts/Storefront.astro`; it was `Base.astro`'s, added
+ * in increment 6). Its whole justification is that these links resolve when
+ * nothing else does — so the thing worth testing is that
  * every one of them is a route THIS SITE defines, not a guess at the operator's
  * menu.
  */

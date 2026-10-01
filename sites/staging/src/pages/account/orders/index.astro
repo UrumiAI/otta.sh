@@ -14,8 +14,7 @@
  */
 import { ACCOUNT_ORDERS_ROUTE, type AccountOrdersResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
-import Notice from "../../../components/Notice.astro";
-import Base from "../../../layouts/Base.astro";
+import Storefront from "../../../layouts/Storefront.astro";
 import {
 	ACCOUNT_NO_STORE,
 	currentSessionToken,
@@ -24,6 +23,7 @@ import {
 } from "../../../lib/account.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
+import type { AccountOrdersModel } from "../../../themes/contract.js";
 
 Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
 
@@ -47,118 +47,22 @@ const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
 const rows =
-	orders?.map((order) => ({
-		id: order.id,
-		href: `/account/orders/${encodeURIComponent(order.id)}`,
-		state: orderStateLabel(order.state),
-		items: order.lines.reduce((sum, line) => sum + line.quantity, 0),
-		total: orderMoney(order.totals.totalCents, order.totals.currency),
-	})) ?? [];
+	orders?.map((order) => {
+		const items = order.lines.reduce((sum, line) => sum + line.quantity, 0);
+		return {
+			id: order.id,
+			href: `/account/orders/${encodeURIComponent(order.id)}`,
+			state: orderStateLabel(order.state),
+			items: items === 1 ? "1 item" : `${items} items`,
+			total: orderMoney(order.totals.totalCents, order.totals.currency),
+		};
+	}) ?? [];
+
+const model: AccountOrdersModel = {
+	/* BUSY is the page's to say: the view only ever sees the sentence. */
+	errorMessage: orders === null ? cartErrorMessage(busy ? "BUSY" : "SERVICE_UNAVAILABLE") : null,
+	rows,
+};
 ---
 
-<Base title="Your orders">
-	<div class="head-row">
-		<h1 class="title">Your orders</h1>
-		<form method="POST" action="/account/logout">
-			<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
-		</form>
-	</div>
-
-	{
-		orders === null ? (
-			<div class="notice-slot" role="alert">
-				<Notice>{cartErrorMessage(busy ? "BUSY" : "SERVICE_UNAVAILABLE")}</Notice>
-			</div>
-		) : rows.length === 0 ? (
-			<p class="empty">
-				No orders yet. Orders you place with this email address — including as a guest — appear
-				here. <a href="/products">Browse products</a>
-			</p>
-		) : (
-			<ul class="orders">
-				{rows.map((row) => (
-					<li class="order">
-						<a class="ref u-mono" href={row.href}>
-							{row.id}
-						</a>
-						<span class="state">{row.state}</span>
-						<span class="items">{row.items === 1 ? "1 item" : `${row.items} items`}</span>
-						<span class="total u-mono">{row.total}</span>
-					</li>
-				))}
-			</ul>
-		)
-	}
-</Base>
-
-<style>
-	.head-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		margin-bottom: 1.5rem;
-	}
-	.head-row form {
-		margin: 0;
-	}
-
-	.title {
-		font-family: var(--u-display);
-		font-variation-settings: "wdth" 78, "opsz" 48;
-		font-weight: 700;
-		font-size: clamp(1.75rem, 4vw, 2.25rem);
-		letter-spacing: -0.025em;
-		line-height: 1;
-		margin: 0;
-	}
-
-	.notice-slot {
-		margin-bottom: 1.5rem;
-	}
-
-	.empty {
-		margin: 0;
-		font-size: 0.875rem;
-		color: var(--u-mute);
-	}
-
-	.orders {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		border-top: var(--u-hair);
-	}
-
-	.order {
-		display: grid;
-		grid-template-columns: minmax(0, 1.4fr) 1fr auto auto;
-		gap: 1rem;
-		align-items: baseline;
-		padding: 0.875rem 0;
-		border-bottom: var(--u-hair);
-		font-size: 0.875rem;
-	}
-
-	.ref {
-		color: var(--u-ink);
-		overflow-wrap: anywhere;
-	}
-
-	.state,
-	.items {
-		color: var(--u-mute);
-	}
-
-	.total {
-		color: var(--u-ink);
-		text-align: right;
-	}
-
-	@media (max-width: 40rem) {
-		.order {
-			grid-template-columns: minmax(0, 1fr) auto;
-		}
-	}
-</style>
+<Storefront view="accountOrders" model={model} title="Your orders" />

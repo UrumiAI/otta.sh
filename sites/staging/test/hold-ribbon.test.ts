@@ -26,6 +26,7 @@ import {
 	HOLD_RELEASED_NEXT_STEP,
 	HOLD_WINDOW_SECONDS,
 } from "../src/lib/hold.js";
+import { hasExecutableScript, templateOf } from "./astro-source.js";
 
 let container: AstroContainer;
 
@@ -169,16 +170,62 @@ describe("HoldRibbon — what a screen reader hears", () => {
 	});
 });
 
-describe("HoldRibbon — the client script", () => {
-	const source = readFileSync(
+/**
+ * The countdown's script lives in `HoldClock.astro` since the storefront-themes
+ * Phase 3 split: theme views draw ribbons (this one, or their own from the same
+ * `data-hold*` hooks) and the cart PAGE renders the one script. These are the
+ * assertions the script always carried, aimed at where it now lives — and the
+ * ribbon itself is pinned below to carry none.
+ */
+describe("HoldRibbon — the ribbon is markup, and ships no script", () => {
+	const ribbon = readFileSync(
 		path.resolve(
 			path.dirname(fileURLToPath(import.meta.url)),
 			"../src/components/HoldRibbon.astro",
 		),
 		"utf8",
 	);
-	const script = source.slice(source.indexOf("<script>"), source.indexOf("</script>"));
 
+	test("no <script> in the ribbon — a view may import it without shipping JavaScript", () => {
+		expect(hasExecutableScript(ribbon)).toBe(false);
+	});
+
+	test("it still ships every hook the countdown writes", () => {
+		for (const hook of [
+			"data-hold",
+			"data-state=",
+			"data-expires=",
+			"data-window=",
+			"data-hold-fill",
+			"data-hold-label",
+			"data-hold-clock",
+			"data-hold-note",
+			"data-hold-announce",
+		]) {
+			expect(ribbon, `the ribbon no longer renders ${hook}`).toContain(hook);
+		}
+	});
+});
+
+describe("HoldClock — the client script", () => {
+	const source = readFileSync(
+		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/components/HoldClock.astro"),
+		"utf8",
+	);
+
+	// Found by the same tag shape the strip below uses, so an attribute on the
+	// tag cannot leave the checks that read `script` reading an empty string.
+	const script = source.slice(source.search(/<script\b/i), source.search(/<\/script\b/i));
+
+	test("it is the script and ONLY the script — no markup of its own", () => {
+		expect(hasExecutableScript(source)).toBe(true);
+		expect(script, "the script body was not found").not.toBe("");
+		// A space, not "", so the strip cannot splice a new `<script` together.
+		const template = templateOf(source)
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, " ")
+			.trim();
+		expect(template).toBe("");
+	});
 	test("it is a bundled module script, not an inline one — one copy per page", () => {
 		// This is what lets it IMPORT the tick instead of restating it, which is
 		// the whole reason the assertions below can be about structure rather
@@ -222,9 +269,17 @@ describe("HoldRibbon — the client script", () => {
 			"[data-hold-clock]",
 			"[data-hold-note]",
 			"[data-hold-announce]",
+			// The time in words ("14 min left", "42 sec"): opt-in slots a theme
+			// ships only when it draws them.
+			"[data-hold-minutes]",
+			"[data-hold-seconds]",
 		]) {
 			expect(script, `the script never looks for ${hook}`).toContain(hook);
 		}
+		// `data-minutes` is kept current ONLY on a root that shipped it, so no
+		// other theme's ribbon gains an attribute it never drew.
+		expect(script).toContain("const tracksMinutes = el.dataset.minutes !== undefined;");
+		expect(script).toContain("if (tracksMinutes) el.dataset.minutes = String(frame.minutesLeft);");
 		// `data-expires` / `data-window`, as the DOM spells them.
 		expect(script).toContain("dataset.expires");
 		expect(script).toContain("dataset.window");

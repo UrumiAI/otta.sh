@@ -1,5 +1,5 @@
 /**
- * Base layout favicon (item 4 — no favicon means a 404 on every page load,
+ * Base layout favicon — now Tempered's Layout (`src/themes/tempered/Layout.astro`) (item 4 — no favicon means a 404 on every page load,
  * console noise). Weak-but-cheap source-text pin (mirrors json-ld-xss.test.ts's
  * pattern for asserting something about an .astro file's markup without
  * rendering it) — real confirmation is the Playwright pass (deferred, see
@@ -17,12 +17,12 @@ import { describe, expect, test } from "vitest";
 
 const BASE_LAYOUT_PATH = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
-	"../src/layouts/Base.astro",
+	"../src/themes/tempered/Layout.astro",
 );
 
 const source = readFileSync(BASE_LAYOUT_PATH, "utf8");
 
-describe("Base layout favicon", () => {
+describe("Tempered layout favicon", () => {
 	test("declares an inline SVG data-URI favicon link — no public/ asset, no 404", () => {
 		expect(source).toMatch(/<link\s+rel="icon"[^>]*>/);
 		expect(source).toContain('type="image/svg+xml"');
@@ -31,7 +31,7 @@ describe("Base layout favicon", () => {
 
 	test("the mark is the coil: one closed swept-ribbon path, not the old disc", () => {
 		const href = /href="(data:image\/svg\+xml,[^"]+)"/.exec(source)?.[1];
-		expect(href, "no favicon data URI in Base.astro").toBeDefined();
+		expect(href, "no favicon data URI in Tempered's Layout.astro").toBeDefined();
 		const markup = decodeURIComponent(href as string);
 		expect(markup).toContain("<path");
 		// A swept ribbon is one closed outline: out along the spiral, back
@@ -43,7 +43,7 @@ describe("Base layout favicon", () => {
 		expect(markup).not.toContain("<circle");
 	});
 
-	test("every hex it hardcodes is still drawn from tokens.css", () => {
+	test("every hex it hardcodes is still drawn from the theme's token sheet", () => {
 		// A favicon cannot read a custom property, so these literals are the one
 		// place in the theme a colour is written down twice, and nothing warns
 		// when the palette moves out from under them.
@@ -54,13 +54,16 @@ describe("Base layout favicon", () => {
 		// dark-theme ink on the dark-theme ground, and this would still pass.
 		// Judging the mark is the screenshot's job.
 		const tokens = readFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/styles/tokens.css"),
+			path.resolve(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"../src/themes/tempered/theme.css",
+			),
 			"utf8",
 		).toLowerCase();
 		const hexes = [...source.matchAll(/%23([0-9a-fA-F]{6})/g)].map((m) => `#${m[1]}`.toLowerCase());
 		expect(hexes.length, "no colours found in the favicon data URI").toBeGreaterThan(0);
 		for (const hex of hexes) {
-			expect(tokens, `favicon hex ${hex} is no longer in tokens.css`).toContain(hex);
+			expect(tokens, `favicon hex ${hex} is no longer in theme.css`).toContain(hex);
 		}
 	});
 });

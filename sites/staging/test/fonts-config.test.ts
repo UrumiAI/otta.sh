@@ -56,17 +56,19 @@ const fileOf = (src: string | undefined): string => path.resolve(here, "..", src
 
 const FACES = [
 	// [cssVariable, family, weight range, axes the theme needs in the file]
-	["--u-face-display", "Bricolage Grotesque", "400 800", ["opsz", "wdth", "wght"]],
-	["--u-face-body", "Schibsted Grotesk", "400 700", ["wght"]],
-	["--u-face-data", "Martian Mono", "300 700", ["wdth", "wght"]],
+	["--f-tempered-display", "Bricolage Grotesque", "400 800", ["opsz", "wdth", "wght"]],
+	["--f-tempered-body", "Schibsted Grotesk", "400 700", ["wght"]],
+	["--f-tempered-data", "Martian Mono", "300 700", ["wdth", "wght"]],
 ] as const;
 
 describe("astro.config fonts", () => {
-	test("declares exactly the three roles: display, body, data", () => {
+	test("declares exactly Tempered's three roles, namespaced `--f-<theme>-<role>`", () => {
+		// Namespaced per theme so a second theme's faces can never collide with
+		// these; theme.css maps them onto the shared `--u-display/-body/-data`.
 		expect([...byVariable.keys()].toSorted()).toEqual([
-			"--u-face-body",
-			"--u-face-data",
-			"--u-face-display",
+			"--f-tempered-body",
+			"--f-tempered-data",
+			"--f-tempered-display",
 		]);
 	});
 

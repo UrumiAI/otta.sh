@@ -26,12 +26,12 @@
  * changes: not the tokenization, not the confirm call, not the return url.
  */
 import Notice from "../../components/Notice.astro";
-import StepTrack from "../../components/StepTrack.astro";
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { payButtonLabel } from "../../lib/totals.js";
+import type { PayModel } from "../../themes/contract.js";
 
 const stash = readCheckoutStash(Astro.cookies);
 // No stash (direct hit, expired cookie, cleared browser): there is nothing to
@@ -46,38 +46,29 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
  *  The page never assembles this string; the amount was formatted by the plugin
  *  at place-time and the label rule lives in `totals.ts`. */
 const payLabel = payButtonLabel(stash.total?.formatted);
+
+/** The frame around the card fields — see the `payment` slot below. */
+const model: PayModel = {
+	paymentConfigured: STRIPE_PUBLISHABLE_KEY !== undefined,
+	/* QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
+	   restated here (§10). */
+	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
+	orderPath,
+};
 ---
 
 {/* The currency is the stash's own, and it is here BECAUSE the button now shows
     money — §7's rule is that a page naming a price names the currency it is in.
     A pre-total stash carries neither: `null`, and the footer stays bare, which
     is still the truth about what this page printed. */}
-<Base title="Payment" currency={stash.total?.currency ?? null}>
-	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
-	    component's root (src/lib/rest-props.ts), so the spacing around one lives
-	    on an element the page owns. */}
-	<div class="steps"><StepTrack current="payment" /></div>
-	<h1 class="title">Payment</h1>
-
+<Storefront view="pay" model={model} title="Payment" currency={stash.total?.currency ?? null}>
+	{/* THE PAYMENT SLOT — the Stripe mount, the pay button, the no-JS
+	    explanation and the script, all of it this page's (ADR-0012): the view
+	    frames it and renders it once. Only when a key is configured, which is
+	    also the only time the view renders the slot. */}
 	{
-		STRIPE_PUBLISHABLE_KEY === undefined ? (
-			/* The lead is QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
-			   rather than restated here (§10). */
-			<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
-				This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
-			</Notice>
-		) : (
-			<div class="pay">
-				{/* A sentence, not a badge (§10). The straw mark is the same fitting
-				    the wordmark and the focus ring use. */}
-				<p class="trust">
-					<span class="trust-mark" aria-hidden="true" />
-					<span>
-						Your card details are handled directly by our payment provider and never reach this
-						site.
-					</span>
-				</p>
-
+		model.paymentConfigured && (
+			<Fragment slot="payment">
 				<form id="payment-form">
 					<div class="mount">
 						<div
@@ -458,56 +449,15 @@ const payLabel = payButtonLabel(stash.total?.formatted);
 						}
 					})();
 				</script>
-			</div>
+			</Fragment>
 		)
 	}
-
-	<p class="back"><a href={orderPath}>View your order</a></p>
-</Base>
+</Storefront>
 
 <style>
-	.steps {
-		margin-bottom: 1.75rem;
-	}
-
-	.title {
-		font-family: var(--u-display);
-		font-variation-settings: "wdth" 78, "opsz" 48;
-		font-weight: 700;
-		font-size: clamp(1.75rem, 4vw, 2.25rem);
-		letter-spacing: -0.025em;
-		line-height: 1;
-		margin: 0 0 1.5rem;
-		text-wrap: balance;
-	}
-
-	/* §8: a narrow single column. Nothing competes with the fields. */
-	.pay {
-		display: flex;
-		flex-direction: column;
-		gap: 1.25rem;
-		max-width: 30rem;
-	}
-
-	.trust {
-		display: flex;
-		gap: 0.625rem;
-		align-items: flex-start;
-		margin: 0;
-		font-size: 0.8125rem;
-		color: var(--u-mute);
-		max-width: 46ch;
-	}
-	/* Continuous, not the dashed bronze a Notice uses: this is a statement of
-	   fact, not a degraded state. */
-	.trust-mark {
-		flex: none;
-		width: 1.5rem;
-		height: 2px;
-		margin-top: 0.5rem;
-		background: var(--u-straw);
-	}
-
+	/* The frame (steps, title, column, trust line, the way back) is the theme
+	   view's; what is styled here is what this page itself renders into the
+	   view's `payment` slot. */
 	#payment-form {
 		display: flex;
 		flex-direction: column;
@@ -544,20 +494,5 @@ const payLabel = payButtonLabel(stash.total?.formatted);
 		background: transparent;
 		font-size: 0.8125rem;
 		line-height: 1.5;
-	}
-
-	/* The pay button is `.u-btn` (tokens.css) — including its disabled state,
-	   which this page is the only caller of and which the shared shape now
-	   carries. Nothing button-shaped is declared here. */
-
-	.back {
-		margin: 2.5rem 0 0;
-		font-size: 0.8125rem;
-	}
-	.back a {
-		color: var(--u-mute);
-	}
-	.back a:hover {
-		color: var(--u-ink);
 	}
 </style>

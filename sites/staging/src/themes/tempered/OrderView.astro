@@ -1,0 +1,145 @@
+---
+/**
+ * Tempered's order confirmation (docs/theme/TEMPERED.md §8): the state stamp
+ * FIRST — the order's own state is the most important thing on the page — then
+ * the actions, then items and totals side by side.
+ *
+ * Presentation only: `src/pages/orders/[orderId].astro` reads the order,
+ * deletes the checkout stash, sets 404/503, picks the copy for the order's
+ * state, and runs the bounded meta-refresh poll (the `<meta>` tags are the
+ * page's). Stripe's redirect parameters never reach this file: the page reads
+ * them to choose between two copy variants and hands over only the words
+ * (`checkout-client-js.test.ts` 10c sweeps this view too).
+ *
+ * ZERO client JavaScript (ADR-0012): the ribbon here is `PollRibbon` — the
+ * hold ribbon's grammar running indeterminate, with no script — never the
+ * cart's countdown.
+ *
+ * Styles: `commerce.css` (`order-*`).
+ */
+import Ledger from "../../components/Ledger.astro";
+import Notice from "../../components/Notice.astro";
+import PollRibbon from "../../components/PollRibbon.astro";
+import StateStamp from "../../components/StateStamp.astro";
+import StepTrack from "../../components/StepTrack.astro";
+import Sum from "../../components/Sum.astro";
+import type { OrderModel } from "../contract.js";
+
+interface Props {
+	model: OrderModel;
+}
+
+const {
+	order,
+	stamp,
+	failureMessage,
+	shouldPoll,
+	pollHop,
+	pollMax,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	canResume,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	totalLabel,
+} = Astro.props.model;
+---
+
+{
+	order === null || stamp === null ? (
+		<>
+			{/* NO step track here. It says Cart and Details and Payment are
+			    behind you, and for an order that does not exist — a mistyped
+			    link, someone else's reference, a service that is down — that
+			    is a journey the visitor never made. */}
+			<h1 class="order-title">Order</h1>
+			<div class="order-alert">
+				<Notice>
+					{failureMessage}
+				</Notice>
+			</div>
+			<p class="order-back">
+				<a href="/products">Browse products</a>
+			</p>
+		</>
+	) : (
+		<>
+			{/* Wrapped rather than given a class: a page's scoped selector
+			    cannot reach a component's root (src/lib/rest-props.ts), so the
+			    spacing around one lives on an element the page owns. */}
+			<div class="order-steps"><StepTrack current="order" /></div>
+
+			<StateStamp
+				state={order.state}
+				headline={stamp.headline}
+				body={stamp.body}
+				reference={order.id}
+			>
+				{/* The hold ribbon's grammar, running indeterminate and
+				    SCRIPT-FREE: there is no duration to drain against, so the
+				    count carries the information and the sweep says only
+				    "still working". */}
+				{shouldPoll && (
+					<div class="order-poll">
+						<PollRibbon poll={pollHop} pollMax={pollMax} />
+					</div>
+				)}
+			</StateStamp>
+
+			<p class="order-keep">Keep this link to check its status.</p>
+
+			{hasActions && (
+				<div class="order-actions">
+					{canCheckAgain && (
+						<a class="u-btn u-btn-ghost" href={nextPollUrl}>
+							Check again
+						</a>
+					)}
+					{canResume && (
+						<a class="u-btn u-btn-ghost" href="/checkout">
+							Complete payment
+						</a>
+					)}
+					{/* A link, never a form: the order page is `no-referrer`, so a POST
+					    from it sends `Origin: null` and the guard 403s it (see
+					    `deadEnd` in pages/orders/[orderId].astro). */}
+					{deadEnd && (
+						<a class="u-btn u-btn-ghost" href="/cart">
+							Go to your cart
+						</a>
+					)}
+				</div>
+			)}
+
+			<div class="order-cols">
+				<section class="order-panel">
+					<div class="order-panel-head">
+						<h2 class="u-label order-head-label">Items</h2>
+					</div>
+					<Ledger rows={ledgerRows} />
+					{order.fulfillment !== null && (
+						<p class="order-ship">
+							Shipped with {order.fulfillment.carrier} — tracking{" "}
+							<span class="u-mono">{order.fulfillment.trackingNumber}</span>
+						</p>
+					)}
+				</section>
+
+				<section class="order-panel">
+					<div class="order-panel-head">
+						<h2 class="u-label order-head-label">Totals</h2>
+					</div>
+					<Sum
+						rows={sumRows}
+						total={order.totals.total}
+						totalLabel={totalLabel}
+						excludesUncalculated={order.totals.totalExcludesUncalculated}
+					/>
+				</section>
+			</div>
+		</>
+	)
+}
+
