@@ -1,0 +1,34 @@
+---
+/**
+ * One product in a Counter grid (brief "Listing"): no card chrome at all — a
+ * 4:5 picture and two text lines whose halves align across the row. Line one
+ * is title | price; line two is the description | the state. A state is only
+ * written when there is one worth saying: "Sold out" (the explicit token,
+ * never `!inStock`) or the page's note for a product with no live price.
+ */
+import type { ShopCard } from "../contract.js";
+import Art from "./Art.astro";
+import Price from "./Price.astro";
+
+interface Props {
+	card: ShopCard;
+}
+
+const { card } = Astro.props;
+const soldOut = card.availability === "out_of_stock";
+const note = card.price === null ? (card.priceNote ?? "Not for sale right now") : null;
+---
+
+<a class="c-card" href={card.href} data-sold-out={soldOut ? "" : undefined}>
+	<span class="c-card-img">
+		<Art seed={card.slug} title={card.title} image={card.image} />
+	</span>
+	<span class="c-l1">
+		<span class="c-card-title">{card.title}</span>
+		{card.price !== null && <Price formatted={card.price} struck={soldOut} />}
+	</span>
+	<span class="c-l2">
+		<span class="c-card-meta">{note ?? card.description}</span>
+		{soldOut && <span class="c-card-state">Sold out</span>}
+	</span>
+</a>

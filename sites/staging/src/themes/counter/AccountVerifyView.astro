@@ -1,0 +1,45 @@
+---
+/**
+ * Counter's verify step — where the emailed magic link lands (issue #306).
+ *
+ * THIS PAGE REDEEMS NOTHING: it renders one button that POSTs the challenge and
+ * token to `/account/verify/confirm`, because mail scanners pre-fetch links and
+ * a redeeming GET would spend the single-use token. The two values are printed
+ * ONLY into the two hidden inputs that form needs. The referrer policy
+ * (`same-origin`, deliberately not `no-referrer`) is the page's, in <head>.
+ */
+import type { AccountVerifyModel } from "../contract.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountVerifyModel;
+}
+
+const { usable, challenge, token, invalidMessage } = Astro.props.model;
+---
+
+<div class="c-acct">
+	<h1 class="c-h1">Sign in</h1>
+
+	{
+		usable ? (
+			<form method="POST" action="/account/verify/confirm" class="c-acct-form">
+				<input type="hidden" name="challenge" value={challenge} />
+				<input type="hidden" name="token" value={token} />
+				<p class="c-acct-lede">Continue to finish signing in. The link works once.</p>
+				<button type="submit" class="u-btn c-co-go">
+					Continue signing in
+				</button>
+			</form>
+		) : (
+			<>
+				<div class="c-notice-slot">
+					<Notice tone="error">{invalidMessage}</Notice>
+				</div>
+				<a class="u-btn u-btn-ghost" href="/account/login">
+					Request a new sign-in link
+				</a>
+			</>
+		)
+	}
+</div>

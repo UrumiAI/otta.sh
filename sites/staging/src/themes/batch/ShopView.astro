@@ -1,0 +1,64 @@
+---
+/**
+ * Batch's shop (brief "Layout (c)"): the title in slab with its count across
+ * the same line, then the bags 3-up (2-up on a phone), each with its printed
+ * label overlapping the bottom of the picture (`Card.astro`).
+ *
+ * Every notice sits on a label, never on kraft. The empty shop is a label too:
+ * a blank bag's worth of paper with one line and the way to the admin.
+ *
+ * Presentation only: `src/pages/products/index.astro` reads the catalog,
+ * decides which of the three states this is, chooses the degraded notice's
+ * lead (BUSY copy included) and maps every card.
+ */
+import type { ShopModel } from "../contract.js";
+import Card from "./Card.astro";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: ShopModel;
+}
+
+const { model } = Astro.props;
+---
+
+<div class="b-view b-wrap b-shop">
+	{
+		model.state === "unavailable" ? (
+			/* Not the empty state: an outage is not a statement about the shop. */
+			<div class="b-label b-empty">
+				<h1 class="b-title">The shop</h1>
+				<p class="b-lede">The catalog is unavailable right now. Try again in a moment.</p>
+			</div>
+		) : model.state === "empty" ? (
+			<div class="b-label b-empty">
+				<h1 class="b-title">No products yet.</h1>
+				<p class="b-lede">
+					Create a product in the admin, price it there, and it appears here with live stock.
+				</p>
+				<a class="u-btn u-btn-ghost" href={model.adminHref}>
+					Open the admin
+				</a>
+			</div>
+		) : (
+			<>
+				<div class="b-sec b-sec-top">
+					<h1 class="b-h1">The shop</h1>
+					{model.countLabel !== null && <p class="b-sec-meta">{model.countLabel}</p>}
+				</div>
+				{model.degradedNotice !== null && (
+					<div class="b-notice-slot">
+						<Notice lead={model.degradedNotice.lead}>
+							The catalog below is complete. Check back in a moment for live prices.
+						</Notice>
+					</div>
+				)}
+				<div class="b-grid">
+					{model.cards.map((card) => (
+						<Card card={card} />
+					))}
+				</div>
+			</>
+		)
+	}
+</div>

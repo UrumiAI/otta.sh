@@ -1,0 +1,61 @@
+---
+/**
+ * Counter's order list for a signed-in customer (issue #306, ADR-0004): one
+ * row per order — the reference as the link, its state, how many items, the
+ * total — aligned in columns on a wide screen and stacked in two lines on a
+ * phone. Presentation only — `src/pages/account/orders/index.astro` resolves
+ * the customer from the SESSION (never a customer id), redirects the
+ * signed-out, sets `private, no-store`, maps BUSY, and hands over finished rows.
+ */
+import type { AccountOrdersModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import Price from "./Price.astro";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+---
+
+<header class="c-bar c-bar-top">
+	<h1 class="c-h1">Your orders</h1>
+	<form method="POST" action="/account/logout">
+		<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+	</form>
+</header>
+
+{
+	errorMessage !== null ? (
+		<div class="c-notice-slot">
+			<Notice tone="error">{errorMessage}</Notice>
+		</div>
+	) : rows.length === 0 ? (
+		<div class="c-empty c-acct-empty">
+			<h2 class="c-h2">No orders yet.</h2>
+			<p class="c-empty-copy">
+				Orders you place with this email address — including as a guest — appear here.
+			</p>
+			<div class="c-acts">
+				<a class="u-btn" href="/products">
+					Browse products
+				</a>
+			</div>
+		</div>
+	) : (
+		<ul class="c-orders" role="list">
+			{rows.map((row) => (
+				<li class="c-orders-row" role="listitem">
+					<a class="c-orders-ref" href={row.href}>
+						{row.id}
+					</a>
+					<span class="c-orders-state">{row.state}</span>
+					<span class="c-orders-items">{row.items}</span>
+					<span class="c-orders-total">
+						<Price formatted={row.total} />
+					</span>
+				</li>
+			))}
+		</ul>
+	)
+}

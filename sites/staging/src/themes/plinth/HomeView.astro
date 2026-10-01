@@ -1,0 +1,60 @@
+---
+/**
+ * Plinth's home: one statement and one object, then two objects offset.
+ *
+ * The hero is a single stone field — the store's thesis at 44/300 in the
+ * lower left, the first product standing on its ledge to the right. Below it
+ * the next two products sit 2-up with the right column dropped 120px, the
+ * brief's designer touch: a gallery hang rather than a grid. The shop link is
+ * the model's own label ("Shop all 3 items" / "Shop everything"), so the page
+ * never states a count it cannot prove.
+ *
+ * DEGRADED: no cards (a read failed, so the page omitted the tape) leaves
+ * the statement on an empty plinth and no featured row — no error box, the
+ * same rule as Tempered's tapeless hero.
+ *
+ * Presentation only — `src/pages/index.astro` builds the model.
+ */
+import type { HomeModel } from "../contract.js";
+import { plinthArt } from "./art.js";
+import Card from "./Card.astro";
+import { firstOfEachKey } from "./continuity.js";
+
+interface Props {
+	model: HomeModel;
+}
+
+const { model } = Astro.props;
+const [lead, ...rest] = model.cards;
+const featured = rest.slice(0, 2);
+/* One set of names per product per page (continuity.ts). */
+const named = firstOfEachKey(featured.map((card) => card.slug));
+const heroArt = lead === undefined || lead.image === null ? plinthArt(lead?.slug ?? model.thesis, lead?.title ?? "") : null;
+---
+
+<section class="pl-hero" aria-labelledby="pl-hero-title">
+	<div class="pl-hero-copy">
+		<h1 id="pl-hero-title" class="pl-statement">{model.thesis}</h1>
+		<p class="pl-hero-lede">{model.lede}</p>
+		<a class="pl-link" href={model.shopHref}>{model.shopLabel}</a>
+	</div>
+	<div class="pl-hero-art">
+		{
+			lead !== undefined && lead.image !== null ? (
+				<img src={lead.image} alt={lead.title} />
+			) : (
+				<Fragment set:html={heroArt?.svg} />
+			)
+		}
+	</div>
+</section>
+
+{
+	featured.length > 0 && (
+		<section class="pl-feature" aria-label="Featured">
+			{featured.map((card, index) => (
+				<Card card={card} headingLevel={2} named={named[index] ?? false} />
+			))}
+		</section>
+	)
+}

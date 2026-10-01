@@ -1,0 +1,59 @@
+---
+/**
+ * Pressing's order list for a signed-in customer (issue #306, ADR-0004): "Your
+ * orders" set expanded with the way to sign out, then one sleeve-blue block per
+ * order, like a catalogue listing — the reference as the link, its state on a
+ * ringed pill, how many items, and the total at 700, expanded, in tabular
+ * figures. Presentation only — `src/pages/account/orders/index.astro` resolves
+ * the customer from the SESSION (never a customer id), redirects the
+ * signed-out, sets `private, no-store`, maps BUSY, and hands over finished rows.
+ */
+import type { AccountOrdersModel } from "../contract.js";
+import Notice from "./Notice.astro";
+
+interface Props {
+	model: AccountOrdersModel;
+}
+
+const { errorMessage, rows } = Astro.props.model;
+---
+
+<div class="pr-page">
+	<header class="pr-page-head">
+		<h1 class="pr-display">Your orders</h1>
+		<form method="POST" action="/account/logout" class="pr-page-aside">
+			<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+		</form>
+	</header>
+
+	{
+		errorMessage !== null ? (
+			<div class="pr-slot">
+				<Notice tone="error">{errorMessage}</Notice>
+			</div>
+		) : rows.length === 0 ? (
+			<div class="pr-orders-empty">
+				<h2 class="pr-h pr-h-page">No orders yet.</h2>
+				<p class="pr-desc">
+					Orders you place with this email address, including as a guest, appear here.
+				</p>
+				<a class="u-btn" href="/products">
+					Browse the catalogue
+				</a>
+			</div>
+		) : (
+			<ul class="pr-orders" role="list">
+				{rows.map((row) => (
+					<li class="pr-orders-row" role="listitem">
+						<a class="pr-orders-ref u-mono" href={row.href}>
+							{row.id}
+						</a>
+						<span class="pr-orders-state">{row.state}</span>
+						<span class="pr-orders-items">{row.items}</span>
+						<span class="pr-orders-total u-mono">{row.total}</span>
+					</li>
+				))}
+			</ul>
+		)
+	}
+</div>

@@ -12,9 +12,16 @@
  * default slot and gets the active theme's chrome and `--u-*` tokens around it.
  *
  * ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns the
- * markup. Nothing here calls commerce — the cart count arrives as a PROP from a
- * page that already read the cart, so the shell never puts commerce on the
- * critical path of a page that would otherwise make no commerce call at all.
+ * markup. By default nothing here calls commerce — the cart count arrives as a
+ * PROP from a page that already read the cart, so the shell never puts commerce
+ * on the critical path of a page that would otherwise make no commerce call.
+ *
+ * THE ONE OPT-IN EXCEPTION is a theme whose chrome draws the cart's LINES
+ * (`ThemeModule.chrome.cartLines` — Counter's bag drawer, Pressing's bag
+ * strip). For those themes only, and only off the checkout flow, the shell
+ * makes one guarded cart read (`lib/bag.ts`) that FAILS SOFT: an unreadable or
+ * BUSY read becomes an "unreadable" bag, never an error page and never a 503.
+ * Every other theme pays nothing.
  */
 import { getMenu, getSiteSettings } from "emdash";
 import SafeJsonLd from "../components/SafeJsonLd.astro";
@@ -42,6 +49,7 @@ import type {
 } from "../themes/contract.js";
 import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
 import { requestThemePreview, themePreviewExitHref } from "../lib/theme-preview.js";
+import { readBag } from "../lib/bag.js";
 import { STORE_THEMES } from "../themes/manifest.js";
 import { activeTheme } from "../themes/resolve.js";
 
@@ -87,7 +95,7 @@ type Props = ShellProps &
 	);
 
 const props = Astro.props;
-const { title, description = null, cartCount = null, currency = null } = props;
+const { title, description = null, cartCount: pageCount = null, currency = null } = props;
 
 /**
  * BOTH content reads here are guarded, and this was the last unguarded read on
@@ -124,14 +132,17 @@ const { title, description = null, cartCount = null, currency = null } = props;
    themes/resolve.ts), so leaving it pending across the awaits below is safe. */
 const themeIdPending = activeTheme(Astro);
 
+/* The settings read is started here too, and awaited last: the menu and the
+   theme decide whether the bag is read at all, and the bag's read then runs
+   alongside this one rather than after it. Guarded as described above. */
 let settings: { title?: string; tagline?: string } = {};
-try {
-	settings = (await getSiteSettings()) as { title?: string; tagline?: string };
-} catch (error) {
-	console.error("[site-staging] layout settings read threw:", error);
-}
-const siteTitle = settings.title ?? "Otta";
-const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+const settingsRead = (async () => {
+	try {
+		settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+	} catch (error) {
+		console.error("[site-staging] layout settings read threw:", error);
+	}
+})();
 
 let navItems: readonly NavItem[] = [];
 try {
@@ -140,23 +151,51 @@ try {
 	console.error("[site-staging] layout menu read threw:", error);
 	navItems = FALLBACK_MENU_ITEMS;
 }
+const chromeNav = withAccountLink(navItems).map((item) => ({
+	label: item.label,
+	url: item.url,
+	isCart: isCartLink(item.url),
+}));
 
 const themeId = await themeIdPending;
 const theme = themeFor(themeId);
+
+/**
+ * The bag, for a theme that draws it (see the note at the top), and only where
+ * it can be drawn: the chrome must have a cart link to hang it on. Not on the
+ * checkout flow: `/cart` IS the bag, `/checkout` and `/checkout/pay` carry their
+ * own summary, and `/orders/<id>` sends `no-referrer` — under which a browser
+ * posts `Origin: null`, so the drawer's forms would be refused there — and
+ * carries Stripe's redirect parameters in its URL. Started before the settings
+ * read is awaited, so the two run together.
+ */
+const BAGLESS_VIEWS: ReadonlySet<string> = new Set(["cart", "checkout", "pay", "order"]);
+const drawsBag =
+	theme.chrome?.cartLines === true &&
+	!BAGLESS_VIEWS.has(props.view ?? "") &&
+	chromeNav.some((item) => item.isCart);
+const bagPending = drawsBag
+	? readBag({ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url })
+	: null;
+
+await settingsRead;
+const siteTitle = settings.title ?? "Otta";
+const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+
+const bag = bagPending === null ? null : await bagPending;
+/* The page's own count wins; the bag's read fills it in where the page read none. */
+const cartCount = pageCount ?? bag?.count ?? null;
 
 const chrome: ChromeModel = {
 	siteTitle,
 	fullTitle,
 	description: description ?? null,
-	navItems: withAccountLink(navItems).map((item) => ({
-		label: item.label,
-		url: item.url,
-		isCart: isCartLink(item.url),
-	})),
+	navItems: chromeNav,
 	cartCount,
 	cartCountLabel: cartCount === null ? null : cartCountLabel(cartCount),
 	currency,
 	themeId,
+	bag,
 };
 
 const Layout = theme.Layout;

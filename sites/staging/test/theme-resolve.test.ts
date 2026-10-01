@@ -17,7 +17,8 @@
  *     own request context, which is how `getDb()` finds the database at runtime.
  *
  * The manifest is widened by ONE test-only id (`fixture`) so a non-default
- * choice can be told apart from the fallback; Phase 1 registers Tempered alone.
+ * choice can be told apart from the fallback by an id no real theme will ever
+ * take, whichever themes the build ships (all six do now).
  */
 import Database from "better-sqlite3";
 import { createPluginManager, definePlugin, OptionsRepository, runWithContext } from "emdash";
@@ -178,7 +179,7 @@ describe("round trip — the plugin's kv write is the site's getPluginSetting re
 	});
 
 	test("a saved id this build does not ship falls back to Tempered", async () => {
-		await save("jumble");
+		await save("not-a-shipped-theme");
 		expect(await readInRequest(() => readStoredThemeId())).toBe("tempered");
 	});
 

@@ -1,0 +1,177 @@
+---
+/**
+ * Counter's product page (brief "Layout (d)"): the picture on the left at
+ * 7fr (4:5, radius 16; full-bleed on a phone), and on the right, in reading
+ * order, the crumb, the title, the price with its small currency sign, the
+ * stock as a dot plus words, the description, the buy row — quantity beside a
+ * full-width "Add to bag" — and the hold, stated in plain words beside a clock.
+ *
+ * On a phone the buy row sits in an opaque bar stuck to the bottom of the
+ * screen (with a short fade above it), so it is always one thumb away and text
+ * scrolls BEHIND it rather than showing through a floating button.
+ *
+ * "Add to bag" is the plain form POST every theme shares (`AddToCartFields`)
+ * and `/cart/add` answers it with a redirect to the bag. So the press is
+ * acknowledged by the button itself (theme.css: `scale(.98)`, CSS only) and the
+ * brief's "Added" label and bag drawer are the cart views' moment, not this
+ * page's — there is no script here, by design.
+ *
+ * Variant swatches, sizes and thumbnails are not drawn: the store has no
+ * variant surface yet, and controls that change nothing are worse than none.
+ *
+ * Presentation only: `src/pages/products/[slug].astro` owns the reads, the
+ * 404/503 status, BUSY, the error token, the idempotency key and the return
+ * path.
+ */
+import AddToCartFields from "../../forms/AddToCartFields.astro";
+import type { ProductModel } from "../contract.js";
+import Art from "./Art.astro";
+import Notice from "./Notice.astro";
+import Price from "./Price.astro";
+
+interface Props {
+	model: ProductModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+	model.state === "unavailable" ? (
+		<div class="c-empty">
+			<h1 class="c-h1">This product is unavailable.</h1>
+			<p class="c-empty-copy">The shop could not be read just now. Try again in a moment.</p>
+			<div class="c-acts">
+				<a class="u-btn u-btn-ghost" href="/products">
+					Back to all products
+				</a>
+			</div>
+		</div>
+	) : model.state === "notFound" ? (
+		<div class="c-empty">
+			<h1 class="c-h1">Product not found.</h1>
+			<p class="c-empty-copy">Nothing here under that address.</p>
+			<div class="c-acts">
+				<a class="u-btn u-btn-ghost" href="/products">
+					Back to all products
+				</a>
+			</div>
+		</div>
+	) : (
+		<>
+			{model.degradedLead !== null && (
+				<div class="c-notice-slot">
+					<Notice lead={model.degradedLead}>
+						Check back in a moment — everything else on this page is up to date.
+					</Notice>
+				</div>
+			)}
+			{model.errorMessage !== null && (
+				<div class="c-notice-slot">
+					<Notice tone="error">{model.errorMessage}</Notice>
+				</div>
+			)}
+
+			<div class="c-pdp">
+				<div class="c-pdp-media" data-dimmed={model.dimmed ? "" : undefined}>
+					<Art
+						seed={model.art}
+						title={model.title}
+						image={model.image}
+						alt={model.title}
+						eager
+					/>
+				</div>
+
+				<div class="c-pdp-info">
+					<nav class="c-crumb" aria-label="Breadcrumb">
+						<a href="/products">Shop</a>
+						<span aria-hidden="true">/</span>
+						<span aria-current="page">{model.title}</span>
+					</nav>
+					<h1 class="c-pdp-title">{model.title}</h1>
+
+					{model.purchase !== null && (
+						<>
+							<p class="c-pdp-price">
+								<Price
+									formatted={model.purchase.priceFormatted}
+									struck={model.purchase.priceStruck}
+								/>
+							</p>
+							{model.purchase.availability !== null && (
+								<p
+									class="c-stock"
+									data-state={model.purchase.availability === "in_stock" ? "in" : "out"}
+								>
+									<span class="c-dot" aria-hidden="true" />
+									{model.purchase.availability === "in_stock" ? "In stock" : "Sold out"}
+								</p>
+							)}
+						</>
+					)}
+
+					{model.description && <p class="c-desc">{model.description}</p>}
+
+					{model.purchase !== null && model.purchase.addToCart !== null && (
+						<form class="c-buyform" method="POST" action="/cart/add">
+							<AddToCartFields fields={model.purchase.addToCart} />
+							<div class="c-buybar">
+								<div class="c-buy">
+									<label class="c-qty">
+										<span class="u-sr-only">Quantity</span>
+										<input type="number" name="qty" value="1" min="1" inputmode="numeric" />
+									</label>
+									<button class="u-btn c-add" type="submit">
+										Add to bag
+									</button>
+								</div>
+							</div>
+							<p class="c-hold">
+								<svg class="c-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+									<circle cx="12" cy="12" r="8" />
+									<path d="M12 8v4l2.5 2" />
+								</svg>
+								{model.purchase.holdNote}
+							</p>
+						</form>
+					)}
+
+					{model.purchase !== null && model.purchase.soldOut && (
+						<div class="c-soldout">
+							<div class="c-buy">
+								<button class="u-btn c-add" type="button" disabled>
+									Sold out
+								</button>
+							</div>
+							<a class="c-link" href="/products">
+								See what's in stock
+							</a>
+						</div>
+					)}
+
+					{model.showNotForSale && (
+						<p class="c-desc">Not currently available for purchase</p>
+					)}
+
+					{model.purchase !== null && model.purchase.sku !== null && (
+						<div class="c-acc">
+							<details>
+								<summary>
+									Product details
+									<svg class="c-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+										<path d="M12 6v12M6 12h12" />
+									</svg>
+								</summary>
+								<dl class="c-spec">
+									<dt>SKU</dt>
+									<dd>{model.purchase.sku}</dd>
+								</dl>
+							</details>
+						</div>
+					)}
+				</div>
+			</div>
+		</>
+	)
+}

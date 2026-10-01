@@ -1,0 +1,254 @@
+---
+/**
+ * Plinth's bag (theme-briefs.md §1): the gallery's grammar kept all the way to
+ * the till. Each line is its object, large, on stone at 4:5 and contain-fit —
+ * never cropped — with the card's line beside it: the name left and the money
+ * right at 16px/500, the reference small and muted beneath, then the hold and
+ * two quiet text controls. Beside the lines (below them on a phone), with no
+ * box around it, the summary and the one ink action, "Check out". No rules
+ * anywhere: space and one stone tone do all the grouping.
+ *
+ * THE HOLD is plain text and a small dot (`HoldRibbon.astro`): "Held for you
+ * until 4:52 pm UTC, 14 min left". `/cart` is the one page that COUNTS DOWN —
+ * each line's hold carries the contract's `data-hold*` hooks and
+ * `components/HoldClock.astro`, which the PAGE renders, keeps them current. No
+ * script lives in a view (ADR-0012).
+ *
+ * THE SIGNATURE, CONTINUED. A line's picture and name carry the same
+ * view-transition names as its product page (`continuity.ts`, one name per
+ * page), so an add lands the object in its line and the picture opens back
+ * into its product page. CSS only (views.css), and only for a visitor who has
+ * not asked for less motion.
+ *
+ * Presentation only: `src/pages/cart/index.astro` decides every arm (empty /
+ * degraded / terminal / live), mints the per-form keys, and composes every
+ * money string. The arms are written in the page's order — empty, terminal,
+ * live — and a degraded read is never drawn as an empty bag.
+ */
+import {
+	CART_CHECKED_OUT_BODY,
+	CART_CHECKED_OUT_TITLE,
+	CART_NEW_CART_CONSEQUENCE,
+	CART_NO_ORDER_LINK,
+	CART_RESUME_PURPOSE,
+} from "../../lib/cart-view.js";
+import { isUncalculated, isUnpricedText, sumRowText } from "../../lib/totals.js";
+import type { CartModel } from "../contract.js";
+import { plinthArt } from "./art.js";
+import { lineTransitionStyles } from "./continuity.js";
+import HoldRibbon from "./HoldRibbon.astro";
+import Notice from "./Notice.astro";
+import QtyInput from "./QtyInput.astro";
+
+interface Props {
+	model: CartModel;
+}
+
+const {
+	summary,
+	errorMessage,
+	degraded,
+	degradedLead,
+	pricingNotice,
+	empty,
+	terminal,
+	placedOrderId,
+	lineViews,
+	sumRows,
+	partialNote,
+} = Astro.props.model;
+
+/* One view-transition name per product per page (a duplicate aborts the
+   transition): the first line of each product carries it. */
+const names = lineTransitionStyles(lineViews);
+const emptyPlinth = plinthArt("nothing-here", "").svg;
+
+/* The subtotal leads the summary. Any further row that carries a FIGURE is
+   set under it; a prose row ("Shipping: At checkout") is already said, in
+   full, by the summary's shipping-and-tax line, so it is not said twice. */
+const [lead, ...others] = sumRows;
+const figureRows = others.filter((row) => !isUncalculated(row.amount));
+---
+
+<div class="pl-cv">
+	<header class="pl-cv-head">
+		<h1 class="pl-h pl-cv-title">Bag</h1>
+		{summary !== null && <p class="pl-count-label">{summary}</p>}
+	</header>
+
+	{
+		errorMessage !== null && (
+			<div class="pl-cv-notice">
+				<Notice tone="error">{errorMessage}</Notice>
+			</div>
+		)
+	}
+	{
+		degraded && (
+			<div class="pl-cv-notice">
+				<Notice tone="warn" lead={degradedLead}>
+					We haven't changed anything. Try again in a moment.
+				</Notice>
+			</div>
+		)
+	}
+	{
+		pricingNotice && (
+			<div class="pl-cv-notice">
+				<Notice tone="warn" lead="Totals are unavailable right now.">
+					Your quantities and your holds are still exact.
+				</Notice>
+			</div>
+		)
+	}
+
+	{
+		empty ? (
+			!degraded && (
+				<div class="pl-missing pl-bag-empty">
+					<div class="pl-missing-art" aria-hidden="true">
+						<Fragment set:html={emptyPlinth} />
+					</div>
+					<div>
+						<h2 class="pl-h">Your bag is empty.</h2>
+						<p class="pl-empty-copy">
+							Anything you add is held for you while you check out.
+						</p>
+						<a href="/products" class="pl-link">
+							See the objects
+						</a>
+					</div>
+				</div>
+			)
+		) : terminal ? (
+			<div class="pl-cart-terminal">
+				<h2 class="pl-h">{CART_CHECKED_OUT_TITLE}</h2>
+				<p class="pl-cv-lede">{CART_CHECKED_OUT_BODY}</p>
+
+				<ul class="pl-receipt pl-terminal-lines" role="list">
+					{lineViews.map((view) => (
+						<li class="pl-receipt-line" role="listitem">
+							<span class="pl-receipt-id">
+								{view.title !== null && <span class="pl-receipt-name">{view.title}</span>}
+								<span class="pl-receipt-meta">{view.line.sku}</span>
+							</span>
+							<span class="pl-receipt-meta u-mono">Qty {view.line.qty}</span>
+						</li>
+					))}
+				</ul>
+
+				<div class="pl-terminal-actions">
+					{placedOrderId !== null && (
+						<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="u-btn">View your order</a>
+					)}
+
+					{placedOrderId === null && (
+						<div class="pl-terminal-resume">
+							<a href="/checkout" class="u-btn">Return to this checkout</a>
+							<p class="pl-fine">{CART_RESUME_PURPOSE}</p>
+							<p class="pl-fine">{CART_NO_ORDER_LINK}</p>
+						</div>
+					)}
+
+					<div class="pl-cart-terminal-restart">
+						<form method="POST" action="/checkout/new-cart">
+							<button type="submit" class="u-btn u-btn-ghost">Start a new cart</button>
+						</form>
+						<p class="pl-fine">{CART_NEW_CART_CONSEQUENCE}</p>
+					</div>
+				</div>
+			</div>
+		) : (
+			<div class="pl-cart">
+				<ul class="pl-lines" role="list">
+					{lineViews.map((view, index) => {
+						const art = view.image === null ? plinthArt(view.artKey, view.title ?? "") : null;
+						const Media = view.href !== null ? "a" : "div";
+						return (
+							<li class="pl-line" role="listitem" style={names[index]}>
+								<Media
+									class="pl-media pl-line-media pl-vt-media"
+									href={view.href ?? undefined}
+									tabindex={view.href !== null ? "-1" : undefined}
+									aria-hidden={view.href !== null ? "true" : undefined}
+								>
+									{view.image !== null ? (
+										<img src={view.image} alt="" loading="lazy" decoding="async" />
+									) : (
+										<Fragment set:html={art?.svg} />
+									)}
+								</Media>
+								<div class="pl-line-body">
+									<div class="pl-line-row">
+										<p class="pl-line-title">
+											{view.href !== null ? (
+												<a class="pl-vt-title" href={view.href}>
+													{view.title ?? view.line.sku}
+												</a>
+											) : (
+												<span class="pl-vt-title">{view.title ?? view.line.sku}</span>
+											)}
+										</p>
+										{isUnpricedText(view.money) ? (
+											<span class="pl-line-money pl-quiet">{view.money}</span>
+										) : (
+											<span class="pl-line-money u-mono">{view.money}</span>
+										)}
+									</div>
+									<p class="pl-line-meta">
+										{view.title !== null && <span>{view.line.sku}</span>}
+										{view.each !== null && <span class="u-mono">{view.each}</span>}
+									</p>
+									<HoldRibbon expiresAt={view.line.expiresAt} />
+									<div class="pl-line-ctl">
+										<form method="POST" action="/cart/update" class="pl-line-update">
+											<input type="hidden" name="lineId" value={view.line.lineId} />
+											<input type="hidden" name="idempotencyKey" value={view.updateKey} />
+											<QtyInput value={view.line.qty} label={`Quantity, ${view.name}`} />
+											<button type="submit" class="pl-textctl">
+												Update<span class="u-sr-only"> {view.name}</span>
+											</button>
+										</form>
+										<form method="POST" action="/cart/remove">
+											<input type="hidden" name="lineId" value={view.line.lineId} />
+											<input type="hidden" name="idempotencyKey" value={view.removeKey} />
+											<button type="submit" class="pl-textctl">
+												Remove<span class="u-sr-only"> {view.name}</span>
+											</button>
+										</form>
+									</div>
+								</div>
+							</li>
+						);
+					})}
+				</ul>
+
+				<aside class="pl-sum" aria-labelledby="pl-sum-title">
+					<h2 class="pl-sum-title" id="pl-sum-title">
+						Summary
+					</h2>
+					{lead !== undefined && (
+						<p class="pl-sub" data-prose={isUncalculated(lead.amount) ? "" : undefined}>
+							<span>{lead.label}</span>
+							<span class="u-mono">{sumRowText(lead)}</span>
+						</p>
+					)}
+					{figureRows.map((row) => (
+						<p class="pl-sub pl-sub-minor">
+							<span>{row.label}</span>
+							<span class="u-mono">{sumRowText(row)}</span>
+						</p>
+					))}
+					{partialNote !== null && <p class="pl-fine">{partialNote}</p>}
+					<p class="pl-fine">Shipping and tax are worked out at checkout.</p>
+					<a href="/checkout" class="u-btn pl-go">
+						Check out
+					</a>
+					<p class="pl-fine">
+						Prices are live and may change; your total is confirmed at checkout.
+					</p>
+				</aside>
+			</div>
+		)
+	}
+</div>

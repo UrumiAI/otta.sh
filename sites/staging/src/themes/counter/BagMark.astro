@@ -1,0 +1,32 @@
+---
+/**
+ * What the header's bag says — the icon, the menu's label and the count badge
+ * in the brand colour (the one piece of brand on the chrome: an action's
+ * badge). Drawn inside both the `/cart` link and the drawer's button (see the
+ * Layout), so the two cannot drift. `count` is `null` when this page read no
+ * cart: then no badge at all, never a misleading "0".
+ */
+interface Props {
+	label: string;
+	count: number | null;
+	countLabel: string | null;
+}
+
+const { label, count, countLabel } = Astro.props;
+---
+
+<svg class="c-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+	<path d="M5 8h14l-1 12H6L5 8z"></path>
+	<path d="M9 8V6a3 3 0 0 1 6 0v2"></path>
+</svg>
+<span>{label}</span>
+{
+	count !== null && (
+		<Fragment>
+			<span class="c-count" aria-hidden="true" data-zero={count === 0 ? "" : undefined}>
+				{count}
+			</span>
+			<span class="u-sr-only">, {countLabel}</span>
+		</Fragment>
+	)
+}

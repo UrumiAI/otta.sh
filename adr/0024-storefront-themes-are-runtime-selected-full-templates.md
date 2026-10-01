@@ -9,7 +9,10 @@
   [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) (the client-JS fence).
 - Amended: 2026-09-30 — an admin **Themes** screen (React, on `otta-console`; ruled in
   [ADR-0014's amendment of the same date](./0014-second-native-descriptor-for-react-admin.md#amendment-2026-09-30--the-storefront-themes-screen-is-a-react-page))
-  and an admin-only **live preview** (`?preview_theme=<id>`). See "Amendment 2026-09-30" at the end.
+  and an admin-only **live preview** (`?preview_theme=<id>`). See "Amendment 2026-09-30 — the Themes
+  screen and the admin-only live preview" at the end.
+- Amended: 2026-09-30 (second) — a theme may opt into a fail-soft chrome **bag read**
+  (`chrome.cartLines`). See "Amendment 2026-09-30 — the opt-in chrome bag read" at the end.
 
 ## Context
 
@@ -183,3 +186,24 @@ a new ADR unless it breaks one of the rules above.
   `X-Frame-Options: SAMEORIGIN` (its `finalizeResponse`) and no `frame-ancestors`, which permits
   exactly this same-origin frame. A deployment that tightens framing must keep same-origin allowed,
   or the overlay's "Open in new tab" is the only way to preview.
+
+## Amendment 2026-09-30 — the opt-in chrome bag read
+
+- **What changes.** The Consequences' "one extra D1 read per storefront request" still holds for every
+  theme that does not opt in. A theme whose chrome draws the cart's LINES outside `/cart` (a drawer,
+  a strip) may set `chrome.cartLines` on its `ThemeModule`. For that theme only, the shell
+  (`layouts/Storefront.astro`) makes one fail-soft cart read (`lib/bag.ts`) on non-checkout pages
+  whose chrome has a cart link — one dispatch, without the dispatcher's BUSY retry — plus one
+  batched, request-cached content read for the lines' names and pictures when the cart has lines,
+  and hands the result to the Layout as `ChromeModel.bag`. No other theme pays anything, and a theme
+  that does not draw the lines must not set it.
+- **A page that drew a bag is per-shopper and must never be shared-cached.** For an opted-in theme,
+  `src/middleware.ts` sends any storefront HTML requested with a cart cookie `Cache-Control:
+  private, no-store` and opts it out of Astro's route cache (`context.cache.set(false)`, before and
+  again after the page renders), so one shopper's lines can never be stored and replayed to another.
+  Other themes' caching is untouched.
+- **What does not change.** Views and Layouts still never read cookies, cart ids or the request
+  (Decision 6): the shell reads the cart cookie and the theme receives a finished model. The read
+  fails soft — an unreadable, throwing or BUSY read is `state: "unreadable"`, never an error page or
+  a 503. It is skipped on `/cart`, `/checkout`, `/checkout/pay` and `/orders/<id>`. Holds in the bag
+  are static wall-clock copy; the countdown script stays `/cart`'s alone (ADR-0012).

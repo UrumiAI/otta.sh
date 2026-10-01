@@ -1,0 +1,147 @@
+---
+/**
+ * Plinth's product page: the object large, the words small.
+ *
+ * Desktop: the media column (7/12) stacks the object and its detail crop, each
+ * 4:5 and contain-fit on stone; the info column (5/12) is sticky — title at
+ * 22px, the price beneath it at 16px, the description at 60ch, one full-width
+ * ink "Add to bag" and the hold note in muted ink. Phone: the media becomes a
+ * horizontal scroll-snap strip, and the add button sits in an OPAQUE bar stuck
+ * to the bottom safe area with a short fade above it, so text scrolls behind a
+ * solid bar rather than showing through a floating button — and the info
+ * column ends with room enough that nothing is covered at rest or at the end.
+ *
+ * THE MORPH: the first media panel and the title carry the same per-product
+ * view-transition names as the catalog card (`art.ts`), so a cross-document
+ * navigation grows the object into place (views.css, 460ms). No script.
+ *
+ * Presentation only: `src/pages/products/[slug].astro` owns the reads, the
+ * 404/503 status, BUSY, the error token, the idempotency key and the return
+ * path. The form's hidden fields are the shared `AddToCartFields`, so this
+ * theme cannot change what `/cart/add` receives.
+ */
+import AddToCartFields from "../../forms/AddToCartFields.astro";
+import type { ProductModel } from "../contract.js";
+import { plinthArt, plinthTransitionName } from "./art.js";
+
+interface Props {
+	model: ProductModel;
+}
+
+const { model } = Astro.props;
+const ok = model.state === "ok" ? model : null;
+const art = ok !== null && ok.image === null ? plinthArt(ok.art, ok.title) : null;
+const detail = ok !== null && ok.image === null ? plinthArt(ok.art, ok.title, { crop: true }) : null;
+const names =
+	ok === null
+		? undefined
+		: `--pl-vt-media: ${plinthTransitionName(ok.art, "media")}; --pl-vt-title: ${plinthTransitionName(ok.art, "title")}`;
+const emptyPlinth = plinthArt("nothing-here", "").svg;
+---
+
+{
+	ok === null ? (
+		/* Not found and unavailable are two different facts wearing one quiet
+		   surface: an empty plinth, a line, a way back. The unavailable case
+		   says what to do; neither guesses at why. */
+		<div class="pl-missing">
+			<div class="pl-missing-art" aria-hidden="true">
+				<Fragment set:html={emptyPlinth} />
+			</div>
+			<div>
+				<h1 class="pl-h">
+					{model.state === "unavailable" ? "This product is unavailable." : "Product not found."}
+				</h1>
+				<p class="pl-empty-copy">
+					{model.state === "unavailable"
+						? "The shop could not be read just now. Try again in a moment."
+						: "Nothing here under that address."}
+				</p>
+				<a class="pl-link" href="/products">
+					Back to all objects
+				</a>
+			</div>
+		</div>
+	) : (
+		<div class="pl-pdp" style={names}>
+			<div class="pl-gallery">
+				<div class="pl-media pl-vt-media" data-sold-out={ok.dimmed ? "" : undefined}>
+					{ok.image !== null ? (
+						<img src={ok.image} alt={ok.title} />
+					) : (
+						<Fragment>
+							<Fragment set:html={art?.svg} />
+							{art?.object === null && (
+								<span class="pl-media-name" aria-hidden="true">
+									{ok.title}
+								</span>
+							)}
+						</Fragment>
+					)}
+				</div>
+				{detail !== null && (
+					<div class="pl-media" data-sold-out={ok.dimmed ? "" : undefined}>
+						<Fragment set:html={detail.svg} />
+					</div>
+				)}
+			</div>
+
+			<div class="pl-info">
+				<p class="pl-crumb">
+					<a href="/products">All objects</a>
+				</p>
+				<h1 class="pl-pdp-title pl-vt-title">{ok.title}</h1>
+				{ok.purchase !== null &&
+					(ok.purchase.soldOut ? (
+						<p class="pl-pdp-price pl-quiet">Sold out</p>
+					) : (
+						<p class="pl-pdp-price u-mono">{ok.purchase.priceFormatted}</p>
+					))}
+
+				{ok.degradedLead !== null && (
+					<div class="pl-notice" role="status">
+						<p class="pl-notice-lead">{ok.degradedLead}</p>
+						<p>Check back in a moment — everything else on this page is up to date.</p>
+					</div>
+				)}
+				{ok.errorMessage !== null && (
+					<div class="pl-notice pl-notice-error" role="alert">
+						<p class="pl-notice-lead">{ok.errorMessage}</p>
+					</div>
+				)}
+
+				{ok.description && <p class="pl-desc">{ok.description}</p>}
+
+				{ok.purchase !== null && ok.purchase.addToCart !== null && (
+					<form class="pl-buy" method="POST" action="/cart/add">
+						<AddToCartFields fields={ok.purchase.addToCart} />
+						<div class="pl-buybar">
+							<button class="u-btn pl-add" type="submit">
+								Add to bag
+							</button>
+						</div>
+						<p class="pl-hold">{ok.purchase.holdNote}</p>
+					</form>
+				)}
+
+				{ok.purchase !== null && ok.purchase.soldOut && (
+					<p class="pl-after">
+						<a class="pl-link" href="/products">
+							See what's in stock
+						</a>
+					</p>
+				)}
+
+				{ok.showNotForSale && (
+					<p class="pl-quiet pl-after">Not currently available for purchase</p>
+				)}
+
+				{ok.purchase !== null && ok.purchase.sku !== null && (
+					<p class="pl-ref">
+						Reference <span class="u-mono">{ok.purchase.sku}</span>
+					</p>
+				)}
+			</div>
+		</div>
+	)
+}

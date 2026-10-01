@@ -1,0 +1,59 @@
+---
+/**
+ * Plinth's pay step — the quiet room around the card fields: the four-word
+ * step track, the heading at 22px, one muted sentence about where the card
+ * details go, the payment slot in a narrow column with wide margins around it,
+ * and the way back to the order as a plain underlined link.
+ *
+ * WHAT IS NOT HERE, AND MUST NOT BE. The Stripe mount, the pay button, the
+ * `<noscript>` explanation and Stripe's script are `src/pages/checkout/pay.astro`'s
+ * — the one page ADR-0012 lets carry client JavaScript and a third-party origin
+ * — and arrive as the `payment` slot, rendered exactly once, and only when the
+ * page says payment is configured. The pay button is the page's `.u-btn`, so it
+ * is the same ink button as every other action.
+ */
+import type { PayModel } from "../contract.js";
+import Notice from "./Notice.astro";
+import StepTrack from "./StepTrack.astro";
+
+interface Props {
+	model: PayModel;
+}
+
+const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
+---
+
+<div class="pl-co pl-pay">
+	<div class="pl-co-steps"><StepTrack current="payment" /></div>
+	<h1 class="pl-h pl-co-title">Payment</h1>
+
+	{
+		!paymentConfigured ? (
+			<div class="pl-co-notice-slot">
+				<Notice tone="warn" lead={notConfiguredLead}>
+					This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
+				</Notice>
+			</div>
+		) : (
+			<div class="pl-pay-body">
+				<p class="pl-pay-trust">
+					Your card details go straight to our payment provider and never reach this site.
+				</p>
+
+				<slot name="payment" />
+			</div>
+		)
+	}
+
+	{/* Once, not twice: when payment is not configured the notice above
+	    already carries this link. */}
+	{
+		paymentConfigured && (
+			<p class="pl-co-back">
+				<a class="pl-link" href={orderPath}>
+					View your order
+				</a>
+			</p>
+		)
+	}
+</div>

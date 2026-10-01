@@ -1,0 +1,428 @@
+/**
+ * "Batch" — the token layer, the shared recipes and the theme's whole motion
+ * budget. Brief: theme-briefs.md §3 (a kraft coffee bag with a printed label
+ * and a rubber stamp). Linked once, by `themes/batch/Layout.astro` through a
+ * `?url` import, so only the ACTIVE theme's sheet reaches the browser.
+ *
+ * THREE MATERIALS, NOT A COLOUR TEMPERATURE. Kraft is the ground, the label is
+ * the only surface (and the only thing with a shadow), roaster green is the
+ * stamp ink and the one action colour. No cream ground, no clay, no Didone.
+ *
+ * TWO VOCABULARIES.
+ *  - `--b-*` is Batch's own palette, as the brief and the approved preview
+ *    write it (kraft, label, roast ink, muted, green, low, rust, the footer
+ *    band, the art's bag tones, radii by role). Batch's views read these.
+ *  - `--u-*` is the theme CONTRACT (`test/themes-boundary.test.ts`): the names
+ *    fallback views (e.g. 404) and shared pieces style themselves with. Each
+ *    is MAPPED by role: Tempered's straw
+ *    "fitting" (focus, hover marks) and its violet "held" both become roaster
+ *    green; its bronze "expiring / failed" becomes rust; its surface is the
+ *    label; its data face is Karla with tabular figures (no monospace in any
+ *    theme but Tempered).
+ *
+ * RUST LIVES ON LABELS ONLY. Rust clears AA on the label (6.8:1) and fails on
+ * kraft (3.7:1), so `--u-bronze` is rust only because views.css lays every
+ * page with no Batch view on a label sheet — nothing that reads it ever sits
+ * on kraft.
+ * Low (#7A4A00, 3.6:1 on kraft) follows the same rule. Muted ink clears AA on
+ * kraft (4.8:1) but not on the darker footer band (3.8:1): the band is ink only.
+ */
+
+:root {
+	color-scheme: light;
+
+	/* ── Batch's palette (light: kraft) ── */
+	--b-kraft: #cdb08a;
+	--b-label: #f6f3ec;
+	--b-ink: #2a1d14;
+	--b-ink-2: #553e2b;
+	--b-accent: #184836;
+	--b-on-accent: #f6f3ec;
+	--b-low: #7a4a00;
+	--b-error: #9a2e12;
+	--b-band: #b99a73;
+	--b-rule: rgba(42, 29, 20, 0.16);
+
+	/* the art: the panel a product stands on, the bag's three kraft tones,
+	   the lino ink, the glaze and the cotton */
+	--b-panel: #bf9f77;
+	--b-bag: #dcc29b;
+	--b-bag-2: #c7a87f;
+	--b-bag-3: #a98a63;
+	--b-lino: #5a3e27;
+	--b-glaze: #f1ebdf;
+	--b-roast: #3b2618;
+	--b-cotton: #e6dccb;
+	--b-cotton-2: #9fae98;
+
+	/* the one elevation — labels only */
+	--b-shadow: 0 1px 0 rgba(42, 29, 20, 0.18), 0 10px 20px -12px rgba(42, 29, 20, 0.45);
+	--b-shadow-up: 0 1px 0 rgba(42, 29, 20, 0.18), 0 18px 28px -14px rgba(42, 29, 20, 0.5);
+
+	/* the kraft's fibre: static SVG noise, 3% (brief "Designer touches") */
+	--b-fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='360'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75 .12' numOctaves='3' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .2 0 0 0 0 .13 0 0 0 0 .07 0 0 0 1.4 -.35'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.08'/%3E%3C/svg%3E");
+
+	/* radii by ROLE: the die-cut label, a control, a tick box — images 0 */
+	--b-r-label: 10px;
+	--b-r-ctl: 10px;
+	--b-r-tick: 3px;
+	--b-r-stamp: 6px;
+
+	/* motion */
+	--b-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--b-ease-stamp: cubic-bezier(0.2, 0.9, 0.1, 1);
+	--b-dur-lift: 200ms;
+	--b-dur-press: 80ms;
+
+	/* ── The --u-* contract, mapped by role ── */
+	--u-ink: var(--b-ink);
+	--u-ground: var(--b-kraft);
+	--u-surface: var(--b-label);
+	--u-edge: #dcd0bc;
+	--u-mute: var(--b-ink-2);
+	--u-straw: var(--b-accent);
+	--u-violet: var(--b-accent);
+	--u-bronze: var(--b-error);
+	--u-panel: rgba(169, 138, 99, 0.24);
+	--u-tint-violet: #184836;
+	--u-tint-straw: var(--b-low);
+	--u-tint-blue: #5a3e27;
+	--u-coil-a: 0.55;
+	--u-r: 10px;
+	--u-hair: 1px solid var(--u-edge);
+	--u-display: var(--f-batch-display, "Zilla Slab"), Rockwell, "Roboto Slab", serif;
+	--u-body: var(--f-batch-body, "Karla"), ui-sans-serif, system-ui, sans-serif;
+	--u-data: var(--f-batch-body, "Karla"), ui-sans-serif, system-ui, sans-serif;
+}
+
+/**
+ * Dark: "roasted", not an inversion. The ground goes to roasted bean, the
+ * label to a darker paper that still sits ABOVE the ground, and the green
+ * lifts to a pale mint so it still reads as the stamp ink (8.6:1 as a button
+ * with roast-coloured text). Rust and low lighten to keep AA on the label.
+ */
+@media (prefers-color-scheme: dark) {
+	:root {
+		color-scheme: dark;
+
+		--b-kraft: #2b1f17;
+		--b-label: #3a2c21;
+		--b-ink: #efe4d2;
+		--b-ink-2: #c4b39c;
+		--b-accent: #8ccba8;
+		--b-on-accent: #2b1f17;
+		--b-low: #e3b35c;
+		--b-error: #f09a7e;
+		--b-band: #231911;
+		--b-rule: rgba(239, 228, 210, 0.14);
+
+		--b-panel: #34271d;
+		--b-bag: #8f7453;
+		--b-bag-2: #7b6245;
+		--b-bag-3: #634e37;
+		--b-lino: #2b1f17;
+		--b-glaze: #cfc3ae;
+		--b-roast: #1c130d;
+		--b-cotton: #a8987f;
+		--b-cotton-2: #6f7f6b;
+
+		--b-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 10px 20px -12px rgba(0, 0, 0, 0.7);
+		--b-shadow-up: 0 1px 0 rgba(0, 0, 0, 0.3), 0 18px 28px -14px rgba(0, 0, 0, 0.8);
+		--b-fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='360'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75 .12' numOctaves='3' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .94 0 0 0 0 .89 0 0 0 0 .82 0 0 0 1.4 -.35'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.03'/%3E%3C/svg%3E");
+
+		--u-edge: #4d3c2d;
+		--u-panel: rgba(0, 0, 0, 0.2);
+		--u-tint-violet: #8ccba8;
+		--u-tint-straw: var(--b-low);
+		--u-tint-blue: #b99a73;
+	}
+}
+
+/* An explicit toggle beats the OS preference in both directions (the same
+   contract Tempered's sheet keeps; nothing sets `data-theme` yet). */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+
+	--b-kraft: #2b1f17;
+	--b-label: #3a2c21;
+	--b-ink: #efe4d2;
+	--b-ink-2: #c4b39c;
+	--b-accent: #8ccba8;
+	--b-on-accent: #2b1f17;
+	--b-low: #e3b35c;
+	--b-error: #f09a7e;
+	--b-band: #231911;
+	--b-rule: rgba(239, 228, 210, 0.14);
+
+	--b-panel: #34271d;
+	--b-bag: #8f7453;
+	--b-bag-2: #7b6245;
+	--b-bag-3: #634e37;
+	--b-lino: #2b1f17;
+	--b-glaze: #cfc3ae;
+	--b-roast: #1c130d;
+	--b-cotton: #a8987f;
+	--b-cotton-2: #6f7f6b;
+
+	--b-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 10px 20px -12px rgba(0, 0, 0, 0.7);
+	--b-shadow-up: 0 1px 0 rgba(0, 0, 0, 0.3), 0 18px 28px -14px rgba(0, 0, 0, 0.8);
+	--b-fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='360'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75 .12' numOctaves='3' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .94 0 0 0 0 .89 0 0 0 0 .82 0 0 0 1.4 -.35'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.03'/%3E%3C/svg%3E");
+
+	--u-edge: #4d3c2d;
+	--u-panel: rgba(0, 0, 0, 0.2);
+	--u-tint-violet: #8ccba8;
+	--u-tint-straw: var(--b-low);
+	--u-tint-blue: #b99a73;
+}
+
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	--b-kraft: #cdb08a;
+	--b-label: #f6f3ec;
+	--b-ink: #2a1d14;
+	--b-ink-2: #553e2b;
+	--b-accent: #184836;
+	--b-on-accent: #f6f3ec;
+	--b-low: #7a4a00;
+	--b-error: #9a2e12;
+	--b-band: #b99a73;
+	--b-rule: rgba(42, 29, 20, 0.16);
+
+	--b-panel: #bf9f77;
+	--b-bag: #dcc29b;
+	--b-bag-2: #c7a87f;
+	--b-bag-3: #a98a63;
+	--b-lino: #5a3e27;
+	--b-glaze: #f1ebdf;
+	--b-roast: #3b2618;
+	--b-cotton: #e6dccb;
+	--b-cotton-2: #9fae98;
+
+	--b-shadow: 0 1px 0 rgba(42, 29, 20, 0.18), 0 10px 20px -12px rgba(42, 29, 20, 0.45);
+	--b-shadow-up: 0 1px 0 rgba(42, 29, 20, 0.18), 0 18px 28px -14px rgba(42, 29, 20, 0.5);
+	--b-fibre: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='360'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75 .12' numOctaves='3' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .2 0 0 0 0 .13 0 0 0 0 .07 0 0 0 1.4 -.35'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.08'/%3E%3C/svg%3E");
+
+	--u-edge: #dcd0bc;
+	--u-panel: rgba(169, 138, 99, 0.24);
+	--u-tint-violet: #184836;
+	--u-tint-straw: var(--b-low);
+	--u-tint-blue: #5a3e27;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	/* Anchors land below the sticky header, not under it. */
+	scroll-padding-top: 6rem;
+}
+
+/* The kraft and its fibre: one static tile under the body and the sticky
+   header alike (brief "Never animates": the kraft ground). */
+body {
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 100vh;
+	min-height: 100dvh;
+	background: var(--b-fibre), var(--b-kraft);
+	color: var(--b-ink);
+	font-family: var(--u-body);
+	font-size: 1.0625rem;
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	accent-color: var(--b-accent);
+	caret-color: var(--b-accent);
+}
+
+/* Brief: `::selection` is green on label. */
+::selection {
+	background: var(--b-accent);
+	color: var(--b-label);
+}
+
+a {
+	color: inherit;
+	text-underline-offset: 0.22em;
+	text-decoration-thickness: 1.5px;
+}
+
+img,
+svg,
+video,
+canvas {
+	max-width: 100%;
+}
+
+img,
+video {
+	height: auto;
+}
+
+.u-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/**
+ * The shared recipes the fallback views and shared pieces use, in Batch's voice.
+ *
+ * `.u-mono` is Tempered's "set in the data face"; Batch has no monospace, so it
+ * keeps only what the recipe is FOR — figures that line up in a column.
+ * `.u-label` is Tempered's uppercase eyebrow; the rules for every new theme ban
+ * all-caps labels, so here it is a small, sentence-case, muted line.
+ * `.b-figures` is the slab's own money setting: lining, tabular figures.
+ */
+.u-mono {
+	font-family: var(--u-data);
+	font-variant-numeric: lining-nums tabular-nums;
+}
+
+.u-label {
+	font-family: var(--u-body);
+	font-size: 0.875rem;
+	font-weight: 600;
+	letter-spacing: 0;
+	color: var(--b-ink-2);
+}
+
+.b-figures {
+	font-variant-numeric: lining-nums tabular-nums;
+}
+
+/**
+ * The button: roaster green with label-coloured words (9.4:1), 10px like the
+ * die-cut label, Karla 700. The ghost rank is a 1.5px ink stroke — the brief's
+ * only border — for a way out rather than a way on.
+ */
+.u-btn {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	min-height: 3rem;
+	padding: 0 1.375rem;
+	border: 0;
+	border-radius: var(--b-r-ctl);
+	background: var(--b-accent);
+	color: var(--b-on-accent);
+	font-family: var(--u-body);
+	font-size: 1rem;
+	font-weight: 700;
+	line-height: 1.2;
+	text-decoration: none;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.u-btn-ghost {
+	background: transparent;
+	color: var(--b-ink);
+	box-shadow: inset 0 0 0 1.5px var(--b-ink);
+}
+
+.u-btn:disabled {
+	background: transparent;
+	color: var(--b-ink-2);
+	box-shadow: inset 0 0 0 1.5px var(--b-ink-2);
+	cursor: default;
+}
+
+/* Brief: focus is a 2px green outline, 2px off the edge — on everything. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+	outline: 2px solid var(--b-accent);
+	outline-offset: 2px;
+}
+
+/* The printed field: a 1.5px ink stroke, the brief's other border. */
+.b-field {
+	box-shadow: inset 0 0 0 1.5px var(--b-ink);
+}
+
+/**
+ * ── Motion — the whole budget, in one place ─────────────────────────────
+ *
+ * Everything that moves is here, and all of it is inside `no-preference`, so a
+ * shopper who asked for less motion gets none of it by construction (the clamp
+ * below is the belt to these braces, and also covers the shared components the
+ * fallback views render). What moves:
+ *
+ *  - a card's label rises 4px off the bag and its shadow deepens, 200ms on the
+ *    brief's ease-out — the label is the only elevated thing, so it is the only
+ *    thing that lifts;
+ *  - a pressed button sinks 1px in 80ms — the acknowledgement a POSTing "Add
+ *    to bag" gets before the bag page loads;
+ *  - menu links draw their underline in.
+ * Never: the page load, the kraft, prices. The authored moment — the green
+ * stamp landing on the label when something goes in the bag — is the bag
+ * page's, in `commerce.css` (with its reduced-motion fade), not this sheet's.
+ */
+@media (prefers-reduced-motion: no-preference) {
+	.b-card .b-label {
+		transition:
+			transform var(--b-dur-lift) var(--b-ease-out),
+			box-shadow var(--b-dur-lift) var(--b-ease-out);
+	}
+
+	.b-card:hover .b-label,
+	.b-card:focus-visible .b-label {
+		transform: translateY(-4px);
+	}
+
+	.u-btn,
+	.b-add {
+		transition:
+			transform var(--b-dur-press) var(--b-ease-out),
+			background-color 150ms var(--b-ease-out);
+	}
+
+	.u-btn:active:not(:disabled),
+	.b-add:active:not(:disabled) {
+		transform: translateY(1px);
+	}
+
+	.b-head a,
+	.b-foot a,
+	.b-link {
+		transition: text-decoration-color 150ms var(--b-ease-out);
+	}
+}
+
+/* Decorative motion off under reduced motion — the same clamp Tempered keeps,
+   with the same exemption for information that must keep moving (the cart's
+   hold countdown, `data-motion="essential"`). */
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto !important;
+	}
+
+	*:not([data-motion="essential"], [data-motion="essential"] *),
+	*:not([data-motion="essential"], [data-motion="essential"] *)::before,
+	*:not([data-motion="essential"], [data-motion="essential"] *)::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}

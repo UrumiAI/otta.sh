@@ -149,6 +149,343 @@ export default defineConfig({
 			display: "swap",
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
+		/**
+		 * Plinth (src/themes/plinth) sets everything in ONE face — small type,
+		 * big objects — so it declares one role. Host Grotesk's only axis is
+		 * weight: 300 is the home statement, 400/500 everything else.
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and for Host Grotesk Google answers that
+		 * UA with a build that has NO `prep` table (the build a current browser
+		 * gets carries one). A TrueType font with no instructions is handed to
+		 * FreeType's AUTOHINTER — Chromium on Linux and Android — which rounds
+		 * every glyph's advance at text sizes, so body copy set as "lapt op",
+		 * "Heavyweig ht", "Cont ent". The build a current browser receives
+		 * carries the `prep` and renders correctly; that file is vendored at
+		 * src/themes/plinth/fonts/ (OFL, licence beside it) and served by Astro
+		 * from this origin like every other face. It is the full variable font:
+		 * wght 300–800.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Host Grotesk",
+			cssVariable: "--f-plinth-body",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/plinth/fonts/host-grotesk-variable-latin.woff2"],
+						weight: "300 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
+		 * Pressing (src/themes/pressing) sets everything in ONE family, Archivo,
+		 * and gets its two voices from the width axis: titles EXPANDED (wdth 125,
+		 * 800), body at normal width (wdth 100, 400).
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and for Archivo Google answers that UA
+		 * with a build that has NO `prep` table (byte-for-byte the current
+		 * build minus that one 7-byte program). A TrueType font with no
+		 * instructions is handed to FreeType's AUTOHINTER — Chromium on Linux
+		 * and Android — which rounds every glyph's advance at text sizes, so
+		 * body copy set as "lapt op", "Tendie-cut", "Cont ent". The build a
+		 * current browser receives carries the `prep` and renders correctly;
+		 * that file is vendored at src/themes/pressing/fonts/ (OFL, licence
+		 * beside it) and served by Astro from this origin like every other face.
+		 * It is the full variable font: wght 100–900, wdth 62–125.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Archivo",
+			cssVariable: "--f-pressing-body",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/pressing/fonts/archivo-variable-latin.woff2"],
+						weight: "100 900",
+						stretch: "62% 125%",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
+		 * Batch (src/themes/batch): a letterpress slab for titles and prices,
+		 * set at two static cuts (Zilla Slab has no variable file), and Karla
+		 * for everything else across its whole weight range.
+		 *
+		 * BOTH SELF-HOSTED FROM VENDORED FILES, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and Google answers that UA with builds
+		 * stripped of their hinting: Karla arrives with NO `prep` table, Zilla
+		 * Slab with no `fpgm`, `prep` or `cvt ` at all (the builds a current
+		 * browser gets carry them). A TrueType font with no instructions is
+		 * handed to FreeType's AUTOHINTER — Chromium on Linux and Android —
+		 * which rounds every glyph's advance at text sizes, so body copy set as
+		 * "lapt op", "Heavyweig ht", "Cont ent". The builds a current browser
+		 * receives carry the instructions and render correctly; they are
+		 * vendored at src/themes/batch/fonts/<family>/ (OFL, licence beside
+		 * each) and served by Astro from this origin like every other face.
+		 * Zilla Slab is its two static cuts, 600 and 700; Karla is the full
+		 * variable font, wght 200–800.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Zilla Slab",
+			cssVariable: "--f-batch-display",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/batch/fonts/zilla-slab/zilla-slab-600-latin.woff2"],
+						weight: "600",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+					{
+						src: ["./src/themes/batch/fonts/zilla-slab/zilla-slab-700-latin.woff2"],
+						weight: "700",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		{
+			provider: fontProviders.local(),
+			name: "Karla",
+			cssVariable: "--f-batch-body",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/batch/fonts/karla/karla-variable-latin.woff2"],
+						weight: "200 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
+		 * Jumble (src/themes/jumble) sets everything in ONE variable family,
+		 * Recursive: wght 300–1000 and its Casual axis (CASL 0–1), which is
+		 * the theme's playfulness — CASL 1 for things you play with (titles,
+		 * buttons, prices), CASL 0 for things you read. MONO is not in the
+		 * file (Google pins it at its default, 0): no monospace in any theme
+		 * but Tempered.
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, for a
+		 * measured defect, not taste. Unifont fetches Google's css2
+		 * with a pinned Chrome/121 user agent, and for Recursive Google answers
+		 * that UA with a build that has NO `prep` table (otherwise identical to
+		 * the current build, table for table). An uninstructed TrueType font is
+		 * handed to FreeType's AUTOHINTER (Chromium on Linux and Android), which
+		 * rounds glyph advances at text sizes and sets body copy unevenly. The
+		 * build a current browser receives carries the `prep`; that file is
+		 * vendored at src/themes/jumble/fonts/ (OFL, licence beside it) and
+		 * served by Astro from this origin like every other face.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Recursive",
+			cssVariable: "--f-jumble-sans",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/jumble/fonts/recursive-variable-latin.woff2"],
+						weight: "300 1000",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
+		/**
+		 * Counter (src/themes/counter): ONE family for every role — the brief's
+		 * whole type system is Rethink Sans at weights 400–800, money included
+		 * (tabular figures, no mono face anywhere).
+		 *
+		 * SELF-HOSTED FROM A VENDORED FILE, not the Google provider, and the
+		 * reason is measured, not taste. Unifont fetches Google's css2 with a
+		 * pinned Chrome/121 user agent, and for Rethink Sans Google answers that
+		 * UA with a build that has NO `prep` table (the build a current browser
+		 * gets carries one). A TrueType font with no instructions is handed to
+		 * FreeType's AUTOHINTER — Chromium on Linux and Android — which rounds
+		 * every glyph's advance at text sizes, so body copy set as "lapt op",
+		 * "Heavyweig ht", "Cont ent". The build a current browser receives
+		 * carries the `prep` and renders correctly; that file is vendored at
+		 * src/themes/counter/fonts/ (OFL, licence beside it) and served by Astro
+		 * from this origin like every other face. It is the full variable font:
+		 * wght 400–800.
+		 */
+		{
+			provider: fontProviders.local(),
+			name: "Rethink Sans",
+			cssVariable: "--f-counter-sans",
+			options: {
+				variants: [
+					{
+						src: ["./src/themes/counter/fonts/rethink-sans-variable-latin.woff2"],
+						weight: "400 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: [
+							"U+0000-00FF",
+							"U+0131",
+							"U+0152-0153",
+							"U+02BB-02BC",
+							"U+02C6",
+							"U+02DA",
+							"U+02DC",
+							"U+0304",
+							"U+0308",
+							"U+0329",
+							"U+2000-206F",
+							"U+20AC",
+							"U+2122",
+							"U+2191",
+							"U+2193",
+							"U+2212",
+							"U+2215",
+							"U+FEFF",
+							"U+FFFD",
+						],
+					},
+				],
+			},
+		},
 	],
 	integrations: [react(), emdash(buildEmdashOptions(egress))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*

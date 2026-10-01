@@ -1,0 +1,31 @@
+---
+/**
+ * The hidden-field contract `/cart/update` and `/cart/remove` read
+ * (src/pages/cart/update.ts, remove.ts), for a cart line's form posted from
+ * OUTSIDE `/cart` — a theme's bag drawer. In one place so no theme can restyle
+ * that form and quietly change what it posts.
+ *
+ *  - `lineId` — the line to change;
+ *  - `idempotencyKey` — minted per rendered form by the PAGE side
+ *    (`lib/bag.ts`), so a double-submit of one rendered form replays instead of
+ *    applying twice. Never minted here or by a theme.
+ *
+ * There is deliberately NO `returnTo`: a change lands on `/cart`, where it is
+ * visible. Without client JS a drawer cannot reopen itself after the redirect,
+ * so landing back on the page it was open on would show the change only as a
+ * changed badge.
+ *
+ * The quantity is the theme's to draw (a stepper's `name="qty"` buttons, or a
+ * field); these are behaviour. `/cart`'s own view keeps its fields inline,
+ * where `cart-page.test.ts` pins them.
+ */
+interface Props {
+	lineId: string;
+	idempotencyKey: string;
+}
+
+const { lineId, idempotencyKey } = Astro.props;
+---
+
+<input type="hidden" name="lineId" value={lineId} />
+<input type="hidden" name="idempotencyKey" value={idempotencyKey} />

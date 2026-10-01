@@ -1,0 +1,43 @@
+---
+/**
+ * Batch's totals block — the same honesty contract as the shared `Sum`
+ * (docs/theme/TEMPERED.md §7), printed on the label: label left, figure right in
+ * slab with lining tabular figures, a row with no figure set as quieter prose
+ * in the body face so it can never be read as an amount, and the total under a
+ * double printed rule at the price size.
+ *
+ * Nothing money-shaped is built here: a row prints `sumRowText` (which never
+ * lets a bare dash through), the total prints the view model's own label, and
+ * the footnote is the page's or `uncalculatedFootnote`'s.
+ */
+import type { CheckoutAmountView } from "@otta-sh/plugin";
+import { isUncalculated, sumRowText, uncalculatedFootnote, type SumRow } from "../../lib/totals.js";
+
+interface Props {
+	rows: SumRow[];
+	total: CheckoutAmountView;
+	totalLabel?: string;
+	excludesUncalculated?: boolean;
+	/** `null` suppresses the footnote; omitted derives it. */
+	footnote?: string | null;
+}
+
+const { rows, total, totalLabel = "Total", excludesUncalculated = false, footnote } = Astro.props;
+const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excludesUncalculated);
+---
+
+<dl class="b-totals">
+	{
+		rows.map((row) => (
+			<div class="b-totals-row" data-prose={isUncalculated(row.amount) ? "" : undefined}>
+				<dt>{row.label}</dt>
+				<dd class="b-figures">{sumRowText(row)}</dd>
+			</div>
+		))
+	}
+	<div class="b-totals-row b-totals-grand" data-prose={isUncalculated(total) ? "" : undefined}>
+		<dt>{totalLabel}</dt>
+		<dd class="b-figures">{total.label}</dd>
+	</div>
+</dl>
+{note !== null && <p class="b-totals-note">{note}</p>}

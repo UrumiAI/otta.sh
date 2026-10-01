@@ -1,0 +1,161 @@
+---
+/**
+ * Batch's Layout — the document shell and the chrome (theme-briefs.md §3,
+ * "Layout (a)"): an 80px header on kraft with the menu on the left, the
+ * wordmark set in slab and centred, the account and the bag on the right; and
+ * a darker kraft band for a footer.
+ *
+ * PRESENTATION ONLY. Everything arrives on `chrome`, built by
+ * `src/layouts/Storefront.astro` (the guarded CMS reads, their fallbacks, the
+ * Account link, the cart count and its spoken label, the currency). The menu is
+ * the operator's and is printed as given; it is only SPLIT — the account and
+ * the bag go right, beside each other, as the brief draws them.
+ *
+ * NOT DRAWN, deliberately: the brief's roastery address, café-hours table and
+ * newsletter field. This store has no address, hours or mailing list behind
+ * them, and a table of invented hours is worse than no table.
+ *
+ * UNPORTED PAGES (the site 404, and anything a page renders in the default
+ * slot) have no Batch view around them; views.css lays them on one printed
+ * label sheet — so the brief's rule that an error sits on a label and never on
+ * kraft holds on pages Batch has not drawn. Every commerce view is Batch's own.
+ *
+ * STYLES are linked through `?url` (the registry imports every theme, so a
+ * theme `.astro` file carries no `<style>`): `theme.css` is the tokens, the
+ * shared recipes and all of the theme's motion; `views.css` is the chrome and
+ * the three catalog views; `commerce.css` the bag, checkout, pay, order and
+ * account views, and the stamp that lands on the bag page. Faces: Zilla Slab and Karla, self-hosted through Astro's
+ * font API under `--f-batch-*` (astro.config.ts).
+ */
+import { Font } from "astro:assets";
+import { isAccountLink } from "../../lib/nav.js";
+import type { ChromeModel } from "../contract.js";
+import commerceHref from "./commerce.css?url";
+import themeHref from "./theme.css?url";
+import viewsHref from "./views.css?url";
+
+interface Props {
+	chrome: ChromeModel;
+}
+
+const { chrome } = Astro.props;
+const menu = chrome.navItems.filter((item) => !item.isCart && !isAccountLink(item.url));
+const account = chrome.navItems.find((item) => !item.isCart && isAccountLink(item.url)) ?? null;
+const bag = chrome.navItems.find((item) => item.isCart) ?? null;
+---
+
+<!doctype html>
+<html lang="en" data-theme-id={chrome.themeId}>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="light dark" />
+		<title>{chrome.fullTitle}</title>
+		{chrome.description && <meta name="description" content={chrome.description} />}
+		{/* Of the slab, only the 700 cut (titles and prices, above the fold) is
+		    preloaded; the 600 cut loads on use rather than competing with it. */}
+		<Font cssVariable="--f-batch-display" preload={[{ weight: "700" }]} />
+		<Font cssVariable="--f-batch-body" preload />
+		<link rel="stylesheet" href={themeHref} />
+		<link rel="stylesheet" href={viewsHref} />
+		<link rel="stylesheet" href={commerceHref} />
+		<slot name="head" />
+		{/* A kraft bag with a green stamp — the whole theme in 32px. Inline, so
+		    no second request. */}
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23CDB08A'/%3E%3Cpath d='M9 8h14v18H9z' fill='%23F6F3EC'/%3E%3Cpath d='M9 8h14v3H9z' fill='%23A98A63'/%3E%3Cpath d='M11 15h10M11 18.5h10' stroke='%23184836' stroke-width='2'/%3E%3C/svg%3E"
+		/>
+	</head>
+	<body>
+		{/* The stamp's rough edge: a static filter the stamps reference by id.
+		    Zero-size and hidden — it draws nothing on its own. */}
+		<svg class="b-defs" width="0" height="0" aria-hidden="true" focusable="false">
+			<filter id="b-rough" x="-5%" y="-10%" width="110%" height="120%">
+				<feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="4" result="n"></feTurbulence>
+				<feDisplacementMap
+					in="SourceGraphic"
+					in2="n"
+					scale="1.1"
+					xChannelSelector="R"
+					yChannelSelector="G"
+					result="d"></feDisplacementMap>
+				<feComponentTransfer in="n" result="m">
+					<feFuncA type="discrete" tableValues="1 1 1 1 1 1 0 1 1 1"></feFuncA>
+				</feComponentTransfer>
+				<feComposite in="d" in2="m" operator="in"></feComposite>
+			</filter>
+		</svg>
+		<div class="b-skip-shell">
+			<a href="#main" class="b-skip-link">Skip to the main content</a>
+		</div>
+		<header class="b-head">
+			<div class="b-wrap b-head-row">
+				{
+					menu.length > 0 ? (
+						<nav class="b-nav" aria-label="Primary">
+							{menu.map((item) => (
+								<a href={item.url} data-home={item.url === "/" ? "" : undefined}>
+									{item.label}
+								</a>
+							))}
+						</nav>
+					) : (
+						<span class="b-nav" />
+					)
+				}
+				<a href="/" class="b-word">{chrome.siteTitle}</a>
+				<div class="b-right">
+					{account !== null && <a href={account.url}>{account.label}</a>}
+					{
+						bag !== null && (
+							<a class="b-bag" href={bag.url}>
+								{bag.label}
+								{chrome.cartCount !== null && (
+									<Fragment>
+										<span class="b-count" aria-hidden="true">
+											({chrome.cartCount})
+										</span>
+										<span class="u-sr-only">, {chrome.cartCountLabel}</span>
+									</Fragment>
+								)}
+							</a>
+						)
+					}
+				</div>
+			</div>
+		</header>
+		<main id="main" class="b-main">
+			<slot />
+		</main>
+		<footer class="b-foot">
+			<div class="b-wrap b-foot-grid">
+				<div class="b-foot-about">
+					<p class="b-foot-word">{chrome.siteTitle}</p>
+					<p>Content by EmDash, commerce by Otta.</p>
+				</div>
+				{
+					chrome.navItems.length > 0 && (
+						<nav class="b-foot-nav" aria-label="Footer">
+							<ul>
+								{chrome.navItems.map((item) => (
+									<li>
+										<a href={item.url}>{item.label}</a>
+									</li>
+								))}
+							</ul>
+						</nav>
+					)
+				}
+				{
+					chrome.currency !== null && (
+						<p class="b-foot-tag">
+							Prices in <span class="u-mono">{chrome.currency}</span>
+						</p>
+					)
+				}
+			</div>
+		</footer>
+	</body>
+</html>
