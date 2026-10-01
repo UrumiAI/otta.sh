@@ -169,13 +169,22 @@ describe("a re-read keeps only what the merchant changed", () => {
 		});
 	});
 
-	test("a field the merchant changed that ALSO changed in the store is a conflict, and the store wins", () => {
+	test("a field changed on BOTH sides is a conflict: the store wins that field, the merchant keeps the rest", () => {
 		const newer = { ...BASE, priceCents: 3500, updatedAt: "2026-10-01T09:00:00.000Z" };
-		const draft = { ...draftFromRecord(BASE), price: "30.00" };
+		const draft = { ...draftFromRecord(BASE), price: "30.00", sku: "TEE-2" };
 		expect(mergeDraft(BASE, newer, draft)).toEqual({
-			draft: draftFromRecord(newer),
+			draft: { ...draftFromRecord(newer), sku: "TEE-2" },
 			conflict: true,
 		});
+	});
+});
+
+describe("a digital product ships nothing", () => {
+	test("its hidden weight and size are neither checked nor sent", () => {
+		const record = { ...BASE, productKind: "digital", weightGrams: 200 };
+		const draft = { ...draftFromRecord(record), weightGrams: "", lengthMm: "abc" };
+		expect(validateDraft(draft, record)).toEqual({});
+		expect(savePayload(record, draft)).toMatchObject({ weightGrams: "", lengthMm: "" });
 	});
 });
 

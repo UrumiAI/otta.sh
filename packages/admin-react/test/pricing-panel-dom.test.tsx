@@ -216,6 +216,32 @@ test("when someone else saved first, the panel shows the latest values, as the r
 	expect(c.textContent).toContain("This product changed since you opened it");
 });
 
+test("a cleared SKU is refused beside the SKU, and focus goes there", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const c = await mountPanel();
+	await type(input(c, "SKU"), "");
+	await fire(button(c, "Save"), "click");
+	await React.act(async () => {
+		await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+	});
+	const sku = input(c, "SKU");
+	expect(sku.getAttribute("aria-invalid")).toBe("true");
+	expect(c.textContent).toContain("A SKU can be changed but not removed");
+	expect(document.activeElement).toBe(sku);
+	expect(writes()).toEqual([]);
+});
+
+test("a problem inside the folded Shipping & tax section opens it", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const c = await mountPanel();
+	const details = c.querySelector("details");
+	expect(details?.open).toBe(false);
+	await type(input(c, "Weight"), "");
+	await fire(button(c, "Save"), "click");
+	expect(details?.open).toBe(true);
+	expect(c.textContent).toContain("Can be changed but not removed");
+});
+
 test("a wrong amount is said in plain words and nothing is sent", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();

@@ -32,6 +32,8 @@ import {
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
 import { forgetSummaries } from "./pricing-columns.js";
+
+const SHIPPING_FIELDS: readonly DraftField[] = ["weightGrams", "lengthMm", "widthMm", "heightMm"];
 import { usePricingStyles } from "./pricing-styles.js";
 import {
 	CURRENCY_CHOICES,
@@ -160,6 +162,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	const [stockMsg, setStockMsg] = React.useState<Status>(null);
 	const [confirmRemove, setConfirmRemove] = React.useState<number | null>(null);
 	const [reload, setReload] = React.useState(0);
+	const [shippingOpen, setShippingOpen] = React.useState(false);
 	/** Whether the next read REPLACES what the merchant typed — after their own
 	 *  save, or after a refusal that means the record moved under them. */
 	const reseed = React.useRef(false);
@@ -169,7 +172,9 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	recordRef.current = load.status === "ready" ? load.record : null;
 	/** A stock movement the server accepted, waiting for the re-read that states
 	 *  the count it actually landed on. */
-	const stockReceipt = React.useRef<{ verb: "Added" | "Removed"; n: number } | null>(null);
+	const stockReceipt = React.useRef<
+		{ verb: "Added" | "Removed"; n: number } | { refused: true } | null
+	>(null);
 	const panelRef = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
@@ -210,7 +215,10 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			}
 			reseed.current = false;
 			const receipt = stockReceipt.current;
-			if (receipt !== null) {
+			if (receipt !== null && "refused" in receipt) {
+				stockReceipt.current = null;
+				setMoving(false);
+			} else if (receipt !== null) {
 				stockReceipt.current = null;
 				setStockMsg({
 					tone: "ok",
@@ -284,6 +292,8 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	const stock = stockStatus(p.onHand, threshold);
 	const hasSku = p.sku !== null;
 	const id = (name: string): string => `${idBase}-${name}`;
+	/** The store's refusal of a typed SKU, else the panel's own objection. */
+	const skuProblem = skuRefusal ?? shown.sku ?? null;
 
 	const set = (field: DraftField) => (next: string) => {
 		setDraft((prev) => (prev === null ? prev : { ...prev, [field]: next }));
@@ -296,6 +306,8 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 		if (Object.keys(allProblems).length > 0) {
 			setTouched(new Set(Object.keys(allProblems) as DraftField[]));
 			setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
+			// A problem inside the folded Shipping & tax section must be seen.
+			if (SHIPPING_FIELDS.some((field) => allProblems[field] !== undefined)) setShippingOpen(true);
 			// Take the merchant to the first problem rather than leaving them to hunt
 			// for it in a column they may have scrolled.
 			requestAnimationFrame(() => {
@@ -354,10 +366,10 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			}
 			const notice = result.notice;
 			if (notice !== null && notice.variant === "error") {
-				// The count it refused against may be stale; the re-read shows the real
-				// one.
-				setMoving(false);
+				// The count it refused against may be stale: the re-read shows the real
+				// one, and the buttons wait for it, as they do after a success.
 				setStockMsg({ tone: "fail", text: notice.description || notice.title });
+				stockReceipt.current = { refused: true };
 				setReload((k) => k + 1);
 				return;
 			}
@@ -580,22 +592,22 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 					<label className="otta-pricing-label" htmlFor={id("sku")}>
 						SKU <span className="otta-pricing-optional">· your code for this product</span>
 					</label>
-					<div className="otta-pricing-input" data-invalid={skuRefusal !== null}>
+					<div className="otta-pricing-input" data-invalid={skuProblem !== null}>
 						<input
 							id={id("sku")}
 							autoComplete="off"
 							placeholder="e.g. TEE-BLACK-M"
 							value={d.sku}
-							aria-invalid={skuRefusal !== null}
+							aria-invalid={skuProblem !== null}
 							aria-describedby={id("sku-note")}
 							onChange={(event) => {
 								set("sku")(event.target.value);
 							}}
 						/>
 					</div>
-					{skuRefusal !== null ? (
+					{skuProblem !== null ? (
 						<span id={id("sku-note")} className="otta-pricing-error">
-							{skuRefusal}
+							{skuProblem}
 						</span>
 					) : (
 						!hasSku && (
@@ -609,7 +621,12 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 
 			<hr className="otta-pricing-rule" />
 
-			<details>
+			<details
+				open={shippingOpen}
+				onToggle={(event) => {
+					setShippingOpen(event.currentTarget.open);
+				}}
+			>
 				<summary>
 					<span className="otta-pricing-summary">
 						<strong>Shipping &amp; tax</strong>

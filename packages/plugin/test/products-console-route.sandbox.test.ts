@@ -46,7 +46,7 @@
  * unreachable half is deleted with its reason.
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
- * Playwright (`sites/staging/e2e/products-pricing-panel.spec.ts, which replaced the retired page's spec`), which is additive
+ * Playwright (`sites/staging/e2e/products-pricing-panel.spec.ts`, which replaced the retired page's spec), which is additive
  * to this tier and replaces none of it.
  *
  * ONE STORE PER PROCESS (`storageBridge`), so every case addresses disjoint ids

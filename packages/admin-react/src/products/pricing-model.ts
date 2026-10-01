@@ -119,8 +119,9 @@ export function isDraftDirty(saved: PricingDraft, draft: PricingDraft): boolean 
  * have typed into. Only the fields THEY changed survive it; every other field
  * takes the newer value, so a save never writes a stale value back over someone
  * else's change under the fresh watermark. A field they changed that ALSO
- * changed in the store is a conflict: the store's value wins and the merchant is
- * told, because neither edit can be assumed to be the one they want.
+ * changed in the store is a conflict: the store's value wins FOR THAT FIELD and
+ * the merchant is told, because neither edit can be assumed to be the one they
+ * want; their other edits stay.
  */
 export function mergeDraft(
 	previous: ProductRecord,
@@ -130,13 +131,15 @@ export function mergeDraft(
 	const before = draftFromRecord(previous);
 	const after = draftFromRecord(next);
 	const mine = changedFields(before, draft);
-	const conflict = mine.some(
-		(field) => canonical(field, before[field]) !== canonical(field, after[field]),
-	);
-	if (conflict) return { draft: after, conflict: true };
+	// A clash takes the store's value for THAT field; the merchant's other edits
+	// survive, so a conflict on the weight does not throw away a typed price.
 	const merged: Record<string, string> = { ...after };
-	for (const field of mine) merged[field] = draft[field];
-	return { draft: merged as unknown as PricingDraft, conflict: false };
+	let conflict = false;
+	for (const field of mine) {
+		if (canonical(field, before[field]) !== canonical(field, after[field])) conflict = true;
+		else merged[field] = draft[field];
+	}
+	return { draft: merged as unknown as PricingDraft, conflict };
 }
 
 function money(value: string): number | null | "invalid" {
@@ -147,6 +150,8 @@ function money(value: string): number | null | "invalid" {
 
 /** Fields the plugin's save reads as "keep" when sent blank — so a blank one
  *  over a stored value would answer "Saved" and change nothing. */
+const SIZE_FIELDS = new Set<DraftField>(["weightGrams", "lengthMm", "widthMm", "heightMm"]);
+
 const UNCLEARABLE: ReadonlyArray<readonly [DraftField, (p: ProductRecord) => boolean, string]> = [
 	[
 		"price",
@@ -174,11 +179,16 @@ export function validateDraft(d: PricingDraft, p: ProductRecord): DraftProblems 
 	if (typeof price === "number" && typeof compareAt === "number" && compareAt <= price) {
 		problems.compareAt = "Must be higher than the price to show a sale";
 	}
+	// A digital product ships nothing: its weight and size are neither shown nor
+	// sent (see `savePayload`), so they are not checked either.
+	const physical = d.productKind !== "digital";
 	for (const field of ["weightGrams", "lengthMm", "widthMm", "heightMm"] as const) {
+		if (!physical) break;
 		const v = d[field].trim();
 		if (v.length > 0 && !/^\d+$/.test(v)) problems[field] = "Use a whole number";
 	}
 	for (const [field, stored, message] of UNCLEARABLE) {
+		if (!physical && SIZE_FIELDS.has(field)) continue;
 		if (d[field].trim().length === 0 && stored(p)) problems[field] = message;
 	}
 	return problems;
@@ -248,9 +258,11 @@ export function savePayload(p: ProductRecord, d: PricingDraft): Record<string, s
 		unitCost: canonical("unitCost", d.unitCost),
 		productKind: d.productKind,
 		taxClass: d.taxClass,
-		weightGrams: d.weightGrams.trim(),
-		lengthMm: d.lengthMm.trim(),
-		widthMm: d.widthMm.trim(),
-		heightMm: d.heightMm.trim(),
+		// Blank keeps what is stored — for a digital product, whose weight and size
+		// are hidden, that is exactly what should happen.
+		weightGrams: d.productKind === "digital" ? "" : d.weightGrams.trim(),
+		lengthMm: d.productKind === "digital" ? "" : d.lengthMm.trim(),
+		widthMm: d.productKind === "digital" ? "" : d.widthMm.trim(),
+		heightMm: d.productKind === "digital" ? "" : d.heightMm.trim(),
 	};
 }

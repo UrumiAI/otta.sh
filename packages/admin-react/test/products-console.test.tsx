@@ -2,7 +2,7 @@
  * The Pricing & inventory console's server-free half (INC-21).
  *
  * The screen itself is gated by Playwright
- * (`sites/staging/e2e/products-pricing-panel.spec.ts, which replaced the retired page's spec`) — it has to be, because the
+ * (`sites/staging/e2e/products-pricing-panel.spec.ts`, which replaced the retired page's spec) — it has to be, because the
  * behaviours INC-21 delivers are a click, a confirm dialog and a focus ring,
  * none of which a Node test can see. What a Node test CAN cover, and what
  * Playwright covers badly, is everything on either side of the browser: the
