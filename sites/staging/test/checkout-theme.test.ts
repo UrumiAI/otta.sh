@@ -23,7 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { hasExecutableScript, splitAstro, templateOf } from "./astro-source.js";
-import { viewCases } from "./theme-views.js";
+import { viewCases, viewSources } from "./theme-views.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
@@ -38,6 +38,7 @@ function shown(source: string): string {
 }
 const PAY = read("pages/checkout/pay.astro");
 const ORDER = read("pages/orders/[orderId].astro");
+const CART = read("pages/cart/index.astro");
 const POLL_RIBBON = read("components/PollRibbon.astro");
 
 /**
@@ -267,8 +268,22 @@ describe("/checkout — the coupon: the page's half", () => {
 			/\{\s*cartId,\s*locale: SITE_LOCALE,\s*\.\.\.\(coupon\.couponCode !== undefined/,
 		);
 	});
-	test("the coupon in the URL never leaks through a Referer", () => {
-		expect(REVIEW).toContain('<meta name="referrer" content="no-referrer" slot="head" />');
+
+	test("the coupon in the URL never leaks through a Referer to another host", () => {
+		// `same-origin`, NOT `no-referrer`: under `no-referrer` a browser sends
+		// `Origin: null` on the page's own POST to /checkout/place, the origin
+		// guard 403s it, and no order can be placed (pinned in a real browser by
+		// e2e/checkout-place.spec.ts). The meta stays on the PAGE, not the view.
+		expect(REVIEW).toContain('<meta name="referrer" content="same-origin" slot="head" />');
+		expect(REVIEW).not.toContain('content="no-referrer"');
+	});
+
+	test("the policy is also a response HEADER, not only the meta", () => {
+		// The meta arrives through `<slot name="head">`, after the layout's font
+		// preloads; a fetch the parser starts before it would not see the meta.
+		expect(splitAstro(REVIEW).frontmatter).toContain(
+			'Astro.response.headers.set("Referrer-Policy", "same-origin");',
+		);
 	});
 
 	test("an ENDED checkout is decided from the locked order's phase", () => {
@@ -570,6 +585,26 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 		expect(ORDER).not.toContain("Back to checkout");
 	});
 
+	test("the order page stays no-referrer, so it carries no form of its own", () => {
+		// ADR-0012 decision 6 — its URL can hold the client secret. Under that
+		// policy browsers send `Origin: null` on the page's own POSTs and the
+		// origin guard 403s them, so the dead-end door is a GET link, drawn by
+		// the view (pinned per theme below).
+		expect(ORDER).toMatch(/<meta name="referrer" content="no-referrer" slot="head" \/>/);
+		expect(templateOf(ORDER)).not.toMatch(/<form\b/i);
+		expect(ORDER).not.toContain('action="/checkout/new-cart"');
+	});
+
+	test("/cart, where the door lands, is NOT no-referrer and every cart view offers the new-cart POST", () => {
+		// The terminal (checked_out) cart is exactly the dead-end order's cart,
+		// and its panel carries the real door (pinned in cart-page.test.ts). The
+		// page must keep sending a real Origin, or that door dies the same way.
+		expect(CART).not.toMatch(/name="referrer"/);
+		for (const { file, source } of viewSources("cart")) {
+			expect(source, file).toContain('<form method="POST" action="/checkout/new-cart">');
+		}
+	});
+
 	test("the receipt names what was bought, not only its SKU", () => {
 		// CLAUDE.md: orders snapshot price AND title at purchase time. A receipt
 		// reading `OTTA-TEE-01 1 $25.00` has lost the thing a buyer opens it to
@@ -605,9 +640,16 @@ describe.each(ORDER_VIEWS)("/orders/<id> — the view %s", (_label, { source: VI
 		expect(body).toContain("<StepTrack");
 	});
 
-	test("every state with nowhere to go offers the new-cart door", () => {
+	test("every state with nowhere to go offers the door — a GET link to /cart, never a form", () => {
+		// The order page is `no-referrer`, so a POST from it sends `Origin: null`
+		// and the origin guard 403s it: a `POST /checkout/new-cart` form here is
+		// dead on arrival (pinned in a real browser by e2e/checkout-place.spec.ts).
 		expect(VIEW).not.toContain("Back to checkout");
-		expect(VIEW).toContain('action="/checkout/new-cart"');
+		expect(templateOf(VIEW)).toMatch(
+			/\{deadEnd && \(\s*<a\b[^>]*href="\/cart"[^>]*>\s*Go to your cart\s*<\/a>/,
+		);
+		expect(templateOf(VIEW)).not.toMatch(/<form\b/i);
+		expect(VIEW).not.toContain('action="/checkout/new-cart"');
 	});
 });
 

@@ -9,8 +9,13 @@
  *
  * Two costs, stated plainly:
  *  - the code sits in history and access logs. It is not personal data, but a
- *    single-use private code is exposed; the page sends `no-referrer` so it at
- *    least never leaves in a Referer;
+ *    single-use private code is exposed; the page sends `same-origin` so it at
+ *    least never leaves for another host in a Referer (not `no-referrer`, under
+ *    which browsers send `Origin: null` on the page's own POSTs — Fetch's
+ *    "append a request `Origin` header" — and the origin guard 403s them). Its
+ *    own POSTs DO carry the full URL as Referer, so their responses send
+ *    `no-referrer` (`withoutReferrer`, cart-actions.ts) and the page they
+ *    redirect to never sees the code in `document.referrer`;
  *  - applying a coupon is a navigation, so fields typed into the place form are
  *    lost — the same no-personal-data-in-URLs trade-off `place.ts` documents.
  *    The coupon field sits FIRST on the page for that reason.

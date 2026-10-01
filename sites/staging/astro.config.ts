@@ -85,6 +85,35 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
 	? "wrangler.local.jsonc"
 	: undefined;
 
+/**
+ * The latin `unicode-range`: the range on the face Google Fonts' css2 response
+ * comments as "latin", copied verbatim. It is what the Google provider emitted
+ * before the fonts were vendored and what the vendored latin-subset files
+ * cover. All three faces share it; `test/fonts-config.test.ts` pins each face
+ * to this list.
+ */
+export const LATIN_UNICODE_RANGE: [string, ...string[]] = [
+	"U+0000-00FF",
+	"U+0131",
+	"U+0152-0153",
+	"U+02BB-02BC",
+	"U+02C6",
+	"U+02DA",
+	"U+02DC",
+	"U+0304",
+	"U+0308",
+	"U+0329",
+	"U+2000-206F",
+	"U+20AC",
+	"U+2122",
+	"U+2191",
+	"U+2193",
+	"U+2212",
+	"U+2215",
+	"U+FEFF",
+	"U+FFFD",
+];
+
 export default defineConfig({
 	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
@@ -95,59 +124,90 @@ export default defineConfig({
 		responsiveStyles: true,
 	},
 	/**
-	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED: Astro
-	 * downloads them at build time and serves them from this origin, so a
-	 * shopper's browser never talks to fonts.googleapis.com or fonts.gstatic.com
-	 * at runtime. Variables are namespaced per theme (`--f-<themeId>-<role>`) so
-	 * two themes' faces never collide: `src/themes/tempered/theme.css` maps the
-	 * `--f-tempered-*` variables these declare onto the shared `--u-display` /
-	 * `--u-body` / `--u-data` names, and `src/themes/tempered/Layout.astro`
-	 * emits the <Font> tags — only the ACTIVE theme's Layout emits its own.
+	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED from files
+	 * checked in under `src/fonts/<family>/` (each with its SIL OFL beside it).
+	 * Astro serves them from this origin, so a shopper's browser never talks to
+	 * fonts.googleapis.com or fonts.gstatic.com. Variables are namespaced per
+	 * theme (`--f-<themeId>-<role>`) so two themes' faces never collide:
+	 * `src/themes/tempered/theme.css` maps the `--f-tempered-*` variables these
+	 * declare onto the shared `--u-display` / `--u-body` / `--u-data` names, and
+	 * `src/themes/tempered/Layout.astro` emits the <Font> tags — only the ACTIVE
+	 * theme's Layout emits its own.
 	 *
-	 * `options.experimental.variableAxis` is load-bearing, not a nicety. Google's
-	 * css2 endpoint only ships an axis you asked for, and the width contrast
-	 * between the narrow display face and the wide data face is the theme's
-	 * loudest move — drop these and `font-variation-settings: "wdth" …` becomes
-	 * a silent no-op that renders at default widths with no error anywhere.
-	 * `test/fonts-config.test.ts` pins them for that reason.
+	 * VENDORED, not the Google provider, and the reason is measured, not taste.
+	 * Astro's Google provider (unifont) fetches css2 with a pinned macOS
+	 * Chrome/121 user agent, and Google answers a macOS UA with builds that have
+	 * NO `prep` table (macOS ignores hinting). Otherwise the files are the same:
+	 * for all three faces the only table that differs is `prep`. That table is
+	 * a 7-byte scan-control program (PUSHW 511 SCANCTRL PUSHB 4 SCANTYPE), not
+	 * real hinting — but its presence is what makes FreeType take the native
+	 * TrueType path. A font with no instructions is handed to FreeType's
+	 * AUTOHINTER instead (Chromium on Linux and Android), which rounds each
+	 * glyph's advance at text sizes, so body copy spaces unevenly. The files
+	 * here are the builds a Windows/Linux browser gets from Google, which carry
+	 * `prep`.
 	 *
-	 * CAVEAT: `experimental` here is UNIFONT's namespace (Astro's font API wraps
-	 * unifont's google provider), not Astro's — it can be renamed or moved under
-	 * a transitive PATCH bump, with no Astro major release to warn us.
-	 * fonts-config.test.ts is the tripwire and will be the first thing to fail;
-	 * the fix is to follow unifont's current option name, not to delete the
-	 * assertion.
+	 * Each file is the full variable font (same axes as the previous Google
+	 * download): Bricolage Grotesque opsz 12–96,
+	 * wdth 75–100, wght 200–800; Schibsted Grotesk wght 400–900; Martian Mono
+	 * wdth 75–112.5, wght 100–800. The width contrast between the narrow display
+	 * face and the wide data face is the theme's loudest move, so
+	 * `font-variation-settings: "wdth" …` must never be a silent no-op.
+	 * `weight` keeps the ranges the theme uses (and the descriptors the Google
+	 * provider emitted), and no `stretch` descriptor is declared, exactly as
+	 * before, so matching and rendering are unchanged apart from the hinting.
+	 * `test/fonts-config.test.ts` pins the provider, the files, a non-empty
+	 * `prep` table, the axes, `display` and the unicode range.
 	 */
 	fonts: [
 		{
-			provider: fontProviders.google(),
+			provider: fontProviders.local(),
 			name: "Bricolage Grotesque",
 			cssVariable: "--f-tempered-display",
-			// Wordmark and titles sit at 700–800; 400 is the muted counter-voice.
-			weights: ["400 800"],
-			styles: ["normal"],
-			subsets: ["latin"],
-			display: "swap",
-			options: { experimental: { variableAxis: { opsz: [["12", "96"]], wdth: [["75", "100"]] } } },
+			options: {
+				variants: [
+					{
+						// Wordmark and titles sit at 700–800; 400 is the muted counter-voice.
+						src: ["./src/fonts/bricolage-grotesque/bricolage-grotesque-variable-latin.woff2"],
+						weight: "400 800",
+						style: "normal",
+						display: "swap",
+						unicodeRange: LATIN_UNICODE_RANGE,
+					},
+				],
+			},
 		},
 		{
-			provider: fontProviders.google(),
+			provider: fontProviders.local(),
 			name: "Schibsted Grotesk",
 			cssVariable: "--f-tempered-body",
-			weights: ["400 700"],
-			styles: ["normal"],
-			subsets: ["latin"],
-			display: "swap",
+			options: {
+				variants: [
+					{
+						src: ["./src/fonts/schibsted-grotesk/schibsted-grotesk-variable-latin.woff2"],
+						weight: "400 700",
+						style: "normal",
+						display: "swap",
+						unicodeRange: LATIN_UNICODE_RANGE,
+					},
+				],
+			},
 		},
 		{
-			provider: fontProviders.google(),
+			provider: fontProviders.local(),
 			name: "Martian Mono",
 			cssVariable: "--f-tempered-data",
-			weights: ["300 700"],
-			styles: ["normal"],
-			subsets: ["latin"],
-			display: "swap",
-			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
+			options: {
+				variants: [
+					{
+						src: ["./src/fonts/martian-mono/martian-mono-variable-latin.woff2"],
+						weight: "300 700",
+						style: "normal",
+						display: "swap",
+						unicodeRange: LATIN_UNICODE_RANGE,
+					},
+				],
+			},
 		},
 	],
 	integrations: [react(), emdash(buildEmdashOptions(egress))],

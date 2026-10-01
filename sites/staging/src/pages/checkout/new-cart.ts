@@ -21,7 +21,7 @@
  * belongs in its own PR.
  */
 import type { APIRoute } from "astro";
-import { clearCartCookie, seeOther } from "../../lib/cart-actions.js";
+import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 
@@ -29,10 +29,12 @@ export const POST: APIRoute = (context) => {
 	// CSRF first — a forged cross-site POST must not be able to bin someone's
 	// cart. Nothing is cleared before this returns.
 	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+	if (forbidden !== null) return withoutReferrer(forbidden);
 
 	clearCartCookie(context);
 	clearCheckoutCookie(context.cookies);
 
-	return seeOther(context, "/products");
+	// Posted from /checkout, whose URL may hold a coupon: the GET this 303
+	// starts must not carry it as its Referer (see `withoutReferrer`).
+	return withoutReferrer(seeOther(context, "/products"));
 };

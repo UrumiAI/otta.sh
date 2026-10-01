@@ -102,12 +102,13 @@ const {
 							Complete payment
 						</a>
 					)}
+					{/* A link, never a form: the order page is `no-referrer`, so a POST
+					    from it sends `Origin: null` and the guard 403s it (see
+					    `deadEnd` in pages/orders/[orderId].astro). */}
 					{deadEnd && (
-						<form method="POST" action="/checkout/new-cart">
-							<button type="submit" class="u-btn u-btn-ghost">
-								Start a new cart
-							</button>
-						</form>
+						<a class="u-btn u-btn-ghost" href="/cart">
+							Go to your cart
+						</a>
 					)}
 				</div>
 			)}
