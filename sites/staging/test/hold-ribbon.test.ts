@@ -220,8 +220,9 @@ describe("HoldClock — the client script", () => {
 	test("it is the script and ONLY the script — no markup of its own", () => {
 		expect(hasExecutableScript(source)).toBe(true);
 		expect(script, "the script body was not found").not.toBe("");
+		// A space, not "", so the strip cannot splice a new `<script` together.
 		const template = templateOf(source)
-			.replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, "")
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, " ")
 			.trim();
 		expect(template).toBe("");
 	});
