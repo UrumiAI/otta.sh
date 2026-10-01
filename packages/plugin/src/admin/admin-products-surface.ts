@@ -39,6 +39,19 @@ export interface ProductSummaryWire {
 	createdAt: string;
 }
 
+/** One product's price and stock, as the Products list's columns show them.
+ *  Money in minor units and `onHand` as a raw count — `null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStockWire {
+	productId: string;
+	sku: string | null;
+	priceCents: number | null;
+	currency: string | null;
+	compareAtCents: number | null;
+	onHand: number | null;
+	deletedAt: string | null;
+}
+
 /** The full admin Product detail (read-only) — carries the single-sku stock
  *  read (`onHand`) the detail leaf fetches for the ONE product opened; the
  *  list gets the same field from its per-page join instead. */
@@ -280,6 +293,15 @@ export interface AdminProductsSurface {
 	 *  exist resolves to `null` (the console renders a "not found" state, not an
 	 *  error banner); a soft-deleted one is a real row with `deletedAt` set. */
 	getProduct(productId: string): Promise<ProductDetailWire | null>;
+
+	/**
+	 * The price and stock of a BOUNDED list of products, in the order asked — the
+	 * Products list's Price and Stock columns, which show one page of CMS entries
+	 * and need one read for all of them rather than one per row (ADR-0014,
+	 * amendment 2026-10-01). An id with no commerce row is LEFT OUT rather than
+	 * invented: a CMS draft that has never synced has nothing to show.
+	 */
+	getProductSummaries(productIds: readonly string[]): Promise<ProductPriceStockWire[]>;
 
 	/**
 	 * Read the tax-class registry (Increment 2 slice 5) — the source for the edit

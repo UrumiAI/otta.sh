@@ -604,6 +604,81 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	// not lost: the fail-closed case above makes the same E-7 assertions against a
 	// trigger that still exists.
 
+	// ── products.summaries: the Products list's Price and Stock columns ──────
+
+	test("products.summaries answers the asked ids, in the asked order, with RAW money and stock", async () => {
+		const a = await seedProduct({ term: "sumrow", onHand: 7, priceCents: 3200 });
+		const b = await seedProduct({ term: "sumrow", onHand: 0, priceCents: 600 });
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			productIds: [b.productId, a.productId],
+		});
+		expect(result["ok"], JSON.stringify(result)).toBe(true);
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries.map((s) => s["productId"])).toEqual([b.productId, a.productId]);
+		expect(summaries[1]).toMatchObject({
+			sku: a.sku,
+			priceCents: 3200,
+			currency: "USD",
+			compareAtCents: null,
+			onHand: 7,
+			deletedAt: null,
+		});
+		// Zero is OUT OF STOCK, a real count — not "no record".
+		expect(summaries[0]?.["onHand"]).toBe(0);
+		// The band a cell needs travels with the page, as on products.list.
+		expect(result["threshold"]).toBe(THRESHOLD);
+	});
+
+	test("products.summaries keeps `null` on-hand distinct from zero, and skips ids it has no row for", async () => {
+		const unknown = await seedProduct({ term: "sumnull", onHand: null });
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			// A CMS entry that has never been saved through the sync has no commerce
+			// row at all — a draft created a moment ago, say. It is left out, not
+			// invented.
+			productIds: [`${NS}-no-commerce-row`, unknown.productId],
+		});
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries.map((s) => s["productId"])).toEqual([unknown.productId]);
+		expect(summaries[0]?.["onHand"]).toBeNull();
+	});
+
+	test("products.summaries carries the compare-at price the list strikes through", async () => {
+		const seeded = await seedProduct({ term: "sumsale", priceCents: 3200 });
+		await products.updateCommerceFields(
+			{
+				productId: toProductId(seeded.productId),
+				compareAtPrice: money(cents(4000), toCurrency("USD")),
+			},
+			idempotencyKey(`${NS}-sumsale-compare`),
+			seeded.updatedAt,
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			productIds: [seeded.productId],
+		});
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries[0]?.["compareAtCents"]).toBe(4000);
+	});
+
+	test("products.summaries refuses a request it cannot bound — no ids, a non-list, or more than a page", async () => {
+		for (const productIds of [
+			undefined,
+			"pcr-prod-1",
+			[],
+			[42],
+			Array.from({ length: 101 }, (_, i) => `x${String(i)}`),
+		]) {
+			const result = await invoke({ type: READ, resource: "products.summaries", productIds });
+			expect(result["ok"], JSON.stringify(productIds)).toBe(false);
+			expect(result["title"]).toBe("That request could not be read");
+		}
+	});
+
 	test("an unrecognised products resource is a refusal, not a blank body", async () => {
 		const result = await invoke({ type: READ, resource: "products.nope" });
 		expect(result["ok"]).toBe(false);

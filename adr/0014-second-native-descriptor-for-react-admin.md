@@ -18,6 +18,10 @@
 - Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
   is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
   Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
+- Amended: 2026-10-01 — **Decision 6 only**: Pricing & inventory leaves the sidebar. Its fields
+  move into a **content editor panel** and **content-list columns** on the `products` collection,
+  served by `otta-console`, and the `/products` page is retired. See "Amendment 2026-10-01" at the
+  end.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -325,3 +329,49 @@ browser — including a tab opened with "Open in new tab".
 
 **Reopens this amendment:** a second React screen justified by this one instead of by its own gaps;
 the Settings radio being removed; or the Themes screen acquiring a write other than `saveStoreTheme`.
+
+## Amendment 2026-10-01 — Pricing & inventory moves into the product editor
+
+**What changes.** A shop owner edits a product in two places today: its title, description and
+images under **Content › Products**, and its price and stock in **Pricing & inventory**, a page at
+the bottom of the sidebar under "Plugins". Merchants read that as two different products. EmDash
+cannot merge two sidebar items or move a plugin page into the Content group (emdash-cms/emdash
+#1023 is open), but since 0.38 a native plugin can contribute two surfaces that sit **inside the
+collection's own screens**:
+
+- a **content editor panel** (`contentEditorPanels`), a section of a saved entry's settings
+  column; and
+- **content-list columns** (`contentListColumns`), read-only cells in the collection's list.
+
+So `otta-console` now exports a **Pricing & stock** panel and **Price** / **Stock** columns, both
+scoped to the `products` collection, and the `/products` page ("Pricing & inventory") is
+**retired**: it leaves `admin.pages`, the sidebar and the console-screens registry. Decision 6's
+scope is unchanged in kind — the same fields, edited by the same writes — and only the place they
+are edited moves.
+
+**What does not change.**
+
+- **One data path (Decision 3).** Both surfaces call the existing `otta` admin route with
+  `otta_console_read` / `otta_console_act`. The panel reads `products.detail` and writes through
+  the same `products:*` actions the retired page used (the save, restock and remove-stock
+  handlers in `products-actions.ts`, with their watermarks and idempotency keys). The columns read
+  one new resource on that same route, `products.summaries`: the price and on-hand of a bounded
+  list of product ids, which is the page of rows the list is showing. It is a read on the existing
+  authenticated route, not a new route, capability or host.
+- **CMS ownership (ADR-0013).** Title, description, images and publish status stay the CMS's. The
+  panel offers no title and no active flag, exactly as the retired page did; the product id is the
+  CMS entry id, so the panel needs no mapping.
+- **Who sees them.** The `otta` admin route requires `plugins:manage` (ADMIN). The panel and the
+  columns declare `minRole: 50` so an editor below ADMIN is never shown controls that would answer
+  403. `minRole` only hides; the route remains the authorization boundary.
+- **No component library**, as before: inline styles over the admin's Kumo custom properties
+  with theme-neutral fallbacks.
+
+**What gets harder.** A panel mounts only on a **saved** entry, so a new product is saved once
+before it can be priced; the panel says so. The columns are read-only, so stock and price are
+changed from the product, not from the list. A merchant who wants a dedicated stock-taking table
+has none until one is justified on its own.
+
+**Reopens this amendment:** a panel or column offering a CMS-owned field; either surface reading or
+writing through anything but the `otta` admin route; or the retired page returning beside the panel.
+
