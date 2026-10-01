@@ -15,7 +15,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { PriceCell, StockCell, PRICING_COLUMNS, forgetSummaries } =
+const { PriceCell, StockCell, PRICING_COLUMNS, FRESH_MS, forgetSummaries, summariesFor } =
 	await import("../src/products/pricing-columns.js");
 
 const ROWS = [
@@ -129,8 +129,9 @@ test("ten cells on the page make ONE request, for the page's ids", async () => {
 
 test("price shows the amount, and a sale's old price struck through", async () => {
 	const c = await render();
-	expect(cell(c, "tee", "price")).toBe("$32.00$40.00");
-	expect(c.querySelector('[data-row="tee"] s')?.textContent).toBe("$40.00");
+	// The struck price is announced as the old one, not read as a second price.
+	expect(cell(c, "tee", "price")).toBe("$32.00was $40.00");
+	expect(c.querySelector('[data-row="tee"] s')?.textContent).toBe("was $40.00");
 	expect(cell(c, "mug", "price")).toBe("$18.00");
 	expect(cell(c, "tote", "price")).toBe("Not priced");
 	// A CMS draft with no commerce row yet.
@@ -158,8 +159,33 @@ test("a failed read shows a dash, not a wrong number, and is retried next time",
 		),
 	);
 	const c = await render();
-	expect(cell(c, "tee", "price")).toBe("—");
+	// The dash is what is SEEN; the reason is what a screen reader hears.
+	expect(c.querySelector('[data-row="tee"] [aria-hidden="true"]')?.textContent).toBe("—");
+	expect(cell(c, "tee", "price")).toContain("Products are unavailable");
 	expect(c.querySelector('[data-row="tee"] [title]')?.getAttribute("title")).toBe(
 		"Products are unavailable",
 	);
+});
+
+test("a shared page is reused only briefly, and forgotten after a panel write", async () => {
+	await summariesFor(PAGE, 1_000);
+	await summariesFor(PAGE, 1_000 + FRESH_MS - 1);
+	expect(apiFetch).toHaveBeenCalledTimes(1);
+	// A price saved in the panel changes the commerce row, not the CMS entry, so
+	// the page key alone could never notice it: time and the panel's own
+	// `forgetSummaries` are what make the list read again.
+	await summariesFor(PAGE, 1_000 + FRESH_MS);
+	expect(apiFetch).toHaveBeenCalledTimes(2);
+	forgetSummaries();
+	await summariesFor(PAGE, 1_000 + FRESH_MS + 1);
+	expect(apiFetch).toHaveBeenCalledTimes(3);
+});
+
+test("a page larger than one read is split, never refused", async () => {
+	const big = Array.from({ length: 150 }, (_, i) => ({ id: `p${String(i)}`, updatedAt: "x" }));
+	await summariesFor(big, 5);
+	const sizes = apiFetch.mock.calls.map(
+		([, init]) => (JSON.parse(String(init?.body)) as { productIds: string[] }).productIds.length,
+	);
+	expect(sizes).toEqual([100, 50]);
 });

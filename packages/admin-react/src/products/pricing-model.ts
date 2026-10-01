@@ -100,10 +100,43 @@ function canonical(field: DraftField, value: string): string {
 	return units === null ? trimmed : formatMinorUnitsInput(units);
 }
 
+function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
+	return (Object.keys(saved) as DraftField[]).filter((field) => {
+		// The currency only travels WITH a price: picked on its own for a product
+		// that has none, the save would send nothing, so it is not a change.
+		if (field === "currency" && draft.price.trim().length === 0) return false;
+		return canonical(field, saved[field]) !== canonical(field, draft[field]);
+	});
+}
+
 export function isDraftDirty(saved: PricingDraft, draft: PricingDraft): boolean {
-	return (Object.keys(saved) as DraftField[]).some(
-		(field) => canonical(field, saved[field]) !== canonical(field, draft[field]),
+	return changedFields(saved, draft).length > 0;
+}
+
+/**
+ * A re-read the merchant did not ask for (a CMS save, a stock movement, a
+ * refusal that declined a value) lands a NEWER record under a form they may
+ * have typed into. Only the fields THEY changed survive it; every other field
+ * takes the newer value, so a save never writes a stale value back over someone
+ * else's change under the fresh watermark. A field they changed that ALSO
+ * changed in the store is a conflict: the store's value wins and the merchant is
+ * told, because neither edit can be assumed to be the one they want.
+ */
+export function mergeDraft(
+	previous: ProductRecord,
+	next: ProductRecord,
+	draft: PricingDraft,
+): { draft: PricingDraft; conflict: boolean } {
+	const before = draftFromRecord(previous);
+	const after = draftFromRecord(next);
+	const mine = changedFields(before, draft);
+	const conflict = mine.some(
+		(field) => canonical(field, before[field]) !== canonical(field, after[field]),
 	);
+	if (conflict) return { draft: after, conflict: true };
+	const merged: Record<string, string> = { ...after };
+	for (const field of mine) merged[field] = draft[field];
+	return { draft: merged as unknown as PricingDraft, conflict: false };
 }
 
 function money(value: string): number | null | "invalid" {
@@ -112,7 +145,22 @@ function money(value: string): number | null | "invalid" {
 	return parseMinorUnitsInput(trimmed, { allowZero: false }) ?? "invalid";
 }
 
-export function validateDraft(d: PricingDraft): DraftProblems {
+/** Fields the plugin's save reads as "keep" when sent blank — so a blank one
+ *  over a stored value would answer "Saved" and change nothing. */
+const UNCLEARABLE: ReadonlyArray<readonly [DraftField, (p: ProductRecord) => boolean, string]> = [
+	[
+		"price",
+		(p) => p.priceCents !== null,
+		"A product that has a price needs one — enter the new price",
+	],
+	["sku", (p) => p.sku !== null, "A SKU can be changed but not removed"],
+	["weightGrams", (p) => p.weightGrams !== null, "Can be changed but not removed"],
+	["lengthMm", (p) => p.lengthMm !== null, "Can be changed but not removed"],
+	["widthMm", (p) => p.widthMm !== null, "Can be changed but not removed"],
+	["heightMm", (p) => p.heightMm !== null, "Can be changed but not removed"],
+];
+
+export function validateDraft(d: PricingDraft, p: ProductRecord): DraftProblems {
 	const problems: DraftProblems = {};
 	const price = money(d.price);
 	const compareAt = money(d.compareAt);
@@ -129,6 +177,9 @@ export function validateDraft(d: PricingDraft): DraftProblems {
 	for (const field of ["weightGrams", "lengthMm", "widthMm", "heightMm"] as const) {
 		const v = d[field].trim();
 		if (v.length > 0 && !/^\d+$/.test(v)) problems[field] = "Use a whole number";
+	}
+	for (const [field, stored, message] of UNCLEARABLE) {
+		if (d[field].trim().length === 0 && stored(p)) problems[field] = message;
 	}
 	return problems;
 }
@@ -178,10 +229,11 @@ export function stockStatus(
 }
 
 /**
- * The one save. EVERY field the panel owns rides with it, so a field the
- * merchant cleared is sent blank (which the plugin reads as "clear") rather than
- * left out (which it reads as "keep"). The watermark is the record the panel
- * last loaded; the plugin refuses the save if the product moved since.
+ * The one save. EVERY field the panel owns rides with it. Blank means "clear"
+ * for compare-at, cost and tax class, and "keep" for price, SKU, weight and size
+ * — which is why `validateDraft` refuses a blank one of those over a stored
+ * value. The watermark is the record the panel last loaded; the plugin refuses
+ * the save if the product moved since.
  *
  * No `title` and no `active`: both are the CMS's (ADR-0013).
  */

@@ -295,6 +295,9 @@ export interface ActPayload {
 	 * HTTP, not a guarantee about it.
 	 */
 	readonly field?: "sku";
+	/** The plugin's `ProductsActionResult.recordMoved`, mirrored: someone else
+	 *  saved first, so the form shows the latest values. */
+	readonly recordMoved?: true;
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────

@@ -133,6 +133,8 @@ interface ActOutcome {
 	notice?: Notice | null;
 	/** Present only on an outcome about ONE input — see the rename refusals. */
 	field?: string;
+	/** Present only on the stale refusal: the record moved under the write. */
+	recordMoved?: true;
 }
 
 let sandbox: SandboxHandle;
@@ -534,6 +536,9 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("This product changed since you opened it");
 		expect(String(result.notice?.description)).toContain("NOT applied");
+		// Said in a form a surface can act on without reading the sentence: the
+		// record moved, so the form must show the latest values.
+		expect(result.recordMoved).toBe(true);
 		// The first save stands; the second was NOT applied over it.
 		expect((await readProduct(seeded.productId)).price).toEqual({ amount: 2100, currency: "USD" });
 	});
@@ -554,6 +559,9 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(taken.notice?.variant).toBe("error");
 		expect(taken.notice?.title).toBe("SKU already in use");
 		expect(String(taken.notice?.description)).toContain(occupied.sku);
+		// A refused VALUE: it belongs beside the SKU input, and nothing moved.
+		expect(taken.field).toBe("sku");
+		expect(taken.recordMoved).toBeUndefined();
 
 		// Currency cannot be changed here — the row is priced in USD.
 		const currencyMismatch = await act("products:save-price", {
@@ -669,10 +677,12 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 	});
 
 	test("every OTHER outcome names no field at all — the top of the screen is still the default", async () => {
-		// The plain edit path is untouched by the two refusals above: a save, a
-		// stale watermark, the live-sku collision and an unknown product all still
-		// report where they always did, and a screen reading `field` gets nothing to
-		// route on.
+		// The plain edit path is untouched by the SKU refusals: a save, a stale
+		// watermark and an unknown product all still report where they always did,
+		// and a screen reading `field` gets nothing to route on. The live-sku
+		// collision is the exception now: it declines ONE value the merchant typed,
+		// so it names the SKU like the two rename refusals (the product editor's
+		// panel keeps the typing beside it).
 		const seeded = await seedProduct();
 		const occupied = await seedProduct();
 
@@ -698,7 +708,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			sku: occupied.sku,
 		});
 		expect(collision.notice?.title).toBe("SKU already in use");
-		expect(collision.field).toBeUndefined();
+		expect(collision.field).toBe("sku");
 
 		const missing = await act("products:save-identity", {
 			productId: `${NS}-prod-nowhere-2`,

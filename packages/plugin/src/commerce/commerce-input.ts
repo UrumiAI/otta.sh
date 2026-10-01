@@ -128,6 +128,12 @@ function fail(field: string, reason: string): never {
 }
 
 /** An opaque id token: non-empty, bounded, no whitespace or control characters. */
+/** Whether `value` passes {@link requireIdToken}, without throwing — for a
+ *  boundary that answers a bad id as a refused request. */
+export function isCommerceIdToken(value: string): boolean {
+	return value.length > 0 && value.length <= ID_MAX && ID_CHARSET.test(value);
+}
+
 export function requireIdToken(field: string, value: string): string {
 	if (value.length === 0) fail(field, "must not be empty");
 	if (value.length > ID_MAX) fail(field, `must be at most ${String(ID_MAX)} characters`);

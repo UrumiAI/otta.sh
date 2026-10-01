@@ -31,12 +31,14 @@ import {
 	type TaxClass,
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
+import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
 import {
 	CURRENCY_CHOICES,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
+	mergeDraft,
 	salePreview,
 	savePayload,
 	stockStatus,
@@ -165,6 +167,10 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	draftRef.current = draft;
 	const recordRef = React.useRef<ProductRecord | null>(null);
 	recordRef.current = load.status === "ready" ? load.record : null;
+	/** A stock movement the server accepted, waiting for the re-read that states
+	 *  the count it actually landed on. */
+	const stockReceipt = React.useRef<{ verb: "Added" | "Removed"; n: number } | null>(null);
+	const panelRef = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -172,6 +178,8 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			if (cancelled) return;
 			if (isFailure(result)) {
 				setLoad({ status: "failed", title: result.title, description: result.description });
+				stockReceipt.current = null;
+				setMoving(false);
 				return;
 			}
 			const record = result.product;
@@ -181,18 +189,36 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 				taxClasses: result.taxClasses,
 				threshold: result.threshold,
 			});
-			// Typing survives a re-read the merchant did not ask for — a CMS save, a
-			// stock movement — because neither changes a field this panel owns. Their
-			// own save, and a refusal that means the record moved, re-seed instead.
+			// The merchant's own save, and a refusal that means the record moved,
+			// re-seed the form. Any other re-read (a CMS save, a stock movement, a
+			// declined value) keeps ONLY the fields they changed (`mergeDraft`).
 			const current = draftRef.current;
 			const previous = recordRef.current;
-			const typed =
-				current !== null && previous !== null && isDraftDirty(draftFromRecord(previous), current);
-			if (reseed.current || !typed) {
+			if (reseed.current || current === null || previous === null) {
 				setDraft(draftFromRecord(record));
 				setTouched(new Set());
+			} else {
+				const merged = mergeDraft(previous, record, current);
+				setDraft(merged.draft);
+				if (merged.conflict) {
+					setTouched(new Set());
+					setSaveStatus({
+						tone: "fail",
+						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
+					});
+				}
 			}
 			reseed.current = false;
+			const receipt = stockReceipt.current;
+			if (receipt !== null) {
+				stockReceipt.current = null;
+				setStockMsg({
+					tone: "ok",
+					text: `${receipt.verb} ${String(receipt.n)} — now ${String(record.onHand ?? 0)} in stock`,
+				});
+				setQty("1");
+				setMoving(false);
+			}
 		});
 		return () => {
 			cancelled = true;
@@ -245,7 +271,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	const d = draft as PricingDraft;
 	const saved = draftFromRecord(p);
 	const dirty = isDraftDirty(saved, d);
-	const allProblems = validateDraft(d);
+	const allProblems = validateDraft(d, p);
 	/** A problem is shown once the merchant has edited that field, or tried to
 	 *  save — never on a value they have not touched. */
 	const shown: DraftProblems = Object.fromEntries(
@@ -270,6 +296,11 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 		if (Object.keys(allProblems).length > 0) {
 			setTouched(new Set(Object.keys(allProblems) as DraftField[]));
 			setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
+			// Take the merchant to the first problem rather than leaving them to hunt
+			// for it in a column they may have scrolled.
+			requestAnimationFrame(() => {
+				panelRef.current?.querySelector<HTMLElement>("[aria-invalid='true']")?.focus();
+			});
 			return;
 		}
 		setSaving(true);
@@ -282,21 +313,26 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			}
 			const notice = result.notice;
 			if (notice !== null && notice.variant === "error") {
-				// A refusal that names a field declined a VALUE: nothing moved, so
-				// the merchant's typing stays for them to fix. Any other refusal
-				// (someone else saved first) means the record moved; the panel shows
-				// the latest values, as the notice says (`refusalKeepsDraft`).
+				// SOMEONE ELSE SAVED FIRST: the record moved and the notice promises the
+				// latest values, so the form re-seeds. Every other refusal declined a
+				// VALUE and nothing moved: the merchant's typing stays — beside the SKU
+				// when it is about the SKU.
+				if (result.recordMoved === true) {
+					setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
+					reseed.current = true;
+					setReload((n) => n + 1);
+					return;
+				}
 				if (result.field === "sku") {
 					setSkuRefusal(notice.description);
 					setSaveStatus({ tone: "fail", text: notice.title });
 					return;
 				}
 				setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
-				reseed.current = true;
-				setReload((n) => n + 1);
 				return;
 			}
 			setSaveStatus({ tone: "ok", text: "Saved" });
+			forgetSummaries();
 			reseed.current = true;
 			setReload((n) => n + 1);
 		});
@@ -311,22 +347,25 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			{ productId: p.productId, onHand: String(onHand), qty: String(n) },
 			PRODUCTS_ACT_SUBJECT,
 		).then((result) => {
-			setMoving(false);
 			if (isFailure(result)) {
+				setMoving(false);
 				setStockMsg({ tone: "fail", text: `${result.title}. ${result.description}` });
 				return;
 			}
 			const notice = result.notice;
 			if (notice !== null && notice.variant === "error") {
+				// The count it refused against may be stale; the re-read shows the real
+				// one.
+				setMoving(false);
 				setStockMsg({ tone: "fail", text: notice.description || notice.title });
-			} else {
-				const after = actionId === "products:restock" ? onHand + n : onHand - n;
-				setStockMsg({
-					tone: "ok",
-					text: `${actionId === "products:restock" ? "Added" : "Removed"} ${String(n)} — now ${String(after)} in stock`,
-				});
-				setQty("1");
+				setReload((k) => k + 1);
+				return;
 			}
+			// The buttons stay disabled until the re-read lands, so a second click is
+			// never sent against the count this one just changed, and the receipt
+			// states the count the SERVER now holds rather than one worked out here.
+			forgetSummaries();
+			stockReceipt.current = { verb: actionId === "products:restock" ? "Added" : "Removed", n };
 			setReload((k) => k + 1);
 		});
 	};
@@ -362,7 +401,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			: (taxClasses.find((t) => t.id === d.taxClass)?.name ?? d.taxClass);
 
 	return (
-		<div className="otta-pricing" data-testid="otta-pricing-panel">
+		<div className="otta-pricing" data-testid="otta-pricing-panel" ref={panelRef}>
 			<ConsoleStyles />
 
 			{!priced && (
@@ -459,7 +498,9 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 
 			<div className="otta-pricing-section">
 				<div className="otta-pricing-head">
-					<span className="otta-pricing-label">Inventory</span>
+					<h4 className="otta-pricing-label" style={{ margin: 0, fontSize: "inherit" }}>
+						Inventory
+					</h4>
 					{hasSku && (
 						<span
 							className="otta-pricing-badge"
@@ -611,6 +652,8 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 								<div className="otta-pricing-input" data-invalid={shown.weightGrams !== undefined}>
 									<input
 										id={id("weight")}
+										aria-invalid={shown.weightGrams !== undefined}
+										aria-describedby={id("weight-note")}
 										className="otta-pricing-num"
 										inputMode="numeric"
 										autoComplete="off"
@@ -622,9 +665,13 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 									<span className="otta-pricing-affix">g</span>
 								</div>
 								{shown.weightGrams !== undefined ? (
-									<span className="otta-pricing-error">{shown.weightGrams}</span>
+									<span id={id("weight-note")} className="otta-pricing-error">
+										{shown.weightGrams}
+									</span>
 								) : (
-									<span className="otta-pricing-hint">Used to work out shipping costs.</span>
+									<span id={id("weight-note")} className="otta-pricing-hint">
+										Used to work out shipping costs.
+									</span>
 								)}
 							</div>
 							<div className="otta-pricing-field">
@@ -646,6 +693,8 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 										>
 											<input
 												aria-label={`${name} in millimetres`}
+												aria-invalid={shown[field] !== undefined}
+												aria-describedby={shown[field] !== undefined ? id("size-error") : undefined}
 												className="otta-pricing-num"
 												inputMode="numeric"
 												autoComplete="off"
@@ -659,7 +708,9 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 									))}
 								</div>
 								{(shown.lengthMm ?? shown.widthMm ?? shown.heightMm) !== undefined && (
-									<span className="otta-pricing-error">Use whole numbers</span>
+									<span id={id("size-error")} className="otta-pricing-error">
+										{shown.lengthMm ?? shown.widthMm ?? shown.heightMm}
+									</span>
 								)}
 							</div>
 						</>
@@ -703,7 +754,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 					{saving ? "Saving…" : "Save"}
 				</button>
 				<span className="otta-pricing-status" role="status" data-tone={saveStatus?.tone ?? "muted"}>
-					{saveStatus?.text ?? (dirty ? "Unsaved changes" : "")}
+					{saveStatus?.text ?? (dirty ? "Not saved yet — use this Save button" : "")}
 				</span>
 			</div>
 

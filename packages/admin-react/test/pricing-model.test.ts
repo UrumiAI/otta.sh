@@ -10,6 +10,7 @@ import {
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
+	mergeDraft,
 	salePreview,
 	savePayload,
 	stockStatus,
@@ -80,38 +81,101 @@ describe("the draft", () => {
 
 describe("validation, in the merchant's words", () => {
 	test("a valid draft has no problems", () => {
-		expect(validateDraft(draftFromRecord(BASE))).toEqual({});
+		expect(validateDraft(draftFromRecord(BASE), BASE)).toEqual({});
 	});
 
 	test("money must look like money", () => {
 		const draft = { ...draftFromRecord(BASE), price: "32,00", unitCost: "abc" };
-		expect(validateDraft(draft)).toEqual({
+		expect(validateDraft(draft, BASE)).toEqual({
 			price: "Enter a price like 24.99",
 			unitCost: "Enter an amount like 9.50",
 		});
 	});
 
 	test("a price of zero is refused — a free product is not something checkout can sell", () => {
-		expect(validateDraft({ ...draftFromRecord(BASE), price: "0" }).price).toBe(
+		expect(validateDraft({ ...draftFromRecord(BASE), price: "0" }, BASE).price).toBe(
 			"Enter a price like 24.99",
 		);
 	});
 
 	test("a compare-at price must be HIGHER than the price, or it is not a sale", () => {
-		expect(validateDraft({ ...draftFromRecord(BASE), compareAt: "32.00" }).compareAt).toBe(
+		expect(validateDraft({ ...draftFromRecord(BASE), compareAt: "32.00" }, BASE).compareAt).toBe(
 			"Must be higher than the price to show a sale",
 		);
 	});
 
 	test("a compare-at price or a cost needs a price to belong to", () => {
-		const draft = { ...draftFromRecord(BASE), price: "", compareAt: "40", unitCost: "" };
-		expect(validateDraft(draft).price).toBe("Add a price first");
+		const unpriced = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const draft = { ...draftFromRecord(unpriced), compareAt: "40" };
+		expect(validateDraft(draft, unpriced).price).toBe("Add a price first");
 	});
 
 	test("weights and sizes are whole numbers", () => {
-		expect(validateDraft({ ...draftFromRecord(BASE), weightGrams: "1.5" }).weightGrams).toBe(
+		expect(validateDraft({ ...draftFromRecord(BASE), weightGrams: "1.5" }, BASE).weightGrams).toBe(
 			"Use a whole number",
 		);
+	});
+});
+
+describe("a value the store cannot clear is never offered as cleared", () => {
+	// The plugin's save reads a BLANK price, SKU, weight or size as "keep what is
+	// stored". A panel that let the merchant blank one would answer "Saved" and
+	// then put the old value back. Compare-at, cost and tax class DO clear.
+	test.each([
+		["price", "A product that has a price needs one — enter the new price"],
+		["sku", "A SKU can be changed but not removed"],
+		["weightGrams", "Can be changed but not removed"],
+		["lengthMm", "Can be changed but not removed"],
+	] as const)("blanking %s is refused in words", (field, message) => {
+		const record = { ...BASE, lengthMm: 300 };
+		expect(validateDraft({ ...draftFromRecord(record), [field]: " " }, record)[field]).toBe(
+			message,
+		);
+	});
+
+	test("blanking compare-at or cost is a real clear, and allowed", () => {
+		expect(validateDraft({ ...draftFromRecord(BASE), compareAt: "", unitCost: "" }, BASE)).toEqual(
+			{},
+		);
+	});
+
+	test("a currency picked for a product that still has no price changes nothing to save", () => {
+		const unpriced = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const saved = draftFromRecord(unpriced);
+		expect(isDraftDirty(saved, { ...saved, currency: "EUR" })).toBe(false);
+		expect(isDraftDirty(saved, { ...saved, currency: "EUR", price: "18" })).toBe(true);
+	});
+});
+
+describe("a re-read keeps only what the merchant changed", () => {
+	test("untouched fields take the newer record's values", () => {
+		const newer = { ...BASE, weightGrams: 450, updatedAt: "2026-10-01T09:00:00.000Z" };
+		const draft = { ...draftFromRecord(BASE), price: "30.00" };
+		expect(mergeDraft(BASE, newer, draft)).toEqual({
+			draft: { ...draftFromRecord(newer), price: "30.00" },
+			conflict: false,
+		});
+	});
+
+	test("a field the merchant changed that ALSO changed in the store is a conflict, and the store wins", () => {
+		const newer = { ...BASE, priceCents: 3500, updatedAt: "2026-10-01T09:00:00.000Z" };
+		const draft = { ...draftFromRecord(BASE), price: "30.00" };
+		expect(mergeDraft(BASE, newer, draft)).toEqual({
+			draft: draftFromRecord(newer),
+			conflict: true,
+		});
 	});
 });
 

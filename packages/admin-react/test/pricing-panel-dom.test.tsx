@@ -164,7 +164,7 @@ test("one Save sends every field with the loaded watermark, then re-reads", asyn
 	});
 	const c = await mountPanel();
 	await type(input(c, "Price"), "29");
-	expect(c.textContent).toContain("Unsaved changes");
+	expect(c.textContent).toContain("Not saved yet");
 	await fire(button(c, "Save"), "click");
 	await flush();
 
@@ -199,6 +199,7 @@ test("when someone else saved first, the panel shows the latest values, as the r
 						title: "This product changed since you opened it",
 						description: "Your edit was NOT applied — the latest values are shown below.",
 					},
+					recordMoved: true,
 				}),
 			);
 		}
@@ -250,26 +251,92 @@ test("a SKU the store refuses keeps what was typed, with the reason beside the S
 	expect(c.textContent).toContain('Another product uses "MUG".');
 });
 
-test("an unpriced product asks for a price and lets the merchant pick its currency", async () => {
-	apiFetch.mockImplementation(() =>
-		Promise.resolve(
-			detail({ priceCents: null, currency: null, compareAtCents: null, unitCostCents: null }),
-		),
-	);
+test("an unpriced product asks for a price and saves it in the currency the merchant picked", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return Promise.resolve(
+			body["type"] === "otta_console_act"
+				? json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } })
+				: detail({ priceCents: null, currency: null, compareAtCents: null, unitCostCents: null }),
+		);
+	});
 	const c = await mountPanel();
 	expect(c.textContent).toContain("Add a price so customers can buy this product.");
 	const currency = input(c, "Currency") as unknown as HTMLSelectElement;
 	expect(currency.value).toBe("USD");
 	await type(currency, "EUR");
-	expect(c.textContent).toContain("EUR");
+	await type(input(c, "Price"), "18");
+	await fire(button(c, "Save"), "click");
+	await flush();
+	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
-test("Add stock is one click; it sends the count the merchant saw", async () => {
+test("after a CMS save, the panel's next save carries the NEW watermark and keeps only the merchant's edits", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		return Promise.resolve(
-			body["type"] === "otta_console_act" ? json({ ok: true, notice: null }) : detail(),
+			body["type"] === "otta_console_act"
+				? json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } })
+				: detail(),
 		);
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "30");
+	// The CMS save landed a newer row: a new watermark, and another admin's new
+	// weight the merchant never touched.
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return Promise.resolve(
+			body["type"] === "otta_console_act"
+				? json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } })
+				: detail({ weightGrams: 450, updatedAt: "2026-09-30T11:00:00.000Z" }),
+		);
+	});
+	entryUpdatedAt = "2026-09-30T11:00:00.000Z";
+	await flush();
+	await fire(button(c, "Save"), "click");
+	await flush();
+	expect(writes()[0]?.["value"]).toMatchObject({
+		expectedUpdatedAt: "2026-09-30T11:00:00.000Z",
+		price: "30.00",
+		// NOT the 200 the panel first loaded: the other admin's change stands.
+		weightGrams: "450",
+	});
+});
+
+test("a refusal that declines a value keeps what the merchant typed", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return Promise.resolve(
+			body["type"] === "otta_console_act"
+				? json({
+						ok: true,
+						notice: {
+							variant: "error",
+							title: "Invalid value",
+							description: "Price must be greater than zero.",
+						},
+					})
+				: detail(),
+		);
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "31");
+	await fire(button(c, "Save"), "click");
+	await flush();
+	expect(input(c, "Price").value).toBe("31");
+	expect(c.textContent).toContain("Invalid value. Price must be greater than zero.");
+});
+
+test("Add stock is one click; it sends the count the merchant saw and reports the count the store now holds", async () => {
+	let added = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			added = true;
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		return Promise.resolve(detail(added ? { onHand: 29 } : {}));
 	});
 	const c = await mountPanel();
 	await type(input(c, "Add or remove stock"), "5");

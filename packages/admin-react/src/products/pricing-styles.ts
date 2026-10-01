@@ -28,9 +28,11 @@ export const PRICING_STYLES = `
 	--op-recessed: var(--color-kumo-recessed, rgba(128, 128, 128, 0.10));
 	--op-fill: var(--color-kumo-fill, rgba(128, 128, 128, 0.14));
 	--op-brand: var(--color-kumo-brand, LinkText);
-	--op-ok: #1f8a4c;
-	--op-warn: #b26a00;
-	--op-fail: #c4320a;
+	/* Readable on both surfaces: the admin sets color-scheme by mode, so
+	   light-dark() picks the darker ink on light and the lighter on dark. */
+	--op-ok: light-dark(#1a7a43, #5fd18f);
+	--op-warn: light-dark(#9a5b00, #f0b45a);
+	--op-fail: light-dark(#b42d08, #ff8f70);
 }
 .otta-pricing {
 	display: flex;
@@ -208,6 +210,14 @@ export const PRICING_STYLES = `
 .otta-pricing-cell[data-align="start"] { align-items: flex-start; }
 .otta-pricing-cell-stock { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .otta-pricing-cell-muted { color: var(--op-subtle); }
+.otta-pricing .otta-sr-only, .otta-pricing-cell .otta-sr-only {
+	position: absolute;
+	inline-size: 1px;
+	block-size: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
 `;
 
 const STYLE_ID = "otta-pricing-styles";

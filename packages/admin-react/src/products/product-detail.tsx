@@ -26,7 +26,7 @@
  * that structurally — `ProductEditWire` has no `title` or `active` member, so a
  * form field for one does not compile. The React screen sends a payload of
  * plain strings and gets no such compile error, which is exactly why a
- * Playwright spec asserts the absence directly (`products-console.spec.ts`)
+ * Playwright spec asserts the absence directly (the retired page's `products-console.spec.ts`)
  * rather than trusting this comment.
  *
  * WHAT REPLACES THE STAGED "REVIEW" STEP for a stock removal: the same collapse

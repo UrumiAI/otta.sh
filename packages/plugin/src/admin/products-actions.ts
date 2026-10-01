@@ -134,6 +134,13 @@ export interface ProductsActionResult {
 	 * screen, exactly as every outcome did before.
 	 */
 	readonly field?: "sku";
+	/**
+	 * THE RECORD MOVED UNDER THE WRITE — someone else saved first. Present only
+	 * on that refusal, so a surface can show the latest values (as the notice
+	 * promises) without matching on the sentence; every other refusal declined a
+	 * value and the merchant's typing should stay.
+	 */
+	readonly recordMoved?: true;
 }
 
 /** A write's payload: the flat string record the caller carried. Untrusted,
@@ -419,12 +426,15 @@ function editOutcome(
 	}
 	switch (result.reason) {
 		case "stale":
-			return applied({
-				variant: "error",
-				title: "This product changed since you opened it",
-				description:
-					"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
-			});
+			return {
+				...applied({
+					variant: "error",
+					title: "This product changed since you opened it",
+					description:
+						"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
+				}),
+				recordMoved: true,
+			};
 		case "currency_mismatch":
 			return applied({
 				variant: "error",
@@ -432,11 +442,14 @@ function editOutcome(
 				description: `This product is priced in ${result.currency ?? "its existing currency"}. A price edit keeps the same currency; re-currencying a product is not supported on this page.`,
 			});
 		case "sku_taken":
-			return applied({
-				variant: "error",
-				title: "SKU already in use",
-				description: `SKU "${result.sku ?? ""}" is already used by another live product. Choose a different SKU.`,
-			});
+			return applied(
+				{
+					variant: "error",
+					title: "SKU already in use",
+					description: `SKU "${result.sku ?? ""}" is already used by another live product. Choose a different SKU.`,
+				},
+				"sku",
+			);
 		// THE TWO RENAME REFUSALS. Both name the sku(s) so the sentence can be acted
 		// on without opening a database, and both say NOTHING MOVED out loud: the
 		// rename and the stock carry are one transaction, so a refusal leaves the

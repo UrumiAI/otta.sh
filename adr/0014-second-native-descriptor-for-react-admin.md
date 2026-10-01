@@ -352,9 +352,10 @@ are edited moves.
 **What does not change.**
 
 - **One data path (Decision 3).** Both surfaces call the existing `otta` admin route with
-  `otta_console_read` / `otta_console_act`. The panel reads `products.detail` and writes through
-  the same `products:*` actions the retired page used (the save, restock and remove-stock
-  handlers in `products-actions.ts`, with their watermarks and idempotency keys). The columns read
+  `otta_console_read` / `otta_console_act`. The panel reads `products.detail`, moves stock with
+  the retired page's `products:restock` / `products:remove-stock`, and saves through one new
+  action id, `products:save`, which runs the same sparse save handler as the page's three split
+  saves (same watermark, same content-derived idempotency key) with every field the panel owns. The columns read
   one new resource on that same route, `products.summaries`: the price and on-hand of a bounded
   list of product ids, which is the page of rows the list is showing. It is a read on the existing
   authenticated route, not a new route, capability or host.
@@ -367,10 +368,17 @@ are edited moves.
 - **No component library**, as before: inline styles over the admin's Kumo custom properties
   with theme-neutral fallbacks.
 
-**What gets harder.** A panel mounts only on a **saved** entry, so a new product is saved once
-before it can be priced; the panel says so. The columns are read-only, so stock and price are
+**What gets harder.** EmDash mounts a panel only on a **saved** entry, so a new product is saved
+once before the panel appears and it can be priced. EmDash also places plugin panels after its own
+settings sections and offers no default position; a merchant can drag the panel up, and EmDash
+remembers that per user and browser. The columns are read-only, so stock and price are
 changed from the product, not from the list. A merchant who wants a dedicated stock-taking table
 has none until one is justified on its own.
+
+**Left for a follow-up.** The retired page's React modules (`products-screen.tsx`,
+`products-list.tsx`, `product-detail.tsx`) and the three split save ids only they send stay in the
+tree, unregistered, because the shared console tests use them as their fixture. Moving those tests
+onto Orders and deleting the modules is the next change.
 
 **Reopens this amendment:** a panel or column offering a CMS-owned field; either surface reading or
 writing through anything but the `otta` admin route; or the retired page returning beside the panel.

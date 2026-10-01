@@ -2,6 +2,15 @@
  * The `/products` console page — list or detail, and the navigation between
  * them (INC-21).
  *
+ * NO LONGER REGISTERED. ADR-0014's amendment of 2026-10-01 moved pricing and
+ * stock into the products collection's own editor (`./pricing-panel.tsx`) and
+ * list (`./pricing-columns.tsx`), and `/products` left `admin.pages`. This
+ * module, `./products-list.tsx` and `./product-detail.tsx` stay only because
+ * the shared console tests (pager, cursor URL, load-more, chrome) still use
+ * them as their fixture; moving those tests onto Orders and deleting these
+ * files — with the `products:save-identity|save-price|save-shipping` action ids
+ * only they send — is the recorded follow-up.
+ *
  * THE DRILL-IN HAS A URL, which is the whole difference from the Block Kit
  * screen. There, "no client routing, no URL per drill-in, back is a rendered
  * button" (§0.5): every interaction POSTs and replaces the entire block tree, so

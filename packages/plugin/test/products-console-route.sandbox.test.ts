@@ -46,7 +46,7 @@
  * unreachable half is deleted with its reason.
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
- * Playwright (`sites/staging/e2e/products-console.spec.ts`), which is additive
+ * Playwright (`sites/staging/e2e/products-pricing-panel.spec.ts, which replaced the retired page's spec`), which is additive
  * to this tier and replaces none of it.
  *
  * ONE STORE PER PROCESS (`storageBridge`), so every case addresses disjoint ids
@@ -671,6 +671,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 			"pcr-prod-1",
 			[],
 			[42],
+			["has space"],
 			Array.from({ length: 101 }, (_, i) => `x${String(i)}`),
 		]) {
 			const result = await invoke({ type: READ, resource: "products.summaries", productIds });

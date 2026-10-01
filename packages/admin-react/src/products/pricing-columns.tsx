@@ -3,9 +3,14 @@
  *
  * EmDash draws the collection's list; each column is a read-only cell per row.
  * Every cell on a page asks for the SAME thing — the price and stock of the
- * page's rows — so they share one request: `summariesFor` memoizes the in-flight
- * read by the page's ids and their `updatedAt`s, which change whenever a row is
- * saved, so a stale page is never served after an edit.
+ * page's rows — so they share one request (`summariesFor`, keyed by the page's
+ * ids).
+ *
+ * FRESHNESS. The key cannot see a commerce edit: a price save or a stock
+ * movement changes the commerce row, not the CMS entry's `updatedAt`. So a
+ * shared answer is kept only briefly (`FRESH_MS`) — long enough for one page's
+ * cells to share it — and the Pricing & stock panel forgets every shared page
+ * after each of its writes, so returning to the list after an edit reads again.
  */
 import * as React from "react";
 import { formatAmount } from "@otta-sh/admin-presentation";
@@ -26,37 +31,54 @@ export interface PricingCellProps {
 	readonly visibleItems: readonly { readonly id: string; readonly updatedAt?: string }[];
 }
 
-/** One page of summaries, shared by every cell rendering that page. */
-const inFlight = new Map<string, Promise<Result<ProductSummariesPayload>>>();
-/** A list page is ~20–50 rows; a handful of recent pages is plenty to share. */
-const KEEP = 8;
+/** How long a shared page answer is reused. One render of a page's cells
+ *  happens well inside it; an edit elsewhere is never hidden for longer. */
+export const FRESH_MS = 10_000;
+/** The plugin answers at most this many ids per read. EmDash's list shows 20
+ *  per page; a larger page is split rather than refused. */
+const BATCH = 100;
+
+type Shared = { readonly at: number; readonly request: Promise<Result<ProductSummariesPayload>> };
+const shared = new Map<string, Shared>();
 
 function pageKey(items: PricingCellProps["visibleItems"]): string {
 	return items.map((i) => `${i.id}@${i.updatedAt ?? ""}`).join("|");
 }
 
+async function readPage(ids: readonly string[]): Promise<Result<ProductSummariesPayload>> {
+	const batches: string[][] = [];
+	for (let i = 0; i < ids.length; i += BATCH) batches.push(ids.slice(i, i + BATCH));
+	const answers = await Promise.all(batches.map((batch) => fetchProductSummaries(batch)));
+	const failed = answers.find(isFailure);
+	if (failed !== undefined) return failed;
+	const ok = answers as ProductSummariesPayload[];
+	return {
+		ok: true,
+		products: ok.flatMap((a) => a.products),
+		threshold: ok[0]?.threshold ?? null,
+	};
+}
+
 export function summariesFor(
 	items: PricingCellProps["visibleItems"],
+	now: number = Date.now(),
 ): Promise<Result<ProductSummariesPayload>> {
 	const key = pageKey(items);
-	const cached = inFlight.get(key);
-	if (cached !== undefined) return cached;
-	const request = fetchProductSummaries(items.map((i) => i.id));
-	inFlight.set(key, request);
-	if (inFlight.size > KEEP) {
-		const oldest = inFlight.keys().next().value;
-		if (oldest !== undefined) inFlight.delete(oldest);
-	}
-	// A failed read is not kept: the next render may succeed.
+	const hit = shared.get(key);
+	if (hit !== undefined && now - hit.at < FRESH_MS) return hit.request;
+	for (const [k, v] of shared) if (now - v.at >= FRESH_MS) shared.delete(k);
+	const request = readPage(items.map((i) => i.id));
+	shared.set(key, { at: now, request });
+	// A failed read is not shared: the next render may succeed.
 	void request.then((result) => {
-		if (isFailure(result)) inFlight.delete(key);
+		if (isFailure(result)) shared.delete(key);
 	});
 	return request;
 }
 
-/** Test seam: forget every shared page. */
+/** Forget every shared page — after a panel write, so the list reads again. */
 export function forgetSummaries(): void {
-	inFlight.clear();
+	shared.clear();
 }
 
 type CellState =
@@ -103,9 +125,11 @@ function Pending({ state }: { state: CellState }): React.ReactElement {
 		<span
 			className="otta-pricing-cell otta-pricing-cell-muted"
 			title={state.status === "failed" ? state.title : undefined}
-			aria-label={state.status === "failed" ? state.title : "Loading"}
 		>
-			{state.status === "failed" ? "—" : "…"}
+			<span aria-hidden="true">{state.status === "failed" ? "—" : "…"}</span>
+			<span className="otta-sr-only">
+				{state.status === "failed" ? state.title : "Loading price and stock"}
+			</span>
 		</span>
 	);
 }
@@ -121,7 +145,8 @@ export function PriceCell(props: PricingCellProps): React.ReactElement {
 		<span className="otta-pricing-cell">
 			<span>{formatAmount(row.priceCents, row.currency)}</span>
 			{row.compareAtCents !== null && row.compareAtCents > row.priceCents && (
-				<s aria-label={`Was ${formatAmount(row.compareAtCents, row.currency)}`}>
+				<s>
+					<span className="otta-sr-only">was </span>
 					{formatAmount(row.compareAtCents, row.currency)}
 				</s>
 			)}

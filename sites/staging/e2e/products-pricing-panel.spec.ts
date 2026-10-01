@@ -77,7 +77,7 @@ test.describe("pricing and stock live in the products collection", () => {
 		const price = panel.getByLabel("Price", { exact: true });
 		const next = (await price.inputValue()) === "27.00" ? "28.00" : "27.00";
 		await price.fill(next);
-		await expect(panel.getByText("Unsaved changes")).toBeVisible();
+		await expect(panel.getByText(/Not saved yet/)).toBeVisible();
 		await panel.getByRole("button", { name: "Save", exact: true }).click();
 		await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 		await expect(price).toHaveValue(next);

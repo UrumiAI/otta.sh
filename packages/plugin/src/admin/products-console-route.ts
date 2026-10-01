@@ -87,6 +87,7 @@ import {
 } from "./products-read.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
+import { isCommerceIdToken } from "../commerce/commerce-input.js";
 import { readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
@@ -381,8 +382,11 @@ async function consoleSummaries(
 	}
 	const productIds: string[] = [];
 	for (const id of raw) {
-		if (typeof id !== "string" || id.length === 0) return UNREADABLE_REQUEST;
-		productIds.push(id);
+		// The id rule the client enforces, applied HERE so a malformed id is a
+		// refused request rather than a throw the catch-all would report as an
+		// outage.
+		if (typeof id !== "string" || !isCommerceIdToken(id)) return UNREADABLE_REQUEST;
+		if (!productIds.includes(id)) productIds.push(id);
 	}
 	const client = await createClient(ctx);
 	const [products, threshold] = await Promise.all([
