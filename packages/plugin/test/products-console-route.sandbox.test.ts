@@ -818,6 +818,41 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(row?.updatedAt.toISOString()).not.toBe(seeded.updatedAt);
 	});
 
+	test("the product editor's ONE save writes price, sku, cost and shipping in a single write", async () => {
+		// The Pricing & stock panel has one Save button, so `products:save` takes
+		// every field the panel owns at once, through the same sparse save the
+		// split actions use. A cleared compare-at is sent blank and cleared.
+		const seeded = await seedProduct({ term: "panelsave", priceCents: 3200 });
+		const result = await invoke({
+			type: ACT,
+			action_id: "products:save",
+			value: {
+				productId: seeded.productId,
+				expectedUpdatedAt: seeded.updatedAt,
+				sku: `${seeded.sku}-P`,
+				price: "29.00",
+				currency: "USD",
+				compareAt: "",
+				unitCost: "11.00",
+				productKind: "physical",
+				taxClass: "",
+				weightGrams: "450",
+				lengthMm: "",
+				widthMm: "",
+				heightMm: "",
+			},
+		});
+		expect(result["ok"], JSON.stringify(result)).toBe(true);
+		expect((result["notice"] as Record<string, unknown>)["title"]).toBe("Saved");
+
+		const row = await products.getByProductId(toProductId(seeded.productId));
+		expect(row?.sku).toBe(`${seeded.sku}-P`);
+		expect(row?.price?.amount).toBe(2900);
+		expect(row?.unitCost?.amount).toBe(1100);
+		expect(row?.compareAtPrice).toBeNull();
+		expect(row?.weightGrams).toBe(450);
+	});
+
 	test("a save with a STALE watermark comes back as the action's own refusal copy", async () => {
 		const seeded = await seedProduct({ term: "stalesave" });
 		const result = await invoke({

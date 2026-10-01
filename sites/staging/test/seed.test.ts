@@ -10,7 +10,7 @@
  * content document a SECOND writer of `product_commerce`'s columns, and every
  * publish reverted whatever the admin console had edited. The field, the
  * widget and its binding are gone; commercial fields are edited only in the
- * admin's Pricing & inventory page. The "no commerce field" test below is the
+ * product's Pricing & stock panel. The "no commerce field" test below is the
  * regression guard — re-adding one anywhere in this collection recreates the
  * second writer.
  */
@@ -78,7 +78,7 @@ describe("seed/seed.json", () => {
 		// carry — `SeedField` has no `description` key, only `SeedCollection` does
 		// — and em-dash surfaces it on Admin → Content Types, not in the editor.
 		// Weak, but better than a repo README a store operator never reads.
-		expect(products?.description).toMatch(/Pricing & inventory/);
+		expect(products?.description).toMatch(/Pricing & stock panel/);
 	});
 
 	test("declares NO commerce field — the CMS stores no commercial data (PR 1b)", () => {

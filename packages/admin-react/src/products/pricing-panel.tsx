@@ -1,0 +1,740 @@
+/**
+ * The product editor's Pricing & stock panel (ADR-0014, amendment 2026-10-01).
+ *
+ * EmDash renders it as a section of a SAVED product's settings column, under a
+ * host-drawn "Pricing & stock" heading; it never mounts for a new entry. It edits
+ * what the retired Pricing & inventory page edited — price, compare-at, cost,
+ * SKU, stock, product type, tax class, weight and size — through the same `otta`
+ * admin route and the same `products:*` writes, so a merchant prices a product
+ * where they wrote it.
+ *
+ * ONE SAVE for every field, and stock moves on its own buttons, as a shop owner
+ * expects: a price is a setting you edit and save, a stock count is something
+ * you add to or take from. Removing stock asks first; adding does not.
+ *
+ * THE RECORD FOLLOWS THE EDITOR. EmDash re-renders the panel with a new
+ * `entry.updatedAt` after every CMS save, and every CMS save also moves the
+ * commerce row's watermark (the sync touches it). So the panel re-reads on that
+ * change; a draft the merchant has typed survives the re-read and is saved
+ * against the new watermark, because a CMS save changes no field this panel owns.
+ *
+ * Every decision about a value lives in `./pricing-model.ts`; this file wires
+ * them up.
+ */
+import * as React from "react";
+import {
+	fetchProductDetail,
+	isFailure,
+	performAction,
+	PRODUCTS_ACT_SUBJECT,
+	type ProductRecord,
+	type TaxClass,
+} from "../console-api.js";
+import { ConfirmDialog, ConsoleStyles } from "../ui.js";
+import { usePricingStyles } from "./pricing-styles.js";
+import {
+	CURRENCY_CHOICES,
+	draftFromRecord,
+	isDraftDirty,
+	marginSummary,
+	salePreview,
+	savePayload,
+	stockStatus,
+	validateDraft,
+	type DraftField,
+	type DraftProblems,
+	type PricingDraft,
+} from "./pricing-model.js";
+import { parseStockQty } from "@otta-sh/admin-presentation";
+
+/** The part of EmDash's `ContentEditorPanelContext` this panel reads. Declared
+ *  structurally: this package does not depend on `@emdash-cms/admin`. */
+export interface PricingPanelProps {
+	readonly collection: string;
+	readonly entry: { readonly id: string; readonly updatedAt?: string };
+	readonly locale?: string;
+}
+
+type Loaded = {
+	readonly record: ProductRecord;
+	readonly taxClasses: readonly TaxClass[];
+	readonly threshold: number | null;
+};
+
+type LoadState =
+	| { readonly status: "loading" }
+	| { readonly status: "failed"; readonly title: string; readonly description: string }
+	| ({ readonly status: "ready" } & Loaded);
+
+type Status = { readonly tone: "ok" | "fail" | "muted"; readonly text: string } | null;
+
+function Chevron(): React.ReactElement {
+	return (
+		<svg
+			width="16"
+			height="16"
+			viewBox="0 0 16 16"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.6"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+		>
+			<path d="M4 6l4 4 4-4" />
+		</svg>
+	);
+}
+
+function MoneyInput({
+	id,
+	label,
+	optional,
+	currency,
+	value,
+	problem,
+	describedBy,
+	onChange,
+}: {
+	id: string;
+	label: string;
+	optional?: boolean;
+	currency: string;
+	value: string;
+	problem: string | undefined;
+	describedBy?: string;
+	onChange: (next: string) => void;
+}): React.ReactElement {
+	const errorId = `${id}-error`;
+	return (
+		<div className="otta-pricing-field">
+			<label className="otta-pricing-label" htmlFor={id}>
+				{label}
+				{optional === true && <span className="otta-pricing-optional"> · optional</span>}
+			</label>
+			<div className="otta-pricing-input" data-invalid={problem !== undefined}>
+				<span className="otta-pricing-affix" aria-hidden="true">
+					{currency}
+				</span>
+				<input
+					id={id}
+					className="otta-pricing-num"
+					inputMode="decimal"
+					autoComplete="off"
+					placeholder="0.00"
+					value={value}
+					aria-invalid={problem !== undefined}
+					aria-describedby={
+						[problem !== undefined ? errorId : null, describedBy ?? null]
+							.filter((v) => v !== null)
+							.join(" ") || undefined
+					}
+					onChange={(event) => {
+						onChange(event.target.value);
+					}}
+				/>
+			</div>
+			{problem !== undefined && (
+				<span id={errorId} className="otta-pricing-error">
+					{problem}
+				</span>
+			)}
+		</div>
+	);
+}
+
+export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElement {
+	const productId = entry.id;
+	usePricingStyles();
+	const idBase = React.useId();
+	const [load, setLoad] = React.useState<LoadState>({ status: "loading" });
+	const [draft, setDraft] = React.useState<PricingDraft | null>(null);
+	const [touched, setTouched] = React.useState<ReadonlySet<DraftField>>(new Set());
+	const [saving, setSaving] = React.useState(false);
+	const [saveStatus, setSaveStatus] = React.useState<Status>(null);
+	const [skuRefusal, setSkuRefusal] = React.useState<string | null>(null);
+	const [qty, setQty] = React.useState("1");
+	const [moving, setMoving] = React.useState(false);
+	const [stockMsg, setStockMsg] = React.useState<Status>(null);
+	const [confirmRemove, setConfirmRemove] = React.useState<number | null>(null);
+	const [reload, setReload] = React.useState(0);
+	/** Whether the next read REPLACES what the merchant typed — after their own
+	 *  save, or after a refusal that means the record moved under them. */
+	const reseed = React.useRef(false);
+	const draftRef = React.useRef<PricingDraft | null>(null);
+	draftRef.current = draft;
+	const recordRef = React.useRef<ProductRecord | null>(null);
+	recordRef.current = load.status === "ready" ? load.record : null;
+
+	React.useEffect(() => {
+		let cancelled = false;
+		void fetchProductDetail(productId).then((result) => {
+			if (cancelled) return;
+			if (isFailure(result)) {
+				setLoad({ status: "failed", title: result.title, description: result.description });
+				return;
+			}
+			const record = result.product;
+			setLoad({
+				status: "ready",
+				record,
+				taxClasses: result.taxClasses,
+				threshold: result.threshold,
+			});
+			// Typing survives a re-read the merchant did not ask for — a CMS save, a
+			// stock movement — because neither changes a field this panel owns. Their
+			// own save, and a refusal that means the record moved, re-seed instead.
+			const current = draftRef.current;
+			const previous = recordRef.current;
+			const typed =
+				current !== null && previous !== null && isDraftDirty(draftFromRecord(previous), current);
+			if (reseed.current || !typed) {
+				setDraft(draftFromRecord(record));
+				setTouched(new Set());
+			}
+			reseed.current = false;
+		});
+		return () => {
+			cancelled = true;
+		};
+		// `entry.updatedAt` is in the list on purpose: a CMS save moves the watermark.
+	}, [productId, entry.updatedAt, reload]);
+
+	if (load.status === "loading" || (load.status === "ready" && draft === null)) {
+		return (
+			<div className="otta-pricing" aria-busy="true">
+				<p className="otta-pricing-hint">Loading price and stock…</p>
+			</div>
+		);
+	}
+	if (load.status === "failed") {
+		return (
+			<div className="otta-pricing" role="alert">
+				<div className="otta-pricing-callout">
+					<strong>{load.title}</strong>
+					<span>{load.description}</span>
+				</div>
+				<div>
+					<button
+						type="button"
+						className="otta-pricing-btn"
+						onClick={() => {
+							setLoad({ status: "loading" });
+							setReload((n) => n + 1);
+						}}
+					>
+						Try again
+					</button>
+				</div>
+			</div>
+		);
+	}
+
+	const { record: p, taxClasses, threshold } = load;
+	if (p.deletedAt !== null) {
+		return (
+			<div className="otta-pricing">
+				<div className="otta-pricing-callout">
+					<strong>This product is in the trash</strong>
+					<span>Its price and stock can't be changed. Orders that included it are unaffected.</span>
+				</div>
+			</div>
+		);
+	}
+
+	const d = draft as PricingDraft;
+	const saved = draftFromRecord(p);
+	const dirty = isDraftDirty(saved, d);
+	const allProblems = validateDraft(d);
+	/** A problem is shown once the merchant has edited that field, or tried to
+	 *  save — never on a value they have not touched. */
+	const shown: DraftProblems = Object.fromEntries(
+		Object.entries(allProblems).filter(([field]) => touched.has(field as DraftField)),
+	);
+	const currency = p.currency ?? d.currency;
+	const priced = p.priceCents !== null;
+	const sale = salePreview(d.price, d.compareAt, currency);
+	const margin = marginSummary(d.price, d.unitCost, currency);
+	const stock = stockStatus(p.onHand, threshold);
+	const hasSku = p.sku !== null;
+	const id = (name: string): string => `${idBase}-${name}`;
+
+	const set = (field: DraftField) => (next: string) => {
+		setDraft((prev) => (prev === null ? prev : { ...prev, [field]: next }));
+		setTouched((prev) => new Set(prev).add(field));
+		setSaveStatus(null);
+		if (field === "sku") setSkuRefusal(null);
+	};
+
+	const save = (): void => {
+		if (Object.keys(allProblems).length > 0) {
+			setTouched(new Set(Object.keys(allProblems) as DraftField[]));
+			setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
+			return;
+		}
+		setSaving(true);
+		setSaveStatus(null);
+		void performAction("products:save", savePayload(p, d), PRODUCTS_ACT_SUBJECT).then((result) => {
+			setSaving(false);
+			if (isFailure(result)) {
+				setSaveStatus({ tone: "fail", text: `${result.title}. ${result.description}` });
+				return;
+			}
+			const notice = result.notice;
+			if (notice !== null && notice.variant === "error") {
+				// A refusal that names a field declined a VALUE: nothing moved, so
+				// the merchant's typing stays for them to fix. Any other refusal
+				// (someone else saved first) means the record moved; the panel shows
+				// the latest values, as the notice says (`refusalKeepsDraft`).
+				if (result.field === "sku") {
+					setSkuRefusal(notice.description);
+					setSaveStatus({ tone: "fail", text: notice.title });
+					return;
+				}
+				setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
+				reseed.current = true;
+				setReload((n) => n + 1);
+				return;
+			}
+			setSaveStatus({ tone: "ok", text: "Saved" });
+			reseed.current = true;
+			setReload((n) => n + 1);
+		});
+	};
+
+	const move = (actionId: "products:restock" | "products:remove-stock", n: number): void => {
+		const onHand = p.onHand ?? 0;
+		setMoving(true);
+		setStockMsg(null);
+		void performAction(
+			actionId,
+			{ productId: p.productId, onHand: String(onHand), qty: String(n) },
+			PRODUCTS_ACT_SUBJECT,
+		).then((result) => {
+			setMoving(false);
+			if (isFailure(result)) {
+				setStockMsg({ tone: "fail", text: `${result.title}. ${result.description}` });
+				return;
+			}
+			const notice = result.notice;
+			if (notice !== null && notice.variant === "error") {
+				setStockMsg({ tone: "fail", text: notice.description || notice.title });
+			} else {
+				const after = actionId === "products:restock" ? onHand + n : onHand - n;
+				setStockMsg({
+					tone: "ok",
+					text: `${actionId === "products:restock" ? "Added" : "Removed"} ${String(n)} — now ${String(after)} in stock`,
+				});
+				setQty("1");
+			}
+			setReload((k) => k + 1);
+		});
+	};
+
+	const qtyValue = parseStockQty(qty);
+	const startMove = (direction: "add" | "remove"): void => {
+		if (qtyValue === null) {
+			setStockMsg({ tone: "fail", text: `Enter how many to ${direction}, like 5` });
+			return;
+		}
+		if (direction === "add") {
+			move("products:restock", qtyValue);
+			return;
+		}
+		const onHand = p.onHand ?? 0;
+		if (qtyValue > onHand) {
+			setStockMsg({ tone: "fail", text: `You only have ${String(onHand)} in stock` });
+			return;
+		}
+		setConfirmRemove(qtyValue);
+	};
+
+	const kindLabel = d.productKind === "digital" ? "Digital — nothing to ship" : "Physical product";
+	const weightNote =
+		d.productKind === "digital"
+			? ""
+			: d.weightGrams.trim()
+				? ` · ${d.weightGrams.trim()} g`
+				: " · no weight yet";
+	const taxName =
+		d.taxClass === ""
+			? "No tax class"
+			: (taxClasses.find((t) => t.id === d.taxClass)?.name ?? d.taxClass);
+
+	return (
+		<div className="otta-pricing" data-testid="otta-pricing-panel">
+			<ConsoleStyles />
+
+			{!priced && (
+				<div className="otta-pricing-callout" data-tone="warn">
+					<span>Add a price so customers can buy this product.</span>
+				</div>
+			)}
+
+			<div className="otta-pricing-section">
+				<MoneyInput
+					id={id("price")}
+					label="Price"
+					currency={currency}
+					value={d.price}
+					problem={shown.price}
+					onChange={set("price")}
+				/>
+				{!priced && (
+					<div className="otta-pricing-field">
+						<label className="otta-pricing-label" htmlFor={id("currency")}>
+							Currency
+						</label>
+						<div className="otta-pricing-input">
+							<select
+								id={id("currency")}
+								value={d.currency}
+								onChange={(event) => {
+									set("currency")(event.target.value);
+								}}
+							>
+								{CURRENCY_CHOICES.map((code) => (
+									<option key={code} value={code}>
+										{code}
+									</option>
+								))}
+							</select>
+						</div>
+						<span className="otta-pricing-hint">Can't be changed once the product is priced.</span>
+					</div>
+				)}
+				<div className="otta-pricing-field">
+					<MoneyInput
+						id={id("compare")}
+						label="Compare-at price"
+						optional
+						currency={currency}
+						value={d.compareAt}
+						problem={shown.compareAt}
+						describedBy={id("compare-note")}
+						onChange={set("compareAt")}
+					/>
+					{shown.compareAt === undefined && (
+						<span id={id("compare-note")} className="otta-pricing-hint otta-pricing-sale">
+							{sale === null ? (
+								"Set a higher “was” price to show this product on sale."
+							) : (
+								<>
+									Shown as a sale: <s>{sale.was}</s> <strong>{sale.now}</strong>
+								</>
+							)}
+						</span>
+					)}
+				</div>
+				<div className="otta-pricing-field">
+					<MoneyInput
+						id={id("cost")}
+						label="Cost per item"
+						optional
+						currency={currency}
+						value={d.unitCost}
+						problem={shown.unitCost}
+						describedBy={id("cost-note")}
+						onChange={set("unitCost")}
+					/>
+					{shown.unitCost === undefined &&
+						(margin === null ? (
+							<span id={id("cost-note")} className="otta-pricing-hint">
+								Customers won't see this.
+							</span>
+						) : (
+							<div id={id("cost-note")} className="otta-pricing-margin">
+								<span>
+									Profit <strong>{margin.profit}</strong>
+								</span>
+								<span>
+									Margin <strong>{margin.margin}</strong>
+								</span>
+							</div>
+						))}
+				</div>
+			</div>
+
+			<hr className="otta-pricing-rule" />
+
+			<div className="otta-pricing-section">
+				<div className="otta-pricing-head">
+					<span className="otta-pricing-label">Inventory</span>
+					{hasSku && (
+						<span
+							className="otta-pricing-badge"
+							data-tone={stock.tone}
+							data-testid="otta-stock-badge"
+						>
+							<span className="otta-pricing-dot" aria-hidden="true" />
+							{stock.label}
+						</span>
+					)}
+				</div>
+
+				{hasSku && p.onHand !== null && (
+					<>
+						<p className="otta-pricing-count">
+							<strong data-testid="otta-on-hand">{p.onHand}</strong>
+							<span>in stock</span>
+						</p>
+						<div className="otta-pricing-field">
+							<label className="otta-pricing-hint" htmlFor={id("qty")}>
+								Add or remove stock
+							</label>
+							<div className="otta-pricing-stockrow">
+								<input
+									id={id("qty")}
+									className="otta-pricing-qty"
+									inputMode="numeric"
+									autoComplete="off"
+									value={qty}
+									aria-describedby={id("stock-msg")}
+									onChange={(event) => {
+										setQty(event.target.value);
+										setStockMsg(null);
+									}}
+								/>
+								<button
+									type="button"
+									className="otta-pricing-btn"
+									data-grow="true"
+									disabled={moving}
+									onClick={() => {
+										startMove("add");
+									}}
+								>
+									+ Add
+								</button>
+								<button
+									type="button"
+									className="otta-pricing-btn"
+									data-grow="true"
+									disabled={moving}
+									onClick={() => {
+										startMove("remove");
+									}}
+								>
+									− Remove
+								</button>
+							</div>
+							<span
+								id={id("stock-msg")}
+								className="otta-pricing-status"
+								role="status"
+								data-tone={stockMsg?.tone}
+							>
+								{stockMsg?.text ?? ""}
+							</span>
+						</div>
+					</>
+				)}
+				{hasSku && p.onHand === null && (
+					<p className="otta-pricing-hint">
+						Stock isn't tracked for this SKU yet. Contact your developer to set it up.
+					</p>
+				)}
+
+				<div className="otta-pricing-field">
+					<label className="otta-pricing-label" htmlFor={id("sku")}>
+						SKU <span className="otta-pricing-optional">· your code for this product</span>
+					</label>
+					<div className="otta-pricing-input" data-invalid={skuRefusal !== null}>
+						<input
+							id={id("sku")}
+							autoComplete="off"
+							placeholder="e.g. TEE-BLACK-M"
+							value={d.sku}
+							aria-invalid={skuRefusal !== null}
+							aria-describedby={id("sku-note")}
+							onChange={(event) => {
+								set("sku")(event.target.value);
+							}}
+						/>
+					</div>
+					{skuRefusal !== null ? (
+						<span id={id("sku-note")} className="otta-pricing-error">
+							{skuRefusal}
+						</span>
+					) : (
+						!hasSku && (
+							<span id={id("sku-note")} className="otta-pricing-hint">
+								Add a SKU and save to start tracking stock.
+							</span>
+						)
+					)}
+				</div>
+			</div>
+
+			<hr className="otta-pricing-rule" />
+
+			<details>
+				<summary>
+					<span className="otta-pricing-summary">
+						<strong>Shipping &amp; tax</strong>
+						<span>
+							{kindLabel}
+							{weightNote} · {taxName}
+						</span>
+					</span>
+					<Chevron />
+				</summary>
+				<div className="otta-pricing-details">
+					<fieldset style={{ border: 0, margin: 0, padding: 0, minInlineSize: 0 }}>
+						<legend className="otta-pricing-label" style={{ padding: 0, marginBlockEnd: 6 }}>
+							Product type
+						</legend>
+						<div className="otta-pricing-segment">
+							{(["physical", "digital"] as const).map((kind) => (
+								<label key={kind} data-checked={d.productKind === kind}>
+									<input
+										type="radio"
+										className="otta-sr-only"
+										name={id("kind")}
+										value={kind}
+										checked={d.productKind === kind}
+										onChange={() => {
+											set("productKind")(kind);
+										}}
+									/>
+									{kind === "physical" ? "Physical" : "Digital"}
+								</label>
+							))}
+						</div>
+					</fieldset>
+					{d.productKind !== "digital" && (
+						<>
+							<div className="otta-pricing-field">
+								<label className="otta-pricing-label" htmlFor={id("weight")}>
+									Weight
+								</label>
+								<div className="otta-pricing-input" data-invalid={shown.weightGrams !== undefined}>
+									<input
+										id={id("weight")}
+										className="otta-pricing-num"
+										inputMode="numeric"
+										autoComplete="off"
+										value={d.weightGrams}
+										onChange={(event) => {
+											set("weightGrams")(event.target.value);
+										}}
+									/>
+									<span className="otta-pricing-affix">g</span>
+								</div>
+								{shown.weightGrams !== undefined ? (
+									<span className="otta-pricing-error">{shown.weightGrams}</span>
+								) : (
+									<span className="otta-pricing-hint">Used to work out shipping costs.</span>
+								)}
+							</div>
+							<div className="otta-pricing-field">
+								<span className="otta-pricing-label" id={id("size")}>
+									Size <span className="otta-pricing-optional">· length × width × height, mm</span>
+								</span>
+								<div className="otta-pricing-sizes" role="group" aria-labelledby={id("size")}>
+									{(
+										[
+											["lengthMm", "Length"],
+											["widthMm", "Width"],
+											["heightMm", "Height"],
+										] as const
+									).map(([field, name]) => (
+										<div
+											key={field}
+											className="otta-pricing-input"
+											data-invalid={shown[field] !== undefined}
+										>
+											<input
+												aria-label={`${name} in millimetres`}
+												className="otta-pricing-num"
+												inputMode="numeric"
+												autoComplete="off"
+												placeholder={name}
+												value={d[field]}
+												onChange={(event) => {
+													set(field)(event.target.value);
+												}}
+											/>
+										</div>
+									))}
+								</div>
+								{(shown.lengthMm ?? shown.widthMm ?? shown.heightMm) !== undefined && (
+									<span className="otta-pricing-error">Use whole numbers</span>
+								)}
+							</div>
+						</>
+					)}
+					<div className="otta-pricing-field">
+						<label className="otta-pricing-label" htmlFor={id("tax")}>
+							Tax class
+						</label>
+						<div className="otta-pricing-input">
+							<select
+								id={id("tax")}
+								value={d.taxClass}
+								onChange={(event) => {
+									set("taxClass")(event.target.value);
+								}}
+							>
+								<option value="">No tax class</option>
+								{taxClasses.map((t) => (
+									<option key={t.id} value={t.id}>
+										{t.name}
+									</option>
+								))}
+								{d.taxClass !== "" && !taxClasses.some((t) => t.id === d.taxClass) && (
+									<option value={d.taxClass}>{d.taxClass}</option>
+								)}
+							</select>
+						</div>
+					</div>
+				</div>
+			</details>
+
+			<div className="otta-pricing-footer">
+				<button
+					type="button"
+					className="otta-pricing-btn"
+					data-primary="true"
+					disabled={!dirty || saving}
+					aria-busy={saving}
+					onClick={save}
+				>
+					{saving ? "Saving…" : "Save"}
+				</button>
+				<span className="otta-pricing-status" role="status" data-tone={saveStatus?.tone ?? "muted"}>
+					{saveStatus?.text ?? (dirty ? "Unsaved changes" : "")}
+				</span>
+			</div>
+
+			<ConfirmDialog
+				open={confirmRemove !== null}
+				title={`Remove ${String(confirmRemove ?? 0)} from stock?`}
+				text={`You'll have ${String((p.onHand ?? 0) - (confirmRemove ?? 0))} left. To undo this, you'd add them back by hand.`}
+				confirmLabel="Remove"
+				denyLabel="Cancel"
+				onConfirm={() => {
+					const n = confirmRemove;
+					setConfirmRemove(null);
+					if (n !== null) move("products:remove-stock", n);
+				}}
+				onDeny={() => {
+					setConfirmRemove(null);
+				}}
+			/>
+		</div>
+	);
+}
+
+/** The extension EmDash discovers on the admin module (`contentEditorPanels`).
+ *  `minRole: 50` (ADMIN): the `otta` admin route requires `plugins:manage`, so a
+ *  lower role would only be shown controls that answer 403. It hides; the route
+ *  authorizes. */
+export const PRICING_PANEL = {
+	id: "pricing-stock",
+	title: "Pricing & stock",
+	collections: ["products"],
+	minRole: 50,
+	order: 10,
+	component: PricingStockPanel,
+} as const;

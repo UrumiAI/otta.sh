@@ -139,12 +139,12 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
-   it in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
+   it in that product's **Pricing & stock** panel (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
-   price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
-   against the SITE. It drives the site's own admin API — the route the Pricing &
-   inventory page uses — so it needs only the site URL and a token that can read the CMS
+   price them in their Pricing & stock panels or run `sites/staging/scripts/seed-demo-commerce.ts`
+   against the SITE. It drives the site's own admin API — the route the Pricing & stock
+   panel uses — so it needs only the site URL and a token that can read the CMS
    and call that route:
 
    ```bash
@@ -154,7 +154,7 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
    ```
 
    The script is safe to re-run: it reads each product first and skips any that already
-   has a SKU, so it never overwrites a price set in Pricing & inventory.
+   has a SKU, so it never overwrites a price set in the Pricing & stock panel.
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 

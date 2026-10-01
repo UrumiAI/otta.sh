@@ -71,11 +71,17 @@ export type OrdersClientSurface = Pick<
 	| "addNote"
 >;
 /** The admin products surface the contract exercises — the port's WHOLE
- *  surface, named method by method, because all six are implemented in-process
+ *  surface, named method by method, because all seven are implemented in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
 export type ProductsClientSurface = Pick<
 	AdminProductsSurface,
-	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
+	| "updateProduct"
+	| "restock"
+	| "removeStock"
+	| "listProducts"
+	| "getProduct"
+	| "getProductSummaries"
+	| "getTaxClasses"
 >;
 /** The rules surface the contract exercises (shipping, tax, coupons) — the
  *  port's WHOLE surface, all twenty-five methods named one by one, because all

@@ -566,6 +566,36 @@ export function fetchProductDetail(productId: string): Promise<Result<ProductDet
 	);
 }
 
+/** One product's price and stock for the Products list's columns — the
+ *  plugin's `ProductPriceStockWire`, mirrored. `onHand: null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStock {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly compareAtCents: number | null;
+	readonly onHand: number | null;
+	readonly deletedAt: string | null;
+}
+
+export interface ProductSummariesPayload {
+	readonly ok: true;
+	readonly products: readonly ProductPriceStock[];
+	readonly threshold: number | null;
+}
+
+/** The price and stock of a page of products (ADR-0014, amendment
+ *  2026-10-01). The ids are CMS entry ids, which are the commerce ids. */
+export function fetchProductSummaries(
+	productIds: readonly string[],
+): Promise<Result<ProductSummariesPayload>> {
+	return post<ProductSummariesPayload>(
+		{ type: READ, resource: "products.summaries", productIds },
+		PRODUCTS_UNAVAILABLE,
+	);
+}
+
 /**
  * Perform a write.
  *

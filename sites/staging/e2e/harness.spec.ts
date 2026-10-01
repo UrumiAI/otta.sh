@@ -150,7 +150,7 @@ test.describe("harness configuration", () => {
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
-		expect(consoleScreenUrl("/products")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/products`);
+		expect(consoleScreenUrl("/themes")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/themes`);
 
 		// The sidebar selector must not match the console's own links, or the
 		// "Block Kit screens are still there" assertion passes vacuously.

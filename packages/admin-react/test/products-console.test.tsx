@@ -74,7 +74,7 @@ const {
 	PRODUCTS_NO_MATCH,
 	priceSavedNotice,
 } = await import("@otta-sh/admin-presentation");
-const { OTTA_CONSOLE_ADMIN_PAGES, PRODUCTS_PAGE } = await import("../src/index.js");
+const { OTTA_CONSOLE_ADMIN_PAGES } = await import("../src/index.js");
 const admin = await import("../src/admin.js");
 
 /** A priced, in-stock, live product — the ordinary case the Price group's four
@@ -150,23 +150,21 @@ beforeEach(() => {
 	apiFetch.mockReset();
 });
 
-describe("the screen is declared, and the console can actually render it", () => {
-	test("the descriptor declares `/products` and `./admin` has a component for it", () => {
-		// A path declared with no component under the same key makes the sidebar
-		// SILENTLY drop the entry — no error, no warning, just a screen nobody can
-		// reach. That is the failure this pins, and it is the same pin
-		// `console-plugin.test.ts` makes for the shell.
-		expect(OTTA_CONSOLE_ADMIN_PAGES.map((page) => page.path)).toContain("/products");
-		expect(Object.keys(admin.pages as Record<string, unknown>)).toContain(PRODUCTS_PAGE.path);
-	});
-
-	test("the sidebar label carries NO disambiguating suffix — there is nothing left to disambiguate", () => {
-		// It read `Pricing & inventory (new)` while both descriptors declared
-		// `/products`, because two entries of that name with nothing to tell them
-		// apart would have been the worst outcome of the two-descriptor
-		// arrangement. INC-R3 retired the Block Kit screen, so the suffix expires
-		// with the thing it distinguished this one FROM (ADR-0015 Decision 1).
-		expect(PRODUCTS_PAGE.label).toBe("Pricing & inventory");
+describe("Pricing & inventory is not a page any more (ADR-0014, amendment 2026-10-01)", () => {
+	test("the sidebar offers no `/products` page; the editor panel and list columns replace it", () => {
+		expect(OTTA_CONSOLE_ADMIN_PAGES.map((page) => page.path)).not.toContain("/products");
+		expect(Object.keys(admin.pages as Record<string, unknown>)).not.toContain("/products");
+		const exported = admin as unknown as {
+			contentEditorPanels: readonly { id: string; collections: readonly string[] }[];
+			contentListColumns: readonly { id: string; collections: readonly string[] }[];
+		};
+		expect(exported.contentEditorPanels.map((p) => [p.id, p.collections])).toEqual([
+			["pricing-stock", ["products"]],
+		]);
+		expect(exported.contentListColumns.map((c) => [c.id, c.collections])).toEqual([
+			["price", ["products"]],
+			["stock", ["products"]],
+		]);
 	});
 });
 

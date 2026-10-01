@@ -80,6 +80,11 @@ export interface ConsoleScreen {
  *
  * INC-26 ADDS THEMES, the first entry with no Block Kit original (ADR-0014's
  * amendment of 2026-09-30), so it moves the Block Kit inventory not at all.
+ *
+ * PRICING & INVENTORY HAS LEFT THE LIST: ADR-0014's amendment of 2026-10-01 moved
+ * it into the products collection's own editor (a panel) and list (two
+ * columns), which are not pages and have no sidebar entry. Its Playwright gate
+ * is `products-pricing-panel.spec.ts`.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -98,22 +103,6 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// unique — so this stays the H1's own text; disambiguating it here, by
 		// reviving a suffix, would be fixing the wrong file.
 		heading: /^Orders$/,
-	},
-	{
-		name: "Pricing & inventory",
-		increment: "INC-21",
-		// It shared this path with the Block Kit screen for the parallel period —
-		// they never collided, because a page's URL carries its plugin id — and
-		// INC-R3 retired that screen, so `/products` is now this screen's alone.
-		path: "/products",
-		// The H1. The `&` is rendered from an HTML entity, so the regex matches the
-		// TEXT the browser produces rather than the source. INC-R3 dropped the
-		// `(new)` sidebar suffix with the screen it disambiguated from, so — exactly
-		// as on `/orders` — the nav label and this heading now read the same string
-		// and the anchors no longer separate them. Its consumers match the heading
-		// ROLE, which is unique; reviving a suffix to disambiguate a TEXT match
-		// would be fixing the wrong file.
-		heading: /^Pricing & inventory$/,
 	},
 	{
 		// Not a migration — the first console screen with no Block Kit original

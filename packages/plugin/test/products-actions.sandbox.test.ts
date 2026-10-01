@@ -238,6 +238,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect([...PRODUCTS_ACTION_IDS].toSorted()).toEqual([
 			"products:remove-stock",
 			"products:restock",
+			"products:save",
 			"products:save-identity",
 			"products:save-price",
 			"products:save-shipping",

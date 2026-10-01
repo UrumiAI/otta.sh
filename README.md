@@ -74,15 +74,15 @@ commerce fields it does not touch — so give them some:
 # 2. Price, stock and activate the demo products (second terminal).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
 #    then prices and stocks each one through the SITE's own admin API — the same
-#    route the Pricing & inventory page uses, so the site URL is all it needs.
+#    route the product editor's Pricing & stock panel uses, so the site URL is all it needs.
 SITE_URL=http://localhost:4321 \
   pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
 ```
 
-`/products` now renders a priced catalog and add-to-cart takes a real inventory hold. Open
-**Pricing & inventory** in the admin to reprice, restock, or price a product of your own —
-that page is the only place commercial fields are edited; the CMS owns the title,
-description and images.
+`/products` now renders a priced catalog and add-to-cart takes a real inventory hold. In the
+admin, **Content › Products** lists each product's price and stock; open a product and use its
+**Pricing & stock** panel to reprice, restock, or price a product of your own. That panel is
+the only place commercial fields are edited; the CMS owns the title, description and images.
 
 One thing to know: card checkout needs Stripe configured (both secrets in admin Settings, plus
 the build-time publishable key), and the storefront has no account or download pages yet —
@@ -124,7 +124,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 | `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
 | `@otta-sh/plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
-| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Pricing & inventory. |
+| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Themes pages, plus the products collection's Pricing & stock panel and Price / Stock list columns. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in

@@ -95,6 +95,10 @@ const PRODUCTS_ACTIONS = screenActions("products");
 const ACTION_SAVE_IDENTITY = PRODUCTS_ACTIONS.custom("save-identity");
 const ACTION_SAVE_PRICE = PRODUCTS_ACTIONS.custom("save-price");
 const ACTION_SAVE_SHIPPING = PRODUCTS_ACTIONS.custom("save-shipping");
+/** The product editor's Pricing & stock panel (ADR-0014, amendment
+ *  2026-10-01) has ONE Save, so it sends every field it owns in one write —
+ *  the same sparse save, the same watermark, the same idempotency key. */
+const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
 /** Restock stays DA-4: one-shot, no staging, no confirm. */
 const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
 /** The screen's ONE destructive act (DA-5's second exception: a removal is
@@ -698,6 +702,7 @@ const PRODUCTS_ACTIONS_BY_ID: Readonly<Record<string, ProductsAction>> = {
 	[ACTION_SAVE_IDENTITY]: saveAction,
 	[ACTION_SAVE_PRICE]: saveAction,
 	[ACTION_SAVE_SHIPPING]: saveAction,
+	[ACTION_SAVE]: saveAction,
 	[ACTION_RESTOCK]: restockAction,
 	[ACTION_REMOVE_STOCK]: removeStockAction,
 };
