@@ -233,6 +233,29 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(text).not.toMatch(/HTTP \d|\/reports\/|401/);
 	});
 
+	test("an UNKNOWN page renders a friendly not-found, never a blank screen or a raw status", async () => {
+		// A bookmark to a retired Block Kit page (`/orders`, `/products` moved to
+		// the React console — ADR-0015) or a typo used to render an empty tree.
+		sandbox = await loadPluginInSandbox({ allowedHosts: [] });
+		for (const page of ["/orders", "/nope", "/<img src=x onerror=alert(1)>"]) {
+			const blocks = blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page }));
+			const header = blocks.find((b) => b.type === "header");
+			expect(header?.text, page).toBe("Page not found");
+			const context = blocks.find((b) => b.type === "context");
+			// The requested path is URL-controlled input: it is never echoed back.
+			expect(JSON.stringify(blocks)).not.toContain(page.slice(1));
+			expect(String(context?.text).length).toBeLessThanOrEqual(140);
+			expect(JSON.stringify(blocks)).not.toMatch(/404|ROUTE_NOT_FOUND/);
+		}
+		// An unrecognised ACTION keeps em-dash's house style — there is no page to
+		// replace, so it answers with nothing rather than a not-found screen.
+		const action = await sandbox.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "nobody:owns-this",
+		});
+		expect(blocksOf(action)).toEqual([]);
+	});
+
 	test("the old per-page keys no longer resolve (404 unknown route)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [] });
 
