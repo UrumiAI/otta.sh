@@ -12,15 +12,17 @@ ADR-0026).
   - `pending → paid` is refused with `MANUAL_PAYMENT_NOT_ALLOWED` unless the payment method is
     declared offline. None is today, so the rule fails closed: Stripe, x402, and an order with
     no method on file are all refused (`manualPaymentAllowed`).
-  - A bare `→ cancelled` is refused with `USE_CANCEL` for any order past `pending`; Cancel order
-    is the way to cancel one.
+  - Every bare `→ cancelled` is refused with `USE_CANCEL`: it would record no reason and release
+    no stock hold. Cancel order is the one way to cancel; it does not refund a paid order.
   - `→ refunded` moves the state and enqueues no email, because a manual Mark refunded records a
     refund made outside Otta.
 
-  `adminNextStates(order)` is the matching offer. `transitionOrder` is unchanged.
+  `adminNextStates(order)` is the matching offer, and `TransitionOrderAsAdminFailure` names its
+  refusals. `transitionOrder` and `transitionOrderAsAdmin` share one precheck.
 - **`@otta-sh/plugin`.** The Orders console offers `adminNextStates` and runs every transition
   through `transitionOrderAsAdmin`. A refused move answers `409` with `reason`
-  (`TransitionOrderResult`'s failure arm gains an optional `reason`), and the console shows its
-  own notice for each.
+  (`TransitionOrderResult`'s failure arm gains an optional `reason`, typed as `TransitionRefusal`),
+  and the console shows its own notice for each. A Mark refunded that applied says "No money moved
+  and the buyer was not emailed."
 - **`@otta-sh/admin-presentation`.** The Mark refunded confirm says the move does not move money
   and does not email the buyer.

@@ -2146,17 +2146,19 @@ between the two halves.
 
 **The offer is the domain's `adminNextStates`, not `legalNextStates` (ADR-0026, 2026-10-02).** It is
 the state machine minus a manual `paid` — no payment method is declared offline today, so **Mark
-paid is never offered**: an order becomes paid when its provider confirms the charge — and minus a
-bare `cancelled` on any order past `pending`. Both are also refused by `transitionOrderAsAdmin` when
-a hand-made payload asks for them, each with its own notice ("Only the payment provider can mark
-this order paid"; "Use Cancel order to cancel a paid order"). **Mark refunded** stays offered, as
-bookkeeping for a refund made outside Otta: it moves no money, **emails nobody**, and its confirm
-says so.
+paid is never offered**: Otta marks an order paid only when its provider confirms the charge — and
+minus a bare `cancelled`, from any state. Both are also refused by `transitionOrderAsAdmin` when a
+hand-made payload asks for them, each with its own notice ("Only the payment provider can mark this
+order paid"; "Use Cancel order to cancel an order", which also says cancelling does not refund the
+buyer and to refund under Money → Refunds first). **Mark refunded** stays offered, as bookkeeping for
+a refund made outside Otta: it moves no money, **emails nobody**, and both its confirm and its
+success notice ("Marked refunded") say so.
 
 The UI steering stays: on a `processing` order the bare `shipped` move is withheld (use Fulfilment,
-which records tracking), and `cancelled` is always withheld (use Cancel, which records a reason) —
-`offeredTransitions`, `orders-read.ts:158-170`, which applies the `ORDER_STATE_SET` filter of item 2
-in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
+which records tracking) — UI steering only, the domain still accepts it — and `cancelled` is
+withheld here too, as a second guard behind the domain's own refusal (use Cancel, which records a
+reason) — `offeredTransitions` in `orders-read.ts`, which applies the `ORDER_STATE_SET` filter of
+item 2 in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
 
 **DA-7 — withheld actions: generalize the coupons pattern.** When a precondition knowably forbids
 an action, render **no control** plus one `context` line stating the reason and the alternative.
