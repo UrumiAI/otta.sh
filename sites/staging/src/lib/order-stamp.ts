@@ -25,6 +25,9 @@ export interface OrderStampInput {
 	latePayment: PublicOrderView["latePayment"];
 	/** Did the buyer arrive via Stripe's redirect? Picks the pending copy only. */
 	returnedFromStripe: boolean;
+	/** A `pending` order whose hold deadline has passed (`isOrderPayable` false) —
+	 *  the sweep will expire it on its next tick; the pay page already refuses it. */
+	holdLapsed: boolean;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -71,9 +74,23 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 
 	if (state === "pending") {
 		if (input.returnedFromStripe) {
+			// Even past the hold: the buyer just paid, and a pending order still
+			// settles. The page polls; the state decides.
 			return {
 				headline: "Payment submitted.",
 				body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
+			};
+		}
+		if (input.holdLapsed) {
+			// The pay page refuses this order, so "awaiting payment" with a resume link
+			// would walk the buyer round a loop. But the order is STILL pending — its
+			// stock has not gone back on sale yet, and a payment made a moment ago may
+			// still settle it — so this says only what is certain, and what happens if
+			// money does arrive: that it is refunded, never "automatically" (on some
+			// paths a person does it). The page keeps its bounded poll in this state.
+			return {
+				headline: "The time to pay has run out.",
+				body: "If you already paid, this page will update — if the order has already expired by then, it will be refunded.",
 			};
 		}
 		return { headline: "This order is awaiting payment.", body: null };

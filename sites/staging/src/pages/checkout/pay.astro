@@ -8,11 +8,22 @@
  * card form would put PAN data on our servers and move every merchant running
  * this theme to SAQ-D.
  *
- * This page makes NO commerce call. Everything it needs — the order id, the
- * client secret and the order's total — is in the first-party `otta_checkout`
- * cookie the place endpoint set one redirect ago. Re-deriving the secret would
- * mean a GET that can create an order, and re-deriving the TOTAL would quote a
- * still-live cart rather than the amount the PaymentIntent was minted for.
+ * Everything the FORM needs — the order id, the client secret and the order's
+ * total — is in the first-party `otta_checkout` cookie the place endpoint set one
+ * redirect ago. Re-deriving the secret would mean a GET that can create an order,
+ * and re-deriving the TOTAL would quote a still-live cart rather than the amount
+ * the PaymentIntent was minted for.
+ *
+ * The page makes exactly ONE commerce call, and it is a READ: the order's own
+ * state, through the same public `storefront/order` route the confirmation page
+ * uses. The stash outlives the order's hold, and a client secret stays payable
+ * at Stripe until something withdraws it — so a form rendered from the cookie
+ * alone let a buyer pay an order that had already EXPIRED, for stock already
+ * back on sale. An order that is not `pending`, or whose hold has lapsed, now
+ * goes to its confirmation page instead (`lib/pay-guard.ts`, ADR-0012's
+ * 2026-10-02 amendment). An unanswerable read still renders the form: the
+ * server cancels an expired order's intent and refunds a payment that lands
+ * anyway, so this page is defence in depth, never the only line.
  *
  * The script reads its inputs from `data-` attributes rather than having them
  * baked into JS source (no `define:vars`), so Astro's attribute escaping is the
@@ -25,10 +36,14 @@
  * the appearance object is how the tokens get across. Nothing else on this page
  * changes: not the tokenization, not the confirm call, not the return url.
  */
+import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Notice from "../../components/Notice.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { payButtonLabel } from "../../lib/totals.js";
 import type { PayModel } from "../../themes/contract.js";
@@ -41,6 +56,19 @@ if (stash === null) return Astro.redirect("/checkout", 303);
 
 const orderUrl = new URL(`/orders/${encodeURIComponent(stash.orderId)}`, Astro.url).toString();
 const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
+
+// Is the stashed order still payable? Read its OWN state — never trust the cookie
+// for that: it outlives the hold. Expired, cancelled, already paid, or past its
+// hold ⇒ its confirmation page, which states the truth. 303, like every other
+// redirect this flow makes, so a reload cannot re-POST anything.
+const orderRead = await dispatchOttaRoute<OrderRouteResult>(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	STOREFRONT_ORDER_ROUTE,
+	{ orderId: stash.orderId },
+	Astro.url,
+);
+const refuseTo = payPageRedirect(orderPath, orderRead, new Date());
+if (refuseTo !== null) return Astro.redirect(refuseTo, 303);
 
 /** "Pay $40.00" (§7) — or "Pay now" for a stash minted before the total shipped.
  *  The page never assembles this string; the amount was formatted by the plugin

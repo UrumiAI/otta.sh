@@ -9,7 +9,7 @@
 import { describe, expect, test } from "vitest";
 import { orderStamp } from "../src/lib/order-stamp.js";
 
-const base = { returnedFromStripe: false, latePayment: "none" } as const;
+const base = { returnedFromStripe: false, holdLapsed: false, latePayment: "none" } as const;
 
 describe("orderStamp — expired and cancelled orders", () => {
 	test("expired with nothing captured keeps 'Nothing was charged'", () => {
@@ -62,6 +62,24 @@ describe("orderStamp — pending orders", () => {
 		expect(orderStamp({ ...base, state: "pending", returnedFromStripe: true })?.headline).toBe(
 			"Payment submitted.",
 		);
+	});
+});
+
+describe("orderStamp — a pending order past its hold", () => {
+	test("says the time to pay has run out — and claims NOTHING about stock or charges, since the order is still pending", () => {
+		const stamp = orderStamp({ ...base, state: "pending", holdLapsed: true });
+		expect(stamp).toEqual({
+			headline: "The time to pay has run out.",
+			body: "If you already paid, this page will update — if the order has already expired by then, it will be refunded.",
+		});
+		expect(stamp?.body).not.toMatch(/nothing was charged|back on sale/i);
+	});
+
+	test("a buyer just back from Stripe still sees 'Payment submitted' — their payment may yet settle", () => {
+		expect(
+			orderStamp({ ...base, state: "pending", holdLapsed: true, returnedFromStripe: true })
+				?.headline,
+		).toBe("Payment submitted.");
 	});
 });
 

@@ -12,8 +12,9 @@
  * stamp is the FIRST thing on the page (docs/theme/TEMPERED.md §8): the state
  * is the most important thing on it.
  *
- * The redirect parameters are read for exactly ONE purpose — choosing between
- * two `pending` copy variants — and are otherwise inert: never echoed into the
+ * The redirect parameters are read for exactly ONE purpose — choosing how a
+ * `pending` order is presented (the "confirming" copy, even past the hold, since a
+ * just-paid pending order may still settle) — and are otherwise inert: never echoed into the
  * markup, never forwarded, never used to decide that anything is paid. That
  * "never echoed" rule is asserted structurally (checkout-client-js.test.ts):
  * their names may appear in this frontmatter and NOWHERE in the template below.
@@ -44,6 +45,7 @@ import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { orderStamp } from "../../lib/order-stamp.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
+import { isOrderPayable } from "../../lib/pay-guard.js";
 import type { OrderModel } from "../../themes/contract.js";
 
 const { orderId } = Astro.params;
@@ -76,6 +78,17 @@ const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
 const state = order?.state ?? null;
 const isPending = state === "pending";
 
+/**
+ * A pending order PAST its hold, reached other than from Stripe's redirect. The
+ * sweep will expire it on its next tick, and `/checkout/pay` already refuses it
+ * (`lib/pay-guard.ts`) — so offering "resume" would walk the buyer round a loop.
+ * It keeps the bounded poll (a payment made a moment ago may still settle it) and
+ * gets the door out. A buyer just back from Stripe is not "lapsed" here at all:
+ * they get the confirming copy.
+ */
+const holdLapsed =
+	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
+
 /** Bounded meta-refresh poll: at most 8 hops (~30 s), then a manual link. */
 const MAX_POLLS = 8;
 const poll = Number.parseInt(Astro.url.searchParams.get("p") ?? "0", 10);
@@ -95,6 +108,7 @@ const stamp = orderStamp({
 	state,
 	latePayment: order?.latePayment ?? "none",
 	returnedFromStripe,
+	holdLapsed,
 });
 
 /** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
@@ -103,7 +117,8 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
 
 /**
  * The states with nowhere left to go, and therefore the states that get the
- * door out.
+ * door out — plus a pending order past its hold (`holdLapsed` above), which is
+ * one sweep away from `expired` and which the pay page already refuses.
  *
  * `failed` is in this set, which it was not before. The cart that produced the
  * order is `checked_out` and never returns to `active`, so /checkout answers
@@ -123,7 +138,7 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
  * consequence stated. A buyer whose cookie holds some other cart, or none, lands
  * on a cart they can already use. The link itself carries no Referer from here.
  */
-const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
+const deadEnd = state === "expired" || state === "cancelled" || state === "failed" || holdLapsed;
 
 /* Resuming a PENDING order is different, and still goes through /checkout
    rather than straight to /checkout/pay: the stash was just deleted above, so
@@ -131,7 +146,7 @@ const deadEnd = state === "expired" || state === "cancelled" || state === "faile
    replays `checkout:<cartId>` — the same order, and through Stripe's own
    idempotency the same PaymentIntent and the same client secret — which
    re-stashes it. The stable key is what makes resuming possible at all. */
-const canResume = state === "pending" && !returnedFromStripe;
+const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
 const canCheckAgain = isPending && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 
