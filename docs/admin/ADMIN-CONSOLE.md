@@ -2144,6 +2144,15 @@ rule generalises past Orders and past the renderer** — DA-6's "derived, never 
 same rule ADR-0015 applied to the one-click cancellation reasons when a process boundary opened
 between the two halves.
 
+**The offer is the domain's `adminNextStates`, not `legalNextStates` (ADR-0026, 2026-10-02).** It is
+the state machine minus a manual `paid` — no payment method is declared offline today, so **Mark
+paid is never offered**: an order becomes paid when its provider confirms the charge — and minus a
+bare `cancelled` on any order past `pending`. Both are also refused by `transitionOrderAsAdmin` when
+a hand-made payload asks for them, each with its own notice ("Only the payment provider can mark
+this order paid"; "Use Cancel order to cancel a paid order"). **Mark refunded** stays offered, as
+bookkeeping for a refund made outside Otta: it moves no money, **emails nobody**, and its confirm
+says so.
+
 The UI steering stays: on a `processing` order the bare `shipped` move is withheld (use Fulfilment,
 which records tracking), and `cancelled` is always withheld (use Cancel, which records a reason) —
 `offeredTransitions`, `orders-read.ts:158-170`, which applies the `ORDER_STATE_SET` filter of item 2
