@@ -573,7 +573,7 @@ test("a read that fails says why and offers to try again", async () => {
 
 const HEX_NONCE = /^[0-9a-f]{32}$/;
 
-type Step = "ok" | "lose-after" | "lose-before" | "refuse";
+type Step = "ok" | "lose-after" | "lose-before" | "refuse" | "pending";
 
 /**
  * A store behind the cards that behaves like the plugin's ledger: a move applies
@@ -582,8 +582,12 @@ type Step = "ok" | "lose-after" | "lose-before" | "refuse";
  * answer, `lose-before` loses the request before anything ran, `refuse` is the
  * plugin's own definitive `{ok:false}`.
  */
-function stockServer(start: number, steps: Step[] = []): { onHand: () => number } {
+function stockServer(
+	start: number,
+	steps: Step[] = [],
+): { onHand: () => number; release: () => Promise<void> } {
 	let onHand = start;
+	let release: (() => void) | null = null;
 	const seen = new Set<string>();
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -596,6 +600,20 @@ function stockServer(start: number, steps: Step[] = []): { onHand: () => number 
 			);
 		}
 		const value = body["value"] as Record<string, string>;
+		if (step === "pending") {
+			// Applied when released, like a slow request that lands.
+			return new Promise<Response>((resolve) => {
+				release = () => {
+					onHand += Number(value["qty"]) * (body["action_id"] === "products:restock" ? 1 : -1);
+					resolve(
+						json({
+							ok: true,
+							notice: { variant: "default", title: "Stock added", description: "" },
+						}),
+					);
+				};
+			});
+		}
 		const nonce = value["nonce"] ?? "";
 		const replayed = seen.has(nonce);
 		if (!replayed) {
@@ -620,7 +638,15 @@ function stockServer(start: number, steps: Step[] = []): { onHand: () => number 
 			),
 		);
 	});
-	return { onHand: () => onHand };
+	return {
+		onHand: () => onHand,
+		release: async () => {
+			await React.act(async () => {
+				release?.();
+			});
+			await flush();
+		},
+	};
 }
 
 function nonces(): unknown[] {
@@ -649,6 +675,21 @@ async function retry(c: HTMLElement): Promise<void> {
 	const b = retryButton(c);
 	if (b === null) throw new Error("no Retry offered");
 	await fire(b, "click");
+	await flush();
+}
+
+const heldText = (c: HTMLElement): string =>
+	c.querySelector('[data-testid="otta-stock-held"] [role="alert"]')?.textContent ?? "";
+
+/** Enter in the quantity: the cards' keyboard Add, reachable while a confirm is
+ *  open in a DOM without modal inertness. */
+async function pressEnterInQty(c: HTMLElement): Promise<void> {
+	const field = input(c, "Add or remove stock");
+	await React.act(async () => {
+		field.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+		);
+	});
 	await flush();
 }
 
@@ -710,11 +751,11 @@ test("a LOST answer says the change may have landed and offers Retry, which re-s
 	const server = stockServer(24, ["lose-after"]);
 	const c = await mountPanel();
 	await add(c, "5");
-	expect(c.textContent).toContain(
-		"The change may have been applied — check the count before trying again.",
+	expect(heldText(c)).toContain(
+		"Add 5 — the change may have been applied; check the count before trying again.",
 	);
 	expect(c.textContent).not.toContain("Added 5");
-	expect(retryButton(c)?.textContent?.trim()).toBe("Retry this change");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
 
 	await retry(c);
 	const moves = writes();
@@ -794,4 +835,94 @@ test("a held Retry expires ten minutes after the ORIGINAL loss, even when a Retr
 	} finally {
 		clock.mockRestore();
 	}
+});
+
+test("the held Retry names the move it re-sends, and sends THAT move, whatever is typed now", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	const first = writes()[0];
+	await type(input(c, "Add or remove stock"), "3");
+	expect(heldText(c)).toContain("Add 5 —");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
+	// The Retry button sits outside the announced text.
+	expect(c.querySelector('[role="alert"] [data-testid="otta-stock-retry"]')).toBeNull();
+	await retry(c);
+	const moves = writes();
+	expect(moves).toHaveLength(2);
+	const retried = moves[1]?.["value"] as Record<string, string>;
+	expect(retried["qty"]).toBe("5");
+	expect(moves[1]).toEqual(first);
+	expect(server.onHand()).toBe(29);
+});
+
+test("a held removal is named as one", async () => {
+	stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await remove(c, "2");
+	expect(heldText(c)).toContain("Remove 2 — the change may have been applied");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: remove 2");
+});
+
+test("a LOST answer re-reads the count, so the next move is judged against the server's", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5"); // landed; only the answer was lost
+	expect(onHandShown(c)).toBe("29");
+	expect(retryButton(c)).not.toBeNull(); // the re-read keeps the Retry
+	expect(c.textContent).not.toContain("Added 5"); // and is not a receipt
+	await remove(c, "2");
+	// The removal's watermark is the re-read count, not the stale 24.
+	const removal = writes()[1]?.["value"] as Record<string, string>;
+	expect(removal["onHand"]).toBe("29");
+	expect(server.onHand()).toBe(27);
+});
+
+test("a confirmed removal sends the count the merchant APPROVED, even if a re-read moved it while the confirm was open", async () => {
+	stockServer(24);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
+		"You'll have 22 left.",
+	);
+	// A move lands while the dialog is open, and the cards re-read 26.
+	await pressEnterInQty(c);
+	expect(onHandShown(c)).toBe("26");
+	// What the dialog said is what was approved.
+	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
+		"You'll have 22 left.",
+	);
+	const yes = c.querySelector('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	await fire(yes, "click");
+	await flush();
+	const removal = writes()[1]?.["value"] as Record<string, string>;
+	expect(removal["qty"]).toBe("2");
+	expect(removal["onHand"]).toBe("24");
+});
+
+test("the remove confirm cannot be pressed while another move is in flight, so it is never silently dropped", async () => {
+	const server = stockServer(24, ["pending"]);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c); // an Add, still in flight
+	const yes = c.querySelector<HTMLButtonElement>('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	expect(yes.disabled).toBe(true);
+	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
+		"Another stock change is still running",
+	);
+	await server.release();
+	expect(server.onHand()).toBe(26);
+	const after = c.querySelector<HTMLButtonElement>('[data-testid="otta-confirm-yes"]');
+	expect(after?.disabled).toBe(false);
+	if (after === null) throw new Error("no remove confirm");
+	await fire(after, "click");
+	await flush();
+	expect(writes().map((w) => w["action_id"])).toEqual([
+		"products:restock",
+		"products:remove-stock",
+	]);
 });

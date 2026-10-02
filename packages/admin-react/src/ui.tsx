@@ -826,6 +826,7 @@ export function ConfirmDialog({
 	confirmLabel,
 	denyLabel,
 	confirmTone = "danger",
+	confirmDisabled,
 	onConfirm,
 	onDeny,
 }: {
@@ -844,6 +845,9 @@ export function ConfirmDialog({
 	 * operator to read past the styling on the confirms that are not.
 	 */
 	confirmTone?: "danger" | "neutral";
+	/** Hold the confirm while the caller cannot act on it yet (its text should
+	 *  say why); Deny stays available. */
+	confirmDisabled?: boolean;
 	onConfirm: () => void;
 	onDeny: () => void;
 }): React.ReactElement | null {
@@ -889,6 +893,7 @@ export function ConfirmDialog({
 					label={confirmLabel}
 					onClick={onConfirm}
 					danger={confirmTone === "danger"}
+					disabled={confirmDisabled}
 					testId="otta-confirm-yes"
 				/>
 			</div>

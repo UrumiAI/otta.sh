@@ -20,8 +20,8 @@
  * ONE CLICK, ONE STOCK MOVE. Each Add/Remove click mints a fresh nonce, the
  * move's idempotency key (ADR-0015, amended 2026-10-02). A key derived from what
  * the move looks like made Add 2, Remove 2, Add 2 refuse the third (QA T1-2).
- * The only re-send of a nonce is the explicit "Retry this change" offered after
- * an answer was lost — see {@link HeldMove}.
+ * The only re-send of a nonce is the explicit Retry ("Retry: add 5") offered
+ * after an answer was lost — see {@link HeldMove}.
  *
  * Every decision about a value lives in `./pricing-model.ts`; this file wires
  * them up.
@@ -155,9 +155,16 @@ interface HeldMove {
  *  check the count instead: a re-send is no longer "the same decision". */
 const HELD_MOVE_TTL_MS = 10 * 60_000;
 
-/** A lost answer must not say nothing happened: the write may have landed. */
-const STOCK_MOVE_INDETERMINATE =
-	"The change may have been applied — check the count before trying again.";
+/** A lost answer must not say nothing happened: the write may have landed. It
+ *  names the held move, so a merchant who has since typed another quantity knows
+ *  what Retry will send. */
+function heldMoveText(held: HeldMove): string {
+	return `${held.actionId === "products:restock" ? "Add" : "Remove"} ${String(held.n)} — the change may have been applied; check the count before trying again.`;
+}
+
+function heldMoveRetryLabel(held: HeldMove): string {
+	return `Retry: ${held.actionId === "products:restock" ? "add" : "remove"} ${String(held.n)}`;
+}
 
 /** One stroke icon set, drawn here: 16px box, 1.6 stroke, round caps. */
 function Icon({ d }: { d: string }): React.ReactElement {
@@ -296,7 +303,12 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	const [qty, setQty] = React.useState("1");
 	const [moving, setMoving] = React.useState(false);
 	const [stockMsg, setStockMsg] = React.useState<Status>(null);
-	const [confirmRemove, setConfirmRemove] = React.useState<number | null>(null);
+	/** The removal awaiting confirmation, with the count the dialog showed: that
+	 *  count is what the merchant approved, and it is the watermark sent. */
+	const [confirmRemove, setConfirmRemove] = React.useState<{
+		readonly n: number;
+		readonly onHand: number;
+	} | null>(null);
 	const [held, setHeld] = React.useState<HeldMove | null>(null);
 	/** Set synchronously on dispatch, so a second click in the same task — before
 	 *  the buttons re-render disabled — is not a second move under a new nonce. */
@@ -634,6 +646,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setMoving(false);
 				if (result.indeterminate === true) {
 					setHeld({ actionId, value, n, title: result.title, heldAt: heldSince ?? Date.now() });
+					// The move may have landed: re-read so the count on screen — and the
+					// next removal's watermark — is the server's, not the one before it.
+					// No receipt: the held notice is the outcome.
+					forgetSummaries();
+					setReload((k) => k + 1);
 					return;
 				}
 				setStockMsg({ tone: "fail", text: `${result.title}. ${result.description}` });
@@ -717,7 +734,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			setStockMsg({ tone: "fail", text: `You only have ${String(onHand)} in stock` });
 			return;
 		}
-		setConfirmRemove(qtyValue);
+		setConfirmRemove({ n: qtyValue, onHand });
 	};
 
 	const kindLabel = d.productKind === "digital" ? "Digital — nothing to ship" : "Physical product";
@@ -940,11 +957,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								<div
 									className="otta-pricing-callout"
 									data-tone="warn"
-									role="alert"
 									data-testid="otta-stock-held"
 								>
-									<span>
-										<strong>{held.title}.</strong> {STOCK_MOVE_INDETERMINATE}
+									{/* Announced; the Retry button stays outside the live region. */}
+									<span role="alert">
+										<strong>{held.title}.</strong> {heldMoveText(held)}
 									</span>
 									<div>
 										<button
@@ -954,7 +971,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 											disabled={moving}
 											onClick={retryHeld}
 										>
-											Retry this change
+											{heldMoveRetryLabel(held)}
 										</button>
 									</div>
 								</div>
@@ -1178,14 +1195,20 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 			<ConfirmDialog
 				open={confirmRemove !== null}
-				title={`Remove ${String(confirmRemove ?? 0)} from stock?`}
-				text={`You'll have ${String((p.onHand ?? 0) - (confirmRemove ?? 0))} left. To undo this, you'd add them back by hand.`}
+				title={`Remove ${String(confirmRemove?.n ?? 0)} from stock?`}
+				text={`You'll have ${String((confirmRemove?.onHand ?? 0) - (confirmRemove?.n ?? 0))} left. To undo this, you'd add them back by hand.${
+					moving ? " Another stock change is still running — wait for it to finish." : ""
+				}`}
 				confirmLabel="Remove"
 				denyLabel="Cancel"
+				// A confirm pressed while a move is in flight would be dropped by the
+				// in-flight guard; it waits instead, and says why.
+				confirmDisabled={moving}
 				onConfirm={() => {
-					const n = confirmRemove;
+					const pending = confirmRemove;
+					if (pending === null || movingNow.current) return;
 					setConfirmRemove(null);
-					if (n !== null && p.onHand !== null) move("products:remove-stock", n, p.onHand);
+					move("products:remove-stock", pending.n, pending.onHand);
 				}}
 				onDeny={() => {
 					setConfirmRemove(null);
