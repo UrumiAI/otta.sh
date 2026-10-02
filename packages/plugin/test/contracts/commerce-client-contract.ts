@@ -347,6 +347,23 @@ export interface CommerceClientTierPayments {
 	 * asked a payment provider to move, which the ledger alone cannot show.
 	 */
 	providerRefundCalls(): readonly ProviderRefundCall[];
+	/**
+	 * OPTIONAL: every `createIntent` call the tier's composed gateways have
+	 * received, oldest first and across cases (filter by order id). It is how a
+	 * case proves a resumed payment asked the provider for the SAME intent — the
+	 * same idempotency key, the same amount — rather than a second one. Absent ⇒
+	 * that half of the resume case is skipped, saying so in its name.
+	 */
+	providerIntentCalls?(): readonly ProviderIntentCall[];
+}
+
+/** One `createIntent` request as a payment gateway received it. */
+export interface ProviderIntentCall {
+	readonly gateway: string;
+	readonly orderId: string;
+	readonly amountCents: number;
+	readonly currency: string;
+	readonly idempotencyKey: string;
 }
 
 /** One refund request as a payment gateway received it. Money in integer minor
@@ -2333,6 +2350,194 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 						"co-lost-key",
 					),
 				).toEqual({ ok: false, reason: "RESERVATION_LOST" });
+			},
+		);
+
+		// ── resuming a pending order's payment (QA U-2) ────────────────────
+		//
+		// The order page is the buyer's way back to an unpaid order on ANY device —
+		// one with no cart cookie and no checkout stash. The order id is the only
+		// thing that device holds, so `resumeOrderPayment` takes the order id alone
+		// and answers with the order's OWN intent: the original checkout replayed on
+		// its own key, never a second order and never a second intent.
+
+		test.skipIf(tier.payments === undefined)(
+			"resumeOrderPayment hands back the pending order's SAME intent: same order, no second order, the provider asked under the order's own key (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const payments = tier.payments;
+				if (payments === undefined) throw new Error("unreachable");
+				const productId = await tier.arrange.product({
+					productId: "prod-co-resume",
+					sku: "SKU-CO-RESUME",
+					title: "Resume Product",
+					price: { amount: 2500, currency: "USD" },
+					onHand: 3,
+					idempotencyKey: "co-resume-seed",
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(
+					cartId,
+					"SKU-CO-RESUME",
+					productId,
+					1,
+					"co-resume-add",
+				);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId, paymentMethod: payments.method, buyerRef: "Resume.Buyer@Example.test" },
+					`checkout:${cartId}`,
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+
+				const resumed = await client.resumeOrderPayment(placed.order.id);
+				if (!resumed.ok) throw new Error(`resume failed: ${resumed.reason}`);
+				expect(resumed.order.id).toBe(placed.order.id);
+				expect(resumed.order.state).toBe("pending");
+				expect(resumed.order.totals.totalCents).toBe(placed.order.totals.totalCents);
+				expect(resumed.intent).toEqual(placed.intent);
+				// The order's email as a HINT, never the address: the order id is a
+				// bearer capability and the public order carries no email at all.
+				expect(resumed.buyerRefHint).toBe("R\u2022\u2022\u2022@E\u2022\u2022\u2022.test");
+				expect(JSON.stringify(resumed)).not.toContain("Resume.Buyer");
+
+				// No second order: the cart is still the one order's, and a second
+				// checkout key against it is refused.
+				expect(
+					await client.createOrder(
+						{ cartId, paymentMethod: payments.method, buyerRef: "other@example.test" },
+						"co-resume-other-key",
+					),
+				).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+			},
+		);
+
+		test.skipIf(tier.payments?.providerIntentCalls === undefined)(
+			"a resumed payment asks the provider under the order's own checkout key with the same amount (SKIPPED where the tier cannot show its gateway's intent calls)",
+			async () => {
+				const payments = tier.payments;
+				if (payments?.providerIntentCalls === undefined) throw new Error("unreachable");
+				const productId = await tier.arrange.product({
+					productId: "prod-co-resume-key",
+					sku: "SKU-CO-RESUME-KEY",
+					title: "Resume Key Product",
+					price: { amount: 1800, currency: "USD" },
+					onHand: 2,
+					idempotencyKey: "co-resume-key-seed",
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(
+					cartId,
+					"SKU-CO-RESUME-KEY",
+					productId,
+					1,
+					"co-resume-key-add",
+				);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId, paymentMethod: payments.method, buyerRef: "key@example.test" },
+					`checkout:${cartId}`,
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				await client.resumeOrderPayment(placed.order.id);
+				await client.resumeOrderPayment(placed.order.id);
+
+				const calls = payments
+					.providerIntentCalls()
+					.filter((call) => call.orderId === placed.order.id);
+				expect(calls).toHaveLength(3);
+				for (const call of calls) {
+					expect(call).toEqual({
+						gateway: payments.method,
+						orderId: placed.order.id,
+						amountCents: 1800,
+						currency: "USD",
+						idempotencyKey: `checkout:${cartId}`,
+					});
+				}
+			},
+		);
+
+		test("resumeOrderPayment of an unknown or malformed order id is ORDER_NOT_FOUND", async () => {
+			expect(await client.resumeOrderPayment("00000000-0000-4000-8000-000000000000")).toEqual({
+				ok: false,
+				reason: "ORDER_NOT_FOUND",
+			});
+			await expectRejectedInput(client.resumeOrderPayment("not an id"), "orderId");
+		});
+
+		test.skipIf(tier.clock === undefined || tier.payments === undefined)(
+			"resumeOrderPayment refuses a pending order past its hold, and mints nothing (SKIPPED where the tier lacks a movable clock or a payment gateway)",
+			async () => {
+				const clock = tier.clock;
+				const payments = tier.payments;
+				if (clock === undefined || payments === undefined) throw new Error("unreachable");
+				const productId = await tier.arrange.product({
+					productId: "prod-co-resume-lapsed",
+					sku: "SKU-CO-RESUME-LAPSED",
+					title: "Lapsed Resume Product",
+					price: { amount: 900, currency: "USD" },
+					onHand: 2,
+					idempotencyKey: "co-resume-lapsed-seed",
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(
+					cartId,
+					"SKU-CO-RESUME-LAPSED",
+					productId,
+					1,
+					"co-resume-lapsed-add",
+				);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId, paymentMethod: payments.method, buyerRef: "lapsed@example.test" },
+					`checkout:${cartId}`,
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				const before = payments.providerIntentCalls?.().length ?? 0;
+
+				await clock.advance(31 * 60 * 1000);
+
+				expect(await client.resumeOrderPayment(placed.order.id)).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
+				expect(payments.providerIntentCalls?.().length ?? 0).toBe(before);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"resumeOrderPayment refuses an order that has left pending — a paid order is not paid twice (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const payments = tier.payments;
+				if (payments === undefined) throw new Error("unreachable");
+				const productId = await tier.arrange.product({
+					productId: "prod-co-resume-paid",
+					sku: "SKU-CO-RESUME-PAID",
+					title: "Paid Resume Product",
+					price: { amount: 700, currency: "USD" },
+					onHand: 2,
+					idempotencyKey: "co-resume-paid-seed",
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(
+					cartId,
+					"SKU-CO-RESUME-PAID",
+					productId,
+					1,
+					"co-resume-paid-add",
+				);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId, paymentMethod: payments.method, buyerRef: "paid@example.test" },
+					`checkout:${cartId}`,
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				await tier.arrange.settle(placed.order.id);
+
+				expect(await client.resumeOrderPayment(placed.order.id)).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
 			},
 		);
 

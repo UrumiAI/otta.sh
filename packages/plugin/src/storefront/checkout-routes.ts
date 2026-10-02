@@ -87,6 +87,9 @@ import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pd
 export const STOREFRONT_CHECKOUT_SUMMARY_ROUTE = "storefront/checkout/summary";
 export const STOREFRONT_CHECKOUT_PLACE_ROUTE = "storefront/checkout/place";
 export const STOREFRONT_ORDER_ROUTE = "storefront/order";
+/** The order page's "Complete payment" (QA U-2): the pending order's own intent,
+ *  from the order id alone. */
+export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
 
 /** The one payment method this slice offers. x402's `x402_challenge` client
  *  action is a second flow, out of scope (plan §7.2). */
@@ -130,6 +133,10 @@ export interface OrderRouteInput {
 	orderId?: unknown;
 	locale?: unknown;
 }
+
+/** Only the order id (and the locale the total is formatted in): nothing else
+ *  in the input is read. */
+export type OrderResumeRouteInput = OrderRouteInput;
 
 /** What the totals were computed WITH — the form echoes it, so the place
  *  prices exactly what the buyer reviewed. `null` ⇒ not applied. */
@@ -262,6 +269,22 @@ export type OrderRouteResult =
 	| { ok: true; order: PublicOrderView }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
+	| RenderGuardFailure;
+
+export type OrderResumeRouteResult =
+	| {
+			ok: true;
+			orderId: string;
+			/** Passed through UNMODIFIED, like the place route's. */
+			clientAction: ClientActionWire;
+			/** The order's own total — absent only when it could not be formatted
+			 *  (the same load-bearing optionality as the place route's). */
+			total?: CartMoneyWire;
+			/** The order's email as a hint (`j•••@g•••.com`), never the address. */
+			buyerRefHint: string;
+	  }
+	| { ok: false; error: "INVALID_INPUT" }
+	| { ok: false; reason: "ORDER_NOT_FOUND" | "ORDER_NOT_PAYABLE" | CheckoutFailureReason }
 	| RenderGuardFailure;
 
 /**
@@ -662,5 +685,58 @@ export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 
 			return { ok: true as const, order: buildOrderView(result.order, input.locale) };
+		});
+}
+
+/**
+ * Resume a pending order's payment from the order page (QA U-2) — on ANY device:
+ * the order id is the whole credential, exactly as for `storefront/order`, and
+ * nothing else in the input is read. No cart id, no key, no email can be
+ * smuggled in to steer the replay; the client replays the order's OWN checkout.
+ *
+ * What this grants beyond the order read is the client secret of the order's
+ * existing PaymentIntent — i.e. the means to PAY that order, for as long as it is
+ * payable (pending, before its hold deadline). The reply is projected like the
+ * place route's: the order id, the client action, the total and a masked email —
+ * never the buyer reference, the ship-to or the intent id.
+ */
+export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteInput> {
+	return (routeCtx, ctx): Promise<OrderResumeRouteResult> =>
+		renderGuard(STOREFRONT_ORDER_RESUME_ROUTE, async () => {
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			const input = parseOrderRouteInput(routeCtx.input);
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
+
+			const client = await makeCommerceClient(ctx);
+			const result = await client.resumeOrderPayment(input.orderId);
+			if (!result.ok) {
+				// A same-key intent still in flight (a double click on "Complete
+				// payment") is BUSY and retryable, as on the place route.
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
+			if (result.intent.clientAction.kind !== "stripe_client_secret") {
+				return { ok: false as const, reason: "ORDER_NOT_PAYABLE" as const };
+			}
+
+			let total: CartMoneyWire | undefined;
+			try {
+				total = buildOrderTotal(result.order, input.locale);
+			} catch (err) {
+				console.error(`[otta] ${STOREFRONT_ORDER_RESUME_ROUTE} total format failed:`, err);
+			}
+			return {
+				ok: true as const,
+				orderId: result.order.id,
+				clientAction: result.intent.clientAction,
+				...(total !== undefined ? { total } : {}),
+				buyerRefHint: result.buyerRefHint,
+			};
 		});
 }

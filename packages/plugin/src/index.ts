@@ -370,9 +370,11 @@ export {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	type CheckoutPlaceRouteInput,
 	type CheckoutLockedOrderView,
 	type CheckoutPlaceRouteResult,
@@ -384,6 +386,8 @@ export {
 	type CheckoutSummaryView,
 	type OrderRouteInput,
 	type OrderRouteResult,
+	type OrderResumeRouteInput,
+	type OrderResumeRouteResult,
 } from "./storefront/checkout-routes.js";
 // ── Phase 5: storefront customer account (ADR-0004, issue #306) ─────────────
 export {
@@ -457,6 +461,7 @@ export {
 	type ClientActionWire,
 	type PaymentIntentWire,
 	type PublicOrderResult,
+	type ResumeOrderPaymentResult,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
 	type QuoteDestinationWire,

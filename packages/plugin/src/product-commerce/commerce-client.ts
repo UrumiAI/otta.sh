@@ -430,6 +430,24 @@ export interface CommerceClient {
 	 *  (`serializeOrder`, incl. `buyerRef`/`shippingAddress`) on a page a guest
 	 *  reads. The guest gets `serializePublicOrder`'s whitelist. */
 	getPublicOrder(orderId: string): Promise<PublicOrderResult>;
+	/**
+	 * Resume a PENDING order's payment from its id alone (QA U-2) — the order
+	 * page's "Complete payment" on any device, where no cart cookie and no
+	 * checkout stash exist. The same capability as {@link getPublicOrder}: the
+	 * order id is the whole credential.
+	 *
+	 * It replays the order's OWN checkout — its cart, its idempotency key, its
+	 * buyer — so the reply is the same order and the provider is asked for the
+	 * same intent under the same key: never a second order, never a second
+	 * intent. Refused `ORDER_NOT_PAYABLE` unless the order is `pending` and
+	 * strictly before its hold deadline (the pay page's own rule), and then
+	 * nothing is asked of the provider at all.
+	 *
+	 * The reply carries `buyerRefHint` (`j•••@g•••.com`), never the buyer
+	 * reference: the order's email shown read-only, without handing the address
+	 * to whoever holds the link.
+	 */
+	resumeOrderPayment(orderId: string): Promise<ResumeOrderPaymentResult>;
 	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
 
@@ -648,6 +666,11 @@ export type CheckoutResult =
 export type PublicOrderResult =
 	| { ok: true; order: PublicOrderWire }
 	| { ok: false; reason: "ORDER_NOT_FOUND" };
+
+/** {@link CommerceClient.resumeOrderPayment}'s reply. */
+export type ResumeOrderPaymentResult =
+	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire; buyerRefHint: string }
+	| { ok: false; reason: "ORDER_NOT_FOUND" | "ORDER_NOT_PAYABLE" | CheckoutFailureReason };
 // ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────

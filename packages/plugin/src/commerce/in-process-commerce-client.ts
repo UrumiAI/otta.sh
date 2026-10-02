@@ -129,6 +129,7 @@ import type {
 	QuoteRequestWire,
 	ReplaceCartResult,
 	QuoteResult,
+	ResumeOrderPaymentResult,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
@@ -137,6 +138,7 @@ import type {
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
 import { loginLinkUrl } from "../storefront/login-link.js";
+import { buyerRefHint } from "./buyer-ref-hint.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
@@ -1053,6 +1055,52 @@ export class InProcessCommerceClient implements CommerceClient {
 		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
 		if (read === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 		return { ok: true, order: serializePublicOrder(read.order, read.latePayment) };
+	}
+
+	/**
+	 * Resume a pending order's payment from its id alone — see the port. The
+	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
+	 * short-circuit: its cart, its key, its buyer, its method. That path returns
+	 * the original order, re-snapshots nothing, and asks the gateway for the
+	 * intent under the SAME key with the SAME body (`intentInputFor`), which is
+	 * what makes Stripe hand back the same PaymentIntent rather than a second one.
+	 *
+	 * Payability is decided BEFORE the replay, on the order as stored, by the pay
+	 * page's own rule (`pending`, strictly before `holdExpiresAt`), so a lapsed or
+	 * settled order never reaches the provider. The replay's own answer is checked
+	 * again: an order that left pending in between comes back with no client
+	 * action, and that is not payable either.
+	 */
+	async resumeOrderPayment(orderId: string): Promise<ResumeOrderPaymentResult> {
+		requireIdToken("orderId", orderId);
+		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
+		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		const deadline = Date.parse(order.holdExpiresAt);
+		if (
+			order.state !== "pending" ||
+			!Number.isFinite(deadline) ||
+			deadline <= this.#stores.clock.now().getTime() ||
+			order.cartId === null ||
+			order.paymentMethod === null
+		) {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		const result = await createOrderFromCart(this.#createOrderDeps, {
+			cartId: order.cartId,
+			idempotencyKey: order.idempotencyKey,
+			buyerRef: order.buyerRef,
+			paymentMethod: order.paymentMethod,
+		});
+		if (!result.ok) return { ok: false, reason: result.reason };
+		if (result.order.state !== "pending" || result.intent.clientAction.kind === "none") {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		return {
+			ok: true,
+			order: serializePublicOrder(result.order, "none"),
+			intent: serializeIntent(result.intent),
+			buyerRefHint: buyerRefHint(order.buyerRef),
+		};
 	}
 
 	/**
