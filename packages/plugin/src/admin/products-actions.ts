@@ -165,6 +165,14 @@ export interface ProductsActionResult {
 	 * value and the merchant's typing should stay.
 	 */
 	readonly recordMoved?: true;
+	/**
+	 * THIS STOCK MOVE WAS ANSWERED FROM THE IDEMPOTENCY LEDGER — an earlier call
+	 * with the same key moved the units and this one moved nothing. Present only
+	 * then, so a surface that composes its own receipt (the Pricing & stock
+	 * cards) never reports a replay as a fresh "Added N" — and never has to match
+	 * on the notice's sentence to tell. The notice still says it in words.
+	 */
+	readonly replayed?: true;
 }
 
 /** A write's payload: the flat string record the caller carried. Untrusted,
@@ -676,7 +684,7 @@ const restockAction: ProductsAction = async (client, payload) => {
 	const key = stockMovementKey(productId, "restock", onHand, qty, nonce);
 	const result = await client.restock(productId, qty, key);
 	if (result.ok && result.replayed === true) {
-		return applied(await replayedNotice(client, productId, nonce));
+		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
 	}
 	return applied(restockNotice(result, qty));
 };
@@ -731,7 +739,7 @@ const removeStockAction: ProductsAction = async (client, payload) => {
 	const key = stockMovementKey(productId, "removal", onHand, qty, nonce);
 	const result = await client.removeStock(productId, qty, key, onHand);
 	if (result.ok && result.replayed === true) {
-		return applied(await replayedNotice(client, productId, nonce));
+		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
 	}
 	return applied(removeStockNotice(result, qty));
 };
