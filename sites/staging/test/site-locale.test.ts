@@ -9,6 +9,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { countryOptions } from "../src/lib/countries.js";
+import { STOREFRONT_LOCALE } from "@otta-sh/plugin";
+import { orderMoney } from "../src/lib/account.js";
 import { SITE_LOCALE } from "../src/lib/site-locale.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
@@ -27,6 +29,18 @@ describe("SITE_LOCALE", () => {
 			const layout = readFileSync(path.join(SRC, "themes", theme, "Layout.astro"), "utf8");
 			expect(layout, theme).toMatch(new RegExp(`<html lang="${SITE_LOCALE}"[\\s>]`));
 		}
+	});
+
+	test("is the plugin's STOREFRONT_LOCALE — the locale order emails are written in", () => {
+		expect(SITE_LOCALE).toBe(STOREFRONT_LOCALE);
+	});
+
+	test("is the locale the account pages format money in", () => {
+		// No second, hard-coded locale beside it.
+		expect(readFileSync(path.join(SRC, "lib", "account.ts"), "utf8")).not.toMatch(/"en-[A-Z]{2}"/u);
+		expect(orderMoney(123450, "INR")).toBe(
+			new Intl.NumberFormat(SITE_LOCALE, { style: "currency", currency: "INR" }).format(1234.5),
+		);
 	});
 
 	test("names countries in that language", () => {
