@@ -594,6 +594,9 @@ export type CheckoutFailureReason =
 	| "CURRENCY_MISMATCH"
 	| "INVALID_SHIPPING_ADDRESS"
 	| "PAYMENT_INTENT_FAILED"
+	/** A same-key intent request is still in flight (a double-submitted
+	 *  checkout): not a failure — the place route answers it as BUSY. */
+	| "PAYMENT_INTENT_IN_FLIGHT"
 	/** The idempotency key already names an order of ANOTHER cart (issue #133):
 	 *  a stale/second checkout tab. Nothing was placed; the cart is untouched. */
 	| "IDEMPOTENCY_KEY_REUSED"

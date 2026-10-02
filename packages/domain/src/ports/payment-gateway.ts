@@ -29,7 +29,8 @@ export interface PaymentGateway {
 	 * failure this port models as a typed throw rather than a result union, so the
 	 * happy-path signature stays a plain handle for the three call sites that only
 	 * ever succeed. `createOrderFromCart` catches it BY TYPE and maps it to
-	 * `PAYMENT_INTENT_FAILED`; anything else propagates (bugs are never swallowed).
+	 * `PAYMENT_INTENT_FAILED` (or, for an `inFlight` one, `PAYMENT_INTENT_IN_FLIGHT`);
+	 * anything else propagates (bugs are never swallowed).
 	 */
 	createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle>;
 	/**
@@ -190,6 +191,16 @@ export interface PaymentIntentErrorInput {
 	providerStatus?: number;
 	/** Provider error code (e.g. Stripe `error.code`) — LOGS ONLY. */
 	providerCode?: string;
+	/**
+	 * True when the provider refused ONLY because a request with the same
+	 * idempotency key is still being processed (a double-submitted checkout).
+	 * Not a failed payment: the same key, asked again shortly, returns the first
+	 * request's result. The one field the domain branches on — it answers
+	 * `PAYMENT_INTENT_IN_FLIGHT` instead of `PAYMENT_INTENT_FAILED`, so a caller
+	 * can say "busy, try again" rather than "we couldn't start a payment".
+	 * Defaults to false. Implies `retryable`.
+	 */
+	inFlight?: boolean;
 	message?: string;
 }
 
@@ -200,10 +211,12 @@ export interface PaymentIntentErrorInput {
  * shape mirrors the `ReservationCommitLostError` precedent: a typed throw the
  * use-case catches by class, never a stringly-matched message.
  *
- * ALL THREE fields are DIAGNOSTIC today: the domain branches on none of them —
- * every `PaymentIntentError` maps to the same `PAYMENT_INTENT_FAILED`, and
- * `retryable` / `providerStatus` / `providerCode` are LOGGED at the catch site so
- * an operator can tell "Stripe was down" from "the card was declined".
+ * `retryable` / `providerStatus` / `providerCode` are DIAGNOSTIC: the domain
+ * branches on none of them, and they are LOGGED at the catch site so an operator
+ * can tell "Stripe was down" from "the card was declined". The one exception is
+ * `inFlight` (a same-key request still being processed), which maps to its own
+ * `PAYMENT_INTENT_IN_FLIGHT`; every other `PaymentIntentError` is
+ * `PAYMENT_INTENT_FAILED`.
  * `retryable` is the field a future caller-driven retry would branch on; it is
  * not load-bearing yet. **Adapter contract: no credential (a Bearer key, a
  * signing secret) may ever reach `message`, `cause`, or any enumerable field of
@@ -214,6 +227,7 @@ export class PaymentIntentError extends Error {
 	readonly retryable: boolean;
 	readonly providerStatus: number | undefined;
 	readonly providerCode: string | undefined;
+	readonly inFlight: boolean;
 
 	constructor(input: PaymentIntentErrorInput) {
 		super(
@@ -229,6 +243,7 @@ export class PaymentIntentError extends Error {
 		this.retryable = input.retryable;
 		this.providerStatus = input.providerStatus;
 		this.providerCode = input.providerCode;
+		this.inFlight = input.inFlight === true;
 	}
 }
 

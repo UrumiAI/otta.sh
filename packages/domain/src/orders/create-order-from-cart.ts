@@ -174,7 +174,7 @@ export async function createOrderFromCart(
 			// untouched — nothing to release, nothing to roll back.
 			if (!(err instanceof PaymentIntentError)) throw err;
 			logIntentFailure(err, already.id);
-			return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+			return { ok: false, reason: intentFailureReason(err) };
 		}
 		return { ok: true, order: already, intent };
 	}
@@ -388,6 +388,13 @@ export async function createOrderFromCart(
 	}
 }
 
+/** A same-key request still in flight is not a failure (see the reason's doc). */
+function intentFailureReason(
+	err: PaymentIntentError,
+): "PAYMENT_INTENT_FAILED" | "PAYMENT_INTENT_IN_FLIGHT" {
+	return err.inFlight ? "PAYMENT_INTENT_IN_FLIGHT" : "PAYMENT_INTENT_FAILED";
+}
+
 /**
  * Surface a mapped intent failure with its DIAGNOSTIC provider fields (status /
  * code), so `PaymentIntentError.providerStatus` / `providerCode` are read, not
@@ -404,12 +411,13 @@ export async function createOrderFromCart(
  * drive-by widening of this use-case's dependency surface.
  */
 function logIntentFailure(err: PaymentIntentError, forOrder: OrderId): void {
-	console.error("[domain] createIntent failed → PAYMENT_INTENT_FAILED", {
+	console.error(`[domain] createIntent failed → ${intentFailureReason(err)}`, {
 		orderId: forOrder,
 		gateway: err.gateway,
 		retryable: err.retryable,
 		providerStatus: err.providerStatus,
 		providerCode: err.providerCode,
+		inFlight: err.inFlight,
 	});
 }
 
@@ -518,7 +526,7 @@ async function finalizeOrder(
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
 		logIntentFailure(err, order.id);
-		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+		return { ok: false, reason: intentFailureReason(err) };
 	}
 }
 
