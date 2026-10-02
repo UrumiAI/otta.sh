@@ -32,7 +32,7 @@ allowBuilds:
   # sharp: originally skipped for the service Worker (wrangler's optional
   # image codec, nothing fed it images) — sites/staging's Astro/EmDash chain
   # installs it as a real dependency, so the native build is allowed now.
-  sharp: true
+  sharp: false
   workerd: true
 
 catalog:
@@ -66,18 +66,12 @@ minimumReleaseAgeExclude:
   - "@cloudflare/vitest-plugin@1.1.8"
   - "wrangler@4.131.1"
   - "miniflare@5.20260911.0-alpha"
-  - "workerd@1.20260911.1"
-  - "@cloudflare/workerd-darwin-64@1.20260911.1"
-  - "@cloudflare/workerd-darwin-arm64@1.20260911.1"
-  - "@cloudflare/workerd-linux-64@1.20260911.1"
-  - "@cloudflare/workerd-linux-arm64@1.20260911.1"
-  - "@cloudflare/workerd-windows-64@1.20260911.1"
-  - "@cloudflare/workerd-darwin-64@1.20260710.1"
-  - "@cloudflare/workerd-darwin-arm64@1.20260710.1"
-  - "@cloudflare/workerd-linux-64@1.20260710.1"
-  - "@cloudflare/workerd-linux-arm64@1.20260710.1"
-  - "@cloudflare/workerd-windows-64@1.20260710.1"
-  - workerd@1.20260710.1
+  - workerd@1.20260710.1 || 1.20260911.1
+  - '@cloudflare/workerd-darwin-64@1.20260710.1 || 1.20260911.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20260710.1 || 1.20260911.1'
+  - '@cloudflare/workerd-linux-64@1.20260710.1 || 1.20260911.1'
+  - '@cloudflare/workerd-linux-arm64@1.20260710.1 || 1.20260911.1'
+  - '@cloudflare/workerd-windows-64@1.20260710.1 || 1.20260911.1'
   # Nothing in this repo sets `minimumReleaseAge`, so this list only has an
   # effect under external pnpm config (a user or CI `.npmrc`) that does.
   #
@@ -87,14 +81,14 @@ minimumReleaseAgeExclude:
   # release-age check entirely; they resolve from the registry again, so they
   # need the exclusion like every sibling. The 0.38.x train is younger than a
   # typical threshold.
-  - "emdash@0.38.0"
-  - "@emdash-cms/admin@0.38.0"
-  - "@emdash-cms/auth@0.38.0"
-  - "@emdash-cms/blocks@0.38.0"
-  - "@emdash-cms/cloudflare@0.38.0"
-  - "@emdash-cms/gutenberg-to-portable-text@0.38.0"
-  - "@emdash-cms/plugin-types@0.3.1"
-  - "@emdash-cms/registry-client@0.6.0"
-  - "@emdash-cms/registry-lexicons@0.5.0"
+  - "emdash@1.0.1"
+  - "@emdash-cms/admin@1.0.1"
+  - "@emdash-cms/auth@1.0.1"
+  - "@emdash-cms/blocks@1.0.1"
+  - "@emdash-cms/cloudflare@1.0.1"
+  - "@emdash-cms/gutenberg-to-portable-text@1.0.1"
+  - '@emdash-cms/plugin-types@0.3.1 || 0.5.0'
+  - '@emdash-cms/registry-client@0.6.0 || 0.7.0'
+  - '@emdash-cms/registry-lexicons@0.5.0 || 0.7.0'
   - "@emdash-cms/registry-moderation@0.2.0"
-  - "@emdash-cms/registry-verification@0.3.1"
+  - '@emdash-cms/registry-verification@0.3.1 || 0.3.3'
