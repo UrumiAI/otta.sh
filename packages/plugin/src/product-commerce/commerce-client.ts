@@ -381,8 +381,18 @@ export interface CommerceClient {
 	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
 	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
 	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
-	 *  it must be stable per cart, or a reload mints a second order). */
-	createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult>;
+	 *  it must be stable per cart, or a reload mints a second order).
+	 *
+	 *  `opts.sessionToken` — the shopper's session, when they are signed in. It
+	 *  is a bearer like every other here: the customer is resolved FROM it, and
+	 *  the order is theirs from birth only when `buyerRef` is that customer's own
+	 *  email (ADR-0004, amended 2026-10-02). Any other email, or an unusable
+	 *  session, places a guest order — a session never refuses a checkout. */
+	createOrder(
+		input: CheckoutRequestWire,
+		idempotencyKey: string,
+		opts?: { sessionToken?: string },
+	): Promise<CheckoutResult>;
 	/**
 	 * The delivery options of the zone a quote MATCHED (ADR-0021), each priced
 	 * for the cart. `zoneId` and `discountedSubtotalCents` come ONLY from this

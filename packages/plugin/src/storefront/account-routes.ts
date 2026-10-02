@@ -124,8 +124,9 @@ export interface AccountLogoutResult {
 }
 
 /** A session token longer than this is not one we minted — it is dropped
- *  without a store round trip. */
-const MAX_SESSION_TOKEN_LENGTH = 512;
+ *  without a store round trip. Shared with the checkout's place input, which
+ *  carries the same bearer. */
+export const MAX_SESSION_TOKEN_LENGTH = 512;
 
 export type AccountAddressesResult =
 	| { ok: true; addresses: AddressWire[] }

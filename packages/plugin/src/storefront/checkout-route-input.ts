@@ -23,6 +23,7 @@ import type {
 	DestinationRequestWire,
 	ShippingAddressWire,
 } from "../product-commerce/commerce-client.js";
+import { MAX_SESSION_TOKEN_LENGTH } from "./account-routes.js";
 import { sanitizeLocale } from "./route-input.js";
 
 /** `checkoutBody.buyerRef` — `z.string().min(1).max(320)`. */
@@ -78,6 +79,9 @@ export interface CheckoutPlaceParsedInput {
 	 *  back rather than rejecting: a bad locale must not fail an order). */
 	locale: string;
 	selection: CheckoutSelection;
+	/** The signed-in shopper's session, when one came along — a bearer the client
+	 *  resolves to its customer, never trusted here. Absent ⇔ a guest checkout. */
+	sessionToken?: string;
 }
 
 export interface OrderRouteParsedInput {
@@ -179,6 +183,7 @@ export function parseCheckoutPlaceInput(input: {
 	locale?: unknown;
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
+	sessionToken?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -206,6 +211,11 @@ export function parseCheckoutPlaceInput(input: {
 		if (address === null) return null;
 		parsed.shippingAddress = address;
 	}
+	// DROPPED, never refused, when it is not a plausible token: the session only
+	// decides who OWNS the order, and a stale or mangled cookie must not cost the
+	// buyer the order itself — they get a guest order, as if signed out.
+	const sessionToken = nonEmptyString(input.sessionToken, MAX_SESSION_TOKEN_LENGTH);
+	if (sessionToken !== null) parsed.sessionToken = sessionToken;
 	return parsed;
 }
 

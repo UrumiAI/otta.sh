@@ -264,6 +264,8 @@ export interface ArrangedCoupon {
 	amount: CommerceMoney;
 	minSubtotalCents?: number | null;
 	maxUses?: number | null;
+	/** Absent ⇒ no per-customer cap. */
+	maxUsesPerCustomer?: number | null;
 	startsAt?: string | null;
 	expiresAt?: string | null;
 }
@@ -1327,6 +1329,148 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			// And their own list stays empty: no cross-customer leak by another route.
 			expect(await client.listMyOrders(theirs.bearer)).toEqual({ ok: true, orders: [] });
 		});
+
+		// A session proves its customer's inbox exactly as the sign-in did, so a guest
+		// order placed under that email (signed out, in another browser, before the
+		// account existed) is claimed when the signed-in shopper looks at their list —
+		// not only at their NEXT sign-in, which they have no reason to make.
+		test("a guest order under a signed-in customer's own email joins their list without another sign-in", async () => {
+			const mine = await tier.arrange.session("id-late-guest@example.test");
+			const theirs = await tier.arrange.session("id-late-other@example.test");
+			// Placed AFTER the session was minted, in another case of the address: the
+			// sign-in's claim has already run and cannot have caught it.
+			const orderId = await tier.arrange.order({
+				orderId: "id-late-guest-order",
+				buyerRef: "ID-Late-Guest@example.test",
+			});
+
+			const listed = await client.listMyOrders(mine.bearer);
+			expect(listed.ok && listed.orders.map((order) => order.id)).toEqual([orderId]);
+			// Claimed, not merely listed: the single-order read agrees.
+			const read = await client.getMyOrder(mine.bearer, orderId);
+			expect(read.ok && read.order.id).toBe(orderId);
+			// Another inbox's session claims nothing of it.
+			expect(await client.listMyOrders(theirs.bearer)).toEqual({ ok: true, orders: [] });
+			expect(await client.getMyOrder(theirs.bearer, orderId)).toEqual({
+				ok: false,
+				reason: "NOT_FOUND",
+			});
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"a signed-in checkout under the session's own email is the customer's order at once; another email, or an unusable session, is a guest order (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-session",
+					sku: "SKU-CO-SESSION",
+					title: "Session Product",
+					price: { amount: 1200, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-session-seed",
+				});
+				const placeOne = async (
+					tag: string,
+					buyerRef: string,
+					sessionToken: string,
+				): Promise<string> => {
+					const cartId = await tier.arrange.cart("USD");
+					const added = await client.addCartLine(
+						cartId,
+						"SKU-CO-SESSION",
+						productId,
+						1,
+						`co-session-add-${tag}`,
+					);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+					const placed = await client.createOrder(
+						{ cartId, paymentMethod, buyerRef },
+						`co-session-key-${tag}`,
+						{ sessionToken },
+					);
+					if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+					return placed.order.id;
+				};
+				const mine = await tier.arrange.session("co-session@example.test");
+
+				// The buyer's own email, in another case: owned at birth. Read through
+				// getMyOrder, which claims nothing, so this is the checkout's doing and not
+				// the list's claim.
+				const own = await placeOne("own", "CO-Session@example.test", mine.bearer);
+				const ownRead = await client.getMyOrder(mine.bearer, own);
+				expect(ownRead.ok && ownRead.order.id).toBe(own);
+
+				// Someone else's email (a gift): never filed under this account.
+				const gift = await placeOne("gift", "co-gift@example.test", mine.bearer);
+				expect(await client.getMyOrder(mine.bearer, gift)).toEqual({
+					ok: false,
+					reason: "NOT_FOUND",
+				});
+				const listed = await client.listMyOrders(mine.bearer);
+				expect(listed.ok && listed.orders.map((order) => order.id)).toEqual([own]);
+
+				// An unusable session never blocks a checkout: the order is simply a guest
+				// order, owned by nobody yet.
+				const forged = await placeOne("forged", "co-forged@example.test", "not-a-session-token");
+				const stranger = await tier.arrange.session("co-forged-other@example.test");
+				expect(await client.getMyOrder(stranger.bearer, forged)).toEqual({
+					ok: false,
+					reason: "NOT_FOUND",
+				});
+			},
+		);
+
+		// A signed-in, same-email checkout now carries its customer, so a coupon's
+		// per-customer cap applies to it (ADR-0004 amendment, item 5). A guest email
+		// is not counted per customer, exactly as before.
+		test.skipIf(tier.payments === undefined)(
+			"a coupon's per-customer cap now binds a signed-in same-email checkout; a guest email is not counted (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-percust",
+					sku: "SKU-CO-PERCUST",
+					title: "Per Customer Product",
+					price: { amount: 2000, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-percust-seed",
+				});
+				await tier.arrange.coupon({
+					id: "coupon-percust",
+					code: "ONCEEACH",
+					amount: { amount: 500, currency: "USD" },
+					maxUsesPerCustomer: 1,
+				});
+				const placeOne = async (tag: string, buyerRef: string, sessionToken?: string) => {
+					const cartId = await tier.arrange.cart("USD");
+					const added = await client.addCartLine(
+						cartId,
+						"SKU-CO-PERCUST",
+						productId,
+						1,
+						`co-percust-add-${tag}`,
+					);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+					return client.createOrder(
+						{ cartId, paymentMethod, buyerRef, couponCode: "ONCEEACH" },
+						`co-percust-key-${tag}`,
+						sessionToken !== undefined ? { sessionToken } : {},
+					);
+				};
+				const mine = await tier.arrange.session("co-percust@example.test");
+
+				const first = await placeOne("first", "co-percust@example.test", mine.bearer);
+				expect(first.ok && first.order.totals.totalCents).toBe(1500);
+				// The same customer again, signed in under the same email: at the cap.
+				expect(await placeOne("second", "co-percust@example.test", mine.bearer)).toEqual({
+					ok: false,
+					reason: "COUPON_MAX_PER_CUSTOMER",
+				});
+				// A guest checkout (no session) is not counted per customer.
+				const guest = await placeOne("guest", "co-percust-guest@example.test");
+				expect(guest.ok).toBe(true);
+			},
+		);
 
 		// ── the publish gate and its watermark ─────────────────────────────
 

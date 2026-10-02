@@ -203,7 +203,7 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 				startsAt: spec.startsAt ?? null,
 				expiresAt: spec.expiresAt ?? null,
 				maxUses: spec.maxUses ?? null,
-				maxUsesPerCustomer: null,
+				maxUsesPerCustomer: spec.maxUsesPerCustomer ?? null,
 			});
 		},
 	};
