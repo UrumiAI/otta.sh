@@ -1260,10 +1260,15 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 	test("the list's search label names EVERY axis the filter searches", () => {
 		// A search axis the label does not mention ships dark: nobody types into a
 		// box for a thing they have no reason to believe it looks at. This pins the
-		// label against the port's `OrderListFilter.search`, which matches an
-		// order-id PREFIX, a buyer_ref SUBSTRING and an exact purchase-time line
+		// label against the port's `OrderListFilter.search`, which GUARANTEES an
+		// order-id PREFIX, a folded buyer_ref PREFIX and an exact purchase-time line
 		// SKU — so adding a fourth axis without a word here fails right here.
-		expect(ORDERS_SEARCH_LABEL).toBe("Search order ID, buyer email, or exact SKU");
+		expect(ORDERS_SEARCH_LABEL).toBe("Search by start of order ID or buyer email, or exact SKU");
+		// AND THE MATCH MODE OF THE TWO TEXT AXES. The label used to promise
+		// nothing about them while the document store matches a prefix only, so
+		// QA's `example.com` (a domain-only fragment) found nothing and read as a
+		// broken search. The port calls that narrowing user-visible; this says it.
+		expect(ORDERS_SEARCH_LABEL).toContain("start of");
 		for (const axis of ["order ID", "buyer email", "SKU"]) {
 			expect(ORDERS_SEARCH_LABEL).toContain(axis);
 		}
