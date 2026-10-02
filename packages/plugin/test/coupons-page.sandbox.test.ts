@@ -653,11 +653,17 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		await boot(state);
 		const fields = formFields(await openNewCouponScreen(), "coupons:create");
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
-		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
-		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
-		expect(byId.get("ratePercent")?.condition).toEqual({ field: "type", eq: "percentage" });
-		expect(byId.get("cap")?.condition).toEqual({ field: "type", eq: "percentage" });
-		expect(byId.get("type")?.initial_value).toBe("fixed_amount"); // R-12b
+		// The type select's VALUES are words, because a `select` trigger renders the
+		// value (R-17a) — QA saw `fixed_amount` there. `condition` compares against
+		// the same words.
+		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
+		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
+		expect(byId.get("ratePercent")?.condition).toEqual({ field: "type", eq: "Percentage off" });
+		expect(byId.get("cap")?.condition).toEqual({ field: "type", eq: "Percentage off" });
+		expect(byId.get("type")?.initial_value).toBe("Fixed amount off"); // R-12b
+		expect(
+			((byId.get("type")?.options ?? []) as Array<{ value: string }>).map((o) => o.value),
+		).toEqual(["Fixed amount off", "Percentage off"]);
 		// The 5 shared axes have no field on the create form at all (§12.2) —
 		// each already has a home in the edit form.
 		for (const removed of [
@@ -930,7 +936,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(formFor(screen, "coupons:apply-filter")).toBeUndefined();
 		expect(formFor(screen, "coupons:create")).toBeDefined();
 		// Nothing is pre-typed on a fresh create (only `type`, R-12b).
-		expect(formInitialValues(screen, "coupons:create")).toEqual({ type: "fixed_amount" });
+		expect(formInitialValues(screen, "coupons:create")).toEqual({ type: "Fixed amount off" });
 
 		const back = buttons(screen).find((b) => b.action_id === "coupons:cancel-new");
 		expect(String(back?.label)).toMatch(/back to coupons/i);
@@ -970,7 +976,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(formInitialValues(refused, "coupons:create")).toEqual({
 			id: "summer26",
 			code: "SUMMER26",
-			type: "percentage", // the SELECT survives too, so `condition` still reveals the rate fields
+			type: "Percentage off", // the SELECT survives too, so `condition` still reveals the rate fields
 			ratePercent: "ten percent", // VERBATIM — never re-derived from a parse that failed
 			cap: "20.00",
 		});
@@ -1301,7 +1307,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		// duplicate is what pays for the `Status` entry that now leads it.
 		expect(fields.has("Code")).toBe(false);
 		expect(fields.get("Status")).toBe("active");
-		expect(fields.get("Type")).toBe("fixed_amount");
+		expect(fields.get("Type")).toBe("Fixed amount off");
 		expect(fields.get("Discount")).toBe("$5.00 off");
 		expect(fields.get("Uses")).toBe("0 uses");
 		expect(fields.get("Currency")).toBe("USD");

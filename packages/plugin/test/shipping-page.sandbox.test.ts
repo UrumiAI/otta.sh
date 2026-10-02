@@ -815,15 +815,25 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(copy).toContain('"Flat rate" always charges its rate');
 		expect(copy).toContain('"Free shipping" charges nothing above its threshold');
 
-		// The SELECT still submits the enum the domain expects — humanizing the
-		// copy must not touch the protocol, and the stored row still spells it.
+		// A `select` trigger renders the option VALUE, not its label (R-17a), so
+		// the values themselves are words — QA saw `flat_rate` in the trigger. The
+		// action maps the word back to the enum, so the domain and the stored row
+		// still spell `flat_rate`.
 		const createForm = formFor(await openNewMethodScreen(blocks), "shipping:create-method");
-		const typeOptions = field(createForm, "type")?.options as Array<{
-			value: string;
-			label: string;
-		}>;
-		expect(typeOptions.map((o) => o.value)).toEqual(["flat_rate", "free_shipping"]);
+		const typeField = field(createForm, "type");
+		const typeOptions = typeField?.options as Array<{ value: string; label: string }>;
+		expect(typeOptions.map((o) => o.value)).toEqual(["Flat rate", "Free shipping"]);
+		expect(typeField?.initial_value).toBe("Flat rate");
 		expect((await shippingRules.getMethod("standard"))?.type).toBe("flat_rate");
+		const edit = field(formFor(blocks, "shipping:save-method"), "type");
+		expect(edit?.initial_value).toBe("Flat rate");
+
+		await submitForm(
+			"shipping:create-method",
+			{ id: "free", name: "Free over $50", type: "Free shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("free_shipping");
 	});
 
 	test("a zone with no methods yet shows the `empty` block, never a fail-closed banner", async () => {
@@ -929,7 +939,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(formInitialValues(refused, "shipping:create-method")).toEqual({
 			id: "bogus",
 			name: "Bogus",
-			type: "flat_rate",
+			type: "Flat rate",
 		});
 	});
 

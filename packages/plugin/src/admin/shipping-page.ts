@@ -1,4 +1,9 @@
-import { COUNTRY_CODES, parseZoneRegions, validateZoneRegionsInput } from "@otta-sh/domain";
+import {
+	COUNTRY_CODES,
+	parseZoneRegions,
+	validateZoneRegionsInput,
+	type ShippingMethodType,
+} from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -939,12 +944,44 @@ function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	};
 }
 
-function methodTypeField(actionId: string, initial: string): FormBlock["fields"][number] {
-	const options: SelectOption[] = [
-		{ value: "flat_rate", label: "Flat rate" },
-		{ value: "free_shipping", label: "Free shipping (threshold-based)" },
-	];
-	return { type: "select", action_id: actionId, label: "Type", options, initial_value: initial };
+/**
+ * THE SELECT'S VALUES ARE WORDS, because a `select` trigger renders the option
+ * VALUE and never its label (R-17a) — QA saw `flat_rate` sitting in the trigger.
+ * F-6c tolerated that as "a word, readable"; it is a wire enum all the same, and
+ * the copy everywhere else on this screen already says "Flat rate". So the value
+ * an operator sees IS the label's word, and {@link methodTypeFromInput} maps it
+ * back to the enum before anything reaches the client: the domain, the store and
+ * the carrier still spell `flat_rate`. The raw enum is still ACCEPTED on input, so
+ * a form rendered before this change submits fine.
+ */
+const METHOD_TYPE_CHOICES: ReadonlyArray<{
+	type: ShippingMethodType;
+	value: string;
+	label: string;
+}> = [
+	{ type: "flat_rate", value: "Flat rate", label: "Flat rate" },
+	{ type: "free_shipping", value: "Free shipping", label: "Free shipping (threshold-based)" },
+];
+
+/** A submitted type (the word, or the legacy enum) → the enum, or `undefined`. */
+function methodTypeFromInput(raw: string): ShippingMethodType | undefined {
+	return METHOD_TYPE_CHOICES.find((c) => c.value === raw || c.type === raw)?.type;
+}
+
+/** The enum → the select value that renders it. */
+function methodTypeInputValue(type: string): string {
+	return (METHOD_TYPE_CHOICES.find((c) => c.type === type) ?? METHOD_TYPE_CHOICES[0]!).value;
+}
+
+function methodTypeField(actionId: string, type: string): FormBlock["fields"][number] {
+	const options: SelectOption[] = METHOD_TYPE_CHOICES.map(({ value, label }) => ({ value, label }));
+	return {
+		type: "select",
+		action_id: actionId,
+		label: "Type",
+		options,
+		initial_value: methodTypeInputValue(type),
+	};
 }
 
 function editMethodForm(zoneId: string, method: ShippingMethodWire): FormBlock {
@@ -1000,8 +1037,7 @@ function newMethodScreen(
  *  select's own options first (X-23), so an unknown value falls back to the
  *  default rather than rendering a blank trigger. */
 function createMethodForm(zoneId: string, draft?: MethodDraft): FormBlock {
-	const type =
-		draft?.type === "free_shipping" || draft?.type === "flat_rate" ? draft.type : "flat_rate";
+	const type = methodTypeFromInput(draft?.type ?? "") ?? "flat_rate";
 	return carriedForm({
 		namespace: "ship:method-create",
 		context: { zoneId },
@@ -1461,19 +1497,16 @@ function createMethodAction() {
 			const values = input.values ?? {};
 			const id = (readString(values.id) ?? "").trim();
 			const name = (readString(values.name) ?? "").trim();
-			const type = readString(values.type) ?? "";
+			const typed = readString(values.type) ?? "";
+			const type = methodTypeFromInput(typed);
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
 			const draft: MethodDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
-				type,
+				type: typed,
 			};
-			if (
-				id.length === 0 ||
-				name.length === 0 ||
-				(type !== "flat_rate" && type !== "free_shipping")
-			) {
+			if (id.length === 0 || name.length === 0 || type === undefined) {
 				return showList(
 					[zoneId],
 					{
@@ -1521,8 +1554,8 @@ function saveMethodAction() {
 		if (zoneId === undefined || methodId === undefined) return showList();
 		const values = input.values ?? {};
 		const name = (readString(values.name) ?? "").trim();
-		const type = readString(values.type) ?? "";
-		if (name.length === 0 || (type !== "flat_rate" && type !== "free_shipping")) {
+		const type = methodTypeFromInput(readString(values.type) ?? "");
+		if (name.length === 0 || type === undefined) {
 			return showList([zoneId], {
 				variant: "error",
 				title: "Method not saved",

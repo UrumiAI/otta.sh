@@ -1490,7 +1490,7 @@ differs by control, and revisions 1–3 got this wrong:
 
 | Control | The trigger reads | Verified instances |
 |---|---|---|
-| `select` | the raw **value** (R-17a) | the coupon create form's type reads `fixed_amount` (`coupons-page.ts:731-736`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
+| `select` | the raw **value** (R-17a) | the coupon create form's type reads `Fixed amount off` and the shipping method type `Flat rate` — their values ARE the words since 2026-10-02 (`COUPON_TYPE_CHOICES`, `METHOD_TYPE_CHOICES`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
 | `combobox` | the option **label** (R-17b) | the Coupons picker reads `Choose a coupon…` closed, and `SUMMER25 · 20% off · 3 uses` selected (`coupons-page.ts:689-700`) |
 
 So a screenshot criterion asking for a "resolved label" is **unsatisfiable on a `select`** and must
@@ -1509,8 +1509,12 @@ shows. So sentinels are words (`any`, `none`), never `""` or `0`.
 is a `combobox` or it is not a dropdown at all: the row-action drill-in would be preferable, but
 it is unreachable on Block Kit (§14 item 2).
 
-The worst *live* instance is now the coupon type `select`, whose trigger reads `fixed_amount`. That is
-inside F-6c's tolerance — a word, readable, unambiguous — which is the whole point of the constraint.
+The worst *live* instance used to be the coupon type `select`, whose trigger read `fixed_amount` —
+inside F-6c's tolerance, but QA (2026-10-02) still read it as a raw enum, as it did the shipping
+method type's `flat_rate`. **Amended:** a closed-set `select` whose enum is not itself the word an
+operator reads takes the WORD as its option value, and the action maps it back to the enum before
+the client call (accepting the bare enum too, for a form rendered before the change). The wire,
+the store and every carrier still spell the enum.
 **Revisions 1–3 named the Orders picker's "raw UUID" here; it was never real** (§0.2 E-a), and the
 picker it referred to has since left Block Kit anyway.
 
