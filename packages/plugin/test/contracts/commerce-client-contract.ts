@@ -789,6 +789,51 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// The storefront replaces a spent cart under a key derived from it, so two
+		// racing requests land in ONE new cart (cart-rotation.ts on the site).
+		// The storefront replaces a SPENT cart under a key the server derives from it,
+		// so two racing requests land in ONE new cart (cart-rotation.ts on the site).
+		// The caller names only the spent cart; it can never choose a key.
+		test("replaceCart refuses an unknown cart and an active one", async () => {
+			expect(await client.replaceCart("cart-never-minted")).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+			const active = await tier.arrange.cart("USD");
+			expect(await client.replaceCart(active)).toEqual({
+				ok: false,
+				reason: "CART_NOT_CHECKED_OUT",
+			});
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"replaceCart refuses a checked-out cart whose order is still PENDING — its payment may still happen (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-replace",
+					sku: "SKU-REPLACE",
+					title: "Replace Product",
+					price: { amount: 700, currency: "USD" },
+					onHand: 2,
+					idempotencyKey: "replace-seed",
+				});
+				const spent = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(spent, "SKU-REPLACE", productId, 1, "replace-add");
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId: spent, paymentMethod, buyerRef: "replace@example.test" },
+					"replace-key",
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				// The order was just minted, so it is pending: the cart is not yet spent.
+				expect(await client.replaceCart(spent)).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_FINISHED",
+				});
+			},
+		);
+
 		test("getCart on an unknown cartId returns the typed CART_NOT_FOUND token, not a thrown error", async () => {
 			const result = await client.getCart("does-not-exist");
 			expect(result).toEqual({ ok: false, reason: "CART_NOT_FOUND" });

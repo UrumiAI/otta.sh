@@ -271,6 +271,7 @@ export {
 	type CartLineWire,
 	type CartResult,
 	type CartWire,
+	type ReplaceCartResult,
 	type CommerceClient,
 	type CommerceMoney,
 	type CommerceProductKind,

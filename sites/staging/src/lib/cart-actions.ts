@@ -87,6 +87,10 @@ export type EnsureCartResult =
 export async function ensureCartId(
 	context: APIContext,
 	handler: PublicPluginApiRouteHandler | undefined,
+	/** When there is no cart, mint the REPLACEMENT for this spent cart: the plugin
+	 *  checks it and derives the key, so the same spent cart always gets the same new
+	 *  cart (cart-rotation.ts). */
+	opts: { replacesCartId?: string } = {},
 ): Promise<EnsureCartResult> {
 	const existing = currentCartId(context);
 	if (existing !== undefined) return { ok: true, cartId: existing };
@@ -94,7 +98,7 @@ export async function ensureCartId(
 	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
 		STOREFRONT_CART_CREATE_ROUTE,
-		{},
+		opts.replacesCartId !== undefined ? { replacesCartId: opts.replacesCartId } : {},
 		context.url,
 	);
 	if (isBusyResult(created)) return { ok: false, reason: "busy" };

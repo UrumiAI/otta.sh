@@ -71,6 +71,7 @@ import {
 	productId as toProductId,
 	quoteShippingOptions,
 	removeLine,
+	replaceSpentCart,
 	requestLogin,
 	SkuConflictError,
 	SkuHeldStockError,
@@ -124,6 +125,7 @@ import type {
 	PublicOrderWire,
 	QuoteDestinationWire,
 	QuoteRequestWire,
+	ReplaceCartResult,
 	QuoteResult,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
@@ -514,6 +516,16 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
 		return { cartId };
+	}
+
+	/** The domain's `replaceSpentCart`, which owns every rule (checked out, order
+	 *  finished) and derives the key — never here and never by the caller. */
+	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
+		requireIdToken("cartId", spentCartId);
+		return replaceSpentCart(
+			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
+			spentCartId,
+		);
 	}
 
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is

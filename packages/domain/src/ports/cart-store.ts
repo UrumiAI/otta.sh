@@ -13,8 +13,26 @@ import type { IdempotencyKey, OrderId } from "../money/ids.js";
  * (Phase 1) at display/checkout, not stored here.
  */
 export interface CartStore {
-	/** Mint a fresh 128-bit-unguessable cart, `state='active'`, in `currency`. */
-	create(currency: Currency): Promise<string>;
+	/**
+	 * Mint a fresh 128-bit-unguessable cart, `state='active'`, in `currency`.
+	 *
+	 * With a `key` the create is IDEMPOTENT: every call with the same key — however
+	 * many race — answers the same cart (created by whichever call won). The id is
+	 * still minted, never derived from the key.
+	 *
+	 * KEYS ARE SERVER-DERIVED, never caller-chosen: a key answers its cart's id. The
+	 * only producer is `replaceSpentCart`, which derives `rotate:<spentCartId>` after
+	 * checking the spent cart exists, is checked out and its order is finished — so
+	 * the one thing a key reveals is the replacement of a cart the caller already
+	 * holds the id of (cart ids are bearer secrets).
+	 *
+	 * The answer is the cart the key minted, IN WHATEVER STATE IT IS NOW: a keyed
+	 * create asked again after its cart has itself been checked out returns that
+	 * checked-out cart. A caller adding to it gets CART_CHECKED_OUT, and the next
+	 * replacement — keyed on THAT cart — is fresh, so it heals on the next rotation.
+	 * Absent ⇒ every call mints a new cart, as before.
+	 */
+	create(currency: Currency, key?: IdempotencyKey): Promise<string>;
 	/** Read a cart with its lines (each carrying its live reservation state), or null. */
 	get(cartId: string): Promise<Cart | null>;
 	/**

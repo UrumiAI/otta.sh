@@ -302,6 +302,17 @@ export interface CommerceClient {
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
 	createCart(currency?: string): Promise<{ cartId: string }>;
+	/**
+	 * The replacement for a SPENT cart — one checked out into an order that is no
+	 * longer pending. The caller names only the spent cart; the key that makes this
+	 * idempotent is derived server-side (`rotate:<cartId>`), so the same spent cart
+	 * always gets the same new cart and racing requests converge. A caller never
+	 * chooses a key. Cart ids are bearer secrets: a spent cart's id grants access to
+	 * the cart that replaces it. Refused `CART_NOT_FOUND`, `CART_NOT_CHECKED_OUT`, or
+	 * `ORDER_NOT_FINISHED` (no order, or one still pending — its payment may still
+	 * happen).
+	 */
+	replaceCart(spentCartId: string): Promise<ReplaceCartResult>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
@@ -687,6 +698,11 @@ export interface CartLineWire {
 	reservationId: string | null;
 	expiresAt: string | null;
 }
+
+/** `replaceCart`'s answer: the new cart, or why the named cart cannot be replaced. */
+export type ReplaceCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
 
 export interface CartWire {
 	cartId: string;

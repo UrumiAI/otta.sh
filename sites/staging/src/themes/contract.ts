@@ -219,6 +219,9 @@ export interface ProductContentModel {
 	degradedLead: string | null;
 	/** A cart error carried back on the URL, already mapped to shopper copy. */
 	errorMessage: string | null;
+	/** The way out that error offers (CART_CHECKED_OUT: the cart page), linked
+	 *  beside `errorMessage`; `null` when it offers none. The page decides it. */
+	errorAction: { href: string; label: string } | null;
 	/** Priced and sellable: the ledger and buy row. `null` otherwise. */
 	purchase: ProductPurchase | null;
 	/** Neither purchasable nor degraded: say so in prose. */

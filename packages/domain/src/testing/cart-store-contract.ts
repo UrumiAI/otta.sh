@@ -37,6 +37,51 @@ export function cartStoreContract(
 	opts: CartStoreContractOptions,
 ): void {
 	describe(`cartStoreContract [${opts.dialect}]`, () => {
+		// A KEYED create is idempotent: the same key is the same cart. The storefront
+		// keys the cart it starts in place of a spent one on that spent cart's id, so two
+		// requests racing to replace it (a double-submitted "Add to cart") land in ONE
+		// new cart instead of each minting its own and leaving the shopper in whichever
+		// cookie arrived last.
+		test("a keyed create returns the same cart for the same key; another key, or none, mints a fresh one", async () => {
+			const h = await makeHarness();
+			const key = idempotencyKey("rotate:cart-spent-1");
+			const first = await h.deps.cartStore.create(USD, key);
+			const again = await h.deps.cartStore.create(USD, key);
+			expect(again).toBe(first);
+			expect((await getCart(h.deps, first))?.state).toBe("active");
+			const other = await h.deps.cartStore.create(USD, idempotencyKey("rotate:cart-spent-2"));
+			const unkeyed = await createCart(h.deps, USD);
+			expect(new Set([first, other, unkeyed]).size).toBe(3);
+		});
+
+		test("concurrent keyed creates converge on one cart", async () => {
+			const h = await makeHarness();
+			const key = idempotencyKey("rotate:cart-spent-race");
+			const ids = await Promise.all([
+				h.deps.cartStore.create(USD, key),
+				h.deps.cartStore.create(USD, key),
+				h.deps.cartStore.create(USD, key),
+			]);
+			expect(new Set(ids).size).toBe(1);
+			expect((await getCart(h.deps, ids[0]!))?.state).toBe("active");
+		});
+
+		// The storefront retries a refused add on the replacement cart with the SAME
+		// key. That is safe only because the refusal claimed nothing.
+		test("an add refused CART_CHECKED_OUT records no mutation under its key", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-SPENT", 5);
+			const spent = await createCart(h.deps, USD);
+			await h.deps.cartStore.checkout(spent, brandOrderId("ord-spent-2"));
+			const key = idempotencyKey("k-refused-add");
+			expect(await addLine(h.deps, spent, sku("SKU-SPENT"), null, 1, key)).toEqual({
+				ok: false,
+				reason: "CART_CHECKED_OUT",
+			});
+			expect(await h.deps.cartStore.recordedMutation(key)).toBeNull();
+			expect(await h.onHand("SKU-SPENT")).toBe(5);
+		});
+
 		test("add reserves via the inventory port and records the reservationId", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);

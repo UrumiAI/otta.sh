@@ -432,11 +432,14 @@ export {
 	expireHolds,
 	getCart,
 	removeLine,
+	replaceSpentCart,
 	updateLine,
 	type AddLineResult,
 	type CartDeps,
 	type CartFailure,
 	type RemoveLineResult,
+	type ReplaceSpentCartDeps,
+	type ReplaceSpentCartResult,
 	type UpdateLineResult,
 } from "./cart/use-cases.js";
 // Phase 7: reporting (read-only) + settings tiering.
