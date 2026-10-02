@@ -85,10 +85,12 @@ import {
 	withCasRetry,
 } from "./cas-retry.js";
 import {
+	CART_CREATE_KEYS_COLLECTION,
 	CART_MUTATION_INDEX_COLLECTION,
 	CARTS_COLLECTION,
 	type CartDoc,
 	type CartLineDoc,
+	type CartCreateKeyDoc,
 	type CartMutationIndexDoc,
 	type CartMutationRecord,
 	computeHoldExpiresAt,
@@ -150,6 +152,7 @@ const EXPIRY_PAGE_SIZE = 100;
 export class EmdashCartStore implements CartStore {
 	readonly #carts: StorageCollection<CartDoc>;
 	readonly #mutationIndex: StorageCollection<CartMutationIndexDoc>;
+	readonly #createKeys: StorageCollection<CartCreateKeyDoc>;
 	/** READ-ONLY handles on the inventory aggregate; see the class docblock. */
 	readonly #inventoryDocs: StorageCollection<InventoryDoc>;
 	readonly #reservationIndex: StorageCollection<ReservationIndexDoc>;
@@ -165,6 +168,7 @@ export class EmdashCartStore implements CartStore {
 			options.storage,
 			CART_MUTATION_INDEX_COLLECTION,
 		);
+		this.#createKeys = collectionOf<CartCreateKeyDoc>(options.storage, CART_CREATE_KEYS_COLLECTION);
 		this.#inventoryDocs = collectionOf<InventoryDoc>(options.storage, INVENTORY_COLLECTION);
 		this.#reservationIndex = collectionOf<ReservationIndexDoc>(
 			options.storage,
@@ -187,7 +191,20 @@ export class EmdashCartStore implements CartStore {
 
 	// -- reads -----------------------------------------------------------------
 
-	async create(currency: Currency): Promise<string> {
+	/**
+	 * Mint a cart; with a `key`, idempotently (see the port).
+	 *
+	 * The keyed path CLAIMS THE KEY FIRST, with a create-if-absent on
+	 * `cart_create_keys/{key}` naming a freshly minted id, and only then writes the
+	 * cart. Whoever wins the claim decides the id; a loser reads the winner's id
+	 * back. Every caller — winner or loser — then create-if-absents the cart document
+	 * itself, so a loser that returns before the winner has written it still hands
+	 * back a cart that exists, and a winner that crashed between the two writes is
+	 * finished by the next caller. Two documents, no transaction, and every
+	 * interleaving converges on one active cart.
+	 */
+	async create(currency: Currency, key?: IdempotencyKey): Promise<string> {
+		if (key !== undefined) return this.#createKeyed(currency, key);
 		const cartId = this.#idGen.newId();
 		const now = this.#clock.now().toISOString();
 		const written = await this.#carts.compareAndSet(
@@ -199,6 +216,24 @@ export class EmdashCartStore implements CartStore {
 		// which is a programming/id-source failure and must be loud rather than
 		// silently returning somebody else's cart.
 		if (!written.applied) throw new Error(`cart id ${cartId} is already taken`);
+		return cartId;
+	}
+
+	async #createKeyed(currency: Currency, key: IdempotencyKey): Promise<string> {
+		let cartId = this.#idGen.newId();
+		const claimed = await this.#createKeys.compareAndSet(key, null, { cartId });
+		if (!claimed.applied) {
+			const winner = await this.#createKeys.get(key);
+			if (winner === null) throw new Error(`cart create key ${key} vanished after a lost claim`);
+			cartId = winner.cartId;
+		}
+		// Create-if-absent: a refusal here means the cart is already written (by the
+		// winner, or by an earlier call), which is exactly the answer wanted.
+		await this.#carts.compareAndSet(
+			cartId,
+			null,
+			newCartDoc(cartId, currency, this.#clock.now().toISOString()),
+		);
 		return cartId;
 	}
 
