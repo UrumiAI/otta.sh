@@ -442,6 +442,9 @@ export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
 export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
+// order emails.
+export { orderTotalLabel } from "@otta-sh/domain";
 // The ship-to's per-field length bounds the domain enforces, for a site that
 // bounds its address inputs and refuses an over-long field as the address
 // error it is rather than a generic one.

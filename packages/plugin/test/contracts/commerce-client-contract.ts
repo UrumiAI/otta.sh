@@ -1465,6 +1465,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				createdAt: byId.get(unpriced)?.createdAt,
 				// A live order: nothing late, exactly what the public read says of it.
 				latePayment: "none",
+				// Nothing refunded on the ledger; the account page shows a refunded
+				// figure only when this is above zero.
+				refundedCents: 0,
 				totals: { shippingZoneId: null, shippingMethodId: null },
 			});
 			const publicRead = await client.getPublicOrder(unpriced);

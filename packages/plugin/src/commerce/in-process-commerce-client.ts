@@ -83,6 +83,8 @@ import {
 	upsertProductCommerce,
 	upsertProductVariant,
 	readOrderWithLatePayment,
+	recordedRefundTotal,
+	classifyLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
@@ -827,16 +829,26 @@ export class InProcessCommerceClient implements CommerceClient {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		// The public order read's ONE ledger read (`readOrderWithLatePayment`), so the
-		// account's order page can say what the public page says about money on a
-		// dead order; on a live order the derivation short-circuits.
-		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
-		if (read === null || read.order.customerId !== customerId) {
+		// ONE ledger read, as the public order read makes: the late-payment status
+		// (so the account's order page says what the public page says about money on
+		// a dead order) and the recorded refunds (its refunded figure) both come
+		// off it.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null || ledger.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
 		return {
 			ok: true,
-			order: { ...serializeOrderSummary(read.order), latePayment: read.latePayment },
+			order: {
+				...serializeOrderSummary(ledger.order),
+				latePayment: classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				refundedCents: recordedRefundTotal(ledger.refunds),
+			},
 		};
 	}
 

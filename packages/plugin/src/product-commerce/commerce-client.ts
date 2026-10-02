@@ -711,6 +711,10 @@ export interface OrderSummaryWire {
  */
 export interface AccountOrderWire extends OrderSummaryWire {
 	latePayment: PublicOrderWire["latePayment"];
+	/** Money the order's ledger shows refunded (RECORDED refunds only), in the
+	 *  order's minor units — `0` when none. A refund made outside Otta ("Mark
+	 *  refunded", ADR-0026) is not on the ledger and is not counted. */
+	refundedCents: number;
 }
 
 export interface AddressWire {
