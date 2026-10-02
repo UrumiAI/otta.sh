@@ -189,6 +189,7 @@ export type {
 } from "./ports/order-store.js";
 export {
 	EmailSendTimeoutError,
+	type EmailSendTimeoutLike,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
 	type EmailSender,

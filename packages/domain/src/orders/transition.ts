@@ -121,8 +121,8 @@ export interface DispatchOrderEmailsOptions {
 export interface DispatchOrderEmailsForOrderOptions extends DispatchOrderEmailsOptions {
 	/** Claim only rows no dispatcher has tried yet — see
 	 *  `OrderStore.claimNextEmailForOrder`. The inline path's setting: at most one
-	 *  attempt per row from there, never a row the cron has backed off;
-	 *  `maxAttempts` itself is unchanged. */
+	 *  COUNTED attempt per row from there (a cut-short attempt is uncounted and may
+	 *  recur), never a row the cron has backed off; `maxAttempts` is unchanged. */
 	onlyUnattempted?: boolean;
 }
 

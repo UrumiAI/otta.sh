@@ -76,9 +76,20 @@ export function isCutShortEmailTimeout(err: unknown): boolean {
 	return isEmailSendTimeoutError(err) && (err as { cutShort?: unknown }).cutShort === true;
 }
 
+/** What {@link isEmailSendTimeoutError} can promise about a value it accepts: the
+ *  name, and the class's fields only as POSSIBLY present — an error that crossed a
+ *  bridge is a plain object that may have dropped them. */
+export interface EmailSendTimeoutLike {
+	readonly name: "EmailSendTimeoutError";
+	readonly timeoutMs?: number;
+	readonly cutShort?: boolean;
+}
+
 /** Structural, not `instanceof`: an error that crossed a bridge is a plain
- *  object on the other side — the same rule the storage errors follow. */
-export function isEmailSendTimeoutError(err: unknown): boolean {
+ *  object on the other side — the same rule the storage errors follow. Narrows to
+ *  {@link EmailSendTimeoutLike}, so a caller reads `timeoutMs` typed, and honestly
+ *  as maybe-absent. */
+export function isEmailSendTimeoutError(err: unknown): err is EmailSendTimeoutLike {
 	return (
 		typeof err === "object" &&
 		err !== null &&
