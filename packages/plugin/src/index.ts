@@ -454,10 +454,18 @@ export { orderTotalLabel } from "@otta-sh/domain";
 // The sign-in link's per-address cap and lifetime, as the in-process verifier
 // enforces them (its defaults — `createInProcessCommerceStores` passes no
 // override), so a storefront's copy about them cannot drift from the truth.
-export {
-	DEFAULT_CHALLENGE_TTL_MS as LOGIN_LINK_TTL_MS,
-	DEFAULT_MAX_ACTIVE_CHALLENGES as LOGIN_LINK_MAX_ACTIVE,
+//
+// Declared HERE as plugin constants rather than re-exported from
+// `@otta-sh/store-emdash`: a re-export makes the emitted declarations reach into
+// that package's types, and through them the host's toolchain (vite, postcss,
+// typescript), which the declaration bundler cannot bundle — the plugin build
+// fails. Same values; the store's defaults stay the one source.
+import {
+	DEFAULT_CHALLENGE_TTL_MS as STORE_CHALLENGE_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES as STORE_MAX_ACTIVE_CHALLENGES,
 } from "@otta-sh/store-emdash";
+export const LOGIN_LINK_TTL_MS: number = STORE_CHALLENGE_TTL_MS;
+export const LOGIN_LINK_MAX_ACTIVE: number = STORE_MAX_ACTIVE_CHALLENGES;
 // The ship-to's per-field length bounds the domain enforces, for a site that
 // bounds its address inputs and refuses an over-long field as the address
 // error it is rather than a generic one.
