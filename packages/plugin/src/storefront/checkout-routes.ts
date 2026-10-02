@@ -567,7 +567,17 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				},
 				input.idempotencyKey,
 			);
-			if (!result.ok) return { ok: false as const, reason: result.reason };
+			if (!result.ok) {
+				// A same-key PaymentIntent request still in flight (a double-submitted
+				// checkout) is not a failure: the first request is about to land, and
+				// a retry with this same key returns its intent. So it is answered as
+				// the storefront's retryable BUSY — "try again in a few seconds" — not
+				// as PAYMENT_INTENT_FAILED's "we couldn't start a payment" (QA T1-9).
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
 
 			// CONTAINED, deliberately. `buildOrderTotal` runs `cents()`/`currency()`,
 			// which THROW, over a reply this client has only envelope-checked — and
