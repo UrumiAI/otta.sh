@@ -96,8 +96,9 @@ describe("ottaPluginDescriptor", () => {
 		// ORDERS AND PRICING & INVENTORY ARE BOTH ABSENT (INC-R2/INC-R3,
 		// ADR-0015): each Block Kit screen was retired once the React console's
 		// write path moved off it, taking the list from seven entries to FIVE.
-		// `/orders` and `/products` are now served only by the `otta-console`
-		// descriptor.
+		// `/orders` is now served only by the `otta-console` descriptor, and
+		// pricing and stock live in the products collection's own editor and list
+		// (ADR-0014, amendment 2026-10-01).
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,

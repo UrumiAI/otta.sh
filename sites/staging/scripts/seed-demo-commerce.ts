@@ -350,7 +350,7 @@ function trimUrl(value: string): string {
 }
 
 /** Authenticate against the site and return the headers to read content with. */
-async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
+export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
 		console.info("[otta] using EMDASH_TOKEN");
@@ -663,7 +663,7 @@ export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<Seed
 	const afterPricing = await readCommerce(row, deps);
 	if (afterPricing === null || afterPricing.onHand === null) {
 		throw new Error(
-			`${row.slug} was priced (sku ${row.sku}) but has no inventory record to stock. It will be listed and unbuyable; add stock from Pricing & inventory.`,
+			`${row.slug} was priced (sku ${row.sku}) but has no inventory record to stock. It will be listed and unbuyable; add stock from the product's Pricing & stock cards.`,
 		);
 	}
 	let stocked = 0;

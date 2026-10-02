@@ -71,11 +71,17 @@ export type OrdersClientSurface = Pick<
 	| "addNote"
 >;
 /** The admin products surface the contract exercises — the port's WHOLE
- *  surface, named method by method, because all six are implemented in-process
+ *  surface, named method by method, because all seven are implemented in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
 export type ProductsClientSurface = Pick<
 	AdminProductsSurface,
-	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
+	| "updateProduct"
+	| "restock"
+	| "removeStock"
+	| "listProducts"
+	| "getProduct"
+	| "getProductSummaries"
+	| "getTaxClasses"
 >;
 /** The rules surface the contract exercises (shipping, tax, coupons) — the
  *  port's WHOLE surface, all twenty-five methods named one by one, because all
@@ -3351,6 +3357,36 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		test("getProduct: an id that never existed is null, not an error", async () => {
 			expect(await client.getProduct("adm-p-missing")).toBeNull();
+		});
+
+		test("getProductSummaries: the asked ids in the asked order, unknown ids left out, zero kept as zero", async () => {
+			await seed({
+				productId: "adm-sum-priced",
+				sku: "ADM-SUM-PRICED",
+				title: "Priced",
+				price: { amount: 2599, currency: "USD" },
+				onHand: 7,
+			});
+			await seed({ productId: "adm-sum-zero", sku: "ADM-SUM-ZERO", title: "Zero" });
+			// Written out in full for the same reason as the detail above: a
+			// narrowed projection must fail on the missing key.
+			const summaries = await client.getProductSummaries([
+				"adm-sum-zero",
+				"adm-sum-missing",
+				"adm-sum-priced",
+			]);
+			expect(summaries).toEqual([
+				expect.objectContaining({ productId: "adm-sum-zero", onHand: 0 }),
+				{
+					productId: "adm-sum-priced",
+					sku: "ADM-SUM-PRICED",
+					priceCents: 2599,
+					currency: "USD",
+					compareAtCents: null,
+					onHand: 7,
+					deletedAt: null,
+				},
+			]);
 		});
 
 		test("a soft-deleted product reads back as a tombstone, lists only under deleted, and takes no stock movement", async () => {

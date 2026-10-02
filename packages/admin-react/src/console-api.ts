@@ -295,6 +295,9 @@ export interface ActPayload {
 	 * HTTP, not a guarantee about it.
 	 */
 	readonly field?: "sku";
+	/** The plugin's `ProductsActionResult.recordMoved`, mirrored: someone else
+	 *  saved first, so the form shows the latest values. */
+	readonly recordMoved?: true;
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────
@@ -427,6 +430,9 @@ export interface Failure {
 	readonly ok: false;
 	readonly title: string;
 	readonly description: string;
+	/** The HTTP status, when the refusal came from one — so a surface can tell
+	 *  "you may not" (403) from "it is broken" without reading the sentence. */
+	readonly status?: number;
 }
 
 export type Result<T> = T | Failure;
@@ -469,6 +475,7 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 		// the Pricing & inventory screen sends an operator to look at the wrong
 		// thing. It names the SCREEN rather than the request, because the screen
 		// is what the operator is looking at.
+		status: response.status,
 		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
 	};
@@ -562,6 +569,36 @@ export function fetchProducts(
 export function fetchProductDetail(productId: string): Promise<Result<ProductDetailPayload>> {
 	return post<ProductDetailPayload>(
 		{ type: READ, resource: "products.detail", productId },
+		PRODUCTS_UNAVAILABLE,
+	);
+}
+
+/** One product's price and stock for the Products list's columns — the
+ *  plugin's `ProductPriceStockWire`, mirrored. `onHand: null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStock {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly compareAtCents: number | null;
+	readonly onHand: number | null;
+	readonly deletedAt: string | null;
+}
+
+export interface ProductSummariesPayload {
+	readonly ok: true;
+	readonly products: readonly ProductPriceStock[];
+	readonly threshold: number | null;
+}
+
+/** The price and stock of a page of products (ADR-0014, amendment
+ *  2026-10-01). The ids are CMS entry ids, which are the commerce ids. */
+export function fetchProductSummaries(
+	productIds: readonly string[],
+): Promise<Result<ProductSummariesPayload>> {
+	return post<ProductSummariesPayload>(
+		{ type: READ, resource: "products.summaries", productIds },
 		PRODUCTS_UNAVAILABLE,
 	);
 }

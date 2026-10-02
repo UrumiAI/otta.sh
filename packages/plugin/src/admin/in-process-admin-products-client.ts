@@ -88,6 +88,7 @@ import type {
 	ProductDetailWire,
 	ProductEditResult,
 	ProductEditWire,
+	ProductPriceStockWire,
 	ProductsListFilter,
 	ProductsListResult,
 	ProductSummaryWire,
@@ -171,6 +172,32 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		const onHand =
 			product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku);
 		return toProductDetailWire(product, onHand);
+	}
+
+	/** Price and stock for a bounded list of products, in the order asked; ids
+	 *  with no commerce row are left out. One batched row read, then one stock
+	 *  read per sku — the same `findOnHand` the detail uses, so `null` ("no
+	 *  inventory row") is never collapsed into `0`. */
+	async getProductSummaries(productIds: readonly string[]): Promise<ProductPriceStockWire[]> {
+		for (const id of productIds) requireIdToken("productId", id);
+		const rows = await this.#stores.productCommerce.getManyByProductId(
+			productIds.map((id) => toProductId(id)),
+		);
+		const ordered = productIds.flatMap((id) => {
+			const row = rows.get(toProductId(id));
+			return row === undefined ? [] : [row];
+		});
+		return Promise.all(
+			ordered.map(async (product) => ({
+				productId: product.productId,
+				sku: product.sku,
+				priceCents: product.price?.amount ?? null,
+				currency: product.price?.currency ?? null,
+				compareAtCents: product.compareAtPrice?.amount ?? null,
+				onHand: product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku),
+				deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
+			})),
+		);
 	}
 
 	/**

@@ -70,8 +70,8 @@ export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
  * arrangement. With the original gone, `(new)` is the misleading thing — a single
  * entry marked new against nothing (ADR-0015 Decision 1).
  *
- * {@link PRODUCTS_PAGE} reached the same state one increment later, for the same
- * reason and under the same clause.
+ * Pricing & inventory's page reached the same state one increment later, for the
+ * same reason and under the same clause, before it left the sidebar altogether.
  */
 export const ORDERS_PAGE = {
 	path: "/orders",
@@ -79,32 +79,18 @@ export const ORDERS_PAGE = {
 	icon: "receipt",
 } as const satisfies PluginAdminPage;
 
-/**
- * The migrated Pricing & inventory screen (INC-21) — the second and last screen
- * ADR-0014 Decision 6 puts in scope, and the console's whole page inventory
- * beside {@link ORDERS_PAGE}.
- *
- * THE ONLY PRICING & INVENTORY SCREEN, as of INC-R3. The story is Orders' one
- * increment later, clause for clause: the Block Kit screen declared `/products`
- * on the `otta` descriptor and this one declares it on `otta-console`, which
- * never collided because a page's URL carries its plugin id, and identical paths
- * were what let an operator compare the two by swapping one segment while both
- * rendered. ADR-0015 ended that parallel period by retiring the original, so the
- * path is now simply this screen's.
- *
- * AND WHY THE LABEL IS PLAIN `Pricing & inventory`. It read
- * `Pricing & inventory (new)` while both entries were in the sidebar at once,
- * because two entries of that name with nothing to tell them apart would have
- * been the worst outcome of the two-descriptor arrangement. The suffix
- * disambiguated this screen FROM the one this increment removes, so it expires
- * with it (ADR-0015 Decision 1) — a single entry marked new against nothing is
- * now the misleading thing.
+/*
+ * There is no Pricing & inventory PAGE any more. INC-21 migrated it here and
+ * ADR-0014's amendment of 2026-10-01 moved it again, into the products
+ * collection's own editor (Pricing & stock cards) and list (Price and Stock
+ * columns) — see `./admin.tsx`. A merchant prices a product where they wrote it,
+ * and the sidebar no longer offers a second "products" screen under Plugins.
  */
-export const PRODUCTS_PAGE = {
-	path: "/products",
-	label: "Pricing & inventory",
-	icon: "box",
-} as const satisfies PluginAdminPage;
+/** The field editors this plugin contributes. A products field declared with
+ *  `widget: "otta-console:pricing"` renders the Pricing & stock cards. */
+export const OTTA_CONSOLE_FIELD_WIDGETS = [
+	{ name: "pricing", label: "Pricing & stock", fieldTypes: ["json"] },
+] as const;
 
 /**
  * Every page the console declares.
@@ -115,7 +101,7 @@ export const PRODUCTS_PAGE = {
  * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
  * gate.
  */
-export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE, PRODUCTS_PAGE];
+export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE];
 
 /**
  * The native entrypoint. EmDash's generated plugins module does
@@ -139,6 +125,15 @@ export function createPlugin(_options: Record<string, unknown> = {}): ResolvedPl
 		admin: {
 			entry: OTTA_CONSOLE_ADMIN_ENTRY,
 			pages: [...OTTA_CONSOLE_ADMIN_PAGES],
+			// The products editor's Pricing & stock cards: a React field editor
+			// (`./admin.tsx`'s `fields.pricing`), declared in the manifest for
+			// completeness (ADR-0014, amendment 2026-10-01). EmDash 0.38's Content
+			// Types screen cannot bind a widget; the seed and
+			// `sites/staging/scripts/add-pricing-field.ts` do.
+			fieldWidgets: OTTA_CONSOLE_FIELD_WIDGETS.map((widget) => ({
+				...widget,
+				fieldTypes: [...widget.fieldTypes],
+			})),
 		},
 	});
 }

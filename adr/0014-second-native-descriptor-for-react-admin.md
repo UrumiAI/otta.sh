@@ -18,10 +18,15 @@
 - Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
   is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
   Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
+- Amended: 2026-10-01 — **Decision 6 only**: Pricing & inventory leaves the sidebar. Its fields
+  move into **Pricing, Inventory and Shipping & tax cards** in the product editor's main column and
+  **content-list columns** on the `products` collection,
+  served by `otta-console`, and the `/products` page is retired. See "Amendment 2026-10-01" at the
+  end.
 - Amended: 2026-10-02 — **the Themes screen is removed again**, with the Settings radio, by
   [ADR-0024's amendment of the same date](./0024-storefront-themes-are-runtime-selected-full-templates.md):
   the store ships one theme and the admin offers no choice. The 2026-09-30 amendment below is
-  history; `otta-console` serves Orders and Pricing & inventory only.
+  history; `otta-console` serves the Orders page and the Pricing & stock field editor and list columns.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -330,12 +335,88 @@ browser — including a tab opened with "Open in new tab".
 **Reopens this amendment:** a second React screen justified by this one instead of by its own gaps;
 the Settings radio being removed; or the Themes screen acquiring a write other than `saveStoreTheme`.
 
+## Amendment 2026-10-01 — Pricing & inventory moves into the product editor
+
+**What changes.** A shop owner edits a product in two places today: its title, description and
+images under **Content › Products**, and its price and stock in **Pricing & inventory**, a page at
+the bottom of the sidebar under "Plugins". Merchants read that as two different products. EmDash
+cannot merge two sidebar items or move a plugin page into the Content group (emdash-cms/emdash
+#1023 is open), but a native plugin can contribute surfaces that sit **inside the collection's own
+screens**:
+
+- a **field editor** (`fields` on the admin module), which EmDash draws in the editor's MAIN column
+  for any field whose `widget` names it; and
+- **content-list columns** (`contentListColumns`), read-only cells in the collection's list.
+
+So the products collection gains one field, `pricing` (`json`, `widget: "otta-console:pricing"`),
+placed after Images, and `otta-console`'s `fields.pricing` draws **Pricing**, **Inventory** and
+**Shipping & tax** cards there — the layout the large commerce admins use. `otta-console` also
+exports **Price** / **Stock** columns. The `/products` page ("Pricing & inventory") is **retired**:
+it leaves `admin.pages`, the sidebar and the console-screens registry.
+
+A content editor panel (`contentEditorPanels`) was built first and rejected for placement: EmDash
+puts plugin panels after all of its own settings sections, with no default-position option, so the
+merchant had to scroll the side column to find the price.
+
+**The `pricing` field holds no data.** It only marks where the cards go: the editor never calls the
+field's `onChange`, no seeded entry carries a value, and every value the cards show or change lives
+in the commerce store, as before (PR 1b's rule, kept). `seed.test.ts` pins the field's role, and
+the binding is the only plugin widget bound on the collection. New stores get the field from the
+seed. EmDash 0.38's Content Types screen cannot bind a widget, so a store created before this change
+adds it with `sites/staging/scripts/add-pricing-field.ts`, through the schema API (which accepts
+`widget`; a later edit of the field in that screen keeps it). **The fallback is a hazard to name:**
+when the widget is missing or `otta-console`'s admin module fails to load, EmDash draws its raw JSON
+editor for the field, which would store whatever is typed into the CMS. DEPLOYMENT.md says to leave
+it empty and re-run the script. Decision 6's
+scope is unchanged in kind — the same fields, edited by the same writes — and only the place they
+are edited moves.
+
+**What does not change.**
+
+- **One data path (Decision 3).** Both surfaces call the existing `otta` admin route with
+  `otta_console_read` / `otta_console_act`. The cards read `products.detail`, move stock with
+  the retired page's `products:restock` / `products:remove-stock`, and saves through one new
+  action id, `products:save`, which runs the same sparse save handler as the page's three split
+  saves (same watermark, same content-derived idempotency key) with every field the cards own. A
+  field editor is not told when the CMS saves the entry (which moves the commerce watermark), so a
+  save re-reads the product first and keeps only the merchant's own edits on top of it. The columns read
+  one new resource on that same route, `products.summaries`: the price and on-hand of a bounded
+  list of product ids, which is the page of rows the list is showing. It is a read on the existing
+  authenticated route, not a new route, capability or host.
+- **CMS ownership (ADR-0013).** Title, description, images and publish status stay the CMS's. The
+  cards offer no title and no active flag, exactly as the retired page did; the product id is the
+  CMS entry id, which the cards read from the editor's address (`…/content/products/<id>`) because
+  EmDash gives a field editor the field's value and nothing about the entry.
+- **Who sees them.** The `otta` admin route requires `plugins:manage` (ADMIN), and remains the
+  authorization boundary. The columns declare `minRole: 50`. A field editor has no `minRole`, so a
+  user below ADMIN who can edit products sees the cards and gets the route's 403 copy ("ask an
+  administrator to grant the plugins:manage permission") — refused, never written.
+- **No component library**, as before: inline styles over the admin's Kumo custom properties
+  with theme-neutral fallbacks.
+
+**What gets harder.** The cards save separately from the CMS's own Save and Publish, and the
+editor's unsaved-changes guard cannot see them. They warn on unload and ask before an in-app link
+leaves them with unsaved edits; the browser's Back button is not covered. A new product has no id yet, so it is saved once before it can be priced; the
+cards say so. The cards depend on the editor's address shape and on the `pricing` field existing on
+the collection; without the field there is nowhere to draw them. The columns are read-only, so stock and price are
+changed from the product, not from the list. A merchant who wants a dedicated stock-taking table
+has none until one is justified on its own.
+
+**Left for a follow-up.** The retired page's React modules (`products-screen.tsx`,
+`products-list.tsx`, `product-detail.tsx`) and the three split save ids only they send stay in the
+tree, unregistered, because the shared console tests use them as their fixture. Moving those tests
+onto Orders and deleting the modules is the next change.
+
+**Reopens this amendment:** the `pricing` field storing a value; a card or column offering a
+CMS-owned field; either surface reading or
+writing through anything but the `otta` admin route; or the retired page returning beside the cards.
+
 ## Amendment 2026-10-02 — the Themes screen is removed
 
 The storefront ships one theme, so the admin offers no theme choice ([ADR-0024's amendment of the
 same date](./0024-storefront-themes-are-runtime-selected-full-templates.md)). The Themes screen
 (`/themes`) leaves `admin.pages` and the console-screens registry, and its `themes.*` branch leaves
 the `otta` admin route. Nothing else in this record changes: Decision 6's scope is Orders and
-Pricing & inventory again, and the reasons recorded in the 2026-09-30 amendment for why such a
+Pricing & inventory (now the product editor cards and list columns) again, and the reasons recorded in the 2026-09-30 amendment for why such a
 screen could not be Block Kit still stand for any future one.
 
