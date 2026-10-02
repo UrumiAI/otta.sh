@@ -175,6 +175,12 @@ not ours to change.
   access, so the residual exposure is bounded — but it is real, and it is recorded here so a
   future reviewer who finds one in an access log knows nothing regressed.
 
+  (2026-10-02) One more is ours and is now in place: `/checkout/pay`, whose HTML carries the
+  client secret, is sent `Cache-Control: private, no-store` and kept out of Astro's route
+  cache (`keepPrivate`, `sites/staging/src/lib/no-store.ts`), as are the cart, review and
+  confirmation pages — so no shared cache stores the secret. It does not reach the URL-bar
+  exposure above, and a browser's back/forward cache is not guaranteed to honour it.
+
 **PR tagging.** This ships tagged `[Plugin]`, reading CLAUDE.md's "the EmDash plugin
 (storefront, …)" scope as covering `sites/staging` — the site is the theme-shim half of the
 plugin's storefront surface (ADR-0003). Neither `@otta-sh/service` nor `@otta-sh/domain` changes.
