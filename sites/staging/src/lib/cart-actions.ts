@@ -30,6 +30,11 @@ export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
  *  whose live product disagrees with the submitted `sku` / isn't
  *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
+
+/** A quantity over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
+ *  refusal, which `/cart/add` and `/cart/update` also give before dispatch (so an
+ *  over-cap add never mints a cart). Its copy names the limit. */
+export const QTY_TOO_LARGE = "QTY_TOO_LARGE";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
 /** 303 See Other — the POST-redirect-GET turn. The target is normalized to a

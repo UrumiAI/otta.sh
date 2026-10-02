@@ -10,6 +10,7 @@
  * missing key is a 400, mirroring the plugin route's own input guard.
  */
 import {
+	CART_LINE_MAX_QTY,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type CartLineMutationRouteResult,
@@ -24,6 +25,7 @@ import {
 	failureToken,
 	PRODUCT_NOT_FOUND,
 	PRODUCT_UNAVAILABLE,
+	QTY_TOO_LARGE,
 	routeDispatcher,
 	seeOther,
 	SERVICE_UNAVAILABLE,
@@ -76,6 +78,11 @@ export const POST: APIRoute = async (context) => {
 			{ status: 400 },
 		);
 	}
+
+	// Over the cap: the plugin refuses it as QTY_TOO_LARGE anyway, so answer that
+	// here, before `ensureCartId` can mint a cart for an add that cannot succeed
+	// (QA U-6). The copy names the limit.
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, returnTo, QTY_TOO_LARGE);
 
 	const handler = routeDispatcher(context);
 

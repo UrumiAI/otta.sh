@@ -13,7 +13,7 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
-import type { CheckoutFailureReason } from "@otta-sh/plugin";
+import { CART_LINE_MAX_QTY, type CheckoutFailureReason } from "@otta-sh/plugin";
 
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
 
@@ -56,7 +56,15 @@ const SELECTION_MESSAGES = {
 >;
 
 const MESSAGES: Record<string, string> = {
-	OUT_OF_STOCK: "Sorry, that item is out of stock.",
+	// About the QUANTITY, deliberately: an add that outruns the stock is refused
+	// OUT_OF_STOCK while the page still — truthfully — says In stock, and "that
+	// item is out of stock" then contradicted it (QA U-6). This sentence is true
+	// for that case and for a sold-out item alike. The available count is not
+	// named because the OUT_OF_STOCK refusal does not carry one.
+	OUT_OF_STOCK: "Sorry, we don't have enough of that in stock — try a smaller quantity.",
+	// Built from the plugin's own cap, so the number cannot drift. "At a time":
+	// the cap is per request, and an add can still take a line past it.
+	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
 	CART_NOT_FOUND: "Your cart could not be found — it may have expired.",
 	LINE_NOT_FOUND: "That cart item could not be found — it may have already been removed.",
 	CART_CHECKED_OUT: "This cart has already been checked out.",

@@ -423,6 +423,9 @@ export {
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
 export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
+// The shopper-facing cart quantity cap the routes enforce, for a site that
+// bounds its quantity field and names the limit instead of a generic failure.
+export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 export {
 	type CheckoutFailureReason,
 	type CheckoutResult,

@@ -5,6 +5,7 @@
  * form — and is forwarded verbatim; never invented here.
  */
 import {
+	CART_LINE_MAX_QTY,
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
 	type CartLineMutationRouteResult,
 	type CartLineWire,
@@ -14,6 +15,7 @@ import {
 	clearCartCookie,
 	currentCartId,
 	failureToken,
+	QTY_TOO_LARGE,
 	routeDispatcher,
 	seeOther,
 } from "../../lib/cart-actions.js";
@@ -45,6 +47,10 @@ export const POST: APIRoute = async (context) => {
 			status: 400,
 		});
 	}
+
+	// Over the cap: the plugin's own QTY_TOO_LARGE, answered without the
+	// dispatch; the copy names the limit (QA U-6).
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, "/cart", QTY_TOO_LARGE);
 
 	const cartId = currentCartId(context);
 	if (cartId === undefined) return seeOther(context, "/cart");
