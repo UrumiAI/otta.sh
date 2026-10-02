@@ -18,14 +18,14 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { STOREFRONT_CART_READ_ROUTE } from "@otta-sh/plugin";
+import { STOREFRONT_CART_READ_ROUTE, STOREFRONT_SHOPPER_STATE_ROUTE } from "@otta-sh/plugin";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("astro:middleware", () => ({
 	defineMiddleware: <T>(handler: T): T => handler,
 }));
 
-import { readCartCount } from "../src/lib/chrome-state.js";
+import { chromeCartCount, readShopperState } from "../src/lib/chrome-state.js";
 import { ACCOUNT_NAV_ITEM, ACCOUNT_NAV_SIGNED_IN_LABEL, withAccountLink } from "../src/lib/nav.js";
 import { onRequest, PER_SHOPPER_NO_STORE } from "../src/middleware.js";
 import { themeFor } from "../src/themes/registry.js";
@@ -33,44 +33,36 @@ import { SRC } from "./theme-views.js";
 
 const SITE = "http://localhost:4321";
 
-function scripted(answers: Record<string, unknown>): { handler: never; calls: string[] } {
-	const calls: string[] = [];
-	const handler = async (_id: string, _method: string, route: string) => {
+interface Call {
+	route: string;
+	body: Record<string, unknown>;
+}
+
+function scripted(answers: Record<string, unknown>): { handler: never; calls: Call[] } {
+	const calls: Call[] = [];
+	const handler = async (_id: string, _method: string, route: string, request: Request) => {
 		const name = route.replace(/^\//, "");
-		calls.push(name);
+		calls.push({ route: name, body: (await request.json()) as Record<string, unknown> });
 		return name in answers ? { success: true, data: answers[name] } : { success: false };
 	};
 	return { handler: handler as never, calls };
 }
 
-function countRequest(handler: unknown, cartCookie: string | null) {
+function shopperRequest(handler: unknown, jar: Record<string, string>) {
 	return {
-		cookies: {
-			get: (name: string) =>
-				name === "otta_cart" && cartCookie !== null ? { value: cartCookie } : undefined,
-		},
+		cookies: { get: (name: string) => (name in jar ? { value: jar[name] ?? "" } : undefined) },
 		locals: { emdash: { handlePublicPluginApiRoute: handler } } as never,
 		url: new URL("/products", SITE),
 	};
 }
 
-const cart = (state: string, qtys: number[]) => ({
-	ok: true,
-	cart: {
-		cartId: "cart-1",
-		state,
-		orderId: null,
-		currency: "USD",
-		lines: qtys.map((qty, n) => ({
-			lineId: `l-${String(n)}`,
-			sku: `SKU-${String(n)}`,
-			productId: null,
-			qty,
-			reservationId: null,
-			expiresAt: null,
-		})),
+const BOTH = { count: true, signedIn: true } as const;
+const answer = (count: number | null, signedIn: boolean, state = "active") => ({
+	[STOREFRONT_SHOPPER_STATE_ROUTE]: {
+		ok: true,
+		cart: count === null ? null : { state, count },
+		signedIn,
 	},
-	pricing: null,
 });
 
 beforeEach(() => {
@@ -78,38 +70,81 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("readCartCount — the header's count, one guarded read that fails soft", () => {
-	test("no cart cookie: no count and NO dispatch", async () => {
-		const { handler, calls } = scripted({});
-		expect(await readCartCount(countRequest(handler, null))).toBeNull();
+/* Review (Workers Free: 50 D1 queries per invocation): the header used the full
+   priced cart read plus an account/me read. It is now ONE dispatch of the lean
+   storefront/shopper-state route (at most two document reads, pinned in the
+   plugin's shopper-state-route.test.ts), without the BUSY retry, per page. */
+describe("readShopperState — the header's facts in ONE lean dispatch per page, failing soft", () => {
+	test("neither cookie: no dispatch at all", async () => {
+		const { handler, calls } = scripted(answer(3, true));
+		expect(await readShopperState(shopperRequest(handler, {}), BOTH)).toEqual({
+			cartCount: null,
+			signedIn: false,
+		});
 		expect(calls).toEqual([]);
 	});
 
-	test("a live cart: its units", async () => {
-		const { handler, calls } = scripted({ [STOREFRONT_CART_READ_ROUTE]: cart("active", [2, 1]) });
-		expect(await readCartCount(countRequest(handler, "cart-1"))).toBe(3);
-		expect(calls).toEqual([STOREFRONT_CART_READ_ROUTE]);
-	});
-
-	test("an empty, checked-out or vanished cart draws no badge", async () => {
-		for (const answer of [
-			cart("active", []),
-			cart("checked_out", [2]),
-			{ ok: false, reason: "CART_NOT_FOUND" },
-		]) {
-			const { handler } = scripted({ [STOREFRONT_CART_READ_ROUTE]: answer });
-			expect(await readCartCount(countRequest(handler, "cart-1"))).toBeNull();
-		}
-	});
-
-	test("BUSY, a failed read or no dispatcher is no count — never an error, never a 503", async () => {
-		const busy = scripted({
-			[STOREFRONT_CART_READ_ROUTE]: { ok: false, error: "BUSY", retryable: true },
+	test("cart and session: exactly one dispatch, to the lean route, carrying both", async () => {
+		const { handler, calls } = scripted(answer(3, true));
+		const jar = { otta_cart: "cart-1", otta_session: "sess-1" };
+		expect(await readShopperState(shopperRequest(handler, jar), BOTH)).toEqual({
+			cartCount: 3,
+			signedIn: true,
 		});
-		expect(await readCartCount(countRequest(busy.handler, "cart-1"))).toBeNull();
-		expect(busy.calls).toHaveLength(1); // ONE read: chrome is not worth a retry
-		expect(await readCartCount(countRequest(scripted({}).handler, "cart-1"))).toBeNull();
-		expect(await readCartCount(countRequest(undefined, "cart-1"))).toBeNull();
+		expect(calls).toEqual([
+			{
+				route: STOREFRONT_SHOPPER_STATE_ROUTE,
+				body: { cartId: "cart-1", sessionToken: "sess-1" },
+			},
+		]);
+		expect(calls.map((call) => call.route)).not.toContain(STOREFRONT_CART_READ_ROUTE);
+	});
+
+	test("only what the page did not already know is asked for", async () => {
+		const { handler, calls } = scripted(answer(2, false));
+		const jar = { otta_cart: "cart-1", otta_session: "sess-1" };
+		await readShopperState(shopperRequest(handler, jar), { count: false, signedIn: true });
+		expect(calls[0]?.body).toEqual({ sessionToken: "sess-1" });
+		await readShopperState(shopperRequest(handler, jar), { count: true, signedIn: false });
+		expect(calls[1]?.body).toEqual({ cartId: "cart-1" });
+		calls.length = 0;
+		await readShopperState(shopperRequest(handler, jar), { count: false, signedIn: false });
+		expect(calls).toEqual([]);
+	});
+
+	test("an empty, checked-out or missing cart draws no badge — the same rule /cart follows", async () => {
+		for (const [count, state] of [
+			[0, "active"],
+			[2, "checked_out"],
+			[null, "active"],
+		] as const) {
+			const { handler } = scripted(answer(count, false, state));
+			const read = await readShopperState(shopperRequest(handler, { otta_cart: "c" }), BOTH);
+			expect(read.cartCount).toBeNull();
+		}
+		expect(chromeCartCount(0)).toBeNull();
+		expect(chromeCartCount(null)).toBeNull();
+		expect(chromeCartCount(4)).toBe(4);
+	});
+
+	test("BUSY, a failed read or no dispatcher: nothing drawn, ONE attempt — never an error, never a 503", async () => {
+		const busy = scripted({
+			[STOREFRONT_SHOPPER_STATE_ROUTE]: { ok: false, error: "BUSY", retryable: true },
+		});
+		const jar = { otta_cart: "cart-1", otta_session: "s" };
+		expect(await readShopperState(shopperRequest(busy.handler, jar), BOTH)).toEqual({
+			cartCount: null,
+			signedIn: false,
+		});
+		expect(busy.calls).toHaveLength(1);
+		expect(await readShopperState(shopperRequest(scripted({}).handler, jar), BOTH)).toEqual({
+			cartCount: null,
+			signedIn: false,
+		});
+		expect(await readShopperState(shopperRequest(undefined, jar), BOTH)).toEqual({
+			cartCount: null,
+			signedIn: false,
+		});
 	});
 });
 
@@ -202,15 +237,20 @@ describe("the middleware keeps a shopper-state page private", () => {
 describe("the shell reads the shopper's state only where it may", () => {
 	const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
 
-	test("the count and the signed-in read come from their guarded helpers, behind the theme's opt-in", () => {
+	test("ONE lean read per page, behind the theme's opt-in — no full cart read, no account/me", () => {
 		expect(shell).toMatch(/chrome\?\.shopperState === true/);
-		expect(shell).toContain("readCartCount(");
-		expect(shell).toContain("signedInEmail(");
+		expect(shell.match(/readShopperState\(/g)).toHaveLength(1);
+		expect(shell).not.toContain("readCartCount(");
+		expect(shell).not.toContain("signedInEmail(");
 	});
 
 	test("the signed-in state reaches the chrome as a boolean — the email never does", () => {
 		const chromeModel = /const chrome: ChromeModel = \{[\s\S]*?\n\};/.exec(shell)?.[0] ?? "";
 		expect(chromeModel).toMatch(/signedIn,/);
 		expect(chromeModel).not.toMatch(/email/i);
+	});
+
+	test("every page's badge follows one rule: no badge for an empty cart, /cart included", () => {
+		expect(shell).toMatch(/const cartCount = chromeCartCount\(/);
 	});
 });

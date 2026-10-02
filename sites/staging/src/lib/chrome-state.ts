@@ -1,57 +1,85 @@
 /**
- * The header's shopper state: the cart count on every storefront page (QA U-14),
- * read by `layouts/Storefront.astro` for a theme whose chrome opts in
- * (`ThemeModule.chrome.shopperState`). Its companion, whether the shopper is
- * signed in, is `lib/account.ts`'s `signedInEmail` — of which the chrome gets only
- * the yes/no, never the address.
+ * The header's shopper state (QA U-12, U-14): the cart count on every storefront
+ * page and whether the shopper is signed in, read by `layouts/Storefront.astro`
+ * for a theme whose chrome opts in (`ThemeModule.chrome.shopperState`).
  *
- * CACHING. A count is one visitor's, so it is read only when the request carries
- * that visitor's cart cookie, and the middleware sends every HTML page rendered
- * for such a request `private, no-store` and out of the route cache. A visitor
- * with no cart cookie costs nothing here and gets a header with no count, which
- * is safe to store (middleware.ts).
+ * COST. It is asked on every uncached page a shopper with a cart or a session
+ * loads, so it is ONE dispatch of the lean `storefront/shopper-state` route — at
+ * most one cart-document read and one session-document read on the plugin side,
+ * no price join, no customer read — and dispatched ONCE, without the BUSY retry.
+ * Not the full cart read (`storefront/cart/read`) and not `account/me`.
+ *
+ * CACHING. Each fact is asked only when the request carries the cookie it
+ * depends on (no cookie ⇒ no dispatch), and the middleware sends every HTML page
+ * rendered for such a request `private, no-store` and out of the route cache.
  *
  * FAIL SOFT, like the bag (`lib/bag.ts`): chrome decorates a page that has its
- * own job, so a busy, failed or vanished read is simply "no count" — never an
- * error page, never a 503, and never retried.
+ * own job, so any answer but a clean one is "draw nothing" — never an error page,
+ * never a 503.
  */
 import {
 	CART_COOKIE_NAME,
-	STOREFRONT_CART_READ_ROUTE,
-	totalQty,
-	type CartReadRouteResult,
+	SESSION_COOKIE_NAME,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+	type ShopperStateResult,
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { isCartTerminal } from "./cart-view.js";
 import { dispatchOttaRouteOnce } from "./otta-api.js";
 
-export interface CartCountRequest {
+export interface ShopperStateRequest {
 	cookies: { get(name: string): { value: string } | undefined };
 	locals: Parameters<typeof getPublicPluginApiRouteHandler>[0];
 	url: URL;
 }
 
+export interface ShopperState {
+	/** Units to badge the cart link with, or `null` for no badge. */
+	cartCount: number | null;
+	/** A live session — yes or no, never who. */
+	signedIn: boolean;
+}
+
 /**
- * Units in the visitor's cart, or `null` for "draw no badge": no cart cookie (no
- * dispatch at all), an empty cart, a checked-out one (its lines are the order's
- * now), a vanished one, or a read that did not answer cleanly.
+ * The ONE badge rule, for every page (/cart included): a count only when there is
+ * something in the cart. An empty cart and "no cart read" both draw the bare link,
+ * so the header does not say "(0)" on one page and nothing on the next.
  */
-export async function readCartCount(request: CartCountRequest): Promise<number | null> {
-	const cartId = request.cookies.get(CART_COOKIE_NAME)?.value;
-	if (cartId === undefined || cartId.length === 0) return null;
-	let result: CartReadRouteResult | null;
+export function chromeCartCount(count: number | null): number | null {
+	return count !== null && count > 0 ? count : null;
+}
+
+const NOTHING: ShopperState = { cartCount: null, signedIn: false };
+
+/** What the header draws. `want` names the facts the page did not already know;
+ *  only those whose cookie is present are asked for, in ONE dispatch. */
+export async function readShopperState(
+	request: ShopperStateRequest,
+	want: { count: boolean; signedIn: boolean },
+): Promise<ShopperState> {
+	const cartId = want.count ? request.cookies.get(CART_COOKIE_NAME)?.value : undefined;
+	const sessionToken = want.signedIn ? request.cookies.get(SESSION_COOKIE_NAME)?.value : undefined;
+	const input = {
+		...(cartId !== undefined && cartId.length > 0 ? { cartId } : {}),
+		...(sessionToken !== undefined && sessionToken.length > 0 ? { sessionToken } : {}),
+	};
+	if (Object.keys(input).length === 0) return NOTHING;
+	let result: ShopperStateResult | null;
 	try {
-		result = await dispatchOttaRouteOnce<CartReadRouteResult>(
+		result = await dispatchOttaRouteOnce<ShopperStateResult>(
 			getPublicPluginApiRouteHandler(request.locals),
-			STOREFRONT_CART_READ_ROUTE,
-			{ cartId },
+			STOREFRONT_SHOPPER_STATE_ROUTE,
+			input,
 			request.url,
 		);
 	} catch (cause) {
-		console.error("[site-staging] header cart count read threw:", cause);
-		return null;
+		console.error("[site-staging] header shopper-state read threw:", cause);
+		return NOTHING;
 	}
-	if (result === null || !result.ok || isCartTerminal(result.cart.state)) return null;
-	const count = totalQty(result.cart);
-	return count > 0 ? count : null;
+	if (result === null || !result.ok) return NOTHING;
+	const cart = result.cart;
+	return {
+		cartCount: cart === null || isCartTerminal(cart.state) ? null : chromeCartCount(cart.count),
+		signedIn: result.signedIn === true,
+	};
 }

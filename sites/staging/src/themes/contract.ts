@@ -590,10 +590,11 @@ export interface ThemeChromeNeeds {
 	/**
 	 * This theme's chrome shows the SHOPPER'S STATE on every storefront page: the
 	 * cart's count beside the cart link, and whether they are signed in (QA U-12,
-	 * U-14). The shell then reads the count (`lib/chrome-state.ts`) for a request
-	 * carrying a cart cookie and asks whether the session is live for one carrying
-	 * a session cookie — never otherwise — and hands over `ChromeModel.cartCount`
-	 * and `ChromeModel.signedIn`. The middleware keeps every such page private,
+	 * U-14). The shell then makes ONE dispatch of the lean `storefront/shopper-state`
+	 * route (`lib/chrome-state.ts`: at most a cart-document and a session-document
+	 * read) for whichever of the cart and session cookies the request carries —
+	 * none without either — and hands over `ChromeModel.cartCount` (no badge for an
+	 * empty cart, on every page) and `ChromeModel.signedIn`. The middleware keeps every such page private,
 	 * no-store and out of the route cache. Both reads fail soft and skip the
 	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
 	 * its own count.
