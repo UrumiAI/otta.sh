@@ -154,6 +154,12 @@ export interface ShopCard {
 	price: string | null;
 	/** What stands where a price would; `undefined` takes the component default. */
 	priceNote: string | undefined;
+	/**
+	 * The compare-at ("was") price, pre-formatted — present only when the
+	 * product is on sale (the plugin's `compareAtPrice`, already decided to be
+	 * above the price) AND `price` is present. A view strikes it beside `price`.
+	 */
+	was: string | null;
 	availability: AvailabilityToken | null;
 }
 
@@ -192,6 +198,10 @@ export interface AddToCartModel {
 export interface ProductPurchase {
 	/** Pre-formatted, off `price.formatted`. */
 	priceFormatted: string;
+	/** The compare-at ("was") price, pre-formatted, when the product is on sale
+	 *  — off the view model's `compareAtPrice`, which is null unless it is above
+	 *  the price. A view strikes it beside `priceFormatted`. */
+	compareAtFormatted: string | null;
 	/** Strike the price: not in stock (degraded is never "purchasable"). */
 	priceStruck: boolean;
 	availability: AvailabilityToken | null;

@@ -11,10 +11,33 @@
  * Mono and tabular, per §3: money is set in the data face, and nothing else is.
  * The face itself is the global `.u-mono` recipe in tokens.css; only size,
  * weight and the sold-out treatment are this component's business.
+ *
+ * A SALE is the optional `was` figure — the view model's `compareAtPrice`,
+ * which the plugin hands over only when it is above the price. It is struck
+ * and muted BEFORE the price, the conventional reading order ("was $20.00,
+ * now $12.00"). It is an `<s>` (a figure that is no longer the price), and it
+ * carries visually-hidden "Was" / "Now" because a strike is invisible to a
+ * screen reader: "$20.00 $12.00" read aloud is two prices and no sale. Those
+ * two words are THIS COMPONENT'S copy — owned here, like the sr-only cell
+ * names in Ledger — not the page's or the view model's. Muted, never a
+ * tempering colour — a sale is not one of the store's states (§1).
+ *
+ * SOLD OUT WINS. A sold-out price is already struck; striking the was-price
+ * beside it would put two crossed-out figures side by side, and the sale is
+ * moot while nothing can be bought. So `soldOut` drops `was` and renders the
+ * single struck figure.
+ *
+ * With no sale, the markup is the single figure it always was.
  */
 import type { HTMLAttributes } from "astro/types";
 import { restProps } from "../lib/rest-props.js";
 
+/**
+ * `class` and every other attribute (`role`, `aria-*`, `data-*`) land on the
+ * ROOT element: the single `.price` span, or on a sale the `.sale` wrapper
+ * that holds both figures — so a caller's `role="cell"` still names the whole
+ * money cell. Astro's scope key is dropped on the way (`restProps`).
+ */
 interface Props extends HTMLAttributes<"span"> {
 	/** Straight off the view model. Never built here. */
 	formatted: string;
@@ -23,18 +46,47 @@ interface Props extends HTMLAttributes<"span"> {
 	soldOut?: boolean;
 	/** Display weight. `lg` is the totals line and the PDP's price. */
 	size?: "sm" | "md" | "lg";
+	/** The compare-at price, pre-formatted, when the product is on sale. Blank
+	 *  is the same as absent, and `soldOut` drops it. Whether it is a sale is
+	 *  never decided here — see the note above. */
+	was?: string | null;
 }
 
-const { formatted, soldOut = false, size = "md", class: className, ...rest } = Astro.props;
+const {
+	formatted,
+	soldOut = false,
+	size = "md",
+	was = null,
+	class: className,
+	...rest
+} = Astro.props;
+
+/** Sold out wins: one struck figure, never two (see the note above). */
+const onSale = was !== null && was !== "" && !soldOut;
 ---
 
-<span
-	class:list={["u-mono", "price", `size-${size}`, className]}
-	data-sold-out={soldOut ? "" : undefined}
-	{...restProps(rest)}
->
-	{formatted}
-</span>
+{
+	onSale ? (
+		<span class:list={["sale", `size-${size}`, className]} {...restProps(rest)}>
+			<s class="u-mono was">
+				<span class="u-sr-only">Was </span>
+				{was}
+			</s>
+			<span class:list={["u-mono", "price", `size-${size}`]}>
+				<span class="u-sr-only">Now </span>
+				{formatted}
+			</span>
+		</span>
+	) : (
+		<span
+			class:list={["u-mono", "price", `size-${size}`, className]}
+			data-sold-out={soldOut ? "" : undefined}
+			{...restProps(rest)}
+		>
+			{formatted}
+		</span>
+	)
+}
 
 <style>
 	.price {
@@ -53,6 +105,35 @@ const { formatted, soldOut = false, size = "md", class: className, ...rest } = A
 	.size-lg {
 		font-size: 1.5rem;
 		font-weight: 600;
+	}
+
+	/* The pair sits on one baseline and never splits a figure across lines;
+	   the gap is the space a reader expects between two amounts. */
+	.sale {
+		display: inline-flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		column-gap: 0.5em;
+	}
+
+	/* The was-price: a step down from the price it sits beside, regular
+	   weight, muted, struck with the same 1px rule sold out uses. Muted, not
+	   a tempering colour — a sale is not a store state (§1). */
+	.was {
+		font-weight: 400;
+		color: var(--u-mute);
+		white-space: nowrap;
+		text-decoration: line-through;
+		text-decoration-thickness: 1px;
+	}
+	.sale.size-sm .was {
+		font-size: 0.6875rem;
+	}
+	.sale.size-md .was {
+		font-size: 0.8125rem;
+	}
+	.sale.size-lg .was {
+		font-size: 1rem;
 	}
 
 	/* Not a colour change plus a strike — sold out is ONE signal, and it is the

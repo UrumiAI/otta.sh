@@ -132,6 +132,26 @@ const CONFIGURED = [
 				availability="out_of_stock"
 			/>
 			<ProductCard index={3} href="#" slug="otta-poster" title="Otta Poster" price={null} />
+			{/* On sale: the struck was-price beside the price. */}
+			<ProductCard
+				href="#"
+				slug="otta-cap"
+				title="Otta Cap"
+				description="On sale."
+				price="$12.00"
+				was="$20.00"
+				availability="in_stock"
+			/>
+			{/* Sold out AND on sale: one struck figure — the was-price is dropped. */}
+			<ProductCard
+				href="#"
+				slug="otta-tote"
+				title="Otta Tote"
+				description="On sale, sold out."
+				price="$12.00"
+				was="$20.00"
+				availability="out_of_stock"
+			/>
 		</div>
 	</section>
 

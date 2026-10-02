@@ -73,6 +73,7 @@ describe("tapeRows — only what the store can actually sell", () => {
 			sku: "SKU-1",
 			href: "/products/product:p1",
 			price: "$11.00",
+			was: null,
 			stock: "In stock",
 			soldOut: false,
 		});
@@ -129,6 +130,15 @@ describe("tapeRows — only what the store can actually sell", () => {
 			"/products/otta-mug",
 			"/products/otta-tee",
 		]);
+	});
+
+	test("a product on sale carries its was-price — the plugin's decision, same as the cards", () => {
+		const onSale = {
+			...priced(1),
+			compareAtPrice: { amount: 2000, currency: "USD", formatted: "$20.00" },
+		} as ProductViewModel;
+		expect(tapeRows([onSale])[0]?.was).toBe("$20.00");
+		expect(tapeRows([priced(2)])[0]?.was).toBeNull();
 	});
 
 	test("a priced product with no sku keeps its name and drops the reference line", () => {

@@ -24,6 +24,7 @@ const row = (overrides: Partial<TapeRow> = {}): TapeRow => ({
 	sku: "OTTA-MUG",
 	href: "/products/otta-mug",
 	price: "$18.00",
+	was: null,
 	stock: "In stock",
 	soldOut: false,
 	...overrides,
@@ -58,6 +59,12 @@ describe("the home tape — names that lead somewhere", () => {
 		const html = await home([row({ sku: null })]);
 		expect(html).toContain("Otta Mug");
 		expect(html).not.toContain("home-sku");
+	});
+
+	test("a row on sale strikes its was-price beside the price, as the cards do", async () => {
+		const html = await home([row({ price: "$12.00", was: "$20.00" })]);
+		expect(html).toMatch(/<s [^>]*>[\s\S]*\$20\.00[\s\S]*<\/s>/);
+		expect(html).toContain("$12.00");
 	});
 
 	test("the item cell keeps its table role, so the link sits INSIDE the cell", async () => {

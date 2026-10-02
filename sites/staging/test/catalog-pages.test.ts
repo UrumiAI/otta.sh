@@ -313,6 +313,23 @@ describe("the catalog grid", () => {
 		expect(SHOP_VIEW).toContain("<Notice");
 	});
 
+	test("a card on sale carries its was-price — only beside a live price, off the view model's own decision", () => {
+		// The plugin decides what is a sale (`compareAtPrice` is null unless it is
+		// above the price); the page only refuses to hand over a was-price for a
+		// card that has no price to strike it beside.
+		expect(PLP).toMatch(
+			/was:\s*product\.purchasable && product\.price !== null\s*\?\s*\(product\.compareAtPrice\?\.formatted \?\? null\)\s*:\s*null/,
+		);
+		expect(HOME).toMatch(
+			/was:\s*product\.purchasable && product\.price !== null\s*\?\s*\(product\.compareAtPrice\?\.formatted \?\? null\)\s*:\s*null/,
+		);
+		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,500}was=\{card\.was\}/);
+	});
+
+	test("the PDP page hands the view the plugin's was-price (the view's rendering: product-view.test.ts)", () => {
+		expect(PDP).toMatch(/compareAtFormatted:\s*product\.compareAtPrice\?\.formatted \?\? null/);
+	});
+
 	test("a degraded card says the price is UNKNOWN, not that the product is retired", () => {
 		// ProductCard's default note is "Not currently available for purchase",
 		// which is true of an unpriced product and false under a banner promising

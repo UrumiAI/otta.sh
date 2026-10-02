@@ -165,7 +165,7 @@ Build these in `src/components/`. Each renders one view-model field group and no
 |---|---|
 | `MediaPanel` | Neutral `--u-panel` ground + one generated coil. See §5 |
 | `ProductCard` | Media, title, description, foot. Foot uses `margin-top: auto` so feet align across a row regardless of description length |
-| `PriceTag` | Mono, tabular. Struck + muted when sold out |
+| `PriceTag` | Mono, tabular. Struck + muted when sold out. Takes an optional `was` — the compare-at price — and then sets it first, struck, muted and a step smaller, beside the price ("was $20.00, now $12.00"), with visually-hidden "Was" / "Now" — the component's own copy — because a strike is not announced. Mute, never a tempering colour: a sale is not a store state. **Sold out wins:** a sold-out price is already struck, so `was` is dropped rather than drawing two crossed-out figures. The product page's spec ledger, every product card and the home tape pass it |
 | `StockRule` | A short 2px rule + mono caps. Solid when in stock, dashed when sold out. **Not** a coloured badge. **Words, not a figure** — see below |
 | `HoldRibbon` | §6 — the signature |
 | `HoldClock` | §6's countdown SCRIPT, split from `HoldRibbon` (which is markup only) so a theme's cart view can draw the ribbon while `/cart` renders the one script (ADR-0012's single pair) |
@@ -246,6 +246,10 @@ becomes a static filled track at 40% opacity.
 ## 7. Money rules
 
 - Never invent a money string. Render `price.formatted` / `.label` from the view model.
+- **A was-price is the plugin's decision, not the theme's.** `compareAtPrice` arrives only
+  when it is above the price, in the same currency, on a product for sale; a store may keep a
+  lower "was" during a price rise, and striking it would claim a discount nobody is giving. A
+  page passes it only beside a live price, and the theme never compares two figures itself.
 - **"Not calculated" is not zero.** `totals.shipping.label` and `totals.tax.label` can mean
   *this store has not configured it*. That renders as muted mono prose — `Not calculated` —
   and **never** as `$0.00`, `—` alone, or "Free shipping". When `totalExcludesUncalculated`

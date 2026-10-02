@@ -64,6 +64,11 @@ export interface TapeRow {
 	href: string;
 	/** Pre-formatted, straight off the view model. Never assembled (§7). */
 	price: string;
+	/** The compare-at ("was") price, pre-formatted, when the product is on sale
+	 *  — the plugin's `compareAtPrice`, already decided to be above the price.
+	 *  The same figure the product's catalog card strikes, so the shelf on the
+	 *  front door and the shop agree about a sale. */
+	was: string | null;
 	/** The availability TOKEN in words. The view model carries no count, so the
 	 *  tape states the fact it actually has rather than the mockup's "12 in
 	 *  stock" — §7's spirit: never render a figure the store did not quote.
@@ -113,6 +118,7 @@ export function tapeRows(
 					   model's own url, else the product's key under /products. */
 					href: product.url ?? `/products/${productKey(product)}`,
 					price: product.price.formatted,
+					was: product.compareAtPrice?.formatted ?? null,
 					stock: soldOut ? "Sold out" : product.availability === "in_stock" ? "In stock" : "",
 					soldOut,
 				},
