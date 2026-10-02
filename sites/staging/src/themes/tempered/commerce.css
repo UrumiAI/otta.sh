@@ -838,6 +838,42 @@
 	font-size: 0.875rem;
 }
 
+/* Already signed in: a hairline-ruled block above the form, quiet links in the
+   order page's `.order-keep` style — informational, not a second form. */
+[data-theme-id] .account-login-signed-in {
+	margin: 0 0 1.5rem;
+	padding: 0.875rem 0;
+	max-width: 34rem;
+	border-block: var(--u-hair);
+	font-size: 0.875rem;
+}
+
+[data-theme-id] .account-login-signed-in-who {
+	margin: 0 0 0.625rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+
+[data-theme-id] .account-login-signed-in-actions a:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-login-signout {
+	margin: 0;
+}
+
 /* ── Verify (was pages/account/verify/index.astro) ───────────────────────────── */
 
 [data-theme-id] .account-verify-title {

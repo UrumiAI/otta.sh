@@ -50,6 +50,8 @@ const {
 	notReadyCopy,
 	paymentConfigured,
 	notConfiguredLead,
+	emailValue,
+	emailNote,
 	ledgerRows,
 	sumRows,
 	footnote,
@@ -279,11 +281,9 @@ const {
 							required
 							autocomplete="email"
 							aria-describedby="email-note"
+							value={emailValue}
 						/>
-						<span class="checkout-note" id="email-note">
-							We use this to send your order confirmation and to link the order to your account if
-							you sign in later.
-						</span>
+						<span class="checkout-note" id="email-note">{emailNote}</span>
 					</div>
 
 					{/* LOCKED: the order's ship-to is fixed — a same-key place replays the

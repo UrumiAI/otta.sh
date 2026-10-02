@@ -1363,6 +1363,20 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		test("getMyAccount names the session's own email, and nothing for an unusable bearer", async () => {
+			const { bearer } = await tier.arrange.session("id-whoami@example.test");
+			expect(await client.getMyAccount(bearer)).toEqual({
+				ok: true,
+				email: "id-whoami@example.test",
+			});
+			expect(await client.getMyAccount("not-a-session-token")).toEqual({
+				ok: false,
+				reason: "UNAUTHENTICATED",
+			});
+			await client.logout(bearer);
+			expect(await client.getMyAccount(bearer)).toEqual({ ok: false, reason: "UNAUTHENTICATED" });
+		});
+
 		test.skipIf(tier.payments === undefined)(
 			"a signed-in checkout under the session's own email is the customer's order at once; another email, or an unusable session, is a guest order (SKIPPED where the tier composes no payment gateway)",
 			async () => {

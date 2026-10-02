@@ -33,6 +33,7 @@ import {
 	ACCOUNT_LOGOUT_ROUTE,
 	ACCOUNT_LOGIN_REQUEST_ROUTE,
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
 	createAccountAddressesHandler,
@@ -40,6 +41,7 @@ import {
 	createAccountLoginRequestHandler,
 	createAccountLoginVerifyHandler,
 	createAccountOrderHandler,
+	createAccountMeHandler,
 	createAccountOrdersHandler,
 } from "./storefront/account-routes.js";
 // ── end Phase 5 account routes ─────────────────────────────────────────────
@@ -215,6 +217,7 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ORDER_ROUTE]: { handler: createAccountOrderHandler() as never, public: true },
 		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
 		[ACCOUNT_LOGOUT_ROUTE]: { handler: createAccountLogoutHandler() as never, public: true },
+		[ACCOUNT_ME_ROUTE]: { handler: createAccountMeHandler() as never, public: true },
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
 		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
 		// fans out on `type` + `page`/`action_id` to the Reports page and the
