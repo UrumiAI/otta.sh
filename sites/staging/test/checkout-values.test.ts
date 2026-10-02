@@ -454,6 +454,113 @@ describe("applying a coupon keeps every typed value", () => {
 	});
 });
 
+describe("updating the delivery keeps every typed value", () => {
+	const ZONED = {
+		...FULL,
+		addressMode: "zoned",
+		country: "US",
+		region: "CA",
+		shippingMethodId: "m1",
+		couponCode: "SAVE10",
+		fromCountry: "US",
+		fromRegion: "CA",
+	};
+
+	test("Update delivery posts the details form: the draft is kept, the new delivery goes in the URL, nothing is placed", async () => {
+		const h = harness(
+			{
+				...ZONED,
+				intent: "update-delivery",
+				deliveryCountry: "us",
+				deliveryRegion: "ny",
+				deliveryMethod: "m2",
+			},
+			PLACED,
+		);
+		const response = await PLACE_POST(h.context);
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toBe(
+			"/checkout?coupon=SAVE10&country=US&region=ny&method=m2&fromCountry=US&fromRegion=CA",
+		);
+		expectNoPersonalDataIn(response.headers.get("location")!);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toMatchObject({ email: "ada@example.com", name: "Ada Lovelace" });
+	});
+
+	test("it works before the email is filled in — it is not a place", async () => {
+		const h = harness(
+			{ ...ZONED, email: "", intent: "update-delivery", deliveryCountry: "DE", deliveryRegion: "" },
+			PLACED,
+		);
+		const response = await PLACE_POST(h.context);
+		expect(response.headers.get("location")).toBe(
+			"/checkout?coupon=SAVE10&country=DE&fromCountry=US&fromRegion=CA",
+		);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a submit whose delivery fields DIFFER from the priced ones re-prices instead of placing (Enter in the region box)", async () => {
+		// Enter in a details field submits through Apply (the form's first submit
+		// button), which falls through to a place when the coupon is unchanged — so
+		// a changed but un-updated delivery must not be placed at the old price.
+		const h = harness(
+			{
+				...ZONED,
+				intent: "apply-coupon",
+				coupon: "SAVE10",
+				deliveryCountry: "US",
+				deliveryRegion: "NY",
+				deliveryMethod: "m1",
+			},
+			PLACED,
+		);
+		const response = await PLACE_POST(h.context);
+		expect(response.headers.get("location")).toBe(
+			"/checkout?coupon=SAVE10&country=US&region=NY&method=m1&fromCountry=US&fromRegion=CA",
+		);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a submit whose delivery fields MATCH the priced ones places the order", async () => {
+		const h = harness(
+			{ ...ZONED, deliveryCountry: "US", deliveryRegion: "us-ca", deliveryMethod: "m1" },
+			PLACED,
+		);
+		const response = await PLACE_POST(h.context);
+		expect(response.headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+	});
+});
+
+describe("Enter in a details field (the coupon box's Apply is the form's default button)", () => {
+	test("the Apply button comes before Continue to payment in the page, so it IS the default button", () => {
+		for (const view of viewSources("checkout")) {
+			const body = templateOf(view.source);
+			const apply = body.indexOf('value="apply-coupon"');
+			const cont = body.indexOf("Continue to payment");
+			expect(apply, view.file).toBeGreaterThan(-1);
+			expect(apply, view.file).toBeLessThan(cont);
+		}
+	});
+
+	test("with the APPLIED code still in the box, Enter places the order (pinned above too)", async () => {
+		const h = harness(
+			{ ...FULL, couponCode: "SAVE10", intent: "apply-coupon", coupon: "SAVE10" },
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+	});
+
+	test("with a DIFFERENT code typed in the box, Enter applies that code first and places nothing", async () => {
+		const h = harness(
+			{ ...FULL, couponCode: "SAVE10", intent: "apply-coupon", coupon: "SAVE20" },
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout?coupon=SAVE20");
+		expect(h.calls).toHaveLength(0);
+	});
+});
+
 // ── the page reads it back; the view prints it ──────────────────────────────
 
 describe("/checkout reads the draft back", () => {

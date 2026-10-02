@@ -31,8 +31,8 @@
  * delivery options as radios (a lone priced option comes back preselected).
  * The place form then carries the destination and the method the totals were
  * priced with as hidden fields, and the typed street address beside them.
- * Resubmitting the delivery form loses address fields typed since the last
- * post; applying a coupon does not (it posts the details form — QA U-1).
+ * Updating the delivery or applying a coupon keeps what was typed: both post
+ * the details form (QA U-1).
  *
  * KEPT VALUES (QA U-1). A refused place comes back here with the buyer's typed
  * values in the draft cookie (lib/checkout-draft.ts), never in the URL; the
@@ -178,12 +178,12 @@ const destinationError = summary.selectionErrors.destination ?? destinationRead.
 
 /** The destination the totals were priced for, or null. */
 const destination = summary.selection.destination;
-/** What the delivery form's fields show: the priced destination, else what was
+/** What the delivery block's fields show: the priced destination, else what was
  *  typed and refused (so a typo can be fixed). */
 const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
 const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
 
-/** The delivery form: an unlocked cart that ships, in a store with zones. */
+/** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
 /** The address block: an unlocked cart that ships. On a store with NO zones
  *  it also asks for the country; otherwise the country/region are the hidden

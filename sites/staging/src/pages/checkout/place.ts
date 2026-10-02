@@ -52,6 +52,8 @@ import {
 } from "../../lib/checkout-draft.js";
 import {
 	checkoutPath,
+	deliveryDiffers,
+	deliveryUpdatePath,
 	isCouponFailure,
 	placeFailurePath,
 	readCouponCode,
@@ -267,6 +269,30 @@ async function place(context: APIContext): Promise<Response> {
 		if (intent === "remove-coupon" || nextCode !== couponCode) {
 			return refuse(checkoutPath({ ...selection, couponCode: nextCode }), undefined);
 		}
+	}
+
+	// UPDATE DELIVERY (QA U-1): like Apply, a submit of THIS form, so changing
+	// where the order goes keeps everything typed. And the safety net: any other
+	// submit (Enter in a field goes through Apply, the form's default button)
+	// whose delivery fields differ from the ones the totals were priced with is
+	// re-priced, never placed at the old price.
+	const delivery = {
+		country: formString(form.get("deliveryCountry")),
+		region: formString(form.get("deliveryRegion")),
+		method: formString(form.get("deliveryMethod")),
+		fromCountry: formString(form.get("fromCountry")),
+		fromRegion: formString(form.get("fromRegion")),
+	};
+	if (
+		intent === "update-delivery" ||
+		(zoned &&
+			deliveryDiffers(delivery, {
+				country: formString(form.get("country")),
+				region: formString(form.get("region")),
+				method: shippingMethodId,
+			}))
+	) {
+		return refuse(deliveryUpdatePath(delivery, couponCode), undefined);
 	}
 
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the

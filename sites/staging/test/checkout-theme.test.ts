@@ -251,8 +251,11 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	// one — and the notice lives IN that form, beside the choice it explains.
 	test("the shipping-method notice is live, inside the delivery form", () => {
 		expect(VIEW).not.toMatch(/unreachable until #305 part 2/);
-		const delivery = /<form[^>]*id="delivery"[\s\S]*?<\/form>/.exec(templateOf(VIEW))?.[0] ?? "";
-		expect(delivery, "no delivery form").not.toBe("");
+		const delivery =
+			/<div class="checkout-delivery" id="delivery">[\s\S]*?<\/fieldset>/.exec(
+				templateOf(VIEW),
+			)?.[0] ?? "";
+		expect(delivery, "no delivery block").not.toBe("");
 		expect(delivery).toContain("shippingError !== null");
 	});
 
@@ -356,45 +359,58 @@ describe("/checkout — the coupon: the page's half", () => {
  */
 describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label, { source: VIEW }) => {
 	const TEMPLATE = templateOf(VIEW);
+	/* QA U-1: the delivery choice is no longer its own GET form — choosing it
+	   that way dropped everything typed. Its fields and its Update button belong
+	   to the place form (`form="checkout-place"`), under names of their own so
+	   they never collide with the place form's priced echo. */
 	const DELIVERY =
-		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*id="delivery"[^>]*>[\s\S]*?<\/form>/.exec(
+		/<div class="checkout-delivery" id="delivery">[\s\S]*?<\/fieldset>\s*<\/div>/.exec(
 			TEMPLATE,
 		)?.[0] ?? "";
 	const PLACE =
 		/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
 
-	test("the delivery form is its own GET /checkout form, after the coupon and before the place form — never nested", () => {
-		expect(DELIVERY, "no delivery form").not.toBe("");
+	test("the delivery block comes after the coupon and before the place form — never nested, never a GET form", () => {
+		expect(DELIVERY, "no delivery block").not.toBe("");
 		const coupon = TEMPLATE.indexOf('name="coupon"');
 		expect(coupon).toBeLessThan(TEMPLATE.indexOf(DELIVERY));
 		expect(TEMPLATE.indexOf(DELIVERY)).toBeLessThan(TEMPLATE.indexOf(PLACE));
 		expect(PLACE).not.toContain('id="delivery"');
+		expect(TEMPLATE).not.toMatch(/<form[^>]*method="GET"[^>]*id="delivery"/);
 	});
 
 	test("it is shown only for an unlocked cart that ships, in a store with zones", () => {
-		expect(VIEW).toMatch(/showDelivery && \(\s*<form[^>]*id="delivery"/);
+		expect(VIEW).toMatch(/showDelivery && \(\s*<div class="checkout-delivery" id="delivery">/);
 	});
 
-	test("it asks for a country (select) and a region CODE, and echoes the priced destination as fromCountry/fromRegion", () => {
-		expect(DELIVERY).toMatch(/<select[^>]*name="country"/);
-		const region = /<input[^>]*name="region"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+	test("it asks for a country (select) and a region CODE, echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
+		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+		expect(select).toContain('form="checkout-place"');
+		const region = /<input[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(region).toContain('maxlength="6"');
 		expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
+		expect(region).toContain('form="checkout-place"');
 		expect(DELIVERY).toMatch(/State\/province code/);
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="fromCountry"/);
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="fromRegion"/);
-		// Applying a delivery keeps the coupon, the same way the coupon form keeps
-		// the delivery.
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="coupon"/);
+		expect(DELIVERY).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="fromCountry"[^>]*form="checkout-place"/,
+		);
+		expect(DELIVERY).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="fromRegion"[^>]*form="checkout-place"/,
+		);
+		expect(DELIVERY).toMatch(
+			/<button[^>]*form="checkout-place"[^>]*name="intent"[^>]*value="update-delivery"[^>]*formnovalidate/,
+		);
 		expect(DELIVERY).toContain("Update delivery");
 	});
 
 	test("the matched zone's options are method radios — unpriced ones disabled, the selected one checked", () => {
-		const radio = /<input[^>]*type="radio"[^>]*name="method"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+		const radio =
+			/<input[^>]*type="radio"[^>]*name="deliveryMethod"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(radio, "no method radio").not.toBe("");
 		expect(radio).toContain("value={option.id}");
 		expect(radio).toContain("disabled={option.disabled}");
 		expect(radio).toContain("checked={option.selected}");
+		expect(radio).toContain('form="checkout-place"');
 	});
 
 	test("its notices come from the destination and method refusals and from noOptions", () => {

@@ -14,9 +14,8 @@
  *
  * The coupon's field and buttons belong to the place form (`form=` attribute),
  * so Apply and Remove post the typed details with them and the review comes
- * back with every value kept (QA U-1). The delivery choice is still a SIBLING
- * GET form, never nested: changing it re-prices the review and loses anything
- * typed since the last post, which is why it comes first. Values the buyer typed
+ * back with every value kept (QA U-1). The delivery block's fields and Update
+ * button belong to it the same way. Values the buyer typed
  * before a refused place come back from the page's draft (`addressValues`,
  * `emailValue`), with `fieldErrors` printed beside the fields they name.
  *
@@ -142,6 +141,12 @@ const {
 								aria-invalid={couponError !== null}
 								aria-describedby={couponError !== null ? "coupon-error coupon-note" : "coupon-note"}
 							/>
+							{/* This is the FIRST submit button of the place form, so it is the
+							    form's default button: Enter in any details field submits
+							    through it. place.ts treats an Apply whose code is the one
+							    already applied as a plain place, a DIFFERENT code as an apply
+							    (nothing placed), and a changed delivery as an update
+							    (checkout-values.test.ts pins all three). */}
 							<button
 								type="submit"
 								class="u-btn u-btn-ghost"
@@ -181,11 +186,15 @@ const {
 			)
 		}
 
-		{/* DELIVERY (ADR-0021) — a SIBLING GET form like the coupon's, never
-		    nested: choosing where the order goes re-prices the review. */}
+		{/* DELIVERY (ADR-0021). Choosing where the order goes re-prices the
+		    review. Like the coupon's, its fields and Update button belong to the
+		    PLACE form (`form="checkout-place"`), so updating it posts everything
+		    typed below and keeps it (QA U-1). Its own names (`deliveryCountry`,
+		    `deliveryRegion`, `deliveryMethod`) never collide with the place
+		    form's priced echo. */}
 		{
 			showDelivery && (
-				<form method="GET" action="/checkout" class="checkout-delivery" id="delivery">
+				<div class="checkout-delivery" id="delivery">
 					<fieldset class="checkout-group">
 						<legend class="u-label checkout-head-label">Delivery</legend>
 						{destinationError !== null && (
@@ -198,7 +207,12 @@ const {
 						<div class="checkout-fields">
 							<label class="checkout-field">
 								<span class="u-label">Country</span>
-								<select name="country" autocomplete="country" required>
+								<select
+									name="deliveryCountry"
+									form="checkout-place"
+									autocomplete="country"
+									required
+								>
 									<option value="">Choose a country…</option>
 									{countries.map((option) => (
 										<option value={option.code} selected={option.code === countryValue}>
@@ -214,7 +228,8 @@ const {
 								<input
 									type="text"
 									id="delivery-region"
-									name="region"
+									name="deliveryRegion"
+									form="checkout-place"
 									autocomplete="address-level1"
 									maxlength="6"
 									pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
@@ -228,18 +243,26 @@ const {
 						</div>
 						{/* The destination these options were priced for: a changed country or
 						    region drops a method chosen for the old one. */}
-						<input type="hidden" name="fromCountry" value={destination?.country ?? ""} />
-						<input type="hidden" name="fromRegion" value={destination?.region ?? ""} />
-						{summary.selection.couponCode !== null && (
-							<input type="hidden" name="coupon" value={summary.selection.couponCode} />
-						)}
+						<input
+							type="hidden"
+							name="fromCountry"
+							form="checkout-place"
+							value={destination?.country ?? ""}
+						/>
+						<input
+							type="hidden"
+							name="fromRegion"
+							form="checkout-place"
+							value={destination?.region ?? ""}
+						/>
 						{summary.shipping.status === "matched" && summary.shipping.options.length > 0 && (
 							<div class="checkout-methods" role="radiogroup" aria-label="Delivery options">
 								{summary.shipping.options.map((option) => (
 									<label class="checkout-method">
 										<input
 											type="radio"
-											name="method"
+											name="deliveryMethod"
+											form="checkout-place"
 											value={option.id}
 											disabled={option.disabled}
 											checked={option.selected}
@@ -251,12 +274,19 @@ const {
 							</div>
 						)}
 						<div>
-							<button type="submit" class="u-btn u-btn-ghost">
+							<button
+								type="submit"
+								class="u-btn u-btn-ghost"
+								form="checkout-place"
+								name="intent"
+								value="update-delivery"
+								formnovalidate
+							>
 								Update delivery
 							</button>
 						</div>
 					</fieldset>
-				</form>
+				</div>
 			)
 		}
 
