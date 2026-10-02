@@ -14,6 +14,8 @@ import {
 	cents,
 	currency,
 	formatMoney,
+	LOGIN_LINK_MAX_ACTIVE,
+	LOGIN_LINK_TTL_MS,
 	SESSION_COOKIE_NAME,
 	type AccountMeResult,
 	type AccountOrderResult,
@@ -38,11 +40,12 @@ export const LOGIN_LINK_SENT_COPY =
 /**
  * The plugin's per-address cap (ADR-0004: at most 3 unconsumed links per address,
  * each live for 15 minutes; past it a request sends nothing and answers exactly as
- * a sent one does). Mirrored here only to word the notices and to bound this
- * browser's own count below — the plugin enforces it, never the site.
+ * a sent one does) — the verifier's own constants, re-exported by the plugin, so
+ * the notices cannot drift from them (account.test.ts pins the copy to them).
+ * Used here only to bound this browser's own count; the plugin enforces the cap.
  */
-export const LOGIN_LINK_CAP = 3;
-export const LOGIN_LINK_WINDOW_MS = 15 * 60 * 1000;
+export const LOGIN_LINK_CAP = LOGIN_LINK_MAX_ACTIVE;
+export const LOGIN_LINK_WINDOW_MS = LOGIN_LINK_TTL_MS;
 
 /**
  * The notice for a browser that has itself asked for more than

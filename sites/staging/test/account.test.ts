@@ -27,6 +27,8 @@ import {
 	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
+	LOGIN_LINK_MAX_ACTIVE,
+	LOGIN_LINK_TTL_MS,
 	SESSION_COOKIE_NAME,
 } from "@otta-sh/plugin";
 import type { APIContext } from "astro";
@@ -36,6 +38,7 @@ import {
 	checkoutEmailNote,
 	LOGIN_LINK_CAP,
 	LOGIN_LINK_MANY_COPY,
+	LOGIN_LINK_WINDOW_MS,
 	LOGIN_LINK_SENT_COPY,
 	LOGIN_REQUESTS_COOKIE_NAME,
 	accountOrderStatus,
@@ -451,6 +454,16 @@ describe("account copy and formatting", () => {
 		for (const token of ["LOGIN_LINK_USED", "LOGIN_LINK_EXPIRED", "LOGIN_LINK_INVALID"]) {
 			expect(cartErrorMessage(token)).not.toBe(generic);
 			expect(cartErrorMessage(token)).toMatch(/sign-in link/);
+		}
+	});
+
+	test("the cap and window the copy names ARE the store's (no drift)", () => {
+		expect(LOGIN_LINK_CAP).toBe(LOGIN_LINK_MAX_ACTIVE);
+		expect(LOGIN_LINK_WINDOW_MS).toBe(LOGIN_LINK_TTL_MS);
+		const minutes = `${String(LOGIN_LINK_TTL_MS / 60_000)} minutes`;
+		for (const copy of [LOGIN_LINK_SENT_COPY, LOGIN_LINK_MANY_COPY]) {
+			expect(copy).toContain(`at most ${String(LOGIN_LINK_MAX_ACTIVE)} links`);
+			expect(copy).toContain(minutes);
 		}
 	});
 
