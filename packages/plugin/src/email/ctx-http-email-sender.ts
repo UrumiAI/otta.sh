@@ -45,6 +45,7 @@
 import { renderEmail, type EmailSender, type SendEmailInput } from "@otta-sh/domain";
 import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
 import type { PluginContext } from "../types.js";
+import { isDeliverableFromAddress } from "./from-address.js";
 
 /**
  * The from-address, in READABLE kv — the in-process equivalent of the service's
@@ -284,13 +285,49 @@ export function makeLoginEmailSender(
 	return makeEmailSender(ctx, egress, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
 }
 
-/** The configured from-address, or the documented default — never a throw and
- *  never an empty string a provider would reject as a malformed sender. */
+/**
+ * The configured from-address, or the documented default — never a throw and
+ * never an empty string a provider would reject as a malformed sender.
+ *
+ * A STORED UNDELIVERABLE ADDRESS IS USED, AND LOGGED — NEVER SILENTLY REPLACED.
+ * One saved before the Settings save refused reserved domains (or written to kv
+ * by anything but the form) would have every send refused by a real provider.
+ * Swapping in the default would not help — it is undeliverable too — and would
+ * hide which setting is wrong; so the value goes out as stored and the isolate
+ * logs, once, which setting to fix. The message names the key, never the value.
+ */
 async function readEmailFrom(ctx: PluginContext): Promise<string> {
+	let value: unknown;
 	try {
-		const value = await ctx.kv.get<string>(EMAIL_FROM_KEY);
-		return typeof value === "string" && value.length > 0 ? value : DEFAULT_EMAIL_FROM;
+		value = await ctx.kv.get<string>(EMAIL_FROM_KEY);
 	} catch {
 		return DEFAULT_EMAIL_FROM;
 	}
+	if (typeof value !== "string" || value.length === 0) return DEFAULT_EMAIL_FROM;
+	if (!isDeliverableFromAddress(value)) {
+		warnOnce(
+			"email-from-undeliverable",
+			"[otta] settings:emailFrom is not a deliverable address; sends will be refused",
+		);
+	}
+	return value;
+}
+
+/**
+ * Logged ONCE per isolate, like `in-process-commerce-client.ts`'s notices: a
+ * misconfiguration is a fact about the deployment, and a line per send (every
+ * login request, every outbox row) would bury everything else.
+ */
+const loggedOnce = new Set<string>();
+
+/** Clears the once-per-isolate latch. TESTS ONLY: without it, a case asserting
+ *  "no warning" passes vacuously whenever an earlier case already logged. */
+export function resetEmailWarningsForTesting(): void {
+	loggedOnce.clear();
+}
+
+function warnOnce(key: string, message: string): void {
+	if (loggedOnce.has(key)) return;
+	loggedOnce.add(key);
+	console.warn(message);
 }

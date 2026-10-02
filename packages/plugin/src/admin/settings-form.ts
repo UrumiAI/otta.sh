@@ -1,4 +1,5 @@
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import { isValidLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../storefront/login-link.js";
 import {
@@ -230,7 +231,11 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		fieldId: "emailFrom",
 		kvKey: EMAIL_FROM_KEY,
 		label: "Order email from-address",
-		placeholder: "no-reply@otta.local",
+		// A placeholder the save ACCEPTS. It used to be the runtime default,
+		// `no-reply@otta.local` — a reserved domain no provider sends from, which
+		// the save now refuses (`email/from-address.ts`). Shows the display-name
+		// form because that is what customers read in their inbox.
+		placeholder: "Your Shop <orders@yourdomain.com>",
 	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back for
@@ -629,6 +634,21 @@ export function createSettingsFormHandler(
 					title: "Payment settings not saved",
 					description:
 						"The sign-in link page must be an absolute http(s) URL with no username or password. Nothing was saved.",
+				});
+			}
+			// The from-address must be one a real provider will send from: a bare
+			// `addr@domain` or `Name <addr@domain>`, on a domain that is not a
+			// reserved name (`.local`, `.test`, `example.com`, …). Saving one used to
+			// leave an outbox whose every send the provider refused, behind a screen
+			// that said "saved". EMPTY stays allowed — clearing the box falls back to
+			// the dev default, which a local mail catcher accepts.
+			const emailFrom = submitted.get(EMAIL_FROM_KEY) ?? "";
+			if (emailFrom.length > 0 && !isDeliverableFromAddress(emailFrom)) {
+				return renderPage(ctx, client, {
+					variant: "error",
+					title: "Payment settings not saved",
+					description:
+						"The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form). Nothing was saved.",
 				});
 			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
