@@ -1,5 +1,10 @@
 import type { Currency } from "../money/cents.js";
-import type { IdempotencyKey, Sku } from "../money/ids.js";
+import {
+	idempotencyKey as brandIdempotencyKey,
+	orderId as brandOrderId,
+	type IdempotencyKey,
+	type Sku,
+} from "../money/ids.js";
 import type { FulfillmentKind } from "../orders/model.js";
 import {
 	type Cart,
@@ -9,6 +14,7 @@ import {
 	type RecordedCartMutation,
 } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
+import type { OrderStore } from "../ports/order-store.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
 
 /**
@@ -70,8 +76,56 @@ function isExpiredHeld(
 	);
 }
 
+/** Mint a new cart. There is no keyed variant here on purpose: the only code that
+ *  makes a create key is `replaceSpentCart`, which derives it server-side. */
 export async function createCart(deps: CartDeps, currency: Currency): Promise<string> {
 	return deps.cartStore.create(currency);
+}
+
+export type ReplaceSpentCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
+
+/** The cart deps, plus the order read the "finished" check needs. */
+export interface ReplaceSpentCartDeps extends CartDeps {
+	orderStore: Pick<OrderStore, "getById">;
+}
+
+/**
+ * The cart that REPLACES a spent one — a cart checked out into an order that can
+ * no longer be paid.
+ *
+ * The key is derived HERE, `rotate:<spentCartId>`, and this is the only code that
+ * makes a create key: the same spent cart always has the same replacement, so two
+ * requests racing to replace it converge on one cart. Cart ids are bearer secrets,
+ * so a spent cart's id grants access to the cart that replaces it — exactly as it
+ * already grants access to the spent cart itself. The replacement is in the spent
+ * cart's currency.
+ *
+ * Refused, in order: `CART_NOT_FOUND` (no such cart), `CART_NOT_CHECKED_OUT` (an
+ * active cart needs no replacing, and rotating it would orphan its lines), and
+ * `ORDER_NOT_FINISHED` — the cart names no order, the order cannot be found, or it
+ * is still `pending`. A pending order's payment may still happen, and its cart is
+ * how the shopper resumes it (the storefront applies the same rule before asking;
+ * this is where it cannot be skipped).
+ */
+export async function replaceSpentCart(
+	deps: ReplaceSpentCartDeps,
+	spentCartId: string,
+): Promise<ReplaceSpentCartResult> {
+	const spent = await deps.cartStore.get(spentCartId);
+	if (spent === null) return { ok: false, reason: "CART_NOT_FOUND" };
+	if (spent.state !== "checked_out") return { ok: false, reason: "CART_NOT_CHECKED_OUT" };
+	const order =
+		spent.orderId === null ? null : await deps.orderStore.getById(brandOrderId(spent.orderId));
+	if (order === null || order.state === "pending") {
+		return { ok: false, reason: "ORDER_NOT_FINISHED" };
+	}
+	const cartId = await deps.cartStore.create(
+		spent.currency,
+		brandIdempotencyKey(`rotate:${spentCartId}`),
+	);
+	return { ok: true, cartId };
 }
 
 /**

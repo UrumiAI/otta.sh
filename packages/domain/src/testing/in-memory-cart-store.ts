@@ -83,6 +83,8 @@ export class InMemoryCartStore implements CartStore {
 	#releaseHold: (reservationId: string) => void;
 
 	#carts = new Map<string, CartRow>();
+	/** Keyed creates: key → the cart it minted (see `CartStore.create`). */
+	#createKeys = new Map<string, string>();
 	#lines = new Map<string, LineRow>();
 	#holds = new Map<string, HoldRow>();
 	/** `cart_mutations` ledger: idempotencyKey → claim/completion record. */
@@ -94,9 +96,14 @@ export class InMemoryCartStore implements CartStore {
 		this.#releaseHold = options.releaseHold;
 	}
 
-	async create(currency: Currency): Promise<string> {
+	async create(currency: Currency, key?: IdempotencyKey): Promise<string> {
+		if (key !== undefined) {
+			const existing = this.#createKeys.get(key);
+			if (existing !== undefined) return existing;
+		}
 		const id = this.#idGen.newId();
 		this.#carts.set(id, { id, currency, state: "active", orderId: null });
+		if (key !== undefined) this.#createKeys.set(key, id);
 		return id;
 	}
 
