@@ -51,7 +51,12 @@ import {
 // ── Work order 02 INC-C5: the in-process x402 settle route ────────────────
 import { createX402SettleHandler, X402_SETTLE_ROUTE } from "./payments/x402-settle-route.js";
 // ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
-import { createActivateHandler, createCronHandler, withSweepBootstrap } from "./cron/index.js";
+import {
+	createActivateHandler,
+	createCronHandler,
+	SWEEP_HOOK_TIMEOUT_MS,
+	withSweepBootstrap,
+} from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -109,7 +114,9 @@ const plugin: SandboxedPlugin = {
 		// re-affirms; the wrappers above cover the configured deployment that reaches
 		// neither.
 		"plugin:activate": { handler: createActivateHandler() },
-		cron: { handler: createCronHandler() },
+		// The timeout is DECLARED, not inherited: the tick's time budget
+		// (`SWEEP_TICK_BUDGET_MS`) is derived from it. See `cron/index.ts`.
+		cron: { handler: createCronHandler(), timeout: SWEEP_HOOK_TIMEOUT_MS },
 	},
 	routes: {
 		// Cast to the route record's erased `unknown`-input shape — each

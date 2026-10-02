@@ -197,16 +197,34 @@ export {
 	createActivateHandler,
 	createCronHandler,
 	ensureSweepTaskScheduled,
+	MAINTENANCE_LEG_INTERVAL_MS,
+	MAINTENANCE_LEGS,
 	runCommerceSweeps,
+	SWEEP_EMAIL_SEND_TIMEOUT_MS,
+	SWEEP_HOOK_TIMEOUT_MS,
 	SWEEP_LEGS,
 	SWEEP_SCHEDULE,
 	SWEEP_TASK_NAME,
+	SWEEP_TICK_BUDGET_MS,
+	SWEEP_TICK_QUERY_BUDGET,
+	SWEEP_TICK_RESERVE_MS,
 	type CommerceSweepOptions,
 	type CommerceSweepSummary,
 	type SweepLeg,
 	type SweepLegOutcome,
 	type SweepScheduleOutcome,
 } from "./cron/index.js";
+// The "Background work per minute" setting — the sweep's per-tick query budget,
+// chosen per Cloudflare plan. Exported so a site or an ops script can read or
+// pre-set the same key the Settings screen writes.
+export {
+	BACKGROUND_WORK_KEY,
+	BACKGROUND_WORK_PRESETS,
+	DEFAULT_BACKGROUND_WORK,
+	MAX_BACKGROUND_WORK,
+	MIN_BACKGROUND_WORK,
+	validateBackgroundWork,
+} from "./cron/background-work-setting.js";
 // INC-C3 — the write-only payment/email secret keys and their fail-closed
 // readers. Exported so a deploying site can assert what the plugin stores, and
 // so INC-C1b's settle route can reach the Stripe webhook secret, without either

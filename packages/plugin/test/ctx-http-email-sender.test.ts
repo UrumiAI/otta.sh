@@ -231,6 +231,58 @@ describe("makeEmailSender — the composition root's fail-closed wiring", () => 
 		await expect(sender.send(input)).rejects.toThrow();
 		expect(seen[0]).toBeInstanceOf(AbortSignal);
 	});
+
+	test("a FUNCTION timeout is asked at each send — the cron tick's remaining budget, not a figure fixed up front", async () => {
+		const asked: number[] = [];
+		const budgets = [15, 25];
+		const sender = new CtxHttpEmailSender({
+			fetch: (_url: string, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+				}),
+			apiUrl: API_URL,
+			from: "orders@shop.test",
+			requestTimeoutMs: () => {
+				const next = budgets[asked.length] ?? 1;
+				asked.push(next);
+				return next;
+			},
+		});
+		// Our own abort is reported as a TIMEOUT, whatever the transport called it.
+		await expect(sender.send(input)).rejects.toMatchObject({ name: "EmailSendTimeoutError" });
+		await expect(sender.send(input)).rejects.toMatchObject({ name: "EmailSendTimeoutError" });
+		expect(asked).toEqual([15, 25]);
+	});
+
+	// The sweep counts a provider FAILURE as an attempt and a TIMEOUT not. An abort
+	// the sender's own signal caused is a timeout even when the transport rejects
+	// with a plain "aborted" error rather than a DOMException named TimeoutError —
+	// otherwise the inner signal winning the race against the sweep's timer would
+	// spend one of the row's attempts.
+	test("an abort its OWN deadline caused is an EmailSendTimeoutError, however the transport words it", async () => {
+		const sender = new CtxHttpEmailSender({
+			fetch: (_url: string, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(new Error("The operation was aborted")),
+					);
+				}),
+			apiUrl: API_URL,
+			from: "orders@shop.test",
+			requestTimeoutMs: 20,
+		});
+		await expect(sender.send(input)).rejects.toMatchObject({ name: "EmailSendTimeoutError" });
+	});
+
+	test("a transport failure that is NOT its own abort stays a failure", async () => {
+		const sender = new CtxHttpEmailSender({
+			fetch: () => Promise.reject(new Error("connection reset")),
+			apiUrl: API_URL,
+			from: "orders@shop.test",
+			requestTimeoutMs: 1000,
+		});
+		await expect(sender.send(input)).rejects.toThrow("connection reset");
+	});
 });
 
 /**
@@ -238,7 +290,8 @@ describe("makeEmailSender — the composition root's fail-closed wiring", () => 
  * route, and a throttled request skips it entirely — so a slow provider would
  * make a sent request seconds slower than a throttled one, and the latency
  * would say which it was. The login sender therefore carries a SHORT ceiling,
- * not the 30 s the cron-driven order emails can afford.
+ * not the 30 s default (which the cron tick does not use either — it passes its
+ * own per-send timeout).
  */
 describe("makeLoginEmailSender — the short ceiling on the inline login send", () => {
 	function hangingCtx(): PluginContext {
