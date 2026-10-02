@@ -390,9 +390,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		const gen = reload;
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
-			/** This read's own receipt; a receipt for a LATER read is left alone. */
-			const receipt = stockReceipt.current?.gen === gen ? stockReceipt.current : null;
-			const awaited = stockReceipt.current !== null && receipt === null;
+			/** The receipt this read settles: its own, or an older one — a read at
+			 *  least as new as the move's own re-read was asked for after the move was
+			 *  answered, so it includes the move (and the move's own read may have
+			 *  been cancelled or batched away by it). A receipt for a LATER read is
+			 *  left for that read. */
+			const pendingReceipt = stockReceipt.current;
+			const receipt = pendingReceipt !== null && pendingReceipt.gen <= gen ? pendingReceipt : null;
+			const awaited = pendingReceipt !== null && receipt === null;
 			if (isFailure(result)) {
 				setLoad({
 					status: "failed",
@@ -441,7 +446,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			const staleConfirm =
 				confirm === null || confirm.onHand === record.onHand
 					? null
-					: `Stock changed to ${String(record.onHand ?? 0)} while you were deciding — nothing was removed; check and try again.`;
+					: record.onHand === null
+						? "Stock could not be read — nothing was removed; check and try again."
+						: `Stock changed to ${String(record.onHand)} while you were deciding — nothing was removed; check and try again.`;
 			if (staleConfirm !== null) {
 				setConfirmRemove(null);
 				setStockMsg((prev) => ({
@@ -1028,6 +1035,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								Stock isn't tracked for this SKU yet. Contact your developer to set it up.
 							</span>
 						</div>
+					)}
+					{/* The last stock outcome survives the count going away under it — a
+					    remove confirm closed by that very change must still say why. */}
+					{hasSku && p.onHand === null && stockMsg !== null && (
+						<span className="otta-pricing-status" role="status" data-tone={stockMsg.tone}>
+							{stockMsg.text}
+						</span>
 					)}
 
 					<div className="otta-pricing-grid">

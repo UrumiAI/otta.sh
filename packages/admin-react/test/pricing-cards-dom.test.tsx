@@ -1029,3 +1029,168 @@ test("if the re-read after a lost answer fails, the held move and its Retry stay
 	expect(writes()[1]).toEqual(writes()[0]);
 	expect(c.textContent).toContain("Already applied — now 29 in stock");
 });
+
+// -- a newer re-read includes the move: the receipt never waits forever -----
+
+/**
+ * A server whose writes are released by hand, per action, and whose next read
+ * can be held or failed. `products:save` answers "Saved"; a stock write applies
+ * its quantity when released.
+ */
+function manualServer(start: number) {
+	let onHand = start;
+	const pendingWrites = new Map<string, () => void>();
+	let heldRead: (() => void) | null = null;
+	let holdNextRead = false;
+	let failNextRead = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") {
+			if (failNextRead) {
+				failNextRead = false;
+				return Promise.resolve(
+					json({ ok: false, title: "Products are unavailable", description: "Try again." }),
+				);
+			}
+			if (holdNextRead) {
+				holdNextRead = false;
+				const snapshot = onHand;
+				return new Promise<Response>((resolve) => {
+					heldRead = () => {
+						resolve(detail({ onHand: snapshot }));
+					};
+				});
+			}
+			return Promise.resolve(detail({ onHand }));
+		}
+		const actionId = String(body["action_id"]);
+		const value = body["value"] as Record<string, string>;
+		return new Promise<Response>((resolve) => {
+			pendingWrites.set(actionId, () => {
+				if (actionId === "products:restock") onHand += Number(value["qty"]);
+				resolve(
+					json({
+						ok: true,
+						notice: {
+							variant: "default",
+							title: actionId === "products:save" ? "Saved" : "Stock added",
+							description: "",
+						},
+					}),
+				);
+			});
+		});
+	});
+	return {
+		holdNextRead: () => {
+			holdNextRead = true;
+		},
+		failNextRead: () => {
+			failNextRead = true;
+		},
+		/** Resolve a pending write inside the current act, letting its answer run. */
+		releaseWrite: async (actionId: string) => {
+			pendingWrites.get(actionId)?.();
+			pendingWrites.delete(actionId);
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+		},
+		releaseHeldRead: () => {
+			heldRead?.();
+			heldRead = null;
+		},
+	};
+}
+
+/** Edit the price, start an Add of 5 (in flight), then press Save (in flight). */
+async function addThenSave(c: HTMLElement): Promise<void> {
+	await type(input(c, "Price"), "30");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+}
+
+const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+test("a Save's re-read that OVERTAKES the Add's own re-read still prints the Add's receipt, once, and releases the buttons", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	server.holdNextRead(); // the Add's own re-read will hang
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+	});
+	await flush();
+	expect(button(c, "Add").disabled).toBe(true); // waiting for a re-read
+	await React.act(async () => {
+		await server.releaseWrite("products:save"); // a newer re-read, which includes the Add
+	});
+	await flush();
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(button(c, "Add").disabled).toBe(false);
+	expect(button(c, "Remove").disabled).toBe(false);
+	// The overtaken read landing late changes nothing.
+	await React.act(async () => {
+		server.releaseHeldRead();
+	});
+	await flush();
+	expect(occurrences(c.textContent ?? "", "Added 5 — now")).toBe(1);
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+});
+
+test("an Add's and a Save's re-reads asked for in ONE batch still print the receipt and release the buttons", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+		await server.releaseWrite("products:save");
+	});
+	await flush();
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(button(c, "Add").disabled).toBe(false);
+});
+
+test("a NEWER re-read that fails releases the stock buttons, and Try again brings them back usable", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	server.holdNextRead(); // the Add's own re-read hangs
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+	});
+	await flush();
+	server.failNextRead(); // the Save's newer re-read fails
+	await React.act(async () => {
+		await server.releaseWrite("products:save");
+	});
+	await flush();
+	expect(c.textContent).toContain("Products are unavailable");
+	await fire(button(c, "Try again"), "click");
+	await flush();
+	expect(onHandShown(c)).toBe("29");
+	expect(button(c, "Add").disabled).toBe(false);
+	expect(button(c, "Remove").disabled).toBe(false);
+});
+
+test("a remove confirm on a count that can no longer be read says so, never 'changed to 0'", async () => {
+	let onHand: number | null = 24;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			onHand = null; // the inventory record is gone by the re-read
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		return Promise.resolve(detail({ onHand }));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c);
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain(
+		"Stock could not be read — nothing was removed; check and try again.",
+	);
+	expect(c.textContent).not.toContain("changed to 0");
+});
