@@ -1318,6 +1318,27 @@ describe("couponStatus — boundaries and precedence (mirrors the domain's valid
 	const at = (over: Partial<Parameters<typeof couponStatus>[0]>) =>
 		couponStatus({ startsAt: null, expiresAt: null, maxUses: null, usesCount: 0, ...over }, NOW);
 
+	test("bounds are compared as INSTANTS, like the domain: a millisecond-less bound is judged right", () => {
+		const half = "2026-07-31T12:00:00.500Z";
+		const status = (over: Partial<Parameters<typeof couponStatus>[0]>) =>
+			couponStatus({ startsAt: null, expiresAt: null, maxUses: null, usesCount: 0, ...over }, half);
+		expect(status({ startsAt: "2026-07-31T12:00:00Z" })).toBe("active");
+		expect(status({ expiresAt: "2026-07-31T12:00:00Z" })).toBe("expired");
+	});
+
+	test("an offset-bearing bound is the instant it denotes — expiry ended, start not yet arrived", () => {
+		// NOW is 12:00:00.000Z.
+		expect(at({ expiresAt: "2026-07-31T13:00:00+01:00" })).toBe("expired");
+		expect(at({ startsAt: "2026-07-31T07:00:01-05:00" })).toBe("scheduled");
+	});
+
+	test("an UNREADABLE bound reads `invalid` — checkout refuses it, and it is never shown as live", () => {
+		for (const bad of ["2026-13-01", "2026-07-31T12:00:00", "garbage"]) {
+			expect(at({ startsAt: bad }), `start ${bad}`).toBe("invalid");
+			expect(at({ expiresAt: bad }), `expiry ${bad}`).toBe("invalid");
+		}
+	});
+
 	test("the end bound is EXCLUSIVE: expiring exactly now is already expired, a millisecond later is still active", () => {
 		expect(at({ expiresAt: NOW })).toBe("expired");
 		expect(at({ expiresAt: "2026-07-31T12:00:00.001Z" })).toBe("active");

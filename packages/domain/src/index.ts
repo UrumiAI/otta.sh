@@ -16,6 +16,7 @@ export {
 	isCouponIdCollisionError,
 } from "./pricing/coupon-code.js";
 export {
+	parseCouponInstant,
 	validateCoupon,
 	type CouponValidationContext,
 	type CouponValidationFailure,

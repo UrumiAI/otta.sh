@@ -4877,6 +4877,72 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).toBe(true);
 		});
 
+		test("a coupon window bound is STORED canonically, so an untouched save can never move it", async () => {
+			const windowOf = async (code: string) =>
+				(await client.listCoupons({ search: code })).coupons[0];
+			const base = { type: "fixed_amount", amountCents: 500, currency: "USD" };
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-z",
+						code: "CANONZ",
+						startsAt: "2026-10-02T12:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-off",
+						code: "CANONOFF",
+						expiresAt: "2026-10-02T13:00:00+01:00",
+					})
+				).ok,
+			).toBe(true);
+			expect((await windowOf("CANONZ"))?.startsAt).toBe("2026-10-02T12:00:00.000Z");
+			expect((await windowOf("CANONOFF"))?.expiresAt).toBe("2026-10-02T12:00:00.000Z");
+			// ISO's end-of-day `24:00` is accepted and stored as the next midnight it denotes.
+			expect(
+				(
+					await client.updateCoupon("canon-z", {
+						amountCents: 500,
+						expiresAt: "2026-10-02T24:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect((await windowOf("CANONZ"))?.expiresAt).toBe("2026-10-03T00:00:00.000Z");
+		});
+
+		test("a coupon window bound that is not a zoned ISO instant is refused on create and edit", async () => {
+			// Checkout fails closed on an unreadable bound; the write side refuses
+			// one in the first place, so an API writer cannot store a coupon that
+			// can never be redeemed by accident. The wire's 64-char bound still holds.
+			const base = {
+				id: "win-c",
+				code: "WINC",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			for (const bad of ["2026-13-01", "2026-10-02T12:00:00", "soon"]) {
+				await expect(client.createCoupon({ ...base, startsAt: bad })).rejects.toMatchObject({
+					code: "INVALID_INPUT",
+					field: "startsAt",
+				});
+			}
+			await expect(
+				client.createCoupon({ ...base, expiresAt: `2026-10-02T12:00:00Z${" ".repeat(60)}` }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+			expect(
+				(await client.createCoupon({ ...base, expiresAt: "2026-10-02T13:00:00+01:00" })).ok,
+			).toBe(true);
+			await expect(
+				client.updateCoupon("win-c", { amountCents: 500, expiresAt: "2026-13-01" }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
