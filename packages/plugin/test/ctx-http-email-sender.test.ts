@@ -138,6 +138,8 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 			"order-cancelled": true,
 			"order-refunded": true,
 			"order-expired": true,
+			"order-late-payment-refunded": true,
+			"order-refund-issued": true,
 		} satisfies Record<EmailTemplate, true>);
 		for (const name of names) {
 			expect(name).toMatch(/^[A-Za-z0-9_-]{1,256}$/u);

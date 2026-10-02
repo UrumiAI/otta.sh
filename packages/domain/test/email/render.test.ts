@@ -372,7 +372,8 @@ describe("renderEmail refund emails", () => {
 			noticeAmountCents: 600,
 			noticeCurrency: "USD",
 		});
-		expect(rendered.subject).toBe("Refund issued — order ord-1");
+		// Named by its products (order-label-not-id); with no lines, "Your order".
+		expect(rendered.subject).toBe("Refund issued — Your order");
 		// Neutral: it also announces a FULL refund on an order that cannot flip to
 		// refunded (a cancellation that lost the race to a shipment).
 		expect(rendered.text).toContain("We've issued a refund for your order.");
