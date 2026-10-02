@@ -22,6 +22,7 @@
  * The service remains the sole authority on identity — it derives `customerId`
  * from the bearer token (§4); this layer only transports it.
  */
+import { isIdToken, LOGIN_TOKEN_MAX } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
@@ -158,6 +159,13 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 			if (!isNonEmptyString(challengeId) || !isNonEmptyString(token)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			// A challenge id or token no store could have minted is an INVALID LINK —
+			// the answer a tampered or truncated link deserves — not the client's
+			// thrown input error, which renderGuard would report as RENDER_FAILED and
+			// the site as an outage (QA U-6).
+			if (!isIdToken(challengeId) || token.length > LOGIN_TOKEN_MAX) {
+				return { ok: false as const, reason: "INVALID" as const };
+			}
 			const result = await (await makeCommerceClient(ctx)).verifyLogin(challengeId, token);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			return {
@@ -208,7 +216,12 @@ export function createAccountOrderHandler(): RouteHandler<AccountOrderInput> {
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			if (!isNonEmptyString(orderId)) return { ok: false as const, error: "NOT_FOUND" };
+			// An id no store could have minted is simply not found — never the
+			// client's thrown input error, which renderGuard would report as
+			// RENDER_FAILED and the account page as a 503 outage (QA U-6).
+			if (!isNonEmptyString(orderId) || !isIdToken(orderId)) {
+				return { ok: false as const, error: "NOT_FOUND" };
+			}
 			const result = await (await makeCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
 			if (result.ok) return { ok: true as const, order: result.order };
 			if (result.reason === "NOT_FOUND") return { ok: false as const, error: "NOT_FOUND" };

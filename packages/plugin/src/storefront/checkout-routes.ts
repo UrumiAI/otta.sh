@@ -24,6 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
+import { isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -590,8 +591,19 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 	return (routeCtx, ctx): Promise<OrderRouteResult> =>
 		renderGuard(STOREFRONT_ORDER_ROUTE, async () => {
+			// Not a string at all is a malformed CALL (no URL produces one):
+			// INVALID_INPUT. Any string that cannot be an order id — blank,
+			// over-long, carrying whitespace or a control character — names no order:
+			// ORDER_NOT_FOUND, which the page renders as "not found". Before, such ids
+			// were INVALID_INPUT or threw out of the client as RENDER_FAILED, both
+			// "Something went wrong" on the page (QA U-6).
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
 			const input = parseOrderRouteInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.getPublicOrder(input.orderId);

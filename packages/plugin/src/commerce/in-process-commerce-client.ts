@@ -141,6 +141,7 @@ import {
 	requireBoundedText,
 	requireCurrencyCode,
 	requireDestination,
+	LOGIN_TOKEN_MAX,
 	requireIdToken,
 	requireIdempotencyKey,
 	requireMoney,
@@ -713,7 +714,7 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
 		requireIdToken("challengeId", challengeId);
-		requireBoundedText("token", token, 1, 400);
+		requireBoundedText("token", token, 1, LOGIN_TOKEN_MAX);
 		const result = await verifyLogin(
 			{
 				credentialVerifier: this.#stores.credentialVerifier,

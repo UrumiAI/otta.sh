@@ -39,6 +39,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import { CART_LINE_MAX_QTY } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -156,6 +157,9 @@ export type CartReadRouteResult =
 export type CartLineMutationRouteResult<T> =
 	| ({ ok: true } & T)
 	| { ok: false; error: "INVALID_INPUT" }
+	/** A quantity over {@link CART_LINE_MAX_QTY} — its own token, so a storefront
+	 *  can name the limit instead of a generic failure. */
+	| { ok: false; error: "QTY_TOO_LARGE" }
 	| { ok: false; reason: CartFailureReason }
 	| RenderGuardFailure;
 
@@ -175,6 +179,17 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isPositiveInt(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * A positive integer OVER the shopper-facing cap: the route's own typed
+ * QTY_TOO_LARGE, checked here rather than left to the client's `requireQty`
+ * throw, which renderGuard would log and answer as RENDER_FAILED — "Something
+ * went wrong" for a shopper who typed a big number (QA U-6). The cap is per
+ * REQUEST: an add that takes an existing line past it is not refused here.
+ */
+function isOverCartQtyCap(value: number): boolean {
+	return value > CART_LINE_MAX_QTY;
 }
 
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
@@ -292,6 +307,7 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
 			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.addCartLine(
 				cartId,
@@ -319,6 +335,7 @@ export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateR
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
 			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.adjustCartLine(
 				cartId,

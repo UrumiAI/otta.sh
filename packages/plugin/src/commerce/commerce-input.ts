@@ -90,6 +90,10 @@ export function isIdToken(value: string): boolean {
 	return value.length > 0 && value.length <= ID_MAX && ID_CHARSET.test(value);
 }
 
+/** A sign-in link token's ceiling. Exported so the verify route answers an
+ *  over-long token as an invalid link instead of letting this client throw. */
+export const LOGIN_TOKEN_MAX = 400;
+
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
 export const CART_LINE_MAX_QTY = 10_000;
