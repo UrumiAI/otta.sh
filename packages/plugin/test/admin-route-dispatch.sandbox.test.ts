@@ -237,12 +237,13 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		// A bookmark to a retired Block Kit page (`/orders`, `/products` moved to
 		// the React console — ADR-0015) or a typo used to render an empty tree.
 		sandbox = await loadPluginInSandbox({ allowedHosts: [] });
-		for (const page of ["/orders", "/nope"]) {
+		for (const page of ["/orders", "/nope", "/<img src=x onerror=alert(1)>"]) {
 			const blocks = blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page }));
 			const header = blocks.find((b) => b.type === "header");
 			expect(header?.text, page).toBe("Page not found");
 			const context = blocks.find((b) => b.type === "context");
-			expect(String(context?.text)).toContain(page);
+			// The requested path is URL-controlled input: it is never echoed back.
+			expect(JSON.stringify(blocks)).not.toContain(page.slice(1));
 			expect(String(context?.text).length).toBeLessThanOrEqual(140);
 			expect(JSON.stringify(blocks)).not.toMatch(/404|ROUTE_NOT_FOUND/);
 		}

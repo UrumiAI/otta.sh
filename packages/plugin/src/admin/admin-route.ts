@@ -166,7 +166,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		// 6. An UNKNOWN PAGE gets a not-found screen, not an empty tree. A bookmark
 		// to a retired Block Kit page (`/orders`, `/products` — ADR-0015) or a typo
 		// used to render nothing at all, which reads as a broken console.
-		if (type === "page_load" && page !== undefined) return pageNotFound(page);
+		if (type === "page_load" && page !== undefined) return pageNotFound();
 
 		// 7. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
@@ -184,15 +184,16 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
  * that needs either a route on `otta-console` (an ADR-0014 amendment) or a host
  * change, and is out of this module's reach.
  */
-function pageNotFound(page: string): { blocks: Block[] } {
-	// Bounded so the interpolated path cannot push the line past the budget.
-	const shown = page.length > 32 ? `${page.slice(0, 31)}…` : page;
+function pageNotFound(): { blocks: Block[] } {
+	// THE REQUESTED PATH IS NOT ECHOED. It is URL-controlled text, and the
+	// renderer is the only thing standing between it and the page; naming it buys
+	// the operator nothing they cannot read in their own address bar.
 	return {
 		blocks: [
 			{ type: "header", text: "Page not found" },
 			{
 				type: "context",
-				text: `There is no Otta page at ${shown}. Pick one from the sidebar — Orders and Pricing & inventory are there too.`,
+				text: "This Otta admin page doesn't exist. Pick one from the sidebar — Orders and Pricing & inventory are there too.",
 			},
 		],
 	};
