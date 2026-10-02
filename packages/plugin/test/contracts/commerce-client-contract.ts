@@ -4355,6 +4355,23 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect((await client.getCoupon("DUPCODE"))?.id).toBe("dup-cpn");
 		});
 
+		test("a create under a parent that does not exist ANSWERS 404 and writes nothing", async () => {
+			// The stores raise a missing zone/method only after giving back the id
+			// they claimed, so — like a collision — it is known to have written nothing.
+			expect(
+				await client.createMethod("no-such-zone", { id: "orphan-m", name: "M", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 404 });
+			expect(
+				await client.createRate("no-such-method", { currency: "USD", amountCents: 1 }),
+			).toEqual({ ok: false, status: 404 });
+			expect(await client.getRate("no-such-method", "USD")).toBeNull();
+			// The claimed method id was given back: it can be used under a real zone.
+			await client.createZone({ id: "real-z", name: "Real" });
+			expect(
+				(await client.createMethod("real-z", { id: "orphan-m", name: "M", type: "flat_rate" })).ok,
+			).toBe(true);
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
