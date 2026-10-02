@@ -32,6 +32,7 @@ interface Props {
 const {
 	order,
 	stamp,
+	orderLabel,
 	failureMessage,
 	shouldPoll,
 	pollHop,
@@ -75,7 +76,7 @@ const {
 				state={order.state}
 				headline={stamp.headline}
 				body={stamp.body}
-				reference={order.id}
+				orderLabel={orderLabel}
 			>
 				{/* The hold ribbon's grammar, running indeterminate and
 				    SCRIPT-FREE: there is no duration to drain against, so the

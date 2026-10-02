@@ -74,10 +74,12 @@ const {
 				   PaymentIntent stays confirmable, and a payment can land just after
 				   the TTL sweep. The public order carries no reconciliation flag, so
 				   this copy makes no claim about money either way — and promises no
-				   particular outcome: reconciliation may refund OR fulfil the order. */
+				   particular outcome: reconciliation may refund OR fulfil the order.
+				   It asks for the EMAIL, not an order number: a shopper is never
+				   shown the order id, and the store finds an order by its buyer. */
 				<Notice lead="This checkout has ended.">
 					Its order can no longer be paid. If a payment did go through, contact the store with
-					your order number — shown on
+					the email address you ordered with — its status is on
 					<a href={`/orders/${encodeURIComponent(locked.id)}`}>your order page</a> — and they
 					will refund it or complete your order. Start a new cart to order again.
 				</Notice>

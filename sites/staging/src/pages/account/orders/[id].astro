@@ -11,7 +11,7 @@
  * The lines are the purchase-time snapshot (title and price as bought), which is
  * what a receipt must show.
  */
-import { ACCOUNT_ORDER_ROUTE, type AccountOrderResult } from "@otta-sh/plugin";
+import { ACCOUNT_ORDER_ROUTE, orderLabel, type AccountOrderResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
@@ -71,12 +71,16 @@ const totals =
 				value: orderMoney(amount as number, order.totals.currency),
 			}));
 
+/** The order's name for the shopper — its products, never the id in the URL
+ *  (`orderLabel`, the same function the order emails use). */
+const label = order === null ? "Order" : orderLabel(order.lines);
+
 const model: AccountOrderModel = {
 	order:
 		order === null
 			? null
 			: {
-					id: order.id,
+					label,
 					state: orderStateLabel(order.state),
 					ledgerRows,
 					totals,
@@ -89,6 +93,6 @@ const model: AccountOrderModel = {
 <Storefront
 	view="accountOrder"
 	model={model}
-	title={order === null ? "Order" : `Order ${order.id}`}
+	title={label}
 	currency={order?.currency ?? null}
 />
