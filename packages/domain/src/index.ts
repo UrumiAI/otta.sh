@@ -253,6 +253,10 @@ export {
 	orderLabel,
 	type OrderLabelLine,
 } from "./orders/order-label.js";
+// What an order's total is called ("Paid" / "Total") and what the ledger shows
+// refunded — shared by the order emails and, through `@otta-sh/plugin`, the
+// storefront's order pages.
+export { orderTotalLabel, recordedRefundTotal } from "./orders/order-total-label.js";
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
