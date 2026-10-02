@@ -824,7 +824,7 @@ test("a voided attempt is not listed as a refund, and an in-flight one is labell
 	);
 });
 
-test("the ledger shows the provider's refund id from the wire's refundRef, and the idempotency key to match it by", async () => {
+test("the ledger shows the provider's refund id from the wire's refundRef, and an UNKNOWN-outcome row's idempotency key to match it by", async () => {
 	const wired: RefundsSummary = {
 		...CAPTURED,
 		refunds: [
@@ -858,11 +858,39 @@ test("the ledger shows the provider's refund id from the wire's refundRef, and t
 	expect(refColumn).toBeGreaterThan(-1);
 	expect(keyColumn).toBeGreaterThan(-1);
 	expect(cellIn(ledger, 0, refColumn).textContent).toBe("re_3PwireRef");
-	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("admin-refund:7e4ce728:500000:0");
+	// A settled refund is matched by its provider id; its key is plumbing (QA:
+	// "the refunds table shows idempotency keys") and is not printed.
+	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("—");
 	// An unknown-outcome row has no provider id — its KEY is how it is found in the
 	// provider's request log.
 	expect(cellIn(ledger, 1, refColumn).textContent).toBe("—");
 	expect(cellIn(ledger, 1, keyColumn).textContent).toBe("admin-refund:7e4ce728:200000:500000");
+});
+
+test("a ledger of SETTLED refunds carries no idempotency-key column at all", async () => {
+	// The key exists for one job — finding an unknown-outcome refund in the
+	// provider's request log (the unverified note says so). With nothing unknown,
+	// a column of `admin-refund:7e4ce728:500000:0` strings is noise in a money table.
+	const settled: RefundsSummary = {
+		...CAPTURED,
+		refunds: [
+			{
+				amountCents: REFUNDED_CENTS,
+				currency: CUR,
+				refundRef: "re_3PwireRef",
+				idempotencyKey: "admin-refund:7e4ce728:500000:0",
+				refundedBy: "ops@example.test",
+				createdAt: "2026-03-04T11:00:00.000Z",
+				status: "recorded",
+			},
+		],
+	};
+	const view = await show(detailFor("paid", settled));
+	await fire(tab(view, "money"), "click");
+	const ledger = table(view, "detail-refund-ledger");
+	const headers = [...ledger.querySelectorAll("thead th")].map((th) => th.textContent);
+	expect(headers).not.toContain("Idempotency key");
+	expect(ledger.textContent).not.toContain("admin-refund:");
 });
 
 test("the refund confirm sends the FINALIZED total as its watermark", async () => {
