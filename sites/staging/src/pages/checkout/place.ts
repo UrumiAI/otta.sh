@@ -53,8 +53,15 @@ import {
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { busyResponse, dispatchOttaRoute, formString, isBusyResult } from "../../lib/otta-api.js";
-import { isCodeShapedRegion } from "@otta-sh/plugin";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formString,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../lib/otta-api.js";
+import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -119,6 +126,18 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	if (region !== undefined && !isCodeShapedRegion(region)) {
 		return { ok: false, error: SHIPPING_REGION_CODE_REQUIRED, partial: false };
 	}
+	// Over the domain's own per-field bound (measured after trimming, as the
+	// domain measures it) is the ADDRESS error it is, refused here. Dispatched,
+	// it failed the plugin's bound as the generic INVALID_INPUT — "Something
+	// went wrong" for a buyer whose street name was simply too long (QA U-6).
+	// The inputs carry the same numbers as `maxlength`; this is for whatever
+	// gets past them.
+	for (const field of [...TYPED_ADDRESS_FIELDS, ...OPTIONAL_ADDRESS_FIELDS]) {
+		const value = formString(form.get(field));
+		if (value !== undefined && value.length > ORDER_ADDRESS_MAX_LENGTHS[field]) {
+			return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false };
+		}
+	}
 
 	const address: Record<string, string> = {};
 	for (const [field, value] of typed) address[field] = value!;
@@ -144,7 +163,8 @@ async function place(context: APIContext): Promise<Response> {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
 	// every redirect below can carry it back: it is not personal data. Trimmed,

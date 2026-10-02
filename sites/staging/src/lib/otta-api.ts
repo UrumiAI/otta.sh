@@ -266,6 +266,33 @@ async function dispatchOnce<TResult>(
 	}
 }
 
+/**
+ * The request's form body, or `null` when it is not one.
+ *
+ * `request.formData()` THROWS on anything but a well-formed urlencoded or
+ * multipart body — JSON, no Content-Type, a truncated multipart, no body at
+ * all — and every form endpoint used to await it bare, so a curl, a bot or a
+ * broken client became an unhandled exception and the host's 500 (QA U-6).
+ * That is the caller's mistake, not ours: the endpoint answers
+ * {@link notAFormResponse} instead. Call it AFTER `rejectCrossOrigin`, as the
+ * endpoints read the body.
+ */
+export async function readFormBody(request: Request): Promise<FormData | null> {
+	try {
+		return await request.formData();
+	} catch {
+		return null;
+	}
+}
+
+/** The 400 a form endpoint answers when {@link readFormBody} found no form. */
+export function notAFormResponse(): Response {
+	return new Response("Bad request: expected a form submission", {
+		status: 400,
+		headers: { "Content-Type": "text/plain; charset=utf-8" },
+	});
+}
+
 /** FormData value → trimmed non-empty string, else undefined. */
 export function formString(value: FormDataEntryValue | null): string | undefined {
 	if (typeof value !== "string") return undefined;

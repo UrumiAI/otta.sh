@@ -1663,9 +1663,24 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	});
 
 	test.each([
-		["a whitespace-only required field", { ...SHIP_TO, name: "   " }],
-		["a field over the domain's cap", { ...SHIP_TO, country: "X".repeat(101) }],
+		["line1 over the domain's cap", { ...SHIP_TO, line1: "x".repeat(201) }],
+		["the country over the domain's cap", { ...SHIP_TO, country: "X".repeat(101) }],
 	])(
+		"an over-long ship-to field (%s) is the typed INVALID_SHIPPING_ADDRESS before any order or intent exists (QA U-6)",
+		async (_label, shippingAddress) => {
+			const cartId = await seedThreeLineCart();
+			orderOps.length = 0;
+
+			expect(await placeCart(cartId, { shippingAddress })).toEqual({
+				ok: false,
+				reason: "INVALID_SHIPPING_ADDRESS",
+			});
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+		},
+	);
+
+	test.each([["a whitespace-only required field", { ...SHIP_TO, name: "   " }]])(
 		"a ship-to the domain would refuse (%s) is refused as INVALID_INPUT before any order or intent exists",
 		async (_label, shippingAddress) => {
 			const cartId = await seedThreeLineCart();

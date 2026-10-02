@@ -27,7 +27,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@otta-sh/plugin";
+import {
+	ORDER_ADDRESS_MAX_LENGTHS,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	type CheckoutSummaryRouteResult,
+} from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
 	CHECKOUT_COOKIE_MAX_AGE_SECONDS,
@@ -1053,6 +1057,59 @@ describe("the delivery address at place (ADR-0021)", () => {
 
 		for (const value of Object.values(TYPED))
 			expect(location).not.toContain(encodeURIComponent(value));
+	});
+});
+
+describe("an address field over the domain's length bound (QA U-6)", () => {
+	const FULL = {
+		...VALID_FORM,
+		name: "A Buyer",
+		line1: "1 Road",
+		city: "Town",
+		postalCode: "12345",
+		country: "GB",
+	};
+
+	test.each(
+		Object.entries(ORDER_ADDRESS_MAX_LENGTHS).filter(
+			([f]) => f !== "country" && f !== "email" && f !== "region",
+		),
+	)(
+		"%s over %i characters is INVALID_SHIPPING_ADDRESS, refused HERE — never dispatched",
+		async (field, max) => {
+			const { handler, calls } = makeHandler();
+			const { context } = makeContext({ ...FULL, [field]: "x".repeat(max + 1) }, handler);
+
+			const response = await PLACE_POST(context);
+
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toContain("error=INVALID_SHIPPING_ADDRESS");
+			expect(calls).toHaveLength(0);
+		},
+	);
+
+	test("a field exactly AT its bound is fine", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{ ...FULL, line1: "x".repeat(ORDER_ADDRESS_MAX_LENGTHS.line1) },
+			handler,
+		);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
+	});
+
+	test("the bound is measured AFTER trimming, as the domain measures it", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{ ...FULL, city: `  ${"x".repeat(ORDER_ADDRESS_MAX_LENGTHS.city)}  ` },
+			handler,
+		);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
 	});
 });
 

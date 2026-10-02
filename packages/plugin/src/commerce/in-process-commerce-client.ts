@@ -145,6 +145,8 @@ import {
 	requireBoundedText,
 	requireCurrencyCode,
 	requireDestination,
+	LOGIN_TOKEN_MAX,
+	BUYER_REF_MAX,
 	requireIdToken,
 	requireIdempotencyKey,
 	requireMoney,
@@ -727,7 +729,7 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
 		requireIdToken("challengeId", challengeId);
-		requireBoundedText("token", token, 1, 400);
+		requireBoundedText("token", token, 1, LOGIN_TOKEN_MAX);
 		const result = await verifyLogin(
 			{
 				credentialVerifier: this.#stores.credentialVerifier,
@@ -967,7 +969,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
 		requireIdempotencyKey(idempotencyKey);
-		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
+		requireBoundedText("buyerRef", input.buyerRef, 1, BUYER_REF_MAX);
 		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);

@@ -10,6 +10,7 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import Notice from "../src/components/Notice.astro";
+import { CART_LINE_MAX_QTY } from "@otta-sh/plugin";
 import QtyField from "../src/components/QtyField.astro";
 
 let container: AstroContainer;
@@ -97,6 +98,13 @@ describe("QtyField — a quantity, in the data face", () => {
 		expect(html).toContain('value="1"');
 	});
 
+	test("never offers more than the cart's cap by default — the plugin's own number", async () => {
+		// A quantity over the cap is refused by the plugin (QA U-6); the field
+		// says so first, so the browser stops it before it is ever submitted.
+		expect(await qty({})).toContain(`max="${String(CART_LINE_MAX_QTY)}"`);
+		expect(await qty({ max: 5 })).toContain('max="5"');
+	});
+
 	test("never offers a quantity below one", async () => {
 		expect(await qty({})).toContain('min="1"');
 		expect(await qty({ min: 0 })).toContain('min="0"');
@@ -175,7 +183,7 @@ describe("QtyField — which element a prop lands on", () => {
 		const html = await qty({});
 		expect(input(html)).not.toMatch(/\sdisabled/);
 		expect(input(html)).not.toContain("form=");
-		expect(input(html)).not.toContain("max=");
+		// `max` is not in this list: it has a default, the cart's cap (above).
 		expect(input(html)).not.toContain("aria-describedby");
 		expect(input(html)).not.toContain("id=");
 	});
