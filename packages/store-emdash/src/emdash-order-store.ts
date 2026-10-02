@@ -998,7 +998,10 @@ export class EmdashOrderStore implements OrderStore {
 	// -- lists, search, counts, the customer view, guest linking ---------------
 
 	/**
-	 * Every order a customer owns, `createdAt ASC, id ASC` — the SQL's own ordering.
+	 * Every order a customer owns, NEWEST FIRST — `createdAt DESC, id DESC`, the port's
+	 * order (a shopper's list leads with the order they just placed). The index orders
+	 * by `createdAt` alone, so the id tie-break is applied in code, exactly as the admin
+	 * list's merge does ({@link byNewestFirst}).
 	 *
 	 * The SQL predicate is `customer_id = :customerId`, an EQUALITY and not the list's
 	 * union: this read is reached from a session whose identity is already resolved, and
@@ -1012,11 +1015,11 @@ export class EmdashOrderStore implements OrderStore {
 		const docs = await this.#scanOrders(
 			"listForCustomer",
 			{ customerKey: customerId },
-			{ createdAt: "asc" },
+			{ createdAt: "desc" },
 			Number.POSITIVE_INFINITY,
 			(doc) => doc.customerId === customerId,
 		);
-		return docs.map((doc) => toOrder(doc));
+		return docs.toSorted(byNewestFirst).map((doc) => toOrder(doc));
 	}
 
 	/**
@@ -1244,10 +1247,13 @@ export class EmdashOrderStore implements OrderStore {
 			holdExpiresAt: input.holdExpiresAt,
 			paymentMethod: input.paymentMethod,
 			buyerRef: input.buyerRef,
-			customerId: null,
-			// R3: the fallback value. `linkGuestOrders` rewrites it; `buyerRefLower` is
-			// frozen alongside `buyerRef` and is the second arm of the customer union.
-			customerKey: customerKeyFor(null, input.buyerRef),
+			// Owned from birth when a signed-in checkout named its owner (the port's
+			// `CreateOrderInput.customerId`), else a guest order.
+			customerId: input.customerId ?? null,
+			// R3: the linked id when there is one, else the fallback value that
+			// `linkGuestOrders` rewrites; `buyerRefLower` is frozen alongside `buyerRef`
+			// and is the second arm of the customer union.
+			customerKey: customerKeyFor(input.customerId ?? null, input.buyerRef),
 			buyerRefLower: foldBuyerRef(input.buyerRef),
 			// The one prefix-searchable arm a single indexed field can serve; the line-sku
 			// arm lives in `order_sku_index`, written right after this document lands.

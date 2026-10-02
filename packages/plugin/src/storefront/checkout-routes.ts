@@ -117,6 +117,10 @@ export interface CheckoutPlaceRouteInput {
 	 *  two routes take, so the amount on the pay button reads exactly like the
 	 *  total the buyer just approved on the review page. */
 	locale?: unknown;
+	/** The signed-in shopper's session (the theme reads its own cookie — the
+	 *  route is cookie-blind). The order is theirs from birth when the buyer
+	 *  email is their own; otherwise, or without one, it is a guest order. */
+	sessionToken?: unknown;
 }
 
 export interface OrderRouteInput {
@@ -548,6 +552,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 						: {}),
 				},
 				input.idempotencyKey,
+				input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
 			);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 

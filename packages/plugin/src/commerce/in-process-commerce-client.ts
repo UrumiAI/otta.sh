@@ -50,6 +50,7 @@ import {
 	activateProductCommerce,
 	addLine,
 	cents,
+	checkoutOwner,
 	computeQuote,
 	createCart,
 	createOrderFromCart,
@@ -62,6 +63,7 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
 	isProductLive,
+	listCustomerOrders,
 	listProductCommerceByIds,
 	listProductVariants,
 	money,
@@ -733,10 +735,29 @@ export class InProcessCommerceClient implements CommerceClient {
 		await this.#stores.sessionStore.revoke(sessionToken);
 	}
 
+	/** Newest first, and including the guest orders placed under the session's
+	 *  own email: the session proves that inbox, so they are claimed here as the
+	 *  sign-in would (`listCustomerOrders`, which states the cost; ADR-0004 as
+	 *  amended 2026-10-02). A claim that fails is logged and the list is served
+	 *  anyway; a session whose customer is gone is UNAUTHENTICATED. */
 	async listMyOrders(sessionToken: string): Promise<AuthedResult<{ orders: OrderSummaryWire[] }>> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
-		const orders = await this.#stores.orderStore.listForCustomer(customerId);
+		const orders = await listCustomerOrders(
+			{
+				customerStore: this.#stores.customerStore,
+				orderStore: this.#stores.orderStore,
+				onClaimError: (err) => {
+					// The message, never the error object (it may quote a stored document).
+					console.error(
+						"[otta] listing claim of same-email guest orders failed:",
+						err instanceof Error ? err.message : "unknown error",
+					);
+				},
+			},
+			customerId,
+		);
+		if (orders === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		return { ok: true, orders: orders.map(serializeOrderSummary) };
 	}
 
@@ -903,16 +924,26 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * intent. The `idempotencyKey` is the CALLER's and is used verbatim: it must be
 	 * stable per cart, or a reload mints a second order.
 	 *
-	 * NO CUSTOMER ID IS THREADED, matching the surface this replaces: the claim
-	 * travelling with a checkout is the `buyerRef`, and a guest's orders are linked
-	 * to an account when the buyer next proves that inbox is theirs.
+	 * THE OWNER COMES FROM THE SESSION, NEVER FROM AN ARGUMENT (rule 1). A signed-in
+	 * shopper's `opts.sessionToken` is resolved to its customer by the domain's
+	 * `checkoutOwner`, and the order is theirs from birth only when `buyerRef` is
+	 * that customer's own email (ADR-0004, amended 2026-10-02) — so it is in "Your
+	 * orders" at once, not after another sign-in. Another email (a gift), an
+	 * unusable session, or a session read that fails places a GUEST order, linked
+	 * to an account when someone proves that inbox; a session never refuses a
+	 * checkout. A same-key replay is still a replay: the order keeps whatever owner
+	 * its first write gave it.
 	 *
 	 * The reply carries the PUBLIC order projection, which is the narrower of the
 	 * two available and deliberately so: the only fields a checkout page uses off
 	 * this reply are the order's id and state, and projecting the whitelist means
 	 * the ship-to snapshot and the buyer reference cannot reach a page by accident.
 	 */
-	async createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult> {
+	async createOrder(
+		input: CheckoutRequestWire,
+		idempotencyKey: string,
+		opts: { sessionToken?: string } = {},
+	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
 		requireIdempotencyKey(idempotencyKey);
 		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
@@ -923,10 +954,27 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.couponCode !== undefined)
 			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
+		const customerId =
+			opts.sessionToken === undefined
+				? undefined
+				: await checkoutOwner(
+						{
+							sessionStore: this.#stores.sessionStore,
+							customerStore: this.#stores.customerStore,
+							onError: (err) => {
+								console.error(
+									"[otta] checkout owner could not be resolved; placing a guest order:",
+									err instanceof Error ? err.message : "unknown error",
+								);
+							},
+						},
+						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
+					);
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
 			buyerRef: input.buyerRef,
+			...(customerId !== undefined ? { customerId } : {}),
 			paymentMethod: input.paymentMethod,
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),

@@ -84,3 +84,42 @@ decision above is unchanged. Three consequences it did not state are recorded he
   outbox leg or a `waitUntil`), and the in-process plugin has neither for this path today.
   Per-IP limiting also blunts the timing probe, because it bounds how many samples an
   attacker can take.
+
+## Amended 2026-10-02 — a live session is the same proof as the sign-in: owner at checkout, claim on listing
+
+An order placed while signed in stayed a guest order: the checkout carried no identity, and the
+order reached "Your orders" only at the shopper's next magic-link sign-in. The decision above is
+unchanged. What changed is **when** the proof it already relies on is used.
+
+- **A session counts as proof of the inbox until it expires or is revoked.** A session is
+  minted by exactly one path, `verifyLogin`, after redeeming a link sent to the customer's
+  email. Holding a live one therefore proves that inbox exactly as the redemption did, and it
+  stops proving it the moment `SessionStore.validate` stops answering for it.
+- **Owner at creation, only on a case-folded email match.** The checkout passes the session
+  token; the domain's `checkoutOwner` resolves its customer and makes them the order's
+  `customerId` only when the buyer email equals the customer's email under the guest-linking
+  fold (lowercase both sides, nothing else). Any other email — a gift, a work address — stays a
+  **guest order** under that email, claimable by whoever proves that inbox, so a session never
+  attaches someone else's address to its account. An unusable session, or a session read that
+  fails, is a guest order too: the session decides ownership, never whether the order is placed.
+- **Claim on listing is equivalent in trust to the claim at sign-in.** `listCustomerOrders` runs
+  `linkGuestOrders(customer, customer.email)` before listing. It reaches **only** orders the
+  customer's next sign-in would claim anyway (same predicate, same fold, unowned orders only),
+  so it grants nothing a sign-in would not. And it adds nothing for a thief: a stolen session
+  already sees everything its account can list, and the claim only moves forward in time a
+  link the owner's next sign-in would make anyway.
+  **Cost:** one customer read plus one indexed query on the folded email per listing, and one
+  compare-and-set per order actually claimed; once an inbox's orders are claimed the query
+  finds nothing. Idempotent. A claim that fails (contention) is logged and the owned orders are
+  listed anyway.
+- **What soundness depends on.** (1) Sessions are minted only by `verifyLogin`; any other
+  minting path (an admin "log in as", an SSO bridge) must prove the inbox too or this rule
+  breaks. (2) A customer's email is immutable (`UpdateCustomerInput` carries no email); an
+  email-change feature would let a session claim a new address's orders without proving it,
+  and must re-prove the inbox first.
+- **Coupons.** The owner is also the coupon redemption's `customerId`, so `maxUsesPerCustomer`
+  now binds a signed-in, same-email checkout (`COUPON_MAX_PER_CUSTOMER`). Guest checkouts, and
+  signed-in checkouts under another email, are not counted per customer — as before.
+- **Revisit** if the credential mechanism stops proving email ownership (this ADR's own
+  trigger), if a second session-minting path or an email-change flow is added, or if listing
+  cost shows up (the claim could then move to a sweep keyed by verified email).
