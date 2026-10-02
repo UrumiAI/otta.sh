@@ -879,6 +879,16 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await stored("qa-xyz")).toBeNull();
 	});
 
+	test("a bare enum coupon type (a form rendered before the word values) still creates", async () => {
+		await boot(makeCouponsState());
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:create",
+			values: { id: "legacy-pct", code: "LEGACYPCT", type: "percentage", ratePercent: "10" },
+		});
+		expect((await stored("legacy-pct"))?.type).toBe("percentage");
+	});
+
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { coupons: [] as CouponRow[] };
 		await boot(state);

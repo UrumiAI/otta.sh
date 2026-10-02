@@ -913,6 +913,18 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(String(bannerOf(blocks)?.description)).toMatch(/threshold/i);
 	});
 
+	test("the bare enum values a form rendered before the word values still submit", async () => {
+		await seedShipping();
+		const methods = await openPath(["us"]);
+		const createForm = formFor(await openNewMethodScreen(methods), "shipping:create-method");
+		await submitForm(
+			"shipping:create-method",
+			{ id: "legacy-free", name: "Legacy", type: "free_shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("legacy-free"))?.type).toBe("free_shipping");
+	});
+
 	test("create-method carries the zoneId invisibly (no visible field) and writes the method UNDER that zone, then reloads the methods level", async () => {
 		await seedShipping();
 		const createForm = formFor(
