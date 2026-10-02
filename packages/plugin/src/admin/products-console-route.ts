@@ -403,7 +403,7 @@ async function consoleSummaries(
  * in the payload — the product id, the `expectedUpdatedAt` or `onHand` watermark
  * the operator observed, the typed amounts — is untrusted operator-round-tripped
  * input, and every one of those fields is re-validated (and, for stock,
- * re-checked against live truth) inside `products-actions.ts` before a single
+ * judged against live truth in the same write as the movement) inside `products-actions.ts` before a single
  * byte is written. This module adds no trust and removes none.
  *
  * THE GATE ON THE ID IS NOT BELT-AND-BRACES. An id this screen does not offer is

@@ -388,6 +388,36 @@ describe("the one data path (ADR-0014 Decision 3)", () => {
 		expect(body["value"]).toEqual({ productId: "prod-1", onHand: "42", qty: "12" });
 	});
 
+	test("a write whose outcome is UNKNOWN is marked indeterminate; a definitive no is not", async () => {
+		// A stock movement's nonce is held until the plugin gives a definitive
+		// answer, and a lost response must not read as "nothing happened". So the
+		// transport says which failures may have let the write run: a request that
+		// never came back, a 5xx, or an unreadable answer after a 2xx. A 4xx or the
+		// plugin's own `{ok:false}` is a definitive no — nothing ran.
+		const value = { productId: "prod-1", onHand: "42", qty: "1" };
+		const cases: Array<[string, () => Promise<Response>, boolean]> = [
+			["fetch threw", () => Promise.reject(new TypeError("Failed to fetch")), true],
+			["502", () => Promise.resolve(jsonResponse({}, 502)), true],
+			["unreadable 200", () => Promise.resolve(new Response("<html>", { status: 200 })), true],
+			["wrong-shape 200", () => Promise.resolve(jsonResponse({ data: "?" })), true],
+			["403", () => Promise.resolve(jsonResponse({}, 403)), false],
+			[
+				"plugin refusal",
+				() =>
+					Promise.resolve(envelope({ ok: false, title: "Nothing was changed", description: "x" })),
+				false,
+			],
+		];
+		for (const [label, respond, indeterminate] of cases) {
+			apiFetch.mockImplementationOnce(respond);
+			const result = await performAction("products:restock", value, PRODUCTS_ACT_SUBJECT);
+			expect(result.ok, label).toBe(false);
+			expect((result as { indeterminate?: boolean }).indeterminate === true, label).toBe(
+				indeterminate,
+			);
+		}
+	});
+
 	test("a refusal NAMES THIS SCREEN, not the other one", async () => {
 		// A console with two migrated screens can refuse on either, and "Orders are
 		// unavailable" on Pricing & inventory sends an operator to look at the

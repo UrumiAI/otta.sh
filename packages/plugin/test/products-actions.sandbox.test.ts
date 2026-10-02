@@ -37,19 +37,25 @@
  *     refused BEFORE anything is written; a blank compare-at is an explicit `null`
  *     CLEAR and never a zero; a blank price leaves the stored price alone and
  *     never becomes zero.
- *  2. **The stale-watermark refusal (DA-3a), carried verbatim.** A stock removal
- *     re-reads live stock and refuses on a mismatch with NOTHING written — and an
- *     ABSENT watermark refuses fail-closed, with no re-read at all. A save carries
- *     `expectedUpdatedAt` and refuses without one rather than clobbering; with a
- *     stale one it is refused by the store's own compare-and-set.
- *  3. **Idempotency without a nonce, and the replay case.** Every key is derived
- *     from content plus the watermark the operator saw. THE KEY IS NO LONGER A
- *     STRING ANY TEST CAN SEE — it is an argument handed to a use-case in this
- *     process rather than a header on a wire — so it is proven by what it BUYS:
- *     a double-submit of one rendered form applies once and still reads `Saved`
- *     (a second, distinct write against that now-stale watermark is refused as
- *     stale instead), and two deliberate movements taken against two different
- *     observed counts both apply.
+ *  2. **The stale-watermark refusal (DA-3a).** A stock REMOVAL carries the count
+ *     the operator saw, and the inventory store refuses a mismatch in the same
+ *     write as the decrement, with NOTHING written; an ABSENT watermark refuses
+ *     fail-closed before anything is sent (for a restock too, whose watermark is
+ *     still required as the legacy key's component). A RESTOCK is not pinned: an
+ *     add is commutative and the count it would be judged against moves with
+ *     every sale. A save carries `expectedUpdatedAt` and refuses without one
+ *     rather than clobbering; with a stale one it is refused by the store's own
+ *     compare-and-set.
+ *  3. **Idempotency, and the replay case.** A save's key is derived from content
+ *     plus its watermark; a stock movement's is a per-click NONCE the console
+ *     mints, with F-2a's content key kept as a one-release fallback for a caller
+ *     that sends none. THE KEY IS NO LONGER A STRING ANY TEST CAN SEE — it is an
+ *     argument handed to a use-case in this process rather than a header on a
+ *     wire — so it is proven by what it BUYS: a double-submit of one rendered
+ *     form applies once and still reads `Saved`; a retry of one movement applies
+ *     once and reports the count it produced; Add, Remove, Add of one size all
+ *     land; two tabs' adds both land; and a second tab's stale removal is a
+ *     conflict, never a silent drop.
  *  4. **The verified sparse edit.** Each of the three split saves writes its own
  *     fields and leaves every other stored value untouched, and `title`/`active`
  *     can never be written at all (G2 / ADR-0013) however hostile the payload is —
@@ -213,6 +219,9 @@ async function act(actionId: string, value: Record<string, string>): Promise<Act
 }
 
 /** The whole carrier the console sends with any of the three saves. */
+/** A per-click nonce, as the console mints one: a fresh UUID per decision. */
+const nonce = (): string => crypto.randomUUID();
+
 const carrierFor = (seeded: Seeded): Record<string, string> => ({
 	productId: seeded.productId,
 	expectedUpdatedAt: seeded.updatedAt,
@@ -734,23 +743,21 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
 	});
 
-	test("a restock does NOT re-read stock first — it is additive, and the watermark is only a key component", async () => {
-		// The asymmetry with a removal is the point (DA-4 versus DA-3/DA-5): adding
-		// stock cannot oversell anything, so it is one-shot. Its watermark buys
-		// idempotency, not a staleness check, and pretending otherwise would put a
-		// round trip on the cheap path.
-		//
-		// The retired suite proved this by counting GETs to the stub. There is no
-		// request to count now, so it is proven by the BEHAVIOUR the absent re-read
-		// produces: the payload's watermark disagrees with live stock, and the
-		// restock applies anyway — which a DA-3a re-read would have refused.
+	test("a restock is NOT pinned to the count the operator saw — an add is commutative, and a sale moving the count must not refuse it", async () => {
+		// `onHand` is the AVAILABLE count: every reservation, release and hold
+		// expiry moves it. Pinning an add to it would refuse an honest "Add 10"
+		// whenever a shopper checked out in between — and buy nothing, because
+		// adding 8 to 30 or to 42 is the same decision. The watermark protects the
+		// removal, which is the movement that can strand units.
 		const seeded = await seedProduct({ onHand: 30 });
 		const result = await act("products:restock", {
 			productId: seeded.productId,
-			onHand: "42", // a stale count; a removal refuses on exactly this
+			onHand: "42", // the count when the operator opened the card
 			qty: "8",
+			nonce: nonce(),
 		});
 		expect(result.notice?.title).toBe("Stock added");
+		expect(String(result.notice?.description)).toContain("Available is now 38");
 		expect(await inventory.findOnHand(seeded.sku)).toBe(38);
 	});
 
@@ -767,25 +774,217 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		}
 	});
 
-	test("THE REPLAY CASE, on stock: one rendered form submitted twice moves ONCE; a fresh watermark moves again", async () => {
-		// The whole reason the key is content-derived rather than a nonce. A
-		// double-click of the same control must dedupe, and two DELIBERATE restocks
-		// of the same size must both apply — which they do because the second is
-		// taken against the on-hand the first produced.
+	test("THE REPLAY CASE, on stock: a RETRY of one submit (same nonce) moves ONCE and reports the real count", async () => {
+		// The nonce is minted per click, so a retry of the SAME submit — a
+		// double-submit, a resend after a dropped response — carries it again and
+		// is answered from the ledger. The retry arrives after the count already
+		// moved (because of this very movement), and is still a success with the
+		// figure the movement produced — never re-judged as "stock changed".
+		const seeded = await seedProduct({ onHand: 42 });
+		const payload = { productId: seeded.productId, onHand: "42", qty: "8", nonce: nonce() };
+
+		const first = await act("products:restock", payload);
+		const retry = await act("products:restock", payload);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
+		expect(first.notice?.title).toBe("Stock added");
+		// NEVER a second "Added 8": the store says the answer came from its ledger,
+		// and the operator is told the change was already in, with the live count.
+		expect(retry.notice?.variant).toBe("default");
+		expect(retry.notice?.title).toBe("Already applied");
+		expect(String(retry.notice?.description)).toBe(
+			"This change was already applied — stock is now 50.",
+		);
+
+		const removal = { productId: seeded.productId, onHand: "50", qty: "5", nonce: nonce() };
+		await act("products:remove-stock", removal);
+		// A sale lands between the removal and its retry: the copy reports the LIVE
+		// count (44), not the one the removal produced (45).
+		expect((await inventory.reserve(seeded.sku, 1, idempotencyKey(`${NS}-rp-sale`))).ok).toBe(true);
+		const removalRetry = await act("products:remove-stock", removal);
+		expect(removalRetry.notice?.title).toBe("Already applied");
+		expect(String(removalRetry.notice?.description)).toBe(
+			"This change was already applied — stock is now 44.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(44);
+	});
+
+	test("ONE TAB: Add 2, Remove 2, Add 2 lands every movement — the third is a new click, not a replay", async () => {
+		// The QA repro: 7 → 9 → 7, and the second "Add 2" against 7 used to derive
+		// the same key as the first and be dropped while the card said "now 7".
+		const seeded = await seedProduct({ onHand: 7 });
+		const add1 = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "7",
+			qty: "2",
+			nonce: nonce(),
+		});
+		const rem = await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "9",
+			qty: "2",
+			nonce: nonce(),
+		});
+		const add2 = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "7",
+			qty: "2",
+			nonce: nonce(),
+		});
+		expect(String(add1.notice?.description)).toContain("Available is now 9");
+		expect(String(rem.notice?.description)).toContain("Available is now 7");
+		expect(add2.notice?.title).toBe("Stock added");
+		expect(String(add2.notice?.description)).toContain("Available is now 9");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(9);
+	});
+
+	test("TWO TABS: both saw 4 and both add 3 — BOTH apply, ending at 10, and each says the count it produced", async () => {
+		// Decided (ADR-0015, amended 2026-10-02): two clicks are two decisions, and
+		// an add is commutative, so both land. The nonce is what tells the second
+		// tab's click from a retry of the first.
+		const seeded = await seedProduct({ onHand: 4 });
+		const tabA = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "4",
+			qty: "3",
+			nonce: nonce(),
+		});
+		const tabB = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "4",
+			qty: "3",
+			nonce: nonce(),
+		});
+		expect(String(tabA.notice?.description)).toContain("Available is now 7");
+		expect(tabB.notice?.title).toBe("Stock added");
+		expect(String(tabB.notice?.description)).toContain("Available is now 10");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(10);
+	});
+
+	test("TWO TABS removing: both saw 10 and both remove 3 — the second is a CONFLICT naming the real count, never a silent drop", async () => {
+		const seeded = await seedProduct({ onHand: 10 });
+		await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "10",
+			qty: "3",
+			nonce: nonce(),
+		});
+		const tabB = await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "10",
+			qty: "3",
+			nonce: nonce(),
+		});
+		expect(tabB.notice?.variant).toBe("error");
+		expect(tabB.notice?.title).toBe("Stock changed — nothing was removed");
+		expect(String(tabB.notice?.description)).toBe(
+			"Stock changed to 7 (orders or another change) — nothing was removed; check and try again.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(7);
+	});
+
+	test("a SALE between the look and the removal is a conflict too — accepted, and the copy does not blame another admin", async () => {
+		// The removal watermark compares against the AVAILABLE count, which a
+		// reservation moves. During checkout traffic a removal can therefore be
+		// refused with no other operator involved; the sentence names "orders"
+		// so the operator is not sent looking for a colleague.
+		const seeded = await seedProduct({ onHand: 10 });
+		expect(
+			(await inventory.reserve(seeded.sku, 2, idempotencyKey(`${NS}-sale-${seeded.sku}`))).ok,
+		).toBe(true);
+		const result = await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "10",
+			qty: "1",
+			nonce: nonce(),
+		});
+		expect(String(result.notice?.description)).toBe(
+			"Stock changed to 8 (orders or another change) — nothing was removed; check and try again.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(8);
+	});
+
+	test("a malformed nonce refuses the movement as unreadable — it is never quietly dropped to the legacy key", async () => {
+		const seeded = await seedProduct({ onHand: 42 });
+		for (const bad of ["", "  ", "short", "has spaces in it ok?", "x".repeat(65)]) {
+			for (const action of ["products:restock", "products:remove-stock"]) {
+				const result = await act(action, {
+					productId: seeded.productId,
+					onHand: "42",
+					qty: "1",
+					nonce: bad,
+				});
+				expect(result.notice?.title, `${action} ${JSON.stringify(bad)}`).toBe("Not changed");
+			}
+		}
+		expect(await inventory.findOnHand(seeded.sku)).toBe(42);
+	});
+
+	// -- a caller that sends NO nonce (backward compatibility, one release) -----
+
+	test("LEGACY, no nonce: a double-submit of one rendered form still moves once", async () => {
+		// The property the content-derived key (F-2a) was chosen for, kept for a
+		// tab rendered by the previous release.
 		const seeded = await seedProduct({ onHand: 42 });
 		const payload = { productId: seeded.productId, onHand: "42", qty: "8" };
-
 		await act("products:restock", payload);
 		const replay = await act("products:restock", payload);
-		// TWO submissions, ONE movement: 42 + 8, and the replay is answered with the
-		// same figure rather than 58.
 		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
-		expect(String(replay.notice?.description)).toContain("50");
+		// Without a nonce a replay cannot be told from a DIFFERENT later move of the
+		// same shape, so it says only what is certain: this submit changed nothing.
+		expect(replay.notice?.title).toBe("Nothing changed");
+		expect(String(replay.notice?.description)).toBe(
+			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
+		);
+	});
 
-		// A re-render reads the NEW on-hand, so the next submission carries a
-		// different watermark ⇒ a different key ⇒ a second, deliberate restock.
-		await act("products:restock", { productId: seeded.productId, onHand: "50", qty: "8" });
-		expect(await inventory.findOnHand(seeded.sku)).toBe(58);
+	test("LEGACY, no nonce: Add 2, Remove 2, Add 2 is a CONFLICT on the third, never a silent 'done'", async () => {
+		// Without a nonce the third Add derives the first one's key, and the ledger
+		// can only echo that earlier answer. It cannot be made to apply; it can be
+		// made honest: the live count disagrees with the echoed one, so the
+		// operator is told to check rather than shown a movement that never landed.
+		// "Reload" is the way out, not a figure of speech: a reload fetches the
+		// console that sends a nonce, while retrying in the old tab re-derives the
+		// same key.
+		const seeded = await seedProduct({ onHand: 7 });
+		await act("products:restock", { productId: seeded.productId, onHand: "7", qty: "2" });
+		await act("products:remove-stock", { productId: seeded.productId, onHand: "9", qty: "2" });
+		const third = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "7",
+			qty: "2",
+		});
+		expect(third.notice?.variant).toBe("error");
+		expect(third.notice?.title).toBe("Nothing changed");
+		expect(String(third.notice?.description)).toBe(
+			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(7);
+	});
+
+	test("LEGACY, no nonce: a stale tab's restock applies as it always did; a byte-identical one is a double-submit", async () => {
+		// THE KNOWN LIMIT OF THE FALLBACK. Two old tabs that both saw 4 and both add
+		// 3 send byte-identical payloads, which no server can tell from one tab's
+		// double-submit — that ambiguity is why the nonce exists. The answer is at
+		// least true to what that operator decided ("4 + 3 = 7"). A tab whose
+		// payload differs in any way derives a different key and applies, exactly
+		// as before this release: a restock takes no watermark.
+		const seeded = await seedProduct({ onHand: 4 });
+		const payload = { productId: seeded.productId, onHand: "4", qty: "3" };
+		await act("products:restock", payload);
+		const tabB = await act("products:restock", payload);
+		expect(tabB.notice?.title).toBe("Nothing changed");
+		expect(String(tabB.notice?.description)).toBe(
+			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(7);
+
+		const stale = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "4",
+			qty: "2",
+		});
+		expect(stale.notice?.title).toBe("Stock added");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(9);
 	});
 
 	// -- remove stock (the screen's ONE destructive act) ------------------------
@@ -815,7 +1014,9 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		});
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
-		expect(String(result.notice?.description)).toContain("30 units are on hand now");
+		expect(String(result.notice?.description)).toBe(
+			"Stock changed to 30 (orders or another change) — nothing was removed; check and try again.",
+		);
 		expect(await inventory.findOnHand(seeded.sku)).toBe(30);
 	});
 
@@ -854,14 +1055,15 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		}
 	});
 
-	test("a removal whose product could not be re-read applies NOTHING and says so", async () => {
+	test("a removal of a product that no longer exists applies NOTHING and says so", async () => {
 		const result = await act("products:remove-stock", {
 			productId: `${NS}-prod-nowhere-3`,
 			qty: "5",
 			onHand: "42",
+			nonce: nonce(),
 		});
 		expect(result.notice?.variant).toBe("error");
-		expect(result.notice?.title).toBe("Nothing was removed");
+		expect(result.notice?.title).toBe("Product not found");
 	});
 
 	test("the DOMAIN's guarded decrement still surfaces a clean refusal — never a negative", async () => {
