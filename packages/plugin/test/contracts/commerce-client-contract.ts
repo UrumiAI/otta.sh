@@ -2785,7 +2785,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.cancelOrder("adm-o-cancel", cancellation, {
 					idempotencyKey: "adm-o-cancel-1",
 				}),
-			).toEqual({ ok: true, cancelled: true });
+			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
 
 			const read = await orders.getOrder("adm-o-cancel");
 			expect(read?.order.state).toBe("cancelled");
@@ -2808,7 +2808,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.cancelOrder("adm-o-cancel", cancellation, {
 					idempotencyKey: "adm-o-cancel-2",
 				}),
-			).toEqual({ ok: true, cancelled: false });
+			).toEqual({
+				ok: true,
+				cancelled: false,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+			});
 
 			expect(
 				await orders.cancelOrder("adm-o-missing", cancellation, {
@@ -2823,6 +2829,41 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					{ idempotencyKey: "adm-o-cancel-4" },
 				),
 			).toMatchObject({ ok: false, status: 400 });
+		});
+
+		test("cancelling a PAID order refunds what was captured through its gateway before it cancels (T1-4)", async () => {
+			await tier.arrange.order({
+				orderId: "adm-o-cancel-paid",
+				buyerRef: "cancel-paid@example.test",
+				captured: { providerRef: "pi_cancel_paid", amountCents: 1500 },
+			});
+			const res = await orders.cancelOrder(
+				"adm-o-cancel-paid",
+				{ reason: "customer_request", cancelledBy: "ops@example.test", restock: true },
+				{ idempotencyKey: "adm-o-cancel-paid-1" },
+			);
+			// The arranged line is digital, so there is nothing to restock.
+			expect(res).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: { amountCents: 1500, currency: "USD" },
+				restockedUnits: 0,
+				restockSkipped: [],
+			});
+			const read = await orders.getOrder("adm-o-cancel-paid");
+			expect(read?.order.state).toBe("cancelled");
+			expect(read?.order.cancellation).toMatchObject({
+				refund: { amount: 1500, currency: "USD" },
+			});
+			// The refund is on the ledger like any other, under the cancellation's key.
+			const refunds = await orders.getRefunds("adm-o-cancel-paid");
+			expect(refunds?.refunds).toHaveLength(1);
+			expect(refunds?.refunds[0]).toMatchObject({
+				amountCents: 1500,
+				status: "recorded",
+				idempotencyKey: "adm-o-cancel-paid-1:refund",
+			});
+			expect(refunds?.remainingCents).toBe(0);
 		});
 
 		// ── the guest's read of an order the console has acted on ─────────
@@ -2906,7 +2947,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					},
 					{ idempotencyKey: "adm-o-pubcan-1" },
 				),
-			).toEqual({ ok: true, cancelled: true });
+			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
 
 			const read = await storefront.getPublicOrder("adm-o-pubcan");
 			expect(read.ok).toBe(true);
@@ -4037,7 +4078,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					{ reason: "customer_request", cancelledBy: "ops@example.test" },
 					{ idempotencyKey: "rep-obs-2-cancel" },
 				),
-			).toEqual({ ok: true, cancelled: true });
+			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
 
 			const after = await reporting.getOrdersByStatus(window);
 			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);

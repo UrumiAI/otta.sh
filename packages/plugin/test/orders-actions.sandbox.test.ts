@@ -127,6 +127,7 @@ interface ActOutcome {
 let sandbox: SandboxHandle;
 let storage: StorageAccess;
 let orderStore: EmdashOrderStore;
+let inventory: EmdashInventoryStore;
 let seq = 0;
 
 /** A namespace no other suite writes under. The document store is process-scoped
@@ -145,7 +146,7 @@ async function outboxStates(id: string): Promise<string[]> {
 
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
 	orderStore = new EmdashOrderStore({ storage, inventory, idGen: uuidIdGen, clock: systemClock });
 	// ONE boot for the file. The isolate holds no per-case state — the commerce
 	// truth lives in the store beside it — so a boot per case would only pay the
@@ -166,11 +167,15 @@ afterAll(async () => {
  * `createFromCart` lands an order in `pending` and `markPaid` moves it.
  */
 async function seedOrder(
-	options: { paid?: boolean; capturedCents?: number } = {},
+	options: { paid?: boolean; capturedCents?: number; physicalOnHand?: number } = {},
 ): Promise<string> {
 	seq += 1;
 	const suffix = `${NS}-${String(seq)}`;
 	const id = `order-${suffix}`;
+	// A PHYSICAL line when the case is about stock: its sku is seeded on hand, so a
+	// cancellation's restock is observable as `skuOf(id)`'s on-hand moving.
+	const physical = options.physicalOnHand !== undefined;
+	if (physical) await inventory.seedOnHand(skuOf(id), options.physicalOnHand ?? 0);
 	await orderStore.createFromCart({
 		orderId: toOrderId(id),
 		cartId: null,
@@ -182,12 +187,12 @@ async function seedOrder(
 		lines: [
 			{
 				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(`SKU-${suffix.toUpperCase()}`),
+				sku: toSku(skuOf(id)),
 				title: "Linen apron",
 				unitPrice: cents(TOTAL_CENTS),
 				currency: currency("USD"),
 				quantity: 1,
-				fulfillmentKind: "digital",
+				fulfillmentKind: physical ? "physical" : "digital",
 				reservationId: null,
 			},
 		],
@@ -209,6 +214,11 @@ async function seedOrder(
 		});
 	}
 	return id;
+}
+
+/** The sku a seeded order's one line carries. */
+function skuOf(id: string): string {
+	return `SKU-${id.slice("order-".length).toUpperCase()}`;
 }
 
 /** The order as the store holds it right now — what a refusal must have left
@@ -378,16 +388,14 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// raw `orders:transition-cancelled` records no reason, releases no stock hold,
 		// and on a paid order keeps the money with a "cancelled" email. The domain
 		// refuses it; Cancel order is the one way to cancel.
-		// The advice is keyed on the state the operator saw: a paid order's says
-		// Cancel order does not refund (and that a FULL refund closes the order as
-		// refunded — so "refund first, then cancel" would be a dead end); an unpaid
-		// one's has no money to talk about.
+		// The advice is keyed on the state the operator saw: a paid order's says Cancel
+		// order refunds and restocks it; an unpaid one's has no money to talk about.
 		for (const [seed, state, emails, description] of [
 			[
 				{ capturedCents: TOTAL_CENTS },
 				"paid",
 				["paid"],
-				"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer — to return their money, use Money → Refunds (a full refund closes the order as refunded).",
+				"Nothing was changed. Cancel an order with Cancel order below, which records why, refunds what the buyer paid and returns the items to stock unless you untick it.",
 			],
 			[
 				{ paid: false },
@@ -706,6 +714,29 @@ describe("the Orders write path (workerd sandbox)", () => {
 			expect(result.notice?.title, JSON.stringify(value)).toBe("That action could not be read");
 			expect((await readOrder(id)).state, JSON.stringify(value)).toBe("paid");
 		}
+	});
+
+	test("a PAID card order with money captured is NOT cancelled when no refund can be issued (T1-4)", async () => {
+		// This boot has no Stripe secret, so no gateway can return the $15.00. The
+		// cancel must refuse rather than cancel and keep the money.
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await act("orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Not cancelled — the refund can’t be issued from here");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		// The next step is a recorded manual refund, never a status-only Mark refunded.
+		expect(String(result.notice?.description)).toContain("Money → Refunds");
+		expect(String(result.notice?.description)).not.toContain("Mark refunded");
+		const order = await readOrder(id);
+		expect(order.state).toBe("paid");
+		expect(order.cancellation).toBeNull();
+		expect(await orderStore.listRefunds(toOrderId(id))).toEqual([]);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
 	});
 
 	test("a NOT_CANCELLABLE order gets copy that offers no retry", async () => {
@@ -1116,6 +1147,127 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 		expect(keys).toHaveLength(2);
 		expect(keys[0]).toBe(`admin-refund:${id}:500:0`);
 		expect(keys[1]).not.toBe(keys[0]);
+	});
+
+	// -- cancelling a paid order: refund + restock (T1-4) -----------------------
+
+	test("cancelling a PAID card order refunds the capture through Stripe, restocks the item and cancels it", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("default");
+		expect(result.notice?.title).toBe("Order cancelled and refunded");
+		expect(String(result.notice?.description)).toContain("Refunded $15.00");
+		expect(String(result.notice?.description)).toContain("1 item returned to stock");
+
+		// ONE refund, for the whole capture, under the cancellation's own key.
+		const posts = refundPosts();
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.headers["idempotency-key"]).toBe(`admin-cancel:${id}:refund`);
+		expect(Object.fromEntries(posts[0]?.form ?? []).amount).toBe(String(TOTAL_CENTS));
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]).toMatchObject({ status: "recorded", purpose: "cancellation" });
+
+		const order = await readOrder(id);
+		expect(order.state).toBe("cancelled");
+		expect(order.cancellation).toMatchObject({
+			reason: "customer_request",
+			refund: { amount: TOTAL_CENTS, currency: "USD" },
+			restocked: true,
+		});
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
+
+		// A double-click is the replay: nothing more refunded, nothing more restocked.
+		const again = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "cancelled",
+			restock: "true",
+		});
+		expect(again.notice?.title).toBe("Already cancelled");
+		expect(refundPosts()).toHaveLength(1);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
+	});
+
+	test("with Return to stock unticked, the cancel refunds but leaves the stock alone", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel", {
+			orderId: id,
+			reason: "other",
+			detail: "arrived damaged",
+			cancelledBy: "carol",
+			state: "paid",
+			restock: "false",
+		});
+		expect(result.notice?.title).toBe("Order cancelled and refunded");
+		expect(String(result.notice?.description)).toContain("Nothing was returned to stock");
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+		expect((await readOrder(id)).cancellation).toMatchObject({ restocked: false });
+		expect(refundPosts()).toHaveLength(1);
+	});
+
+	test("a cancel of an order paid in TWO captures is refused with its own reason, nothing refunded", async () => {
+		const id = await seedOrder({ capturedCents: 1000, physicalOnHand: 4 });
+		await orderStore.recordPayment({
+			orderId: toOrderId(id),
+			gateway: "stripe",
+			providerRef: `pi-${id}-second`,
+			amount: cents(500),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.title).toBe("Not cancelled — paid in more than one payment");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		expect(refundPosts()).toHaveLength(0);
+		expect((await readOrder(id)).state).toBe("paid");
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+	});
+
+	test("a cancel whose refund Stripe REJECTS changes nothing and says so", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Not cancelled — the refund was rejected");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		const order = await readOrder(id);
+		expect(order.state).toBe("paid");
+		expect(order.cancellation).toBeNull();
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+	});
+
+	test("a cancel whose refund hits a 429 says try again — and the retry resumes the SAME refund", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const value = { orderId: id, reason: "customer_request", state: "paid", restock: "true" };
+		const first = await actOn(stripeBoot, "orders:cancel-customer_request", value);
+		expect(first.notice?.title).toBe("Not cancelled — temporary problem");
+		expect((await readOrder(id)).state).toBe("paid");
+
+		const retry = await actOn(stripeBoot, "orders:cancel-customer_request", value);
+		expect(retry.notice?.title).toBe("Order cancelled and refunded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-cancel:${id}:refund`,
+			`admin-cancel:${id}:refund`,
+		]);
+		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
 	});
 
 	test("a rejection of a DIFFERENT refund on the order does not move a retryable refund onto a new key", async () => {

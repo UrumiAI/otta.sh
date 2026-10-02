@@ -40,13 +40,17 @@
  * that has to change changes once.
  */
 import {
-	CANCEL_BANNER,
 	CANCEL_CONFIRM,
 	CANCEL_PICK_REASON,
+	CANCEL_REFUNDS_UNKNOWN,
+	CANCEL_RESTOCK_HINT,
+	CANCEL_RESTOCK_LABEL,
 	CUSTOMER_CONTEXT_UNAVAILABLE,
 	FULFILMENT_LABELS,
 	FULLY_REFUNDED_NOTE,
+	CANCEL_BANNER,
 	MARK_REFUNDED_CONFIRM,
+	PENDING_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
@@ -62,7 +66,7 @@ import {
 	TIMELINE_UNAVAILABLE,
 	UNNAMED_REFUND_RECIPIENT,
 	buyerReferenceText,
-	cancelBannerDescription,
+	cancelBannerText,
 	cancelConfirmText,
 	cancelGroupLabel,
 	fit,
@@ -78,7 +82,15 @@ import {
 	refundConfirmText,
 	refundTooHighInline,
 	refundsGroupLabel,
+	type CancelEffects,
 } from "@otta-sh/admin-presentation";
+
+/** The states an order can still be cancelled from — the state machine's own
+ *  `→ cancelled` sources. The Cancel group is rendered only for these. */
+const CANCELLABLE_STATES: ReadonlySet<string> = new Set(["pending", "paid", "processing"]);
+
+/** The Cancel group's alert title — the same on every order. */
+const CANCEL_BANNER_TITLE = CANCEL_BANNER.title;
 import * as React from "react";
 import {
 	fetchOrderDetail,
@@ -686,6 +698,9 @@ export function OrderDetail({
 	const [cancelReason, setCancelReason] = React.useState("");
 	const [cancelDetail, setCancelDetail] = React.useState("");
 	const [cancelledBy, setCancelledBy] = React.useState("");
+	// Return the units to stock on a paid order's cancel — ticked by default
+	// (T1-4), unticked for goods that came back damaged.
+	const [restock, setRestock] = React.useState(true);
 	const [noteAuthor, setNoteAuthor] = React.useState("");
 	const [noteBody, setNoteBody] = React.useState("");
 	const [amountError, setAmountError] = React.useState<RefundRefusal | null>(null);
@@ -771,6 +786,32 @@ export function OrderDetail({
 		refunds?.currency !== undefined && refunds.currency.length > 0
 			? refunds.currency
 			: order.totals.currency;
+	// What cancelling THIS order does with money and stock (T1-4) — one value every
+	// piece of cancel copy is composed from. A pending order releases its held stock
+	// and refunds nothing; a paid one refunds what remains refundable (the server
+	// computes the same remainder) and restocks unless the box is unticked.
+	const hasPhysical = order.lines.some((line) => line.fulfillmentKind === "physical");
+	const cancelEffects: CancelEffects =
+		order.state === "pending"
+			? PENDING_CANCEL_EFFECTS
+			: {
+					refund:
+						refunds !== null && refunds.remainingCents > 0
+							? formatAmount(refunds.remainingCents, cur)
+							: null,
+					refundAutomatic: refunds?.refundable ?? false,
+					stock: !hasPhysical ? "none" : restock ? "restock" : "keep",
+				};
+	// A refund Otta cannot issue means the server will refuse the cancel, so no
+	// control is offered for it — only the banner saying what to do instead.
+	// An unreadable ledger on a paid order: what the cancel would refund is UNKNOWN,
+	// so it is blocked too rather than described as refunding nothing.
+	const refundsUnknown = order.state !== "pending" && refunds === null;
+	const cancelBlocked =
+		refundsUnknown || (cancelEffects.refund !== null && !cancelEffects.refundAutomatic);
+	// Sent with every cancel of a paid order; a pending order's cancel ignores it.
+	const restockValue: Record<string, string> =
+		order.state === "pending" ? {} : { restock: restock ? "true" : "false" };
 
 	const ladder: ReadonlyArray<readonly [string, number]> = [
 		["Subtotal", order.totals.subtotalCents],
@@ -1168,107 +1209,142 @@ export function OrderDetail({
 							</section>
 						)}
 
-						<Group testId="detail-cancel" label={cancelGroupLabel(order.state)}>
-							<Notice
-								variant="alert"
-								title={CANCEL_BANNER.title}
-								description={cancelBannerDescription(order.state)}
-							/>
-							<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
-							{/* One button per reason the plugin says has an id, taken from the list
+						{/* Only an order that can still be cancelled gets the group: on a shipped,
+						    delivered, completed, refunded or cancelled order every control in it
+						    would be refused. */}
+						{CANCELLABLE_STATES.has(order.state) && (
+							<Group testId="detail-cancel" label={cancelGroupLabel(cancelEffects)}>
+								<Notice
+									variant="alert"
+									title={CANCEL_BANNER_TITLE}
+									description={
+										refundsUnknown ? CANCEL_REFUNDS_UNKNOWN : cancelBannerText(cancelEffects)
+									}
+									testId="cancel-banner"
+								/>
+								{!cancelBlocked && order.state !== "pending" && hasPhysical && (
+									<label style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13 }}>
+										<input
+											type="checkbox"
+											className="otta-focusable"
+											data-testid="cancel-restock"
+											checked={restock}
+											onChange={(event) => setRestock(event.target.checked)}
+										/>
+										<span>
+											{CANCEL_RESTOCK_LABEL}
+											<span style={{ display: "block", fontSize: 12, opacity: 0.75 }}>
+												{CANCEL_RESTOCK_HINT}
+											</span>
+										</span>
+									</label>
+								)}
+								{!cancelBlocked && (
+									<>
+										<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
+										{/* One button per reason the plugin says has an id, taken from the list
 							    it SHIPS rather than filtered out of `cancellationReasons` here. The
 							    ids are derived on that side from the same constant; a second copy
 							    of the exclusion on this side would post `orders:cancel-other` the
 							    day the two disagreed, and that id is not registered — the console
 							    would show an unknown-action refusal, not a cancel. */}
-							<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
-								{detail.vocabulary.oneClickCancellationReasons.map((reason) => (
-									<Button
-										key={reason.value}
-										testId={`cancel-${reason.value}`}
-										label={reason.label}
-										danger
-										disabled={busy}
-										onClick={() => {
-											setPending({
-												actionId: `orders:cancel-${reason.value}`,
-												value: { orderId: order.id, reason: reason.value, state: order.state },
-												title: CANCEL_CONFIRM.title,
-												text: cancelConfirmText(reason.label, order.state),
-												confirmLabel: CANCEL_CONFIRM.confirm,
-												denyLabel: CANCEL_CONFIRM.deny,
-											});
-										}}
-									/>
-								))}
-							</div>
-							<Group testId="detail-cancel-note" label="Cancel with a note">
-								<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
-									<Field label="Reason">
-										<select
-											className="otta-focusable"
-											data-testid="cancel-note-reason"
-											style={inputStyle}
-											value={cancelReason}
-											onChange={(event) => setCancelReason(event.target.value)}
-										>
-											<option value="">Choose a reason…</option>
-											{detail.vocabulary.cancellationReasons.map((reason) => (
-												<option key={reason.value} value={reason.value}>
-													{reason.label}
-												</option>
+										<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
+											{detail.vocabulary.oneClickCancellationReasons.map((reason) => (
+												<Button
+													key={reason.value}
+													testId={`cancel-${reason.value}`}
+													label={reason.label}
+													danger
+													disabled={busy}
+													onClick={() => {
+														setPending({
+															actionId: `orders:cancel-${reason.value}`,
+															value: {
+																orderId: order.id,
+																reason: reason.value,
+																state: order.state,
+																...restockValue,
+															},
+															title: CANCEL_CONFIRM.title,
+															text: cancelConfirmText(reason.label, cancelEffects),
+															confirmLabel: CANCEL_CONFIRM.confirm,
+															denyLabel: CANCEL_CONFIRM.deny,
+														});
+													}}
+												/>
 											))}
-										</select>
-									</Field>
-									<Field label="Detail (optional)">
-										<input
-											className="otta-focusable"
-											data-testid="cancel-note-detail"
-											style={inputStyle}
-											value={cancelDetail}
-											onChange={(event) => setCancelDetail(event.target.value)}
-										/>
-									</Field>
-									<Field label="Cancelled by">
-										<input
-											className="otta-focusable"
-											data-testid="cancel-note-by"
-											style={inputStyle}
-											value={cancelledBy}
-											onChange={(event) => setCancelledBy(event.target.value)}
-										/>
-									</Field>
-									<div>
-										<Button
-											label="Cancel the order"
-											testId="cancel-with-note"
-											danger
-											disabled={busy || cancelReason.length === 0}
-											onClick={() => {
-												const label =
-													detail.vocabulary.cancellationReasons.find(
-														(reason) => reason.value === cancelReason,
-													)?.label ?? cancelReason;
-												setPending({
-													actionId: "orders:cancel",
-													value: {
-														orderId: order.id,
-														reason: cancelReason,
-														detail: cancelDetail,
-														cancelledBy,
-														state: order.state,
-													},
-													title: CANCEL_CONFIRM.title,
-													text: cancelConfirmText(label, order.state),
-													confirmLabel: CANCEL_CONFIRM.confirm,
-													denyLabel: CANCEL_CONFIRM.deny,
-												});
-											}}
-										/>
-									</div>
-								</div>
+										</div>
+										<Group testId="detail-cancel-note" label="Cancel with a note">
+											<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+												<Field label="Reason">
+													<select
+														className="otta-focusable"
+														data-testid="cancel-note-reason"
+														style={inputStyle}
+														value={cancelReason}
+														onChange={(event) => setCancelReason(event.target.value)}
+													>
+														<option value="">Choose a reason…</option>
+														{detail.vocabulary.cancellationReasons.map((reason) => (
+															<option key={reason.value} value={reason.value}>
+																{reason.label}
+															</option>
+														))}
+													</select>
+												</Field>
+												<Field label="Detail (optional)">
+													<input
+														className="otta-focusable"
+														data-testid="cancel-note-detail"
+														style={inputStyle}
+														value={cancelDetail}
+														onChange={(event) => setCancelDetail(event.target.value)}
+													/>
+												</Field>
+												<Field label="Cancelled by">
+													<input
+														className="otta-focusable"
+														data-testid="cancel-note-by"
+														style={inputStyle}
+														value={cancelledBy}
+														onChange={(event) => setCancelledBy(event.target.value)}
+													/>
+												</Field>
+												<div>
+													<Button
+														label="Cancel the order"
+														testId="cancel-with-note"
+														danger
+														disabled={busy || cancelReason.length === 0}
+														onClick={() => {
+															const label =
+																detail.vocabulary.cancellationReasons.find(
+																	(reason) => reason.value === cancelReason,
+																)?.label ?? cancelReason;
+															setPending({
+																actionId: "orders:cancel",
+																value: {
+																	orderId: order.id,
+																	reason: cancelReason,
+																	detail: cancelDetail,
+																	cancelledBy,
+																	state: order.state,
+																	...restockValue,
+																},
+																title: CANCEL_CONFIRM.title,
+																text: cancelConfirmText(label, cancelEffects),
+																confirmLabel: CANCEL_CONFIRM.confirm,
+																denyLabel: CANCEL_CONFIRM.deny,
+															});
+														}}
+													/>
+												</div>
+											</div>
+										</Group>
+									</>
+								)}
 							</Group>
-						</Group>
+						)}
 					</>
 				)}
 

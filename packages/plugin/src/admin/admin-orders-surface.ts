@@ -384,8 +384,30 @@ export type RecordFulfillmentResult =
  *  (e.g. `NOT_CANCELLABLE` — the order can no longer be cancelled); the caller
  *  renders GENERIC copy keyed off it, never the raw status/URL. */
 export type CancelOrderResult =
-	| { ok: true; cancelled: boolean }
-	| { ok: false; status: number; reason?: string };
+	| {
+			ok: true;
+			cancelled: boolean;
+			/** The money the cancellation returned (QA T1-4), or null when none. On a
+			 *  replay, what the cancellation on file returned. */
+			refund?: { amountCents: number; currency: string } | null;
+			/** Units THIS call returned to stock (0 on a replay or when declined). */
+			restockedUnits?: number;
+			/** Lines the restock could not return, and why (`UNKNOWN_SKU`,
+			 *  `HOLD_RELEASED`, `HOLD_UNKNOWN`) — reported so the console can say so. */
+			restockSkipped?: { sku: string; quantity: number; reason: string }[];
+	  }
+	| {
+			ok: false;
+			status: number;
+			reason?: string;
+			/** With `reason: "REFUND_FAILED"`: the refund leg's own typed reason
+			 *  (`GATEWAY_RETRYABLE`, `GATEWAY_TERMINAL`, `GATEWAY_UNVERIFIED`, …). */
+			refundFailure?: string;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: what DID move before the order
+			 *  shipped — the refund and the units restocked. */
+			refund?: { amountCents: number; currency: string } | null;
+			restockedUnits?: number;
+	  };
 
 /**
  * THE ADMIN ORDERS SURFACE, structurally — what a caller may do, with no claim
@@ -493,12 +515,21 @@ export interface AdminOrdersSurface {
 		opts: { idempotencyKey: string },
 	): Promise<RecordFulfillmentResult>;
 
-	/** Cancel an order WITH a structured reason (admin-UX Increment 1). Returns a
-	 *  discriminated result; forwards a typed `reason` (e.g. `NOT_CANCELLABLE`) so
-	 *  the console can pick the right GENERIC copy. */
+	/** Cancel an order WITH a structured reason (admin-UX Increment 1). A paid
+	 *  order is refunded what is still refundable and — unless `restock` is false —
+	 *  its units are returned to stock BEFORE it is cancelled (QA T1-4,
+	 *  `cancelOrderWithRefund`); a failed refund cancels nothing. Returns a
+	 *  discriminated result; forwards a typed `reason` (e.g. `NOT_CANCELLABLE`,
+	 *  `REFUND_FAILED` with its `refundFailure`) so the console can pick the right
+	 *  GENERIC copy. `restock` defaults to true. */
 	cancelOrder(
 		orderId: string,
-		cancellation: { reason: string; detail?: string | null; cancelledBy: string },
+		cancellation: {
+			reason: string;
+			detail?: string | null;
+			cancelledBy: string;
+			restock?: boolean;
+		},
 		opts: { idempotencyKey: string },
 	): Promise<CancelOrderResult>;
 

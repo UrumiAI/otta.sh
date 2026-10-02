@@ -250,9 +250,9 @@ const PAID_BY_PROVIDER_ONLY: Notice = {
  * A bare `cancelled` move (QA T1-4), from any state — keyed on the state the
  * operator SAW. It records no reason and releases no stock hold, so Cancel order is
  * the one way to cancel. An unpaid order's advice is about its held stock. A paid
- * order's says Cancel order does not refund (it does not, on this build) and points
- * at Money → Refunds — without "refund first, then cancel": a FULL refund closes the
- * order as `refunded`, after which it can no longer be cancelled.
+ * order's says what Cancel order does with the money and the stock: it refunds what
+ * the buyer paid and restocks unless the operator unticks it
+ * (`cancelOrderWithRefund`, ADR-0026's cancel-with-refund amendment).
  */
 function useCancelOrder(observedState: string): Notice {
 	return {
@@ -261,7 +261,7 @@ function useCancelOrder(observedState: string): Notice {
 		description:
 			observedState === "pending"
 				? "Nothing was changed. Cancel an order with Cancel order below, which records why and returns its held stock."
-				: "Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer — to return their money, use Money → Refunds (a full refund closes the order as refunded).",
+				: "Nothing was changed. Cancel an order with Cancel order below, which records why, refunds what the buyer paid and returns the items to stock unless you untick it.",
 	};
 }
 
@@ -577,6 +577,13 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 			description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
 		});
 	}
+	// "Return the items to stock" — ticked unless the operator untick it (damaged
+	// goods). ABSENT means ticked: the decision's default, and what a tab rendered
+	// before the box existed meant by cancelling.
+	const restock = readString(payload["restock"]) !== "false";
+	// The key is the CANCELLATION's, and the refund and restock legs derive theirs
+	// from it (`<key>:refund`, `<key>:restock:<line>`), so a double-click or a retry
+	// after a failure replays one cancellation rather than refunding twice.
 	const key = `admin-cancel:${orderId}`;
 	const result = await client.cancelOrder(
 		orderId,
@@ -584,29 +591,17 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 			reason,
 			...(detail.length > 0 ? { detail } : {}),
 			cancelledBy: cancelledBy.length > 0 ? cancelledBy : "admin",
+			restock,
 		},
 		{ idempotencyKey: key },
 	);
 	// The write was ATTEMPTED past this point, so every branch below is an outcome
 	// to read rather than an input to correct — `NOT_CANCELLABLE` above all, which
 	// means the order cannot be cancelled at all now.
-	if (!result.ok) {
-		return applied(
-			result.reason === "NOT_CANCELLABLE"
-				? {
-						variant: "error",
-						title: "Order can’t be cancelled right now",
-						description:
-							"This order can no longer be cancelled — it may have shipped, or been cancelled without a reason on file. Reload and check its status.",
-					}
-				: {
-						variant: "error",
-						title: "Not cancelled",
-						description:
-							"That cancellation could not be recorded — check the order, then retry in a moment.",
-					},
-		);
+	if (!result.ok && result.reason === "CANCEL_LOST_AFTER_REFUND") {
+		return applied(cancelLostNotice(result.refund ?? null, result.restockedUnits ?? 0));
 	}
+	if (!result.ok) return applied(cancelFailureNotice(result.reason, result.refundFailure));
 	if (!result.cancelled) {
 		return applied({
 			variant: "default",
@@ -614,12 +609,162 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 			description: "This order was already cancelled; its recorded reason is shown above.",
 		});
 	}
+	const refund = result.refund ?? null;
+	const stock =
+		restockSentence(restock, result.restockedUnits ?? 0) +
+		skippedSentence(result.restockSkipped ?? []);
+	if (refund !== null) {
+		return applied({
+			variant: "default",
+			title: "Order cancelled and refunded",
+			description: fit(
+				`Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.${stock} The buyer has been emailed.`,
+				BANNER_BUDGET,
+			),
+		});
+	}
 	return applied({
 		variant: "default",
 		title: "Order cancelled",
-		description: "The cancellation was recorded and the buyer has been emailed.",
+		description: `The cancellation was recorded.${stock} The buyer has been emailed.`,
 	});
 };
+
+/** What a cancellation did with the order's units, as a sentence led by a space —
+ *  or nothing, when it had none to return (an unpaid or digital-only order). */
+function restockSentence(restock: boolean, units: number): string {
+	if (!restock) return " Nothing was returned to stock.";
+	if (units === 0) return "";
+	return units === 1 ? " 1 item returned to stock." : ` ${String(units)} items returned to stock.`;
+}
+
+/** Lines the restock could not return, as a sentence led by a space — so the
+ *  operator knows which stock to check by hand. Empty when every line went back. */
+function skippedSentence(skipped: ReadonlyArray<{ sku: string; quantity: number }>): string {
+	if (skipped.length === 0) return "";
+	const lines = skipped.map((s) => `${s.sku} ×${String(s.quantity)}`).join(", ");
+	return ` Not returned to stock (check by hand): ${lines}.`;
+}
+
+/**
+ * The one cancel outcome where money MOVED but the order did not close: it shipped
+ * between the refund and the cancel. The order is flagged; this says what moved and
+ * what to do next.
+ */
+function cancelLostNotice(
+	refund: { amountCents: number; currency: string } | null,
+	restockedUnits: number,
+): Notice {
+	const money =
+		refund === null
+			? "The order was not cancelled"
+			: `${formatTotal(refund.amountCents, refund.currency)} was refunded, but the order was not cancelled`;
+	const stock =
+		restockedUnits === 0
+			? "nothing was returned to stock"
+			: `${String(restockedUnits)} item${restockedUnits === 1 ? " was" : "s were"} returned to stock`;
+	return {
+		variant: "error",
+		title: "Refunded, but the order was not cancelled",
+		description: fit(
+			`${money} — it shipped first, and ${stock}. It is flagged: contact the buyer, then stop the shipment or use Mark refunded. Don’t ship or refund it again unchecked.`,
+			BANNER_BUDGET,
+		),
+	};
+}
+
+/**
+ * A refused cancellation, keyed off the typed reason (and, for a failed refund, the
+ * refund leg's own). Every one of them says what the ORDER is now, because the rule
+ * (QA T1-4) is that a cancel whose refund did not happen changes nothing — the copy
+ * must never leave the operator believing the buyer was refunded or the order closed.
+ */
+function cancelFailureNotice(
+	reason: string | undefined,
+	refundFailure: string | undefined,
+): Notice {
+	switch (reason) {
+		case "NOT_CANCELLABLE":
+			return {
+				variant: "error",
+				title: "Order can’t be cancelled right now",
+				description:
+					"This order can no longer be cancelled — it may have shipped, or been cancelled without a reason on file. Reload and check its status.",
+			};
+		case "REFUND_NOT_AUTOMATIC":
+			return {
+				variant: "error",
+				title: "Not cancelled — the refund can’t be issued from here",
+				description:
+					"Nothing was changed. Otta can’t return this order’s payment automatically. Send the buyer their money yourself, then record it as a manual refund in Money → Refunds.",
+			};
+		case "MULTIPLE_CAPTURES":
+			return {
+				variant: "error",
+				title: "Not cancelled — paid in more than one payment",
+				description:
+					"Nothing was changed. This order was paid in more than one payment, and Otta can’t refund them in one step yet. Refund each payment in your provider’s dashboard, then use Mark refunded.",
+			};
+		case "REFUND_IN_FLIGHT":
+			return {
+				variant: "error",
+				title: "Not cancelled — another refund is unresolved",
+				description:
+					"Nothing was changed. A refund on this order is still pending or its outcome is unknown. Check Money → Refunds and your payment provider, then cancel again.",
+			};
+		case "REFUND_FAILED":
+			return cancelRefundFailureNotice(refundFailure);
+		default:
+			return {
+				variant: "error",
+				title: "Not cancelled",
+				description:
+					"That cancellation could not be recorded — check the order, then retry in a moment.",
+			};
+	}
+}
+
+/** The cancel's refund leg failed, so nothing was cancelled and nothing restocked. */
+function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
+	switch (refundFailure) {
+		case "GATEWAY_RETRYABLE":
+			return {
+				variant: "error",
+				title: "Not cancelled — temporary problem",
+				description:
+					"Nothing was changed: the payment provider could not be reached, so no refund was made. Try again in a moment — the retry continues the same refund.",
+			};
+		case "GATEWAY_UNVERIFIED":
+			return {
+				variant: "error",
+				title: "Not cancelled — refund status unknown",
+				description:
+					"The order was not cancelled. The refund request timed out and its outcome is unknown. Do NOT retry — check your provider dashboard first, then reconcile.",
+			};
+		case "PROVIDER_ALREADY_REFUNDED":
+			return {
+				variant: "error",
+				title: "Not cancelled — already refunded at the provider",
+				description:
+					"Nothing was changed. Your payment provider shows this payment already refunded (possibly from its dashboard). Reconcile it, then use Mark refunded to close the order.",
+			};
+		case "GATEWAY_TERMINAL":
+		case "REFUND_NOT_SUPPORTED":
+			return {
+				variant: "error",
+				title: "Not cancelled — the refund was rejected",
+				description:
+					"Nothing was changed and nothing was restocked: the payment provider rejected the refund. Check the payment in your provider dashboard.",
+			};
+		default:
+			return {
+				variant: "error",
+				title: "Not cancelled",
+				description:
+					"The refund could not be completed, so the order was not cancelled. Check Money → Refunds and your payment provider before trying again.",
+			};
+	}
+}
 
 // -- refunds ------------------------------------------------------------------
 

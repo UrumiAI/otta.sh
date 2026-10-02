@@ -93,7 +93,7 @@
 import {
 	adminNextStates,
 	appendOrderNote,
-	cancelOrder as cancelOrderUseCase,
+	cancelOrderWithRefund,
 	computeRefundCeiling,
 	getOrderCustomerContext,
 	getOrderTimeline,
@@ -367,10 +367,21 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/** POST cancel an order WITH a structured reason. Cancelling records the reason
 	 *  envelope AND drives the `{pending,paid,processing} → cancelled` transition
 	 *  AND enqueues the cancelled email, atomically — legality lives in the ONE
-	 *  state machine, so an order that cannot reach `cancelled` is 409. */
+	 *  state machine, so an order that cannot reach `cancelled` is 409.
+	 *
+	 *  A PAID order is refunded and restocked first (QA T1-4): the domain's
+	 *  `cancelOrderWithRefund` runs the refund through the order's own gateway — the
+	 *  same one the refund POST uses, so the money takes the one refund path — and
+	 *  restocks through the inventory store. A failed refund cancels nothing and
+	 *  answers with `REFUND_FAILED` and the refund leg's reason. */
 	async cancelOrder(
 		orderId: string,
-		cancellation: { reason: string; detail?: string | null; cancelledBy: string },
+		cancellation: {
+			reason: string;
+			detail?: string | null;
+			cancelledBy: string;
+			restock?: boolean;
+		},
 		opts: { idempotencyKey: string },
 	): Promise<CancelOrderResult> {
 		let reason: CancellationReason;
@@ -386,20 +397,72 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:cancel:${orderId}`);
-		const res = await cancelOrderUseCase(
-			{ orderStore: this.#stores.orderStore },
+		const oid = toOrderId(orderId);
+		const order = await this.#stores.orderStore.getById(oid);
+		// The order's own gateway, or null — the domain refuses a refund it cannot
+		// issue (`REFUND_NOT_AUTOMATIC`) rather than cancelling with the money kept.
+		const gateway =
+			order === null || order.paymentMethod === null
+				? null
+				: (this.#gateways[order.paymentMethod] ?? null);
+		const res = await cancelOrderWithRefund(
 			{
-				orderId: toOrderId(orderId),
+				orderStore: this.#stores.orderStore,
+				inventoryStore: this.#stores.inventory,
+				paymentEventStore: this.#stores.paymentEventStore,
+				clock: this.#stores.clock,
+			},
+			gateway,
+			{
+				orderId: oid,
 				reason,
 				detail: cancellation.detail ?? null,
 				cancelledBy: cancellation.cancelledBy,
+				restock: cancellation.restock ?? true,
 				idempotencyKey: toIdempotencyKey(key),
 			},
 		);
-		if (res.ok) return { ok: true, cancelled: res.cancelled };
-		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
-		if (res.reason === "NOT_CANCELLABLE") return { ok: false, status: 409, reason: res.reason };
-		return { ok: false, status: 400, reason: res.reason };
+		if (res.ok) {
+			return {
+				ok: true,
+				cancelled: res.cancelled,
+				refund:
+					res.refund === null
+						? null
+						: { amountCents: res.refund.amount, currency: res.refund.currency },
+				restockedUnits: res.restockedUnits,
+				restockSkipped: res.restockSkipped.map((skip) => ({ ...skip })),
+			};
+		}
+		switch (res.reason) {
+			case "CANCEL_LOST_AFTER_REFUND":
+				// The refund (and restock) happened, so the console must say what moved.
+				return {
+					ok: false,
+					status: 409,
+					reason: res.reason,
+					refund:
+						res.refund === null
+							? null
+							: { amountCents: res.refund.amount, currency: res.refund.currency },
+					restockedUnits: res.restockedUnits,
+				};
+			case "ORDER_NOT_FOUND":
+				return { ok: false, status: 404, reason: res.reason };
+			case "EMPTY_CANCELLED_BY":
+				return { ok: false, status: 400, reason: res.reason };
+			case "REFUND_FAILED":
+				return {
+					ok: false,
+					status: refundFailureStatus(res.refundFailure),
+					reason: res.reason,
+					refundFailure: res.refundFailure,
+				};
+			default:
+				// NOT_CANCELLABLE, REFUND_NOT_AUTOMATIC, REFUND_IN_FLIGHT and
+				// MULTIPLE_CAPTURES are all conflicts with the order's state.
+				return { ok: false, status: 409, reason: res.reason };
+		}
 	}
 
 	/** GET an order's customer context (read-only). An unknown order resolves to
