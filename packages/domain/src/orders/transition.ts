@@ -242,6 +242,12 @@ export interface DispatchOrderEmailsOptions {
 	onRepeatedTimeouts?: (row: { id: string; orderId: OrderId; timeouts: number }) => void;
 	/** Uncounted timeouts a row is allowed. Default: {@link MAX_UNCOUNTED_TIMEOUTS}. */
 	maxUncountedTimeouts?: number;
+	/**
+	 * Told about every row the drain SENT, after it is marked sent — never a row
+	 * whose send failed. A caller that must say truthfully whether a particular email
+	 * went out (the admin console, QA T1-6) needs which rows, not how many.
+	 */
+	onSent?: (row: OutboxEmail) => void;
 }
 
 export interface DispatchOrderEmailsForOrderOptions extends DispatchOrderEmailsOptions {
@@ -453,7 +459,11 @@ async function drainOutbox(
 				row.id,
 				row.attempts >= maxAttempts ? null : leaseUntil,
 			);
+			continue;
 		}
+		// Outside the try: a caller's callback that throws must never be mistaken for a
+		// failed send and reschedule a row that already went out.
+		options.onSent?.(row);
 	}
 	return sent;
 }

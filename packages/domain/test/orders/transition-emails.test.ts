@@ -391,6 +391,30 @@ describe("dispatchOrderEmailsForOrder — one order, inline", () => {
 		expect(emailSender.countByTemplate("order-confirmation", "ord-1")).toBe(1);
 	});
 
+	test("onSent reports each row it sent, in order — a failed one is not reported", async () => {
+		// The admin console reports "emailed" only for a row that was really sent
+		// (QA T1-6), so the caller needs WHICH rows, not just how many.
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.markPaid(orderId("ord-1"));
+		await transitionOrder(
+			{ orderStore: store },
+			{
+				orderId: orderId("ord-1"),
+				toState: "processing",
+				idempotencyKey: idempotencyKey("t:ord-1:processing"),
+			},
+		);
+		const sent: OrderState[] = [];
+		const deps = { orderStore: store, emailSender, clock };
+		emailSender.failNextSends(1);
+		await dispatchOrderEmailsForOrder(deps, orderId("ord-1"), {
+			onSent: (row) => sent.push(row.toState),
+		});
+		// The confirmation failed (backed off for the cron); processing went out.
+		expect(sent).toEqual(["processing"]);
+	});
+
 	test("an order with nothing due is a zero, not an error", async () => {
 		const { store, clock, emailSender } = harness();
 		await store.createFromCart(pending()); // still pending — no outbox row
