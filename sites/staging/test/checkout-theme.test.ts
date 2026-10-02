@@ -617,7 +617,14 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 		expect(frontmatter).toMatch(
 			/if \(refuseTo !== null\) return Astro\.redirect\(refuseTo, 303\);/,
 		);
-		expect(frontmatter.match(/orderRead/g) ?? []).toHaveLength(2);
+		// QA U-14: the same read also states the hold deadline — its
+		// `holdExpiresAt` and nothing else, and never on the button.
+		const holdNote =
+			/holdNote:\s*orderRead !== null && !isBusyResult\(orderRead\) && orderRead\.ok\s*\?\s*payHoldCopy\(orderRead\.order\.holdExpiresAt, new Date\(\)\)\s*:\s*null/.exec(
+				frontmatter,
+			)?.[0] ?? "";
+		expect(holdNote, "the hold note reads the order's deadline only").not.toBe("");
+		expect(frontmatter.replace(holdNote, "").match(/orderRead/g) ?? []).toHaveLength(2);
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {

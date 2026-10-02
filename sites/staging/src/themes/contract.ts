@@ -434,6 +434,13 @@ export interface PayModel {
 	 * and nothing on this step can change it. `null` when the stash carries none.
 	 */
 	emailHint: string | null;
+	/**
+	 * How long the order is still reserved (QA U-14): `lead` ("Your order is
+	 * reserved for 12 more minutes") and `until` ("2:32 pm UTC", with its zone)
+	 * for a `<time datetime={iso}>`. `null` when the page could not read the
+	 * order (it renders the form anyway — pay-guard.ts's fail-open).
+	 */
+	holdNote: { lead: string; until: string; iso: string } | null;
 }
 
 export interface OrderStampCopy {

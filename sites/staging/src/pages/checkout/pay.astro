@@ -42,7 +42,8 @@ import Notice from "../../components/Notice.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
+import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { payButtonLabel } from "../../lib/totals.js";
@@ -91,6 +92,12 @@ const model: PayModel = {
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
 	orderPath,
 	emailHint: stash.emailHint ?? null,
+	/* From the read the guard just made — no second commerce call. An
+	   unanswerable read rendered the form anyway; it simply states no deadline. */
+	holdNote:
+		orderRead !== null && !isBusyResult(orderRead) && orderRead.ok
+			? payHoldCopy(orderRead.order.holdExpiresAt, new Date())
+			: null,
 };
 ---
 
@@ -124,9 +131,15 @@ const model: PayModel = {
 				<noscript>
 					<Notice>
 						Entering card details requires JavaScript, because your card number is handled
-						directly by our payment provider and never touches this site. Your order is reserved
-						for 15 minutes — enable JavaScript and reload, or{" "}
-						<a href={orderPath}>view your order</a>.
+						directly by our payment provider and never touches this site.{" "}
+						{model.holdNote !== null ? (
+							<>
+								{model.holdNote.lead}, until {model.holdNote.until} —
+							</>
+						) : (
+							<>Your order is reserved for a limited time —</>
+						)}{" "}
+						enable JavaScript and reload, or <a href={orderPath}>view your order</a>.
 					</Notice>
 				</noscript>
 

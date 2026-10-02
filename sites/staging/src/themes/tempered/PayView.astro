@@ -25,7 +25,8 @@ interface Props {
 	model: PayModel;
 }
 
-const { paymentConfigured, notConfiguredLead, orderPath, emailHint } = Astro.props.model;
+const { paymentConfigured, notConfiguredLead, orderPath, emailHint, holdNote } =
+	Astro.props.model;
 ---
 
 {/* Wrapped rather than given a class: a view cannot style a component's root
@@ -50,6 +51,16 @@ const { paymentConfigured, notConfiguredLead, orderPath, emailHint } = Astro.pro
 					site.
 				</span>
 			</p>
+
+			{/* How long the order is held (QA U-14): relative, true in every zone
+			    when the page loads, and the deadline WITH its zone, which stays
+			    true after — this page does not tick. */}
+			{holdNote !== null && (
+				<p class="pay-hold">
+					{holdNote.lead}, until <time datetime={holdNote.iso}>{holdNote.until}</time>. After
+					that the items go back on sale and this order can't be paid.
+				</p>
+			)}
 
 			{/* Read-only, never an input: the order keeps the email it was placed
 			    with (QA U-2). A hint, because this step can be reached from the
