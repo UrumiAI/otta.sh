@@ -13,6 +13,7 @@
  * isolate — module state — and a file is the unit vitest gives a fresh module
  * graph to.
  */
+import { EmailSendTimeoutError } from "@otta-sh/domain";
 import { FakeEmailSender } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
@@ -176,6 +177,43 @@ describe("requestLoginLink on a deployment with NO email configured", () => {
 			expect(harness.egressAttempts()).toBe(0);
 		} finally {
 			warns.mockRestore();
+		}
+	});
+});
+
+/**
+ * The login send's catch is GENERIC — any error from the sender is logged by
+ * message and swallowed into the same answer — so the sweep's timeout error type
+ * (`EmailSendTimeoutError`, which the sender now raises for its own abort) needs
+ * no special case here. Pinned, because a catch that matched the old abort error
+ * by name would let this one escape as a 500.
+ */
+describe("requestLoginLink with a login send that TIMES OUT", () => {
+	let harness: InProcessCommerceHarness;
+	const timingOut = {
+		async send(): Promise<void> {
+			throw new EmailSendTimeoutError(3000);
+		},
+	};
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce({ emailSender: timingOut });
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("answers the same generic success and logs the timeout by message only", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(
+				await harness.client.requestLoginLink("slow@example.test", { verifyPageUrl: VERIFY }),
+			).toEqual({ ok: true });
+			expect(errors).toHaveBeenCalled();
+			expect(JSON.stringify(errors.mock.calls)).toContain("email send abandoned after 3000 ms");
+			expect(JSON.stringify(errors.mock.calls)).not.toMatch(/token=|\/account\/verify/);
+		} finally {
+			errors.mockRestore();
 		}
 	});
 });

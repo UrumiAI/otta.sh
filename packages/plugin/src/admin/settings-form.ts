@@ -1,3 +1,9 @@
+import {
+	BACKGROUND_WORK_KEY,
+	BACKGROUND_WORK_PRESETS,
+	readBackgroundWork,
+	validateBackgroundWork,
+} from "../cron/background-work-setting.js";
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
 import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
@@ -41,6 +47,10 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  *    rather than from an HTTP status the in-process tier does not have.
  *  - the write-only payment/email credentials ("Payments & email" group) save
  *    into write-only plugin kv, one key per secret ({@link PAYMENT_SECRET_FIELDS}).
+ *  - "Background work per minute" (in "Checkout & holds", beside the hold TTL)
+ *    saves the commerce sweep's per-tick query budget into plugin kv — a
+ *    deployment fact (the Cloudflare plan), not domain configuration; see
+ *    `cron/background-work-setting.ts`.
  *
  * RETIRED (work order 02, INC-D3a): this screen used to carry a FOURTH
  * "Service connection" group with two more write-only secret forms —
@@ -74,6 +84,9 @@ export const SETTINGS_PAGE: AdminPageConfig = {
 /** The kv key for the cosmetic store display name (`settings:*` = the em-dash
  *  convention for user-configurable prefs shown in admin UI). */
 export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
+
+/** The "Background work per minute" form's submit — a kv save. */
+const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -293,6 +306,9 @@ interface SettingsPageState {
 	/** INC-C5: the NON-secret payment/email settings, keyed by kv key. These ARE
 	 *  the values, and they are rendered back — that is the tier difference. */
 	plainSettings: Map<string, string>;
+	/** The commerce sweep's per-tick query budget ("Background work per minute"),
+	 *  as the sweep would read it — the default when unset or unusable. */
+	backgroundWork: number;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -318,17 +334,22 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * were redundant re-reads). With both tokens gone — the commerce service they
  * authenticated to is gone — there is nothing left to derive from a
  * caller-supplied argument, so this reads everything itself: the display name,
- * the payment-secret state and the plain payment settings: three concurrent gets.
+ * the payment-secret state, the plain payment settings and the background-work
+ * budget: four concurrent gets.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings] = await Promise.all([
+	const [displayName, paymentSecrets, plainSettings, backgroundWork] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
 		readPaymentSecretState(ctx),
 		readPlainSettings(ctx),
+		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+		// sweep makes, so the form shows the budget the next tick will use.
+		readBackgroundWork(ctx),
 	]);
 	return {
+		backgroundWork,
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,
@@ -367,6 +388,7 @@ async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
 export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
 	"save-operational",
+	SAVE_BACKGROUND_WORK_ACTION,
 	// INC-C3: the four payment/email secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
@@ -475,6 +497,38 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			return {
 				...page,
 				toast: { message: "Display name saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
+		// -- kv save path: Background work per minute -----------------------------
+		// The sweep's per-tick query budget. Validated here, at the one writer, and
+		// REFUSED rather than clamped when out of bounds — a budget above the
+		// platform's per-invocation cap fails every tick, one below the floor makes
+		// no progress. The sweep re-validates on read, so nothing else can slip a
+		// bad value past it either.
+		if (action === SAVE_BACKGROUND_WORK_ACTION) {
+			const checked = validateBackgroundWork(input.values?.backgroundWorkPerMinute);
+			if (!checked.ok) {
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: "Background work not saved",
+					description: `${checked.message} Nothing was changed.`,
+				});
+				return {
+					...page,
+					toast: { message: "Background work not saved", type: "error" },
+				} satisfies BlockResponse;
+			}
+			await ctx.kv.set(BACKGROUND_WORK_KEY, checked.value);
+			const preset = BACKGROUND_WORK_PRESETS.find((entry) => entry.value === checked.value);
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: "Background work saved",
+				description: `Background work per minute set to ${preset?.label ?? String(checked.value)}. It applies from the next minute's sweep.`,
+			});
+			return {
+				...page,
+				toast: { message: "Background work saved", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -780,6 +834,7 @@ function buildSettingsBlocks(args: {
 	persisted: OperationalSettingsWire | undefined;
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
+	backgroundWork: number;
 	notice?: Notice;
 }): Block[] {
 	const blocks: Block[] = [
@@ -792,7 +847,7 @@ function buildSettingsBlocks(args: {
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
 		storeGroup(args.displayName),
-		checkoutGroup(args.settings, args.persisted),
+		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
 		paymentsGroup(args.paymentSecrets, args.plainSettings),
 	);
 	return blocks;
@@ -884,9 +939,52 @@ function storeGroup(displayName: string): AccordionBlock {
 	};
 }
 
+/** What the choice means, in the operator's terms. */
+const backgroundWorkContext: Block = {
+	type: "context",
+	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
+};
+
+/**
+ * "Background work per minute" — a radio of the two plan presets, beside the
+ * hold TTL because it decides how fast expired holds come back on sale.
+ *
+ * A `radio`, because a Block Kit `select` shows the raw value, not the label
+ * (R-17a). A stored value that is not a preset (one saved before
+ * the presets changed, say) is offered as its own "Custom" row, so the form
+ * never shows a choice that is not what is stored. Keyed on its prefill by
+ * `carriedForm`, so a new stored value remounts it.
+ */
+function backgroundWorkForm(backgroundWork: number): FormBlock {
+	const presets = BACKGROUND_WORK_PRESETS.map((preset) => ({
+		value: String(preset.value),
+		label: preset.label,
+	}));
+	const options = BACKGROUND_WORK_PRESETS.some((preset) => preset.value === backgroundWork)
+		? presets
+		: [...presets, { value: String(backgroundWork), label: `Custom (${String(backgroundWork)})` }];
+	return carriedForm({
+		namespace: "settings:background-work",
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "radio",
+					action_id: "backgroundWorkPerMinute",
+					label: "Background work per minute",
+					options,
+					initial_value: String(backgroundWork),
+				},
+			],
+			submit: { label: "Save background work", action_id: SAVE_BACKGROUND_WORK_ACTION },
+		},
+	});
+}
+
 function checkoutGroup(
 	settings: OperationalSettingsWire | undefined,
 	persisted: OperationalSettingsWire | undefined,
+	backgroundWork: number,
 ): AccordionBlock {
 	const body: Block[] =
 		settings === undefined
@@ -897,6 +995,9 @@ function checkoutGroup(
 						type: "context",
 						text: "Operational settings could not be loaded right now. Store display name and payment/email settings are unaffected.",
 					},
+					// Stored in plugin kv, not the settings store, so it stays usable.
+					backgroundWorkContext,
+					backgroundWorkForm(backgroundWork),
 				]
 			: [
 					{
@@ -924,6 +1025,8 @@ function checkoutGroup(
 							submit: { label: "Save operational settings", action_id: "save-operational" },
 						},
 					}),
+					backgroundWorkContext,
+					backgroundWorkForm(backgroundWork),
 				];
 	return {
 		type: "accordion",

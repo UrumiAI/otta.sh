@@ -48,6 +48,23 @@ function toGlobalFetch(fetchImpl: PluginContext["http"]["fetch"]): typeof fetch 
 	return (input, init) => fetchImpl(String(input), init);
 }
 
+/** Per-caller tuning of the live gateway. */
+export interface StripeGatewayOptions {
+	/**
+	 * Bound on each live Stripe call. Unset ⇒ the transport's 30 s default, right
+	 * for a checkout or an admin refund. A caller running inside someone else's
+	 * deadline passes less: the settle webhook (Stripe stops waiting on a delivery
+	 * after ~10 s) and the cron sweep (a provider stall must not hold the tick) —
+	 * the sweep as a FUNCTION, asked at each call, of what its leg has left.
+	 */
+	requestTimeoutMs?: number | (() => number);
+	/** A FIXED bound for the refund create alone (see `StripePaymentGateway`). */
+	refundCreateTimeoutMs?: number;
+	/** Asked between the refund pre-flight and the create; `false` skips the create
+	 *  and answers RETRYABLE (nothing issued). */
+	beforeRefundCreate?: () => boolean;
+}
+
 /**
  * Resolve the Stripe gateway for a context, or report `undefined` for
  * "Stripe is not configured on this deployment" — the same fail-closed shape
@@ -58,6 +75,7 @@ function toGlobalFetch(fetchImpl: PluginContext["http"]["fetch"]): typeof fetch 
  */
 export async function stripeGatewayFromCtx(
 	ctx: PluginContext,
+	options: StripeGatewayOptions = {},
 ): Promise<StripePaymentGateway | undefined> {
 	const [secretKey, webhookSecret] = await Promise.all([
 		stripeSecretKeyFromKv(ctx),
@@ -68,5 +86,14 @@ export async function stripeGatewayFromCtx(
 		secretKey,
 		webhookSecret,
 		fetch: toGlobalFetch(ctx.http.fetch),
+		...(options.requestTimeoutMs !== undefined
+			? { requestTimeoutMs: options.requestTimeoutMs }
+			: {}),
+		...(options.refundCreateTimeoutMs !== undefined
+			? { refundCreateTimeoutMs: options.refundCreateTimeoutMs }
+			: {}),
+		...(options.beforeRefundCreate !== undefined
+			? { beforeRefundCreate: options.beforeRefundCreate }
+			: {}),
 	});
 }

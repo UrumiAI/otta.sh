@@ -369,9 +369,12 @@ export type CommitManyResult = { lost: string[] };
  * the order for manual reconciliation; it is never swallowed.
  */
 export class ReservationCommitLostError extends Error {
+	/** The state the reservation was in — `released` means its units went back. */
+	readonly state: string;
 	constructor(reservationId: string, state: string) {
 		super(`cannot commit reservation ${reservationId}: it is ${state}, not held/adopted/committed`);
 		this.name = "ReservationCommitLostError";
+		this.state = state;
 	}
 }
 

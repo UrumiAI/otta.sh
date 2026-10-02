@@ -158,6 +158,53 @@ describe("renderEmail order-cancelled", () => {
 	});
 });
 
+// QA T1-4: cancelling a paid order refunds it, and the buyer's email must say so —
+// with the amount actually refunded — whatever the (possibly sensitive) reason was.
+describe("renderEmail order-cancelled with a refund", () => {
+	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
+
+	test("states the refund and its amount", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: {
+				reason: "customer_request",
+				detail: null,
+				refund: { amountCents: 1800, currency: "USD" },
+			},
+		});
+		expect(rendered.text).toContain(
+			"A refund of 18.00 USD is on its way to your original payment method.",
+		);
+		expect(rendered.html).toContain("A refund of 18.00 USD is on its way");
+		// The reason line still renders beside it.
+		expect(rendered.text).toContain("Reason: at your request");
+	});
+
+	test("states the refund even when the reason is not customer-safe", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: {
+				reason: "fraud_suspected",
+				detail: "internal",
+				refund: { amountCents: 2400, currency: "USD" },
+			},
+		});
+		expect(rendered.text).toContain("A refund of 24.00 USD is on its way");
+		expect(rendered.text).not.toContain("Reason:");
+		expect(rendered.text).not.toContain("fraud");
+	});
+
+	test("says nothing about a refund when none was made", () => {
+		for (const cancellation of [
+			{ reason: "customer_request", detail: null, refund: null },
+			{ reason: "customer_request", detail: null },
+		]) {
+			const rendered = renderEmail("order-cancelled", { ...base, cancellation });
+			expect(rendered.text).not.toContain("refund");
+		}
+	});
+});
+
 // The mapping itself, pinned as the explicit allowlist the review asked for:
 // exactly two customer-safe reasons; everything else — incl. every sensitive
 // enum member and unknown values — is undefined (⇒ no reason line renders).
@@ -311,5 +358,38 @@ describe("renderEmail names the order by its products, never its id", () => {
 		expect(rendered.html).toContain("&lt;b&gt;Tee&lt;/b&gt; &amp; Co");
 		expect(rendered.html).not.toContain("<b>Tee</b>");
 		expect(rendered.text).toContain("<b>Tee</b> & Co");
+	});
+});
+
+// QA T1-6: a refund email states the amount REFUNDED — not the order total — and
+// every refund email states it the same way (`Refunded: X`, the notice path).
+describe("renderEmail refund emails", () => {
+	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
+
+	test("a refund-issued email states its own amount, neutral about how much and how", () => {
+		const rendered = renderEmail("order-refund-issued", {
+			...base,
+			noticeAmountCents: 600,
+			noticeCurrency: "USD",
+		});
+		expect(rendered.subject).toBe("Refund issued — order ord-1");
+		// Neutral: it also announces a FULL refund on an order that cannot flip to
+		// refunded (a cancellation that lost the race to a shipment).
+		expect(rendered.text).toContain("We've issued a refund for your order.");
+		expect(rendered.text).not.toContain("partial");
+		expect(rendered.text).toContain("Refunded: 6.00 USD");
+		expect(rendered.text).not.toContain("Total:");
+		expect(rendered.text).not.toContain("original payment method");
+	});
+
+	test("the refunded state email states the money refunded the same way", () => {
+		const rendered = renderEmail("order-refunded", {
+			...base,
+			state: "refunded",
+			noticeAmountCents: 2400,
+			noticeCurrency: "USD",
+		});
+		expect(rendered.text).toContain("Your order has been refunded.");
+		expect(rendered.text).toContain("Refunded: 24.00 USD");
 	});
 });

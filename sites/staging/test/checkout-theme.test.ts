@@ -585,11 +585,29 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 
 	test("the amount comes from the STASH, not from a commerce read on this page", () => {
 		// Which is the whole reason it is captured at place-time: the cart stays
-		// live and mutable, the charge does not. A dispatch here would also break
-		// the "this page makes no commerce call" property the design leans on.
+		// live and mutable, the charge does not.
 		const { frontmatter } = splitAstro(PAY);
 		expect(frontmatter).toContain("stash.total?.formatted");
-		expect(frontmatter).not.toContain("dispatchOttaRoute");
+		expect(frontmatter).toContain("payButtonLabel(stash.total?.formatted)");
+	});
+
+	test("the ONE commerce call is the order-state READ that guards the form — nothing it returns reaches the button", () => {
+		// The page used to make no commerce call at all, and that is how an
+		// EXPIRED order got paid: the stash outlives the hold. It now reads the
+		// order's own state (the confirmation page's public route) and redirects
+		// away from a form for anything not payable (ADR-0012, amended 2026-10-02).
+		// The read is a guard only: exactly one dispatch, to the order route, its
+		// result fed to `payPageRedirect` and nowhere else.
+		const { frontmatter } = splitAstro(PAY);
+		expect(frontmatter.match(/dispatchOttaRoute</g) ?? []).toHaveLength(1);
+		expect(frontmatter).toMatch(
+			/dispatchOttaRoute<OrderRouteResult>\(\s*[^,]+,\s*STOREFRONT_ORDER_ROUTE,/,
+		);
+		expect(frontmatter).toContain("payPageRedirect(orderPath, orderRead, new Date())");
+		expect(frontmatter).toMatch(
+			/if \(refuseTo !== null\) return Astro\.redirect\(refuseTo, 303\);/,
+		);
+		expect(frontmatter.match(/orderRead/g) ?? []).toHaveLength(2);
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {

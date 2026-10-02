@@ -35,6 +35,7 @@ import {
 	sku as brandSku,
 	updateLine,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,
@@ -596,6 +597,15 @@ describeEachDialect("order flow", (ctx) => {
 			expire: (id, at) => h.store.expire(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),
+			recordPaymentIntent: (i) => h.store.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.store.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.store.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.store.updatePaymentIntentCancel(id, intent, u),
+			readOrderLedger: (id) => h.store.readOrderLedger(id),
+			scheduleRefundRetry: (id, key, retry) => h.store.scheduleRefundRetry(id, key, retry),
+			listRefundRetriesDue: (now, limit) => h.store.listRefundRetriesDue(now, limit),
+			listRefundRetriesStale: (cutoff, limit) => h.store.listRefundRetriesStale(cutoff, limit),
 			getCapturedPayments: (id) => h.store.getCapturedPayments(id),
 			listRefunds: (id) => h.store.listRefunds(id),
 			getRefundByIdempotencyKey: (k) => h.store.getRefundByIdempotencyKey(k),
@@ -615,13 +625,19 @@ describeEachDialect("order flow", (ctx) => {
 			countOrders: (f) => h.store.countOrders(f),
 			linkGuestOrders: (c, ref) => h.store.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.store.claimNextEmail(now, lease),
+			releaseEmailClaim: (id) => h.store.releaseEmailClaim(id),
+			enqueueNotice: (id, notice) => h.store.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.store.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.store.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.store.rescheduleEmail(id, at),
 		};
 
+		// A gateway that CANNOT refund, so the flag must stand for a human; the
+		// refundable case (auto-refund, flag resolved) is `latePaymentContract`'s.
 		const settled = await settleOrder(
 			{ ...h.settleDeps, orderStore: racingOrderStore },
-			h.stripeGateway,
+			new FakePaymentGateway({ id: "stripe", refundable: false }),
 			h.stripeGateway.webhook(evt(res.order)),
 		);
 		expect(settled.ok).toBe(true);

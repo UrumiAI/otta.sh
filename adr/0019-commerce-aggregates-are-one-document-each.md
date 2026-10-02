@@ -5,6 +5,9 @@
   unchanged and reaffirmed; the amendment corrects the statements the built adapters proved wrong, adds
   the rows they proved missing, and states four rules that recurred. Every in-place correction carries a
   **†**.
+  **Amended again 2026-10-02** — see
+  [Amendment 2026-10-02 — the sweepers run every minute, inside a time budget](#amendment-2026-10-02--the-sweepers-run-every-minute-inside-a-time-budget).
+  When and how long the sweepers run; what they must complete is unchanged.
 - Date: 2026-09-13
 - Refines: [ADR-0002](./0002-adapter-based-split.md) — this record names the document model that
   satisfies the storage seam ADR-0002 designed, on a store with **no transactions**. The ports do not
@@ -1319,3 +1322,157 @@ and finds it decided with no reservation; it could retire the claim there on an 
 checked-out one `#narrowCheckedOut` already leaves it out of the deadline), making the sweep
 self-healing. It is deferred because the
 sweep's expiry pass is being reworked separately (`fix/sweep-cadence`).
+
+## Amendment 2026-10-02 — the sweepers run every minute, inside a time budget
+
+**What this changes.** Only *when* and *for how long* the sweepers of
+[The sweepers the adapters now require](#the-sweepers-the-adapters-now-require) run. What each must
+complete, and the rule that a missing sweeper is a correctness bug, are unchanged and reaffirmed — this
+amendment exists because, as shipped, five of the nine legs were missing in practice.
+
+**Context.** The plugin's one cron task, `commerce-sweeps`, was due every fifteen minutes — the cadence
+the standalone service ran its `scheduled()` handler on, chosen there so a serverless Postgres origin
+could autosuspend between ticks. That reason left with the service: commerce truth now lives in the
+site's own D1, and the site's Worker Cron Trigger already fires every minute to drive the host's
+executor. End-to-end QA found two compounding defects:
+
+1. **Holds outlived their TTL.** A fifteen-minute cart or order hold lasted fifteen to thirty minutes,
+   and a queued email waited up to fifteen.
+2. **One slow leg starved the rest.** The nine legs ran back to back in one host hook, and the host
+   abandons a hook after its timeout (5000 ms in EmDash 0.38, per hook, configurable as the hook's
+   `timeout`). The QA log showed `expire-holds 18`, `expire-orders 14`, then
+   `Hook timeout after 5000ms` — twice. Every leg after them — the outbox, the challenge prune and the
+   hold-intent, reporting and coupon completers — never ran. The per-leg try/catch contained a leg that
+   *threw*; nothing contained a leg that was *slow*.
+
+**Decision.**
+
+1. **The task is due every minute** (`SWEEP_SCHEDULE = "* * * * *"`), the trigger's own resolution.
+   Deployments registered under the old cadence move on their own: the per-isolate bootstrap reads the
+   host's task row and upserts only when its schedule differs. The tick does not re-affirm on every run
+   (that was a database write, and a `next_run_at` nudge on the running row, every minute).
+2. **The scans keep the fifteen-minute cadence, per leg.** `sku-transfers`, `order-sku-index`,
+   `reporting-heal` and `coupon-orphans` read up to a page budget of a collection (or re-reconcile the
+   closed day) on every run; that read cost, not the holds, is what the old cadence was bounding, and
+   the residue they heal is rare and not customer-visible within minutes. Each runs only when fifteen
+   minutes have passed since it last completed (one state document in the plugin's `ctx.kv`); a run the
+   budget cut short is not stamped, so it resumes on the next tick; a run that *failed* is stamped, so a
+   broken scan retries at its own cadence rather than every minute. The other five legs find their work
+   through a predicate that narrows as the work completes, so an idle run costs only its discovery read
+   (one query each, a little more for the outbox claim and the settings read).
+3. **The tick has a budget in two dimensions, started at hook entry.**
+   - *Time.* The hook declares its timeout, `SWEEP_HOOK_TIMEOUT_MS = 15000` — RAISED from the host's
+     5000 ms default so one send of a slow-but-working email provider fits in a tick (see 5). The legs
+     get `SWEEP_TICK_BUDGET_MS = 9500`; the 5.5 s between them hold one whole email send plus the
+     trailing reserve (a test pins that inequality). The cost, accepted: EmDash 0.38's executor runs
+     due tasks one after another in a single scheduled event, so a long tick can delay another
+     plugin's task due in the same minute by up to the hook's timeout. Acceptable because the tick
+     ends itself at 9.5 s and usually far sooner (on Workers Free the query budget ends it first), cron
+     granularity is a minute anyway, and the time is wall time spent waiting on I/O — Workers Free's
+     per-invocation CPU limit is unaffected.
+   - *Queries.* Cloudflare caps one Worker invocation at **50 D1 queries and 50 subrequests on Workers
+     Free (1000 and 10,000 on Paid)**, and the scheduled event that runs the tick also runs the host's
+     executor, its scheduled-publishing pass, system cleanup and heartbeat. Every storage, kv and egress
+     call the tick makes is counted, against an OPERATIONAL SETTING, "Background work per minute"
+     (Settings → Checkout & holds, beside the hold TTL; plugin `ctx.kv`, not the domain's settings
+     store — the domain has no notion of a Cloudflare plan). Presets: Workers Free (30, the default —
+     the plan DEPLOYMENT.md §2 builds for) and Workers Paid (600); any whole number from **30** to 900
+     is accepted on save, anything else refused with a message; a stored value outside the bounds is
+     ignored for the default. 30 is the FLOOR, not only the default: below it the costliest critical
+     unit (an order expiry, ~23 calls with its list, plus the tick's own reads and reserve) could never
+     start, and order expiry would stop silently and forever — a test pins the floor against the
+     measured cost table. The sweep reads the setting once per tick, and that read counts against the
+     budget. The per-tick bites are sized from it and the measured unit costs (Free: 2 holds/orders,
+     1 email; Paid: 18 holds/orders, 22 emails), because the expiry list is read before per-unit
+     checks run. The time budget applies on both plans.
+   - *Measured costs.* Each leg's per-unit call cost is measured (`cron-leg-costs.test.ts`, one real
+     unit per leg through the counting context, SQLite): an email ~8, a hold flip ~14, an order expiry
+     ~22, a hold-intent completion ~14, a stranded sku carry ~12, a coupon orphan ~7. A loop's first
+     unit is admitted on that estimate (time estimated as calls × the tick's observed cost per call)
+     until it has timed a real one.
+4. **What the budget checks, exactly.** Each leg asks before it starts (room for its fixed entry reads
+   plus one unit) and is reported `deferred` — not a failure — if refused. Inside, a check precedes each
+   *unit*: each hold flip, order flip, outbox claim, scanned page and row, and reporting day. A unit is
+   admitted only if the slowest unit seen so far in that loop (or a measured estimate, before one has
+   been seen) still fits with the trailing reserve kept back. The expiry legs' candidate lists are
+   bounded by a count (`batch + 1` — `listExpired` and `listExpirable` gained an optional `limit`) and
+   `listExpired` also asks a stop check before each candidate cart, keeping room for one flip. Not
+   checked call by call: the settings read and the single `prune-challenges` call.
+   **Head-of-line.** `listExpired` no longer offers a lapsed hold whose reservation is no longer live
+   (released or committed behind the cart's back): `expireHold` refuses such a hold every time, and
+   under a small limit a few of them would fill every bite forever while live holds waited. A line
+   already carrying an expiry token is still offered — it is a claimed expiry owed its completion.
+   Skipping is not enough on its own: the cart's `holdExpiresAt` index would still match, so the cart
+   would be fetched and its reads paid on every listing, and a few such carts sorted ahead of a live
+   one would use the Free listing allowance every tick. So the listing also HEALS the index — exactly
+   as it already narrowed checked-out carts — recomputing `holdExpiresAt` without the dead candidates
+   (lines and claims stay on the document). Safe because a reservation that is no longer live never
+   becomes live again; a later write that recomputes the index re-arms the cart for one more heal.
+   *Accepted residual:* a candidate whose reservation index is live but which `#claimExpiry` still
+   refuses — its inventory hold not `held`, or its mutation locator missing — is not healed (telling
+   those apart costs an inventory read per line; they are rare crash residue costing only their own
+   reads). A stop lands *between* guarded units, and an advancing cursor moves only past rows actually
+   handled — always forward, even when a cut-short walk's rows all fall inside the cursor's overlap.
+5. **The email send is capped, and a timeout is not (at first) an attempt.** The sweep's sender is
+   given `SWEEP_EMAIL_SEND_TIMEOUT_MS = 5000` — long enough for a slow-but-working provider; a cap
+   below its normal round trip would time out every send and never deliver — or what is left of the
+   leg, whichever is sooner, computed at send time — and the WHOLE send is raced against a timer at that limit, because work before the
+   request (the sender's kv reads; the host's `ctx.http.fetch` resolving the provider over
+   DNS-over-HTTPS, which ignores our abort signal) can hang too. The outbox stops claiming once less
+   than a send's worth is left, and asks again just before the send (the claim and the order reads take
+   time): too little left, and the row is handed back untried, due again in 30 s (`UNTRIED_RETRY_MS`,
+   forward so a run short of time cannot pin the same row at the head of the queue). A send given
+   LESS than the full cap (the tick was short of time) that times out is the sweep's doing, not the
+   provider's (`EmailSendTimeoutError.cutShort`): handed back due at once, no backoff, nothing
+   recorded. Either way — handed back, or cut off by
+   the timer or our own abort (`EmailSendTimeoutError`) — the row goes back through the new
+   `OrderStore.releaseEmailClaim`, **without counting the attempt**, and the drain stops. A timed-out
+   row is released with a FORWARD backoff (`dueAt` = now + 1 min, doubling per timeout to 15 min), so
+   it falls behind every other due row instead of being claimed first again and stalling the queue
+   (only a timeout WITH the full cap counts here) —
+   the order-scoped claim on the in-flight order-email-on-payment branch applies the same due
+   predicate, so it respects the backoff too. The row keeps its own timeout counter, which stops at
+   ten; past ten timeouts the sweep logs `console.error` (alertable) and each further timeout counts
+   as an attempt instead,
+   so a provider that never answers in time does eventually park the row, with the reason "provider
+   kept timing out". A transport that words our own abort differently is still read as a timeout (the
+   sender judges by its own signal having fired). Otherwise only a genuine provider failure counts
+   toward the five attempts after which a row is parked `failed`; a late delivery of a timed-out send
+   is deduped by the `Idempotency-Key` (the outbox row id) on the retry. There is no admin action to re-queue a parked row yet (a follow-up). The sender's general
+   30 s default is not the cron's: a send outliving the hook would leave its row leased and be re-sent
+   when the lease lapsed.
+6. **Shares, order and bites.** The three critical legs — the outbox (a customer is waiting on it) and
+   the two expiry legs — run first and take turns LEADING by minute: on the Free preset one unit is most
+   of the budget, so under a backlog the leader is often the only one that can run, and a fixed order
+   would let one leg's backlog starve the others. Each of these three may use only a share of the tick
+   (a cap, not a reservation) — but never less than one unit of its own work — so a hung provider or a
+   hold backlog takes its share and not the whole tick. The expiry legs take bounded bites
+   (`expireHoldsBatch`/`expireOrdersBatch` in the domain: a `limit`, a `shouldContinue`, and whether the
+   backlog was `drained`; the stop condition is the caller's, injected as a predicate, so the domain stays
+   pure) and `dispatchOrderEmails` takes a `shouldContinue` checked before each claim. Stopping early is
+   safe because every unit is a guarded, idempotent write.
+7. **`coupon-orphans` waits for a drained `expire-orders`.** Its `expired` arm is the retry for a coupon
+   release `expire-orders` owed, and it judges a redemption once and moves its cursor past it. So a tick
+   whose `expire-orders` was deferred, failed or stopped early defers `coupon-orphans` too, preserving the
+   "two faults" bound recorded for that residual.
+
+**Consequences.** A hold outlives its TTL by about a minute plus any backlog, and a queued email waits
+about a minute. The hook can no longer be killed by the sweep's own work, so a leg that does not run is
+visible as `deferred` in the summary and in one log line (with a warning after five consecutive
+deferrals), instead of as a host-level hook failure that hid which legs never started. Idle legs log
+nothing; a leg logs when it did work, has more left, or failed.
+
+**Accepted costs.** On Workers Free the query cap, not time, is the binding limit: with backlogs on
+every critical leg one tick advances about one unit of whichever leads it — roughly one email, one hold
+or one order a minute, each leading one minute in three. The scans, and `coupon-orphans` especially
+(last in the tick, and only after a finished order expiry), may run much less often than every
+fifteen minutes while Free works through a backlog. A forward cursor cut short by the budget steps to
+1 ms before its newest handled row when its overlap would not advance it, so on such a walk a row
+written late with a `createdAt` already behind the cursor can be stepped over — the residual the
+overlap otherwise covers; for `coupon-orphans` that is an orphaned redemption left holding a use (the
+safe direction: a coupon looks one use fuller than it is). A store that
+abandons more checkouts than that per minute outgrows Workers Free. On Paid the operator must choose
+the Paid preset; one who leaves the default drains at the Free pace, and one who picks Paid on Free
+gets ticks failing with D1's per-invocation cap. The every-tick legs issue their (mostly empty) discovery reads every minute. A budget-cut
+tick can leave a scan an interval later than before. ADR-0022's window ("the order's hold plus up to one
+run of the plugin's scheduled sweep") shrinks accordingly; its decision is unaffected.

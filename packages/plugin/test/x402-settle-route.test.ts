@@ -22,7 +22,9 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
+	type EmailSender,
 } from "@otta-sh/domain";
+import { FakeEmailSender } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
@@ -35,12 +37,14 @@ import {
 	X402_SETTLE_ROUTE,
 	type X402SettleResult,
 } from "../src/payments/x402-settle-route.js";
+import type { SendOrderEmailsNowOptions } from "../src/email/send-order-emails-now.js";
 import type { PluginContext } from "../src/types.js";
 import { busyStorage } from "./helpers/busy-storage.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
+import { runUnderFakeTime } from "./helpers/run-under-fake-time.js";
 
 const FACILITATOR_URL = "https://facilitator.example.test/verify";
 const PAY_TO = "0x00000000000000000000000000000000000000a1";
@@ -57,6 +61,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
@@ -148,9 +153,11 @@ async function invoke(
 	ctx: PluginContext,
 	facilitatorUrl: string | null = FACILITATOR_URL,
 	headers: Record<string, string> = {},
+	orderEmails?: SendOrderEmailsNowOptions,
 ): Promise<X402SettleResult> {
 	const handler = createX402SettleHandler({
 		egress: facilitatorUrl === null ? {} : { facilitatorUrl },
+		...(orderEmails === undefined ? {} : { orderEmails }),
 	});
 	const result = await handler(
 		{ input: input as never, request: { method: "POST", url: "/route", headers } },
@@ -471,5 +478,78 @@ describe("storage pressure is a retryable 503, never a thrown host 500", () => {
 		};
 
 		await expect(invoke(proofFor(ORDER_A), broken)).rejects.toThrow("disk on fire");
+	});
+});
+
+describe("the paid order's confirmation goes out with the settlement, best-effort (ADR-0005 2026-10-02)", () => {
+	function acceptingFacilitator() {
+		return ctxWithFacilitator((body) =>
+			jsonResponse({ valid: true, transaction: (body as { transaction?: string }).transaction }),
+		);
+	}
+
+	test("a settled proof sends the order-confirmation inline — and a replay does not send it again", async () => {
+		await seedPendingOrder(ORDER_A);
+		const { ctx, calls } = acceptingFacilitator();
+		const emailSender = new FakeEmailSender();
+
+		expect(await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {}, { emailSender })).toEqual({
+			ok: true,
+			status: 200,
+		});
+		expect(emailSender.countByTemplate("order-confirmation", ORDER_A)).toBe(1);
+		// The facilitator is still the route's only ctx.http egress.
+		expect(calls).toHaveLength(1);
+
+		expect((await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {}, { emailSender })).ok).toBe(
+			true,
+		);
+		expect(emailSender.countByTemplate("order-confirmation", ORDER_A)).toBe(1);
+	});
+
+	test("a throwing or hanging sender does not change the 200", async () => {
+		await seedPendingOrder(ORDER_A);
+		await seedPendingOrder(ORDER_B);
+		const { ctx } = acceptingFacilitator();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const throwing = new FakeEmailSender();
+		throwing.failNextSends(1);
+		const hanging: EmailSender = { send: () => new Promise<void>(() => {}) };
+
+		expect(
+			await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {}, { emailSender: throwing }),
+		).toEqual({ ok: true, status: 200 });
+		// Fake `setTimeout` only: the hung send is abandoned at the inline deadline
+		// without the suite waiting for it.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		let res: X402SettleResult | undefined;
+		await runUnderFakeTime(
+			invoke(proofFor(ORDER_B), ctx, FACILITATOR_URL, {}, { emailSender: hanging }).then(
+				(r) => (res = r),
+			),
+		);
+		vi.useRealTimers();
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(await orderState(ORDER_A)).toBe("paid");
+		expect(await orderState(ORDER_B)).toBe("paid");
+	});
+
+	test("no email API URL in this build: nothing is sent, and the facilitator is the only egress", async () => {
+		await seedPendingOrder(ORDER_A);
+		const { ctx, calls } = acceptingFacilitator();
+		expect(await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {}, { egress: {} })).toEqual({
+			ok: true,
+			status: 200,
+		});
+		expect(calls.map((c) => c.url)).toEqual([FACILITATOR_URL]);
+	});
+
+	test("a refused proof sends nothing", async () => {
+		await seedPendingOrder(ORDER_A, "stripe"); // WRONG_PAYMENT_METHOD
+		const { ctx } = acceptingFacilitator();
+		const emailSender = new FakeEmailSender();
+		const res = await invoke(proofFor(ORDER_A), ctx, FACILITATOR_URL, {}, { emailSender });
+		expect(res).toMatchObject({ ok: false, status: 400 });
+		expect(emailSender.sends).toHaveLength(0);
 	});
 });

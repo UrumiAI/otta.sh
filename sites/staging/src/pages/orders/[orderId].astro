@@ -12,8 +12,9 @@
  * stamp is the FIRST thing on the page (docs/theme/TEMPERED.md §8): the state
  * is the most important thing on it.
  *
- * The redirect parameters are read for exactly ONE purpose — choosing between
- * two `pending` copy variants — and are otherwise inert: never echoed into the
+ * The redirect parameters are read for exactly ONE purpose — choosing how a
+ * `pending` order is presented (the "confirming" copy, even past the hold, since a
+ * just-paid pending order may still settle) — and are otherwise inert: never echoed into the
  * markup, never forwarded, never used to decide that anything is paid. That
  * "never echoed" rule is asserted structurally (checkout-client-js.test.ts):
  * their names may appear in this frontmatter and NOWHERE in the template below.
@@ -50,7 +51,9 @@ import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { keepPrivate } from "../../lib/no-store.js";
+import { orderStamp } from "../../lib/order-stamp.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
+import { isOrderPayable } from "../../lib/pay-guard.js";
 import type { OrderModel } from "../../themes/contract.js";
 
 const { orderId } = Astro.params;
@@ -103,6 +106,17 @@ const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
 const state = order?.state ?? null;
 const isPending = state === "pending";
 
+/**
+ * A pending order PAST its hold, reached other than from Stripe's redirect. The
+ * sweep will expire it on its next tick, and `/checkout/pay` already refuses it
+ * (`lib/pay-guard.ts`) — so offering "resume" would walk the buyer round a loop.
+ * It keeps the bounded poll (a payment made a moment ago may still settle it) and
+ * gets the door out. A buyer just back from Stripe is not "lapsed" here at all:
+ * they get the confirming copy.
+ */
+const holdLapsed =
+	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
+
 /** Bounded meta-refresh poll: at most 8 hops (~30 s), then a manual link. */
 const MAX_POLLS = 8;
 const poll = Number.parseInt(Astro.url.searchParams.get("p") ?? "0", 10);
@@ -110,47 +124,20 @@ const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
 const shouldPoll = isPending && pollAttempt < MAX_POLLS;
 const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
 
-interface StateCopy {
-	/** The stamp's headline — the largest type on the page. */
-	headline: string;
-	/** What it means and what happens next. */
-	body: string | null;
-}
-
 /**
- * The order's own state → what we are willing to say. Copy lives here so the
- * template stays a mapping and the honesty rules are readable in one place.
- *
- * These are the page's OWN sentences, split at the boundary that was already in
- * them — §10 says quote the copy that exists rather than rewriting it, and the
- * stamp simply wants the first sentence larger than the second. The expired
- * body is the one line taken from the mockup: it says the same thing the old
- * sentence did and adds the fact a buyer looking at a lapsed order needs most.
+ * The order's own state → what we are willing to say: `lib/order-stamp.ts`, where
+ * the honesty rules are unit-tested. The one sentence that depends on more than
+ * the state — whether anything was charged on an expired or cancelled order — is
+ * decided by `order.latePayment`, which the plugin derives from the payments and
+ * refunds ledgers: "Nothing was charged" only when nothing was captured, and "we've
+ * refunded it" only once the refund is on the ledger.
  */
-const COPY: Record<string, StateCopy> = {
-	paid: { headline: "Order confirmed.", body: "Thank you — we've received your payment." },
-	failed: { headline: "The payment did not go through.", body: "No charge was made." },
-	expired: {
-		headline: "This order expired.",
-		body: "Payment didn't complete in time, so the items went back on sale. Nothing was charged.",
-	},
-	cancelled: { headline: "This order was cancelled.", body: null },
-	refunded: { headline: "This order has been refunded.", body: null },
-};
-
-const pendingCopy: StateCopy = returnedFromStripe
-	? {
-			headline: "Payment submitted.",
-			body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
-		}
-	: { headline: "This order is awaiting payment.", body: null };
-
-const stamp: StateCopy | null =
-	state === null
-		? null
-		: isPending
-			? pendingCopy
-			: (COPY[state] ?? { headline: `Order status: ${state}.`, body: null });
+const stamp = orderStamp({
+	state,
+	latePayment: order?.latePayment ?? "none",
+	returnedFromStripe,
+	holdLapsed,
+});
 
 /** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
  *  rather than a comparison so no other state can ever pick up the word. */
@@ -158,7 +145,8 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
 
 /**
  * The states with nowhere left to go, and therefore the states that get the
- * door out.
+ * door out — plus a pending order past its hold (`holdLapsed` above), which is
+ * one sweep away from `expired` and which the pay page already refuses.
  *
  * `failed` is in this set, which it was not before. The cart that produced the
  * order is `checked_out` and never returns to `active`, so /checkout answers
@@ -178,7 +166,7 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
  * consequence stated. A buyer whose cookie holds some other cart, or none, lands
  * on a cart they can already use. The link itself carries no Referer from here.
  */
-const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
+const deadEnd = state === "expired" || state === "cancelled" || state === "failed" || holdLapsed;
 
 /* Signed in as this order's owner? Then it is already in their list (a signed-in
    checkout under the account's own email is owned from birth), and the keep-this-
@@ -203,7 +191,7 @@ const ownsOrder =
    replays `checkout:<cartId>` — the same order, and through Stripe's own
    idempotency the same PaymentIntent and the same client secret — which
    re-stashes it. The stable key is what makes resuming possible at all. */
-const canResume = state === "pending" && !returnedFromStripe;
+const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
 const canCheckAgain = isPending && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 

@@ -408,6 +408,111 @@ export function cartStoreContract(
 			expect(cart?.lines).toHaveLength(0);
 		});
 
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpired honours a limit, returning at most that many lapsed holds", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 9);
+			for (const n of [1, 2, 3]) {
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku("SKU-1"),
+					null,
+					1,
+					idempotencyKey(`lim-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 10 })).toHaveLength(3);
+			await expect(h.deps.cartStore.listExpired(now, now, { limit: 0 })).rejects.toThrow(
+				RangeError,
+			);
+			// Listing is read-only: nothing was released by it.
+			expect(await h.onHand("SKU-1")).toBe(6);
+		});
+
+		/** One cart per sku, one unit each, every hold lapsed by `PAST_TTL_MS`. */
+		async function lapsedCarts(h: CartStoreHarness, skus: readonly string[], tag: string) {
+			const reservations: string[] = [];
+			for (const [n, name] of skus.entries()) {
+				await h.seedStock(name, 5);
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`${tag}-${String(n)}`),
+				);
+				if (!add.ok || add.line.reservationId === null) throw new Error("seed add must succeed");
+				reservations.push(add.line.reservationId);
+			}
+			return reservations;
+		}
+
+		// HEAD-OF-LINE. A lapsed line whose reservation is no longer held (released
+		// behind the cart's back, say) can never be expired. Listed under a small
+		// limit, a couple of those would fill every bite forever and no live hold
+		// behind them would ever be reached — so the list must not offer them.
+		test("an unexpirable lapsed hold is not listed, so it cannot starve the expirable ones behind it", async () => {
+			const h = await makeHarness();
+			const [deadA, deadB, live] = await lapsedCarts(h, ["SKU-DA", "SKU-DB", "SKU-LIVE"], "hol");
+			await h.deps.inventoryStore.release(deadA!);
+			await h.deps.inventoryStore.release(deadB!);
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 1 })).toEqual([
+				{ reservationId: live },
+			]);
+			const all = await h.deps.cartStore.listExpired(now, now);
+			expect(all.map((hold) => hold.reservationId)).toEqual([live]);
+		});
+
+		// The list itself must be stoppable: under a tight per-tick query budget a
+		// run of candidates that yield nothing would otherwise be read in full.
+		test("listExpired asks shouldContinue before each candidate, and stops when told", async () => {
+			const h = await makeHarness();
+			await lapsedCarts(h, ["SKU-S1", "SKU-S2", "SKU-S3"], "stop");
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { shouldContinue: () => false })).toEqual(
+				[],
+			);
+			let allowed = 1;
+			const one = await h.deps.cartStore.listExpired(now, now, {
+				shouldContinue: () => allowed-- > 0,
+			});
+			expect(one).toHaveLength(1);
+		});
+
+		test("a multi-line cart counts each of its holds against the limit", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			for (const [n, name] of ["SKU-M1", "SKU-M2", "SKU-M3"].entries()) {
+				await h.seedStock(name, 5);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`multi-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
+		});
+
 		// ── the cart's `order_id` (issue #132) ───────────────────────────────
 		// `checkout` is the ONLY writer of the column, and it writes it in the
 		// same guarded statement that makes the cart terminal

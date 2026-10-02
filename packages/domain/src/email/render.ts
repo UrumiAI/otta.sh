@@ -41,8 +41,16 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	// travels in `data.orderId` — the dispatcher keys on it — it is just not
 	// rendered. The label is plain text: escaped below like every other value.
 	const label = orderLabel(labelLines(data["lines"]));
-	const total = formatMoney(data["totalCents"], str(data["currency"]));
-	const copy = ORDER_COPY[template];
+	// A refund email states its OWN figure (`noticeAmountCents`, the refunded money),
+	// not the order total — a late capture or a partial refund differs from it.
+	// Labelled for what it is. The ONE "amount refunded" path: notices (late payment,
+	// partial refund) and the `refunded` state email alike (ADR-0026).
+	const isNotice = data["noticeAmountCents"] !== undefined;
+	const total = isNotice
+		? formatMoney(data["noticeAmountCents"], str(data["noticeCurrency"]))
+		: formatMoney(data["totalCents"], str(data["currency"]));
+	const totalLabel = isNotice ? "Refunded" : "Total";
+	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
 	const subject = `${copy.subject} — ${label}`;
 	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
 	// is no longer an empty "on its way" — rendered only when the order was
@@ -55,15 +63,21 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	// this channel; those render the plain generic body, exactly like a
 	// bare-transition cancellation that carries no reason at all.
 	const cancellation =
-		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
+		template === "order-cancelled"
+			? joinLines([
+					cancellationRefundLine(data["cancellation"]),
+					cancellationLines(data["cancellation"]),
+				])
+			: null;
 	const extra = tracking ?? cancellation;
 	const text =
-		`${copy.body}\n\nOrder: ${label}\nTotal: ${total}` + (extra !== null ? `\n${extra.text}` : "");
+		`${copy.body}\n\nOrder: ${label}\n${totalLabel}: ${total}` +
+		(extra !== null ? `\n${extra.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(label)}<br>Total: ${escapeHtml(total)}` +
+			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(label)}<br>${totalLabel}: ${escapeHtml(total)}` +
 				(extra !== null ? `<br>${extra.html}` : ""),
 		),
 	};
@@ -105,6 +119,33 @@ function cancellationLines(cancellation: unknown): { text: string; html: string 
 	const safeCopy = customerSafeCancellationCopy(reason);
 	if (safeCopy === undefined) return null; // not customer-safe ⇒ no reason line
 	return { text: `Reason: ${safeCopy}`, html: `Reason: ${escapeHtml(safeCopy)}` };
+}
+
+/** The refund a cancellation made (QA T1-4): "A refund of X is on its way …", or
+ *  null when the cancellation refunded nothing. Unlike the reason line it is
+ *  rendered whatever the reason was — the money is the buyer's, and saying it is
+ *  coming reveals nothing about why the order was cancelled. */
+function cancellationRefundLine(cancellation: unknown): { text: string; html: string } | null {
+	if (cancellation === null || typeof cancellation !== "object") return null;
+	const refund = (cancellation as { refund?: unknown }).refund;
+	if (refund === null || typeof refund !== "object") return null;
+	const r = refund as { amountCents?: unknown; currency?: unknown };
+	const amount = formatMoney(r.amountCents, str(r.currency));
+	if (amount === "") return null;
+	const line = `A refund of ${amount} is on its way to your original payment method.`;
+	return { text: line, html: escapeHtml(line) };
+}
+
+/** Join optional blocks into one, or null when there are none. */
+function joinLines(
+	blocks: ReadonlyArray<{ text: string; html: string } | null>,
+): { text: string; html: string } | null {
+	const present = blocks.filter((b): b is { text: string; html: string } => b !== null);
+	if (present.length === 0) return null;
+	return {
+		text: present.map((b) => b.text).join("\n"),
+		html: present.map((b) => b.html).join("<br>"),
+	};
 }
 
 /** Render the tracking block for a shipped email from the fulfillment data the
@@ -157,6 +198,26 @@ const ORDER_COPY: Record<
 		subject: "Checkout expired",
 		body: "Your checkout session expired and the items were released back to stock — you're welcome to try again.",
 	},
+	// The late-payment notice (`settleOrder`'s auto-refund). The buyer has already
+	// had the "checkout expired" email, then saw a charge on their card: this is
+	// the one message that reconciles the two, so it names both facts — the
+	// payment arrived late, and it is on its way back — plus the provider's
+	// settlement window, because "refunded" with no timescale reads as "lost" on
+	// day three. Same copy for an expired and a cancelled order: both mean the
+	// order could no longer take the money.
+	"order-late-payment-refunded": {
+		subject: "Payment refunded",
+		body: "A payment arrived after your order expired, so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.",
+	},
+	// A refund announced on its own (QA T1-6): an admin partial refund, or a
+	// cancellation's FULL refund on an order that shipped before it could be
+	// cancelled. So the body is neutral about HOW MUCH — the figure is on the
+	// `Refunded: X` line — and about HOW: a manual (x402) refund goes to a wallet, not
+	// "to your original payment method".
+	"order-refund-issued": {
+		subject: "Refund issued",
+		body: "We've issued a refund for your order.",
+	},
 };
 
 /** The email data's `lines` (built by `buildOrderEmailData`) read back as
@@ -176,6 +237,33 @@ function labelLines(lines: unknown): OrderLabelLine[] {
 			},
 		];
 	});
+}
+
+/**
+ * The late-payment notice names WHY the order could not take the money. The table
+ * copy says "expired" — by far the common case (a pay page left open past the
+ * hold) — and a cancelled or (historical) failed order gets its own sentence:
+ * telling a buyer whose order a merchant cancelled that it "expired" would be a
+ * small lie about the one thing this email exists to explain. `state` is the
+ * order's state when the notice was enqueued (`buildOrderEmailData`).
+ */
+function latePaymentCopyFor(
+	template: EmailTemplate,
+	state: string | undefined,
+): { subject: string; body: string } | null {
+	if (template !== "order-late-payment-refunded") return null;
+	const subject = ORDER_COPY["order-late-payment-refunded"].subject;
+	const tail =
+		"so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.";
+	if (state === "cancelled") {
+		return { subject, body: `A payment arrived after your order was cancelled, ${tail}` };
+	}
+	if (state === "failed") {
+		// A historical `failed` order (ADR-0022): it never completed, and the buyer
+		// was told so — the late payment is money for an order that no longer exists.
+		return { subject, body: `A payment arrived for an order that had already failed, ${tail}` };
+	}
+	return null;
 }
 
 function str(value: unknown): string | undefined {

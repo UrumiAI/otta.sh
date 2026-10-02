@@ -852,7 +852,10 @@ names only the verb makes the most dangerous control on the panel the quietest t
 
 | Group | Label |
 |---|---|
-| Cancel | `Cancel order — permanent, releases held stock` |
+| *(no Cancel group)* | shipped, delivered, completed, refunded or cancelled — nothing in the group could succeed, so it is not rendered |
+| Cancel (pending order) | `Cancel order — permanent, releases held stock` |
+| Cancel (paid order, money to refund) | `Cancel order — permanent, refunds the buyer` |
+| Cancel (paid order, nothing captured) | `Cancel order — permanent` |
 | Refund a partial amount | `Refund a different amount — cannot be reversed` |
 | Any delete (§12) | `Delete <thing> — permanent` |
 
@@ -1253,7 +1256,7 @@ watermark as a key component**. No `crypto.randomUUID()` is minted at render tim
 | Refund | `admin-refund:${orderId}:${amountCents}:${refundedSoFarCents}` — the third component is the watermark the operator *saw* |
 | Stock movement | ~~`${productId}:${direction}:${onHandAtRender}:${qty}`~~ — **superseded 2026-10-02**: a nonce minted fresh per click, re-sent only by an explicit Retry; a removal's watermark is judged in the store, a restock carries none ([ADR-0015, amended 2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md)) |
 | Transition | `admin-transition:${orderId}:${toState}` |
-| Cancel | `admin-cancel:${orderId}` |
+| Cancel | `admin-cancel:${orderId}` — a paid order's refund and restock legs derive theirs from it in the domain: `…:refund` (then `…:refund:<n>` after a rejected attempt) and `…:restock:<lineId>` (ADR-0026) |
 | Note | `admin-note:${orderId}:${author}:${body}` |
 | Edit / save (sparse PATCH) | content hash of the submitted wire + `expectedUpdatedAt` (`deriveEditIdempotencyKey`, `products-actions.ts:307-324`) |
 
@@ -1589,8 +1592,22 @@ trip, no staleness window, no staged payload to decode.
 > because a listing somewhere still draws it.
 
 - **Cancel order** (the worked instance, now React). The reason is a closed set. One danger button per
-  reason, the reason **named in the confirm text**:
-  *"Cancel this order as 'out of stock'? This is permanent and releases the held stock."*
+  reason, the reason **named in the confirm text**, and the text states what the cancel does with the
+  MONEY and the STOCK — composed from one `CancelEffects` value (`cancelConfirmText` /
+  `cancelBannerText` / `cancelGroupLabel`) so the label, the banner and the confirm cannot describe
+  three different cancellations (QA T1-4, ADR-0026's cancel-with-refund amendment):
+  - pending: *"Cancel this order as 'out of stock'? This is permanent — the order cannot be
+    un-cancelled, and the held stock is released."*
+  - paid: *"Cancel this order as 'customer requested it'? This is permanent — $24.00 is refunded to
+    the buyer, and the items go back to stock."* A **Return the items to stock** checkbox (ticked;
+    its hint says to untick for damaged, lost, already-packed or hand-restocked goods) sits above the
+    reason buttons on a paid order with physical lines, and rides every cancel's payload as
+    `restock`. **No cancel control is offered** when Otta cannot issue the refund (the banner says to
+    send it and record a manual refund in Money → Refunds) or when the refund ledger could not be
+    loaded (the amount is unknown, never "nothing is refunded").
+  - The outcome notice names the refund, the units returned, and any line NOT returned to stock
+    (`restockSkipped`); a refused refund says nothing was changed; the shipped-first race says what
+    moved and the next step.
   **Four buttons, not five:** `other` gets no button, because a bare `Other` button records no detail
   and a label promising detail (`Other (add detail below)`) promises a field the button does not have
   and points at a group that may be collapsed. Button labels are the **bare reason** — `Out of stock`,
@@ -2148,10 +2165,23 @@ rule generalises past Orders and past the renderer** — DA-6's "derived, never 
 same rule ADR-0015 applied to the one-click cancellation reasons when a process boundary opened
 between the two halves.
 
+**The offer is the domain's `adminNextStates`, not `legalNextStates` (ADR-0026, 2026-10-02).** It is
+the state machine minus a manual `paid` — no payment method is declared offline today, so **Mark
+paid is never offered**: Otta marks an order paid only when its provider confirms the charge — and
+minus a bare `cancelled`, from any state. Both are also refused by `transitionOrderAsAdmin` when a
+hand-made payload asks for them, each with its own notice ("Only the payment provider can mark this
+order paid"; "Use Cancel order to cancel an order", keyed on the observed state: an unpaid
+order's says Cancel order returns its held stock; a paid order's says Cancel order records why,
+refunds what the buyer paid and returns the items to stock unless the box is unticked — ADR-0026's
+cancel-with-refund amendment). **Mark refunded** stays offered, as bookkeeping for
+a refund made outside Otta: it moves no money, **emails nobody**, and both its confirm and its
+success notice ("Marked refunded") say so.
+
 The UI steering stays: on a `processing` order the bare `shipped` move is withheld (use Fulfilment,
-which records tracking), and `cancelled` is always withheld (use Cancel, which records a reason) —
-`offeredTransitions`, `orders-read.ts:158-170`, which applies the `ORDER_STATE_SET` filter of item 2
-in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
+which records tracking) — UI steering only, the domain still accepts it — and `cancelled` is
+withheld here too, as a second guard behind the domain's own refusal (use Cancel, which records a
+reason) — `offeredTransitions` in `orders-read.ts`, which applies the `ORDER_STATE_SET` filter of
+item 2 in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
 
 **DA-7 — withheld actions: generalize the coupons pattern.** When a precondition knowably forbids
 an action, render **no control** plus one `context` line stating the reason and the alternative.
@@ -2187,6 +2217,24 @@ One consequence worth knowing before you write a test: a DA-7 line quotes the co
 *starts with* the label, or resolve by `block_id` (§15 V-1).
 
 ---
+
+### 8.1 What an admin write says about the buyer's email (QA T1-6, ADR-0026)
+
+Every Orders write that enqueues a buyer email — a status move, a fulfilment, a cancel, a refund —
+sends it **inline** before it answers (`sendOrderEmailsNow`, budgeted from the write's start;
+ADR-0005's second 2026-10-02 amendment), so the email goes with the click and in click order rather
+than on the cron's next 15-minute tick. The write's result carries `email`, and the notice follows
+it — **never a blanket "the buyer has been emailed"**:
+
+| `email` | Sentence in the notice |
+|---|---|
+| `sent` — the row this write enqueued was delivered | *The buyer has been emailed.* (fulfilment: *…emailed their tracking.*) |
+| `queued` — the provider failed or was slow; the cron retries it | *The buyer's email is queued and will be retried automatically.* |
+| `unconfigured` — no email provider in this bundle | *No email was sent — this store has no email provider set up.* |
+| absent — the write enqueued none (a replay; Mark refunded) | nothing about email; Mark refunded says *No money moved and the buyer was not emailed.* |
+
+A status move therefore answers with a notice (`Order marked <state>` + the sentence) where it used
+to answer `null`. The inline send is best-effort and bounded and can never fail the write.
 
 ## 9. Money, dates, IDs
 

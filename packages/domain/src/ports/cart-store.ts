@@ -143,8 +143,16 @@ export interface CartStore {
 	 * `expires_at IS NULL AND created_at <= cutoff` with the reservation's key
 	 * present in the `cart_mutations` ledger. A raw (non-cart) reserve is never
 	 * listed. Drives both lazy-on-read and the scheduled sweep.
+	 *
+	 * A hold that can no longer be expired (its reservation released or committed
+	 * behind the cart's back) is never listed. A store that keeps a DERIVED
+	 * candidate index (the document store's `holdExpiresAt`) may rewrite that index
+	 * while listing, so such a cart stops matching — and that is the ONLY write a
+	 * listing may make: it never touches stock, holds, lines or the mutation ledger.
+	 * A store with no derived index (the in-memory fake, which filters live holds
+	 * directly on every call) has nothing to heal.
 	 */
-	listExpired(now: string, cutoff: string): Promise<ExpiredHold[]>;
+	listExpired(now: string, cutoff: string, options?: ExpiryListOptions): Promise<ExpiredHold[]>;
 	/**
 	 * Atomically expire one hold: the guarded flip `held → released` RE-CHECKS
 	 * the deadline inside the same conditional statement (`expires_at <= now`, or
@@ -278,4 +286,27 @@ export interface AdjustLineInput {
 	/** Null for a digital line (no hold to re-stamp, Phase 4 §6). */
 	expiresAt: string | null;
 	key: IdempotencyKey;
+}
+
+/**
+ * Bounds an expiry LIST (`CartStore.listExpired`, `OrderStore.listExpirable`).
+ *
+ * The scheduled sweep runs in a host hook with a hard timeout, and an unbounded
+ * list reads the whole backlog — every page, plus per-row reads — before the
+ * sweep's own per-unit checks ever run. With a `limit` the store stops reading
+ * once it holds that many candidates and returns at most that many; without one
+ * it returns them all, as before. A positive integer; anything else is a
+ * `RangeError`. Which candidates a limited call returns is unspecified: the
+ * rest are still lapsed, and still listed, on the next call.
+ */
+export interface ExpiryListOptions {
+	readonly limit?: number;
+	/**
+	 * Asked before each CANDIDATE the store would examine (a cart document, for a
+	 * document store; a hold, for the fake); `false` ends the list with what it
+	 * has. The bound on the list's own cost: a run of candidates that yield
+	 * nothing, or carts with many lines, would otherwise be read in full before the
+	 * caller's per-unit budget ever runs. Default: never stop.
+	 */
+	readonly shouldContinue?: () => boolean;
 }
