@@ -115,6 +115,7 @@
  * {@link EmdashOrderStore.listOrders} and the package README.
  */
 import {
+	assertSweepLimit,
 	cents,
 	computeRefundCeiling,
 	emailTemplateForState,
@@ -128,6 +129,8 @@ import {
 	type CreateOrderResult,
 	type Currency,
 	type CustomerId,
+	type ExpiryListOptions,
+	type ReleaseEmailClaimOptions,
 	type FinalizeRefundInput,
 	type FinalizeRefundStoreResult,
 	type IdempotencyKey,
@@ -465,24 +468,33 @@ export class EmdashOrderStore implements OrderStore {
 		return won;
 	}
 
-	async listExpirable(now: string): Promise<OrderId[]> {
+	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
 		// Both halves of the SQL predicate are declared index fields, so this is the
 		// predicate itself rather than a candidate filter — but `limit` is clamped by
 		// the host, so it pages, and each fetched document is re-checked because a
 		// page read is not a lock.
+		//
+		// A caller's `limit` ends the walk once it holds that many, and a walk that
+		// ends there is NOT the silent truncation the page-limit error below refuses:
+		// the caller asked for a bite and knows the rest is still due (the time-boxed
+		// cron sweep asks for one more than it will expire, to tell the two apart).
+		assertSweepLimit(options.limit);
+		const limit = options.limit;
 		const ids: OrderId[] = [];
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxExpiryPages; page++) {
 			const result = await this.#orders.query({
 				where: { state: "pending", holdExpiresAt: { lte: now } },
-				limit: EXPIRY_PAGE_SIZE,
+				limit: limit === undefined ? EXPIRY_PAGE_SIZE : Math.min(EXPIRY_PAGE_SIZE, limit),
 				cursor,
 			});
 			for (const { data } of result.items) {
+				if (limit !== undefined && ids.length >= limit) return ids;
 				if (data.state === "pending" && data.holdExpiresAt <= now) {
 					ids.push(data.orderId as OrderId);
 				}
 			}
+			if (limit !== undefined && ids.length >= limit) return ids;
 			if (!result.hasMore || result.cursor === undefined) return ids;
 			cursor = result.cursor;
 		}
@@ -1200,14 +1212,41 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
+	 * Hand a claimed entry back untried: `pending`, its due time unchanged (so it is
+	 * due at once), and the attempt its claim counted taken back off. Guarded like
+	 * every settle (`#updateOutboxEntry` writes only a `sending` entry), so a double
+	 * release is a no-op.
+	 */
+	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
+		// A `retryAt` moves `dueAt` FORWARD, so the entry falls behind every other
+		// due entry in the `emailDueAt` index — both the sweep's walk and the
+		// order-scoped claim (`claimNextEmailForOrder`, on feat/order-email-on-payment)
+		// apply the same `outboxDueAt(entry) <= now` predicate, so neither re-claims a
+		// backed-off entry early.
+		await this.#updateOutboxEntry(id, (entry) => ({
+			...entry,
+			status: "pending",
+			leaseUntil: null,
+			attempts: Math.max(0, entry.attempts - 1),
+			...(options.retryAt === undefined ? {} : { dueAt: options.retryAt }),
+			...(options.timedOut === true ? { timeouts: (entry.timeouts ?? 0) + 1 } : {}),
+		}));
+	}
+
+	/**
 	 * Return a claimed entry to `pending` for a later tick, or park it `failed` when
 	 * the retries are exhausted. `retryAt` moves the due time FORWARD so the row is
 	 * not re-picked inside the same drain loop.
 	 */
-	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+	async rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void> {
 		await this.#updateOutboxEntry(id, (entry) =>
 			retryAt === null
-				? { ...entry, status: "failed", leaseUntil: null }
+				? {
+						...entry,
+						status: "failed",
+						leaseUntil: null,
+						...(reason === undefined ? {} : { failureReason: reason }),
+					}
 				: { ...entry, status: "pending", leaseUntil: null, dueAt: retryAt },
 		);
 	}
@@ -1964,6 +2003,7 @@ export class EmdashOrderStore implements OrderStore {
 						orderId: doc.orderId as OrderId,
 						toState: claimed.toState,
 						attempts: claimed.attempts,
+						timeouts: claimed.timeouts ?? 0,
 					})
 				: CAS_RETRY;
 		});

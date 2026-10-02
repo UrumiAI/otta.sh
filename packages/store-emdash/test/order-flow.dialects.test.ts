@@ -615,6 +615,7 @@ describeEachDialect("order flow", (ctx) => {
 			countOrders: (f) => h.store.countOrders(f),
 			linkGuestOrders: (c, ref) => h.store.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.store.claimNextEmail(now, lease),
+			releaseEmailClaim: (id) => h.store.releaseEmailClaim(id),
 			markEmailSent: (id, now) => h.store.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.store.rescheduleEmail(id, at),
 		};

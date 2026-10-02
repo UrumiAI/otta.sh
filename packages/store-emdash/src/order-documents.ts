@@ -290,6 +290,12 @@ export interface OutboxEntryDoc {
 	 * is `max(dueAt, leaseUntil)`.
 	 */
 	dueAt?: string;
+	/** Sends the dispatcher cut off for time (not attempts). ABSENT means 0, so
+	 *  entries written before the field existed read correctly. */
+	timeouts?: number;
+	/** Why a `failed` entry was parked, when the dispatcher said (e.g. "provider
+	 *  kept timing out"). Absent for an ordinary failure. */
+	failureReason?: string;
 }
 
 /**
