@@ -283,6 +283,12 @@ the id stays in URLs only. This changed the theme contract (`src/themes/contract
 breaks a theme written against the old one: `AccountOrderRow` and `AccountOrderModel.order`
 lost `id` (now `label`), and `OrderModel` gained `orderLabel`.
 
+**The PDP's hold note departs from the mockup on purpose.** The mockup reads "Adding this holds
+one in stock for 15 minutes." under a quantity field the shopper can set to 3, and the hold covers
+whatever quantity is added. The page says "We'll hold what you add for 15 minutes." — the store's
+effective window, still a number (§10), and no unit count to get wrong (`lib/hold.ts`'s
+`holdNote`).
+
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page
 shipped it; both halves were wrong at once. The item count sums units while the held count
 counted *lines*, so four units across three lines read `4 items · 3 held` with every unit
