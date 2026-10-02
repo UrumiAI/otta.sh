@@ -8,9 +8,21 @@
  * used the ambient `fetch` because it was a plain Node process; the plugin is
  * sandboxed, so the same request goes through `ctx.http.fetch` and is gated by
  * `allowedHosts` — whose email entry INC-C3 already resolves from
- * `IN_PROCESS_EGRESS_URLS.emailApiUrl`. Same JSON body, same headers, same
- * rendering (moved verbatim to `@otta-sh/domain`, where its suite still pins
- * every template).
+ * `IN_PROCESS_EGRESS_URLS.emailApiUrl`. Same headers, same rendering (moved
+ * verbatim to `@otta-sh/domain`, where its suite still pins every template).
+ *
+ * THE BODY IS RESEND'S `POST /emails`, EXACTLY (2026-10-02; DEPLOYMENT.md
+ * "Email provider"). Bearer auth, `Idempotency-Key`, a string `to`, `from`,
+ * `subject`, `text`, `html` — all as Resend defines them. The ONE change from
+ * the service-era body: the template name used to ride as a top-level
+ * `template` string, and Resend defines `template` as an OBJECT (`{ id,
+ * variables }`, a provider-hosted template) that cannot be combined with
+ * `html`/`text` — so every send would have been refused. The name now travels as a Resend
+ * tag, `{ name: "template", value }`, which keeps it visible in the provider's
+ * dashboard and logs without changing what is sent. Every `EmailTemplate` name
+ * fits the tag charset (ASCII letters, digits, `_`, `-`); the suite pins that
+ * exhaustively. Another provider needs its own adapter behind the
+ * `EmailSender` port — this file does not pretend to be generic.
  *
  * `ctx.email` IS REJECTED, by the plan (§D5) and not by omission: EmDash's native
  * sender needs an `email:send` capability grant — widening the manifest's
@@ -27,11 +39,13 @@
  * tick into a duplicate customer email while the outbox still looked healthy.
  *
  * A NON-2XX THROWS, for the same reason: the dispatcher must not mark a row sent
- * for a message the provider refused.
+ * for a message the provider refused. The error names WHY — see
+ * {@link describeProviderError}.
  */
 import { renderEmail, type EmailSender, type SendEmailInput } from "@otta-sh/domain";
 import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
 import type { PluginContext } from "../types.js";
+import { isDeliverableFromAddress } from "./from-address.js";
 
 /**
  * The from-address, in READABLE kv — the in-process equivalent of the service's
@@ -111,16 +125,98 @@ export class CtxHttpEmailSender implements EmailSender {
 				subject: rendered.subject,
 				text: rendered.text,
 				html: rendered.html,
-				template: input.template,
+				// NOT a top-level `template`: Resend reads that as a hosted-template
+				// object and refuses it beside `html`. See this module's head comment.
+				tags: [{ name: "template", value: input.template }],
 			}),
 			// A hung provider must never hold the cron tick open — see
 			// {@link DEFAULT_EMAIL_TIMEOUT_MS}.
 			signal: AbortSignal.timeout(this.#timeoutMs),
 		});
 		if (!res.ok) {
-			throw new Error(`email transport failed with status ${res.status}`);
+			const detail = await describeProviderError(res, input.to);
+			throw new Error(
+				`email transport failed with status ${res.status}${detail === undefined ? "" : `: ${detail}`}`,
+			);
 		}
 	}
+}
+
+/** The ceiling on how much of a provider's error message reaches a log line. */
+const PROVIDER_ERROR_MAX_CHARS = 200;
+
+/** The error body is parsed from at most its first this-many characters.
+ *  Resend's error object is well under 1 KiB; anything past this is not one,
+ *  and the error path must not parse megabytes an intermediary chose to send.
+ *  (The body is still read whole — `ctx.http.fetch` offers no bounded read —
+ *  and the request's abort signal bounds how long that read can take.) */
+const PROVIDER_ERROR_MAX_BODY_CHARS = 4096;
+
+/** C0 and C1 controls, DEL, and the Unicode line/paragraph separators — what a
+ *  provider message must not smuggle into a log line (a CR/LF, NEL or U+2028
+ *  there forges a second, fake log entry in a viewer that breaks on it). */
+// oxlint-disable-next-line no-control-regex -- matching control characters IS the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu;
+
+/**
+ * WHY the provider refused, as `name: message`, or `undefined` when the body
+ * does not say in a shape we trust.
+ *
+ * A BARE STATUS IS UNDIAGNOSABLE. The reasons a real provider refuses are
+ * specific and operator-fixable — an unverified sending domain, a revoked key,
+ * a sandbox account sending to someone other than its owner — and Resend says
+ * which in `{ statusCode, name, message }`. The login route logs this error's
+ * message; without the detail its log says only "403".
+ *
+ * WHAT IS NEVER IN IT: anything of the REQUEST. The body carries the sign-in
+ * link (a live token) and the headers carry the API key, and neither is read
+ * here. Only the provider's own `name` and `message` strings are used, and:
+ *  - the body is parsed from at most its first
+ *    {@link PROVIDER_ERROR_MAX_BODY_CHARS} characters — a longer body fails to
+ *    parse and contributes nothing;
+ *  - control characters become spaces BEFORE truncation, so the message cannot
+ *    forge a log line;
+ *  - the recipient is redacted case-insensitively, in case the provider quotes
+ *    it back in any case;
+ *  - the result is bounded to {@link PROVIDER_ERROR_MAX_CHARS}.
+ * Not redacted: an address that is not the recipient. Resend's testing-mode
+ * refusal quotes the ACCOUNT OWNER's address, which can therefore appear in the
+ * login route's log — the operator's own address, not a customer's.
+ *
+ * A non-JSON body — an HTML gateway page, an empty body — contributes NOTHING:
+ * there is no telling what an intermediary's page echoes. Never throws: a body
+ * that cannot be read is the same as one that says nothing.
+ */
+async function describeProviderError(
+	res: Response,
+	recipient: string,
+): Promise<string | undefined> {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse((await res.text()).slice(0, PROVIDER_ERROR_MAX_BODY_CHARS));
+	} catch {
+		return undefined;
+	}
+	if (typeof parsed !== "object" || parsed === null) return undefined;
+	const { name, message } = parsed as { name?: unknown; message?: unknown };
+	const parts = [name, message].filter(
+		(part): part is string => typeof part === "string" && part.length > 0,
+	);
+	if (parts.length === 0) return undefined;
+	const joined = parts.join(": ").replace(CONTROL_CHARS, " ");
+	const detail =
+		recipient.length > 0
+			? joined.replace(new RegExp(escapeRegExp(recipient), "giu"), "<recipient>")
+			: joined;
+	return detail.length > PROVIDER_ERROR_MAX_CHARS
+		? `${detail.slice(0, PROVIDER_ERROR_MAX_CHARS)}…`
+		: detail;
+}
+
+/** `value` as a literal inside a RegExp — an address's `.` and `+` are
+ *  metacharacters. */
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 /** The deployment-supplied half of the wiring — the build-time email URL, the
@@ -189,13 +285,49 @@ export function makeLoginEmailSender(
 	return makeEmailSender(ctx, egress, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
 }
 
-/** The configured from-address, or the documented default — never a throw and
- *  never an empty string a provider would reject as a malformed sender. */
+/**
+ * The configured from-address, or the documented default — never a throw and
+ * never an empty string a provider would reject as a malformed sender.
+ *
+ * A STORED UNDELIVERABLE ADDRESS IS USED, AND LOGGED — NEVER SILENTLY REPLACED.
+ * One saved before the Settings save refused reserved domains (or written to kv
+ * by anything but the form) would have every send refused by a real provider.
+ * Swapping in the default would not help — it is undeliverable too — and would
+ * hide which setting is wrong; so the value goes out as stored and the isolate
+ * logs, once, which setting to fix. The message names the key, never the value.
+ */
 async function readEmailFrom(ctx: PluginContext): Promise<string> {
+	let value: unknown;
 	try {
-		const value = await ctx.kv.get<string>(EMAIL_FROM_KEY);
-		return typeof value === "string" && value.length > 0 ? value : DEFAULT_EMAIL_FROM;
+		value = await ctx.kv.get<string>(EMAIL_FROM_KEY);
 	} catch {
 		return DEFAULT_EMAIL_FROM;
 	}
+	if (typeof value !== "string" || value.length === 0) return DEFAULT_EMAIL_FROM;
+	if (!isDeliverableFromAddress(value)) {
+		warnOnce(
+			"email-from-undeliverable",
+			"[otta] settings:emailFrom is not a deliverable address; sends will be refused",
+		);
+	}
+	return value;
+}
+
+/**
+ * Logged ONCE per isolate, like `in-process-commerce-client.ts`'s notices: a
+ * misconfiguration is a fact about the deployment, and a line per send (every
+ * login request, every outbox row) would bury everything else.
+ */
+const loggedOnce = new Set<string>();
+
+/** Clears the once-per-isolate latch. TESTS ONLY: without it, a case asserting
+ *  "no warning" passes vacuously whenever an earlier case already logged. */
+export function resetEmailWarningsForTesting(): void {
+	loggedOnce.clear();
+}
+
+function warnOnce(key: string, message: string): void {
+	if (loggedOnce.has(key)) return;
+	loggedOnce.add(key);
+	console.warn(message);
 }

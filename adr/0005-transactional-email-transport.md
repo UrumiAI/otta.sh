@@ -44,3 +44,8 @@ transactional-API provider's idempotency key (`HttpEmailSender` passes the outbo
 
 _Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
 Phase 5 plan §6 recommendation._
+
+_Amended 2026-10-02 (pending maintainer sign-off) — `CtxHttpEmailSender` (`packages/plugin/src/email/ctx-http-email-sender.ts`),
+the in-process successor to `HttpEmailSender`, is the **Resend** adapter: it posts Resend's
+`POST /emails` body exactly. The vendor is still an implementation detail behind the port —
+another provider needs its own `EmailSender` adapter, not a different `EMAIL_API_URL`._
