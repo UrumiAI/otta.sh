@@ -267,6 +267,16 @@ export interface RefundsSummaryWire {
 	refundable: boolean;
 }
 
+/**
+ * What became of the buyer's email an admin write enqueued (QA T1-6). The write
+ * sends it inline (`sendOrderEmailsNow`), so the console can say what is TRUE:
+ *  - `sent`         — it went out;
+ *  - `queued`       — it did not go yet (the provider failed or was slow); the
+ *                     cron sends it within a few minutes;
+ *  - `unconfigured` — the store has no email provider, so it will not be sent.
+ */
+export type InlineEmailStatus = "sent" | "queued" | "unconfigured";
+
 /** POST refund returns a discriminated result (like `transitionOrder`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.
  *  `recorded:false` on a 2xx ⇒ an idempotent replay (`duplicate`). On a failure,
@@ -274,7 +284,15 @@ export interface RefundsSummaryWire {
  *  `REFUND_EXCEEDS_TOTAL`, `PROVIDER_ALREADY_REFUNDED`, `GATEWAY_UNVERIFIED`); the
  *  caller renders GENERIC copy keyed off it, never the raw status/URL. */
 export type RefundOrderResult =
-	| { ok: true; recorded: boolean; duplicate: boolean; fullyRefunded: boolean }
+	| {
+			ok: true;
+			recorded: boolean;
+			duplicate: boolean;
+			fullyRefunded: boolean;
+			/** What became of the refund email this write enqueued — see
+			 *  {@link InlineEmailStatus}. Absent on a replay. */
+			email?: InlineEmailStatus;
+	  }
 	| { ok: false; status: number; reason?: string };
 
 /** An append-only order note (admin-UX Increment 0) on the wire. */
@@ -350,7 +368,13 @@ export type TransitionRefusal =
  *  settles an order today) and `USE_CANCEL` (any bare cancel — Cancel order is the
  *  one way) get their own copy. */
 export type TransitionOrderResult =
-	| { ok: true; transitioned: boolean }
+	| {
+			ok: true;
+			transitioned: boolean;
+			/** What became of the email this move enqueued. Absent when it enqueued none
+			 *  — a no-op, or a Mark refunded (bookkeeping, emails nobody). */
+			email?: InlineEmailStatus;
+	  }
 	| { ok: false; status: number; reason?: TransitionRefusal };
 
 /** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
@@ -373,7 +397,7 @@ export type ResolveReconciliationResult =
  *  `processing`); the caller renders GENERIC copy keyed off it, never the raw
  *  status/URL. */
 export type RecordFulfillmentResult =
-	| { ok: true; recorded: boolean }
+	| { ok: true; recorded: boolean; email?: InlineEmailStatus }
 	| { ok: false; status: number; reason?: string };
 
 /** POST cancel returns a discriminated result (like `transitionOrder`) so a
@@ -395,6 +419,8 @@ export type CancelOrderResult =
 			/** Lines the restock could not return, and why (`UNKNOWN_SKU`,
 			 *  `HOLD_RELEASED`, `HOLD_UNKNOWN`) — reported so the console can say so. */
 			restockSkipped?: { sku: string; quantity: number; reason: string }[];
+			/** What became of the cancelled email. Absent on a replay. */
+			email?: InlineEmailStatus;
 	  }
 	| {
 			ok: false;

@@ -94,6 +94,7 @@ import {
 	adminNextStates,
 	appendOrderNote,
 	cancelOrderWithRefund,
+	emailTemplateForState,
 	computeRefundCeiling,
 	getOrderCustomerContext,
 	getOrderTimeline,
@@ -117,7 +118,9 @@ import {
 	type OrderListFilter,
 	type OrderNote,
 	type OrderState,
+	type OrderId,
 	type OrderSummary,
+	type OutboxEmail,
 	type OrderTimeline,
 	type PaymentGateway,
 	type PaymentMethod,
@@ -138,12 +141,18 @@ import {
 	type InProcessCommerceStoresOptions,
 } from "../commerce/in-process-commerce-stores.js";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
+import {
+	sendOrderEmailsNow,
+	type SendOrderEmailsNowOptions,
+} from "../email/send-order-emails-now.js";
+import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import type {
 	AddNoteResult,
 	AdminOrdersSurface,
 	CancelOrderResult,
 	CustomerContextWire,
+	InlineEmailStatus,
 	OrderDetailResult,
 	OrderDetailWire,
 	OrderNoteWire,
@@ -172,6 +181,12 @@ const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
 export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** The inline order-email attempt's options — a deploy passes none (the bundle's
+	 *  sender); a suite injects a sender. The deadline is NOT taken from here: each
+	 *  write fixes its own as it starts (see `#writeDeadline`). */
+	orderEmails?: Omit<SendOrderEmailsNowOptions, "deadline">;
+	/** The wall clock each write's deadline is measured on. Default `Date.now`. */
+	now?: () => number;
 }
 
 export class InProcessAdminOrdersClient implements AdminOrdersSurface {
@@ -187,6 +202,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 */
 	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 
+	/** The context and options the inline order-email attempt runs with. */
+	readonly #ctx: PluginContext;
+	readonly #orderEmails: Omit<SendOrderEmailsNowOptions, "deadline">;
+	readonly #now: () => number;
+
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console route already had. A context with
@@ -195,6 +215,43 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	constructor(ctx: PluginContext, options: InProcessAdminOrdersClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#gateways = options.gateways ?? {};
+		this.#ctx = ctx;
+		this.#orderEmails = options.orderEmails ?? {};
+		this.#now = options.now ?? Date.now;
+	}
+
+	/**
+	 * The write's ONE deadline, fixed as it starts — the same `settle-deadline.ts`
+	 * budget the settle routes use (ADR-0005). The inline email that ends the write
+	 * takes only what the write itself left of it (a Stripe refund can spend most),
+	 * so the request never waits a full email budget on top of a slow write.
+	 */
+	#writeDeadline(): SettleDeadline {
+		return settleDeadline(this.#now);
+	}
+
+	/**
+	 * Send `orderId`'s due emails NOW and say whether the one this write enqueued —
+	 * the row `announces` recognizes — went out (QA T1-6; ADR-0005's second
+	 * 2026-10-02 amendment). Every admin write that enqueues a buyer email ends here,
+	 * so the email goes with the click, in the order the clicks were made, instead of
+	 * on the cron's next 15-minute tick; the cron stays the at-least-once backstop.
+	 *
+	 * NEVER FAILS THE WRITE: `sendOrderEmailsNow` resolves whatever the provider or
+	 * the store does, within its bounded wait. The write has already committed by the
+	 * time this runs.
+	 */
+	async #sendEmailsNow(
+		orderId: OrderId,
+		deadline: SettleDeadline,
+		announces: (row: OutboxEmail) => boolean,
+	): Promise<InlineEmailStatus> {
+		const result = await sendOrderEmailsNow(this.#ctx, this.#stores, orderId, {
+			...this.#orderEmails,
+			deadline,
+		});
+		if (!result.configured) return "unconfigured";
+		return result.sent.some(announces) ? "sent" : "queued";
 	}
 
 	/**
@@ -257,6 +314,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		toState: string,
 		opts: { idempotencyKey: string },
 	): Promise<TransitionOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		let target: OrderState;
 		try {
 			requireIdToken("orderId", orderId);
@@ -270,7 +329,17 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			{ orderStore: this.#stores.orderStore },
 			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
 		);
-		if (res.ok) return { ok: true, transitioned: res.transitioned };
+		if (res.ok) {
+			// A move that enqueued an email sends it now. Mark refunded enqueues none
+			// (bookkeeping), and a replay moved nothing.
+			const emailed =
+				res.transitioned && target !== "refunded" && emailTemplateForState(target) !== null;
+			if (!emailed) return { ok: true, transitioned: res.transitioned };
+			const email = await this.#sendEmailsNow(res.order.id, deadline, (row) =>
+				isStateRow(row, target),
+			);
+			return { ok: true, transitioned: true, email };
+		}
 		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404 };
 		return { ok: false, status: 409, reason: res.reason };
 	}
@@ -331,6 +400,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		},
 		opts: { idempotencyKey: string },
 	): Promise<RecordFulfillmentResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		try {
 			requireIdToken("orderId", orderId);
 			requireBoundedText("carrier", fulfillment.carrier, 1, 200);
@@ -359,7 +430,13 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				idempotencyKey: toIdempotencyKey(key),
 			},
 		);
-		if (res.ok) return { ok: true, recorded: res.recorded };
+		if (res.ok) {
+			if (!res.recorded) return { ok: true, recorded: false };
+			const email = await this.#sendEmailsNow(toOrderId(orderId), deadline, (row) =>
+				isStateRow(row, "shipped"),
+			);
+			return { ok: true, recorded: true, email };
+		}
 		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
 		if (res.reason === "NOT_FULFILLABLE") return { ok: false, status: 409, reason: res.reason };
 		return { ok: false, status: 400, reason: res.reason };
@@ -385,6 +462,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		},
 		opts: { idempotencyKey: string },
 	): Promise<CancelOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		let reason: CancellationReason;
 		try {
 			requireIdToken("orderId", orderId);
@@ -426,9 +505,13 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			},
 		);
 		if (res.ok) {
+			const email = res.cancelled
+				? await this.#sendEmailsNow(oid, deadline, (row) => isStateRow(row, "cancelled"))
+				: undefined;
 			return {
 				ok: true,
 				cancelled: res.cancelled,
+				...(email !== undefined ? { email } : {}),
 				refund:
 					res.refund === null
 						? null
@@ -570,6 +653,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		refund: { amountCents: number; currency: string; reason?: string | null; refundedBy: string },
 		opts: { idempotencyKey: string },
 	): Promise<RefundOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		try {
 			requireIdToken("orderId", orderId);
 			requireRefundAmount(refund.amountCents);
@@ -613,11 +698,28 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			},
 		);
 		if (res.ok) {
+			if (res.duplicate) {
+				return {
+					ok: true,
+					recorded: res.recorded,
+					duplicate: true,
+					fullyRefunded: res.fullyRefunded,
+				};
+			}
+			// A full refund is announced by the refunded state email; a partial one by
+			// its own refund email (QA T1-6).
+			const refundId = res.refund.id;
+			const email = await this.#sendEmailsNow(oid, deadline, (row) =>
+				res.fullyRefunded
+					? isStateRow(row, "refunded")
+					: row.notice?.kind === "refund-issued" && row.notice.refundId === refundId,
+			);
 			return {
 				ok: true,
 				recorded: res.recorded,
-				duplicate: res.duplicate,
+				duplicate: false,
 				fullyRefunded: res.fullyRefunded,
+				email,
 			};
 		}
 		return { ok: false, status: refundFailureStatus(res.reason), reason: res.reason };
@@ -720,6 +822,12 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			total,
 		};
 	}
+}
+
+/** An outbox row that is the STATE email for `state` — never a notice row, whatever
+ *  state the order was in when the notice was enqueued. */
+function isStateRow(row: OutboxEmail, state: OrderState): boolean {
+	return row.notice === null && row.toState === state;
 }
 
 // ── the wire projections, field for field ─────────────────────────────────

@@ -59,6 +59,7 @@ import {
 	type EmailSender,
 	type OrderId,
 	type OrderStore,
+	type OutboxEmail,
 } from "@otta-sh/domain";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
@@ -133,22 +134,40 @@ export interface SendOrderEmailsNowOptions {
 }
 
 /**
+ * What an inline attempt did — so a caller that tells a person "the buyer has been
+ * emailed" (the admin console, QA T1-6) can say it only when it is true.
+ *
+ * `configured: false` ⇒ this bundle has no email provider: nothing was or will be
+ * sent. Otherwise `sent` lists every row this attempt delivered, in order; a row it
+ * did not deliver (a failed send, the wait running out, a spent budget) is not
+ * there and is the cron's to send. A row sent AFTER the wait ran out is not listed
+ * either — the conservative direction for a caller reporting it.
+ */
+export interface InlineOrderEmails {
+	readonly configured: boolean;
+	readonly sent: readonly OutboxEmail[];
+}
+
+/**
  * Dispatch `orderId`'s due, never-attempted outbox emails now. Resolves (never
  * rejects) once they are sent, have failed and been rescheduled for the cron, the
- * wait has run out, or there was nothing to do. A bundle with no email API URL is a
- * quiet no-op — the cron leg reports that configuration as `skipped`; a per-request
- * log line would only be noise.
+ * wait has run out, or there was nothing to do — with what it sent. A bundle with no
+ * email API URL is a quiet no-op — the cron leg reports that configuration as
+ * `skipped`; a per-request log line would only be noise.
  */
 export async function sendOrderEmailsNow(
 	ctx: PluginContext,
 	stores: OrderEmailStores,
 	orderId: OrderId,
 	options: SendOrderEmailsNowOptions = {},
-): Promise<void> {
+): Promise<InlineOrderEmails> {
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
 	// as well, so a "the cron sweep will deliver it" line below would be false.
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
-	if (options.emailSender === undefined && !emailSenderConfigured(egress)) return;
+	if (options.emailSender === undefined && !emailSenderConfigured(egress)) {
+		return { configured: false, sent: [] };
+	}
+	const sent: OutboxEmail[] = [];
 
 	const deadline = options.deadline ?? settleDeadline();
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
@@ -156,7 +175,7 @@ export async function sendOrderEmailsNow(
 		console.warn(
 			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will deliver it`,
 		);
-		return;
+		return { configured: true, sent: [] };
 	}
 	// The inline wait's own end — at most the request's deadline, sooner when the
 	// 5 s inline cap is the tighter of the two.
@@ -188,6 +207,10 @@ export async function sendOrderEmailsNow(
 			leaseMs: ORDER_EMAIL_INLINE_LEASE_MS,
 			onlyUnattempted: true,
 			shouldContinue: () => !expired,
+			// Only what was sent while the request was still waiting is reported.
+			onSent: (row) => {
+				if (!expired) sent.push(row);
+			},
 		},
 	).then(
 		() => undefined,
@@ -216,6 +239,7 @@ export async function sendOrderEmailsNow(
 	} finally {
 		clearTimeout(timer);
 	}
+	return { configured: true, sent: [...sent] };
 }
 
 /**

@@ -587,12 +587,14 @@ describe("the console's read/write branch on the otta admin route", () => {
 	});
 
 	test("a write with no notice reports no notice, rather than inventing one", async () => {
+		// A note is the quiet write: an appended note has nothing to report. (A status
+		// move no longer is — it says what became of the buyer's email, QA T1-6.)
 		const tag = "quietwrite";
 		const id = await seedOrder({ tag });
 		const result = await invoke({
 			type: ACT,
-			action_id: "orders:transition-processing",
-			value: { orderId: id, toState: "processing", state: "paid" },
+			action_id: "orders:add-note",
+			value: { orderId: id, author: "carol", body: "called the buyer" },
 		});
 		expect(result["ok"]).toBe(true);
 		expect(result["notice"]).toBeNull();
@@ -613,7 +615,11 @@ describe("the console's read/write branch on the otta admin route", () => {
 			action_id: "orders:transition-processing",
 			value: { orderId: id, toState: "processing", state: "paid" },
 		});
-		expect(result["notice"]).toBeNull();
+		// The notice is the WRITE's own outcome — what became of the buyer's email —
+		// and says nothing of the order's settlement alert.
+		const notice = result["notice"] as Record<string, unknown>;
+		expect(notice["title"]).toBe("Order marked processing");
+		expect(JSON.stringify(notice)).not.toMatch(/mismatch|reconcil/i);
 		// ...and the flag is still standing, unread by the write.
 		const detail = await invoke({ type: READ, resource: "orders.detail", orderId: id });
 		expect((detail["order"] as Record<string, unknown>)["reconciliationFlag"]).toBe(

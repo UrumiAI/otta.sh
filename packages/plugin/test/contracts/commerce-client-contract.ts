@@ -2649,7 +2649,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.transitionOrder("adm-o-trans", "processing", {
 					idempotencyKey: "adm-o-trans-1",
 				}),
-			).toEqual({ ok: true, transitioned: true });
+			).toEqual({ ok: true, transitioned: true, email: NO_EMAIL_PROVIDER });
 			// THE REPLAY, under the same key: already there, so nothing moved — and the
 			// surface says so rather than reporting a second transition.
 			expect(
@@ -2785,7 +2785,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.cancelOrder("adm-o-cancel", cancellation, {
 					idempotencyKey: "adm-o-cancel-1",
 				}),
-			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const read = await orders.getOrder("adm-o-cancel");
 			expect(read?.order.state).toBe("cancelled");
@@ -2849,6 +2856,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				refund: { amountCents: 1500, currency: "USD" },
 				restockedUnits: 0,
 				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
 			});
 			const read = await orders.getOrder("adm-o-cancel-paid");
 			expect(read?.order.state).toBe("cancelled");
@@ -2891,7 +2899,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.transitionOrder("adm-o-pubful", "processing", {
 					idempotencyKey: "adm-o-pubful-t2",
 				}),
-			).toEqual({ ok: true, transitioned: true });
+			).toEqual({ ok: true, transitioned: true, email: NO_EMAIL_PROVIDER });
 			expect(
 				await orders.recordFulfillment(
 					"adm-o-pubful",
@@ -2947,7 +2955,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					},
 					{ idempotencyKey: "adm-o-pubcan-1" },
 				),
-			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const read = await storefront.getPublicOrder("adm-o-pubcan");
 			expect(read.ok).toBe(true);
@@ -3252,7 +3267,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						},
 						{ idempotencyKey: "adm-o-refok-1" },
 					),
-				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: false,
+					email: NO_EMAIL_PROVIDER,
+				});
 				// The PROVIDER's view: one call, against the captured PaymentIntent, for
 				// the amount asked, carrying the command's key as its own idempotency key.
 				expect(providerCallsFor("adm-o-refok-1")).toEqual([
@@ -3289,7 +3310,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ amountCents: 1000, currency: "USD", refundedBy: "ops@example.test" },
 						{ idempotencyKey: "adm-o-refok-2" },
 					),
-				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: true });
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: true,
+					email: NO_EMAIL_PROVIDER,
+				});
 				expect(providerCallsFor("adm-o-refok-2")).toHaveLength(1);
 				expect(await orders.getRefunds("adm-o-refok")).toMatchObject({
 					refundedTotalCents: 1500,
@@ -3311,7 +3338,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				const refund = { amountCents: 700, currency: "USD", refundedBy: "ops@example.test" };
 				expect(
 					await orders.refundOrder("adm-o-refrep", refund, { idempotencyKey: "adm-o-refrep-1" }),
-				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: false,
+					email: NO_EMAIL_PROVIDER,
+				});
 
 				// THE DOUBLE-SUBMIT: same key, same refund. The ledger answers it — the
 				// provider is never asked twice, so money cannot move twice.
@@ -3351,7 +3384,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ amountCents: 1500, currency: "USD", refundedBy: "ops@example.test" },
 						{ idempotencyKey: "adm-o-refman-1" },
 					),
-				).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: true });
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: true,
+					email: NO_EMAIL_PROVIDER,
+				});
 				expect(providerCallsFor("adm-o-refman-1")).toEqual([]);
 				const after = await orders.getRefunds("adm-o-refman");
 				expect(after?.refunds).toHaveLength(1);
@@ -3856,6 +3895,14 @@ type ProductsListResultShape = Awaited<ReturnType<ProductsClientSurface["listPro
 
 // ── Slice 3: admin rules + reporting (INC-B10c) ───────────────────────────
 
+/**
+ * What an admin write reports about the buyer's email on this tier (QA T1-6): it is
+ * built with no email API URL, so a write that enqueues the email says nothing will
+ * be sent — never "emailed". The inline send itself is pinned, with a sender, in
+ * `admin-order-emails-inline.test.ts`.
+ */
+const NO_EMAIL_PROVIDER = "unconfigured";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The top-products page bound both transports enforce (`limit` is
@@ -4078,7 +4125,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					{ reason: "customer_request", cancelledBy: "ops@example.test" },
 					{ idempotencyKey: "rep-obs-2-cancel" },
 				),
-			).toEqual({ ok: true, cancelled: true, refund: null, restockedUnits: 0, restockSkipped: [] });
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const after = await reporting.getOrdersByStatus(window);
 			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);

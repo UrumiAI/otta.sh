@@ -74,6 +74,7 @@ import {
 } from "@otta-sh/admin-presentation";
 import type {
 	AdminOrdersSurface,
+	InlineEmailStatus,
 	RefundsSummaryWire,
 	TransitionRefusal,
 } from "./admin-orders-surface.js";
@@ -230,6 +231,25 @@ function normalizeBound(value: string | undefined): string | undefined {
  *  different shape — see {@link OrdersActionResult}. */
 const applied = (notice: Notice | null): OrdersActionResult => ({ ok: true, notice });
 
+/**
+ * What became of the buyer's email, as a sentence led by a space (QA T1-6). Every
+ * write that enqueues one now sends it inline and reports the result, so this says
+ * "emailed" only when it went out — never on the strength of a queued row.
+ * `undefined` (the write enqueued none) says nothing.
+ */
+function emailSentence(email: InlineEmailStatus | undefined): string {
+	switch (email) {
+		case "sent":
+			return " The buyer has been emailed.";
+		case "queued":
+			return " The buyer’s email is queued — it will go out within a few minutes.";
+		case "unconfigured":
+			return " No email was sent — this store has no email provider set up.";
+		default:
+			return "";
+	}
+}
+
 // -- transitions --------------------------------------------------------------
 
 /**
@@ -362,7 +382,15 @@ function transitionAction(toState: string): OrdersAction {
 				description: "The order is already in that state.",
 			});
 		}
-		return applied(toState === "refunded" ? MARKED_REFUNDED : null);
+		// Mark refunded emails nobody, and says so (A's notice, ADR-0026 Decision 3);
+		// every other applied move says what became of the buyer's email (T1-6).
+		if (toState === "refunded" && result.email === undefined) return applied(MARKED_REFUNDED);
+		const email = emailSentence(result.email).trim();
+		return applied(
+			email.length === 0
+				? null
+				: { variant: "default", title: `Order marked ${toState}`, description: email },
+		);
 	};
 }
 
@@ -526,7 +554,10 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 	return applied({
 		variant: "default",
 		title: "Order shipped",
-		description: "Fulfilment recorded — the buyer has been emailed their tracking.",
+		description:
+			result.email === "sent"
+				? "Fulfilment recorded. The buyer has been emailed their tracking."
+				: `Fulfilment recorded.${emailSentence(result.email)}`,
 	});
 };
 
@@ -623,7 +654,7 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 			variant: "default",
 			title: "Order cancelled and refunded",
 			description: fit(
-				`Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.${stock} The buyer has been emailed.`,
+				`Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.${stock}${emailSentence(result.email)}`,
 				BANNER_BUDGET,
 			),
 		});
@@ -631,7 +662,7 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 	return applied({
 		variant: "default",
 		title: "Order cancelled",
-		description: `The cancellation was recorded.${stock} The buyer has been emailed.`,
+		description: `The cancellation was recorded.${stock}${emailSentence(result.email)}`,
 	});
 };
 
@@ -943,15 +974,16 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		return applied({
 			variant: "default",
 			title: "Refund complete",
-			description:
-				"The refund was recorded and the order is now fully refunded — the buyer has been emailed.",
+			description: `The refund was recorded and the order is now fully refunded.${emailSentence(result.email)}`,
 		});
 	}
 	return applied({
 		variant: "default",
 		title: "Refund recorded",
-		description:
-			"The refund was recorded. The order stays in its current status; Money → Refunds shows what remains.",
+		description: fit(
+			`The refund was recorded; the order stays in its current status and Money → Refunds shows what remains.${emailSentence(result.email)}`,
+			BANNER_BUDGET,
+		),
 	});
 };
 

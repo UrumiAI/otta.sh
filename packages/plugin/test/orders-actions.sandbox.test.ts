@@ -261,7 +261,8 @@ describe("the Orders write path (workerd sandbox)", () => {
 				toState: to,
 				state: from,
 			});
-			expect(result.notice, `${from} → ${to}`).toBeNull();
+			// Applied: a non-error notice saying what became of the buyer's email (T1-6).
+			expect(result.notice?.variant, `${from} → ${to}`).toBe("default");
 			from = to;
 		}
 	}
@@ -301,7 +302,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 
 	// -- transitions ------------------------------------------------------------
 
-	test("a transition APPLIES to the persisted order and reports no notice", async () => {
+	test("a transition APPLIES to the persisted order and says what became of the buyer's email", async () => {
 		// What the deleted POST-body assertion was a proxy for. There is no request
 		// to inspect now, so the claim is made directly against the store the write
 		// went to: the order moved, and it moved to the state the id names.
@@ -311,7 +312,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 			toState: "processing",
 			state: "paid",
 		});
-		expect(result.notice).toBeNull();
+		// This boot is bundled with no email API URL, so nothing will be sent — and the
+		// notice says exactly that rather than "the buyer has been emailed" (T1-6).
+		expect(result.notice).toEqual({
+			variant: "default",
+			title: "Order marked processing",
+			description: "No email was sent — this store has no email provider set up.",
+		});
 		expect((await readOrder(id)).state).toBe("processing");
 	});
 
