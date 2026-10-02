@@ -1,3 +1,4 @@
+import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -312,15 +313,19 @@ export function couponUsesSummary(usesCount: number, maxUses: number | null): st
  *  coupon's own window and use bound — never stored, never a form field
  *  (G2/F-2b: a value the domain derives is displayed, never given an input,
  *  because an input would be a second, disagreeing home for it). */
-export type CouponStatus = "active" | "scheduled" | "expired" | "used up";
+/** `invalid`: a window bound that cannot be read as one zoned instant — checkout
+ *  refuses the code (it FAILS CLOSED), so the console must not call it live. */
+export type CouponStatus = "active" | "scheduled" | "expired" | "used up" | "invalid";
 
 /**
  * The coupon's lifecycle state, decided the way the DOMAIN decides it and in
  * the domain's own order — window first (`[startsAt, expiresAt)`), then the
  * use bound — mirroring `validateCoupon`
  * (`packages/domain/src/pricing/validate-coupon.ts`, the `startsAt`/
- * `expiresAt`/`maxUses` checks) check for check, including its LEXICOGRAPHIC
- * comparison of ISO-UTC instants. Two consequences worth stating:
+ * `expiresAt`/`maxUses` checks) check for check, comparing the bounds as
+ * INSTANTS through the domain's own `parseCouponInstant` and failing closed the
+ * same way: a bound it cannot read makes the coupon `invalid` (checkout answers
+ * `COUPON_NOT_ACTIVE`). Two further consequences worth stating:
  *
  * - The end bound is EXCLUSIVE, so a coupon whose `expiresAt` is exactly
  *   `now` is already `expired` — the same instant at which checkout starts
@@ -339,8 +344,15 @@ export function couponStatus(
 	c: Pick<CouponSummaryWire, "startsAt" | "expiresAt" | "maxUses" | "usesCount">,
 	now: string,
 ): CouponStatus {
-	if (c.startsAt !== null && now < c.startsAt) return "scheduled";
-	if (c.expiresAt !== null && now >= c.expiresAt) return "expired";
+	// INSTANTS, read by the same function `validateCoupon` uses — string order is
+	// wrong for a bound stored without milliseconds or with an offset — and
+	// FAILING CLOSED like it: an unreadable bound (or `now`) is never shown as live.
+	const at = parseCouponInstant(now);
+	const starts = c.startsAt === null ? undefined : parseCouponInstant(c.startsAt);
+	const expires = c.expiresAt === null ? undefined : parseCouponInstant(c.expiresAt);
+	if (at === null || starts === null || expires === null) return "invalid";
+	if (starts !== undefined && at < starts) return "scheduled";
+	if (expires !== undefined && at >= expires) return "expired";
 	if (c.maxUses !== null && c.usesCount >= c.maxUses) return "used up";
 	return "active";
 }
@@ -968,11 +980,13 @@ function detailBlocks(
 function statusBanner(status: CouponStatus): BannerBlock | undefined {
 	if (status === "active") return undefined;
 	const description =
-		status === "scheduled"
-			? "Checkout refuses this code until its start date."
-			: status === "expired"
-				? "Checkout refuses this code — its expiry date has passed."
-				: "Checkout refuses this code — it has reached its maximum number of uses.";
+		status === "invalid"
+			? "Checkout refuses this code — its start or expiry date can't be read. Set the dates again in Edit."
+			: status === "scheduled"
+				? "Checkout refuses this code until its start date."
+				: status === "expired"
+					? "Checkout refuses this code — its expiry date has passed."
+					: "Checkout refuses this code — it has reached its maximum number of uses.";
 	return {
 		type: "banner",
 		variant: "alert",
@@ -1258,9 +1272,10 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
  * get the same treatment rather than being trusted for looking date-shaped: a
  * carrier round-trips through the operator's browser (`carrier.ts`: "treat
  * every decoded value as untrusted input"), the service only length-checks
- * these columns, and the domain compares them LEXICOGRAPHICALLY — so a value
- * that is merely parseable rather than canonical would sort wrong forever and
- * silently mis-decide `validateCoupon`.
+ * these columns, and canonical `toISOString()` text is the one form every reader
+ * (the domain's `parseCouponInstant`, the window check below, the list's sort)
+ * agrees on — a value that is merely parseable rather than canonical is exactly
+ * the kind `validateCoupon` now refuses as unreadable.
  *
  * The test is a ROUND TRIP, not a parse: `Date.parse` accepts `2026-02-30` and
  * rolls it into March, so "it parsed" proves nothing about what would be
@@ -1575,7 +1590,14 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 	if (expiresAt.ok === false) {
 		return { ok: false, message: `Expires at ${DATE_HINT}` };
 	}
-	if (startsAt.value !== null && expiresAt.value !== null && startsAt.value >= expiresAt.value) {
+	// Compared as INSTANTS. Both sides are canonical `toISOString()` text by
+	// construction (`resolveBound` round-trips), where string order would agree —
+	// parsed anyway, so the rule does not hang on that invariant.
+	if (
+		startsAt.value !== null &&
+		expiresAt.value !== null &&
+		Date.parse(startsAt.value) >= Date.parse(expiresAt.value)
+	) {
 		return { ok: false, message: "Expires at must be on or after starts at." };
 	}
 	const maxUses = parseCountInput(submittedOr(values, "maxUses", current.maxUses, disclosed));
@@ -1640,8 +1662,9 @@ const DATE_HINT = "must be a date like 2026-08-01.";
  * from the data loss it would be if the heuristic were ever wrong.
  *
  * A full ISO datetime still parses and is still NORMALIZED to ISO-8601 UTC:
- * the wire is untrusted, older records hold one, and `validateCoupon` compares
- * these strings LEXICOGRAPHICALLY, so a non-ISO shape would mis-order silently.
+ * the wire is untrusted, older records hold one, and `validateCoupon` reads
+ * bounds with `parseCouponInstant` and FAILS CLOSED on anything else, so a
+ * non-ISO shape stored here would switch the coupon off.
  */
 function resolveBound(
 	values: Record<string, unknown>,

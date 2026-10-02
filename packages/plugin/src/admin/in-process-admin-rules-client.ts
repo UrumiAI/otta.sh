@@ -75,6 +75,7 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
@@ -738,12 +739,27 @@ function optionalBps(field: string, value: number | null | undefined): number | 
 	return requireBps(field, value);
 }
 
-/** `z.string().min(1).max(64).nullable().optional()` — the coupon window bounds.
- *  Deliberately NOT an instant parse: the wire never parsed one either, and
- *  refusing more than the other transport refuses is still a divergence. */
+/**
+ * A coupon window bound: the wire's `min(1).max(64)`, AND a zoned ISO-8601
+ * instant (`parseCouponInstant`, the domain's one reader). This used to be
+ * length-only, for parity with a wire that never parsed one — but checkout now
+ * FAILS CLOSED on a bound it cannot read, so an unreadable value stored here
+ * would be a coupon that silently can never be redeemed. Refusing it at the
+ * write is the honest end of the same rule. What is stored is the CANONICAL
+ * `toISOString()` form of the instant, not the text as sent.
+ */
 function optionalInstantText(field: string, value: string | null | undefined): string | null {
 	if (value === undefined || value === null) return null;
-	return requireBoundedText(field, value, 1, INSTANT_TEXT_MAX);
+	requireBoundedText(field, value, 1, INSTANT_TEXT_MAX);
+	const instant = parseCouponInstant(value);
+	if (instant === null) {
+		throw new CommerceInputError(field, "must be an ISO-8601 instant with Z or an offset");
+	}
+	// STORED CANONICAL (`toISOString()`): the console's edit form round-trips the
+	// stored bound, so a stored `+01:00` or `24:00` spelling would be re-rendered
+	// and re-saved in another form — the canonical text is the one an untouched
+	// save cannot move.
+	return new Date(instant).toISOString();
 }
 
 /** The page size the caller asked for, bounded as the query schema bounded it.
