@@ -315,6 +315,10 @@ order of appearance in a deployment's life:
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
   rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  With a sender, a settled payment's **order confirmation goes out inline** from the settle
+  route (best-effort, a few seconds at most); the `order-emails` leg is the backstop that
+  delivers anything that attempt missed, on its next run
+  ([ADR-0005](./adr/0005-transactional-email-transport.md), 2026-10-02).
   Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
   API key is a write-only Settings credential, and the from-address ("Order email
   from-address", `settings:emailFrom`, default `no-reply@otta.local`) is a readable Settings
