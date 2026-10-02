@@ -194,6 +194,32 @@ export interface StripePaymentGatewayOptions {
 	/** Injectable `fetch` for the DEFAULT http transport (used only when
 	 *  `transport` is omitted and `secretKey` is set). Defaults to the global. */
 	fetch?: typeof fetch;
+	/**
+	 * Per-request timeout for the DEFAULT http transport (ignored when `transport`
+	 * is injected). Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. A caller that
+	 * runs inside someone else's deadline passes a shorter one: the settle webhook
+	 * refunds a late payment inside Stripe's own delivery, and Stripe treats a
+	 * delivery that has not answered in ~10 s as failed and sends it again. A
+	 * FUNCTION is asked at each call: a cron leg passes "what my budget has left",
+	 * so every call is bounded by the time actually remaining when it starts.
+	 */
+	requestTimeoutMs?: number | (() => number);
+	/**
+	 * A FIXED bound for the refund CREATE alone, overriding `requestTimeoutMs` for
+	 * that one call. A create that times out is AMBIGUOUS (Stripe may have
+	 * processed it), and lands as "verify in Stripe" — so a caller with a shrinking
+	 * budget must never hand the create a sliver of time: it either gives the create
+	 * this full bound or does not start it (`beforeRefundCreate`).
+	 */
+	refundCreateTimeoutMs?: number;
+	/**
+	 * Asked AFTER the refund pre-flight and BEFORE the create. `false` ⇒ the create
+	 * is not started and the refund answers `NOT_STARTED` — truthfully: nothing was
+	 * issued, nothing failed at Stripe, and the caller's reservation stays
+	 * `reserved` for a later retry under the same key. For a caller whose time may
+	 * have run out during the pre-flight.
+	 */
+	beforeRefundCreate?: () => boolean;
 	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
 	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
 	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
@@ -340,6 +366,7 @@ export class StripePaymentGateway implements PaymentGateway {
 	readonly #transport: StripeTransport | undefined;
 	readonly #toleranceSeconds: number;
 	readonly #clock: Clock;
+	readonly #beforeRefundCreate: (() => boolean) | undefined;
 
 	constructor(options: StripePaymentGatewayOptions) {
 		if (options.webhookSecret.length === 0) {
@@ -358,11 +385,20 @@ export class StripePaymentGateway implements PaymentGateway {
 		this.#transport =
 			options.transport ??
 			(secretKey !== undefined
-				? createStripeHttpTransport({ fetch: options.fetch ?? globalThis.fetch })
+				? createStripeHttpTransport({
+						fetch: options.fetch ?? globalThis.fetch,
+						...(options.requestTimeoutMs !== undefined
+							? { requestTimeoutMs: options.requestTimeoutMs }
+							: {}),
+						...(options.refundCreateTimeoutMs !== undefined
+							? { createRefundTimeoutMs: options.refundCreateTimeoutMs }
+							: {}),
+					})
 				: undefined);
 		this.refundable = secretKey !== undefined && this.#transport !== undefined;
 		this.#toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
 		this.#clock = options.clock ?? { now: () => new Date() };
+		this.#beforeRefundCreate = options.beforeRefundCreate;
 	}
 
 	/**
@@ -399,6 +435,11 @@ export class StripePaymentGateway implements PaymentGateway {
 		const { amountRefunded, amountCaptured } = pre.view;
 		if (amountRefunded > input.priorRefunded || amountRefunded + input.amount > amountCaptured) {
 			return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+		}
+		// Out of time for a WHOLE create: issue nothing, and say it was NOT STARTED —
+		// the caller's choice, not a provider failure, so it costs no attempt.
+		if (this.#beforeRefundCreate !== undefined && !this.#beforeRefundCreate()) {
+			return { ok: false, reason: "NOT_STARTED" };
 		}
 		const created = await this.#transport.createRefund({
 			providerRef: input.providerRef,
@@ -726,7 +767,10 @@ export interface StripeHttpTransportOptions {
 	 *  `createRefund`. Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. A timeout
 	 *  classifies exactly like a network error on the same call — `retryable` on
 	 *  the intent create and the read, `ambiguous` on the refund create. */
-	requestTimeoutMs?: number;
+	requestTimeoutMs?: number | (() => number);
+	/** A FIXED timeout for `createRefund` alone (see the gateway's
+	 *  `refundCreateTimeoutMs`). Default: `requestTimeoutMs`. */
+	createRefundTimeoutMs?: number;
 }
 
 /**
@@ -748,7 +792,16 @@ export interface StripeHttpTransportOptions {
 export function createStripeHttpTransport(options: StripeHttpTransportOptions): StripeTransport {
 	const doFetch = options.fetch;
 	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
-	const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	// Asked per call, so a caller with a shrinking budget bounds each call by what
+	// is left when it starts; never below 1 ms (a zero means "no timeout" to some
+	// runtimes, which is the opposite of what a caller out of time wants).
+	const requested = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const timeoutOf = (): number =>
+		Math.max(1, typeof requested === "function" ? requested() : requested);
+	const createRefundTimeoutOf = (): number =>
+		options.createRefundTimeoutMs !== undefined
+			? Math.max(1, options.createRefundTimeoutMs)
+			: timeoutOf();
 
 	return {
 		async createPaymentIntent({
@@ -793,7 +846,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					},
 					body: form.toString(),
 					// A hung Stripe must never hang a Worker checkout.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(timeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout. Unlike a refund create this is NOT
@@ -840,7 +893,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					method: "GET",
 					headers: stripeHeaders(secretKey),
 					// A hung Stripe must never hang the operator's refund.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(timeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout — the read issued nothing.
@@ -889,7 +942,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					body: form.toString(),
 					// Bounded like the other calls — but see the catch: a timed-out
 					// refund POST is NOT a clean failure.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(createRefundTimeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout — the POST may have reached Stripe before

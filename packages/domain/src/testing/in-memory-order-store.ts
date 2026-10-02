@@ -28,6 +28,10 @@ import type {
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
+	OrderLedger,
+	RefundRetry,
+	RefundRetrySchedule,
+	OrderNoticeInput,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
@@ -42,6 +46,7 @@ import type {
 	Order,
 	OrderAddress,
 	OrderLine,
+	OrderNotice,
 	OrderState,
 	OrderTotals,
 	PaymentMethod,
@@ -98,6 +103,8 @@ interface StoredOutbox {
 	leaseUntil: string | null;
 	sentAt: string | null;
 	createdAt: string;
+	/** Non-null on a NOTICE row (`enqueueNotice`); null on a state row. */
+	notice: OrderNoticeInput | null;
 }
 
 /**
@@ -114,6 +121,8 @@ export class InMemoryOrderStore implements OrderStore {
 	#orders = new Map<string, StoredOrder>();
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
+	/** Scheduled late-payment refund retries, per order then per refund key. */
+	#refundRetries = new Map<string, Map<string, RefundRetrySchedule>>();
 	/** Append-only refunds ledger — the fake analogue of the `refunds` table
 	 *  (ADR-0008). */
 	#refunds: RefundRecord[] = [];
@@ -238,6 +247,63 @@ export class InMemoryOrderStore implements OrderStore {
 			currency: input.currency,
 			status: input.status,
 		});
+	}
+
+	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
+		const order = await this.getById(orderId);
+		if (order === null) return null;
+		return {
+			order,
+			events: await this.listEventsForOrder(orderId),
+			payments: await this.getCapturedPayments(orderId),
+			refunds: await this.listRefunds(orderId),
+			refundRetries: this.#retriesOf(orderId),
+		};
+	}
+
+	#retriesOf(orderId: string): RefundRetry[] {
+		return [...(this.#refundRetries.get(orderId) ?? new Map<string, RefundRetrySchedule>())]
+			.toSorted((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+			.map(([key, r]) => ({ idempotencyKey: toIdempotencyKey(key), ...r }));
+	}
+
+	async scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void> {
+		if (!this.#orders.has(orderId)) return;
+		const perOrder = this.#refundRetries.get(orderId) ?? new Map<string, RefundRetrySchedule>();
+		if (retry === null) perOrder.delete(idempotencyKey);
+		else perOrder.set(idempotencyKey, { ...retry });
+		if (perOrder.size === 0) this.#refundRetries.delete(orderId);
+		else this.#refundRetries.set(orderId, perOrder);
+	}
+
+	async listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]> {
+		const stale: [string, string][] = [];
+		for (const [id, perOrder] of this.#refundRetries) {
+			let oldest: string | null = null;
+			for (const r of perOrder.values()) if (oldest === null || r.since < oldest) oldest = r.since;
+			if (oldest !== null && oldest <= cutoff) stale.push([id, oldest]);
+		}
+		return stale
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
+	}
+
+	async listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]> {
+		const due: [string, string][] = [];
+		for (const [id, perOrder] of this.#refundRetries) {
+			let earliest: string | null = null;
+			for (const r of perOrder.values()) if (earliest === null || r.at < earliest) earliest = r.at;
+			if (earliest !== null && earliest <= now) due.push([id, earliest]);
+		}
+		return due
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
 	}
 
 	// -- Refunds ledger (ADR-0008) --------------------------------------------
@@ -784,7 +850,32 @@ export class InMemoryOrderStore implements OrderStore {
 			toState: row.toState,
 			attempts: row.attempts,
 			timeouts: row.timeouts,
+			notice: row.notice === null ? null : { ...row.notice },
 		};
+	}
+
+	async enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean> {
+		const stored = this.#orders.get(orderId);
+		if (stored === undefined) return false;
+		// First-wins per (orderId, notice) — the notice analogue of the state rows'
+		// ON CONFLICT (order_id, to_state) DO NOTHING.
+		if (this.#outbox.some((r) => r.orderId === orderId && r.notice?.kind === notice.kind)) {
+			return false;
+		}
+		this.#outbox.push({
+			id: this.#idGen.newId(),
+			orderId,
+			toState: stored.order.state,
+			status: "pending",
+			attempts: 0,
+			timeouts: 0,
+			failureReason: null,
+			leaseUntil: null,
+			sentAt: null,
+			createdAt: this.#clock.now().toISOString(),
+			notice: { ...notice },
+		});
+		return true;
 	}
 
 	async markEmailSent(id: string, now: string): Promise<void> {
@@ -830,11 +921,22 @@ export class InMemoryOrderStore implements OrderStore {
 		return this.#payments.filter((p) => p.orderId === orderId);
 	}
 
-	/** Outbox rows for an order (for contract assertions). */
+	/** STATE-transition outbox rows for an order (for contract assertions).
+	 *  Notice rows are reported by {@link noticesFor}, so a case that pins an
+	 *  order's transition emails is not perturbed by a late-payment notice. */
 	outboxFor(orderId: string): { toState: OrderState; status: OutboxStatus }[] {
 		return this.#outbox
-			.filter((r) => r.orderId === orderId)
+			.filter((r) => r.orderId === orderId && r.notice === null)
 			.map((r) => ({ toState: r.toState, status: r.status }));
+	}
+
+	/** NOTICE outbox rows for an order (for contract assertions). */
+	noticesFor(orderId: string): { notice: OrderNotice; status: OutboxStatus }[] {
+		return this.#outbox.flatMap((r) =>
+			r.orderId === orderId && r.notice !== null
+				? [{ notice: r.notice.kind, status: r.status }]
+				: [],
+		);
 	}
 
 	// -- internals ------------------------------------------------------------
@@ -872,7 +974,10 @@ export class InMemoryOrderStore implements OrderStore {
 
 	/** Outbox INSERT … ON CONFLICT(order_id, to_state) DO NOTHING (§5). */
 	#enqueue(orderId: string, toState: OrderState): void {
-		if (this.#outbox.some((r) => r.orderId === orderId && r.toState === toState)) return;
+		if (
+			this.#outbox.some((r) => r.orderId === orderId && r.notice === null && r.toState === toState)
+		)
+			return;
 		this.#outbox.push({
 			id: this.#idGen.newId(),
 			orderId,
@@ -884,6 +989,7 @@ export class InMemoryOrderStore implements OrderStore {
 			leaseUntil: null,
 			sentAt: null,
 			createdAt: this.#clock.now().toISOString(),
+			notice: null,
 		});
 	}
 

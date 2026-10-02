@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: nine legs, one tick (INC-C4).
+ * The scheduled sweep: ten legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -11,7 +11,7 @@
  *
  * EVERY LEG IN ITS OWN TRY/CATCH, WITH ITS OWN LABEL — mirroring the service's
  * `scheduled()` handler, and for its reason: a sweep that throws must not starve
- * the eight beside it. A tick therefore always returns a summary, and a failed
+ * the others beside it. A tick therefore always returns a summary, and a failed
  * leg is a `{ ok: false, error }` row in it rather than a rejected hook.
  *
  * AND EVERY LEG LOGS, which is the other half of that mirror and was missing from
@@ -141,11 +141,14 @@ import {
 	DEFAULT_COUPON_GRACE_MS,
 	dispatchOrderEmails,
 	EmailSendTimeoutError,
+	escalateStaleLateRefunds,
 	expireHoldsBatch,
 	expireOrdersBatch,
 	isEmailSendTimeoutError,
 	orderId as toOrderId,
+	retryLatePaymentRefunds,
 	type EmailSender,
+	type OrderId,
 	type OrderState,
 } from "@otta-sh/domain";
 import {
@@ -168,14 +171,22 @@ import {
 } from "../commerce/in-process-commerce-stores.js";
 import { makeEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
+import {
+	resolvePaymentGateways,
+	type PaymentGateways,
+} from "../payments/resolve-payment-gateways.js";
+import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
 import type { PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import { type LegBudget, type LegShare, TickBudget, WHOLE_TICK } from "./tick-budget.js";
 
-/** The nine legs in PRIORITY order, since a tick that runs out of budget defers
+/** The ten legs in PRIORITY order, since a tick that runs out of budget defers
  *  whatever is left: the three critical legs (the outbox, then the two expiry
  *  legs — which of the three LEADS rotates by minute, see the head comment), then
- *  the self-narrowing completers, then the four scans. `coupon-orphans` must stay
+ *  the self-narrowing completers, then the four scans, then the BEST-EFFORT
+ *  `late-refunds` retry (ADR-0022's 2026-10-02 amendment) — last, because a
+ *  Stripe round trip is the most expensive unit any leg has and nothing a
+ *  customer is waiting on may be deferred for it. `coupon-orphans` must stay
  *  after `expire-orders`: its `expired` arm is that leg's retry. A summary always
  *  lists the legs in THIS order, whichever critical leg led. */
 export const SWEEP_LEGS = [
@@ -188,6 +199,7 @@ export const SWEEP_LEGS = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	"late-refunds",
 ] as const;
 
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
@@ -293,6 +305,16 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// backlog on one leg from taking the whole tick.
 	"expire-holds": { time: 0.5, queries: 0.5 },
 	"expire-orders": { time: 0.5, queries: 0.5 },
+	// Best-effort: Stripe's own webhook redelivery is the first retry; this leg only
+	// finishes what that leaves. On the Workers Free preset one unit (~26 calls
+	// with its entry) fits only a tick it LEADS, so it leads one tick per
+	// maintenance interval when it has work; and the give-up ESCALATION, which
+	// makes no provider call, runs on every preset. It is NOT a critical leg:
+	// `minimumQueryBudget` ignores it.
+	// Its TIME share is the whole tick: it runs last (or leads, once per interval),
+	// and its unit minimum — room for a pre-flight, a WHOLE create and the writes
+	// after it (`LATE_REFUND_MIN_UNIT_MS`) — is what bounds it.
+	"late-refunds": { time: 1, queries: 0.4 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
@@ -323,6 +345,13 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"order-sku-index": { entry: 2, unit: 3 },
 		"reporting-heal": { entry: 1, unit: 3 },
 		"coupon-orphans": { entry: 2, unit: 7 },
+		// entry: resolving the gateways (their secret kv reads: 2 for Stripe, up to 3
+		// more with x402 configured) — once, and only when a unit needs them. The due
+		// list is the leg's due check, charged before this (see `run`'s `isDue`).
+		// unit: one order's ledger read, the re-driven refund (the two Stripe
+		// subrequests, finalize with its reporting write) and the resolve, retry
+		// clear and notice that follow — the TRIMMED resume, measured at 20.
+		"late-refunds": { entry: 5, unit: 20 },
 	};
 
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
@@ -342,7 +371,11 @@ function expireHoldsEntry(expiryBatch: number): number {
  * Free (30): 2 holds/orders, 1 email. Paid (600): 18 holds/orders, 22 emails —
  * the time budget, not the count, usually ends a Paid tick first.
  */
-export function batchesFor(queryBudget: number): { expiry: number; email: number } {
+export function batchesFor(queryBudget: number): {
+	expiry: number;
+	email: number;
+	lateRefunds: number;
+} {
 	const holds = LEG_QUERY_COSTS["expire-holds"].unit + 2;
 	const emails = LEG_QUERY_COSTS["order-emails"].unit;
 	const holdShare = LEG_SHARES["expire-holds"]?.queries ?? 1;
@@ -350,6 +383,13 @@ export function batchesFor(queryBudget: number): { expiry: number; email: number
 	return {
 		expiry: clampInt((queryBudget * holdShare) / holds, 2, 50),
 		email: clampInt((queryBudget * emailShare) / emails, 1, 25),
+		// Best-effort Stripe round trips: at most a handful a minute even on Paid.
+		lateRefunds: clampInt(
+			(queryBudget * (LEG_SHARES["late-refunds"]?.queries ?? 1)) /
+				LEG_QUERY_COSTS["late-refunds"].unit,
+			1,
+			5,
+		),
 	};
 }
 
@@ -357,9 +397,53 @@ function clampInt(value: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+/** One late-refund ESCALATION (give-up, no provider call), MEASURED. */
+export const LATE_REFUND_ESCALATION_UNIT = 8;
+
+/** The refund CREATE's fixed bound. A create that times out is AMBIGUOUS (it may
+ *  have reached Stripe) and lands as "verify in Stripe", so it is never handed a
+ *  sliver of time: it gets all of this, or it is not started. */
+export const LATE_REFUND_CREATE_MS = 2_500;
+/** Room for the storage writes after a create (finalize, resolve, notice). */
+const LATE_REFUND_STORAGE_MS = 500;
+/** Room for the refund pre-flight read (clippable: a timed-out READ is retryable). */
+const LATE_REFUND_PREFLIGHT_MS = 500;
+/** The least time left at which a late-refund unit is ADMITTED. */
+const LATE_REFUND_MIN_UNIT_MS =
+	LATE_REFUND_PREFLIGHT_MS + LATE_REFUND_CREATE_MS + LATE_REFUND_STORAGE_MS;
+
+/**
+ * The Stripe options the `late-refunds` leg builds its gateway with, given the leg's
+ * budget. Exported for its test.
+ *  - the pre-flight READ is bounded by what the leg has left (a timed-out read
+ *    issued nothing, so clipping it is safe);
+ *  - the CREATE gets the fixed {@link LATE_REFUND_CREATE_MS};
+ *  - and is started only while a whole create plus the writes after it still fit
+ *    — otherwise the gateway answers RETRYABLE having issued nothing, the row
+ *    stays `reserved`, and the domain reschedules it.
+ */
+export function lateRefundStripeOptions(legBudget: { remainingMs(): number }): {
+	requestTimeoutMs: () => number;
+	refundCreateTimeoutMs: number;
+	beforeRefundCreate: () => boolean;
+} {
+	return {
+		requestTimeoutMs: () => Math.max(1, Math.min(LATE_REFUND_CREATE_MS, legBudget.remainingMs())),
+		refundCreateTimeoutMs: LATE_REFUND_CREATE_MS,
+		beforeRefundCreate: () =>
+			legBudget.remainingMs() >= LATE_REFUND_CREATE_MS + LATE_REFUND_STORAGE_MS,
+	};
+}
+
 /** Calls every tick makes before any leg: the setting read and the cadence-state
  *  read. */
 const TICK_OVERHEAD_QUERIES = 2;
+
+/** What an IDLE tick spends before the last leg, MEASURED (DEPLOYMENT.md §5: "an
+ *  idle tick is 8 queries"): the overhead plus every other leg's discovery read.
+ *  A budget that cannot hold this plus one late-refund unit is one where that leg
+ *  can never run last — so there, and only there, it leads. */
+const IDLE_TICK_QUERIES = 8;
 
 /**
  * The smallest query budget at which every critical leg can START when it leads
@@ -492,6 +576,18 @@ export interface CommerceSweepOptions {
 	 * carries an email API URL. A suite injects one to model a slow provider that
 	 * honours the abort. Ignored when `emailSender` is set.
 	 */
+	/**
+	 * The payment gateways a provider-facing leg uses — an OVERRIDE, either a map
+	 * or a thunk producing one. Left unset, the leg resolves the deployment's own
+	 * (`resolvePaymentGateways`) from the COUNTED context — so the secret reads and
+	 * the Stripe subrequests count against the tick's query budget — once, lazily,
+	 * only when it has found work, with every Stripe call bounded by what the leg
+	 * has left. A suite injects fakes to pin the provider calls offline.
+	 */
+	readonly gateways?: PaymentGateways | (() => PaymentGateways | Promise<PaymentGateways>);
+	/** Most orders the `late-refunds` leg resumes per tick. Default: scaled from
+	 *  the query budget (`batchesFor`) — 1 to 5. */
+	readonly lateRefundBatch?: number;
 	readonly emailSenderFactory?: (
 		requestTimeoutMs: () => number,
 	) => Promise<EmailSender | undefined>;
@@ -549,7 +645,7 @@ const INTENT_OWNER_STATE: Record<"adopt" | "commit" | "release", readonly OrderS
  * Run every leg of the commerce sweep once.
  *
  * Never rejects for a leg failure: the summary carries each leg's own outcome, so
- * a broken sweep is visible without taking the other eight down with it. It DOES
+ * a broken sweep is visible without taking the others down with it. It DOES
  * reject when the context carries no document store, because that is a wiring
  * fault rather than a sweep result.
  */
@@ -584,6 +680,7 @@ export async function runCommerceSweeps(
 	const batches = batchesFor(queryBudget);
 	const expiryLimit = options.expiryBatchLimit ?? batches.expiry;
 	const emailLimit = options.emailBatchLimit ?? batches.email;
+	const lateRefundLimit = options.lateRefundBatch ?? batches.lateRefunds;
 	const state = await readState(cursors);
 	let stateChanged = false;
 	const legs: SweepLegOutcome[] = [];
@@ -604,6 +701,7 @@ export async function runCommerceSweeps(
 	const run = async (
 		leg: SweepLeg,
 		body: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok">>,
+		hooks: LegHooks = {},
 	): Promise<void> => {
 		const maintenance = MAINTENANCE_LEGS.includes(leg);
 		if (maintenance && !isDue(state.lastRun[leg], now)) {
@@ -611,6 +709,25 @@ export async function runCommerceSweeps(
 			// that matter. The summary still lists the leg.
 			legs.push({ leg, ok: true, count: 0, notDue: true });
 			return;
+		}
+		// A best-effort leg asks first whether it has ANY work (one query). Idle, it
+		// is not "deferred" — there was nothing to defer — so no line, no warning
+		// and no state write; only a leg with work due can be deferred.
+		if (hooks.isDue !== undefined) {
+			if (!budget.leg(WHOLE_TICK).canStart(1, 0)) {
+				// Not even room to ask. The summary says "not reached" (`deferred`), but
+				// quietly — no line, no streak — since nothing says there is work.
+				legs.push({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
+				return;
+			}
+			if (!(await hooks.isDue())) {
+				legs.push({ leg, ok: true, count: 0 });
+				if ((state.deferrals[leg] ?? 0) > 0) {
+					delete state.deferrals[leg];
+					stateChanged = true;
+				}
+				return;
+			}
 		}
 		const costs = LEG_QUERY_COSTS[leg];
 		// A malformed limit adds nothing here, so the leg STARTS and its use-case
@@ -621,13 +738,19 @@ export async function runCommerceSweeps(
 		// that would refuse the leg on every tick, silently, forever.
 		const legBudget = budget.leg(LEG_SHARES[leg] ?? WHOLE_TICK, entry + costs.unit);
 		if (!legBudget.canStart(entry, costs.unit)) {
-			legs.push({ leg, ok: true, count: 0, deferred: true });
+			legs.push({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
 			deferredByBudget.push(leg);
 			noteDeferral(leg);
 			return;
 		}
 		try {
-			const outcome = { leg, ok: true, ...(await body(legBudget)) };
+			const result = await body(legBudget);
+			const outcome = {
+				leg,
+				ok: true,
+				...result,
+				count: result.count + (hooks.extraCount?.() ?? 0),
+			};
 			legs.push(outcome);
 			if (outcome.deferred === true) {
 				// Deferred by its own body (a dependency), which logged why.
@@ -764,6 +887,89 @@ export async function runCommerceSweeps(
 				),
 			),
 		);
+	// ── late-refunds: best-effort, LAST — except where a resume unit cannot fit as
+	// the last leg at all (the Workers Free preset: one unit, ~26 calls with its
+	// entry, needs a tick nothing else has spent yet). There it LEADS one tick per
+	// maintenance interval when it has work, capped at ONE unit, which is what lets
+	// a Free store make progress at all — at the price of the critical legs going
+	// second in that one minute. On Paid it never leads.
+	// The due check IS the resume step's list (`lateRefundLimit` orders), read once
+	// per tick and handed to the domain, so the leg never pays for its list twice.
+	let lateRefundsDue: Promise<readonly OrderId[]> | undefined;
+	const lateRefundsDueIds = (): Promise<readonly OrderId[]> =>
+		(lateRefundsDue ??= stores.orderStore.listRefundRetriesDue(nowIso, lateRefundLimit));
+	const lateRefundsAreDue = async (): Promise<boolean> => (await lateRefundsDueIds()).length > 0;
+	let lateRefundsRan = false;
+	const lateRefundsLeg = async (leading = false): Promise<void> => {
+		if (lateRefundsRan) return;
+		lateRefundsRan = true;
+		const limit = leading ? 1 : lateRefundLimit;
+		await run(
+			"late-refunds",
+			async (legBudget) => {
+				// Resume late-payment refunds a transient provider failure left `reserved`
+				// (`retryLatePaymentRefunds`), one gated UNIT per refund. A unit is admitted
+				// only with room for a pre-flight, a WHOLE create and the writes after it;
+				// the gateway is resolved from the COUNTED context, once, and only when a
+				// unit needs it (see `lateRefundStripeOptions`). The domain re-drives the
+				// SAME key, so a resume can never be a second refund.
+				assertSweepLimit(limit);
+				const gate = legBudget.gate(LATE_REFUND_MIN_UNIT_MS, LEG_QUERY_COSTS["late-refunds"].unit);
+				const count = await retryLatePaymentRefunds(
+					{
+						orderStore: stores.orderStore,
+						paymentEventStore: stores.paymentEventStore,
+						clock: { now: () => now },
+						gateways: sweepGateways(ctx, options, lateRefundStripeOptions(legBudget)),
+					},
+					{ limit, shouldContinue: gate, due: await lateRefundsDueIds() },
+				);
+				return legResult(count, legBudget.stopped || count >= limit);
+			},
+			{ isDue: lateRefundsAreDue, extraCount: () => lateRefundsEscalated },
+		);
+	};
+	// When late-refund work is due, the head of the tick does ONE of two things:
+	//  - where a unit cannot fit as the last leg, once per maintenance interval, the
+	//    leg LEADS with one unit (its resume step gives a refund past the ~3-day
+	//    limit up itself, without a provider call);
+	//  - otherwise the give-up ESCALATION runs — no provider call, its own age-ranked
+	//    list and a few calls — so a refund the resume step cannot afford is still
+	//    handed to a human within a tick of passing the limit, instead of
+	//    "retrying" forever.
+	// The due check is one query, so an idle tick pays exactly that.
+	const lateRefundsMustLead =
+		queryBudget <
+		IDLE_TICK_QUERIES +
+			1 +
+			LEG_QUERY_COSTS["late-refunds"].entry +
+			LEG_QUERY_COSTS["late-refunds"].unit +
+			RESERVE_QUERIES;
+	let lateRefundsEscalated = 0;
+	if (await lateRefundsAreDue()) {
+		if (lateRefundsMustLead && isDue(state.lastRun["late-refunds"], now)) {
+			state.lastRun["late-refunds"] = nowIso;
+			stateChanged = true;
+			await lateRefundsLeg(true);
+		} else {
+			const escalation = budget.leg(WHOLE_TICK, 1 + LATE_REFUND_ESCALATION_UNIT);
+			if (escalation.canStart(1, LATE_REFUND_ESCALATION_UNIT)) {
+				try {
+					lateRefundsEscalated = await escalateStaleLateRefunds(
+						{
+							orderStore: stores.orderStore,
+							paymentEventStore: stores.paymentEventStore,
+							clock: { now: () => now },
+						},
+						{ shouldContinue: escalation.gate(0, LATE_REFUND_ESCALATION_UNIT) },
+					);
+				} catch (err) {
+					console.error("[otta] cron sweep late-refunds escalation FAILED:", err);
+				}
+			}
+		}
+	}
+
 	// ROTATE which critical leg leads. One unit of real work is most of the Free
 	// preset's budget (an order expiry is ~23 calls of 30), so under a backlog the
 	// leg that runs first is often the only one that can — and a fixed order would
@@ -821,6 +1027,8 @@ export async function runCommerceSweeps(
 		return await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget);
 	});
 
+	await lateRefundsLeg();
+
 	if (deferredByBudget.length > 0) {
 		console.log(
 			`[otta] cron sweep deferred to the next tick: ${deferredByBudget.join(", ")}` +
@@ -877,6 +1085,29 @@ function countingContext(ctx: PluginContext, budget: TickBudget): PluginContext 
 		http: counted(ctx.http),
 		...(storage === undefined ? {} : { storage }),
 	});
+}
+
+/**
+ * The payment gateways for a provider-facing leg, as the LAZY thunk the domain
+ * calls per unit of work — and only once it has found some, so a quiet tick reads
+ * no secrets. An injected map or thunk wins (suites). Otherwise the deployment's
+ * own, resolved ONCE per leg from the COUNTED context (the secret kv reads and
+ * every Stripe subrequest count against the tick's query budget), with each Stripe
+ * call bounded, AT THE CALL, by `min(callCapMs, what the leg has left)`.
+ */
+function sweepGateways(
+	ctx: PluginContext,
+	options: CommerceSweepOptions,
+	stripeOptions: StripeGatewayOptions,
+): () => Promise<PaymentGateways> {
+	let resolved: Promise<PaymentGateways> | undefined;
+	return async () => {
+		const injected = options.gateways;
+		if (typeof injected === "function") return injected();
+		if (injected !== undefined) return injected;
+		resolved ??= resolvePaymentGateways(ctx, stripeOptions);
+		return resolved;
+	};
 }
 
 /**
@@ -997,6 +1228,15 @@ function isDue(lastRunIso: string | undefined, now: Date): boolean {
 }
 
 /** The cadence state: each scan's last completion, each leg's deferral streak. */
+/** A leg's optional entry hooks (see `run`). */
+interface LegHooks {
+	/** One cheap query: is there any work? `false` ⇒ a quiet, idle leg. */
+	readonly isDue?: () => Promise<boolean>;
+	/** Units a step outside the leg's body completed for it this tick (counted in
+	 *  its outcome, run or deferred). */
+	readonly extraCount?: () => number;
+}
+
 interface SweepState {
 	lastRun: Partial<Record<SweepLeg, string>>;
 	deferrals: Partial<Record<SweepLeg, number>>;
@@ -1014,7 +1254,10 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 		const { lastRun, deferrals } = parsed as { lastRun?: unknown; deferrals?: unknown };
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
-			if (typeof stamp === "string" && MAINTENANCE_LEGS.includes(leg)) state.lastRun[leg] = stamp;
+			if (typeof stamp === "string" && (MAINTENANCE_LEGS.includes(leg) || leg === "late-refunds")) {
+				// `late-refunds` keeps a stamp too: when it last LED a tick.
+				state.lastRun[leg] = stamp;
+			}
 			const streak = (deferrals as Record<string, unknown> | undefined)?.[leg];
 			if (typeof streak === "number" && Number.isInteger(streak) && streak > 0) {
 				state.deferrals[leg] = streak;

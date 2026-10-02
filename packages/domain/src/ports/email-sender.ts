@@ -16,7 +16,11 @@ export type EmailTemplate =
 	| "order-completed"
 	| "order-cancelled"
 	| "order-refunded"
-	| "order-expired";
+	| "order-expired"
+	/** A NOTICE, not a transition email (`OrderNotice` "late-payment-refunded"):
+	 *  a payment landed after the order expired or was cancelled, and was
+	 *  refunded automatically. */
+	| "order-late-payment-refunded";
 
 export interface SendEmailInput {
 	to: Email;

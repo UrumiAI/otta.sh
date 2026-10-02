@@ -30,12 +30,14 @@ import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import { StorageContentionError } from "@otta-sh/store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../src/payment-secrets.js";
 import {
 	createStripeWebhookSettleHandler,
+	SETTLE_PROVIDER_TIMEOUT_MS,
 	settleResultToResponse,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 	type SettleFn,
@@ -211,6 +213,40 @@ describe("the route's identity", () => {
 		expect(settleResultToResponse({ ok: false, reason: "AMOUNT_MISMATCH" })).toMatchObject({
 			status: 200,
 		});
+		// 503, the one failure a REDELIVERY fixes: a late payment's automatic refund
+		// hit a transient Stripe error, and the retry resumes that same refund.
+		expect(settleResultToResponse({ ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" })).toEqual({
+			ok: false,
+			status: 503,
+			reason: "LATE_PAYMENT_REFUND_RETRYABLE",
+			// The BUSY convention: a 503 that says "the same delivery will work later"
+			// carries `retryable`, which is what the site keys its Retry-After on.
+			retryable: true,
+		});
+	});
+
+	test("a late payment's refund (a pre-flight read + a create) fits inside Stripe's ~10 s delivery window", () => {
+		expect(SETTLE_PROVIDER_TIMEOUT_MS * 2).toBeLessThanOrEqual(6_000);
+	});
+
+	test("settle gets a REFUND-CAPABLE gateway when a secret key is configured, a verify-only one otherwise", async () => {
+		// A late payment is refunded INSIDE settle, through the gateway this route
+		// builds. Verify-only (`refundable: false`) is the honest fallback: settle then
+		// flags the order for a manual refund rather than pretending to issue one.
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		const seen: boolean[] = [];
+		const settle: SettleFn = async (deps, gateway, raw) => {
+			seen.push(gateway.refundable);
+			return settleOrder(deps, gateway, raw);
+		};
+		await seedPendingOrder("ord-gw-a");
+		expect((await invoke(await signedDelivery("ord-gw-a"), {}, { settle })).ok).toBe(true);
+
+		await harness.ctx.kv.set(STRIPE_SECRET_KEY_KEY, "sk_test_settle_route");
+		await seedPendingOrder("ord-gw-b");
+		expect((await invoke(await signedDelivery("ord-gw-b"), {}, { settle })).ok).toBe(true);
+
+		expect(seen).toEqual([false, true]);
 	});
 });
 

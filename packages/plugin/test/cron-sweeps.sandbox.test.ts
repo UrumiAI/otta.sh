@@ -1,5 +1,5 @@
 /**
- * INC-C4 — the `cron` hook and its nine sweep legs, driven inside REAL workerd.
+ * INC-C4 — the `cron` hook and its sweep legs, driven inside REAL workerd.
  *
  * WHY THE SANDBOX AND NOT A UNIT TEST. The sweeps are the plugin's only
  * unattended code path: nobody is watching when they run, and "it worked in
@@ -257,7 +257,7 @@ describe("the cron hook", () => {
 		expect(outcome.result).toEqual({ task: "someone-elses-task", skipped: true });
 	}, 120_000);
 
-	test("one tick drives all nine legs, and a leg never starves the others", async () => {
+	test("one tick drives every leg, and a leg never starves the others", async () => {
 		const summary = await tick();
 		expect(summary.task).toBe(SWEEP_TASK_NAME);
 		expect(summary.legs.map((entry) => entry.leg)).toEqual([...SWEEP_LEGS]);

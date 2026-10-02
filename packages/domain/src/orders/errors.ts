@@ -76,4 +76,14 @@ export type SettleFailure =
 	 * receipt aimed at a second order, and it must be terminally refused before any
 	 * state moves. Recorded as the `RECEIPT_REBOUND` anomaly.
 	 */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/**
+	 * A verified success landed on a never-paid `expired`/`cancelled` order and
+	 * its automatic refund hit a TRANSIENT gateway failure (network / 5xx — the
+	 * refund was definitely not issued). Nothing is lost: the payment is
+	 * recorded, the refund reservation is KEPT and the order is flagged. This is a
+	 * failure only so the transport answers "retry" (Stripe redelivers on a
+	 * non-2xx): the redelivery re-drives settle, which resumes the SAME reserved
+	 * refund under the SAME idempotency key — so retrying can never refund twice.
+	 */
+	| "LATE_PAYMENT_REFUND_RETRYABLE";

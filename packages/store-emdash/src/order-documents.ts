@@ -80,6 +80,8 @@ import type {
 	OrderCancellation,
 	OrderEventKind,
 	OrderFulfillment,
+	OrderNoticeInput,
+	RefundRetrySchedule,
 	OrderState,
 	PaymentMethod,
 	ProductId,
@@ -197,6 +199,10 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"emailDueAt",
 			"holdExpiresAt",
 			"holdsPendingAt",
+			// The late-payment refund-retry sweep's due scan (`listRefundRetriesDue`).
+			"refundRetryAt",
+			// The late-refund give-up escalation's age scan (`listRefundRetriesStale`).
+			"refundRetrySince",
 			["state", "createdAt"],
 		],
 	},
@@ -296,6 +302,16 @@ export interface OutboxEntryDoc {
 	/** Why a `failed` entry was parked, when the dispatcher said (e.g. "provider
 	 *  kept timing out"). Absent for an ordinary failure. */
 	failureReason?: string;
+	/**
+	 * Set on a NOTICE entry (`enqueueNotice`): an email about the order that is not
+	 * a state transition — today only `late-payment-refunded`. ABSENT on every
+	 * state entry, which is what keeps a document written before notices existed
+	 * exactly what it was. A notice entry is first-wins per `notice.kind`, never per
+	 * `toState`: its `toState` is only the state the order was in when it was
+	 * enqueued, so it must never occupy (or be found as) that state's slot — see
+	 * {@link findOutboxEntry}.
+	 */
+	notice?: OrderNoticeInput;
 }
 
 /**
@@ -465,6 +481,26 @@ export interface OrderDoc {
 	emailOutbox: OutboxEntryDoc[];
 	/** Settled payments, keyed by `providerRef`. */
 	payments: PaymentEntryDoc[];
+	/**
+	 * Scheduled retries of the order's AUTOMATIC late-payment refunds, keyed by each
+	 * refund's idempotency key (`scheduleRefundRetry`) — PER REFUND, so finishing one
+	 * late capture never drops the retry another still needs. Optional on the stored
+	 * shape: every document written before late-payment refunds lacks it.
+	 */
+	refundRetries?: Record<string, RefundRetrySchedule>;
+	/**
+	 * DECLARED INDEX. The earliest `at` over {@link refundRetries}, or `null`/absent
+	 * when none is owed — the sweep's due scan, since the filter algebra cannot reach
+	 * into a map. DERIVED on every write that touches the map, never incremented.
+	 */
+	refundRetryAt?: string | null;
+	/**
+	 * DECLARED INDEX. The earliest `since` (first failure) over {@link refundRetries},
+	 * or `null`/absent — the give-up escalation's own scan (`listRefundRetriesStale`),
+	 * ranked by AGE so due-but-young retries never block a stale one. Derived like
+	 * {@link refundRetryAt}.
+	 */
+	refundRetrySince?: string | null;
 	/** The refunds ledger; the ceiling is arbitrated against it in place. */
 	refunds: RefundEntryDoc[];
 	/**
@@ -625,13 +661,26 @@ export function normalizeOrderDoc(doc: OrderDoc): OrderDoc {
 		events: doc.events ?? [],
 		emailOutbox: doc.emailOutbox ?? [],
 		payments: doc.payments ?? [],
+		refundRetries: doc.refundRetries ?? {},
+		refundRetryAt: doc.refundRetryAt ?? null,
+		refundRetrySince: doc.refundRetrySince ?? null,
 		refunds: doc.refunds ?? [],
 	};
 }
 
-/** The outbox entry for `toState`, if one was ever enqueued. */
+/** The STATE outbox entry for `toState`, if one was ever enqueued. A notice entry
+ *  is never it, whatever state it was enqueued in — otherwise a late-payment notice
+ *  enqueued on an `expired` order would read as that order's expiry email. */
 export function findOutboxEntry(doc: OrderDoc, toState: OrderState): OutboxEntryDoc | undefined {
-	return doc.emailOutbox.find((entry) => entry.toState === toState);
+	return doc.emailOutbox.find((entry) => entry.notice === undefined && entry.toState === toState);
+}
+
+/** The NOTICE outbox entry of this kind, if one was ever enqueued. */
+export function findNoticeEntry(
+	doc: OrderDoc,
+	kind: OrderNoticeInput["kind"],
+): OutboxEntryDoc | undefined {
+	return doc.emailOutbox.find((entry) => entry.notice?.kind === kind);
 }
 
 /**
@@ -821,4 +870,26 @@ export function computeEmailDueAt(doc: Pick<OrderDoc, "emailOutbox">): string | 
 		if (earliest === null || due < earliest) earliest = due;
 	}
 	return earliest;
+}
+
+/** Recompute {@link OrderDoc.refundRetryAt}: the earliest scheduled retry, else `null`. */
+export function computeRefundRetryAt(
+	retries: Readonly<Record<string, RefundRetrySchedule>> | undefined,
+): string | null {
+	let earliest: string | null = null;
+	for (const retry of Object.values(retries ?? {})) {
+		if (earliest === null || retry.at < earliest) earliest = retry.at;
+	}
+	return earliest;
+}
+
+/** Recompute {@link OrderDoc.refundRetrySince}: the oldest first failure, else `null`. */
+export function computeRefundRetrySince(
+	retries: Readonly<Record<string, RefundRetrySchedule>> | undefined,
+): string | null {
+	let oldest: string | null = null;
+	for (const retry of Object.values(retries ?? {})) {
+		if (oldest === null || retry.since < oldest) oldest = retry.since;
+	}
+	return oldest;
 }

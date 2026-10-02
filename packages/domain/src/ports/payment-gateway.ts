@@ -97,6 +97,10 @@ export type RefundResult =
 export type RefundFailureReason =
 	| "UNSUPPORTED"
 	| "PROVIDER_ALREADY_REFUNDED"
+	/** The CALLER's own guard declined to start the issuing call (it had no time
+	 *  for a whole one): nothing was issued, and it is not the provider's failure —
+	 *  retry under the same key, and do not count it as an attempt. */
+	| "NOT_STARTED"
 	| "RETRYABLE"
 	| "TERMINAL"
 	| "UNVERIFIED";

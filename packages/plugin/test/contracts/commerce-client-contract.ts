@@ -1816,6 +1816,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(read.order).toMatchObject({
 				id: orderId,
 				currency: "USD",
+				// A live order carries no late payment — the confirmation page's
+				// "was anything charged?" sentence reads this, never the private ledger.
+				latePayment: "none",
 				totals: { currency: "USD", subtotalCents: 5000, totalCents: 5000 },
 				lines: [
 					{

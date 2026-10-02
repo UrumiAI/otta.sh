@@ -13,6 +13,7 @@ import type {
 	FulfillmentKind,
 	Order,
 	OrderAddress,
+	OrderNotice,
 	OrderState,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -164,6 +165,49 @@ export interface OrderStore {
 	 * retried or released. False ⇒ no reserved row under the key.
 	 */
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean>;
+	/**
+	 * Read the order AND its ledgers — state-change audit, captured payments,
+	 * refunds — in ONE read of the aggregate, or `null` when there is no such order.
+	 *
+	 * The late-payment paths (settle's cure, the storefront's "was anything
+	 * charged?" status, the refund-retry sweep) need all four together, and every
+	 * one of them already lives on the order's single document: reading them
+	 * through `getById` + `listEventsForOrder` + `getCapturedPayments` +
+	 * `listRefunds` would read that same document four times, on a page a buyer
+	 * reloads.
+	 */
+	readOrderLedger(orderId: OrderId): Promise<OrderLedger | null>;
+	/**
+	 * Schedule (or, with `null`, clear) a retry of ONE automatic late-payment refund,
+	 * keyed by that refund's idempotency key — set after a transient provider
+	 * failure, cleared once the refund is finalized or handed to a human. PER REFUND,
+	 * not per order: an order can carry two late captures, and finishing one must
+	 * never drop the retry the other still needs. The order is due
+	 * ({@link listRefundRetriesDue}) while ANY of its refunds is scheduled.
+	 * Last-writer-wins per key; the store only remembers the bookkeeping, the
+	 * domain owns what a retry means (`retryLatePaymentRefunds`).
+	 *
+	 * WHY IT EXISTS. Stripe's redelivery is the first retry, but Stripe stops after
+	 * a few days, and a `reserved` refund row keeps holding ceiling capacity —
+	 * which would also refuse any admin refund against the same money — until
+	 * something resumes it or hands it to a human.
+	 */
+	scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void>;
+	/** Orders with at least one scheduled refund retry due (`at <= now`), earliest
+	 *  first, at most `limit`. */
+	listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]>;
+	/**
+	 * Orders with at least one scheduled refund retry whose FIRST failure (`since`)
+	 * is at or before `cutoff`, oldest first, at most `limit` — the give-up
+	 * escalation's own list. Ranked by age rather than by due time, so a run of
+	 * due-but-young retries at the head of the due list can never keep a stale
+	 * one from being handed to a human.
+	 */
+	listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
 	/**
@@ -328,6 +372,17 @@ export interface OrderStore {
 	 */
 	claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null>;
 	/**
+	 * Enqueue a NON-transition email about this order (see {@link OrderNotice}) on
+	 * the same outbox the state emails drain from — first-wins per
+	 * `(orderId, notice.kind)`, the notice analogue of the state rows'
+	 * `UNIQUE(order_id, to_state)`. A replay (a redelivered webhook re-driving the
+	 * step that enqueued it) writes nothing and answers `false`; `true` ⇒ this call
+	 * enqueued the row. The row's `toState` is the order's state at enqueue time —
+	 * informational only; the dispatcher picks the template from `notice`.
+	 * `false` too when the order does not exist.
+	 */
+	enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean>;
+	/**
 	 * Mark a claimed row delivered (`sent_at`), terminal. Only ever called on a row
 	 * `claimNextEmail` has already handed this dispatcher, so the entry it names is
 	 * expected to EXIST. An adapter that cannot LOCATE the claimed entry must throw
@@ -485,6 +540,43 @@ export interface OrderTransitionResult {
 	order: Order | null;
 }
 
+/**
+ * A notice to enqueue, WITH the facts its email states. The amount is the money
+ * the notice is about — for `late-payment-refunded`, the refund itself — and NOT
+ * the order total: a late capture can differ from the total, and an email that
+ * tells the buyer the wrong figure came back is worse than no email.
+ */
+export interface OrderNoticeInput {
+	kind: OrderNotice;
+	amount: Cents;
+	currency: Currency;
+}
+
+/** One refund's retry bookkeeping ({@link OrderStore.scheduleRefundRetry}). */
+export interface RefundRetrySchedule {
+	/** When to try again (ISO-8601 UTC). */
+	at: string;
+	/** Transient failures so far — drives the backoff. */
+	attempts: number;
+	/** When the FIRST transient failure happened — drives the give-up window. */
+	since: string;
+}
+
+/** A scheduled retry, as the ledger read reports it. */
+export interface RefundRetry extends RefundRetrySchedule {
+	idempotencyKey: IdempotencyKey;
+}
+
+/** The order with its ledgers, as {@link OrderStore.readOrderLedger} returns it. */
+export interface OrderLedger {
+	order: Order;
+	events: OrderEvent[];
+	payments: CapturedPayment[];
+	refunds: RefundRecord[];
+	/** The order's scheduled late-payment refund retries, by key order. */
+	refundRetries: RefundRetry[];
+}
+
 /** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
 /** How {@link OrderStore.releaseEmailClaim} hands a row back. */
 export interface ReleaseEmailClaimOptions {
@@ -507,6 +599,10 @@ export interface OutboxEmail {
 	 *  recorded as an attempt instead, so the row's `attempts` carries the rest. 0
 	 *  when absent. */
 	timeouts: number;
+	/** Set on a NON-transition row ({@link OrderStore.enqueueNotice}): the
+	 *  dispatcher renders the notice's template, with its own payload, instead of
+	 *  `toState`'s. `null` on every state-transition row. */
+	notice: OrderNoticeInput | null;
 }
 
 /** A line to snapshot into `order_items` — price + title already resolved from

@@ -121,7 +121,12 @@ export type X402SettleReason =
 	| "BUSY"
 	/** The receipt's `transaction` is already recorded against a DIFFERENT order
 	 *  (`settleOrder` step 2b). One settlement, one on-chain payment. */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/** `settleOrder`'s late-payment refund hit a transient gateway failure: 503,
+	 *  retry. UNREACHABLE on this route today — x402 is not refundable, so a late
+	 *  x402 receipt is flagged for a manual refund instead — and mapped anyway so
+	 *  the table stays total over `SettleFailure` rather than mislabelling it 400. */
+	| "LATE_PAYMENT_REFUND_RETRYABLE";
 
 /**
  * What the caller reconstructs an HTTP response from — the same in-body-status
@@ -131,10 +136,14 @@ export type X402SettleReason =
  */
 export type X402SettleResult =
 	| { ok: true; status: 200 }
-	| { ok: false; status: 400 | 401 | 404 | 503; reason: Exclude<X402SettleReason, "BUSY"> }
+	| {
+			ok: false;
+			status: 400 | 401 | 404 | 503;
+			reason: Exclude<X402SettleReason, "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE">;
+	  }
 	/** Storage contention: the same proof will work later. `retryable` rides on
 	 *  every busy shape Otta emits. */
-	| { ok: false; status: 503; reason: "BUSY"; retryable: true };
+	| { ok: false; status: 503; reason: "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE"; retryable: true };
 
 /** UUID v4, the shape every order id in this system has — the same bound the
  *  service's `idParam` enforced, restated because there is no zod in the
@@ -202,6 +211,9 @@ function parseProof(input: X402SettleInput): X402Proof | undefined {
  */
 export function x402SettleResultToResponse(res: SettleResult): X402SettleResult {
 	if (res.ok) return { ok: true, status: 200 };
+	if (res.reason === "LATE_PAYMENT_REFUND_RETRYABLE") {
+		return { ok: false, status: 503, reason: res.reason, retryable: true };
+	}
 	return res.reason === "ORDER_NOT_FOUND"
 		? { ok: false, status: 404, reason: "ORDER_NOT_FOUND" }
 		: // `RECEIPT_REBOUND` lands here too, and 400 is right for it on this route

@@ -36,8 +36,14 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	}
 
 	const orderId = str(data["orderId"]) ?? "";
-	const total = formatMoney(data["totalCents"], str(data["currency"]));
-	const copy = ORDER_COPY[template];
+	// A notice states its OWN figure (`noticeAmountCents`, the refunded money), not
+	// the order total — a late capture can differ from it. Labelled for what it is.
+	const isNotice = data["noticeAmountCents"] !== undefined;
+	const total = isNotice
+		? formatMoney(data["noticeAmountCents"], str(data["noticeCurrency"]))
+		: formatMoney(data["totalCents"], str(data["currency"]));
+	const totalLabel = isNotice ? "Refunded" : "Total";
+	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
 	const subject = `${copy.subject} — order ${orderId}`;
 	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
 	// is no longer an empty "on its way" — rendered only when the order was
@@ -53,13 +59,13 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
 	const extra = tracking ?? cancellation;
 	const text =
-		`${copy.body}\n\nOrder: ${orderId}\nTotal: ${total}` +
+		`${copy.body}\n\nOrder: ${orderId}\n${totalLabel}: ${total}` +
 		(extra !== null ? `\n${extra.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>Total: ${escapeHtml(total)}` +
+			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>${totalLabel}: ${escapeHtml(total)}` +
 				(extra !== null ? `<br>${extra.html}` : ""),
 		),
 	};
@@ -153,7 +159,45 @@ const ORDER_COPY: Record<
 		subject: "Checkout expired",
 		body: "Your checkout session expired and the items were released back to stock — you're welcome to try again.",
 	},
+	// The late-payment notice (`settleOrder`'s auto-refund). The buyer has already
+	// had the "checkout expired" email, then saw a charge on their card: this is
+	// the one message that reconciles the two, so it names both facts — the
+	// payment arrived late, and it is on its way back — plus the provider's
+	// settlement window, because "refunded" with no timescale reads as "lost" on
+	// day three. Same copy for an expired and a cancelled order: both mean the
+	// order could no longer take the money.
+	"order-late-payment-refunded": {
+		subject: "Payment refunded",
+		body: "A payment arrived after your order expired, so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.",
+	},
 };
+
+/**
+ * The late-payment notice names WHY the order could not take the money. The table
+ * copy says "expired" — by far the common case (a pay page left open past the
+ * hold) — and a cancelled or (historical) failed order gets its own sentence:
+ * telling a buyer whose order a merchant cancelled that it "expired" would be a
+ * small lie about the one thing this email exists to explain. `state` is the
+ * order's state when the notice was enqueued (`buildOrderEmailData`).
+ */
+function latePaymentCopyFor(
+	template: EmailTemplate,
+	state: string | undefined,
+): { subject: string; body: string } | null {
+	if (template !== "order-late-payment-refunded") return null;
+	const subject = ORDER_COPY["order-late-payment-refunded"].subject;
+	const tail =
+		"so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.";
+	if (state === "cancelled") {
+		return { subject, body: `A payment arrived after your order was cancelled, ${tail}` };
+	}
+	if (state === "failed") {
+		// A historical `failed` order (ADR-0022): it never completed, and the buyer
+		// was told so — the late payment is money for an order that no longer exists.
+		return { subject, body: `A payment arrived for an order that had already failed, ${tail}` };
+	}
+	return null;
+}
 
 function str(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;

@@ -23,7 +23,12 @@ import {
 	reservationId as toReservationId,
 	sku as toSku,
 	money,
+	escalateStaleLateRefunds,
+	retryLatePaymentRefunds,
+	settleOrder,
+	type PaymentGateway,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import {
 	collectionOf,
 	INVENTORY_COLLECTION,
@@ -40,7 +45,8 @@ import {
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
-import { LEG_QUERY_COSTS } from "../src/cron/sweeps.js";
+import { LATE_REFUND_ESCALATION_UNIT, LEG_QUERY_COSTS } from "../src/cron/sweeps.js";
+import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../src/types.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
@@ -300,6 +306,129 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			await s.productCommerce.completePendingSkuTransfer(fromSku);
 		});
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["sku-transfers"].unit);
+	});
+
+	test("late-refunds: one order's reserved late refund resumed (ledger, re-drive, the two Stripe calls, resolve, notice)", async () => {
+		const placed = await placeOrder(
+			"late-refund",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+		);
+		const s = counted();
+		const id = toOrderId(placed.id);
+		await s.orderStore.expire(id, new Date().toISOString());
+		// The webhook's attempt hit a transient Stripe failure: reserved + scheduled.
+		const fake = new FakePaymentGateway({ id: "stripe" });
+		fake.setRefundResult({ ok: false, reason: "RETRYABLE" });
+		const settleDeps = {
+			orderStore: s.orderStore,
+			entitlementStore: s.entitlementStore,
+			paymentEventStore: s.paymentEventStore,
+			inventoryStore: s.inventory,
+			clock: s.clock,
+		};
+		const settled = await settleOrder(
+			settleDeps,
+			fake,
+			fake.webhook({
+				outcome: "succeeded",
+				orderId: placed.id,
+				providerRef: "pi_cost_late",
+				amount: 1000,
+				currency: "USD",
+				dedupeKey: "evt_cost_late",
+			}),
+		);
+		expect(settled).toEqual({ ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" });
+		fake.clearRefundResult();
+		// A real Stripe refund is two subrequests: the pre-flight read and the create.
+		const stripe: PaymentGateway = {
+			id: "stripe",
+			refundable: true,
+			createIntent: (i) => fake.createIntent(i),
+			verifyConfirmation: (raw) => fake.verifyConfirmation(raw),
+			async refund(input) {
+				counter.calls += 2;
+				return fake.refund(input);
+			},
+		};
+		const later = new Date(Date.now() + 2 * HOUR_MS);
+		const used = await cost(() =>
+			retryLatePaymentRefunds(
+				{
+					orderStore: s.orderStore,
+					paymentEventStore: s.paymentEventStore,
+					clock: { now: () => later },
+					gateways: () => ({ stripe }),
+				},
+				{ limit: 1 },
+			),
+		);
+		expect((await s.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["recorded"]);
+		// The leg's ENTRY covers the due list read (1 of these calls).
+		expect(used - 1, `measured ${String(used - 1)}`).toBeLessThanOrEqual(
+			LEG_QUERY_COSTS["late-refunds"].unit,
+		);
+	});
+
+	test("late-refunds ESCALATION: one stale retry given up — no provider call", async () => {
+		const placed = await placeOrder(
+			"late-escalate",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+		);
+		const s = counted();
+		const id = toOrderId(placed.id);
+		await s.orderStore.expire(id, new Date().toISOString());
+		const fake = new FakePaymentGateway({ id: "stripe" });
+		fake.setRefundResult({ ok: false, reason: "RETRYABLE" });
+		await settleOrder(
+			{
+				orderStore: s.orderStore,
+				entitlementStore: s.entitlementStore,
+				paymentEventStore: s.paymentEventStore,
+				inventoryStore: s.inventory,
+				clock: s.clock,
+			},
+			fake,
+			fake.webhook({
+				outcome: "succeeded",
+				orderId: placed.id,
+				providerRef: "pi_cost_escalate",
+				amount: 1000,
+				currency: "USD",
+				dedupeKey: "evt_cost_escalate",
+			}),
+		);
+		const stale = new Date(Date.now() + 4 * DAY_MS);
+		const used = await cost(() =>
+			escalateStaleLateRefunds(
+				{
+					orderStore: s.orderStore,
+					paymentEventStore: s.paymentEventStore,
+					clock: { now: () => stale },
+				},
+				{ limit: 1 },
+			),
+		);
+		expect((await s.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["unverified"]);
+		// The age-ranked stale list read (1) is the escalation's entry.
+		expect(used - 1, `measured ${String(used - 1)}`).toBeLessThanOrEqual(
+			LATE_REFUND_ESCALATION_UNIT,
+		);
+	});
+
+	test("late-refunds entry: resolving the deployment's gateways (their secret reads)", async () => {
+		const ctx = {
+			http: { fetch: () => Promise.reject(new Error("no egress")) },
+			kv: {
+				async get() {
+					counter.calls++;
+					return null;
+				},
+			},
+		} as unknown as PluginContext;
+		// The due list is the leg's due check, charged before the entry.
+		const used = await cost(() => resolvePaymentGateways(ctx));
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["late-refunds"].entry);
 	});
 
 	test("reporting-heal: one day reconciled", async () => {

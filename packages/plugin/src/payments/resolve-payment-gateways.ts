@@ -21,15 +21,18 @@
 import type { PaymentGateway, PaymentMethod } from "@otta-sh/domain";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import type { PluginContext } from "../types.js";
-import { stripeGatewayFromCtx } from "./stripe-wiring.js";
+import { stripeGatewayFromCtx, type StripeGatewayOptions } from "./stripe-wiring.js";
 import { x402GatewayFromCtx } from "./x402-wiring.js";
 
 export type PaymentGateways = Partial<Record<PaymentMethod, PaymentGateway>>;
 
-export async function resolvePaymentGateways(ctx: PluginContext): Promise<PaymentGateways> {
+export async function resolvePaymentGateways(
+	ctx: PluginContext,
+	options: StripeGatewayOptions = {},
+): Promise<PaymentGateways> {
 	const [x402, stripe] = await Promise.all([
 		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
-		stripeGatewayFromCtx(ctx),
+		stripeGatewayFromCtx(ctx, options),
 	]);
 	return {
 		...(x402 === undefined ? {} : { x402 }),

@@ -554,6 +554,15 @@ export interface PublicOrderWire {
 		shippedAt: string;
 	} | null;
 	cancellation: { reason: string; cancelledAt: string } | null;
+	/**
+	 * Money on a DEAD order, for the buyer's own page: `none` (nothing captured, or
+	 * the order is live / was paid), `refunded` (a payment arrived after the order
+	 * expired or was cancelled, and was refunded in full), `refund_pending`
+	 * (captured and not yet refunded). It is what lets the page stop saying
+	 * "Nothing was charged" when something was. A derived status only — never an
+	 * amount, a provider ref or the reconciliation detail behind it.
+	 */
+	latePayment: "none" | "refunded" | "refund_pending";
 }
 
 /** `CreateOrderFailure` verbatim (`@otta-sh/domain`'s orders/errors.ts). */

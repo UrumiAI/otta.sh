@@ -19,6 +19,11 @@ export interface OrderStoreContractOptions {
 
 const USD = currency("USD");
 
+/** One refund-retry schedule entry for the per-refund retry case. */
+function retry(at: string, attempts = 1) {
+	return { at, attempts, since: "2026-07-10T00:00:00.000Z" };
+}
+
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function summaryRow(overrides: Partial<SeedOrderSummaryRow> & { id: string }): SeedOrderSummaryRow {
 	return {
@@ -433,6 +438,115 @@ export function orderStoreContract(
 				"2026-07-10T00:07:00.000Z",
 			);
 			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
+		});
+
+		// -- Notices: non-transition emails on the outbox --------------------------
+
+		test("enqueueNotice is first-wins per (order, notice kind), carries its own payload, and is claimed beside the state rows", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const notice = { kind: "late-payment-refunded" as const, amount: cents(1200), currency: USD };
+
+			expect(await store.enqueueNotice(orderId("ord-1"), notice)).toBe(true);
+			// A second late payment on the same order is not a second email.
+			expect(await store.enqueueNotice(orderId("ord-1"), { ...notice, amount: cents(300) })).toBe(
+				false,
+			);
+			expect(await store.enqueueNotice(orderId("ord-missing"), notice)).toBe(false);
+
+			const claimed: { toState: string; notice: unknown }[] = [];
+			for (let i = 0; i < 10; i++) {
+				const row = await store.claimNextEmail(
+					"2026-07-10T01:00:00.000Z",
+					"2026-07-10T01:05:00.000Z",
+				);
+				if (row === null) break;
+				claimed.push({ toState: row.toState, notice: row.notice });
+				await store.markEmailSent(row.id, "2026-07-10T01:00:00.000Z");
+			}
+			// The expiry's own state email is untouched by the notice (a notice never
+			// occupies a state's slot), and the notice row carries the FIRST payload.
+			expect(claimed).toHaveLength(2);
+			expect(claimed).toContainEqual({ toState: "expired", notice: null });
+			expect(claimed).toContainEqual({ toState: "expired", notice });
+		});
+
+		// -- Late-payment support: the one-read ledger and the refund-retry schedule
+
+		test("readOrderLedger returns the order with its events, payments and refunds; null for an unknown order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			await store.recordPayment({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				providerRef: "pi_ledger",
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(ledger?.order.state).toBe("expired");
+			expect(ledger?.events.map((e) => [e.fromState, e.toState])).toEqual([["pending", "expired"]]);
+			expect(ledger?.payments.map((p) => p.providerRef)).toEqual(["pi_ledger"]);
+			expect(ledger?.refunds).toEqual([]);
+			expect(await store.readOrderLedger(orderId("ord-missing"))).toBeNull();
+		});
+
+		test("scheduleRefundRetry is PER REFUND: due orders list earliest-first and bounded; clearing one refund keeps the order due while another still needs it", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const kA = idempotencyKey("late-payment-refund:pi_a");
+			const kB = idempotencyKey("late-payment-refund:pi_b");
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, retry("2026-07-10T00:30:00.000Z"));
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, retry("2026-07-10T00:40:00.000Z", 2));
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, retry("2026-07-10T00:10:00.000Z"));
+			await store.scheduleRefundRetry(
+				orderId("ord-missing"),
+				kA,
+				retry("2026-07-10T00:00:00.000Z"),
+			);
+
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(
+				ledger?.refundRetries.map((r) => [r.idempotencyKey, r.at, r.attempts, r.since]),
+			).toEqual([
+				[kA, "2026-07-10T00:30:00.000Z", 1, "2026-07-10T00:00:00.000Z"],
+				[kB, "2026-07-10T00:40:00.000Z", 2, "2026-07-10T00:00:00.000Z"],
+			]);
+
+			// Clearing ONE refund's retry leaves the order due for the other.
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, null);
+			expect(await store.listRefundRetriesDue("2026-07-10T00:35:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			// The STALE list ranks by the OLDEST first failure (`since`), whatever is due:
+			// both orders' retries began at 00:00, and a cutoff before that finds none.
+			expect(
+				(await store.listRefundRetriesStale("2026-07-10T00:00:00.000Z", 10)).toSorted(),
+			).toEqual([orderId("ord-1"), orderId("ord-2")].toSorted());
+			expect(await store.listRefundRetriesStale("2026-07-09T23:59:59.000Z", 10)).toEqual([]);
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, null);
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, null);
+			expect(await store.listRefundRetriesStale("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listRefundRetriesDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+			expect((await store.readOrderLedger(orderId("ord-1")))?.refundRetries).toEqual([]);
 		});
 
 		// -- Admin Orders console: view-only keyset list --------------------------

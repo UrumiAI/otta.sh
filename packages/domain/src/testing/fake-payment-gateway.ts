@@ -61,6 +61,12 @@ export class FakePaymentGateway implements PaymentGateway {
 		this.#refundResult = result;
 	}
 
+	/** Back to the default success — the "the provider recovered" step of a
+	 *  retryable-failure-then-redelivery case. */
+	clearRefundResult(): void {
+		this.#refundResult = undefined;
+	}
+
 	async refund(input: RefundInput): Promise<RefundResult> {
 		this.refundCalls.push(input);
 		if (!this.refundable) return { ok: false, reason: "UNSUPPORTED" };

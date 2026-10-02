@@ -216,6 +216,9 @@ export interface PublicOrderView {
 		shippedAt: string;
 	} | null;
 	cancellation: { reason: string; cancelledAt: string } | null;
+	/** {@link PublicOrderWire.latePayment}, passed through: the page chooses its
+	 *  "was anything charged?" sentence from it. */
+	latePayment: PublicOrderWire["latePayment"];
 }
 
 /**
@@ -268,6 +271,7 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		}),
 		fulfillment: order.fulfillment,
 		cancellation: order.cancellation,
+		latePayment: order.latePayment,
 	};
 }
 

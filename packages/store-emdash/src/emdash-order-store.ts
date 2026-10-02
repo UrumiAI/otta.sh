@@ -145,6 +145,10 @@ import {
 	type OrderListFilter,
 	type OrderListPage,
 	type OrderListResult,
+	type OrderLedger,
+	type OrderNoticeInput,
+	type RefundRetry,
+	type RefundRetrySchedule,
 	type OrderSummary,
 	type OrderState,
 	type OrderStore,
@@ -183,9 +187,12 @@ import {
 	activeRefundTotal,
 	capturedPaymentTotal,
 	computeEmailDueAt,
+	computeRefundRetryAt,
+	computeRefundRetrySince,
 	computeHoldsPendingAt,
 	customerKeyFor,
 	finalizedRefundTotal,
+	findNoticeEntry,
 	findOutboxEntry,
 	findRefund,
 	foldBuyerRef,
@@ -537,23 +544,7 @@ export class EmdashOrderStore implements OrderStore {
 
 	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		// `at` is fixed-width ISO-8601 text, so lexical order IS chronological; `id`
-		// is the stable tie-break when two events share a timestamp under a fixed
-		// clock — the same `(at, id)` order the SQL's index emitted. The events array
-		// is already in append order; sorting makes the contract's order explicit
-		// rather than a property of how it was built.
-		return [...doc.events]
-			.toSorted((a, b) => (a.at === b.at ? compare(a.id, b.id) : compare(a.at, b.at)))
-			.map((event) => ({
-				id: event.id,
-				orderId: orderId,
-				at: event.at,
-				kind: event.kind,
-				fromState: event.fromState,
-				toState: event.toState,
-				actor: event.actor,
-			}));
+		return doc === null ? [] : eventsOf(normalizeOrderDoc(doc), orderId);
 	}
 
 	// -- the payments ledger ---------------------------------------------------
@@ -605,6 +596,96 @@ export class EmdashOrderStore implements OrderStore {
 			});
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
+	}
+
+	// -- late-payment support ---------------------------------------------------
+
+	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
+		// ONE document read: the order, its audit, its payments and its refunds all
+		// live on the aggregate, so the late-payment paths never pay four reads for it.
+		const raw = await this.#orders.get(orderId);
+		if (raw === null) return null;
+		const doc = normalizeOrderDoc(raw);
+		return {
+			order: toOrder(doc),
+			events: eventsOf(doc, orderId),
+			payments: paymentsOf(doc),
+			refunds: refundsOf(doc, orderId),
+			refundRetries: Object.entries(doc.refundRetries ?? {})
+				.toSorted((a, b) => compare(a[0], b[0]))
+				.map(
+					([key, retry]): RefundRetry => ({
+						idempotencyKey: key as IdempotencyKey,
+						at: retry.at,
+						attempts: retry.attempts,
+						since: retry.since,
+					}),
+				),
+		};
+	}
+
+	async scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void> {
+		// Last-writer-wins PER KEY: the domain owns what a retry means, the store only
+		// remembers it. The order-level index is re-derived in the SAME write, so the
+		// order stays due while ANY of its refunds is scheduled. Still a
+		// compare-and-set, because every write here is; an unknown order is a no-op.
+		await this.#casOrder<void>("scheduleRefundRetry", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeOrderDoc(current.value);
+			const retries = { ...doc.refundRetries };
+			if (retry === null) {
+				if (!(idempotencyKey in retries)) return casDone(undefined);
+				delete retries[idempotencyKey];
+			} else {
+				retries[idempotencyKey] = { at: retry.at, attempts: retry.attempts, since: retry.since };
+			}
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				refundRetries: retries,
+				refundRetryAt: computeRefundRetryAt(retries),
+				refundRetrySince: computeRefundRetrySince(retries),
+				updatedAt: this.#clock.now().toISOString(),
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	async listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `refundRetrySince` index, OLDEST first.
+		const result = await this.#orders.query({
+			where: { refundRetrySince: { lte: cutoff } },
+			orderBy: { refundRetrySince: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			const since = data.refundRetrySince ?? null;
+			if (since !== null && since <= cutoff) ids.push(data.orderId as OrderId);
+		}
+		return ids;
+	}
+
+	async listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `refundRetryAt` index, earliest first — the
+		// sweep's batch IS the limit, so there is no paging: what is not reached this
+		// tick is reached on the next. A null field drops out of the range by itself.
+		const result = await this.#orders.query({
+			where: { refundRetryAt: { lte: now } },
+			orderBy: { refundRetryAt: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			// A page read is not a lock: re-check what the index promised.
+			const at = data.refundRetryAt ?? null;
+			if (at !== null && at <= now) ids.push(data.orderId as OrderId);
+		}
+		return ids;
 	}
 
 	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
@@ -749,27 +830,12 @@ export class EmdashOrderStore implements OrderStore {
 
 	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		return normalizeOrderDoc(doc).payments.map((payment) => ({
-			gateway: payment.gateway,
-			providerRef: payment.providerRef,
-			amount: payment.amount,
-			currency: payment.currency,
-			status: payment.status,
-		}));
+		return doc === null ? [] : paymentsOf(normalizeOrderDoc(doc));
 	}
 
 	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		// `(created_at ASC, id ASC)` — the SQL's own order. `createdAt` is fixed-width
-		// ISO-8601 text, so lexical order IS chronological, and `id` is the stable
-		// tie-break when two refunds share a timestamp under a fixed clock.
-		return [...normalizeOrderDoc(doc).refunds]
-			.toSorted((a, b) =>
-				a.createdAt === b.createdAt ? compare(a.id, b.id) : compare(a.createdAt, b.createdAt),
-			)
-			.map((refund) => toRefundRecord(refund, orderId));
+		return doc === null ? [] : refundsOf(normalizeOrderDoc(doc), orderId);
 	}
 
 	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
@@ -1187,6 +1253,50 @@ export class EmdashOrderStore implements OrderStore {
 	 * Proven by `test/outbox-dispatch.dialects.test.ts` (the crashed-dispatcher and
 	 * failed-send cases, ported from the SQL adapters' own suite).
 	 */
+	async enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean> {
+		// The notice rides the SAME embedded outbox as the state emails, so it is
+		// claimed, leased, retried and located by exactly the code that already does
+		// that for them — one array, one due index, one locator collection. First-wins
+		// per `notice.kind`, inside the compare-and-set, the way a state entry is per
+		// `toState` inside the flip.
+		const enqueued = await this.#casOrder<OrderDoc | null>("enqueueNotice", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone<OrderDoc | null>(null);
+			const doc = normalizeOrderDoc(current.value);
+			if (findNoticeEntry(doc, notice.kind) !== undefined) return casDone<OrderDoc | null>(null);
+			const now = this.#clock.now().toISOString();
+			const emailOutbox: OutboxEntryDoc[] = [
+				...doc.emailOutbox,
+				{
+					id: this.#idGen.newId(),
+					toState: doc.state,
+					status: "pending",
+					attempts: 0,
+					leaseUntil: null,
+					sentAt: null,
+					createdAt: now,
+					notice: { kind: notice.kind, amount: notice.amount, currency: notice.currency },
+				},
+			];
+			const next: OrderDoc = {
+				...doc,
+				emailOutbox,
+				// R2's due index, derived in the SAME write — the only way the claim
+				// can find the entry.
+				emailDueAt: computeEmailDueAt({ emailOutbox }),
+				updatedAt: now,
+			};
+			const written = await this.#orders.compareAndSet(orderId, current.revision, next);
+			return written.applied ? casDone<OrderDoc | null>(next) : CAS_RETRY;
+		});
+		if (enqueued === null) return false;
+		// The locator, bracketed after the write exactly like a flip's (see
+		// `#recordOutboxLocator`): a tear leaves "entry, no locator", which the
+		// settle-time walk heals.
+		await this.#recordLocatorFor(enqueued, findNoticeEntry(enqueued, notice.kind));
+		return true;
+	}
+
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxOutboxPages; page++) {
@@ -1947,7 +2057,11 @@ export class EmdashOrderStore implements OrderStore {
 	 * a locator pointing at an entry that does not exist, which nothing can heal.
 	 */
 	async #recordOutboxLocator(doc: OrderDoc, toState: OrderState): Promise<void> {
-		const entry = findOutboxEntry(doc, toState);
+		await this.#recordLocatorFor(doc, findOutboxEntry(doc, toState));
+	}
+
+	/** The locator write itself, for a state entry or a notice entry alike. */
+	async #recordLocatorFor(doc: OrderDoc, entry: OutboxEntryDoc | undefined): Promise<void> {
 		if (entry === undefined) return;
 		const written = await this.#outboxKeys.compareAndSet(entry.id, null, {
 			orderId: doc.orderId,
@@ -2004,6 +2118,7 @@ export class EmdashOrderStore implements OrderStore {
 						toState: claimed.toState,
 						attempts: claimed.attempts,
 						timeouts: claimed.timeouts ?? 0,
+						notice: claimed.notice ?? null,
 					})
 				: CAS_RETRY;
 		});
@@ -2172,6 +2287,49 @@ export class EmdashOrderStore implements OrderStore {
 	#casOrder<T>(operation: string, step: (attempt: number) => Promise<CasStep<T>>): Promise<T> {
 		return withCasRetry(operation, step, this.#retry);
 	}
+}
+
+/**
+ * The order's state-change audit, in `(at, id)` order. `at` is fixed-width ISO-8601
+ * text, so lexical order IS chronological; `id` is the stable tie-break when two
+ * events share a timestamp under a fixed clock — the same `(at, id)` order the
+ * SQL's index emitted. The events array is already in append order; sorting makes
+ * the contract's order explicit rather than a property of how it was built.
+ */
+function eventsOf(doc: OrderDoc, orderId: OrderId): OrderEvent[] {
+	return [...doc.events]
+		.toSorted((a, b) => (a.at === b.at ? compare(a.id, b.id) : compare(a.at, b.at)))
+		.map((event) => ({
+			id: event.id,
+			orderId,
+			at: event.at,
+			kind: event.kind,
+			fromState: event.fromState,
+			toState: event.toState,
+			actor: event.actor,
+		}));
+}
+
+/** The order's captured payments, as the port names them. */
+function paymentsOf(doc: OrderDoc): CapturedPayment[] {
+	return doc.payments.map((payment) => ({
+		gateway: payment.gateway,
+		providerRef: payment.providerRef,
+		amount: payment.amount,
+		currency: payment.currency,
+		status: payment.status,
+	}));
+}
+
+/** The refunds ledger in `(created_at ASC, id ASC)` — the SQL's own order.
+ *  `createdAt` is fixed-width ISO-8601 text, so lexical order IS chronological, and
+ *  `id` is the stable tie-break when two refunds share a timestamp. */
+function refundsOf(doc: OrderDoc, orderId: OrderId): RefundRecord[] {
+	return [...doc.refunds]
+		.toSorted((a, b) =>
+			a.createdAt === b.createdAt ? compare(a.id, b.id) : compare(a.createdAt, b.createdAt),
+		)
+		.map((refund) => toRefundRecord(refund, orderId));
 }
 
 /** Beyond any timestamp this domain writes — the upper bound of the due-index scan. */

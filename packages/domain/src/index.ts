@@ -163,6 +163,10 @@ export type {
 	OrderSummary,
 	OrderTransitionInput,
 	OrderTransitionResult,
+	OrderLedger,
+	RefundRetry,
+	RefundRetrySchedule,
+	OrderNoticeInput,
 	OutboxEmail,
 	ReleaseEmailClaimOptions,
 	RecordFulfillmentInput,
@@ -205,10 +209,12 @@ export type {
 export type { Address, AddressKind, Customer } from "./customers/model.js";
 export { DuplicateCustomerEmailError, type LoginFailure } from "./customers/errors.js";
 export {
+	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
 	legalNextStates,
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
+	ORDER_NOTICE_EMAIL_TEMPLATE,
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
 // Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
@@ -279,6 +285,7 @@ export type {
 	OrderCancellation,
 	OrderFulfillment,
 	OrderLine,
+	OrderNotice,
 	OrderTotals,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -361,6 +368,27 @@ export {
 } from "./orders/order-timeline.js";
 export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export {
+	classifyLatePayment,
+	escalateStaleLateRefunds,
+	isUnpaidTerminalState,
+	LATE_REFUND_GIVE_UP_MS,
+	lateRefundRetryDelayMs,
+	LATE_PAYMENT_REFUNDED_BY,
+	latePaymentRefundKey,
+	leftPendingUnpaid,
+	providerRefOfLateRefundKey,
+	readOrderWithLatePayment,
+	refundLatePayment,
+	retryLatePaymentRefunds,
+	type LateCapture,
+	type LatePaymentAnomaly,
+	type LatePaymentDeps,
+	type LatePaymentOutcome,
+	type LatePaymentStatus,
+	type LazyGateways,
+	type RetryLatePaymentRefundsOptions,
+} from "./orders/late-payment.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";

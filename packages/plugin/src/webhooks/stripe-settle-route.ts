@@ -55,12 +55,18 @@ import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenAccepted } from "../edge-token.js";
 import { stripeWebhookSecretFromKv } from "../payment-secrets.js";
+import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import type { RouteHandler } from "../types.js";
 
 /** The PUBLIC route path a forwarded Stripe webhook posts to. Named for what it
  *  does — settle a Stripe webhook — in the repo's `<area>/<thing>/<verb>` route
  *  convention (`storefront/checkout/place`, `entitlements/download`). */
 export const STRIPE_WEBHOOK_SETTLE_ROUTE = "webhooks/stripe/settle";
+
+/** Bound on each Stripe call a settle makes. A late payment's refund is TWO calls
+ *  (the pre-flight read, then the create), so 3 s each keeps the pair well inside
+ *  Stripe's ~10 s webhook delivery timeout. See the handler. */
+export const SETTLE_PROVIDER_TIMEOUT_MS = 3_000;
 
 export interface StripeWebhookSettleInput {
 	/** The webhook's RAW bytes, base64-encoded — see the module doc. */
@@ -83,11 +89,13 @@ export type StripeWebhookSettleResult =
 	| {
 			ok: false;
 			status: 400 | 401 | 404 | 200 | 503;
-			reason: Exclude<StripeWebhookSettleReason, "BUSY">;
+			reason: Exclude<StripeWebhookSettleReason, "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE">;
 	  }
-	/** Storage contention — the one refusal that says "the same delivery will
-	 *  work later". `retryable` rides on every busy shape Otta emits. */
-	| { ok: false; status: 503; reason: "BUSY"; retryable: true };
+	/** The refusals that say "the same delivery will work later": storage
+	 *  contention, and a late payment's refund hitting a transient provider error.
+	 *  `retryable` rides on every such shape Otta emits, and is what the site keys
+	 *  its `Retry-After` on. */
+	| { ok: false; status: 503; reason: "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE"; retryable: true };
 
 /** Every refusal this route can express. A FIXED vocabulary: no message is built
  *  from a secret, a kv error, or a gateway diagnostic. */
@@ -100,6 +108,10 @@ export type StripeWebhookSettleReason =
 	| "ORDER_NOT_FOUND"
 	| "AMOUNT_MISMATCH"
 	| "RECEIPT_REBOUND"
+	/** A success landed on an expired/cancelled order and its AUTOMATIC refund
+	 *  hit a transient Stripe failure. 503, so Stripe redelivers; the redelivery
+	 *  resumes the SAME reserved refund under the SAME key (never a second one). */
+	| "LATE_PAYMENT_REFUND_RETRYABLE"
 	/** The store was too busy to commit (compare-and-set budget exhausted, or a
 	 *  retryable serialization abort). Always 503: Stripe retries it. */
 	| "BUSY";
@@ -159,6 +171,12 @@ export function settleResultToResponse(res: SettleResult): StripeWebhookSettleRe
 			// order. 200, for the same reason AMOUNT_MISMATCH is: the anomaly is
 			// recorded and no redelivery can ever fix it, so Stripe should stop.
 			return { ok: false, status: 200, reason: res.reason };
+		case "LATE_PAYMENT_REFUND_RETRYABLE":
+			// The opposite of the two above: a redelivery is EXACTLY what fixes it.
+			// The late payment is recorded, its refund reserved and the order flagged;
+			// Stripe's retry re-drives settle, which resumes that refund. 503 is the
+			// status Stripe retries on.
+			return { ok: false, status: 503, reason: res.reason, retryable: true };
 	}
 }
 
@@ -233,7 +251,23 @@ export function createStripeWebhookSettleHandler(
 			return { ok: false, status: 503, reason: "NOT_CONFIGURED" };
 		}
 
-		const gateway = new StripePaymentGateway({ webhookSecret });
+		// REFUND-CAPABLE when the deployment has a secret key. A late payment — a
+		// success landing on an order that already expired — is refunded inside
+		// `settleOrder`, through THIS gateway; a verify-only gateway is honestly
+		// `refundable: false`, and settle then falls back to flagging the order for
+		// a manual refund. The webhook secret above stays the gate either way: the
+		// fallback is constructed from it, and `stripeGatewayFromCtx` re-reads the
+		// same kv key, so verification is identical on both arms.
+		//
+		// BOUNDED: the refund runs inside Stripe's own delivery, which Stripe treats
+		// as failed after ~10 s and sends again. A refund pinned to the transport's
+		// 30 s default could still be in flight when the redelivery arrives; at
+		// SETTLE_PROVIDER_TIMEOUT_MS a stalled call classifies (retryable read, or an
+		// unverified create) well inside the delivery, and the next attempt resumes
+		// the same reservation under the same key.
+		const gateway =
+			(await stripeGatewayFromCtx(ctx, { requestTimeoutMs: SETTLE_PROVIDER_TIMEOUT_MS })) ??
+			new StripePaymentGateway({ webhookSecret });
 		const stores = createInProcessCommerceStores(ctx);
 		const deps: SettleDeps = {
 			orderStore: stores.orderStore,

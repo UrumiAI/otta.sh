@@ -821,6 +821,9 @@ function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 
 		case "GATEWAY_TERMINAL":
 			return 502;
 		case "GATEWAY_RETRYABLE":
+		// Unreachable from the console (its gateway sets no start guard), and the same
+		// "try again, nothing was issued" answer if it ever is.
+		case "GATEWAY_NOT_STARTED":
 			return 503;
 	}
 }

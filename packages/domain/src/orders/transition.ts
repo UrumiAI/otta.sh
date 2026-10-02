@@ -13,7 +13,11 @@ import {
 } from "../ports/email-sender.js";
 import type { OrderStore } from "../ports/order-store.js";
 import type { Order, OrderState } from "./model.js";
-import { emailTemplateForState, isLegalOrderTransition } from "./state-machine.js";
+import {
+	emailTemplateForNotice,
+	emailTemplateForState,
+	isLegalOrderTransition,
+} from "./state-machine.js";
 
 export interface TransitionOrderDeps {
 	orderStore: OrderStore;
@@ -177,7 +181,13 @@ export async function dispatchOrderEmails(
 		const row = await deps.orderStore.claimNextEmail(nowIso, leaseUntil);
 		if (row === null) break;
 
-		const template = emailTemplateForState(row.toState);
+		// A NOTICE row (`enqueueNotice`) renders its own template; every other row is
+		// a state email keyed by the state it announces. `toState` on a notice row is
+		// only the state the order was in when it was enqueued — never the template.
+		const template =
+			row.notice !== null
+				? emailTemplateForNotice(row.notice.kind)
+				: emailTemplateForState(row.toState);
 		const order = await deps.orderStore.getById(row.orderId);
 		// A row with no template (defensive) or a vanished order can never be
 		// delivered — mark it done so it doesn't wedge the queue.
@@ -197,7 +207,16 @@ export async function dispatchOrderEmails(
 			await deps.emailSender.send({
 				to: await resolveRecipient(deps, order),
 				template,
-				data: buildOrderEmailData(order, row.toState),
+				data:
+					row.notice === null
+						? buildOrderEmailData(order, row.toState)
+						: {
+								...buildOrderEmailData(order, row.toState),
+								// The notice's OWN figure — the money it is about (the refund),
+								// never the order total it may differ from.
+								noticeAmountCents: row.notice.amount,
+								noticeCurrency: row.notice.currency,
+							},
 				idempotencyKey: row.id,
 			});
 			await deps.orderStore.markEmailSent(row.id, nowIso);
