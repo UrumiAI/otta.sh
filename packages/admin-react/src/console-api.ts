@@ -427,6 +427,15 @@ export interface Failure {
 	readonly ok: false;
 	readonly title: string;
 	readonly description: string;
+	/**
+	 * THE WRITE MAY HAVE RUN. Set when the request never came back, came back
+	 * 5xx, or came back 2xx with an answer this screen could not read — every
+	 * case where the plugin may have applied a write whose outcome was lost.
+	 * Absent on a 4xx and on the plugin's own `{ok:false}`, which are a
+	 * definitive no. A stock movement holds its nonce across exactly these, so a
+	 * re-send is answered by the ledger rather than applied a second time.
+	 */
+	readonly indeterminate?: true;
 }
 
 export type Result<T> = T | Failure;
@@ -471,6 +480,8 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 		// is what the operator is looking at.
 		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
+		// A 5xx can follow a write that landed; a 4xx refused before anything ran.
+		...(response.status >= 500 ? { indeterminate: true as const } : {}),
 	};
 }
 
@@ -491,6 +502,7 @@ function transportFailure(error: unknown): Failure {
 		description: `The request never completed${
 			error instanceof Error ? ` — ${error.message}` : ""
 		}. Check that you are online, then reload.`,
+		indeterminate: true,
 	};
 }
 
@@ -519,6 +531,8 @@ async function post<T extends { ok: true }>(body: unknown, subject: string): Pro
 	if (typeof data === "object" && data !== null && "ok" in data) return data as Result<T>;
 	return {
 		ok: false,
+		// It answered 2xx, so the plugin ran — whatever it did is unknown here.
+		indeterminate: true,
 		title: "The admin sent something this screen could not read",
 		description:
 			"The response did not have the shape this screen expects. Reload the page; if it happens again, this is a fault in the console itself.",

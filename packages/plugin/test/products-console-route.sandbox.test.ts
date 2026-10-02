@@ -792,27 +792,48 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("a RESTOCK dispatched from the console really adds the units", async () => {
-		// F-2a lives in the action (`${productId}:restock:${onHand}:${qty}`), and
-		// in-process the key is an ARGUMENT rather than a header — it is proven by
-		// what it buys, in `products-actions.sandbox.test.ts`. What this tier still
-		// owns is that the console's flat payload reaches the movement at all.
+		// The key is built in the action (per-click nonce, or F-2a's content key
+		// without one), and in-process it is an ARGUMENT rather than a header — it
+		// is proven by what it buys, in `products-actions.sandbox.test.ts`. What
+		// this tier still owns is that the console's flat payload reaches the
+		// movement at all.
 		const seeded = await seedProduct({ term: "restockwire", onHand: 42 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:restock",
-			value: { productId: seeded.productId, onHand: "42", qty: "12" },
+			value: { productId: seeded.productId, onHand: "42", qty: "12", nonce: crypto.randomUUID() },
 		});
 		expect(result["ok"]).toBe(true);
 		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(54);
 	});
 
-	test("a REMOVAL is re-checked against live stock before anything moves (DA-3a)", async () => {
+	test("the console's NONCE reaches the key: Add 2, Remove 2, Add 2 through the route lands at 9", async () => {
+		// The admin QA repro, end to end through the route's payload reader: a
+		// `nonce` it dropped would put all three clicks back on F-2a's content key,
+		// and the third would be swallowed as a replay of the first.
+		const seeded = await seedProduct({ term: "noncewire", onHand: 7 });
+		for (const [action_id, onHand] of [
+			["products:restock", "7"],
+			["products:remove-stock", "9"],
+			["products:restock", "7"],
+		] as const) {
+			const result = await invoke({
+				type: ACT,
+				action_id,
+				value: { productId: seeded.productId, onHand, qty: "2", nonce: crypto.randomUUID() },
+			});
+			expect((result["notice"] as Record<string, unknown>)["variant"], action_id).toBe("default");
+		}
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(9);
+	});
+
+	test("a REMOVAL against a count that has moved is refused, and nothing moves (DA-3a)", async () => {
 		// The operator saw 42; the live product is at 40. Nothing may be removed.
 		const seeded = await seedProduct({ term: "da3a", onHand: 40 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock",
-			value: { productId: seeded.productId, qty: "3", onHand: "42" },
+			value: { productId: seeded.productId, qty: "3", onHand: "42", nonce: crypto.randomUUID() },
 		});
 		expect(result["ok"]).toBe(true);
 		const notice = result["notice"] as Record<string, unknown>;
