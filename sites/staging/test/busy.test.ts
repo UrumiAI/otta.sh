@@ -558,6 +558,13 @@ describe("every SSR page that dispatches a plugin route maps BUSY to 503 + Retry
 		// Its one read goes through the guard, and the guard's verdict is a 303.
 		expect(source).toMatch(/payPageRedirect\(orderPath, orderRead, new Date\(\)\)/);
 		expect(source).toMatch(/return Astro\.redirect\(refuseTo, 303\)/);
+		// Failing open never means failing cacheable: the page renders a client
+		// secret, so it is private (fix/private-pages-no-store) BEFORE its order read.
+		const keep = source.indexOf("keepPrivate(Astro)");
+		expect(keep, "pay.astro calls keepPrivate(Astro)").toBeGreaterThan(-1);
+		expect(keep, "keepPrivate precedes the order read").toBeLessThan(
+			source.indexOf("dispatchOttaRoute<OrderRouteResult>("),
+		);
 	});
 
 	test("the pay guard renders on BUSY and refuses a known non-payable order", () => {
