@@ -8,6 +8,9 @@
   and decision 5's use of the redirect parameters covers a lapsed pending order; see
   "Amended 2026-10-02" at the end of this record.
 
+- Amended: 2026-10-02 (second) — the order page resumes a pending order's payment on any
+  device through `/checkout/resume`, and a refused checkout keeps the typed values in a
+  first-party draft cookie; see "Amended 2026-10-02 (second)" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -267,3 +270,42 @@ amendment, which also adds the server-side prevention and the automatic refund).
 - The guard's read costs one document read (the plugin reads the order and its ledgers
   together). The `latePayment` derivation riding on it does no I/O and short-circuits for a
   `pending` order — the only state the guard lets through — so the guard pays nothing for it.
+
+## Amended 2026-10-02 (second) — resuming payment from the order page, and keeping typed values
+
+**What changed and why (QA U-2, U-1, U-14).** The order page's "Complete payment" linked to
+`/checkout`, which rebuilds the pay step from the CART cookie: a dead end on another device or
+once that cookie had rotated. Where it worked, the locked review showed an empty, editable email
+that the replayed order silently ignored. Separately, every refused place 303'd back to an empty
+form, because the redirect may carry no personal data (decision 6's reasoning).
+
+**The amendment.**
+
+- **Resume.** `GET /checkout/resume?order=<id>` asks the plugin's public `storefront/order/resume`
+  for the order's OWN PaymentIntent: the plugin replays the order's original checkout on its own
+  idempotency key (its cart, its buyer), so it is the same order and, at Stripe, the same intent —
+  never a second of either. It answers only for a `pending` order strictly before its hold
+  deadline (the pay guard's rule), and asks the provider nothing otherwise. The endpoint writes the
+  ordinary `otta_checkout` stash and 303s to `/checkout/pay`, whose guard is unchanged. It is a
+  GET because the order page is `no-referrer` (a POST from it would carry `Origin: null`); the GET
+  is safe to repeat, and a cross-site navigation (`Sec-Fetch-Site: cross-site`) is sent to the
+  order page without dispatching, so another site cannot make a browser write the stash.
+- **What authorises a resume: the order id, and nothing else** — the same bearer capability the
+  order page reads with. What it adds to that capability is the means to pay the order while it
+  is payable. Stated plainly, it also hands that holder the PaymentIntent's client secret, and a
+  client secret can retrieve the intent with the publishable key — including the `shipping` block
+  (name and address) the Stripe adapter sets for physical goods. That is more than the public
+  order shows. It is bounded by the hold (at most the checkout window, on a pending order) and was
+  judged acceptable for a link that already reads the order; a store that disagrees can gate the
+  resume on a second factor (the cart cookie, the signed-in owner, or the email typed again).
+- **The order's email** is shown read-only, as a hint (`j•••@g•••.com`): enough for the buyer to
+  recognise, no more than the link should reveal. The locked review no longer renders an email
+  field or a place form at all; its "Continue to payment" is a link to the resume path, and it
+  shows no stale place-time `?error=`.
+- **Typed values.** A refused place writes the typed fields to `otta_checkout_draft` (httpOnly,
+  Secure, `SameSite=Strict`, `Path=/checkout`, 15 minutes; whitelisted fields only, never the key
+  or a client secret), and the review reads them back with the refused field marked. The URL still
+  carries only the error token and the non-personal selection. Applying or removing a coupon now
+  posts the details form for the same reason.
+- **The deadline.** The pay page states the order's own hold deadline from the read its guard
+  already makes — relative minutes plus a time with its zone ("until 2:32 pm UTC").
