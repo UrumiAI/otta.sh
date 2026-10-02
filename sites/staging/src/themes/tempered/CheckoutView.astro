@@ -40,6 +40,7 @@ const {
 	ended,
 	couponValue,
 	couponError,
+	refusedCouponCode,
 	destinationError,
 	shippingError,
 	noOptionsCopy,
@@ -117,6 +118,29 @@ const {
 			<h2 class="u-label checkout-head-label">Your details</h2>
 		</div>
 
+		{/* ENTER. The place form's FIRST submit button in tree order, and so its
+		    default button: Enter in any details field submits `intent=enter`,
+		    never Apply. place.ts applies a code typed into the box (unless it is
+		    the one just refused), re-prices a changed delivery, else places.
+		    Visually hidden, out of the tab order and hidden from assistive tech:
+		    keyboard and screen-reader users submit with the visible buttons, and
+		    Enter needs no focusable target. */}
+		{
+			locked === null && !ended && (
+				<button
+					type="submit"
+					class="u-sr-only"
+					form="checkout-place"
+					name="intent"
+					value="enter"
+					tabindex="-1"
+					aria-hidden="true"
+				>
+					Continue
+				</button>
+			)
+		}
+
 		{/* The coupon comes first. Its field and buttons belong to the PLACE form
 		    (`form="checkout-place"`) although they sit up here: Apply and Remove
 		    post everything typed below with them, so changing the coupon keeps the
@@ -141,12 +165,18 @@ const {
 								aria-invalid={couponError !== null}
 								aria-describedby={couponError !== null ? "coupon-error coupon-note" : "coupon-note"}
 							/>
-							{/* This is the FIRST submit button of the place form, so it is the
-							    form's default button: Enter in any details field submits
-							    through it. place.ts treats an Apply whose code is the one
-							    already applied as a plain place, a DIFFERENT code as an apply
-							    (nothing placed), and a changed delivery as an update
-							    (checkout-values.test.ts pins all three). */}
+							{/* The code just refused, put back in the box for correcting: Enter
+							    with it unchanged is not an apply again (place.ts). */}
+							{refusedCouponCode !== null && (
+								<input
+									type="hidden"
+									name="refusedCoupon"
+									form="checkout-place"
+									value={refusedCouponCode}
+								/>
+							)}
+							{/* An explicit Apply. It never places (the applied code again is
+							    "already applied"); Enter goes through the hidden button above. */}
 							<button
 								type="submit"
 								class="u-btn u-btn-ghost"

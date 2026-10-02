@@ -257,6 +257,7 @@ const model: CheckoutModel = {
 	locked: locked === null ? null : { id: locked.id, resumeHref: resumeHref(locked.id) },
 	ended,
 	couponValue,
+	refusedCouponCode: couponError !== null || placeCouponError !== null ? couponValue : null,
 	couponError:
 		couponError !== null
 			? cartErrorMessage(couponError.reason)

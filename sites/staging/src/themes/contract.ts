@@ -370,6 +370,9 @@ export interface CheckoutModel {
 	ended: boolean;
 	/** The coupon field's value (a refused code comes back to be fixed). */
 	couponValue: string;
+	/** That refused code, when the field holds one — echoed so Enter with it
+	 *  unchanged does not apply it again. `null` otherwise. */
+	refusedCouponCode: string | null;
 	/** Refusal copy, already mapped: coupon, destination, delivery method. */
 	couponError: string | null;
 	destinationError: string | null;

@@ -117,20 +117,15 @@ export interface DraftCookieWriter {
 }
 
 /**
- * Write the draft. A draft that would not fit a cookie sheds the optional
- * fields first (line 2, phone) and is otherwise NOT written — a truncated value
- * silently placed later would be worse than an empty field.
+ * Write the draft. A draft that would not fit a cookie is NOT written at all —
+ * never a shortened one: an address line silently dropped from the form would
+ * be placed without it. The buyer then sees the form empty, as before the draft
+ * existed, rather than a form that looks whole and is not.
  */
 export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDraft): void {
-	let candidate = clean(draft);
+	const candidate = clean(draft);
 	if (candidate === null) return;
-	const fits = (d: CheckoutDraft): boolean =>
-		encodeURIComponent(JSON.stringify(d)).length <= COOKIE_BUDGET;
-	if (!fits(candidate)) {
-		const { line2: _line2, phone: _phone, ...rest } = candidate.values;
-		candidate = { ...candidate, values: rest };
-		if (!fits(candidate)) return;
-	}
+	if (encodeURIComponent(JSON.stringify(candidate)).length > COOKIE_BUDGET) return;
 	cookies.set(CHECKOUT_DRAFT_COOKIE, JSON.stringify(candidate), {
 		httpOnly: true,
 		secure: true,

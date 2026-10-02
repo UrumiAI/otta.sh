@@ -298,7 +298,9 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		// unlocked notice is unchanged.
 		const template = templateOf(VIEW);
 		const lockedStart = template.indexOf("locked !== null && !ended && (");
-		const placeStart = template.indexOf("locked === null && !ended && (");
+		const placeStart = template.search(
+			/locked === null && !ended && \(\s*<form method="POST" action="\/checkout\/place"/,
+		);
 		expect(lockedStart, "no locked block").toBeGreaterThan(-1);
 		expect(placeStart, "no unlocked place form").toBeGreaterThan(lockedStart);
 		const lockedVariant = shown(template.slice(lockedStart, placeStart));

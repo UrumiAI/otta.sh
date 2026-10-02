@@ -341,7 +341,7 @@ describe("POST /checkout/resume — the order's email as the proof", () => {
 	test("the copy: one sentence for a wrong email, one for too many tries", () => {
 		expect(cartErrorMessage("EMAIL_MISMATCH")).toBe("That email doesn't match this order.");
 		expect(cartErrorMessage("THROTTLED")).toBe(
-			"Too many tries for this order. Wait a few minutes, then try again.",
+			"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
 		);
 	});
 });

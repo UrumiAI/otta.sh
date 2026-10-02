@@ -81,6 +81,8 @@ const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
 /** The site's own token for a review page placed for a cart the cookie no
  *  longer names (see the module doc). */
 const CHECKOUT_STALE = "CHECKOUT_STALE";
+/** An explicit Apply of the code already applied (it never places). */
+const COUPON_ALREADY_APPLIED = "COUPON_ALREADY_APPLIED";
 
 const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
 
@@ -257,18 +259,39 @@ async function place(context: APIContext): Promise<Response> {
 
 	// APPLY / REMOVE COUPON (QA U-1). These buttons submit THIS form (they sit
 	// beside the coupon field, `form="checkout-place"`, without browser
-	// validation), so applying a code no longer drops everything typed below it:
-	// the typed values go into the draft and the review re-renders priced with
-	// the new code. Nothing is placed. A code equal to the one already applied is
-	// not an apply — it is Enter pressed in a details field, whose default button
-	// is Apply because it comes first — and falls through to the place below.
+	// validation), so changing the coupon no longer drops everything typed below
+	// it: the typed values go into the draft and the review re-renders priced
+	// with the new code. An explicit Apply NEVER places — the applied code again
+	// is answered "already applied".
+	//
+	// ENTER (review round 1). Enter in a details field submits through the form's
+	// first submit button, a hidden `intent=enter` (CheckoutView.astro), never
+	// through Apply. It applies a code typed into the box that differs from the
+	// applied one — unless it is the code just REFUSED, put back for correcting
+	// (`refusedCoupon`), which would only loop on the same refusal; re-prices a
+	// changed delivery (below); and otherwise places.
 	const intent = formString(form.get("intent"));
-	if (intent === "apply-coupon" || intent === "remove-coupon") {
-		const typed = intent === "remove-coupon" ? {} : readCouponCode(formString(form.get("coupon")));
-		const nextCode = typed.couponCode ?? typed.rejected?.code;
-		if (intent === "remove-coupon" || nextCode !== couponCode) {
-			return refuse(checkoutPath({ ...selection, couponCode: nextCode }), undefined);
+	const typedCoupon = readCouponCode(formString(form.get("coupon")));
+	const typedCode = typedCoupon.couponCode ?? typedCoupon.rejected?.code;
+	if (intent === "remove-coupon") {
+		return refuse(checkoutPath({ ...selection, couponCode: undefined }), undefined);
+	}
+	if (intent === "apply-coupon") {
+		if (typedCode !== undefined && typedCode === couponCode) {
+			return refuse(
+				checkoutPath({ ...selection, error: COUPON_ALREADY_APPLIED }),
+				COUPON_ALREADY_APPLIED,
+			);
 		}
+		return refuse(checkoutPath({ ...selection, couponCode: typedCode }), undefined);
+	}
+	if (
+		intent === "enter" &&
+		typedCode !== couponCode &&
+		typedCode !== undefined &&
+		typedCode !== formString(form.get("refusedCoupon"))
+	) {
+		return refuse(checkoutPath({ ...selection, couponCode: typedCode }), undefined);
 	}
 
 	// UPDATE DELIVERY (QA U-1): like Apply, a submit of THIS form, so changing

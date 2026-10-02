@@ -24,6 +24,7 @@ import { ORDER_ADDRESS_MAX_LENGTHS, STOREFRONT_CHECKOUT_PLACE_ROUTE } from "@ott
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
 import { viewSources } from "./theme-views.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	CHECKOUT_DRAFT_COOKIE,
 	CHECKOUT_DRAFT_MAX_AGE_SECONDS,
@@ -185,17 +186,20 @@ describe("the draft cookie", () => {
 		expect(readCheckoutDraft({ get: () => ({ value: "[]" }) })).toBeNull();
 	});
 
-	test("a draft too large for a cookie is not written at all — never a truncated one", () => {
+	test("a draft too large for a cookie is not written at all — never one with a field dropped", () => {
 		const sets: CookieSet[] = [];
-		const huge = "一".repeat(200);
+		// Fits only if line 2 were dropped — and it must not be.
+		const huge = "\u4e00".repeat(150);
 		writeCheckoutDraft(
 			{ set: (name, value, options) => sets.push({ name, value, options: { ...options } }) },
 			{
-				values: { name: huge, line1: huge, line2: huge, city: huge, email: "a@b.co" },
+				values: { name: huge, line1: huge, line2: huge, city: "London", email: "a@b.co" },
 				errors: {},
 			},
 		);
-		for (const set of sets) expect(encodeURIComponent(set.value).length).toBeLessThan(4000);
+		// Never a shortened draft: an address line silently dropped would be
+		// placed without it. Too large ⇒ nothing written at all.
+		expect(sets).toHaveLength(0);
 	});
 });
 
@@ -435,14 +439,20 @@ describe("applying a coupon keeps every typed value", () => {
 		expect(h.draft()!.values.email).toBe("ada@example.com");
 	});
 
-	test("Enter in a field with the APPLIED code still in the coupon box places the order", async () => {
+	test("an explicit Apply NEVER places: the applied code again re-renders with 'already applied', and no order is created", async () => {
+		// Review round 1: the box is prefilled with the applied code, so clicking
+		// Apply on it used to fall through to a place.
 		const h = harness(
 			{ ...FULL, couponCode: "SAVE10", intent: "apply-coupon", coupon: "SAVE10" },
 			PLACED,
 		);
 		const response = await PLACE_POST(h.context);
-		expect(response.headers.get("location")).toBe("/checkout/pay");
-		expect(h.calls).toHaveLength(1);
+		expect(response.headers.get("location")).toBe(
+			"/checkout?coupon=SAVE10&error=COUPON_ALREADY_APPLIED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values.email).toBe("ada@example.com");
+		expect(cartErrorMessage("COUPON_ALREADY_APPLIED")).toBe("That code is already applied.");
 	});
 
 	test("a cross-site Apply is refused like any other place POST", async () => {
@@ -500,13 +510,13 @@ describe("updating the delivery keeps every typed value", () => {
 	});
 
 	test("a submit whose delivery fields DIFFER from the priced ones re-prices instead of placing (Enter in the region box)", async () => {
-		// Enter in a details field submits through Apply (the form's first submit
-		// button), which falls through to a place when the coupon is unchanged — so
-		// a changed but un-updated delivery must not be placed at the old price.
+		// Enter in a details field submits through the hidden first button
+		// (intent=enter), which places only when nothing on the page is pending —
+		// so a changed but un-updated delivery must not be placed at the old price.
 		const h = harness(
 			{
 				...ZONED,
-				intent: "apply-coupon",
+				intent: "enter",
 				coupon: "SAVE10",
 				deliveryCountry: "US",
 				deliveryRegion: "NY",
@@ -532,36 +542,54 @@ describe("updating the delivery keeps every typed value", () => {
 	});
 });
 
-describe("Enter in a details field (the coupon box's Apply is the form's default button)", () => {
-	test("the Apply button comes before Continue to payment in the page, so it IS the default button", () => {
-		for (const view of viewSources("checkout")) {
+describe("Enter in a details field — its own hidden default button (intent=enter)", () => {
+	test.each(viewSources("checkout").map((v) => [v.file, v] as const))(
+		"%s: a hidden intent=enter submit comes BEFORE Apply, out of the tab order and hidden from assistive tech",
+		(_file, view) => {
 			const body = templateOf(view.source);
-			const apply = body.indexOf('value="apply-coupon"');
-			const cont = body.indexOf("Continue to payment");
-			expect(apply, view.file).toBeGreaterThan(-1);
-			expect(apply, view.file).toBeLessThan(cont);
-		}
-	});
+			const enter = /<button[^>]*value="enter"[^>]*>/.exec(body)?.[0] ?? "";
+			expect(enter, "no enter button").not.toBe("");
+			expect(enter).toContain('form="checkout-place"');
+			expect(enter).toContain('name="intent"');
+			expect(enter).toContain('tabindex="-1"');
+			expect(enter).toContain('aria-hidden="true"');
+			expect(enter).toContain('class="u-sr-only"');
+			expect(body.indexOf('value="enter"')).toBeLessThan(body.indexOf('value="apply-coupon"'));
+		},
+	);
 
-	test("with the APPLIED code still in the box, Enter places the order (pinned above too)", async () => {
-		const h = harness(
-			{ ...FULL, couponCode: "SAVE10", intent: "apply-coupon", coupon: "SAVE10" },
-			PLACED,
-		);
+	test("Enter in a details field, nothing pending, places the order", async () => {
+		const h = harness({ ...FULL, couponCode: "SAVE10", intent: "enter", coupon: "SAVE10" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
 	});
 
-	test("with a DIFFERENT code typed in the box, Enter applies that code first and places nothing", async () => {
-		const h = harness(
-			{ ...FULL, couponCode: "SAVE10", intent: "apply-coupon", coupon: "SAVE20" },
-			PLACED,
-		);
+	test("Enter with a DIFFERENT code in the box applies it and places nothing", async () => {
+		const h = harness({ ...FULL, couponCode: "SAVE10", intent: "enter", coupon: "SAVE20" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout?coupon=SAVE20");
 		expect(h.calls).toHaveLength(0);
 	});
-});
 
-// ── the page reads it back; the view prints it ──────────────────────────────
+	test("Enter with the REFUSED code still in the box is not an apply again — it places, without it", async () => {
+		// The refused code is put back for correcting; the form echoes it as
+		// `refusedCoupon`, so Enter does not loop on the same refusal.
+		const h = harness(
+			{ ...FULL, intent: "enter", coupon: "BOGUS", refusedCoupon: "BOGUS" },
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls[0]).not.toHaveProperty("couponCode");
+	});
+
+	test("an explicit Apply of the refused code does try it again", async () => {
+		const h = harness(
+			{ ...FULL, intent: "apply-coupon", coupon: "BOGUS", refusedCoupon: "BOGUS" },
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout?coupon=BOGUS");
+		expect(h.calls).toHaveLength(0);
+	});
+});
 
 describe("/checkout reads the draft back", () => {
 	const page = splitAstro(read("pages/checkout/index.astro")).frontmatter;
@@ -611,6 +639,12 @@ describe.each(viewSources("checkout").map((v) => [v.file, v] as const))(
 				.map((m) => m[0])
 				.find((m) => !m.includes("delivery-region"));
 			expect(typed).toContain("value={addressValues.region}");
+		});
+
+		test("the refused code rides as a hidden refusedCoupon, from the page's model", () => {
+			expect(body).toMatch(
+				/<input[^>]*type="hidden"[^>]*name="refusedCoupon"[^>]*form="checkout-place"[^>]*value=\{refusedCouponCode\}/,
+			);
 		});
 
 		test("Apply and Remove coupon submit the DETAILS form, without browser validation", () => {
