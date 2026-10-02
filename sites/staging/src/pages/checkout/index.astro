@@ -162,9 +162,13 @@ const notReadyCopy = summary.shipping.noOptions
 		? "Choose a delivery option above to continue."
 		: "Choose where we're delivering above to continue.";
 
-/** SKU / qty / money — the same tape the home page opens with, itemised. The
- *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
+/** Name / SKU / qty / money. The name is the summary's `title` — the string
+ *  the order will snapshot (the locked review's IS the snapshot) — so this,
+ *  the last summary before paying, reads as the receipt will. A line the store
+ *  cannot name leaves the SKU standing alone, never a made-up name. The money
+ *  cell is `lineTotal.formatted` or the honest prose; never assembled. */
 const ledgerRows = lines.map((line) => ({
+	...(line.title !== null ? { title: line.title } : {}),
 	sku: line.sku,
 	qty: line.qty,
 	money: line.lineTotal?.formatted ?? "priced at checkout",

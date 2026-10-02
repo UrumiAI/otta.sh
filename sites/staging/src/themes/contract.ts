@@ -248,7 +248,11 @@ export type ProductModel =
 export interface LedgerLine {
 	sku: string;
 	qty: number;
-	/** The purchase-time title, on a receipt. Absent on the review, which has none. */
+	/** The line's name: the purchase-time snapshot on a receipt, the title the
+	 *  order will snapshot on the review (`CheckoutLineView.title`, the commerce
+	 *  row's copy). `/cart` names lines from its own CMS read instead, so right
+	 *  after a rename the two pages can briefly disagree — the review shows what
+	 *  the order will record. Absent when the store cannot name it. */
 	title?: string;
 	/** `lineTotal.formatted`, or the honest prose — never assembled. */
 	money: string;
