@@ -764,7 +764,13 @@ function cancelLostNotice(
 			: ` ${String(restockedUnits)} item${restockedUnits === 1 ? "" : "s"} restocked.`;
 	return {
 		variant: "error",
-		title: "Refunded, but the order was not cancelled",
+		// The title says what DID move: a refund, else a restock, else nothing.
+		title:
+			refund !== null
+				? "Refunded, but the order was not cancelled"
+				: restockedUnits > 0
+					? "Restocked, but the order was not cancelled"
+					: "Not cancelled — the order moved first",
 		description: fit(
 			`${money}${stock} Flagged — contact the buyer; don’t ship or refund it again unchecked.${lostEmailSentence(email)}`,
 			BANNER_BUDGET,

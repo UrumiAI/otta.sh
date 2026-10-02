@@ -140,4 +140,20 @@ describe("the cancel notices when the money and the order part ways", () => {
 			expect(String(result.notice?.description).endsWith("…")).toBe(false);
 		}
 	});
+
+	test("a lost race with no refund titles the notice by what did move", async () => {
+		const base = {
+			ok: false as const,
+			status: 409,
+			reason: "CANCEL_LOST_AFTER_REFUND",
+			refund: null,
+			movedTo: "shipped",
+		};
+		expect((await cancel({ ...base, restockedUnits: 2 })).notice?.title).toBe(
+			"Restocked, but the order was not cancelled",
+		);
+		expect((await cancel({ ...base, restockedUnits: 0 })).notice?.title).toBe(
+			"Not cancelled — the order moved first",
+		);
+	});
 });
