@@ -8,18 +8,38 @@
  * so this page is not an account oracle. Zero client JS, like every page but the
  * payment step (ADR-0012).
  */
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import { ACCOUNT_NO_STORE, LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
+import {
+	ACCOUNT_HOME_PATH,
+	LOGIN_LINK_SENT_COPY,
+	signedInEmail,
+} from "../../../lib/account.js";
+import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import type { AccountLoginModel } from "../../../themes/contract.js";
 
-Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+/* Private, always, and out of Astro's route cache: the page can greet a
+   signed-in shopper by email. One call sets both (lib/no-store.ts). */
+keepPrivate(Astro);
 
 const sent = Astro.url.searchParams.get("sent") === "1";
 const error = Astro.url.searchParams.get("error");
 
+/* Already signed in? Say so, with the way to their orders and out — the page
+   used to show a bare sign-in form to a shopper who was signed in, which read as
+   though they were not. The form stays below it: signing in as another address
+   is still how a shopper switches. keepPrivate (above) covers this page's
+   now-personal content. */
+const email = await signedInEmail(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	Astro.cookies,
+	Astro.url,
+);
+
 /** The notice is the SAME sentence for every address (not an account oracle). */
 const model: AccountLoginModel = {
+	signedIn: email !== null ? { email, ordersHref: ACCOUNT_HOME_PATH } : null,
 	sent,
 	sentCopy: LOGIN_LINK_SENT_COPY,
 	errorMessage: error !== null ? cartErrorMessage(error) : null,

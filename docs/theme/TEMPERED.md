@@ -265,9 +265,10 @@ Compare each against the matching frame in the mockup.
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
 | `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
-| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
+| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right. The email field takes its initial value from `model.emailValue` (the signed-in account's address, else empty) and its hint from `model.emailNote` — the page's copy, which for a signed-in shopper says an order placed with a different email won't appear in their account. No client JS, so the note is stated up front, never on typing |
+| `account/login/index.astro` | Heading, lede, then the email form. Signed in (`model.signedIn`), a hairline-ruled block ABOVE the form says "You're signed in as <email>" with a quiet "View your orders" link (`signedIn.ordersHref`) and a Sign out POST to `/account/logout`; the form stays, to switch address |
 | `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals. The "keep this link" line also links to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals. The "keep this link" line links straight to Your orders (`model.accountOrdersHref`) when the shopper is signed in as the order's owner, else to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
 | `404.astro` | Same empty-state language as the others |
 
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page

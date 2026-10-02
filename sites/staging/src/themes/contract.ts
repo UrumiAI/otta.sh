@@ -375,6 +375,10 @@ export interface CheckoutModel {
 	paymentConfigured: boolean;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
+	/** The email field's initial value: the signed-in account's address, else "". */
+	emailValue: string;
+	/** The hint under the email field — the page's copy (`checkoutEmailNote`). */
+	emailNote: string;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];
 	/** Why the total is incomplete, when it is. */
@@ -420,14 +424,20 @@ export interface OrderModel {
 	sumRows: SumRow[];
 	/** "Total", or "Paid" once settled. */
 	totalLabel: string;
-	/** The sign-in page. The page owns the path; a theme only links to it. An
-	 *  order is placed as a guest and joins the shopper's order list on their
-	 *  next sign-in with the email they ordered with — even when a session is
-	 *  already open — so the order view points here, not at the list. */
+	/** The sign-in page. The page owns the path; a theme only links to it. For a
+	 *  shopper who is not signed in as this order's owner: the sign-in link joins
+	 *  the order to the list of the email it was placed with. */
 	accountSignInHref: string;
+	/** Your orders — non-null ONLY when the shopper is signed in as this order's
+	 *  owner (the page asked the plugin), so the view links straight to the list
+	 *  instead of to sign-in. `null` ⇒ use `accountSignInHref`. */
+	accountOrdersHref: string | null;
 }
 
 export interface AccountLoginModel {
+	/** Signed in already: who, and where their orders are — shown above the form
+	 *  (which still works, to switch address). `null` ⇔ signed out. */
+	signedIn: { email: string; ordersHref: string } | null;
 	/** `?sent=1`: the generic notice — the same for every address. */
 	sent: boolean;
 	sentCopy: string;

@@ -45,6 +45,7 @@ const {
 	sumRows,
 	totalLabel,
 	accountSignInHref,
+	accountOrdersHref,
 } = Astro.props.model;
 ---
 
@@ -89,13 +90,20 @@ const {
 				)}
 			</StateStamp>
 
-			{/* Worded for what is true today: an order is placed as a guest and
-			    joins the account on the NEXT sign-in with its email, so "sign in"
-			    is the step even for a shopper whose session is already open. */}
-			<p class="order-keep">
-				Keep this link to check its status. To see all your orders,{" "}
-				<a href={accountSignInHref}>sign in with the email you ordered with</a>.
-			</p>
+			{/* The page decides which is true (OrderModel): a shopper signed in
+			    as this order's owner already has it in their list, so the line
+			    links there; anyone else is pointed at sign-in, whose link joins
+			    the order to the list for the email it was placed with. */}
+			{accountOrdersHref !== null ? (
+				<p class="order-keep">
+					Keep this link to check its status. It's also in <a href={accountOrdersHref}>your orders</a>.
+				</p>
+			) : (
+				<p class="order-keep">
+					Keep this link to check its status. To see all your orders,{" "}
+					<a href={accountSignInHref}>sign in with the email you ordered with</a>.
+				</p>
+			)}
 
 			{hasActions && (
 				<div class="order-actions">
