@@ -22,9 +22,9 @@ export const LOGIN_LINK_SENT_COPY =
 	"If an account exists for that address, we've sent a sign-in link. It works once and expires in 15 minutes.";
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
- *  never be stored by a shared cache, nor replayed from the back/forward cache
- *  after logout. */
-export const ACCOUNT_NO_STORE = "private, no-store";
+ *  never be stored by a shared cache. The site's ONE such constant, under the
+ *  name the account pages already use. */
+export { PRIVATE_NO_STORE as ACCOUNT_NO_STORE } from "./no-store.js";
 
 /** Where a signed-in customer lands, and where the header's "Account" points. */
 export const ACCOUNT_HOME_PATH = "/account/orders";

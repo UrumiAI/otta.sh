@@ -44,18 +44,19 @@ import {
 	decideThemePreview,
 	setRequestThemePreview,
 	THEME_PREVIEW_COOKIE,
-	THEME_PREVIEW_NO_STORE,
 } from "./lib/theme-preview.js";
+import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
 
-/** `Cache-Control` for a page that drew one shopper's bag. */
-export const PER_SHOPPER_NO_STORE = "private, no-store";
+/** `Cache-Control` for a page that drew one shopper's bag — the site's ONE
+ *  private, no-store constant, under the name its callers already use. */
+export { PRIVATE_NO_STORE as PER_SHOPPER_NO_STORE } from "./lib/no-store.js";
 
 /** Mark a response private. A `Response` built by `Response.redirect()` (or
  *  handed through from elsewhere) can carry IMMUTABLE headers, so a refusal to
  *  set is answered by copying the response rather than by sending it cacheable. */
-function noStore(response: Response, value: string = THEME_PREVIEW_NO_STORE): Response {
+function noStore(response: Response, value: string = PRIVATE_NO_STORE): Response {
 	try {
 		response.headers.set("Cache-Control", value);
 		return response;
@@ -127,5 +128,5 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	// Again after the page, as for a preview (TWO CACHES above).
 	skipRouteCache(context);
 	const html = response.headers.get("Content-Type")?.includes("text/html") ?? false;
-	return html ? noStore(response, PER_SHOPPER_NO_STORE) : response;
+	return html ? noStore(response, PRIVATE_NO_STORE) : response;
 });

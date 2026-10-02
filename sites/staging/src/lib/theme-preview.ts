@@ -49,8 +49,9 @@ export const THEME_PREVIEW_COOKIE = "otta_theme_preview";
  *  and the level is part of EmDash's stable role scale (10…50). */
 export const THEME_PREVIEW_MIN_ROLE = 50;
 
-/** `Cache-Control` for a previewed response. */
-export const THEME_PREVIEW_NO_STORE = "private, no-store";
+/** `Cache-Control` for a previewed response — the site's ONE private, no-store
+ *  constant, under the name the middleware already uses. */
+export { PRIVATE_NO_STORE as THEME_PREVIEW_NO_STORE } from "./no-store.js";
 
 /** The subset of EmDash's `User` (`App.Locals["user"]`) this reads. */
 export interface PreviewUser {

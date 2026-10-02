@@ -14,17 +14,15 @@
 import { ACCOUNT_ORDER_ROUTE, type AccountOrderResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import {
-	ACCOUNT_NO_STORE,
-	currentSessionToken,
-	orderMoney,
-	orderStateLabel,
-} from "../../../lib/account.js";
+import { currentSessionToken, orderMoney, orderStateLabel } from "../../../lib/account.js";
+import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
 import type { AccountOrderModel } from "../../../themes/contract.js";
 
-Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+// The customer's own data: private, no-store AND out of Astro's route cache,
+// which ignores Cache-Control (middleware.ts, "TWO CACHES").
+keepPrivate(Astro);
 
 const sessionToken = currentSessionToken(Astro.cookies);
 if (sessionToken === undefined) return Astro.redirect("/account/login", 303);

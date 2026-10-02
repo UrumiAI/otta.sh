@@ -9,11 +9,14 @@
  * payment step (ADR-0012).
  */
 import Storefront from "../../../layouts/Storefront.astro";
-import { ACCOUNT_NO_STORE, LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
+import { LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
+import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import type { AccountLoginModel } from "../../../themes/contract.js";
 
-Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+// The customer's own data: private, no-store AND out of Astro's route cache,
+// which ignores Cache-Control (middleware.ts, "TWO CACHES").
+keepPrivate(Astro);
 
 const sent = Astro.url.searchParams.get("sent") === "1";
 const error = Astro.url.searchParams.get("error");

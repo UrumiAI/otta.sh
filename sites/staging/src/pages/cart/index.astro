@@ -65,6 +65,14 @@ import {
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { CartModel } from "../../themes/contract.js";
+import { keepPrivate } from "../../lib/no-store.js";
+
+/* This page renders one shopper's cart: never stored by a shared cache, and kept out of
+   Astro's route cache, which ignores Cache-Control (middleware.ts, "TWO
+   CACHES") — QA U-7. Called FIRST so no rendered branch (an error state, a
+   busy 503) goes out without it; a redirect is its own response and carries
+   no body to store. */
+keepPrivate(Astro);
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
