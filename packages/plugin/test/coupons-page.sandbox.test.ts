@@ -854,6 +854,25 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await couponCount(), "and nothing was added").toBe(2);
 	});
 
+	test("a coupon currency that is not an ISO-4217 currency (XYZ) is refused on the create screen", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-xyz",
+					code: "QAXYZ",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "XYZ",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(await stored("qa-xyz")).toBeNull();
+	});
+
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { coupons: [] as CouponRow[] };
 		await boot(state);

@@ -1181,6 +1181,20 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
+	test("a currency-SHAPED code that is not an ISO-4217 currency (XYZ) is refused — nothing is written", async () => {
+		// QA saved an "XYZ" rate: three letters passes the shape check, and a rate
+		// in a currency no cart is ever in is a price nobody is quoted.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "xyz", amount: "4.99", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("XYZ"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+	});
+
 	test("an invalid currency code is caught at the plugin boundary — nothing is written", async () => {
 		await seedShipping();
 		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");

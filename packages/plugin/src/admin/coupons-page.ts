@@ -25,6 +25,7 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { isIsoCurrencyCode } from "./currency-codes.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -1502,6 +1503,12 @@ function parseEconomics(
 		if (mode === "create") {
 			if (!/^[A-Z]{3}$/.test(currencyRaw)) {
 				return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
+			}
+			if (!isIsoCurrencyCode(currencyRaw)) {
+				return {
+					ok: false,
+					message: `${currencyRaw} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+				};
 			}
 			currency = currencyRaw;
 		}

@@ -25,6 +25,7 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
+import { isIsoCurrencyCode } from "./currency-codes.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
@@ -1614,6 +1615,13 @@ function createRateAction() {
 				variant: "error",
 				title: "Rate not created",
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
+			});
+		}
+		if (!isIsoCurrencyCode(currency)) {
+			return showList([zoneId, methodId], {
+				variant: "error",
+				title: "Rate not created",
+				description: `${currency} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
 			});
 		}
 		const amountCents = parseAmountInput(readString(values.amount) ?? "");
