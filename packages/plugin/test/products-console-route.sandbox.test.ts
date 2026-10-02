@@ -185,6 +185,10 @@ function stockOf(result: Record<string, unknown>): Record<string, unknown> {
 	return result["stock"] as Record<string, unknown>;
 }
 
+/** A nonce as the Pricing & stock cards mint one (`mintMovementNonce`): 128
+ *  random bits as 32 lowercase hex characters. */
+const hexNonce = (): string => crypto.randomUUID().replaceAll("-", "");
+
 describe("the console's Pricing & inventory branch on the otta admin route", () => {
 	test("products.list returns RAW minor units and a RAW on-hand count", async () => {
 		// THE WHOLE REASON THIS BRANCH EXISTS. A Block Kit row carries "$19.99"
@@ -936,6 +940,42 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 			expect((result["notice"] as Record<string, unknown>)["variant"], action_id).toBe("default");
 		}
 		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(9);
+	});
+
+	test("the PRICING CARDS' payload: a fresh hex nonce per click lands every repeat, and a re-sent one applies once and says `replayed`", async () => {
+		// The product editor's Pricing & stock cards (admin-react
+		// `pricing-cards.tsx`) are the only live stock UI. They post exactly
+		// `{productId, onHand, qty, nonce}` through this route, with the nonce from
+		// `mintMovementNonce` — 32 lowercase hex characters, not the UUID the other
+		// cases use. QA T1-2 through that path: Add 2, Remove 2, Add 2 lands at 9.
+		const seeded = await seedProduct({ term: "cardsnonce", onHand: 7 });
+		const moves = [
+			["products:restock", "7"],
+			["products:remove-stock", "9"],
+			["products:restock", "7"],
+		] as const;
+		for (const [action_id, onHand] of moves) {
+			const result = await invoke({
+				type: ACT,
+				action_id,
+				value: { productId: seeded.productId, onHand, qty: "2", nonce: hexNonce() },
+			});
+			expect((result["notice"] as Record<string, unknown>)["variant"], action_id).toBe("default");
+			expect(result["replayed"], action_id).toBeUndefined();
+		}
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(9);
+
+		// ONE click sent twice (a double-submit, or the cards' explicit Retry after a
+		// lost answer) carries one nonce: it moves once, and the answer says it was
+		// answered from the ledger — as a machine-readable flag, so the cards never
+		// compose a fresh "Added 2" for it.
+		const once = { productId: seeded.productId, onHand: "9", qty: "2", nonce: hexNonce() };
+		const first = await invoke({ type: ACT, action_id: "products:restock", value: once });
+		const again = await invoke({ type: ACT, action_id: "products:restock", value: once });
+		expect(first["replayed"]).toBeUndefined();
+		expect(again["replayed"]).toBe(true);
+		expect((again["notice"] as Record<string, unknown>)["title"]).toBe("Already applied");
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(11);
 	});
 
 	test("a REMOVAL against a count that has moved is refused, and nothing moves (DA-3a)", async () => {
