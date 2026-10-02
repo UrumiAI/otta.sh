@@ -5,6 +5,7 @@ import {
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import { isValidLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../storefront/login-link.js";
@@ -81,9 +82,10 @@ export const SETTINGS_PAGE: AdminPageConfig = {
 	icon: "settings",
 };
 
-/** The kv key for the cosmetic store display name (`settings:*` = the em-dash
- *  convention for user-configurable prefs shown in admin UI). */
-export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
+/** The kv key for the store display name (`settings:*` = the em-dash
+ *  convention for user-configurable prefs shown in admin UI). Defined beside the
+ *  email sender, which names the store in the sign-in email. */
+export { STORE_DISPLAY_NAME_KEY };
 
 /** The "Background work per minute" form's submit — a kv save. */
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
@@ -409,7 +411,8 @@ export const SETTINGS_SCHEMA: SettingsSchema = {
 	storeDisplayName: {
 		type: "string",
 		label: "Store display name",
-		description: "Cosmetic label for the admin reporting widget (stored in plugin kv).",
+		description:
+			"Your store's name — shown on the admin reporting widget and in customer sign-in emails (stored in plugin kv).",
 		tier: "kv",
 	},
 	holdTtlMinutes: {

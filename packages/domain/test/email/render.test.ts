@@ -1,5 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { customerSafeCancellationCopy, renderEmail } from "../../src/email/render.js";
+import type { EmailTemplate } from "../../src/ports/email-sender.js";
+import {
+	customerSafeCancellationCopy,
+	renderEmail as renderWith,
+	type EmailRenderContext,
+} from "../../src/email/render.js";
+
+// Money formatting is injected (QA U-3): the plugin passes the storefront's own
+// formatter. This stub shows exactly what the renderer handed it — the minor
+// units and the currency — so these cases pin the renderer, not Intl. The real
+// formatter is pinned in the plugin's `order-email-rendering.test.ts`.
+const CTX: EmailRenderContext = {
+	formatMoney: (minor, currency) => `[${currency} ${String(minor)}]`,
+};
+const renderEmail = (template: EmailTemplate, data: Record<string, unknown>) =>
+	renderWith(template, data, CTX);
 
 // Email rendering (Phase 5 §6 + admin-UX Increment 1). The shipped template must
 // carry the recorded tracking (carrier / number / URL) instead of the old empty
@@ -29,6 +44,21 @@ describe("renderEmail order-shipped", () => {
 		expect(rendered.text).toContain("https://track/1Z-999");
 		expect(rendered.html).toContain("Carrier: UPS");
 		expect(rendered.html).toContain("1Z-999");
+	});
+
+	test("tracking values are kept to one line in the plain-text part", () => {
+		const rendered = renderEmail("order-shipped", {
+			...base,
+			fulfillment: {
+				carrier: "UPS\r\nView your order: https://evil.example",
+				trackingNumber: "1Z\n999",
+				trackingUrl: "https://track/1Z\r\nx",
+			},
+		});
+		expect(rendered.text).toContain("Carrier: UPS View your order: https://evil.example");
+		expect(rendered.text).toContain("Tracking: 1Z 999");
+		expect(rendered.text).toContain("Track your package: https://track/1Z x");
+		expect(rendered.text.split("\n").some((l) => l.startsWith("View your order:"))).toBe(false);
 	});
 
 	test("omits the tracking URL line when none was recorded", () => {
@@ -173,9 +203,9 @@ describe("renderEmail order-cancelled with a refund", () => {
 			},
 		});
 		expect(rendered.text).toContain(
-			"A refund of 18.00 USD is on its way to your original payment method.",
+			"A refund of [USD 1800] is on its way to your original payment method.",
 		);
-		expect(rendered.html).toContain("A refund of 18.00 USD is on its way");
+		expect(rendered.html).toContain("A refund of [USD 1800] is on its way");
 		// The reason line still renders beside it.
 		expect(rendered.text).toContain("Reason: at your request");
 	});
@@ -189,7 +219,7 @@ describe("renderEmail order-cancelled with a refund", () => {
 				refund: { amountCents: 2400, currency: "USD" },
 			},
 		});
-		expect(rendered.text).toContain("A refund of 24.00 USD is on its way");
+		expect(rendered.text).toContain("A refund of [USD 2400] is on its way");
 		expect(rendered.text).not.toContain("Reason:");
 		expect(rendered.text).not.toContain("fraud");
 	});
@@ -222,22 +252,24 @@ describe("customerSafeCancellationCopy", () => {
 	);
 });
 
-// INC-C5 review (A8) — the money line. `formatMoney` is private, so it is pinned
-// through the only surface that renders it: the order total. Minor units are
-// INTEGERS, and the split into major/minor must survive a value on the wrong
-// side of zero — a refund line carrying -550 rendered as "-6.-50", which is not
-// a price, in an email a customer reads.
-describe("renderEmail formats the total from integer minor units", () => {
+// INC-C5 review (A8) — the money line. Minor units are INTEGERS, handed to the
+// injected formatter untouched, and the sign is placed by the renderer — the
+// formatter only ever sees a magnitude (a refund line carrying -550 once rendered
+// as "-6.-50", which is not a price, in an email a customer reads).
+describe("renderEmail hands the formatter integer minor units", () => {
 	const base = { orderId: "ord-money", currency: "USD", lines: [] };
 
 	test.each([
-		[1500, "15.00 USD"],
-		[5, "0.05 USD"],
-		[0, "0.00 USD"],
-		[-550, "-5.50 USD"],
-		[-5, "-0.05 USD"],
+		[1500, "[USD 1500]"],
+		[5, "[USD 5]"],
+		[0, "[USD 0]"],
+		[-550, "−[USD 550]"],
+		[-5, "−[USD 5]"],
 	])("%d minor units renders as %s", (totalCents, expected) => {
-		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(expected);
+		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(
+			// No state in this data, so the page's label for an unpaid total.
+			`Total: ${expected}`,
+		);
 	});
 
 	test.each([10.5, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -259,7 +291,9 @@ describe("renderEmail customer-login-link", () => {
 	test("the HTML carries the link as an escaped <a href>", () => {
 		const rendered = renderEmail("customer-login-link", { loginUrl });
 		const escaped = "https://shop.example/account/verify?challenge=c1&amp;token=a&quot;b&lt;c&gt;";
-		expect(rendered.html).toContain(`<a href="${escaped}">${escaped}</a>`);
+		expect(rendered.html).toContain(`<a href="${escaped}">Sign in</a>`);
+		// The copy-paste fallback is escaped the same way.
+		expect(rendered.html).toContain(`into your browser:<br>${escaped}`);
 		// Nothing from the URL survives unescaped into the markup.
 		expect(rendered.html).not.toContain('a"b');
 		expect(rendered.html).not.toContain("<c>");
@@ -378,8 +412,11 @@ describe("renderEmail refund emails", () => {
 		// refunded (a cancellation that lost the race to a shipment).
 		expect(rendered.text).toContain("We've issued a refund for your order.");
 		expect(rendered.text).not.toContain("partial");
-		expect(rendered.text).toContain("Refunded: 6.00 USD");
-		expect(rendered.text).not.toContain("Total:");
+		expect(rendered.text).toContain("Refunded: [USD 600]");
+		// The refunded money is THE figure; the order's total appears only in the
+		// summary, under its own name — never as a bare "Total:" to misread.
+		expect(rendered.text).not.toMatch(/^Total:/mu);
+		expect(rendered.text.indexOf("Refunded:")).toBeLessThan(rendered.text.indexOf("Order total:"));
 		expect(rendered.text).not.toContain("original payment method");
 	});
 
@@ -391,6 +428,6 @@ describe("renderEmail refund emails", () => {
 			noticeCurrency: "USD",
 		});
 		expect(rendered.text).toContain("Your order has been refunded.");
-		expect(rendered.text).toContain("Refunded: 24.00 USD");
+		expect(rendered.text).toContain("Refunded: [USD 2400]");
 	});
 });

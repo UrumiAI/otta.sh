@@ -18,7 +18,16 @@
  * The page should redeem the token on a POST from its own form rather than on
  * the GET, so a mail scanner that pre-fetches links does not burn it.
  */
+import { DEFAULT_CHALLENGE_TTL_MS } from "@otta-sh/store-emdash";
 import type { PluginContext } from "../types.js";
+
+/**
+ * How long an emailed sign-in link works. The ONE value both halves read: the
+ * credential verifier is built with it (`in-process-commerce-stores.ts`), and the
+ * sign-in email states it ("expires in 15 minutes", QA U-3) — so the email
+ * cannot promise a lifetime the verifier does not enforce.
+ */
+export const LOGIN_LINK_TTL_MS = DEFAULT_CHALLENGE_TTL_MS;
 
 /** The storefront page the emailed link lands on, by convention — the
  *  placeholder the Settings field suggests. */

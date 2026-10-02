@@ -12,12 +12,17 @@ import {
 	type OrderEvent,
 	type OrderStore,
 	orderId as brandOrderId,
-	renderEmail,
+	renderEmail as renderWith,
 	settleOrder,
+	type EmailTemplate,
 } from "@otta-sh/domain";
 import { FakeEmailSender } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
+
+// Money formatting is injected; this stub shows the minor units it was handed.
+const renderEmail = (template: EmailTemplate, data: Record<string, unknown>) =>
+	renderWith(template, data, { formatMoney: (minor, code) => `[${code} ${String(minor)}]` });
 
 // The fake-only half of the late-payment cure: what the shared contract cannot
 // observe through the ports (anomaly rows, the dispatcher's template and data)
@@ -121,8 +126,10 @@ describe("late payments", () => {
 		expect(notice?.to).toBe("buyer@example.com");
 		expect(notice?.data["noticeAmountCents"]).toBe(900);
 		const rendered = renderEmail("order-late-payment-refunded", notice?.data ?? {});
-		expect(rendered.text).toContain("Refunded: 9.00 USD");
-		expect(rendered.text).not.toContain("15.00");
+		expect(rendered.text).toContain("Refunded: [USD 900]");
+		// The order's own total is only ever the summary's "Order total", never the
+		// refunded figure.
+		expect(rendered.text).not.toContain("Refunded: [USD 1500]");
 	});
 
 	test("the notice rides the sweep's bounded dispatcher like any row: handed back untried, or timed out, it is sent later — once, never parked", async () => {
@@ -295,7 +302,7 @@ describe("the late-payment-refunded email", () => {
 		expect(email.subject).toMatch(/refunded/i);
 		expect(email.text).toMatch(/after (your|the) order expired/i);
 		expect(email.text).toMatch(/5.10 (business )?days/);
-		expect(email.text).toContain("Refunded: 15.00 USD");
+		expect(email.text).toContain("Refunded: [USD 1500]");
 		expect(email.text).not.toMatch(/nothing was charged/i);
 	});
 

@@ -21,6 +21,7 @@ import {
 } from "@otta-sh/plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
+import { SITE_LOCALE } from "./site-locale.js";
 
 /** The one notice a link request ends on, whatever the plugin knows about the
  *  address — the page must not become an account oracle (ADR-0004). It must
@@ -170,7 +171,7 @@ export function verifyFailureToken(reason: "EXPIRED" | "INVALID" | "CONSUMED"): 
  */
 export function orderMoney(amountCents: number, currencyCode: string): string {
 	try {
-		return formatMoney(cents(amountCents), currency(currencyCode), "en-US");
+		return formatMoney(cents(amountCents), currency(currencyCode), SITE_LOCALE);
 	} catch {
 		return "—";
 	}

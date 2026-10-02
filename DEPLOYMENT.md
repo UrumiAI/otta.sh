@@ -355,7 +355,19 @@ order of appearance in a deployment's life:
   `/account/verify` page — the emailed link points there and never at the request's origin.
   With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
   success, issues nothing, and logs once server-side. For the reference site, set it to
-  `https://<your-site>/account/verify`.
+  `https://<your-site>/account/verify`. **Order emails link to the order page** through the
+  same setting: its origin plus `/orders/<order id>`, the page a shopper is sent to after
+  checkout (a bearer link — anyone holding it sees the order's public view, which carries no
+  address or email). Two assumptions: the storefront is served from the **root** of that
+  origin (a path on the sign-in page URL, such as `/shop/account/verify`, is dropped — the
+  site's own links are root-absolute), and the URL is **https**. An `http:` URL is used only
+  for `localhost`, `127.0.0.1` or `[::1]` (local development); any other http URL gives no
+  order link, because a bearer link must not travel in clear text. Unset or invalid, order
+  emails go out with no link; it is never taken from a request's `Host`. The sign-in email (and the sign-off of every order email) names the
+  store from Settings → "Store display name" (`settings:storeDisplayName`); unset, it is
+  left out. The sign-in email states the link's real lifetime (15 minutes). Order
+  emails list the order's own line snapshot, totals and ship-to, with money formatted as the
+  storefront formats it.
 
 > **Email provider: Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
 > auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag), so
@@ -369,7 +381,9 @@ order of appearance in a deployment's life:
 > 3. In admin Settings, save the Resend API key and a from-address on that verified domain —
 >    `orders@yourdomain.com` or `Your Shop <orders@yourdomain.com>`.
 > 4. Set "Sign-in link page" to the public `https://<your-site>/account/verify` URL — a
->    localhost or http URL in a customer's inbox is a dead link.
+>    localhost or http URL in a customer's inbox is a dead link. Order emails link to
+>    `https://<your-site>/orders/<id>` from the same setting, and set "Store display name"
+>    so the sign-in email names your store.
 >
 > Resend's free tier is 3,000 emails/month and 100/day. A refused send throws with Resend's
 > own error name and message (never the request). **Only the login route logs it today**:
