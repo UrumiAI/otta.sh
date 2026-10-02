@@ -155,12 +155,14 @@ function cancelWith(
 		key?: string;
 		orderStore?: OrderStore;
 		inventoryStore?: InventoryStore;
+		isRetryable?: (err: unknown) => boolean;
 	} = {},
 ) {
 	return cancelOrderWithRefund(
 		{
 			orderStore: opts.orderStore ?? h.orderStore,
 			inventoryStore: opts.inventoryStore ?? h.inventoryStore,
+			...(opts.isRetryable !== undefined ? { isRetryable: opts.isRetryable } : {}),
 		},
 		gateway,
 		{
@@ -356,7 +358,11 @@ export function cancelWithRefundContract(
 			expect(gw.refundCalls).toHaveLength(1);
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
-			expect((await h.orderStore.getById(id))?.state).toBe("cancelled");
+			const done = await h.orderStore.getById(id);
+			expect(done?.state).toBe("cancelled");
+			// The "did not finish — click Cancel order again" flag is cleared by the retry
+			// that finished: no stale alert pointing at a control that is gone.
+			expect(done?.reconciliationFlag).toBeNull();
 		});
 
 		test("a retry of a crashed cancel keeps the FIRST attempt's restock choice — the envelope stays truthful", async () => {
@@ -395,6 +401,26 @@ export function cancelWithRefundContract(
 			expect(gw.refundCalls).toHaveLength(1);
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+		});
+
+		test("a RETRYABLE (busy) failure after the refund says so, and stays retry-safe", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-busy");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const busy = new Error("storage busy");
+			const res = await cancelWith(h, gw, id, {
+				inventoryStore: failingOnce(h.inventoryStore, "restock", busy),
+				isRetryable: (err) => err === busy,
+			});
+			expect(res).toMatchObject({
+				ok: false,
+				reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+				retryable: true,
+			});
+			expect(await cancelWith(h, gw, id)).toMatchObject({ ok: true, cancelled: true });
+			expect(gw.refundCalls).toHaveLength(1);
 		});
 
 		test("a refund the provider REJECTS leaves the order paid, the stock untouched and nobody emailed", async () => {

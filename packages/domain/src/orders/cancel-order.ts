@@ -186,6 +186,11 @@ export interface CancelOrderWithRefundDeps {
 	/** Forwarded to `refundOrder` for its loud "issued but unrecorded" residual. */
 	paymentEventStore?: PaymentEventStore;
 	clock?: Clock;
+	/** Whether an error is a RETRYABLE storage condition (the plugin's
+	 *  `isRetryableStorageBusy`). Only shapes the operator's wording after the refund:
+	 *  "the store was busy" instead of "did not finish". The domain cannot name the
+	 *  adapter's error, so the caller tells it. */
+	isRetryable?: (err: unknown) => boolean;
 }
 
 export interface CancelOrderWithRefundCommand extends CancelOrderCommand {
@@ -242,7 +247,13 @@ export type CancelOrderWithRefundOutcome =
 	/** The refund went through but the restock or the cancel flip then FAILED (an
 	 *  error, not a refusal): the order is still `paid`/`processing`, flagged, and a
 	 *  retry finishes it without refunding twice. */
-	| { ok: false; reason: "CANCEL_INCOMPLETE_AFTER_REFUND"; refund: CancellationRefund }
+	| {
+			ok: false;
+			reason: "CANCEL_INCOMPLETE_AFTER_REFUND";
+			refund: CancellationRefund;
+			/** The failure was a retryable storage condition (busy). */
+			retryable: boolean;
+	  }
 	/** The refund (and restock) happened but the order shipped first — flagged. */
 	| {
 			ok: false;
@@ -432,18 +443,38 @@ export async function cancelOrderWithRefund(
 		legs = await restockAndFlip(deps, order, cmd, { detail, cancelledBy, refund, restock });
 	} catch (err) {
 		if (refund === null) throw err;
-		try {
-			await deps.orderStore.flagReconciliation(
+		await bestEffort(() =>
+			deps.orderStore.flagReconciliation(
 				cmd.orderId,
-				`a cancellation (key ${cmd.idempotencyKey}) refunded ${String(refund.amount)} ${refund.currency} but did not finish — click Cancel order again (it will not refund twice)`,
-			);
-		} catch {
-			// Best-effort: the outcome below still tells the operator.
-		}
-		return { ok: false, reason: "CANCEL_INCOMPLETE_AFTER_REFUND", refund };
+				`${cancellationFlagPrefix(cmd.idempotencyKey)} refunded ${String(refund.amount)} ${refund.currency} but did not finish — click Cancel order again (it will not refund twice)`,
+			),
+		);
+		return {
+			ok: false,
+			reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
+			refund,
+			retryable: deps.isRetryable?.(err) ?? false,
+		};
 	}
 	const { res, restockedUnits, restockSkipped } = legs;
 	if (res.cancelled) {
+		// A retry that FINISHED clears the "did not finish — click Cancel order again"
+		// flag an earlier attempt left: compare-and-clear on that exact flag, so an
+		// anomaly flagged by anything else is never cleared here.
+		const finished = res.order;
+		const stale = finished?.reconciliationFlag ?? null;
+		if (stale !== null && stale.startsWith(cancellationFlagPrefix(cmd.idempotencyKey))) {
+			await bestEffort(() =>
+				deps.orderStore.resolveReconciliation({
+					orderId: cmd.orderId,
+					expectedFlag: stale,
+					outcome: "refunded",
+					reason: "The cancellation finished on a retry; its refund was issued once.",
+					resolvedBy: cancelledBy,
+					idempotencyKey: toIdempotencyKey(`${cmd.idempotencyKey}:resolve-incomplete`),
+				}),
+			);
+		}
 		return {
 			ok: true,
 			cancelled: true,
@@ -475,9 +506,11 @@ export async function cancelOrderWithRefund(
 		]
 			.filter((part) => part !== null)
 			.join(" and ");
-		await deps.orderStore.flagReconciliation(
-			cmd.orderId,
-			`a cancellation (key ${cmd.idempotencyKey}) ${what}, but the order moved to ${fresh?.state ?? "an unknown state"} before it could be cancelled — contact the buyer, then stop the shipment or use Mark refunded; do not ship or refund it again unchecked`,
+		await bestEffort(() =>
+			deps.orderStore.flagReconciliation(
+				cmd.orderId,
+				`${cancellationFlagPrefix(cmd.idempotencyKey)} ${what}, but the order moved to ${fresh?.state ?? "an unknown state"} before it could be cancelled — contact the buyer, then stop the shipment or use Mark refunded; do not ship or refund it again unchecked`,
+			),
 		);
 		return {
 			ok: false,
@@ -541,6 +574,22 @@ async function restockAndFlip(
 		res = await flip(res.order.state);
 	}
 	return { res, restockedUnits, restockSkipped };
+}
+
+/** The prefix of every flag a cancellation leaves, so a later attempt of the SAME
+ *  cancellation can recognise (and clear) its own. */
+function cancellationFlagPrefix(key: IdempotencyKey): string {
+	return `a cancellation (key ${key})`;
+}
+
+/** Run a write whose failure must not surface — after a refund, nothing may throw
+ *  bare; the outcome the caller returns still tells the operator. */
+async function bestEffort(write: () => Promise<unknown>): Promise<void> {
+	try {
+		await write();
+	} catch {
+		// Best-effort by design: see the caller.
+	}
 }
 
 type RefundLeg =
