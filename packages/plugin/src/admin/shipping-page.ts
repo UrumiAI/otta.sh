@@ -40,6 +40,7 @@ import {
 	listLevel,
 	noticeBanner,
 	PATH_FIELD,
+	readBoolean,
 	readString,
 	screenActions,
 	type ListDetailInput,
@@ -194,11 +195,14 @@ type ShippingRenderState =
 	| { kind: "new-zone"; draft?: ZoneDraft }
 	| { kind: "new-method"; draft?: MethodDraft };
 
-/** The "New shipping zone" form's three fields, as submitted. */
+/** The "New shipping zone" form's fields, as submitted. `ackFirstZone` is the
+ *  first-zone acknowledgement toggle — restated on a refusal because a toggle is
+ *  mount-only (X-24), so a refusal for another reason does not untick it. */
 interface ZoneDraft {
 	id: string;
 	name: string;
 	regions: string;
+	ackFirstZone?: boolean;
 }
 
 /** The "New shipping method" form's three fields, as submitted. `type` is a
@@ -361,7 +365,9 @@ function zonesBlocks(
 	notice: Notice | undefined,
 	renderState: ShippingRenderState | undefined,
 ): Block[] {
-	if (renderState?.kind === "new-zone") return newZoneScreen(renderState.draft, notice);
+	if (renderState?.kind === "new-zone") {
+		return newZoneScreen(renderState.draft, notice, zones.length === 0);
+	}
 	const blocks: Block[] = [
 		{ type: "header", text: "Shipping zones" },
 		{
@@ -371,7 +377,21 @@ function zonesBlocks(
 		createActionBlock("ship:create-zone-action", ACTION_OPEN_CREATE_ZONE, "New shipping zone"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	blocks.push(...zoneRegionWarnings(zones));
+	const warnings = zoneRegionWarnings(zones);
+	blocks.push(...warnings);
+	const coverage = zoneCoverageNotice(zones);
+	if (coverage !== undefined) {
+		// X-31 allows TWO top-level banners. The region warnings are the more
+		// urgent (they are refusing checkouts the operator meant to allow), so the
+		// coverage statement steps down to a plain line when they fill the budget —
+		// the words are the same either way.
+		const used = warnings.length + (notice === undefined ? 0 : 1);
+		blocks.push(
+			used < 2
+				? { type: "banner", block_id: "ship:coverage", variant: "alert", ...coverage }
+				: { type: "context", text: `${coverage.title}: ${coverage.description}` },
+		);
+	}
 
 	if (zones.length === 0) {
 		blocks.push(
@@ -516,25 +536,56 @@ function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
  *  context · the form, the shape every other non-list level on this console
  *  already has. The banner sits above the form because it explains the values
  *  the form below has just put back. */
-function newZoneScreen(draft: ZoneDraft | undefined, notice: Notice | undefined): Block[] {
+function newZoneScreen(
+	draft: ZoneDraft | undefined,
+	notice: Notice | undefined,
+	firstZone: boolean,
+): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "New shipping zone" },
 		// No path: this screen belongs to the ROOT registry.
 		backButton(ACTION_CANCEL_NEW, "← Back to shipping zones"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	if (firstZone) blocks.push(FIRST_ZONE_WARNING);
 	blocks.push({
 		type: "context",
 		text: "Regions are ISO codes: a country (US) or state/province (US-CA). Addresses match exactly; the most specific zone wins.",
 	});
-	blocks.push(createZoneForm(draft));
+	blocks.push(createZoneForm(draft, firstZone));
 	return blocks;
 }
+
+/**
+ * THE FIRST ZONE CHANGES WHAT CHECKOUT DOES FOR EVERY OTHER COUNTRY.
+ *
+ * ADR-0021 §4: a store with NO zones ships physical items anywhere (no shipping,
+ * no tax, no address check); a store with ANY zone refuses an address no zone
+ * lists. So creating a Japan-only zone silently turns away every non-Japanese
+ * buyer with "We don't ship to this address" — QA did exactly that and found
+ * nothing on the screen had said so. The rule is the ADR's and stays; what
+ * changes is that the operator meets it before the one click that triggers it.
+ * Block Kit's form submit has no `confirm` (only a button does), so the
+ * acknowledgement is a required toggle on the form itself, checked server-side
+ * against a FRESH zones read — a second tab having created a zone meanwhile
+ * means this one is no longer the first.
+ */
+const FIRST_ZONE_WARNING: BannerBlock = {
+	type: "banner",
+	block_id: "ship:first-zone",
+	variant: "alert",
+	title: "This is your first zone",
+	// 196 chars ≤ 240 (X-11).
+	description:
+		'Once any zone exists, checkout only ships physical items to addresses a zone lists. Buyers anywhere else see "We don\'t ship to this address" until you add a zone for them.',
+};
+
+const ACK_FIRST_ZONE_FIELD = "ackFirstZone";
 
 /** `draft` is the refusal path (DA-3a-i): what was submitted comes back as
  *  `initial_value`, so a rejected duplicate id costs one edit and not three
  *  retypes. */
-function createZoneForm(draft?: ZoneDraft): FormBlock {
+function createZoneForm(draft: ZoneDraft | undefined, firstZone: boolean): FormBlock {
 	return carriedForm({
 		namespace: "ship:zone-create",
 		form: {
@@ -561,6 +612,18 @@ function createZoneForm(draft?: ZoneDraft): FormBlock {
 					placeholder: "e.g. US",
 					...prefill(draft?.regions),
 				},
+				...(firstZone
+					? [
+							{
+								type: "toggle" as const,
+								action_id: ACK_FIRST_ZONE_FIELD,
+								label: "I understand addresses outside my zones can't check out",
+								// F-6b/X-24: declared, or an untouched toggle is absent from
+								// `values`; restated from the draft because it is mount-only.
+								initial_value: draft?.ackFirstZone === true,
+							},
+						]
+					: []),
 			],
 			submit: { label: "Create zone", action_id: ACTION_CREATE_ZONE },
 		},
@@ -1303,10 +1366,12 @@ function createZoneAction() {
 			const name = (readString(values.name) ?? "").trim();
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
+			const acknowledged = readBoolean(values[ACK_FIRST_ZONE_FIELD]) === true;
 			const draft: ZoneDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
 				regions: readString(values.regions) ?? "",
+				ackFirstZone: acknowledged,
 			};
 			if (id.length === 0 || name.length === 0) {
 				return showList(
@@ -1322,6 +1387,19 @@ function createZoneAction() {
 			const checked = await checkZoneRegions(client, readString(values.regions) ?? "", null);
 			if (!checked.ok) {
 				return showList(undefined, checked.notice("Zone not created"), { kind: "new-zone", draft });
+			}
+			// A FRESH read, not the screen's: see FIRST_ZONE_WARNING.
+			if (!acknowledged && (await client.listZones()).length === 0) {
+				return showList(
+					undefined,
+					{
+						variant: "error",
+						title: "Zone not created",
+						description:
+							"This is your first zone — confirm you understand that addresses outside your zones can't check out, then create it.",
+					},
+					{ kind: "new-zone", draft },
+				);
 			}
 			const result = await client.createZone({ id, name, regions: checked.codes });
 			const notice = createZoneNotice(result, id, name);
@@ -1872,6 +1950,30 @@ function zoneRegionWarnings(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock
 }
 
 const NO_MATCH_ZONES_BLOCK_ID = "ship:no-match-zones";
+
+/**
+ * What checkout ships to, stated on the landing whenever ANY zone exists — the
+ * standing half of {@link FIRST_ZONE_WARNING}. ADR-0021 §4 refuses an address no
+ * zone lists, so the registry IS the store's delivery map; listing its codes in
+ * one sentence is what lets an operator see "only JP" at a glance. `undefined`
+ * with no zones, when checkout ships anywhere and there is nothing to warn about.
+ */
+function zoneCoverageNotice(
+	zones: ReadonlyArray<ShippingZoneWire>,
+): { title: string; description: string } | undefined {
+	if (zones.length === 0) return undefined;
+	const codes = [...new Set(zones.flatMap((zone) => parseZoneRegions(zone.regions).codes))];
+	return {
+		title: "Checkout only ships to addresses your zones list",
+		description:
+			codes.length === 0
+				? 'No zone lists a region code yet, so every physical checkout is refused with "We don\'t ship to this address".'
+				: fitDescription(
+						'Physical orders to anywhere else are refused ("We don\'t ship to this address"). Covered: ',
+						[codes.join(", ")],
+					),
+	};
+}
 
 /** A banner description's budget (X-11, §1). */
 const BANNER_DESCRIPTION_MAX = 240;

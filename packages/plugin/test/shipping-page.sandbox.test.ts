@@ -534,6 +534,79 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 	});
 });
 
+describe("admin Shipping console — the first zone turns on address matching (ADR-0021 §4)", () => {
+	// QA: creating ONE zone (Japan) silently made checkout refuse every other
+	// country ("We don't ship to this address"). ADR-0021 decided that — a store
+	// with zones refuses addresses no zone lists — but nothing on the screen said
+	// so, before or after.
+	test("whenever zones exist, the landing states which destinations checkout ships to and that every other address is refused", async () => {
+		await seedShipping({
+			zones: [
+				{ id: "jp", name: "Japan", regions: ["JP"] },
+				{ id: "west", name: "US West", regions: ["US-CA", "US-OR"] },
+			],
+			methods: [],
+			rates: [],
+		});
+		const blocks = await loadZones();
+		const coverage = findBlocks(blocks, "banner").find((b) => b.block_id === "ship:coverage");
+		expect(coverage, "a coverage banner").toBeDefined();
+		expect(coverage?.variant).toBe("alert");
+		expect(String(coverage?.title)).toMatch(/only ships to addresses your zones list/i);
+		expect(String(coverage?.description)).toMatch(/We don't ship to this address/);
+		expect(String(coverage?.description)).toContain("JP, US-CA, US-OR");
+		expect(String(coverage?.description).length).toBeLessThanOrEqual(240);
+	});
+
+	test("with no zones there is nothing to warn about on the landing", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const blocks = await loadZones();
+		expect(findBlocks(blocks, "banner").some((b) => b.block_id === "ship:coverage")).toBe(false);
+	});
+
+	test("the FIRST zone's create screen warns and requires an acknowledgement; without it nothing is written and the typing is kept", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const screen = await openNewZoneScreen();
+		const warning = findBlocks(screen, "banner").find((b) => b.block_id === "ship:first-zone");
+		expect(String(warning?.title)).toMatch(/first zone/i);
+		const form = formFor(screen, "shipping:create-zone");
+		const ack = ((form?.fields ?? []) as Array<Record<string, unknown>>).find(
+			(f) => f.action_id === "ackFirstZone",
+		);
+		expect(ack?.type).toBe("toggle");
+		expect(ack?.initial_value).toBe(false); // F-6b/X-24: a toggle must declare one
+
+		const refused = await submitForm(
+			"shipping:create-zone",
+			{ id: "jp", name: "Japan", regions: "JP", ackFirstZone: false },
+			form?.block_id,
+		);
+		expect(String(bannerOf(refused)?.title)).toBe("Zone not created");
+		expect(String(bannerOf(refused)?.description)).toMatch(/confirm/i);
+		expect(formInitialValues(refused, "shipping:create-zone")).toMatchObject({
+			id: "jp",
+			name: "Japan",
+			regions: "JP",
+		});
+		expect(await shippingRules.getZone("jp")).toBeNull();
+
+		const created = await submitForm(
+			"shipping:create-zone",
+			{ id: "jp", name: "Japan", regions: "JP", ackFirstZone: true },
+			formFor(refused, "shipping:create-zone")?.block_id,
+		);
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect((await shippingRules.getZone("jp"))?.regions).toEqual(["JP"]);
+	});
+
+	test("once a zone exists, later zones need no acknowledgement", async () => {
+		await seedShipping();
+		const screen = await openNewZoneScreen();
+		expect(findBlocks(screen, "banner").some((b) => b.block_id === "ship:first-zone")).toBe(false);
+		expect(fieldIds(formFor(screen, "shipping:create-zone"))).not.toContain("ackFirstZone");
+	});
+});
+
 describe("admin Shipping console — zones level, zero-row empty state (E-2)", () => {
 	test("zero zones renders the `empty` block (not the row list) with a create action in empty.actions", async () => {
 		await seedShipping({ zones: [], methods: [], rates: [] });

@@ -2822,6 +2822,11 @@ header      "Shipping zones"
 context     "A zone groups the shipping methods you offer for a set of destinations." (≤140)
 actions     [ button "New shipping zone" style primary → the create SCREEN ]       (L-8)
 banner      (cond) notice        ── no filter (0 fields) ──
+banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only ships to addresses
+            your zones list" + the covered codes (ADR-0021 §4). Steps down to a `context`
+            line when the notice and the region warnings already fill X-31's two banners.
+            The FIRST zone's create screen adds banner ship:first-zone and a required
+            toggle `ackFirstZone` (a form submit has no `confirm`).  ← ADDED (QA 2026-10-02)
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to
