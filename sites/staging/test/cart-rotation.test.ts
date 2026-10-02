@@ -390,11 +390,15 @@ describe("the product page's CART_CHECKED_OUT notice offers the way out", () => 
 
 describe("the order confirmation page forgets a spent cart", () => {
 	// A response that DELETES the cart cookie must never be stored and replayed: a
-	// cached copy would clear the next shopper's cart. So the forgetting render is
-	// private and kept out of Astro's route cache.
-	test("it hands the order it read to forgetSpentCart, and keeps a forgetting response private", () => {
-		expect(splitAstro(source("pages/orders/[orderId].astro")).frontmatter).toMatch(
-			/if \(\s*order !== null &&\s*\(await forgetSpentCart\([\s\S]*?\)\)\s*\)\s*\{\s*keepPrivate\(Astro\);/,
+	// cached copy would clear the next shopper's cart. The whole page is now
+	// private (keepPrivate first — private-pages.test.ts), so the forgetting
+	// render is covered without a conditional call of its own.
+	test("it hands the order it read to forgetSpentCart, on a page already private", () => {
+		const frontmatter = splitAstro(source("pages/orders/[orderId].astro")).frontmatter;
+		expect(frontmatter).toMatch(/if \(order !== null\) \{\s*await forgetSpentCart\(/);
+		expect(frontmatter.indexOf("keepPrivate(Astro);")).toBeGreaterThan(-1);
+		expect(frontmatter.indexOf("keepPrivate(Astro);")).toBeLessThan(
+			frontmatter.indexOf("await forgetSpentCart("),
 		);
 	});
 });

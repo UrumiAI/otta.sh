@@ -418,7 +418,7 @@ describe("account pages — source-level guarantees", () => {
 		"%s is private: no-store, and an unauthenticated read redirects to /account/login",
 		(relative) => {
 			const { frontmatter } = splitAstro(page(relative));
-			expect(frontmatter).toContain("ACCOUNT_NO_STORE");
+			expect(frontmatter).toContain("keepPrivate(Astro);");
 			expect(frontmatter).toMatch(/Astro\.redirect\(/);
 		},
 	);

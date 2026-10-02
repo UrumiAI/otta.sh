@@ -34,13 +34,9 @@ export const LOGIN_LINK_SENT_COPY =
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
  *  never be stored by a shared cache, nor replayed from the back/forward cache
- *  after logout. */
-// TODO(after fix/new-cart-after-order and feat/account-signed-in-ux merge):
-// consolidate the four "private, no-store" constants — this one,
-// PER_SHOPPER_NO_STORE (middleware.ts), THEME_PREVIEW_NO_STORE (theme-preview.ts)
-// and PRIVATE_NO_STORE — into lib/no-store.ts, which both branches add verbatim
-// and so must not diverge before then.
-export const ACCOUNT_NO_STORE = "private, no-store";
+ *  after logout. The site's ONE such constant, under the name the account pages
+ *  already use. */
+export { PRIVATE_NO_STORE as ACCOUNT_NO_STORE } from "./no-store.js";
 
 /** Where a signed-in customer lands, and where the header's "Account" points. */
 export const ACCOUNT_HOME_PATH = "/account/orders";
