@@ -158,7 +158,14 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
 				{ idempotencyKey: `${id}-r1` },
 			),
-		).toEqual({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+		).toEqual({
+			ok: true,
+			recorded: true,
+			duplicate: false,
+			fullyRefunded: false,
+			// No email API is configured in this ctx (ADR-0005's 2026-10-02 admin amendment).
+			email: "unconfigured",
+		});
 
 		const posts = requests.filter((r) => r.method === "POST");
 		expect(posts).toHaveLength(1);
@@ -282,6 +289,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			recorded: true,
 			duplicate: false,
 			fullyRefunded: false,
+			email: "unconfigured",
 		});
 		// Both POSTs carried the SAME key, so Stripe's native idempotency covers the
 		// retry — and the ledger holds ONE refund, not an orphan plus a second one.
