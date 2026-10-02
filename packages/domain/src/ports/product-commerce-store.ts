@@ -334,8 +334,9 @@ export interface UpdateProductCommerceFieldsInput {
 	 * MUST share the product's own currency (the same atomic currency-integrity
 	 * axis `price` carries — see `ProductCommerceUpdateResult.currency_mismatch`);
 	 * a mismatched currency is rejected, never silently coerced. `undefined`
-	 * PRESERVES, an explicit `null` CLEARS. Storefront strikethrough rendering is
-	 * OUT of scope for this slice (data model + admin edit only). `compareAt <
+	 * PRESERVES, an explicit `null` CLEARS. The storefront reads it off
+	 * `ProductCommerceView.compareAtPrice` and shows it struck through only when
+	 * it is above the price. `compareAt <
 	 * price` is the normal case, but `compareAt >= price` is DELIBERATELY NOT
 	 * rejected (Shopify allows it — a "was" price can legitimately be ≤ the
 	 * current one during a price rise); the admin form's STATIC help copy
@@ -463,6 +464,15 @@ export interface ProductCommerceView {
 	 * Public by nature — it is the storefront heading's own text.
 	 */
 	title: string | null;
+	/**
+	 * The compare-at / was-price (`ProductCommerce.compareAtPrice`), as STORED —
+	 * same currency as `price` by the write-side guard. Reported verbatim, even
+	 * when it is not above `price` (that is allowed, see the update input): the
+	 * store reports state, and whether it reads as a sale is the storefront
+	 * view model's decision. Display-only — never what a buyer is charged.
+	 * (`unitCost` is NOT here and never may be: admin-only margin data.)
+	 */
+	compareAtPrice: Money | null;
 	/**
 	 * Coarse display-only stock signal: `inventory.on_hand > 0` at read time
 	 * (Phase 2 §8 risk 5, pre-approved). NOT reservation-aware — it can say
