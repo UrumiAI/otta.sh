@@ -3728,9 +3728,11 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ok: true,
 				onHand: 5,
 			});
+			// The replay SAYS it is one, so the screen never reports it as a fresh add.
 			expect(await client.restock("adm-r-replay", 5, "adm-r-replay-1")).toEqual({
 				ok: true,
 				onHand: 5,
+				replayed: true,
 			});
 			expect((await client.getProduct("adm-r-replay"))?.onHand).toBe(5);
 		});
@@ -3782,6 +3784,36 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			});
 			// Nothing moved.
 			expect((await client.getProduct("adm-sm-bad"))?.onHand).toBe(5);
+		});
+
+		test("a removal pinned to a count that has moved is stale_on_hand with the live count; a current one applies", async () => {
+			await seed({ productId: "adm-sm-wm", sku: "ADM-SM-WM", onHand: 7 });
+
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-1", 10)).toEqual({
+				ok: false,
+				reason: "stale_on_hand",
+				onHand: 7,
+			});
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-2", 7)).toEqual({
+				ok: true,
+				onHand: 4,
+			});
+			// A retry of the applied removal answers its success, although the count
+			// it was pinned to (7) is no longer the count — and says it is a replay.
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-2", 7)).toEqual({
+				ok: true,
+				onHand: 4,
+				replayed: true,
+			});
+			for (const bad of [-1, 1.5]) {
+				expect(await client.removeStock("adm-sm-wm", 1, "adm-sm-wm-bad", bad)).toMatchObject({
+					ok: false,
+					reason: "invalid",
+				});
+			}
+			// A restock is never pinned: it applies whatever the count is.
+			expect(await client.restock("adm-sm-wm", 6, "adm-sm-wm-3")).toEqual({ ok: true, onHand: 10 });
+			expect((await client.getProduct("adm-sm-wm"))?.onHand).toBe(10);
 		});
 
 		// ── getTaxClasses ─────────────────────────────────────────────────

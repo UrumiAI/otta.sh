@@ -1,6 +1,6 @@
 /**
  * The chrome's bag — the cart's lines, read for a theme whose CHROME draws them
- * outside `/cart` (Counter's drawer, Pressing's bag strip). Opt-in:
+ * outside `/cart` (e.g. a bag drawer or a bag strip). Opt-in:
  * `layouts/Storefront.astro` calls this only when the active theme sets
  * `chrome.cartLines`, and never on the checkout flow, so no other theme and no
  * other page pays for it.

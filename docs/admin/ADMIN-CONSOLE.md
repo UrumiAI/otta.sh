@@ -1251,7 +1251,7 @@ watermark as a key component**. No `crypto.randomUUID()` is minted at render tim
 | Write | Key |
 |---|---|
 | Refund | `admin-refund:${orderId}:${amountCents}:${refundedSoFarCents}` — the third component is the watermark the operator *saw* |
-| Stock movement | `${productId}:${direction}:${onHandAtRender}:${qty}` |
+| Stock movement | ~~`${productId}:${direction}:${onHandAtRender}:${qty}`~~ — **superseded 2026-10-02**: a nonce minted fresh per click, re-sent only by an explicit Retry; a removal's watermark is judged in the store, a restock carries none ([ADR-0015, amended 2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md)) |
 | Transition | `admin-transition:${orderId}:${toState}` |
 | Cancel | `admin-cancel:${orderId}` |
 | Note | `admin-note:${orderId}:${author}:${body}` |
@@ -1283,7 +1283,11 @@ inventory — and all four were deleted rather than relocated when those write p
 the shipped keys are `admin-refund:${orderId}:${amountCents}:${observedSoFar}`
 (`orders-actions.ts:642`) and `${productId}:${direction}:${onHand}:${qty}`
 (`stockMovementKey`, `products-actions.ts:430-437`), both watermarked and neither random. X-28 is a
-regression gate from here. This also keeps the document self-consistent: §2 already lists nonce
+regression gate from here. **Except stock movements — [ADR-0015, amended
+2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md):** a stock movement's key is now a
+nonce the console mints fresh per CLICK (not per render) and sends in the action payload; it is
+re-sent only by an explicit "Retry this change" after a lost answer, held in memory for ten minutes; the content key above survives only as a
+one-release fallback for a caller that sends none. This also keeps the document self-consistent: §2 already lists nonce
 fields under `form` → forbidden, and F-2 already says a key is never something a human can see, pick
 or alter — a render-time carried nonce satisfies neither half.
 
@@ -3186,7 +3190,7 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-25 | H | A `meter` whose `value`/`max` are minor units and which has no `custom_value`. | M-8 |
 | X-26 | H | `banner.variant` outside `default` \| `alert` \| `error`, or a banner with a `text` field. | M-9, §2 |
 | X-27 | H | A `table` with no `page_action_id`, or with `next_cursor` inside a leaf detail. | T-6, T-8 |
-| X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. | F-2a |
+| X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. **Except stock movements** — a per-click nonce in the action payload (ADR-0015 amended 2026-10-02). | F-2a |
 | X-29 | H | A DA-3 state-2 accordion that changes its `block_id` without `default_open: true`, or sets the flag without changing the id. | B-6 |
 | X-30 | | A prefilling `combobox`; or a `combobox` used for a closed set of ≤8 **whose values are already readable words** — a **record picker is a `combobox` at any count** and is never an X-30 (L-7). | F-6, R-12a, R-17b |
 | X-31 | H | More than 2 `banner`s at the top level of a screen (banners inside an accordion are not counted). | §2 |

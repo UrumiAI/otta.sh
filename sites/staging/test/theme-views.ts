@@ -58,7 +58,7 @@ export function viewSources(view: CommerceView): ViewSource[] {
 	});
 }
 
-/** `[label, entry]` rows for `test.each` / `describe.each`, labelled "counter → themes/…". */
+/** `[label, entry]` rows for `test.each` / `describe.each`, labelled "tempered → themes/…". */
 export function viewCases(view: CommerceView): [string, ViewSource][] {
 	return viewSources(view).map((entry) => [`${entry.theme} → ${entry.file}`, entry]);
 }

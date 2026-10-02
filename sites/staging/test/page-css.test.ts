@@ -130,7 +130,7 @@ describe("every page reads the token layer and writes nothing of its own", () =>
 		// `var(--u-r)` for corners; `1px` is the half-height rounding of a 2–3px
 		// bar, `50%` is a dot and `0` is no corner at all. Tempered has exactly
 		// one radius, so for it this IS "the one radius". A theme whose brief
-		// gives radii by ROLE (Counter's control / button / media / panel /
+		// gives radii by ROLE (control / button / media / panel /
 		// pill, say) names them as tokens in its own theme.css — `var(--<prefix>-r-<role>)` — so a corner
 		// is still never a raw length written in a view.
 		for (const [, value = ""] of declarations(name).matchAll(/border-radius:\s*([^;]+);/g)) {
@@ -297,7 +297,7 @@ const MOTION = /animation[-a-z]*\s*:|transition[-a-z]*\s*:|@keyframes/;
 
 /** A view sheet of any theme but Tempered — the one theme whose budget is zero.
  *  Every sheet such a theme ships beside its token layer (its `views.css`, and
- *  e.g. Counter's `commerce.css`, the bag drawer and commerce views). */
+ *  e.g. a `commerce.css` for its commerce views, or a bag drawer's). */
 function isOtherThemeSheet(name: string): boolean {
 	return /^themes\/[^/]+\/[\w-]+\.css$/.test(name) && !name.startsWith("themes/tempered/");
 }
@@ -381,7 +381,7 @@ describe("the motion budget, at page scope (§2, §6, §11)", () => {
 	test.each(FILES.filter(isOtherThemeSheet))(
 		"%s: under reduced motion, nothing moves — at most a fade",
 		(name) => {
-			// A reduced-motion block may carry the brief's fade (Counter's drawer:
+			// A reduced-motion block may carry the brief's fade (a drawer, say:
 			// 150ms of opacity instead of the slide), and the discrete `display` /
 			// `overlay` a top-layer element needs to fade out at all. Nothing that
 			// MOVES: no transform, translate, scale, animation or keyframes.

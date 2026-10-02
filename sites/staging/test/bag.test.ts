@@ -1,6 +1,6 @@
 /**
  * The chrome's bag (`lib/bag.ts`) — the one cart read a theme whose chrome
- * draws the cart's lines (Counter's drawer, Pressing's bag strip) opts into —
+ * draws the cart's lines (a bag drawer, a bag strip) opts into —
  * the forms it posts to `/cart/update` and `/cart/remove`, and the caching
  * rule for a page that drew it.
  *
@@ -19,6 +19,15 @@ vi.mock("emdash", () => ({ getEmDashCollection }));
 vi.mock("astro:middleware", () => ({
 	defineMiddleware: <T>(handler: T): T => handler,
 }));
+// No theme this repo ships draws the bag's lines (Tempered's chrome shows a
+// count), so the opt-in is exercised through an in-test fixture theme that sets
+// `chrome.cartLines`, spliced into the manifest and the registry.
+vi.mock("../src/themes/manifest.js", async (real) =>
+	(await import("./helpers/fixture-theme.js")).withFixtureManifest(await real()),
+);
+vi.mock("../src/themes/registry.js", async (real) =>
+	(await import("./helpers/fixture-theme.js")).withFixtureRegistry(await real()),
+);
 
 import {
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
@@ -32,6 +41,7 @@ import { POST as REMOVE_POST } from "../src/pages/cart/remove.js";
 import { POST as UPDATE_POST } from "../src/pages/cart/update.js";
 import { themeFor } from "../src/themes/registry.js";
 import { STORE_THEMES } from "../src/themes/manifest.js";
+import { FIXTURE_THEME_ID } from "./helpers/fixture-theme.js";
 import { SRC } from "./theme-views.js";
 
 const SITE = "http://localhost:4321";
@@ -233,9 +243,9 @@ describe("the bag's hold copy is static wall-clock time", () => {
 
 describe("only a theme that draws the bag pays for the read", () => {
 	test.each(STORE_THEMES.map((theme) => theme.id))("%s", (id) => {
-		// Counter's drawer and Pressing's bag strip draw the lines; every other
-		// theme's chrome shows a count at most and must not pay the read.
-		expect(themeFor(id).chrome?.cartLines === true).toBe(id === "counter" || id === "pressing");
+		// Only the fixture's chrome draws the lines; every theme this repo ships
+		// shows a count at most and must not pay the read.
+		expect(themeFor(id).chrome?.cartLines === true).toBe(id === FIXTURE_THEME_ID);
 	});
 
 	test("the read lives in lib/bag.ts, which never marks a response BUSY", () => {
@@ -322,10 +332,17 @@ describe("the middleware: a page that drew a bag is never shared-cached", () => 
 		expect(ctx.cache.set.mock.calls).toEqual(drawsBag ? [[false], [false]] : []);
 	});
 
+	test("the fixture theme draws the bag, so its page is per-shopper", () => {
+		// Guard against a vacuous sweep: the cases above must include a theme that
+		// opts in, or the PER_SHOPPER_NO_STORE arm is never exercised.
+		expect(STORE_THEMES.map((theme) => theme.id)).toContain(FIXTURE_THEME_ID);
+		expect(themeFor(FIXTURE_THEME_ID).chrome?.cartLines).toBe(true);
+	});
+
 	test("a page that sets a cache hint cannot re-enable the route cache for a bag page", async () => {
 		// Astro 7's `cache.set(options)` clears an earlier `set(false)`, and the
 		// route cache reads the options after `next()` returns.
-		const ctx = middlewareContext("/products?theme=counter", "cart-1");
+		const ctx = middlewareContext(`/products?theme=${FIXTURE_THEME_ID}`, "cart-1");
 		await runMiddleware(ctx, () => {
 			ctx.cache.set({ maxAge: 60 });
 			return htmlPage();
