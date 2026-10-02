@@ -124,6 +124,9 @@ const COUPON_ACTIONS: ScreenActions = screenActions("coupons");
 const ACTION_CREATE = COUPON_ACTIONS.custom("create");
 const ACTION_SAVE = COUPON_ACTIONS.custom("save");
 const ACTION_DELETE = COUPON_ACTIONS.custom("delete");
+/** Ends a coupon NOW by setting its expiry to the current instant — see
+ *  {@link retireCouponAction}. */
+const ACTION_RETIRE = COUPON_ACTIONS.custom("retire");
 /** Fired by the "New coupon" button — the promoted one above the table, and
  *  the empty state's own (E-2). Both render the create screen. Not a DA-3
  *  verb; see the module doc. */
@@ -141,6 +144,7 @@ export const COUPONS_ACTION_IDS: ReadonlySet<string> = COUPON_ACTIONS.actionIds(
 	"create",
 	"save",
 	"delete",
+	"retire",
 	"new",
 	"cancel-new",
 );
@@ -231,6 +235,7 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 			[ACTION_CREATE]: createCouponAction(),
 			[ACTION_SAVE]: saveCouponAction(),
 			[ACTION_DELETE]: deleteCouponAction(),
+			[ACTION_RETIRE]: retireCouponAction(),
 			[ACTION_NEW]: newCouponAction(),
 			[ACTION_CANCEL_NEW]: cancelNewCouponAction(),
 		},
@@ -936,7 +941,7 @@ function detailBlocks(
 		]),
 	);
 	const panels: TabPanel[] = [
-		{ label: "Coupon", blocks: couponPanel(detail) },
+		{ label: "Coupon", blocks: couponPanel(detail, status) },
 		{ label: "Redemptions", blocks: redemptionsPanel(detail) },
 	];
 	blocks.push({
@@ -983,8 +988,8 @@ function statusBanner(status: CouponStatus): BannerBlock | undefined {
 
 // -- panel "Coupon" -------------------------------------------------------------
 
-function couponPanel(detail: CouponSummaryWire): Block[] {
-	return [
+function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
+	const blocks: Block[] = [
 		// D-2a: the would-be `History` panel holds only Created (already in the
 		// identity strip), so these two round out the first panel's own `fields`
 		// instead of getting a panel of their own.
@@ -999,6 +1004,43 @@ function couponPanel(detail: CouponSummaryWire): Block[] {
 		]),
 		editGroup(detail),
 	];
+	// Not offered on a coupon that has already ended: there is nothing to retire,
+	// and an expired coupon is reopened through the edit form's expiry instead.
+	if (status !== "expired") blocks.push(retireCouponActions(detail));
+	return blocks;
+}
+
+/**
+ * RETIRE — end a coupon NOW, whether or not it has been redeemed.
+ *
+ * WHY THIS, AND NOT A DELETE OR AN `active` FLAG. Delete is forbidden once a
+ * coupon is redeemed (the redemptions are the audit trail an order's discount
+ * points at), and QA found the copy telling operators to "retire this coupon"
+ * with no control that did. An expiry of NOW is the domain's own lifecycle — the
+ * validity window `[startsAt, expiresAt)` checkout already enforces — so this
+ * needs no new state on the port: checkout refuses the code from this instant,
+ * the list and detail read `expired` through the same `couponStatus`, the uses
+ * and redemptions are untouched, and setting a later expiry in the edit form
+ * reopens it. A separate `retired` flag would be a second way to say "checkout
+ * refuses this code" that every reader of the window would have to learn.
+ */
+function retireCouponActions(detail: CouponSummaryWire): ActionsBlock {
+	const button: ButtonElement = {
+		type: "button",
+		action_id: ACTION_RETIRE,
+		label: "Retire coupon", // generic verb (M-7) — the code is in the confirm title
+		style: "danger",
+		value: { couponId: detail.id, code: detail.code },
+		confirm: {
+			title: fitLabel(`Retire ${detail.code}?`),
+			// 138 chars ≤ 200 (X-11).
+			text: "Checkout stops accepting this code now. Placed orders keep their discount; set a later expiry in Edit to reopen it.",
+			confirm: "Yes, retire",
+			deny: "Keep it",
+			style: "danger",
+		},
+	};
+	return { type: "actions", block_id: "coupons:retire-action", elements: [button] };
 }
 
 /**
@@ -1352,7 +1394,7 @@ function deleteCouponActions(detail: CouponSummaryWire): ActionsBlock {
 /** DA-7's normative blockquote, parametrized. No "deliberately"/"there is
  *  no"/"we do not" (X-41); names the alternative (DA-7a). */
 function withheldDeleteContext(usesCount: number): string {
-	return `This coupon has been redeemed ${usesCount} time${usesCount === 1 ? "" : "s"} — deletion is blocked to keep the redemption audit trail. To retire it, set its expiry to a past date.`;
+	return `This coupon has been redeemed ${usesCount} time${usesCount === 1 ? "" : "s"} — deletion is blocked to keep the redemption audit trail. To stop it at checkout, use Retire coupon.`;
 }
 
 // -- form parsing (exact integer math; NO floats — CLAUDE.md) -------------------
@@ -1884,13 +1926,63 @@ function deleteCouponOutcome(
 			variant: "error",
 			title: "Coupon not deleted",
 			description:
-				"This coupon has been redeemed — deletion is blocked to preserve the redemption audit trail. To retire it, set its expiry to a past date instead.",
+				"This coupon has been redeemed — deletion is blocked to preserve the redemption audit trail. To stop it at checkout, use Retire coupon instead.",
 		});
 	}
 	return showLeaf([code], {
 		variant: "error",
 		title: "Coupon not deleted",
 		description: "The coupon could not be deleted — retry in a moment.",
+	});
+}
+
+// -- custom action: retire a coupon (expiry := now) ------------------------------
+
+/**
+ * Re-reads the coupon FIRST and writes back every field it holds, changing only
+ * the window. The port's edit is a last-writer-wins full replace with no
+ * partial form, so retiring from the values the button rendered with would roll
+ * back any edit saved since; the fresh read narrows that to the read-to-write
+ * gap every LWW coupon edit already accepts (`CouponStore.update`'s doc).
+ *
+ * A start date still in the future is DROPPED: `[future, now)` is an inverted
+ * window that would read `scheduled` until the start passed and only then
+ * `expired`, for a coupon the operator just ended.
+ */
+function retireCouponAction() {
+	return customAction<AdminRulesSurface>(async ({ input, client, showLeaf, showList }) => {
+		const payload = asRecord(input.value);
+		const couponId = readString(payload?.couponId);
+		const code = readString(payload?.code);
+		if (couponId === undefined || code === undefined) return showList();
+		const page = await client.listCoupons({ search: code }, { limit: 2 });
+		const current = page.coupons.find((c) => c.id === couponId);
+		if (current === undefined) {
+			return showList(undefined, {
+				variant: "error",
+				title: "Coupon not found",
+				description: "This coupon no longer exists — it may have been deleted.",
+			});
+		}
+		const now = new Date().toISOString();
+		const result = await client.updateCoupon(couponId, {
+			amountCents: current.amountCents,
+			rateBps: current.rateBps,
+			capCents: current.capCents,
+			minSubtotalCents: current.minSubtotalCents,
+			startsAt: current.startsAt !== null && current.startsAt > now ? null : current.startsAt,
+			expiresAt: now,
+			maxUses: current.maxUses,
+			maxUsesPerCustomer: current.maxUsesPerCustomer,
+		});
+		if (result.ok) {
+			return showLeaf([current.code], {
+				variant: "default",
+				title: "Coupon retired",
+				description: `Checkout no longer accepts "${current.code}". Placed orders keep their discount. To reopen it, set a later expiry date in Edit.`,
+			});
+		}
+		return saveCouponOutcome(result, current.code, showLeaf, showList);
 	});
 }
 

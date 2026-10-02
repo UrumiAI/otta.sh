@@ -2157,7 +2157,11 @@ The normative copy, ≤200 chars — **this blockquote is the spec, and the code
 The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
 
 > `This coupon has been redeemed 3 times — deletion is blocked to keep the redemption audit
-> trail. To retire it, set its expiry to a past date.`
+> trail. To stop it at checkout, use Retire coupon.`
+
+*(Amended 2026-10-02: the alternative used to read "set its expiry to a past date", an
+instruction with no control of its own; the coupon detail now has a `Retire coupon` action that
+does exactly that — see §12.2.)*
 
 Applies to: coupon delete when redeemed; tax class / zone / method delete when referenced; edit and
 stock forms on a soft-deleted product; refund action when nothing remains refundable; cancel when the
@@ -2668,6 +2672,15 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                  ── every editable field on `coupons-page.ts:1096-1175` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
+│  actions    (cond status ≠ expired) block_id coupons:retire-action
+│             [ "Retire coupon" style danger  value {couponId, code}
+│                 confirm{ title "Retire SUMMER25?", text "Checkout stops accepting this
+│                   code now. Placed orders keep their discount; set a later expiry in Edit
+│                   to reopen it.", confirm "Yes, retire", deny "Keep it" } ]
+│             ← RETIRE = expiresAt := now (a future startsAt is dropped). The domain's own
+│               window, so no `retired` state exists on the port; works on a REDEEMED
+│               coupon, which delete cannot touch. Re-reads the coupon before its LWW
+│               full-replace write so it changes only the window.  ← ADDED (QA 2026-10-02)
 │
 └─ panel "Redemptions"
      fields     block_id coupons:uses     Redemptions | Max uses ·
