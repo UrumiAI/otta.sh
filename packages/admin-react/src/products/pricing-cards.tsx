@@ -324,10 +324,29 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	const recordRef = React.useRef<ProductRecord | null>(null);
 	recordRef.current = load.status === "ready" ? load.record : null;
 	/** A stock movement the server accepted, waiting for the re-read that states
-	 *  the count it actually landed on. */
+	 *  the count it actually landed on. TAGGED WITH THAT RE-READ'S GENERATION: an
+	 *  earlier re-read still in flight (the one after a lost answer, say) may
+	 *  resolve after this move's answer and before its own re-read runs, and must
+	 *  neither print this receipt with its older count nor release the buttons. */
 	const stockReceipt = React.useRef<
-		{ verb: "Added" | "Removed"; n: number } | { replayed: true } | { refused: true } | null
+		| ({ readonly gen: number } & (
+				| { verb: "Added" | "Removed"; n: number }
+				| { replayed: true }
+				| { refused: true }
+		  ))
+		| null
 	>(null);
+	/** The last generation asked for; `reload` catches up on the next render. */
+	const generation = React.useRef(0);
+	/** Ask for a re-read, and return its generation. */
+	const rereadNow = (): number => {
+		generation.current += 1;
+		setReload(generation.current);
+		return generation.current;
+	};
+	/** The open remove confirm, for the re-read to check against. */
+	const confirmRef = React.useRef<{ readonly n: number; readonly onHand: number } | null>(null);
+	confirmRef.current = confirmRemove;
 	const panelRef = React.useRef<HTMLDivElement | null>(null);
 	/** Whether the cards hold edits their own Save has not written — read by the
 	 *  leave-page guard below, which is registered once. */
@@ -368,8 +387,12 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 	React.useEffect(() => {
 		let cancelled = false;
+		const gen = reload;
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
+			/** This read's own receipt; a receipt for a LATER read is left alone. */
+			const receipt = stockReceipt.current?.gen === gen ? stockReceipt.current : null;
+			const awaited = stockReceipt.current !== null && receipt === null;
 			if (isFailure(result)) {
 				setLoad({
 					status: "failed",
@@ -377,9 +400,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					description: result.description,
 					forbidden: result.status === 403,
 				});
-				stockReceipt.current = null;
-				movingNow.current = false;
-				setMoving(false);
+				if (!awaited) {
+					stockReceipt.current = null;
+					movingNow.current = false;
+					setMoving(false);
+				}
 				return;
 			}
 			const record = result.product;
@@ -409,7 +434,21 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 			}
 			reseed.current = false;
-			const receipt = stockReceipt.current;
+			// A REMOVE CONFIRM STILL OPEN ON A COUNT THAT MOVED says "You'll have N
+			// left" about a number that is no longer true: it is closed, and the
+			// merchant is told nothing was removed.
+			const confirm = confirmRef.current;
+			const staleConfirm =
+				confirm === null || confirm.onHand === record.onHand
+					? null
+					: `Stock changed to ${String(record.onHand ?? 0)} while you were deciding — nothing was removed; check and try again.`;
+			if (staleConfirm !== null) {
+				setConfirmRemove(null);
+				setStockMsg((prev) => ({
+					tone: "fail",
+					text: prev === null || prev.text === "" ? staleConfirm : `${prev.text} ${staleConfirm}`,
+				}));
+			}
 			if (receipt !== null && "refused" in receipt) {
 				stockReceipt.current = null;
 				movingNow.current = false;
@@ -417,13 +456,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			} else if (receipt !== null) {
 				stockReceipt.current = null;
 				const now = `now ${String(record.onHand ?? 0)} in stock`;
+				// A ledger answer moved nothing: it is never reported as a fresh move.
+				const text =
+					"replayed" in receipt
+						? `Already applied — ${now}`
+						: `${receipt.verb} ${String(receipt.n)} — ${now}`;
 				setStockMsg({
-					tone: "ok",
-					// A ledger answer moved nothing: it is never reported as a fresh move.
-					text:
-						"replayed" in receipt
-							? `Already applied — ${now}`
-							: `${receipt.verb} ${String(receipt.n)} — ${now}`,
+					tone: staleConfirm === null ? "ok" : "fail",
+					text: staleConfirm === null ? text : `${text}. ${staleConfirm}`,
 				});
 				setQty("1");
 				movingNow.current = false;
@@ -434,6 +474,102 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			cancelled = true;
 		};
 	}, [productId, reload]);
+
+	/** Send one stock move. `heldSince` is set only by a Retry: the original loss
+	 *  time, so a Retry lost again is held under it (see {@link HeldMove}). */
+	const send = (
+		actionId: StockActionId,
+		value: Readonly<Record<string, string>>,
+		n: number,
+		heldSince?: number,
+	): void => {
+		movingNow.current = true;
+		setMoving(true);
+		setStockMsg(null);
+		// Dispatching a move supersedes any lost move still offered for Retry.
+		setHeld(null);
+		void performAction(actionId, value, PRODUCTS_ACT_SUBJECT).then((result) => {
+			if (isFailure(result)) {
+				movingNow.current = false;
+				setMoving(false);
+				if (result.indeterminate === true) {
+					setHeld({ actionId, value, n, title: result.title, heldAt: heldSince ?? Date.now() });
+					// The move may have landed: re-read so the count on screen — and the
+					// next removal's watermark — is the server's, not the one before it.
+					// No receipt: the held notice is the outcome.
+					forgetSummaries();
+					rereadNow();
+					return;
+				}
+				setStockMsg({ tone: "fail", text: `${result.title}. ${result.description}` });
+				return;
+			}
+			const notice = result.notice;
+			if (notice !== null && notice.variant === "error") {
+				// The count it refused against may be stale: the re-read shows the real
+				// one, and the buttons wait for it, as they do after a success.
+				setStockMsg({ tone: "fail", text: notice.description || notice.title });
+				stockReceipt.current = { refused: true, gen: generation.current + 1 };
+				rereadNow();
+				return;
+			}
+			// The buttons stay disabled until the re-read lands, so a second click is
+			// never sent against the count this one just changed, and the receipt
+			// states the count the SERVER now holds rather than one worked out here.
+			forgetSummaries();
+			const gen = generation.current + 1;
+			stockReceipt.current =
+				result.replayed === true
+					? { replayed: true, gen }
+					: { verb: actionId === "products:restock" ? "Added" : "Removed", n, gen };
+			rereadNow();
+		});
+	};
+
+	/** THE ONLY RE-SEND of a nonce: the held move, once per Retry click. */
+	const retryHeld = (): void => {
+		if (held === null || movingNow.current) return;
+		// The Retry button goes on the click; hand keyboard focus to the quantity
+		// rather than dropping it to the page.
+		requestAnimationFrame(() => {
+			if (document.activeElement === null || document.activeElement === document.body) {
+				qtyInput.current?.focus();
+			}
+		});
+		if (Date.now() - held.heldAt > HELD_MOVE_TTL_MS) {
+			setHeld(null);
+			setStockMsg({
+				tone: "fail",
+				text: "This change is too old to retry safely — check the count before trying again.",
+			});
+			return;
+		}
+		send(held.actionId, held.value, held.n, held.heldAt);
+	};
+
+	/** The held move, its sentence and its Retry — shown in the Inventory card,
+	 *  and on the failure view when the re-read after the loss itself failed:
+	 *  the move may still have landed, and Retry is still the safe way on. */
+	const heldCallout =
+		held === null ? null : (
+			<div className="otta-pricing-callout" data-tone="warn" data-testid="otta-stock-held">
+				{/* Announced; the Retry button stays outside the live region. */}
+				<span role="alert">
+					<strong>{held.title}.</strong> {heldMoveText(held)}
+				</span>
+				<div>
+					<button
+						type="button"
+						className="otta-pricing-btn"
+						data-testid="otta-stock-retry"
+						disabled={moving}
+						onClick={retryHeld}
+					>
+						{heldMoveRetryLabel(held)}
+					</button>
+				</div>
+			</div>
+		);
 
 	if (load.status === "loading" || (load.status === "ready" && draft === null)) {
 		return (
@@ -458,13 +594,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					<strong>{load.title}</strong>
 					<span>{load.description}</span>
 				</div>
+				{heldCallout}
 				<div>
 					<button
 						type="button"
 						className="otta-pricing-btn"
 						onClick={() => {
 							setLoad({ status: "loading" });
-							setReload((n) => n + 1);
+							rereadNow();
 						}}
 					>
 						Try again
@@ -596,7 +733,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					if (result.recordMoved === true) {
 						setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
 						reseed.current = true;
-						setReload((n) => n + 1);
+						rereadNow();
 						return;
 					}
 					if (result.field === "sku") {
@@ -610,7 +747,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setSaveStatus({ tone: "ok", text: "Saved" });
 				forgetSummaries();
 				reseed.current = true;
-				setReload((n) => n + 1);
+				rereadNow();
 			})
 			.catch((error: unknown) => {
 				// Never leave the button stuck on "Saving…", nor keyboard focus on the page.
@@ -625,56 +762,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					text: `The save did not finish${error instanceof Error ? ` — ${error.message}` : ""}. Try again.`,
 				});
 			});
-	};
-
-	/** Send one stock move. `heldSince` is set only by a Retry: the original loss
-	 *  time, so a Retry lost again is held under it (see {@link HeldMove}). */
-	const send = (
-		actionId: StockActionId,
-		value: Readonly<Record<string, string>>,
-		n: number,
-		heldSince?: number,
-	): void => {
-		movingNow.current = true;
-		setMoving(true);
-		setStockMsg(null);
-		// Dispatching a move supersedes any lost move still offered for Retry.
-		setHeld(null);
-		void performAction(actionId, value, PRODUCTS_ACT_SUBJECT).then((result) => {
-			if (isFailure(result)) {
-				movingNow.current = false;
-				setMoving(false);
-				if (result.indeterminate === true) {
-					setHeld({ actionId, value, n, title: result.title, heldAt: heldSince ?? Date.now() });
-					// The move may have landed: re-read so the count on screen — and the
-					// next removal's watermark — is the server's, not the one before it.
-					// No receipt: the held notice is the outcome.
-					forgetSummaries();
-					setReload((k) => k + 1);
-					return;
-				}
-				setStockMsg({ tone: "fail", text: `${result.title}. ${result.description}` });
-				return;
-			}
-			const notice = result.notice;
-			if (notice !== null && notice.variant === "error") {
-				// The count it refused against may be stale: the re-read shows the real
-				// one, and the buttons wait for it, as they do after a success.
-				setStockMsg({ tone: "fail", text: notice.description || notice.title });
-				stockReceipt.current = { refused: true };
-				setReload((k) => k + 1);
-				return;
-			}
-			// The buttons stay disabled until the re-read lands, so a second click is
-			// never sent against the count this one just changed, and the receipt
-			// states the count the SERVER now holds rather than one worked out here.
-			forgetSummaries();
-			stockReceipt.current =
-				result.replayed === true
-					? { replayed: true }
-					: { verb: actionId === "products:restock" ? "Added" : "Removed", n };
-			setReload((k) => k + 1);
-		});
 	};
 
 	/** A NEW move: one click, one fresh nonce, never reused after it is answered.
@@ -692,27 +779,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			},
 			n,
 		);
-	};
-
-	/** THE ONLY RE-SEND of a nonce: the held move, once per Retry click. */
-	const retryHeld = (): void => {
-		if (held === null || movingNow.current) return;
-		// The Retry button goes on the click; hand keyboard focus to the quantity
-		// rather than dropping it to the page.
-		requestAnimationFrame(() => {
-			if (document.activeElement === null || document.activeElement === document.body) {
-				qtyInput.current?.focus();
-			}
-		});
-		if (Date.now() - held.heldAt > HELD_MOVE_TTL_MS) {
-			setHeld(null);
-			setStockMsg({
-				tone: "fail",
-				text: "This change is too old to retry safely — check the count before trying again.",
-			});
-			return;
-		}
-		send(held.actionId, held.value, held.n, held.heldAt);
 	};
 
 	const qtyValue = parseStockQty(qty);
@@ -953,29 +1019,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 							>
 								{stockMsg?.text ?? ""}
 							</span>
-							{held !== null && (
-								<div
-									className="otta-pricing-callout"
-									data-tone="warn"
-									data-testid="otta-stock-held"
-								>
-									{/* Announced; the Retry button stays outside the live region. */}
-									<span role="alert">
-										<strong>{held.title}.</strong> {heldMoveText(held)}
-									</span>
-									<div>
-										<button
-											type="button"
-											className="otta-pricing-btn"
-											data-testid="otta-stock-retry"
-											disabled={moving}
-											onClick={retryHeld}
-										>
-											{heldMoveRetryLabel(held)}
-										</button>
-									</div>
-								</div>
-							)}
+							{heldCallout}
 						</div>
 					)}
 					{hasSku && p.onHand === null && (
@@ -1196,9 +1240,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			<ConfirmDialog
 				open={confirmRemove !== null}
 				title={`Remove ${String(confirmRemove?.n ?? 0)} from stock?`}
-				text={`You'll have ${String((confirmRemove?.onHand ?? 0) - (confirmRemove?.n ?? 0))} left. To undo this, you'd add them back by hand.${
-					moving ? " Another stock change is still running — wait for it to finish." : ""
-				}`}
+				text={`You'll have ${String((confirmRemove?.onHand ?? 0) - (confirmRemove?.n ?? 0))} left. To undo this, you'd add them back by hand.`}
+				status={moving ? "Another stock change is still running — wait for it to finish." : ""}
 				confirmLabel="Remove"
 				denyLabel="Cancel"
 				// A confirm pressed while a move is in flight would be dropped by the

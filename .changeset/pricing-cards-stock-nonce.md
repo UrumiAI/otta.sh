@@ -16,7 +16,10 @@ no nonce, so the plugin keyed the move on `productId:direction:onHand:qty`.
   the remove confirm keeps it. It expires 10 minutes after the original loss and is never
   persisted.
 - The remove confirm sends the count it showed as the removal's watermark, and its Remove
-  button waits while another stock change is still running instead of being dropped.
+  button waits while another stock change is still running instead of being dropped. If
+  that change moves the count, the confirm closes and says nothing was removed.
+- If the re-read after a lost answer fails, the held move and its Retry stay on the
+  failure view.
 - `products:restock` / `products:remove-stock` results carry `replayed: true` when the move
   was answered from the idempotency ledger, so the cards read "Already applied — now N in
   stock" instead of a fresh "Added N".

@@ -878,21 +878,36 @@ test("a LOST answer re-reads the count, so the next move is judged against the s
 	expect(server.onHand()).toBe(27);
 });
 
-test("a confirmed removal sends the count the merchant APPROVED, even if a re-read moved it while the confirm was open", async () => {
+const confirmOpen = (c: HTMLElement): boolean =>
+	c.querySelector<HTMLDialogElement>('[data-testid="otta-confirm"]')?.open === true;
+
+test("a re-read that moves the count while the remove confirm is open closes it and says so — nothing is removed", async () => {
 	stockServer(24);
 	const c = await mountPanel();
 	await type(input(c, "Add or remove stock"), "2");
 	await fire(button(c, "Remove"), "click");
+	expect(confirmOpen(c)).toBe(true);
 	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
 		"You'll have 22 left.",
 	);
-	// A move lands while the dialog is open, and the cards re-read 26.
+	// A move lands while the dialog is open, and the cards re-read 26: the
+	// dialog's "22 left" is no longer true, so it is not left standing.
 	await pressEnterInQty(c);
 	expect(onHandShown(c)).toBe("26");
-	// What the dialog said is what was approved.
-	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
-		"You'll have 22 left.",
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain(
+		"Stock changed to 26 while you were deciding — nothing was removed; check and try again.",
 	);
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:restock"]);
+});
+
+test("a confirm left open by a lost answer that moved nothing still sends the count it showed", async () => {
+	stockServer(24, ["lose-before"]);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c); // lost before it ran; the re-read still says 24
+	expect(confirmOpen(c)).toBe(true);
 	const yes = c.querySelector('[data-testid="otta-confirm-yes"]');
 	if (yes === null) throw new Error("no remove confirm");
 	await fire(yes, "click");
@@ -902,7 +917,7 @@ test("a confirmed removal sends the count the merchant APPROVED, even if a re-re
 	expect(removal["onHand"]).toBe("24");
 });
 
-test("the remove confirm cannot be pressed while another move is in flight, so it is never silently dropped", async () => {
+test("the remove confirm cannot be pressed while another move is in flight, says why politely, and closes when that move changes the count", async () => {
 	const server = stockServer(24, ["pending"]);
 	const c = await mountPanel();
 	await type(input(c, "Add or remove stock"), "2");
@@ -911,18 +926,106 @@ test("the remove confirm cannot be pressed while another move is in flight, so i
 	const yes = c.querySelector<HTMLButtonElement>('[data-testid="otta-confirm-yes"]');
 	if (yes === null) throw new Error("no remove confirm");
 	expect(yes.disabled).toBe(true);
-	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
-		"Another stock change is still running",
-	);
+	const status = c.querySelector('[data-testid="otta-confirm-status"]');
+	expect(status?.getAttribute("aria-live")).toBe("polite");
+	expect(status?.textContent).toContain("Another stock change is still running");
 	await server.release();
 	expect(server.onHand()).toBe(26);
-	const after = c.querySelector<HTMLButtonElement>('[data-testid="otta-confirm-yes"]');
-	expect(after?.disabled).toBe(false);
-	if (after === null) throw new Error("no remove confirm");
-	await fire(after, "click");
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain("Added 2 — now 26 in stock");
+	expect(c.textContent).toContain("Stock changed to 26 while you were deciding");
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:restock"]);
+});
+
+test("a STALE re-read that resolves after a Retry succeeded cannot print the receipt or release the buttons — only the Retry's own re-read does", async () => {
+	// R1 is the re-read after the lost answer; R2 the one after the Retry. R1
+	// resolves (with the pre-Retry count) after the Retry's answer is in but
+	// before R2 runs.
+	let onHand = 24;
+	let writesSeen = 0;
+	let releaseWrite: (() => void) | null = null;
+	let releaseRead: (() => void) | null = null;
+	let holdNextRead = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") {
+			if (holdNextRead) {
+				holdNextRead = false;
+				const snapshot = onHand;
+				return new Promise<Response>((resolve) => {
+					releaseRead = () => {
+						resolve(detail({ onHand: snapshot }));
+					};
+				});
+			}
+			return Promise.resolve(detail({ onHand }));
+		}
+		writesSeen += 1;
+		if (writesSeen === 1) return Promise.reject(new TypeError("Failed to fetch"));
+		return new Promise<Response>((resolve) => {
+			releaseWrite = () => {
+				onHand += 5;
+				resolve(
+					json({ ok: true, notice: { variant: "default", title: "Stock added", description: "" } }),
+				);
+			};
+		});
+	});
+	const c = await mountPanel();
+	holdNextRead = true;
+	await add(c, "5"); // lost before it ran; R1 is now pending with 24
+	expect(releaseRead).not.toBeNull();
+	await retry(c); // the Retry's write is pending
+	await React.act(async () => {
+		releaseWrite?.();
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+		releaseRead?.();
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+	});
 	await flush();
-	expect(writes().map((w) => w["action_id"])).toEqual([
-		"products:restock",
-		"products:remove-stock",
-	]);
+	expect(c.textContent).not.toContain("now 24 in stock");
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(onHandShown(c)).toBe("29");
+});
+
+test("if the re-read after a lost answer fails, the held move and its Retry stay on the failure view", async () => {
+	let onHand = 24;
+	let failReads = false;
+	let wrote = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			wrote += 1;
+			if (wrote === 1) {
+				onHand += 5; // landed; the answer is lost
+				failReads = true;
+				return Promise.reject(new TypeError("Failed to fetch"));
+			}
+			return Promise.resolve(
+				json({
+					ok: true,
+					notice: { variant: "default", title: "Already applied", description: "" },
+					replayed: true,
+				}),
+			);
+		}
+		if (failReads) {
+			return Promise.resolve(
+				json({ ok: false, title: "Products are unavailable", description: "Try again." }),
+			);
+		}
+		return Promise.resolve(detail({ onHand }));
+	});
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(c.textContent).toContain("Products are unavailable");
+	expect(heldText(c)).toContain(
+		"Add 5 — the change may have been applied; check the count before trying again.",
+	);
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
+	failReads = false;
+	await retry(c);
+	expect(writes()).toHaveLength(2);
+	expect(writes()[1]).toEqual(writes()[0]);
+	expect(c.textContent).toContain("Already applied — now 29 in stock");
 });
