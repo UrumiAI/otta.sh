@@ -342,9 +342,14 @@ order of appearance in a deployment's life:
   `https://<your-site>/account/verify`. **Order emails link to the order page** through the
   same setting: its origin plus `/orders/<order id>`, the page a shopper is sent to after
   checkout (a bearer link — anyone holding it sees the order's public view, which carries no
-  address or email). Unset or invalid, order emails go out with no link; it is never taken
-  from a request's `Host`. The sign-in email names the store from Settings → "Store display
-  name" (`settings:storeDisplayName`) and states the link's real lifetime (15 minutes). Order
+  address or email). Two assumptions: the storefront is served from the **root** of that
+  origin (a path on the sign-in page URL, such as `/shop/account/verify`, is dropped — the
+  site's own links are root-absolute), and the URL is **https**. An `http:` URL is used only
+  for `localhost`, `127.0.0.1` or `[::1]` (local development); any other http URL gives no
+  order link, because a bearer link must not travel in clear text. Unset or invalid, order
+  emails go out with no link; it is never taken from a request's `Host`. The sign-in email (and the sign-off of every order email) names the
+  store from Settings → "Store display name" (`settings:storeDisplayName`); unset, it is
+  left out. The sign-in email states the link's real lifetime (15 minutes). Order
   emails list the order's own line snapshot, totals and ship-to, with money formatted as the
   storefront formats it.
 
