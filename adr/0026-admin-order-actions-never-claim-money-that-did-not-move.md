@@ -42,14 +42,17 @@ refuse. A hand-made request is still refused in the domain.
 2. **No bare `→ cancelled`, from any state.** It is refused with `USE_CANCEL`, and
    `adminNextStates` never offers it. Cancel order is the admin's one way to cancel. It records
    the reason and, through the store's release intent, frees a pending order's held stock. On this
-   build Cancel order does NOT refund or restock a paid order. The refusal's copy says so and
-   points the operator to Money → Refunds first, rather than implying the money is handled.
+   build Cancel order does NOT refund or restock a paid order. The refusal's copy, keyed on the
+   order's state, says so and points the operator to Money → Refunds. It does not say "refund
+   first": a full refund closes the order as `refunded`, after which it cannot be cancelled. The
+   Cancel group's label, banner and confirm are keyed on the state the same way, and no longer
+   promise released stock on a paid order.
 3. **Mark refunded is bookkeeping and emails nobody.** It was kept rather than removed, because it
    is the only way to close an order whose refund was made outside Otta. For a Stripe order the
    ledger cannot record that refund: its pre-flight fails closed on money the provider already
    shows refunded (ADR-0008). The move enqueues no outbox row. Its confirm and its success notice
-   ("Marked refunded. No money moved and the buyer was not emailed.") both say so. Money moved through Money → Refunds emails the buyer
-   from the ledger write.
+   ("Marked refunded. No money moved and the buyer was not emailed.") both say so. Money moved
+   through Money → Refunds emails the buyer from the ledger write.
 
 `transitionOrder` itself is unchanged. It is the generic state-machine command every suite drives
 orders through, and these are rules about who is acting. The admin console is the only production

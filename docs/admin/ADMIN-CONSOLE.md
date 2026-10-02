@@ -852,7 +852,8 @@ names only the verb makes the most dangerous control on the panel the quietest t
 
 | Group | Label |
 |---|---|
-| Cancel | `Cancel order — permanent, releases held stock` |
+| Cancel (unpaid order) | `Cancel order — permanent, releases held stock` |
+| Cancel (paid or processing order) | `Cancel order — permanent, does not refund` — on this build Cancel order neither refunds nor restocks a paid order, and its copy says so (`cancelGroupLabel` / `cancelBannerDescription` / `cancelConfirmText(label, state)`) |
 | Refund a partial amount | `Refund a different amount — cannot be reversed` |
 | Any delete (§12) | `Delete <thing> — permanent` |
 
@@ -2149,8 +2150,10 @@ the state machine minus a manual `paid` — no payment method is declared offlin
 paid is never offered**: Otta marks an order paid only when its provider confirms the charge — and
 minus a bare `cancelled`, from any state. Both are also refused by `transitionOrderAsAdmin` when a
 hand-made payload asks for them, each with its own notice ("Only the payment provider can mark this
-order paid"; "Use Cancel order to cancel an order", which also says cancelling does not refund the
-buyer and to refund under Money → Refunds first). **Mark refunded** stays offered, as bookkeeping for
+order paid"; "Use Cancel order to cancel an order", keyed on the observed state: an unpaid
+order's says Cancel order returns its held stock; a paid order's says cancelling does not refund
+the buyer and points to Money → Refunds — never "refund first", because a full refund closes the
+order as `refunded`, after which it cannot be cancelled). **Mark refunded** stays offered, as bookkeeping for
 a refund made outside Otta: it moves no money, **emails nobody**, and both its confirm and its
 success notice ("Marked refunded") say so.
 

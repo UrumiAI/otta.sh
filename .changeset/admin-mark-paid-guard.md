@@ -1,7 +1,8 @@
 ---
 "@otta-sh/domain": minor
 "@otta-sh/plugin": minor
-"@otta-sh/admin-presentation": patch
+"@otta-sh/admin-presentation": minor
+"@otta-sh/admin-react": patch
 ---
 
 Admin status moves can no longer claim money that did not move (QA T1-3, T1-4, T1-6;
@@ -26,3 +27,8 @@ ADR-0026).
   and the buyer was not emailed."
 - **`@otta-sh/admin-presentation`.** The Mark refunded confirm says the move does not move money
   and does not email the buyer.
+- **Cancel copy is keyed on the order's state.** The bare-cancel refusal tells an unpaid order
+  that Cancel order returns its held stock, and tells a paid one that cancelling does not refund
+  the buyer (see Money → Refunds). On a paid order, the Cancel group's label, banner
+  (`cancelBannerDescription`) and confirm (`cancelConfirmText(label, state)`) no longer claim
+  released stock, and say the cancel does not refund.
