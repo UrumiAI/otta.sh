@@ -431,10 +431,10 @@ export interface CommerceClient {
 	 *  reads. The guest gets `serializePublicOrder`'s whitelist. */
 	getPublicOrder(orderId: string): Promise<PublicOrderResult>;
 	/**
-	 * Resume a PENDING order's payment from its id alone (QA U-2) — the order
-	 * page's "Complete payment" on any device, where no cart cookie and no
-	 * checkout stash exist. The same capability as {@link getPublicOrder}: the
-	 * order id is the whole credential.
+	 * Resume a PENDING order's payment (QA U-2) — the order page's "Complete
+	 * payment" on any device — from the order id PLUS a second factor (the
+	 * order's cart, a session owning it, or its email). The id alone, the
+	 * capability {@link getPublicOrder} reads with, is `PROOF_REQUIRED`.
 	 *
 	 * It replays the order's OWN checkout — its cart, its idempotency key, its
 	 * buyer — so the reply is the same order and the provider is asked for the

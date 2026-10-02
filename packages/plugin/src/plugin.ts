@@ -171,8 +171,9 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
-		// QA U-2: the order page's "Complete payment" — the same capability as the
-		// order read (the id), answering the pending order's OWN intent.
+		// QA U-2: the order page's "Complete payment" — the order id PLUS a second
+		// factor (cart, owning session or email), answering the pending order's
+		// OWN intent. The id alone is PROOF_REQUIRED.
 		[STOREFRONT_ORDER_RESUME_ROUTE]: {
 			handler: createOrderResumeRouteHandler() as never,
 			public: true,

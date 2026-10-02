@@ -89,7 +89,8 @@ export const STOREFRONT_CHECKOUT_SUMMARY_ROUTE = "storefront/checkout/summary";
 export const STOREFRONT_CHECKOUT_PLACE_ROUTE = "storefront/checkout/place";
 export const STOREFRONT_ORDER_ROUTE = "storefront/order";
 /** The order page's "Complete payment" (QA U-2): the pending order's own intent,
- *  from the order id alone. */
+ *  from the order id plus a second factor (cart, owning session or email); the
+ *  id alone is `PROOF_REQUIRED`. */
 export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
 
 /** The one payment method this slice offers. x402's `x402_challenge` client

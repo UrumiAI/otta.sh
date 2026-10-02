@@ -1060,7 +1060,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * Resume a pending order's payment from its id alone — see the port. The
+	 * Resume a pending order's payment from its id plus a second factor (cart,
+	 * owning session or email; the id alone is PROOF_REQUIRED) — see the port. The
 	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
 	 * short-circuit: its cart, its key, its buyer, its method. That path returns
 	 * the original order, re-snapshots nothing, and asks the gateway for the
