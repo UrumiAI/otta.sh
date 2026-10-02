@@ -2,6 +2,7 @@ import {
 	cents,
 	currency,
 	dispatchOrderEmails,
+	dispatchOrderEmailsForOrder,
 	idempotencyKey,
 	orderId,
 	productId,
@@ -13,6 +14,7 @@ import {
 } from "@otta-sh/domain";
 import {
 	EmailSendTimeoutError,
+	type EmailSender,
 	isEmailSendTimeoutError,
 	MAX_UNCOUNTED_TIMEOUTS,
 	TIMEOUT_BACKOFF_BASE_MS,
@@ -338,3 +340,189 @@ function timingOutFor(orderIdText: string, sent: string[]) {
 		},
 	};
 }
+// The order-scoped dispatcher the payment-settle route calls inline (ADR-0005's
+// 2026-10-02 amendment). It shares `dispatchOrderEmails`' send / mark / reschedule
+// body; what differs is only WHICH rows it may claim — one order's, never the queue.
+describe("dispatchOrderEmailsForOrder — one order, inline", () => {
+	test("sends only the named order's due email; the other order waits for the cron", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.createFromCart(
+			pending({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+		);
+		await store.markPaid(orderId("ord-1"));
+		await store.markPaid(orderId("ord-2"));
+
+		const deps = { orderStore: store, emailSender, clock };
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-2"))).toBe(1);
+		expect(emailSender.sends.map((s) => s.data["orderId"])).toEqual(["ord-2"]);
+		// The idempotency key is the outbox row id, exactly as on the cron path — it is
+		// what dedupes an inline send and a later cron re-send provider-side.
+		expect(emailSender.sends[0]?.idempotencyKey).toMatch(/\S/);
+		expect(store.outboxFor("ord-1")).toEqual([{ toState: "paid", status: "pending" }]);
+		expect(store.outboxFor("ord-2")).toEqual([{ toState: "paid", status: "sent" }]);
+	});
+
+	test("a replay sends nothing — the row is already sent", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.markPaid(orderId("ord-1"));
+		const deps = { orderStore: store, emailSender, clock };
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-1"))).toBe(1);
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-1"))).toBe(0);
+		expect(await dispatchOrderEmails(deps)).toBe(0); // and the cron finds nothing either
+		expect(emailSender.countByTemplate("order-confirmation", "ord-1")).toBe(1);
+	});
+
+	test("a failed send backs the row off by the caller's lease; the cron delivers it after", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.markPaid(orderId("ord-1"));
+		const deps = { orderStore: store, emailSender, clock };
+
+		emailSender.failNextSends(1);
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-1"), { leaseMs: 60_000 })).toBe(0);
+		expect(store.outboxFor("ord-1")).toEqual([{ toState: "paid", status: "pending" }]);
+		// Backed off: not due inside the lease, for either dispatcher.
+		expect(await dispatchOrderEmails(deps)).toBe(0);
+		// The short lease is the point: the backstop picks it up a minute later, not five.
+		clock.advance(60_000);
+		expect(await dispatchOrderEmails(deps)).toBe(1);
+		expect(emailSender.countByTemplate("order-confirmation", "ord-1")).toBe(1);
+	});
+
+	test("an order with nothing due is a zero, not an error", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending()); // still pending — no outbox row
+		const deps = { orderStore: store, emailSender, clock };
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-1"))).toBe(0);
+		expect(await dispatchOrderEmailsForOrder(deps, orderId("ord-unknown"))).toBe(0);
+		expect(emailSender.sends).toHaveLength(0);
+	});
+
+	test("onlyUnattempted: a row a previous dispatch already tried is left to the cron", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.markPaid(orderId("ord-1"));
+		const deps = { orderStore: store, emailSender, clock };
+
+		emailSender.failNextSends(1);
+		expect(
+			await dispatchOrderEmailsForOrder(deps, orderId("ord-1"), {
+				leaseMs: 60_000,
+				onlyUnattempted: true,
+			}),
+		).toBe(0);
+		clock.advance(60_000); // the backoff has lapsed — the row is due again
+		expect(
+			await dispatchOrderEmailsForOrder(deps, orderId("ord-1"), { onlyUnattempted: true }),
+		).toBe(0);
+		expect(emailSender.sends).toHaveLength(0);
+		// Its retry is the cron's — with the budget it would have had.
+		expect(await dispatchOrderEmails(deps)).toBe(1);
+	});
+
+	test("shouldContinue() false stops the drain before the next claim — nothing new is claimed", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await store.markPaid(orderId("ord-1"));
+		const deps = { orderStore: store, emailSender, clock };
+		expect(
+			await dispatchOrderEmailsForOrder(deps, orderId("ord-1"), { shouldContinue: () => false }),
+		).toBe(0);
+		// Never claimed: still a first attempt for whoever comes next.
+		expect(
+			await store.claimNextEmailForOrder(
+				orderId("ord-1"),
+				clock.now().toISOString(),
+				clock.now().toISOString(),
+			),
+		).toMatchObject({ attempts: 1 });
+	});
+});
+
+/** An instant `ms` past the harness clock, as the ISO string the store takes. */
+function due(h: { clock: FixedClock }, ms = 0): string {
+	return new Date(h.clock.now().getTime() + ms).toISOString();
+}
+
+// The order-scoped drain is the SAME body as the global one (only the claim differs),
+// so every sweep-cadence and late-payment semantic must hold for it too.
+describe("dispatchOrderEmailsForOrder shares the drain's semantics", () => {
+	async function paid() {
+		const h = harness();
+		await h.store.createFromCart(pending());
+		await h.store.markPaid(orderId("ord-1"));
+		return { ...h, deps: { orderStore: h.store, emailSender: h.emailSender, clock: h.clock } };
+	}
+
+	test("canSend false hands the row back untried, behind the short untried backoff", async () => {
+		const h = await paid();
+		expect(
+			await dispatchOrderEmailsForOrder(h.deps, orderId("ord-1"), { canSend: () => false }),
+		).toBe(0);
+		expect(
+			await h.store.claimNextEmailForOrder(orderId("ord-1"), due(h), due(h, 60_000)),
+		).toBeNull();
+		expect(
+			await h.store.claimNextEmailForOrder(
+				orderId("ord-1"),
+				due(h, UNTRIED_RETRY_MS),
+				due(h, UNTRIED_RETRY_MS + 60_000),
+				{ onlyUnattempted: true },
+			),
+		).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
+	test("a CUT-SHORT timeout is released uncounted and due at once — still a first attempt", async () => {
+		const h = await paid();
+		const cut: EmailSender = {
+			send: () => Promise.reject(new EmailSendTimeoutError(800, { cutShort: true })),
+		};
+		expect(
+			await dispatchOrderEmailsForOrder({ ...h.deps, emailSender: cut }, orderId("ord-1"), {
+				onlyUnattempted: true,
+			}),
+		).toBe(0);
+		expect(
+			await h.store.claimNextEmailForOrder(orderId("ord-1"), due(h), due(h, 60_000), {
+				onlyUnattempted: true,
+			}),
+		).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
+	test("a GENUINE timeout backs the row off and records it; the inline path then leaves it to the cron", async () => {
+		const h = await paid();
+		const slow: EmailSender = { send: () => Promise.reject(new EmailSendTimeoutError(3_000)) };
+		await dispatchOrderEmailsForOrder({ ...h.deps, emailSender: slow }, orderId("ord-1"), {
+			onlyUnattempted: true,
+		});
+		h.clock.advance(TIMEOUT_BACKOFF_BASE_MS);
+		expect(
+			await dispatchOrderEmailsForOrder(h.deps, orderId("ord-1"), { onlyUnattempted: true }),
+		).toBe(0);
+		expect(await dispatchOrderEmails(h.deps)).toBe(1); // the cron's retry
+	});
+
+	test("a NOTICE row renders its own template and figure through the order-scoped drain", async () => {
+		const h = harness();
+		await h.store.createFromCart(pending());
+		await drive(h.store, "ord-1", "expired");
+		await dispatchOrderEmails({ orderStore: h.store, emailSender: h.emailSender, clock: h.clock });
+		await h.store.enqueueNotice(orderId("ord-1"), {
+			kind: "late-payment-refunded",
+			amount: cents(450),
+			currency: USD,
+		});
+		expect(
+			await dispatchOrderEmailsForOrder(
+				{ orderStore: h.store, emailSender: h.emailSender, clock: h.clock },
+				orderId("ord-1"),
+				{ onlyUnattempted: true },
+			),
+		).toBe(1);
+		const notice = h.emailSender.sends.at(-1)!;
+		expect(notice.template).not.toBe("order-expired");
+		expect(notice.data).toMatchObject({ noticeAmountCents: 450, noticeCurrency: "USD" });
+	});
+});

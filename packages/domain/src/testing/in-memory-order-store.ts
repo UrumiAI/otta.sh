@@ -15,6 +15,7 @@ import type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
 	CapturedPayment,
+	ClaimEmailForOrderOptions,
 	CreateOrderInput,
 	CreateOrderResult,
 	FinalizeRefundInput,
@@ -884,6 +885,33 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
+		return this.#claimFirstDue(now, leaseUntil, () => true);
+	}
+
+	async claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options: ClaimEmailForOrderOptions = {},
+	): Promise<OutboxEmail | null> {
+		// The same claim, filtered to one order — the predicate is shared rather than
+		// restated so the two can never disagree about what "due" means.
+		return this.#claimFirstDue(
+			now,
+			leaseUntil,
+			(r) =>
+				r.orderId === orderId &&
+				// Never tried: no counted attempt AND no uncounted timeout (which leaves
+				// `attempts` at 0 but makes the row the cron's to retry, on its backoff).
+				(options.onlyUnattempted !== true || (r.attempts === 0 && r.timeouts === 0)),
+		);
+	}
+
+	async #claimFirstDue(
+		now: string,
+		leaseUntil: string,
+		scope: (row: { orderId: string; attempts: number; timeouts: number }) => boolean,
+	): Promise<OutboxEmail | null> {
 		// Claimability is lease-driven: a row is claimable when it isn't sent, isn't
 		// failed, and has no live lease (null, or elapsed). This unifies "fresh
 		// pending", "crashed 'sending' whose lease expired", and "rescheduled with a
@@ -891,6 +919,7 @@ export class InMemoryOrderStore implements OrderStore {
 		const claimable = this.#outbox
 			.filter(
 				(r) =>
+					scope(r) &&
 					r.sentAt === null &&
 					r.status !== "failed" &&
 					(r.leaseUntil === null || r.leaseUntil <= now),

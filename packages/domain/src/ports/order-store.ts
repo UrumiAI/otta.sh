@@ -434,6 +434,35 @@ export interface OrderStore {
 	 */
 	enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean>;
 	/**
+	 * {@link claimNextEmail} narrowed to ONE order: the earliest due row of `orderId`,
+	 * under the same due predicate, the same lease and the same single-winner
+	 * conditional write — so it composes with a concurrent `claimNextEmail` (or a
+	 * second call of its own) exactly as two global dispatchers do (ADR-0005). `null`
+	 * ⇒ that order has nothing due (none enqueued, all sent/failed, or leased), or the
+	 * order does not exist; it NEVER claims another order's row.
+	 *
+	 * It exists for the payment-settle route, which sends the order it just settled
+	 * inline (ADR-0005's 2026-10-02 amendment). A request must never run the global
+	 * drain — that walks the whole queue and belongs to the cron — and an order-scoped
+	 * claim is a single read of one aggregate plus one write, bounded by construction.
+	 *
+	 * `onlyUnattempted` narrows it further to rows NO dispatcher has tried yet —
+	 * `attempts === 0` AND `timeouts === 0` — checked inside the same conditional
+	 * write, on top of the due predicate (so a row backed off to a future due time is
+	 * never claimable early either). The settle route passes it: it makes at most one
+	 * attempt per row (the total budget, `maxAttempts`, is unchanged), so repeated
+	 * deliveries during a provider outage cannot spend that budget and park the email
+	 * `failed` within minutes; and a row the cron has already backed off — an
+	 * uncounted timeout leaves `attempts` at 0 but `timeouts` above it — is never
+	 * retried inline, so a request can never undercut the cron's backoff.
+	 */
+	claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options?: ClaimEmailForOrderOptions,
+	): Promise<OutboxEmail | null>;
+	/**
 	 * Mark a claimed row delivered (`sent_at`), terminal. Only ever called on a row
 	 * `claimNextEmail` has already handed this dispatcher, so the entry it names is
 	 * expected to EXIST. An adapter that cannot LOCATE the claimed entry must throw
@@ -675,7 +704,13 @@ export interface OrderLedger {
 	paymentIntents: PaymentIntentRecord[];
 }
 
-/** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
+/** Narrowing for {@link OrderStore.claimNextEmailForOrder}. */
+export interface ClaimEmailForOrderOptions {
+	/** Claim only a row no dispatcher has tried before — never claimed for an
+	 *  attempt (`attempts === 0`) and never timed out (`timeouts === 0`). */
+	onlyUnattempted?: boolean;
+}
+
 /** How {@link OrderStore.releaseEmailClaim} hands a row back. */
 export interface ReleaseEmailClaimOptions {
 	/** When the row is due again (a backoff). Absent: due at once. */
@@ -684,6 +719,7 @@ export interface ReleaseEmailClaimOptions {
 	readonly timedOut?: boolean;
 }
 
+/** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
 export interface OutboxEmail {
 	id: string;
 	orderId: OrderId;

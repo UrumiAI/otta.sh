@@ -156,6 +156,7 @@ import {
 	type OrderStore,
 	type OrderTransitionInput,
 	type OrderTransitionResult,
+	type ClaimEmailForOrderOptions,
 	type OutboxEmail,
 	ReservationCommitLostError,
 	type RecordFulfillmentInput,
@@ -1401,13 +1402,45 @@ export class EmdashOrderStore implements OrderStore {
 				cursor,
 			});
 			for (const { data } of result.items) {
-				const claimed = await this.#claimOutboxEntry(data.orderId, now, leaseUntil);
+				const claimed = await this.#claimOutboxEntry(
+					"claimNextEmail",
+					data.orderId,
+					now,
+					leaseUntil,
+				);
 				if (claimed !== null) return claimed;
 			}
 			if (!result.hasMore || result.cursor === undefined) return null;
 			cursor = result.cursor;
 		}
 		throw new ScanPageLimitError("claimNextEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
+	}
+
+	/**
+	 * Claim the earliest due entry on ONE order — the settle route's inline dispatch
+	 * (ADR-0005's 2026-10-02 amendment).
+	 *
+	 * This is exactly the per-order step {@link claimNextEmail} already runs for each
+	 * candidate the `emailDueAt` index yields, minus the index walk: the caller already
+	 * knows the order, so it is one `getVersioned` of that document and one
+	 * compare-and-set that re-applies the due predicate. Sharing the step is what keeps
+	 * the two claims single-winner AGAINST EACH OTHER — a settle route and a cron tick
+	 * racing for the same entry meet at the same revision, and the loser re-reads a
+	 * leased entry and returns `null`. A missing order is `null` too: nothing is due.
+	 */
+	async claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options: ClaimEmailForOrderOptions = {},
+	): Promise<OutboxEmail | null> {
+		return this.#claimOutboxEntry(
+			"claimNextEmailForOrder",
+			orderId,
+			now,
+			leaseUntil,
+			options.onlyUnattempted === true,
+		);
 	}
 
 	/** Mark a claimed entry delivered. Terminal — it leaves the due index. */
@@ -1424,7 +1457,7 @@ export class EmdashOrderStore implements OrderStore {
 	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
 		// A `retryAt` moves `dueAt` FORWARD, so the entry falls behind every other
 		// due entry in the `emailDueAt` index — both the sweep's walk and the
-		// order-scoped claim (`claimNextEmailForOrder`, on feat/order-email-on-payment)
+		// order-scoped claim (`claimNextEmailForOrder`)
 		// apply the same `outboxDueAt(entry) <= now` predicate, so neither re-claims a
 		// backed-off entry early.
 		await this.#updateOutboxEntry(id, (entry) => ({
@@ -2185,14 +2218,19 @@ export class EmdashOrderStore implements OrderStore {
 	/**
 	 * Claim the earliest due entry on ONE order, re-applying the due predicate inside
 	 * the write — so only one dispatcher can win a claim, and a lapsed lease is
-	 * claimable again.
+	 * claimable again. `onlyUnattempted` skips any entry a dispatcher has already
+	 * tried (`attempts > 0`, or `timeouts > 0`) — re-checked on every re-read, so it holds under
+	 * contention exactly as the due predicate does. `op` labels a contention error
+	 * with the public method that ran out of budget.
 	 */
 	async #claimOutboxEntry(
+		op: "claimNextEmail" | "claimNextEmailForOrder",
 		orderId: string,
 		now: string,
 		leaseUntil: string,
+		onlyUnattempted = false,
 	): Promise<OutboxEmail | null> {
-		return this.#casOrder<OutboxEmail | null>("claimNextEmail", async () => {
+		return this.#casOrder<OutboxEmail | null>(op, async () => {
 			const current = await this.#orders.getVersioned(orderId);
 			if (current === null) return casDone<OutboxEmail | null>(null);
 			const doc = normalizeOrderDoc(current.value);
@@ -2201,6 +2239,9 @@ export class EmdashOrderStore implements OrderStore {
 			for (const entry of doc.emailOutbox) {
 				const due = outboxDueAt(entry);
 				if (due === null || due > now) continue;
+				// Never tried: no counted attempt AND no uncounted timeout — a timed-out
+				// entry is the cron's to retry, on the cron's backoff.
+				if (onlyUnattempted && (entry.attempts > 0 || (entry.timeouts ?? 0) > 0)) continue;
 				if (pickedDue === undefined || due < pickedDue) {
 					picked = entry;
 					pickedDue = due;

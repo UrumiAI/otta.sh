@@ -348,6 +348,8 @@ describe("settleOrder", () => {
 			linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
 			enqueueNotice: (id, notice) => h.orderStore.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.orderStore.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.orderStore.rescheduleEmail(id, at),
 			releaseEmailClaim: (id) => h.orderStore.releaseEmailClaim(id),

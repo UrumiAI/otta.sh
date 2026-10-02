@@ -11,7 +11,7 @@ import {
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
 } from "../ports/email-sender.js";
-import type { OrderStore } from "../ports/order-store.js";
+import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState } from "./model.js";
 import {
 	emailTemplateForNotice,
@@ -118,6 +118,14 @@ export interface DispatchOrderEmailsOptions {
 	maxUncountedTimeouts?: number;
 }
 
+export interface DispatchOrderEmailsForOrderOptions extends DispatchOrderEmailsOptions {
+	/** Claim only rows no dispatcher has tried yet — see
+	 *  `OrderStore.claimNextEmailForOrder`. The inline path's setting: at most one
+	 *  attempt per row from there, never a row the cron has backed off;
+	 *  `maxAttempts` itself is unchanged. */
+	onlyUnattempted?: boolean;
+}
+
 /**
  * A timed-out row is retried after a backoff: one minute, doubling per timeout,
  * capped at fifteen. Forward, so the row goes BEHIND the other due rows instead
@@ -152,6 +160,12 @@ export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_LIMIT = 100;
+/** The per-order cap. The outbox holds at most one state row per `(order, toState)`
+ *  (the UNIQUE the stores enforce) plus at most one notice row per `(order, kind)`
+ *  (`enqueueNotice`'s first-wins), so an order can never have more due rows than
+ *  there are templated states + notices; this is a safety bound that is never the
+ *  reason a drain stops in practice. */
+const DEFAULT_ORDER_BATCH_LIMIT = 10;
 
 /**
  * The outbox dispatcher (Phase 5 §5 step 2–3 / §8 5.8), reusing the Phase-3
@@ -169,16 +183,62 @@ export async function dispatchOrderEmails(
 	deps: DispatchOrderEmailsDeps,
 	options: DispatchOrderEmailsOptions = {},
 ): Promise<number> {
+	return drainOutbox(deps, options, DEFAULT_BATCH_LIMIT, (nowIso, leaseUntil) =>
+		deps.orderStore.claimNextEmail(nowIso, leaseUntil),
+	);
+}
+
+/**
+ * The outbox dispatcher narrowed to ONE order — what the payment-settle route calls
+ * inline so a just-paid order's confirmation goes out with the settlement rather than
+ * on the next cron tick (ADR-0005's 2026-10-02 amendment).
+ *
+ * It is {@link dispatchOrderEmails} with a different CLAIM and nothing else: the same
+ * send (state emails and notices alike), the same `markEmailSent`, the same
+ * `shouldContinue` / `canSend` checks, the same timeout handling (a cut-short send
+ * released uncounted and due at once; a genuine timeout backed off, counted past the
+ * limit) and the same reschedule-or-park on failure, with the same `Idempotency-Key`
+ * (the row id) — so an inline send and a later cron re-send of the same row dedupe
+ * provider-side exactly as two cron ticks do. The claim is `claimNextEmailForOrder`,
+ * which can never take another order's row: a request must not run the global
+ * drain, which walks the whole queue and is the cron's job.
+ *
+ * Best-effort by contract, not by hope: the cron leg remains the at-least-once
+ * backstop. A failed send here is rescheduled to `leaseUntil` like any other — so a
+ * caller passing a SHORT `leaseMs` is also choosing how soon the backstop may retry.
+ */
+export async function dispatchOrderEmailsForOrder(
+	deps: DispatchOrderEmailsDeps,
+	orderId: OrderId,
+	options: DispatchOrderEmailsForOrderOptions = {},
+): Promise<number> {
+	const claimOptions = options.onlyUnattempted === true ? { onlyUnattempted: true } : {};
+	return drainOutbox(deps, options, DEFAULT_ORDER_BATCH_LIMIT, (nowIso, leaseUntil) =>
+		deps.orderStore.claimNextEmailForOrder(orderId, nowIso, leaseUntil, claimOptions),
+	);
+}
+
+/**
+ * The one dispatch body both dispatchers share. Only the claim differs between them,
+ * and it is the only thing passed in, so the two cannot drift on retry, timeout,
+ * notice-rendering or dedupe semantics.
+ */
+async function drainOutbox(
+	deps: DispatchOrderEmailsDeps,
+	options: DispatchOrderEmailsOptions,
+	defaultBatchLimit: number,
+	claim: (nowIso: string, leaseUntil: string) => Promise<OutboxEmail | null>,
+): Promise<number> {
 	const now = deps.clock.now();
 	const nowIso = now.toISOString();
 	const leaseUntil = new Date(now.getTime() + (options.leaseMs ?? DEFAULT_LEASE_MS)).toISOString();
 	const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-	const batchLimit = options.batchLimit ?? DEFAULT_BATCH_LIMIT;
+	const batchLimit = options.batchLimit ?? defaultBatchLimit;
 
 	let sent = 0;
 	for (let i = 0; i < batchLimit; i++) {
 		if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
-		const row = await deps.orderStore.claimNextEmail(nowIso, leaseUntil);
+		const row = await claim(nowIso, leaseUntil);
 		if (row === null) break;
 
 		// A NOTICE row (`enqueueNotice`) renders its own template; every other row is

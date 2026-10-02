@@ -627,6 +627,8 @@ describeEachDialect("order flow", (ctx) => {
 			claimNextEmail: (now, lease) => h.store.claimNextEmail(now, lease),
 			releaseEmailClaim: (id) => h.store.releaseEmailClaim(id),
 			enqueueNotice: (id, notice) => h.store.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.store.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.store.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.store.rescheduleEmail(id, at),
 		};

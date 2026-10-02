@@ -172,6 +172,7 @@ export type {
 	PaymentIntentCancelOutcome,
 	PaymentIntentCancelUpdate,
 	PaymentIntentRecord,
+	ClaimEmailForOrderOptions,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
@@ -231,6 +232,7 @@ export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from ".
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
+	dispatchOrderEmailsForOrder,
 	MAX_UNCOUNTED_TIMEOUTS,
 	TIMEOUT_BACKOFF_BASE_MS,
 	TIMEOUT_BACKOFF_MAX_MS,
@@ -239,6 +241,7 @@ export {
 	UNTRIED_RETRY_MS,
 	transitionOrder,
 	type DispatchOrderEmailsDeps,
+	type DispatchOrderEmailsForOrderOptions,
 	type DispatchOrderEmailsOptions,
 	type TransitionOrderCommand,
 	type TransitionOrderDeps,
