@@ -54,16 +54,28 @@
  * `X-Internal-Token` / `X-Service-Token` are transport concerns and stay on the
  * transport, and its auth-rejection cases stay in its own file.
  *
- * HOW A REFUSED INPUT SURFACES, and the ONE arm this tier deliberately leaves
- * unreachable. The request schemas that used to stand in front of every call are
+ * HOW A REFUSED INPUT SURFACES. The request schemas that used to stand in front of every call are
  * mirrored below through `commerce-input.ts`, and a refused input REJECTS — it
  * never resolves to a synthesized status. That is a departure from the orders
  * client, and it is forced by the shape of `RulesCreateResult`: its only failure
  * arm is `{ ok: false, status }`, with no typed reason at all, so "fill it in
  * in-process" would mean inventing a wire status for a wire that does not exist.
- * The arm is therefore HTTP-ONLY and genuinely untested on this tier, said out
- * loud rather than faked. For symmetry the update/delete results' `reason:
- * "error"` arms are left to the transport too, with ONE exception that is a
+ * A malformed input therefore still REJECTS here.
+ *
+ * A COLLISION IS THE EXCEPTION, and it answers the create's `{ ok: false,
+ * status }` arm after all (`409`; a missing parent zone/method is `404`). The
+ * stores raise a duplicate id or code as a thrown, structurally-coded error
+ * BEFORE anything is written (`rules-errors.ts`, `coupon-errors.ts`), so it is
+ * the one create failure that is known to have changed nothing — and a
+ * rejection reaching the console's custom-action net can only be described as
+ * "Action outcome unknown — the action may already have been applied", which
+ * QA found on every duplicate zone, tax rate and coupon id an operator typed.
+ * The status is a code the screens key their own "that ID is already in use"
+ * copy off, never rendered raw. Anything else a store throws still rejects:
+ * only a failure known to have written nothing may be answered as a refusal.
+ *
+ * The update/delete results' `reason: "error"` arms are left to the transport,
+ * with ONE exception that is a
  * ported ROUTE behaviour rather than a boundary shape check: the coupon-economics
  * refusal above answers `{ ok: false, reason: "error" }` on both tiers, so the
  * rule that closed #75 is provable by a SHARED contract case instead of by prose.
@@ -95,6 +107,17 @@ import {
 	requireIdToken,
 	requireNonNegativeInteger,
 } from "../commerce/commerce-input.js";
+import {
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+	isShippingMethodIdCollisionError,
+	isShippingMethodNotFoundError,
+	isShippingRateExistsError,
+	isShippingZoneIdCollisionError,
+	isShippingZoneNotFoundError,
+	isTaxClassIdCollisionError,
+	isTaxRateIdCollisionError,
+} from "@otta-sh/store-emdash";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -178,12 +201,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createZone(input: ShippingZoneInput): Promise<RulesCreateResult<ShippingZoneWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
-		const zone = await this.#stores.shippingRules.createZone({
-			id: input.id,
-			name: input.name,
-			regions: requireZoneRegions(input.regions ?? null),
-		});
-		return { ok: true, value: toZoneWire(zone) };
+		const regions = requireZoneRegions(input.regions ?? null);
+		return createOrRefuse(async () =>
+			toZoneWire(
+				await this.#stores.shippingRules.createZone({ id: input.id, name: input.name, regions }),
+			),
+		);
 	}
 
 	/** LWW rename + full-replace of the match list. `regions` is REQUIRED (see the
@@ -225,14 +248,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(input.type);
-		const method = await this.#stores.shippingRules.createMethod({
-			id: input.id,
-			// The ZONE IS THE PATH, never the body — a method's parent is identity.
-			zoneId,
-			name: input.name,
-			type,
-		});
-		return { ok: true, value: toMethodWire(method) };
+		return createOrRefuse(async () =>
+			toMethodWire(
+				await this.#stores.shippingRules.createMethod({
+					id: input.id,
+					// The ZONE IS THE PATH, never the body — a method's parent is identity.
+					zoneId,
+					name: input.name,
+					type,
+				}),
+			),
+		);
 	}
 
 	/** LWW edit. `zoneId` is immutable identity and is not editable here. */
@@ -279,14 +305,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
 		if (min !== undefined && min !== null) requireNonNegativeInteger("minSubtotalCents", min);
-		const rate = await this.#stores.shippingRules.createRate({
-			methodId,
-			currency: toCurrency(input.currency),
-			amountCents: toCents(input.amountCents),
-			// Money stays an integer minor unit, branded at this boundary.
-			minSubtotalCents: min === undefined || min === null ? null : toCents(min),
-		});
-		return { ok: true, value: toRateWire(rate) };
+		return createOrRefuse(async () =>
+			toRateWire(
+				await this.#stores.shippingRules.createRate({
+					methodId,
+					currency: toCurrency(input.currency),
+					amountCents: toCents(input.amountCents),
+					// Money stays an integer minor unit, branded at this boundary.
+					minSubtotalCents: min === undefined || min === null ? null : toCents(min),
+				}),
+			),
+		);
 	}
 
 	/**
@@ -342,8 +371,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createTaxClass(input: TaxClassInput): Promise<RulesCreateResult<TaxClassWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
-		const cls = await this.#stores.taxRules.createClass({ id: input.id, name: input.name });
-		return { ok: true, value: toTaxClassWire(cls) };
+		return createOrRefuse(async () =>
+			toTaxClassWire(await this.#stores.taxRules.createClass({ id: input.id, name: input.name })),
+		);
 	}
 
 	/** LWW rename. A class id is the referent rates and products point at, so a
@@ -401,16 +431,19 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps);
-		const rate = await this.#stores.taxRules.createRate({
-			id: input.id,
-			taxClassId: input.taxClassId,
-			zoneId: input.zoneId,
-			rateBps: input.rateBps,
-			// The CREATE's optional-default-false is deliberate and unlike the edit's
-			// required key: there is no prior value to clobber at creation.
-			appliesToShipping: input.appliesToShipping ?? false,
-		});
-		return { ok: true, value: toTaxRateWire(rate) };
+		return createOrRefuse(async () =>
+			toTaxRateWire(
+				await this.#stores.taxRules.createRate({
+					id: input.id,
+					taxClassId: input.taxClassId,
+					zoneId: input.zoneId,
+					rateBps: input.rateBps,
+					// The CREATE's optional-default-false is deliberate and unlike the edit's
+					// required key: there is no prior value to clobber at creation.
+					appliesToShipping: input.appliesToShipping ?? false,
+				}),
+			),
+		);
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
@@ -523,22 +556,26 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (input.currency !== undefined && input.currency !== null) {
 			requireCurrencyCode("currency", input.currency);
 		}
-		const coupon = await this.#stores.couponStore.create({
-			id: input.id,
-			code: input.code,
-			type,
-			amountCents: amountCents === null ? null : toCents(amountCents),
-			rateBps,
-			capCents: capCents === null ? null : toCents(capCents),
-			currency:
-				input.currency === undefined || input.currency === null ? null : toCurrency(input.currency),
-			minSubtotalCents: minSubtotalCents === null ? null : toCents(minSubtotalCents),
-			startsAt,
-			expiresAt,
-			maxUses,
-			maxUsesPerCustomer,
+		return createOrRefuse(async () => {
+			const coupon = await this.#stores.couponStore.create({
+				id: input.id,
+				code: input.code,
+				type,
+				amountCents: amountCents === null ? null : toCents(amountCents),
+				rateBps,
+				capCents: capCents === null ? null : toCents(capCents),
+				currency:
+					input.currency === undefined || input.currency === null
+						? null
+						: toCurrency(input.currency),
+				minSubtotalCents: minSubtotalCents === null ? null : toCents(minSubtotalCents),
+				startsAt,
+				expiresAt,
+				maxUses,
+				maxUsesPerCustomer,
+			});
+			return toCouponWire(coupon);
 		});
-		return { ok: true, value: toCouponWire(coupon) };
 	}
 
 	/**
@@ -685,6 +722,43 @@ function toDeleteResult(res: { ok: true } | { ok: false; reason: string }): Rule
 	return res.reason === "not_found"
 		? { ok: false, reason: "not_found" }
 		: { ok: false, reason: "in_use" };
+}
+
+// ── a create's KNOWN-NOTHING-WRITTEN refusals ──────────────────────────────
+
+/** The HTTP status a refused create answers with — a code the screens key copy
+ *  off, never rendered. */
+const CREATE_CONFLICT = 409;
+const CREATE_PARENT_MISSING = 404;
+
+/**
+ * Run one create and answer its store's KNOWN refusals as the create result's
+ * own `{ ok: false, status }` arm (see the class doc's "A COLLISION IS THE
+ * EXCEPTION"). Matched STRUCTURALLY, by the error's `code`, so the mapping
+ * survives a bundle boundary. Every one of these is raised before the store
+ * writes anything (or after it has given its claim back), which is the whole
+ * licence for answering rather than rejecting; any other throw propagates.
+ */
+async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
+	try {
+		return { ok: true, value: await write() };
+	} catch (err) {
+		if (
+			isShippingZoneIdCollisionError(err) ||
+			isShippingMethodIdCollisionError(err) ||
+			isShippingRateExistsError(err) ||
+			isTaxClassIdCollisionError(err) ||
+			isTaxRateIdCollisionError(err) ||
+			isCouponIdCollisionError(err) ||
+			isCouponCodeConflictError(err)
+		) {
+			return { ok: false, status: CREATE_CONFLICT };
+		}
+		if (isShippingZoneNotFoundError(err) || isShippingMethodNotFoundError(err)) {
+			return { ok: false, status: CREATE_PARENT_MISSING };
+		}
+		throw err;
+	}
 }
 
 // ── the input bounds the request schemas used to hold ─────────────────────

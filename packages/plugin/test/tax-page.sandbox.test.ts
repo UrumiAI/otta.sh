@@ -59,9 +59,9 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 //  * `listZones()` sorts by zone id (the store reads `ORDER BY id`), where the
 //    old stub answered in insertion order — so the Zone select's options are
 //    `eu` before `us`, and the assertion says so.
-//  * A duplicate id is a THROWN collision from the store, not a 500 the client
-//    maps to `{ok:false}`. See the duplicate-create case for what the operator
-//    sees now.
+//  * A duplicate id is a THROWN collision from the store, which the client
+//    answers as the create's `{ok:false, status: 409}` arm (known to have
+//    written nothing), so the screen's own "already exists" copy renders.
 
 /** One process-wide store, wiped between cases — see `resetStore`. */
 let storage: StorageAccess;
@@ -320,17 +320,12 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(group(after, "tax:class:reduced")?.label).toBe("reduced — Reduced rate");
 	});
 
-	test("creating a class with a duplicate id refuses with a GENERIC error banner and writes nothing", async () => {
-		// THE MECHANISM CHANGED AND THE GUARANTEE DID NOT. A duplicate used to be a
-		// 500 the HTTP client mapped to `{ok:false}`, which the screen dressed as its
-		// own "Tax class not created". In-process the store REJECTS with a collision
-		// error, which the scaffold's custom-action net catches — so the operator
-		// gets the engine's "outcome unknown, re-check the record" banner instead of
-		// the screen's copy. Worth stating plainly because it is a REGRESSION IN
-		// COPY, not in safety: the banner is still an error, still carries no status
-		// code or path, and the registry is provably unchanged. (Recovering the
-		// screen's own copy would need the client to catch the collision and answer
-		// `{ok:false}` — a `src/` change, not a test one.)
+	test("creating a class with a duplicate id says the ID is taken — never 'outcome unknown' — and writes nothing", async () => {
+		// The store raises a duplicate id BEFORE writing anything, and the client
+		// answers it as the create's `{ok:false, status: 409}` arm, so the screen's
+		// own copy can say what is wrong. It used to reach the scaffold's
+		// custom-action net as a rejection and read "Action outcome unknown — the
+		// action may already have been applied" — a scary sentence about a typo.
 		await seedRules();
 		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", {
@@ -339,9 +334,33 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		});
 		const banner = bannerOf(after);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Tax class not created");
+		expect(String(banner?.description)).toMatch(
+			/a tax class with the ID "standard" already exists/i,
+		);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|outcome unknown/i);
 		// Never applied — exactly one "standard", still under its original name.
 		expect(await taxRules.listClasses()).toEqual([{ id: "standard", name: "Standard" }]);
+	});
+
+	test("creating a tax RATE with an id another rate holds says so, and keeps the operator's typing", async () => {
+		await seedRules();
+		const screen = await openNewRateScreen("standard");
+		const dup = await submitForm(screen, "tax:create-rate", {
+			id: "std-us",
+			zoneId: "eu",
+			ratePercent: "9",
+			appliesToShipping: false,
+		});
+		const banner = bannerOf(dup);
+		expect(String(banner?.title)).toBe("Tax rate not created");
+		expect(String(banner?.description)).toMatch(/a tax rate with the ID "std-us" already exists/i);
+		expect(formInitialValues(dup, "tax:create-rate")).toMatchObject({
+			id: "std-us",
+			ratePercent: "9",
+		});
+		expect((await findRate("us", "std-us"))?.rateBps).toBe(725);
+		expect(await findRate("eu", "std-us")).toBeUndefined();
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------
@@ -397,22 +416,19 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(refused.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
 		expect(formInitialValues(refused, "tax:create-class")).toEqual({ name: "Reduced rate" });
 
-		// A STORE refusal does NOT keep them — asserted, not described. Under the
-		// transport a duplicate id came back as `{ok:false}` and the screen
-		// re-rendered ITSELF with the draft intact ("a SERVICE refusal keeps them
-		// too"); in-process the collision REJECTS, the scaffold's custom-action net
-		// catches it and renders the ROOT registry, which carries no draft by
-		// construction. That is a real narrowing of the property above, so it gets
-		// a real assertion rather than a comment: if the client ever learns to
-		// answer `{ok:false}` on a collision, this is what fails and says the
-		// create screen — and the operator's typing — came back.
+		// A STORE refusal keeps them too: the client answers a duplicate id as the
+		// create's `{ok:false}` arm, so the screen re-renders ITSELF with the draft
+		// intact rather than falling back to the root registry.
 		const dup = await submitForm(refused, "tax:create-class", {
 			id: "standard",
 			name: "Standard again",
 		});
 		expect(bannerOf(dup)?.variant).toBe("error");
-		expect(dup.some((b) => b.type === "header" && b.text === "Tax classes")).toBe(true);
-		expect(formFor(dup, "tax:create-class")).toBeUndefined();
+		expect(dup.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
+		expect(formInitialValues(dup, "tax:create-class")).toEqual({
+			id: "standard",
+			name: "Standard again",
+		});
 		// And the refusal really was a refusal: the registry is unchanged.
 		expect(await listClassIds()).toEqual(["standard"]);
 

@@ -1020,6 +1020,11 @@ function rateDetailFailClosed() {
 
 // -- custom action: create a tax class ----------------------------------------
 
+/** The status a create answers when the id is already taken — the store's
+ *  collision, refused before anything was written. A code the notices key
+ *  their copy off, never rendered. */
+const CREATE_CONFLICT = 409;
+
 function createClassAction() {
 	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const values = input.values ?? {};
@@ -1069,7 +1074,10 @@ function createClassNotice(
 	return {
 		variant: "error",
 		title: "Tax class not created",
-		description: `Could not create "${id}" — check the class ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A tax class with the ID "${id}" already exists — choose another ID.`
+				: `Could not create "${id}" — check the class ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1236,7 +1244,10 @@ function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): N
 	return {
 		variant: "error",
 		title: "Tax rate not created",
-		description: `Could not create "${id}" — check the rate ID isn't already in use and the zone id is correct, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A tax rate with the ID "${id}" already exists — rate IDs are unique across every class, so choose another.`
+				: `Could not create "${id}" — check the rate ID isn't already in use and the zone id is correct, then try again.`,
 	};
 }
 

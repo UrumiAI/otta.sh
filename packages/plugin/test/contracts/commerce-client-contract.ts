@@ -4288,6 +4288,73 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.deleteZone("z1")).toEqual({ ok: true });
 		});
 
+		test("a create that collides with an existing id or code ANSWERS 409 — never a rejection — and writes nothing", async () => {
+			// THE OPERATOR'S MOST COMMON TYPO is a duplicate id, and it used to reach the
+			// console as a thrown store collision, which the scaffold's last-resort net
+			// can only describe as "Action outcome unknown — may already have been
+			// applied". A collision is the one failure that is KNOWN to have written
+			// nothing, so it must arrive as the typed refusal the create result already
+			// has an arm for, and the screen's own "already in use" copy can say so.
+			expect((await client.createZone({ id: "dup-z", name: "Zone" })).ok).toBe(true);
+			expect(await client.createZone({ id: "dup-z", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listZones()).filter((z) => z.id === "dup-z")).toEqual([
+				{ id: "dup-z", name: "Zone", regions: null },
+			]);
+
+			expect(
+				(await client.createMethod("dup-z", { id: "dup-m", name: "Flat", type: "flat_rate" })).ok,
+			).toBe(true);
+			expect(
+				await client.createMethod("dup-z", { id: "dup-m", name: "Again", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 409 });
+
+			expect((await client.createRate("dup-m", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			expect(await client.createRate("dup-m", { currency: "USD", amountCents: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.getRate("dup-m", "USD"))?.amountCents).toBe(500);
+
+			expect((await client.createTaxClass({ id: "dup-c", name: "Class" })).ok).toBe(true);
+			expect(await client.createTaxClass({ id: "dup-c", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+
+			const rate = { id: "dup-t", taxClassId: "dup-c", zoneId: "dup-z", rateBps: 725 };
+			expect((await client.createTaxRate(rate)).ok).toBe(true);
+			expect(await client.createTaxRate({ ...rate, rateBps: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listTaxRates("dup-z")).map((r) => r.rateBps)).toEqual([725]);
+
+			const coupon = {
+				id: "dup-cpn",
+				code: "DUPCODE",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			expect((await client.createCoupon(coupon)).ok).toBe(true);
+			// Same id, and — separately — the same code under a new id, case-folded.
+			expect(await client.createCoupon({ ...coupon, code: "OTHER" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.createCoupon({ ...coupon, id: "dup-cpn-2", code: "dupcode" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.getCoupon("OTHER")).toBeNull();
+			expect((await client.getCoupon("DUPCODE"))?.id).toBe("dup-cpn");
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so

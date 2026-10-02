@@ -425,17 +425,10 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
-	test("creating a zone with a duplicate id refuses with a GENERIC error banner and writes nothing", async () => {
-		// THE MECHANISM CHANGED AND THE GUARANTEE DID NOT. A duplicate used to be a
-		// 500 the HTTP client mapped to `{ok:false}`, which the screen dressed as
-		// its own "Zone not created". In-process the store REJECTS with a collision
-		// error, which the scaffold's custom-action net catches — so the operator
-		// gets the engine's "outcome unknown, re-check the record" banner instead of
-		// the screen's copy, and the draft is not carried back. A REGRESSION IN
-		// COPY, not in safety: still an error, still no raw status or path, and the
-		// registry is provably unchanged. (Recovering the screen's own copy would
-		// need the client to catch the collision and answer `{ok:false}` — a `src/`
-		// change, not a test one.)
+	test("creating a zone with a duplicate id says the ID is taken — never 'outcome unknown' — and keeps the typing", async () => {
+		// The store refuses a duplicate id before writing anything, and the client
+		// answers that as the create's `{ok:false, status: 409}` arm — so the
+		// screen's own copy renders, on the create screen, with the draft back.
 		await seedShipping();
 		const blocks = await submitForm("shipping:create-zone", {
 			id: "us",
@@ -444,7 +437,13 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		});
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Zone not created");
+		expect(String(banner?.description)).toMatch(/a zone with the ID "us" already exists/i);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
+		expect(formInitialValues(blocks, "shipping:create-zone")).toMatchObject({
+			id: "us",
+			name: "United States again",
+		});
 		expect((await shippingRules.getZone("us"))?.name).toBe("United States");
 		expect((await shippingRules.listZones()).filter((z) => z.id === "us")).toHaveLength(1);
 	});

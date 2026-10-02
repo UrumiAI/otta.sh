@@ -833,23 +833,35 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(bannerOf(blocksOf(pctWithAmount))?.variant).toBe("error");
 	});
 
-	test("creating a coupon with a duplicate id/code fails with a GENERIC error notice (no raw status)", async () => {
+	test("creating a coupon with a duplicate id/code says it is taken, keeps the typing, and writes nothing", async () => {
 		const state = makeCouponsState();
 		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "coupons:create",
-			values: {
-				id: "c-five",
-				code: "FIVEOFF",
-				type: "fixed_amount",
-				amount: "5.00",
-				currency: "USD",
-			},
-		});
-		const banner = bannerOf(blocksOf(outcome));
+		const values = {
+			id: "c-five",
+			code: "FIVEOFF",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		};
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values,
+			}),
+		);
+		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Coupon not created");
+		expect(String(banner?.description)).toMatch(/already used by another coupon/i);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
+		// The create screen comes back with what was typed (DA-3a-i) — a duplicate
+		// is one field away from a success.
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({
+			id: "c-five",
+			code: "FIVEOFF",
+		});
 		expect((await stored("c-five"))?.code, "the original survives").toBe("FIVEOFF");
 		expect(await couponCount(), "and nothing was added").toBe(2);
 	});
@@ -966,18 +978,6 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(headerTexts(created)).toEqual(["Coupons"]);
 		expect(formFor(created, "coupons:create")).toBeUndefined();
 	});
-
-	// DELETED (INC-D3a): "a SERVICE refusal (duplicate id/code) keeps the typed
-	// values too". There is no service to refuse anything any more, and the
-	// in-process store does not answer a collision with a typed refusal — it
-	// THROWS (`CouponIdCollisionError`). A throw inside a custom action is caught
-	// by the engine and rendered as the generic ACTION_OUTCOME_UNKNOWN banner on
-	// the ROOT LIST, which by construction carries no draft, so there is no
-	// create screen left to put the typed values back into. The DA-3a-i
-	// guarantee itself is untouched and still pinned by the test above: a refusal
-	// the PLUGIN raises (the unparseable rate) re-renders the create screen with
-	// every typed value verbatim. What the duplicate case still guarantees — a
-	// generic notice and an unchanged registry — is asserted at line ~815.
 });
 
 // ---------------------------------------------------------------------------
