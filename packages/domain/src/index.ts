@@ -364,6 +364,12 @@ export {
 } from "./orders/record-fulfillment.js";
 export {
 	cancelOrder,
+	cancelOrderWithRefund,
+	type RestockSkip,
+	type CancelOrderWithRefundCommand,
+	type CancelOrderWithRefundDeps,
+	type CancelOrderWithRefundFailure,
+	type CancelOrderWithRefundOutcome,
 	type CancelOrderCommand,
 	type CancelOrderDeps,
 	type CancelOrderFailure,

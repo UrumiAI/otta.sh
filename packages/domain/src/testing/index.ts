@@ -62,6 +62,11 @@ export {
 	type LatePaymentHarness,
 } from "./late-payment-contract.js";
 export {
+	cancelWithRefundContract,
+	type CancelWithRefundContractOptions,
+	type CancelWithRefundHarness,
+} from "./cancel-with-refund-contract.js";
+export {
 	paymentDeclineContract,
 	type PaymentDeclineContractOptions,
 	type PaymentDeclineHarness,
