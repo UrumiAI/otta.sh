@@ -180,8 +180,8 @@ export const FRESH_HOLD_GRACE_SECONDS = 15;
  * Was this hold taken within the last `graceSeconds` — is this render the one
  * that follows the add (or the quantity change) that took it?
  *
- * For a theme's on-add moment (e.g. Batch's stamp landing, Jumble's hop into
- * the bag, Pressing's strip rising): it must play ONCE, on the page the add
+ * For a theme's on-add moment (e.g. a stamp landing on the new line, the line
+ * hopping into the bag, a bag strip rising): it must play ONCE, on the page the add
  * lands on, not on every later render of the same live hold — a reload, a
  * revisit, a change to another line. The wire carries no "just added" flag
  * and the redirect `/cart/add` answers with carries none either, so the age

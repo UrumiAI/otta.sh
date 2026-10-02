@@ -249,7 +249,7 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		// `ThemeModule.chrome.cartLines` makes the shell pay one cart read on every
 		// non-checkout page. A theme that sets it must actually DRAW the lines — its
 		// Layout takes `chrome.bag` and it, or a theme component it imports, reads
-		// the bag's `lines` (Counter's popover drawer, Pressing's bag strip) — and
+		// the bag's `lines` (e.g. a bag drawer or a bag strip) — and
 		// every theme that does not draw them must not set it (it would pay a read
 		// for nothing). The scan goes ONE import deep (the Layout and the theme
 		// components it imports directly); a theme that read the lines two
@@ -267,10 +267,10 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 				/\bbag\.lines\b/.test(code(`themes/${id}/Layout.astro`) + imported);
 			expect(opts, `${id}: chrome.cartLines vs drawing chrome.bag's lines`).toBe(draws);
 		}
-		expect(themeBlock("counter")).toMatch(/chrome:\s*\{\s*cartLines:\s*true\s*\}/);
-		expect(themeBlock("pressing")).toMatch(/chrome:\s*\{\s*cartLines:\s*true\s*\}/);
-		// Nothing else in the registry sets it.
-		expect(registry.match(/cartLines\s*:/g)).toHaveLength(2);
+		// No theme this repo ships draws the lines today (Tempered's chrome shows a
+		// count), so nothing in the registry sets it; the read itself is pinned
+		// with an in-test fixture theme in bag.test.ts.
+		expect(registry.match(/cartLines\s*:/g)).toBeNull();
 	});
 
 	test("the shell reads the bag only for an opted-in theme, off the checkout flow", () => {

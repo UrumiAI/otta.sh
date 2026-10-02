@@ -13,6 +13,9 @@
   screen and the admin-only live preview" at the end.
 - Amended: 2026-09-30 (second) — a theme may opt into a fail-soft chrome **bag read**
   (`chrome.cartLines`). See "Amendment 2026-09-30 — the opt-in chrome bag read" at the end.
+- Note: 2026-10-01 — five of the six themes (`plinth`, `pressing`, `batch`, `jumble`, `counter`)
+  moved out of this repo; only `tempered` ships here. The decision is unchanged. See "Note
+  2026-10-01 — five themes moved out of this repo" at the end.
 
 ## Context
 
@@ -207,3 +210,19 @@ a new ADR unless it breaks one of the rules above.
   fails soft — an unreadable, throwing or BUSY read is `state: "unreadable"`, never an error page or
   a 503. It is skipped on `/cart`, `/checkout`, `/checkout/pay` and `/orders/<id>`. Holds in the bag
   are static wall-clock copy; the countdown script stays `/cart`'s alone (ADR-0012).
+
+## Note 2026-10-01 — five themes moved out of this repo
+
+Not a change to the decision, only to which themes this repo ships. `plinth`, `pressing`, `batch`,
+`jumble` and `counter` were removed from `sites/staging` (views, layouts, sheets, art, vendored fonts,
+preview screenshots and their manifest, registry and font entries); they are moving to a dedicated
+themes repo, seeded from git history at `fca5cbc` (`git show fca5cbc:sites/staging/src/themes/<id>`).
+Decision 10's list now reads as history: only `tempered` ships here, and it remains the default and
+the fallback. A stored `settings:storeTheme` naming a removed id falls back to Tempered, as the
+Consequences already state for any id a later build drops.
+
+The theme system stays whole — the contract, manifest, registry, resolver, shell, the admin preview,
+the opt-in chrome bag read (`chrome.cartLines`, `lib/bag.ts`, `forms/CartLineFields.astro`), the
+`__OTTA_STORE_THEMES__` define, the plugin's Store theme setting and the admin Themes screen — as the
+host side external themes will plug into. Mechanisms no shipped theme exercises today (the bag read,
+the preview of a non-default theme) are covered by an in-test fixture theme rather than dropped.

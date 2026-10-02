@@ -13,8 +13,10 @@
  *
  * A theme is added HERE when it is built, not before: listing an id the
  * registry cannot render would put an option in the admin that silently falls
- * back to Tempered. All six ship: Tempered (the default), Plinth, Pressing,
- * Batch, Jumble and Counter.
+ * back to Tempered. One ships in this repo: Tempered (the default). The five
+ * other themes built here (Plinth, Pressing, Batch, Jumble, Counter) moved out
+ * on 2026-10-01 to their own repo, to come back as external themes once the
+ * theme SDK and host integration exist.
  */
 
 export interface StoreThemeEntry {
@@ -39,36 +41,6 @@ export const STORE_THEMES = [
 		label: "Tempered",
 		description: "Condensed headlines and a live stock table.",
 		preview: "/theme-previews/tempered.webp",
-	},
-	{
-		id: "plinth",
-		label: "Plinth",
-		description: "A quiet gallery: stone tones and wide margins.",
-		preview: "/theme-previews/plinth.webp",
-	},
-	{
-		id: "pressing",
-		label: "Pressing",
-		description: "Record-sleeve blue, sleeve pink and big type.",
-		preview: "/theme-previews/pressing.webp",
-	},
-	{
-		id: "batch",
-		label: "Batch",
-		description: "Kraft paper, a letterpress label and a green stamp.",
-		preview: "/theme-previews/batch.webp",
-	},
-	{
-		id: "jumble",
-		label: "Jumble",
-		description: "Sunny, rounded and playful — a toy shop.",
-		preview: "/theme-previews/jumble.webp",
-	},
-	{
-		id: "counter",
-		label: "Counter",
-		description: "Clean, calm and product-first.",
-		preview: "/theme-previews/counter.webp",
 	},
 ] as const satisfies readonly StoreThemeEntry[];
 

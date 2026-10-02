@@ -18,7 +18,7 @@
  *
  * The manifest is widened by ONE test-only id (`fixture`) so a non-default
  * choice can be told apart from the fallback by an id no real theme will ever
- * take, whichever themes the build ships (all six do now).
+ * take, whichever themes the build ships (Tempered alone, in this repo).
  */
 import Database from "better-sqlite3";
 import { createPluginManager, definePlugin, OptionsRepository, runWithContext } from "emdash";
@@ -57,6 +57,13 @@ describe("readStoredThemeId — anything unusable renders Tempered", () => {
 		["null", null],
 		["empty", ""],
 		["an id this build does not ship", "plinth-from-a-later-build"],
+		// The five themes that moved out of this repo (2026-10-01): a store that
+		// had one chosen renders Tempered until it is installed again.
+		["a moved-out theme: plinth", "plinth"],
+		["a moved-out theme: pressing", "pressing"],
+		["a moved-out theme: batch", "batch"],
+		["a moved-out theme: jumble", "jumble"],
+		["a moved-out theme: counter", "counter"],
 		["the wrong case", "Tempered"],
 		["a number", 42],
 		["an object", { id: "fixture" }],
