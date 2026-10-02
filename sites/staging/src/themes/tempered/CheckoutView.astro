@@ -12,9 +12,13 @@
  * hidden echoes of what the totals were priced with — and a theme may restyle
  * them, never rename them.
  *
- * The coupon and the delivery choice are SIBLING GET forms of the place form,
- * never nested in it: applying either is a navigation that loses anything
- * typed below, which is why they come first.
+ * The coupon's field and buttons belong to the place form (`form=` attribute),
+ * so Apply and Remove post the typed details with them and the review comes
+ * back with every value kept (QA U-1). The delivery choice is still a SIBLING
+ * GET form, never nested: changing it re-prices the review and loses anything
+ * typed since the last post, which is why it comes first. Values the buyer typed
+ * before a refused place come back from the page's draft (`addressValues`,
+ * `emailValue`), with `fieldErrors` printed beside the fields they name.
  *
  * Styles: `commerce.css` (`checkout-*`).
  */
@@ -53,6 +57,8 @@ const {
 	notConfiguredLead,
 	emailValue,
 	emailNote,
+	addressValues,
+	fieldErrors,
 	ledgerRows,
 	sumRows,
 	footnote,
@@ -112,22 +118,14 @@ const {
 			<h2 class="u-label checkout-head-label">Your details</h2>
 		</div>
 
-		{/* The coupon comes FIRST, and is a SIBLING of the place form, never
-		    nested in it: applying it is a GET navigation, which loses anything
-		    typed below — so the natural order is "coupon, then details". */}
+		{/* The coupon comes first. Its field and buttons belong to the PLACE form
+		    (`form="checkout-place"`) although they sit up here: Apply and Remove
+		    post everything typed below with them, so changing the coupon keeps the
+		    details (QA U-1) — place.ts re-prices and comes straight back, placing
+		    nothing. `formnovalidate`: applying a code must not demand an email. */}
 		{
 			!summary.orderCreated && (
-				<form method="GET" action="/checkout" class="checkout-coupon">
-					{/* The delivery choice rides along, so applying a coupon keeps it. */}
-					{destination !== null && (
-						<input type="hidden" name="country" value={destination.country} />
-					)}
-					{destination?.region != null && (
-						<input type="hidden" name="region" value={destination.region} />
-					)}
-					{summary.selection.shippingMethodId !== null && (
-						<input type="hidden" name="method" value={summary.selection.shippingMethodId} />
-					)}
+				<div class="checkout-coupon">
 					<div class="checkout-field">
 						<label class="u-label" for="coupon">
 							Coupon code
@@ -137,12 +135,21 @@ const {
 								type="text"
 								id="coupon"
 								name="coupon"
+								form="checkout-place"
 								maxlength="200"
 								autocomplete="off"
 								value={couponValue}
+								aria-invalid={couponError !== null}
 								aria-describedby={couponError !== null ? "coupon-error coupon-note" : "coupon-note"}
 							/>
-							<button type="submit" class="u-btn u-btn-ghost">
+							<button
+								type="submit"
+								class="u-btn u-btn-ghost"
+								form="checkout-place"
+								name="intent"
+								value="apply-coupon"
+								formnovalidate
+							>
 								Apply
 							</button>
 						</div>
@@ -152,17 +159,25 @@ const {
 							</div>
 						)}
 						<span class="checkout-note" id="coupon-note">
-							Codes are case-sensitive. Apply a code before filling in your details — applying it
-							reloads this page.
+							Codes are case-sensitive.
 							{summary.selection.couponCode !== null && (
 								<>
 									{" "}
-									<a href="/checkout">Remove coupon</a>
+									<button
+										type="submit"
+										class="checkout-link-button"
+										form="checkout-place"
+										name="intent"
+										value="remove-coupon"
+										formnovalidate
+									>
+										Remove coupon
+									</button>
 								</>
 							)}
 						</span>
 					</div>
-				</form>
+				</div>
 			)
 		}
 
@@ -275,7 +290,7 @@ const {
 
 		{
 			locked === null && !ended && (
-				<form method="POST" action="/checkout/place" class="checkout-details">
+				<form method="POST" action="/checkout/place" class="checkout-details" id="checkout-place">
 					{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
 					    replays into the SAME order and the same PaymentIntent instead of
 					    minting a second order the CART_CHECKED_OUT fence would reject. */}
@@ -309,9 +324,15 @@ const {
 							required
 							autocomplete="email"
 							maxlength={BUYER_REF_MAX}
-							aria-describedby="email-note"
+							aria-invalid={fieldErrors.email !== undefined}
+							aria-describedby={fieldErrors.email !== undefined ? "email-error email-note" : "email-note"}
 							value={emailValue}
 						/>
+						{fieldErrors.email !== undefined && (
+							<span class="checkout-field-error" id="email-error">
+								{fieldErrors.email}
+							</span>
+						)}
 						<span class="checkout-note" id="email-note">{emailNote}</span>
 					</div>
 
@@ -346,92 +367,175 @@ const {
 									</p>
 								)}
 								<div class="checkout-fields">
-									<label class="checkout-field checkout-span2">
-										<span class="u-label">
+									<div class="checkout-field checkout-span2">
+										<label class="u-label" for="address-name">
 											Full name{summary.addressRequired && <span class="checkout-req">required</span>}
-										</span>
+										</label>
 										<input
 											type="text"
+											id="address-name"
 											name="name"
 											autocomplete="name"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.name}
+											value={addressValues.name}
+											aria-invalid={fieldErrors.name !== undefined}
+											aria-describedby={fieldErrors.name !== undefined ? "name-error" : undefined}
 										/>
-									</label>
-									<label class="checkout-field checkout-span2">
-										<span class="u-label">
-											Address line 1
-											{summary.addressRequired && <span class="checkout-req">required</span>}
-										</span>
+										{fieldErrors.name !== undefined && (
+											<span class="checkout-field-error" id="name-error">
+												{fieldErrors.name}
+											</span>
+										)}
+									</div>
+									<div class="checkout-field checkout-span2">
+										<label class="u-label" for="address-line1">
+											Address line 1{summary.addressRequired && <span class="checkout-req">required</span>}
+										</label>
 										<input
 											type="text"
+											id="address-line1"
 											name="line1"
 											autocomplete="address-line1"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line1}
+											value={addressValues.line1}
+											aria-invalid={fieldErrors.line1 !== undefined}
+											aria-describedby={fieldErrors.line1 !== undefined ? "line1-error" : undefined}
 										/>
-									</label>
-									<label class="checkout-field checkout-span2">
-										<span class="u-label">Address line 2</span>
+										{fieldErrors.line1 !== undefined && (
+											<span class="checkout-field-error" id="line1-error">
+												{fieldErrors.line1}
+											</span>
+										)}
+									</div>
+									<div class="checkout-field checkout-span2">
+										<label class="u-label" for="address-line2">
+											Address line 2
+										</label>
 										<input
 											type="text"
+											id="address-line2"
 											name="line2"
 											autocomplete="address-line2"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line2}
+											value={addressValues.line2}
+											aria-invalid={fieldErrors.line2 !== undefined}
+											aria-describedby={fieldErrors.line2 !== undefined ? "line2-error" : undefined}
 										/>
-									</label>
-									<label class="checkout-field">
-										<span class="u-label">
+										{fieldErrors.line2 !== undefined && (
+											<span class="checkout-field-error" id="line2-error">
+												{fieldErrors.line2}
+											</span>
+										)}
+									</div>
+									<div class="checkout-field">
+										<label class="u-label" for="address-city">
 											City{summary.addressRequired && <span class="checkout-req">required</span>}
-										</span>
+										</label>
 										<input
 											type="text"
+											id="address-city"
 											name="city"
 											autocomplete="address-level2"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.city}
+											value={addressValues.city}
+											aria-invalid={fieldErrors.city !== undefined}
+											aria-describedby={fieldErrors.city !== undefined ? "city-error" : undefined}
 										/>
-									</label>
-									<label class="checkout-field">
-										<span class="u-label">
+										{fieldErrors.city !== undefined && (
+											<span class="checkout-field-error" id="city-error">
+												{fieldErrors.city}
+											</span>
+										)}
+									</div>
+									<div class="checkout-field">
+										<label class="u-label" for="address-postalCode">
 											Postal code{summary.addressRequired && <span class="checkout-req">required</span>}
-										</span>
+										</label>
 										<input
 											type="text"
+											id="address-postalCode"
 											name="postalCode"
 											autocomplete="postal-code"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.postalCode}
+											value={addressValues.postalCode}
+											aria-invalid={fieldErrors.postalCode !== undefined}
+											aria-describedby={fieldErrors.postalCode !== undefined ? "postalCode-error" : undefined}
 										/>
-									</label>
+										{fieldErrors.postalCode !== undefined && (
+											<span class="checkout-field-error" id="postalCode-error">
+												{fieldErrors.postalCode}
+											</span>
+										)}
+									</div>
 									{!showDelivery && (
 										<>
-											<label class="checkout-field">
-												<span class="u-label">Country</span>
-												<select name="country" autocomplete="country">
+											<div class="checkout-field">
+												<label class="u-label" for="address-country">
+													Country
+												</label>
+												<select
+													id="address-country"
+													name="country"
+													autocomplete="country"
+													aria-invalid={fieldErrors.country !== undefined}
+													aria-describedby={fieldErrors.country !== undefined ? "country-error" : undefined}
+												>
 													<option value="">Choose a country…</option>
 													{countries.map((option) => (
-														<option value={option.code}>{option.label}</option>
+														<option value={option.code} selected={option.code === addressValues.country}>
+															{option.label}
+														</option>
 													))}
 												</select>
-											</label>
-											<label class="checkout-field">
-												<span class="u-label">State / province code</span>
+												{fieldErrors.country !== undefined && (
+													<span class="checkout-field-error" id="country-error">
+														{fieldErrors.country}
+													</span>
+												)}
+											</div>
+											<div class="checkout-field">
+												<label class="u-label" for="address-region">
+													State / province code
+												</label>
 												<input
 													type="text"
+													id="address-region"
 													name="region"
 													autocomplete="address-level1"
 													maxlength="6"
 													pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+													value={addressValues.region}
+													aria-invalid={fieldErrors.region !== undefined}
+													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}
 												/>
-											</label>
+												{fieldErrors.region !== undefined && (
+													<span class="checkout-field-error" id="region-error">
+														{fieldErrors.region}
+													</span>
+												)}
+											</div>
 										</>
 									)}
-									<label class="checkout-field checkout-span2">
-										<span class="u-label">Phone</span>
+									<div class="checkout-field checkout-span2">
+										<label class="u-label" for="address-phone">
+											Phone
+										</label>
 										<input
 											type="tel"
+											id="address-phone"
 											name="phone"
 											autocomplete="tel"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.phone}
+											value={addressValues.phone}
+											aria-invalid={fieldErrors.phone !== undefined}
+											aria-describedby={fieldErrors.phone !== undefined ? "phone-error" : undefined}
 										/>
-									</label>
+										{fieldErrors.phone !== undefined && (
+											<span class="checkout-field-error" id="phone-error">
+												{fieldErrors.phone}
+											</span>
+										)}
+									</div>
 								</div>
 							</fieldset>
 						)

@@ -66,7 +66,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	});
 
 	test("the email is required, typed, and the buyerRef the service stores", () => {
-		const field = /<input[\s\S]{0,220}?name="email"[\s\S]{0,220}?\/>/.exec(VIEW)?.[0] ?? "";
+		const field = /<input[\s\S]{0,400}?name="email"[\s\S]{0,400}?\/>/.exec(VIEW)?.[0] ?? "";
 		expect(field).toContain('type="email"');
 		expect(field).toContain("required");
 		expect(field).toContain('autocomplete="email"');
@@ -75,7 +75,10 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	test("the email's hint is DESCRIBED, not part of the field's name", () => {
 		// Nested inside the <label> its ~25 words join the accessible name and
 		// are read out on every focus.
-		expect(VIEW).toMatch(/aria-describedby="email-note"/);
+		// With a refused email (QA U-1) its error is described first, then the note.
+		expect(VIEW).toMatch(
+			/aria-describedby=\{fieldErrors\.email !== undefined \? "email-error email-note" : "email-note"\}/,
+		);
 		expect(VIEW).toMatch(/id="email-note"/);
 	});
 
@@ -121,7 +124,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	);
 
 	test("the email is bounded by the place route's own buyerRef limit (BUYER_REF_MAX)", () => {
-		const field = /<input[\s\S]{0,260}?name="email"[\s\S]{0,260}?\/>/.exec(VIEW)?.[0] ?? "";
+		const field = /<input[\s\S]{0,400}?name="email"[\s\S]{0,400}?\/>/.exec(VIEW)?.[0] ?? "";
 		expect(field).toContain("maxlength={BUYER_REF_MAX}");
 	});
 
@@ -188,23 +191,28 @@ describe.each(ORDER_VIEWS)("the confirmation's panels — %s", (_label, { source
  */
 describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source: VIEW }) => {
 	const TEMPLATE = templateOf(VIEW);
-	const COUPON_FORM =
-		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ??
-		"";
+	/* QA U-1: the coupon is no longer its own GET form — applying it that way
+	   dropped everything typed below. Its field and buttons belong to the place
+	   form (`form="checkout-place"`), which posts the typed details with them. */
+	const COUPON =
+		/<div class="checkout-coupon">[\s\S]*?<span class="checkout-note" id="coupon-note">/.exec(
+			TEMPLATE,
+		)?.[0] ?? "";
 
-	test("the coupon form is GET /checkout with name=coupon maxlength=200", () => {
-		expect(COUPON_FORM, "no GET /checkout form").not.toBe("");
-		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON_FORM)?.[0] ?? "";
+	test("the coupon field is name=coupon maxlength=200, owned by the place form", () => {
+		expect(COUPON, "no coupon block").not.toBe("");
+		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON)?.[0] ?? "";
 		expect(field).toContain('maxlength="200"');
 		expect(field).toContain('autocomplete="off"');
+		expect(field).toContain('form="checkout-place"');
 	});
 
-	test("the coupon form is NOT nested in the place form", () => {
+	test("the coupon block sits before the place form and is not nested in it", () => {
 		const place =
 			/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
 		expect(place).not.toBe("");
 		expect(place).not.toContain('name="coupon"');
-		expect(TEMPLATE.indexOf(COUPON_FORM)).toBeLessThan(TEMPLATE.indexOf(place));
+		expect(TEMPLATE.indexOf(COUPON)).toBeLessThan(TEMPLATE.indexOf(place));
 	});
 
 	test("the place form carries a hidden couponCode bound to summary.selection.couponCode", () => {
@@ -213,8 +221,8 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		);
 	});
 
-	test("the coupon form is hidden once the cart has become an order", () => {
-		expect(VIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
+	test("the coupon block is hidden once the cart has become an order", () => {
+		expect(VIEW).toMatch(/!summary\.orderCreated && \(\s*<div class="checkout-coupon">/);
 	});
 
 	test("an ENDED checkout offers no pay button — only the way to a new cart", () => {
@@ -395,20 +403,12 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(DELIVERY).toContain("summary.shipping.noOptions");
 	});
 
-	test("the coupon form carries the delivery selection, so applying a coupon keeps it", () => {
-		const coupon =
-			[
-				...TEMPLATE.matchAll(
-					/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/g,
-				),
-			]
-				.map((m) => m[0])
-				.find(
-					(form) => /<input[^>]*name="coupon"[^>]*>/.test(form) && !form.includes('id="delivery"'),
-				) ?? "";
-		expect(coupon, "no coupon form").not.toBe("");
-		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="country"/);
-		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="method"/);
+	test("applying a coupon keeps the delivery selection: Apply posts the place form, which carries it", () => {
+		// QA U-1: Apply is a submit of the place form, whose hidden fields carry the
+		// priced destination and method; place.ts puts them back on the URL.
+		expect(TEMPLATE).toMatch(/<button[^>]*form="checkout-place"[^>]*value="apply-coupon"/);
+		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="country"/);
+		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="shippingMethodId"/);
 	});
 
 	test("the place form echoes the priced METHOD and DESTINATION as hidden fields — never on the locked page", () => {

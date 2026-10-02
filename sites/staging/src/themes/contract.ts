@@ -393,8 +393,23 @@ export interface CheckoutModel {
 	paymentConfigured: boolean;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
-	/** The email field's initial value: the signed-in account's address, else "". */
+	/** The email field's initial value: what the buyer typed before a refused
+	 *  place (QA U-1), else the signed-in account's address, else "". */
 	emailValue: string;
+	/** The address fields' initial values — what the buyer typed before a
+	 *  refused place, else "" (QA U-1). */
+	addressValues: Record<
+		"name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+		string
+	>;
+	/** Copy for the fields a refused place identified, keyed by field name — a
+	 *  view prints each beside its field (QA U-1). */
+	fieldErrors: Partial<
+		Record<
+			"email" | "name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+			string
+		>
+	>;
 	/** The hint under the email field — the page's copy (`checkoutEmailNote`). */
 	emailNote: string;
 	ledgerRows: LedgerLine[];

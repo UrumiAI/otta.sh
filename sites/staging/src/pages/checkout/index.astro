@@ -30,8 +30,13 @@
  * URL — prices the cart for the destination and offers the matched zone's
  * delivery options as radios (a lone priced option comes back preselected).
  * The place form then carries the destination and the method the totals were
- * priced with as hidden fields, and the typed street address beside them. As
- * with the coupon, resubmitting the delivery form loses typed address fields.
+ * priced with as hidden fields, and the typed street address beside them.
+ * Resubmitting the delivery form loses address fields typed since the last
+ * post; applying a coupon does not (it posts the details form — QA U-1).
+ *
+ * KEPT VALUES (QA U-1). A refused place comes back here with the buyer's typed
+ * values in the draft cookie (lib/checkout-draft.ts), never in the URL; the
+ * page fills the form from it and marks the fields the refusal named.
  *
  * Shape (§8): step track, then two panels — the details form left (~1.15fr),
  * the order ledger + totals right.
@@ -49,6 +54,12 @@ import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { resumeHref } from "../../lib/checkout-resume.js";
 import { reviewErrorToken } from "../../lib/checkout-review.js";
 import {
+	draftAddressValues,
+	readCheckoutDraft,
+	shownFieldErrors,
+} from "../../lib/checkout-draft.js";
+import {
+	isCouponFailure,
 	readCouponParam,
 	readDestinationParams,
 	readMethodParam,
@@ -140,10 +151,27 @@ const ended = locked?.phase === "ended";
  *  Back returns to from the pay page (QA U-2). */
 const shownError = reviewErrorToken(error, locked !== null);
 
+/** What the buyer typed before the last refused place (QA U-1) — read back into
+ *  the form from the draft cookie (lib/checkout-draft.ts), never from the URL.
+ *  A locked review has no form to fill. */
+const draft = locked === null ? readCheckoutDraft(Astro.cookies) : null;
+
+/** A coupon refused AT PLACE: the redirect dropped it from the URL (so the
+ *  totals are priced without it), and it comes back into the coupon field with
+ *  its refusal beside it — not as a second, page-level notice. */
+const placeCouponError =
+	shownError !== null &&
+	isCouponFailure(shownError) &&
+	draft?.error === shownError &&
+	draft.coupon !== undefined
+		? { code: draft.coupon, message: cartErrorMessage(shownError) }
+		: null;
+
 /** The coupon refusal to explain, from the plugin or from the cap check above.
  *  Its code goes back into the field so a typo can be fixed. */
 const couponError = summary.selectionErrors.coupon ?? coupon.rejected ?? null;
-const couponValue = couponError?.code ?? summary.selection.couponCode ?? "";
+const couponValue =
+	couponError?.code ?? placeCouponError?.code ?? summary.selection.couponCode ?? "";
 const shippingError = summary.selectionErrors.shippingMethod ?? null;
 /** A refused destination — by the plugin, or by the shape check above. */
 const destinationError = summary.selectionErrors.destination ?? destinationRead.rejected ?? null;
@@ -223,12 +251,16 @@ const sumRows = [
  */
 const model: CheckoutModel = {
 	summary,
-	errorMessage: shownError !== null ? cartErrorMessage(shownError) : null,
+	errorMessage:
+		shownError !== null && placeCouponError === null ? cartErrorMessage(shownError) : null,
 	checkedOut,
 	locked: locked === null ? null : { id: locked.id, resumeHref: resumeHref(locked.id) },
 	ended,
 	couponValue,
-	couponError: couponError !== null ? cartErrorMessage(couponError.reason) : null,
+	couponError:
+		couponError !== null
+			? cartErrorMessage(couponError.reason)
+			: (placeCouponError?.message ?? null),
 	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
@@ -245,7 +277,9 @@ const model: CheckoutModel = {
 	/* Quoted from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
-	emailValue: accountEmail ?? "",
+	emailValue: draft?.values.email ?? accountEmail ?? "",
+	addressValues: draftAddressValues(draft),
+	fieldErrors: shownFieldErrors(draft, shownError),
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,

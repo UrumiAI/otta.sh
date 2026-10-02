@@ -313,7 +313,8 @@ describe("no publishable key ⇒ NO ORDER (§1.7)", () => {
 		// The server-side half of the review page's hidden button: an order would
 		// hold stock for 15 minutes against a payment that cannot happen.
 		expect(calls).toHaveLength(0);
-		expect(cookieOps).toHaveLength(0);
+		// No stash: nothing to pay. (The typed values are kept in the draft — QA U-1.)
+		expect(cookieOps.filter((op) => op.name !== "otta_checkout_draft")).toHaveLength(0);
 	});
 });
 
@@ -336,7 +337,7 @@ describe("6b — the idempotency key is the COOKIE cart's, checked against the f
 		expect(response.status).toBe(303);
 		expect(response.headers.get("location")).toContain("error=CHECKOUT_STALE");
 		expect(calls).toHaveLength(0);
-		expect(cookieOps).toHaveLength(0);
+		expect(cookieOps.filter((op) => op.name !== "otta_checkout_draft")).toHaveLength(0);
 	});
 
 	test("a key that is not a checkout key at all is refused the same way", async () => {
