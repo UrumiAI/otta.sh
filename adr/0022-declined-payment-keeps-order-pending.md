@@ -5,6 +5,9 @@
 - Decided by: the maintainer, 2026-09-29 (issue [#304](https://github.com/UrumiAI/otta.sh/issues/304))
 - Refines: the Phase-4 settlement design (`settleOrder`, §5) and the Phase-5 order state
   machine. Amends no earlier ADR.
+- Amended: 2026-10-02 — the "success after expiry" path: a payment that lands on an order
+  that provably left `pending` unpaid is refunded automatically. See "Amended 2026-10-02" at
+  the end of this record.
 
 ## Context
 
@@ -111,3 +114,106 @@ success after expiry → flagged for reconciliation, as before.
 - The domain's public surface narrows: `OrderStore.markFailed` and `SettleDeps.couponStore`
   are gone, and `legalNextStates("pending")` no longer contains `failed`. Pre-1.0, recorded
   in the changeset.
+
+## Amended 2026-10-02 — a payment that lands on a dead order is refunded automatically
+
+**What changed and why.** This record left one window open and named it: "one who pays after
+the sweep lands in the existing `SETTLE_ON_NON_PENDING` reconciliation path". End-to-end QA
+walked straight through it: a buyer kept `/checkout/pay` open past the hold, paid, Stripe
+captured, the webhook verified, the order stayed `expired` with `reconciliationFlag: "settle
+on expired"` — and the order page told them "Nothing was charged". No refund, no email. The
+flag was correct and useless: the buyer was out of pocket until an operator happened to look.
+The maintainer decided the money goes back automatically. (Closing the window itself —
+cancelling the intent at expiry and refusing the pay page — is a separate, following change.)
+
+**The amended behaviour** (`refundLatePayment`, called by `settleOrder`):
+
+1. **The capture is always recorded.** A verified success on an `expired`, `cancelled` or
+   (historically) `failed` order is written to the payments ledger first, whatever happens
+   next — including on the paths that cannot refund it. It is real money held against the
+   order, and recording it is what keeps every reader from claiming nothing was charged.
+2. **Positive evidence it was never paid.** The refund is automatic only when the order
+   provably left `pending` unpaid: `expired` and `failed` can only be entered from `pending`;
+   a `cancelled` order needs the `pending → cancelled` flip in its state-change audit. A paid
+   order an admin later cancelled has captured money too, and refunding a redelivery of its
+   original settling event is the merchant's decision, not the webhook's. An order that
+   predates the audit log has no events and therefore no evidence — it stays manual.
+3. **Exactly once.** The refund goes through `refundOrder` (ADR-0008's reserve → issue →
+   finalize) under ONE key derived from the captured payment,
+   `late-payment-refund:{providerRef}`, so any number of redeliveries, concurrent deliveries
+   and sweep resumes produce one provider refund and one ledger row. After a non-ok result the
+   key's row is re-read, so an attempt that lost to a concurrent, successful one finishes as a
+   success instead of flagging a refund that happened. The order's state does not move.
+4. **The flag says what a human should do.** It is set to "automatic refund in progress"
+   before the provider call, and on success that exact flag is resolved with outcome
+   `refunded` by `otta:auto-refund`. On failure it is reworded by what the failure means:
+   "retrying" (a transient error — nothing to do), "needs checking … verify in Stripe, it may
+   already be refunded" (an ambiguous or already-refunded provider answer — look before acting,
+   a second refund would be a loss), and "refund it manually" (a definite refusal).
+5. **Retries outlive the webhook — and end.** A transient failure answers
+   `LATE_PAYMENT_REFUND_RETRYABLE` (HTTP 503 with the BUSY convention's `retryable` +
+   `Retry-After`) so Stripe redelivers, and schedules a retry PER REFUND
+   (`OrderStore.scheduleRefundRetry`, keyed by the refund's key, so finishing one late capture
+   never drops another's retry), backing off 5 min → 15 min → hourly. Stripe gives up after a
+   few days while a `reserved` row keeps holding refund capacity — refusing even an admin refund
+   of the same money — so the cron's `late-refunds` leg (`retryLatePaymentRefunds`) resumes it
+   under the same key. The leg runs inside the sweep's tick budget (ADR-0019's cadence
+   amendment) as a best-effort leg:
+   - **idle is free of noise**: one due query; nothing due ⇒ no deferral line, no state write;
+   - a **trimmed resume unit** (~20 calls, measured: a `reserved` row proves the capture was
+     recorded and the order flagged, so none of that is redone, and the ledger it reads stands
+     in for the refund's own reads), gated PER REFUND, 1–5 per tick, ≤40% of the queries;
+   - **never a create bound to time out**: the create gets a FIXED 2.5 s, a unit is admitted
+     only with 3.5 s left (pre-flight + create + writes), and the gateway skips the create —
+     answering RETRYABLE, the row still `reserved` — if the pre-flight ate into that;
+   - a create the leg declined to start for lack of time answers `NOT_STARTED`
+     (`RefundFailureReason`): nothing issued, no attempt counted, the flag untouched;
+   - it runs **last**; only where a unit can never fit there (the Workers Free preset) does it
+     **lead one tick per fifteen minutes** while refunds are pending, capped at one unit;
+     otherwise a **give-up escalation** (no provider call, its own age-ranked list —
+     `listRefundRetriesStale` — so young retries never block a stale one, ~9 calls) runs at
+     the head of the tick. Escalation finishes a refund it finds already `recorded` (a `finish`
+     that crashed after the finalize) instead of flagging it.
+   - **A pattern for future legs.** Two optional hooks on the sweep's leg runner make a
+     best-effort leg cheap and quiet: `isDue` (one query; nothing due ⇒ no deferral line, no
+     streak, no state write — only a leg with work can be deferred) and `extraCount` (units a
+     step outside the leg's body completed this tick, counted in its outcome). A leg that must
+     occasionally lead persists its own lead stamp in the sweep state, as `late-refunds`
+     does.
+   After ~3 days of transient failures (Stripe's own redelivery window) — a missing gateway
+   counts as one, so a transient secret miss is not a reason to hand money to a human — it
+   GIVES UP, on every preset: the retry is cleared, the reservation is kept and
+   marked `unverified` — never voided, since a stalled call may have reached the provider — and
+   the flag says "needs checking … verify in Stripe, and refund it manually if it was not
+   refunded". The settle path bounds each Stripe call at 3 s, so a refund (a pre-flight read and
+   a create) fits inside Stripe's ~10 s delivery timeout. The trade: a create that times out is
+   AMBIGUOUS (Stripe may have processed it), so it lands as `unverified` with the "verify in
+   Stripe" flag rather than being retried blind. **Known gap:** after a give-up or an
+   ambiguous create, a refund made by hand in the Stripe dashboard is invisible to Otta — the
+   order page keeps saying the payment "will be refunded" until an admin action confirms it
+   (a follow-up: "confirm refunded in provider").
+6. **The buyer is told once, with the right figure.** ONE `late-payment-refunded` notice is
+   enqueued — a new, non-transition outbox row (`OrderStore.enqueueNotice`, first-wins per order
+   and kind), the "new, non-state-transition notification" this record's #26 note anticipated.
+   It carries the REFUNDED amount and currency, not the order total. **A second late capture on
+   the same order** (a second intent) is refunded the same way under its own key **without a
+   second email** — the notice is per kind, not per payment — and if it would take the refunds
+   past the order total, the ceiling refuses it and it goes to a human ("refund it manually").
+7. **The order page tells the truth.** The public order read carries a derived `latePayment`
+   status (`none` / `refunded` / `refund_pending`), read with the order in one document read;
+   "Nothing was charged" is said only for `none`. A pending refund is promised only as "it will
+   be refunded" — never "automatically": the wire does not say whether a person or the system
+   will do it, because on the manual paths it is a person.
+
+**What still goes to a human:** a gateway that cannot refund (x402; Stripe with no secret
+key), an order without evidence it was unpaid, a definite refusal, and an ambiguous outcome.
+
+**Consequences of the amendment.** The `paymentDeclineContract` case "success after expiry →
+flagged for reconciliation, as before" now asserts the refund; the new `latePaymentContract`
+(`@otta-sh/domain/testing`, run on the fakes and on the document store over SQLite, Postgres
+and D1) pins the once-only cure, the flag wording, the retry, the concurrent case and the
+no-evidence case, the backoff, the give-up and per-refund retries. The order document gains a
+per-refund `refundRetries` map and an indexed, derived `refundRetryAt`. A late-payment refund
+counts in the reporting rollup's refunded total for its day although the order never counted
+as revenue — money really did come in and go back out. ADR-0008's "auto-refund on a settle
+anomaly" rejection is narrowed accordingly (its 2026-10-02 amendment).

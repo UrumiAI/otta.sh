@@ -239,7 +239,8 @@ order of appearance in a deployment's life:
   live payment but never verify its confirmation (or the reverse) would leave orders holding
   stock against a payment nothing can settle. Independently, until the webhook signing secret
   is set, the settle route answers `NOT_CONFIGURED`; it verifies deliveries with the
-  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`). The pay
+  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`), and uses the
+  secret key, when set, only to refund a late payment (below). The pay
   page also needs the build-time publishable key, `STRIPE_PUBLIC_KEY` — see
   [`sites/staging/README.md`](./sites/staging/README.md).
 
@@ -253,6 +254,31 @@ order of appearance in a deployment's life:
   order is kept deliberately — retrying with the same `Idempotency-Key` re-issues the *same*
   PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing stock
   and any coupon use) if it never gets paid.
+
+  **Late payments** ([ADR-0022](./adr/0022-declined-payment-keeps-order-pending.md), amended
+  2026-10-02). A buyer can still pay after their order's hold lapsed and the order expired (a
+  pay tab left open). Such a payment is now **refunded automatically** by the settle route,
+  once, through `POST /v1/refunds` (key `late-payment-refund:<pi_…>`, each Stripe call bounded
+  at 3 s): the order stays `expired`, its reconciliation flag is resolved with outcome
+  `refunded` by `otta:auto-refund`, the buyer gets a "Payment refunded" email naming the
+  refunded amount, and the order page says the payment was refunded. This needs the **secret
+  key** on the settle path; without it the order is flagged for a manual refund as before, and
+  the order page still shows the payment as captured rather than "nothing was charged". A
+  transient Stripe error answers the webhook 503 (with `Retry-After`) so Stripe retries, and the
+  cron's `late-refunds` leg keeps resuming it after Stripe stops (backing off 5 min → 15 min →
+  hourly; best-effort — see §5); the flag reads `… automatic refund retrying` meanwhile. A
+  retry that finds no Stripe gateway (a secret missing or unreadable) is treated the same way.
+  After ~3 days of this it gives up — on every plan, Workers Free included — and flags the
+  order `… needs checking (gave up retrying …) — verify in Stripe`, keeping the refund
+  reservation as `unverified`. A cancelled order is refunded automatically only if its audit
+  shows it was cancelled while unpaid.
+
+  **Known gap — refunding by hand after a give-up.** Once a late refund is `unverified` (a
+  give-up, or an ambiguous create), the order page keeps saying the payment "will be
+  refunded" even after someone refunds it in the Stripe dashboard: nothing tells Otta the
+  money went back. Resolve the reconciliation flag in the admin console so the order leaves
+  the queue; the page copy follows the refunds ledger, and an admin "confirm refunded in the
+  provider" action to finalize such a row is a planned follow-up.
 
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
@@ -319,8 +345,8 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all nine sweep legs: they share a store composition and
-a clock, and splitting them would only put nine rows in contention on the same documents. The
+hook when it comes due. One task drives all ten sweep legs: they share a store composition and
+a clock, and splitting them would only put ten rows in contention on the same documents. The
 four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) run at
 most every fifteen minutes inside that task, because each reads a page budget of a collection
 per run; the outbox, the two expiry legs, the challenge prune and the hold-intent completer run
@@ -376,7 +402,20 @@ one unit of whichever customer-facing leg leads it — roughly one email, one ho
 minute, each leg leading one minute in three** — enough for a small store. The four scans, and
 `coupon-orphans` especially (it runs last, and only in a tick whose order expiry finished), may
 run much less often than every fifteen minutes while Free is working through a backlog. A store
-that abandons more checkouts than that per minute has outgrown Workers Free.
+that abandons more checkouts than that per minute has outgrown Workers Free. The tenth leg,
+`late-refunds` (resuming a late payment's automatic refund after a transient Stripe failure),
+is **best-effort**: a tick with nothing due pays one query for it and logs nothing. One resume
+is about 20 calls (two of them Stripe subrequests, the rest mostly the refund's finalize and its
+reporting write) plus up to 5 secret reads to build the gateway; a unit is started only with
+3.5 s left (a pre-flight, a whole 2.5 s create — a create that times out is ambiguous, so it is
+never started with less — and the writes after it). It runs last; only where it cannot fit
+there — **Workers Free** — does it, while refunds are pending, **lead one tick per fifteen
+minutes**, resuming one refund: that lead tick takes most of that minute's budget, so the
+critical legs go second in it (at most once per fifteen minutes, and only while late refunds
+are pending). In the other minutes a cheap give-up step — no Stripe call, its own list of the
+oldest retries, about 9 calls — runs at the head of the tick, so a refund past the ~3-day limit
+is handed to a human within a tick on every plan. On Paid it never leads and resumes up to five
+a tick, within 40% of the query budget.
 
 **Background work per minute (Settings → Checkout & holds).** The query budget is an
 operational setting, beside the cart hold TTL, with two presets: **Workers Free (30)**, the
@@ -412,7 +451,7 @@ and retries on the next if that fails. It reads the task row first and writes on
 schedule differs.
 
 Every leg is **idempotent** and runs in its own try/catch with its own label, so a leg that
-throws cannot starve the eight beside it; a tick always returns a summary. A leg logs one line
+throws cannot starve the others beside it; a tick always returns a summary. A leg logs one line
 when it did work or has more left, nothing when idle, and one `console.error` on failure
 (visible in `wrangler tail`). Per
 [ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md), these sweepers are not
@@ -452,5 +491,8 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
+| An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
+| An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
+| An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
