@@ -496,12 +496,40 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		state: toState,
 		currency: order.totals.currency,
 		totalCents: order.totals.total,
+		// The totals breakdown AS RECORDED (QA U-3), so the email states the same
+		// rows the order page does. Whether shipping and tax were calculated at all
+		// is read off the method snapshot exactly as the order page reads it (the
+		// plugin's `orderTotalsFlags`): shipping follows the method, tax follows the
+		// zone. Uncalculated renders "Not calculated", never "$0.00".
+		subtotalCents: order.totals.subtotal,
+		discountCents: order.totals.discount,
+		shippingCents: order.totals.shipping,
+		taxCents: order.totals.tax,
+		appliedCouponCode: order.totals.appliedCouponCode,
+		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
+		taxCalculated: snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false),
+		// The order's line SNAPSHOT (title and unit price as bought), never the
+		// live product: an email sent after a rename still names what was paid for.
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
 			title: l.title,
 			quantity: l.quantity,
 			unitPriceCents: l.unitPrice,
 		})),
+		// The immutable ship-to snapshot (ADR-0009), or null — without the contact
+		// channel, which the email has no reason to repeat.
+		shippingAddress:
+			order.shippingAddress === null
+				? null
+				: {
+						name: order.shippingAddress.name,
+						line1: order.shippingAddress.line1,
+						line2: order.shippingAddress.line2,
+						city: order.shippingAddress.city,
+						region: order.shippingAddress.region,
+						postalCode: order.shippingAddress.postalCode,
+						country: order.shippingAddress.country,
+					},
 		// Tracking travels with the data (never a store reach-back, §6) so the
 		// shipped template renders it — the whole point of the fulfillment slice is a
 		// shipped email that carries tracking instead of being empty. Present only
@@ -544,4 +572,15 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 				}
 			: {}),
 	};
+}
+
+/** Does the totals' opaque shipping-method snapshot carry this id? The same test
+ *  the order page applies (`shippingMethodIdOf` requires a non-empty method id,
+ *  `shippingZoneIdOf` any string zone id), so the email and the page agree on
+ *  every order. The snapshot is written only by `createOrderFromCart`, as
+ *  `{ zoneId, methodId, matchedRegion }`. */
+function snapshotField(snapshot: unknown, key: "zoneId" | "methodId", nonEmpty: boolean): boolean {
+	if (snapshot === null || typeof snapshot !== "object") return false;
+	const value = (snapshot as Record<string, unknown>)[key];
+	return typeof value === "string" && (!nonEmpty || value.length > 0);
 }

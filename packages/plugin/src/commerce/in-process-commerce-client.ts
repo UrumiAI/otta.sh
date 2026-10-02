@@ -132,7 +132,7 @@ import type {
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
-import { loginLinkUrl } from "../storefront/login-link.js";
+import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
@@ -696,8 +696,12 @@ export class InProcessCommerceClient implements CommerceClient {
 				to: address,
 				template: "customer-login-link",
 				// The link ONLY: the token travels nowhere a template or a provider
-				// log could print it on its own.
-				data: { loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token) },
+				// log could print it on its own. Beside it, the lifetime the email
+				// states — the TTL the verifier was built with (QA U-3).
+				data: {
+					loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token),
+					expiresInMinutes: Math.round(LOGIN_LINK_TTL_MS / 60_000),
+				},
 				// The challenge, not the token: one challenge is one email, so a
 				// retried send dedupes provider-side.
 				idempotencyKey: `login:${issued.challengeId}`,

@@ -26,6 +26,7 @@
  * customer email — silently, since the outbox would still look correctly drained.
  */
 import { renderEmail, type EmailTemplate } from "@otta-sh/domain";
+import { storefrontEmailMoney } from "../src/email/email-render-context.js";
 import { describe, expect, test } from "vitest";
 import {
 	CtxHttpEmailSender,
@@ -109,7 +110,11 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 		expect(call?.url).toBe(API_URL);
 		expect(call?.init?.method).toBe("POST");
 		const body = JSON.parse(String(call?.init?.body)) as Record<string, unknown>;
-		const rendered = renderEmail(input.template, input.data);
+		// No store name and no storefront origin on this sender: the storefront's
+		// money formatter is the whole context.
+		const rendered = renderEmail(input.template, input.data, {
+			formatMoney: storefrontEmailMoney,
+		});
 		expect(body).toEqual({
 			from: "shop@example.test",
 			to: input.to,
@@ -259,7 +264,9 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 			expect(message).not.toContain("re_secret_key");
 			// A provider that quotes the recipient back has it redacted here.
 			expect(message).not.toContain(String(input.to));
-			expect(message).not.toContain(renderEmail(input.template, input.data).subject);
+			expect(message).not.toContain(
+				renderEmail(input.template, input.data, { formatMoney: storefrontEmailMoney }).subject,
+			);
 		});
 
 		test("redacts the recipient case-insensitively", async () => {

@@ -8,50 +8,82 @@ export interface RenderedEmail {
 }
 
 /**
+ * What the CALLER supplies to a render, beyond the template's own data (QA U-3).
+ *
+ * Nothing here is read from a store: the plugin's email sender resolves it from
+ * its settings and passes it in, so rendering stays pure.
+ */
+export interface EmailRenderContext {
+	/**
+	 * Integer minor units + an ISO currency code → display money ("$100.00",
+	 * "₹1,234.50"), or `null` when the value cannot be formatted.
+	 *
+	 * INJECTED, NOT IMPLEMENTED HERE. Formatting is presentation, not domain
+	 * (`@otta-sh/admin-presentation`'s `formatMoney` says so), and the email must
+	 * format money exactly as the storefront does — so the plugin passes the
+	 * storefront's own formatter, at the storefront's locale. Called only with a
+	 * safe integer and a non-empty currency; a negative amount is never passed
+	 * (the renderer places the sign itself).
+	 */
+	formatMoney: (minorUnits: number, currency: string) => string | null;
+	/** The store's name, for the sign-in email. Plain text; escaped here. */
+	storeName?: string | undefined;
+	/**
+	 * The absolute URL of THIS order's page on the storefront — the same page the
+	 * shopper lands on after checkout. A bearer link (the page is readable by
+	 * whoever holds the URL), so it goes only to the order's own recipient.
+	 * Absent when the store's public URL is not configured: then no link at all.
+	 */
+	orderPageUrl?: string | undefined;
+}
+
+/** What an uncalculated shipping or tax row says — the storefront's own
+ *  `NOT_CALCULATED_LABEL` (the plugin pins that the two are equal). A store
+ *  that never priced delivery did not make it free: never "$0.00". */
+export const EMAIL_NOT_CALCULATED_LABEL = "Not calculated";
+
+/** A rendered block: the same content as plain text and as HTML. */
+interface Block {
+	text: string;
+	html: string;
+}
+
+/**
  * Render an email from a template + explicit data (Phase 5 §6). Plain-text +
  * HTML pair, interpolated (no concatenation of user data into markup beyond
  * escaping) so the templates stay i18n-ready. No template reaches back into a
- * store — it renders only what the dispatcher passed it.
+ * store — it renders only what the dispatcher passed it, plus the caller's
+ * {@link EmailRenderContext}.
+ *
+ * EVERY VALUE FROM DATA IS UNTRUSTED. Product titles come from the CMS, the
+ * address and coupon code from a shopper's form. In HTML each is escaped; in
+ * plain text each single-line value is folded onto one line, so a CR/LF in a
+ * title cannot forge a "View your order:" line of its own.
  */
-export function renderEmail(template: EmailTemplate, data: Record<string, unknown>): RenderedEmail {
-	if (template === "customer-login-link") {
-		const loginUrl = str(data["loginUrl"]);
-		const link = loginUrl ?? str(data["challengeId"]) ?? "";
-		const subject = "Your sign-in link";
-		const footer =
-			"This link is single-use and expires shortly. If you didn't request it, you can ignore this email.";
-		const text = `Click to sign in: ${link}\n\n${footer}`;
-		// The link is an ANCHOR — a bare URL in a paragraph is not clickable in every
-		// client — and the href is escaped exactly like the text: the URL is built
-		// from operator config and a token, and neither is markup. (Adapted from #325
-		// by @stephanedemotte.)
-		const shown =
-			loginUrl !== undefined
-				? `<a href="${escapeHtml(loginUrl)}">${escapeHtml(loginUrl)}</a>`
-				: escapeHtml(link);
-		return {
-			subject,
-			text,
-			html: paragraph(`Click to sign in: ${shown}`) + paragraph(escapeHtml(footer)),
-		};
-	}
+export function renderEmail(
+	template: EmailTemplate,
+	data: Record<string, unknown>,
+	context: EmailRenderContext,
+): RenderedEmail {
+	if (template === "customer-login-link") return renderLoginLink(data, context);
 
+	const money = moneyFormatter(context);
 	// The order is named by WHAT WAS BOUGHT, never by its id (`orderLabel`): the
 	// recipient is the buyer, and a UUID names nothing they bought. The id still
-	// travels in `data.orderId` — the dispatcher keys on it — it is just not
-	// rendered. The label is plain text: escaped below like every other value.
+	// travels in `data.orderId` — the dispatcher keys on it, and the caller builds
+	// the order page link from it — it is just not rendered as text.
 	const label = orderLabel(labelLines(data["lines"]));
-	// A refund email states its OWN figure (`noticeAmountCents`, the refunded money),
-	// not the order total — a late capture or a partial refund differs from it.
-	// Labelled for what it is. The ONE "amount refunded" path: notices (late payment,
-	// partial refund) and the `refunded` state email alike (ADR-0026).
-	const isNotice = data["noticeAmountCents"] !== undefined;
-	const total = isNotice
-		? formatMoney(data["noticeAmountCents"], str(data["noticeCurrency"]))
-		: formatMoney(data["totalCents"], str(data["currency"]));
-	const totalLabel = isNotice ? "Refunded" : "Total";
 	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
 	const subject = `${copy.subject} — ${label}`;
+	// A refund email states its OWN figure first (`noticeAmountCents`, the refunded
+	// money): a late capture or a partial refund differs from the order total,
+	// which the summary below states under its own name. The ONE "amount refunded"
+	// path: notices (late payment, partial refund) and the `refunded` state email
+	// alike (ADR-0026).
+	const refunded =
+		data["noticeAmountCents"] !== undefined
+			? money(data["noticeAmountCents"], str(data["noticeCurrency"]))
+			: null;
 	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
 	// is no longer an empty "on its way" — rendered only when the order was
 	// fulfilled and the data carries it (any other template ignores fulfillment).
@@ -65,22 +97,238 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	const cancellation =
 		template === "order-cancelled"
 			? joinLines([
-					cancellationRefundLine(data["cancellation"]),
+					cancellationRefundLine(data["cancellation"], money),
 					cancellationLines(data["cancellation"]),
 				])
 			: null;
-	const extra = tracking ?? cancellation;
-	const text =
-		`${copy.body}\n\nOrder: ${label}\n${totalLabel}: ${total}` +
-		(extra !== null ? `\n${extra.text}` : "");
+
+	const sections: Array<Block | null> = [
+		{ text: copy.body, html: paragraph(escapeHtml(copy.body)) },
+		refunded === null
+			? null
+			: {
+					text: `Refunded: ${refunded}`,
+					html: paragraph(`<strong>Refunded: ${escapeHtml(refunded)}</strong>`),
+				},
+		asParagraph(tracking ?? cancellation),
+		{ text: `Order: ${label}`, html: paragraph(`<strong>${escapeHtml(label)}</strong>`) },
+		lineItems(data["lines"], str(data["currency"]), money),
+		totalsBlock(data, money),
+		addressBlock(data["shippingAddress"]),
+		orderLink(context.orderPageUrl),
+	];
+	const present = sections.filter((s): s is Block => s !== null);
 	return {
 		subject,
-		text,
-		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(label)}<br>${totalLabel}: ${escapeHtml(total)}` +
-				(extra !== null ? `<br>${extra.html}` : ""),
+		text: present.map((s) => s.text).join("\n\n"),
+		html: present.map((s) => s.html).join(""),
+	};
+}
+
+/**
+ * The sign-in email (QA U-3): it names the store, gives the link a clear label
+ * (a raw URL alone reads like spam and wraps badly), keeps the URL as the
+ * plain-text part's link and as the HTML part's copy-paste fallback, and states
+ * the real lifetime — `expiresInMinutes`, which the sender derives from the
+ * challenge TTL the store enforces.
+ */
+function renderLoginLink(
+	data: Record<string, unknown>,
+	context: EmailRenderContext,
+): RenderedEmail {
+	const loginUrl = str(data["loginUrl"]);
+	const store = context.storeName !== undefined ? oneLine(context.storeName) : "";
+	const subject = store.length > 0 ? `Sign in to ${store}` : "Your sign-in link";
+	const action = store.length > 0 ? `Sign in to ${store}` : "Sign in";
+	const minutes = data["expiresInMinutes"];
+	const lifetime =
+		typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes > 0
+			? `It works once and expires in ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`
+			: "It works once.";
+	const intro = `${store.length > 0 ? `Use the link below to sign in to ${store}.` : "Use the link below to sign in."} ${lifetime}`;
+	const ignore = "If you didn't ask to sign in, you can ignore this email.";
+	if (loginUrl === undefined) {
+		return {
+			subject,
+			text: `${intro}\n\n${ignore}`,
+			html: paragraph(escapeHtml(intro)) + paragraph(escapeHtml(ignore)),
+		};
+	}
+	// The href is escaped exactly like text: the URL is built from operator config
+	// and a token, and neither is markup. (Anchor + escaping adapted from #325 by
+	// @stephanedemotte.)
+	const href = escapeHtml(loginUrl);
+	return {
+		subject,
+		text: `${intro}\n\n${action}: ${loginUrl}\n\n${ignore}`,
+		html:
+			paragraph(escapeHtml(intro)) +
+			paragraph(`<a href="${href}">${escapeHtml(action)}</a>`) +
+			paragraph(`If the link doesn't work, copy this link into your browser:<br>${href}`) +
+			paragraph(escapeHtml(ignore)),
+	};
+}
+
+/** Money as the renderer uses it: data's loose values in, a display string or
+ *  `null` out. Validates what crossed the outbox's JSON boundary — a non-integer
+ *  or a missing currency renders NOTHING rather than a plausible wrong amount —
+ *  and places the sign itself, so the formatter only ever sees a magnitude. */
+type Money = (minorUnits: unknown, currency: string | undefined) => string | null;
+
+function moneyFormatter(context: EmailRenderContext): Money {
+	return (minorUnits, currency) => {
+		if (
+			typeof minorUnits !== "number" ||
+			!Number.isSafeInteger(minorUnits) ||
+			currency === undefined ||
+			currency.length === 0
+		) {
+			return null;
+		}
+		const formatted = context.formatMoney(Math.abs(minorUnits), currency);
+		if (formatted === null || formatted.length === 0) return null;
+		return minorUnits < 0 ? `−${formatted}` : formatted;
+	};
+}
+
+/** The line snapshot: "Otta Tee × 2 — $30.00" (unit price × quantity, from the
+ *  ORDER's lines — `buildOrderEmailData` copies them off the order, never the
+ *  live product). Null when there are no readable lines. */
+function lineItems(lines: unknown, currency: string | undefined, money: Money): Block | null {
+	if (!Array.isArray(lines)) return null;
+	const rows = lines.flatMap((line: unknown) => {
+		if (line === null || typeof line !== "object") return [];
+		const l = line as { title?: unknown; quantity?: unknown; unitPriceCents?: unknown };
+		const title = oneLine(str(l.title) ?? "");
+		const quantity = l.quantity;
+		if (title.length === 0 || typeof quantity !== "number" || !Number.isSafeInteger(quantity)) {
+			return [];
+		}
+		const unit = l.unitPriceCents;
+		const lineTotal =
+			typeof unit === "number" && Number.isSafeInteger(unit * quantity)
+				? money(unit * quantity, currency)
+				: null;
+		return [{ title, quantity, lineTotal }];
+	});
+	if (rows.length === 0) return null;
+	return {
+		text: rows
+			.map(
+				(r) =>
+					`${r.title} × ${String(r.quantity)}${r.lineTotal === null ? "" : ` — ${r.lineTotal}`}`,
+			)
+			.join("\n"),
+		html: table(
+			rows.map((r) => [
+				`${escapeHtml(r.title)} × ${String(r.quantity)}`,
+				r.lineTotal === null ? "" : escapeHtml(r.lineTotal),
+			]),
 		),
 	};
+}
+
+/**
+ * Subtotal, discount (with its coupon code), shipping, tax and total, AS THE
+ * ORDER RECORDED THEM — the same rows the order page shows, by the same rules:
+ *  - shipping and tax that were never calculated (`shippingCalculated` /
+ *    `taxCalculated`, which `buildOrderEmailData` derives exactly as the order
+ *    page's `orderTotalsFlags` does) read {@link EMAIL_NOT_CALCULATED_LABEL};
+ *    a calculated zero is money. A non-zero amount is always shown, whatever
+ *    the flag says: money charged is never hidden.
+ *  - no discount and no coupon: no discount row at all.
+ * A row whose amount cannot be formatted is left out rather than shown wrong.
+ */
+function totalsBlock(data: Record<string, unknown>, money: Money): Block | null {
+	const currency = str(data["currency"]);
+	const rows: Array<[string, string]> = [];
+	const push = (label: string, value: string | null) => {
+		if (value !== null) rows.push([label, value]);
+	};
+	push("Subtotal", money(data["subtotalCents"], currency));
+	const coupon = str(data["appliedCouponCode"]);
+	const discount = data["discountCents"];
+	if (coupon !== undefined || (typeof discount === "number" && discount > 0)) {
+		const amount = typeof discount === "number" ? money(-discount, currency) : null;
+		const name = coupon !== undefined ? `Discount (${oneLine(coupon)})` : "Discount";
+		push(name, amount);
+	}
+	push("Shipping", calculated(data["shippingCents"], data["shippingCalculated"], currency, money));
+	push("Tax", calculated(data["taxCents"], data["taxCalculated"], currency, money));
+	push("Order total", money(data["totalCents"], currency));
+	if (rows.length === 0) return null;
+	return {
+		text: rows.map(([label, value]) => `${label}: ${value}`).join("\n"),
+		html: table(rows.map(([label, value]) => [escapeHtml(label), escapeHtml(value)])),
+	};
+}
+
+function calculated(
+	amount: unknown,
+	flag: unknown,
+	currency: string | undefined,
+	money: Money,
+): string | null {
+	if (flag === true || (typeof amount === "number" && amount !== 0)) return money(amount, currency);
+	return EMAIL_NOT_CALCULATED_LABEL;
+}
+
+/** The ship-to snapshot, or null when the order has none (a digital-only order,
+ *  or one placed before addresses were captured). Contact fields are not shown. */
+function addressBlock(address: unknown): Block | null {
+	if (address === null || typeof address !== "object") return null;
+	const a = address as Record<string, unknown>;
+	const field = (key: string) => oneLine(str(a[key]) ?? "");
+	const cityLine = [
+		[field("city"), field("region")].filter((p) => p.length > 0).join(", "),
+		field("postalCode"),
+	]
+		.filter((p) => p.length > 0)
+		.join(" ");
+	const lines = [field("name"), field("line1"), field("line2"), cityLine, field("country")].filter(
+		(l) => l.length > 0,
+	);
+	if (lines.length === 0) return null;
+	return {
+		text: `Delivery address:\n${lines.join("\n")}`,
+		html: paragraph(`Delivery address:<br>${lines.map(escapeHtml).join("<br>")}`),
+	};
+}
+
+/** The order page link, or null when the caller has no storefront URL. */
+function orderLink(url: string | undefined): Block | null {
+	if (url === undefined || url.length === 0) return null;
+	return {
+		text: `View your order: ${url}`,
+		html: paragraph(`<a href="${escapeHtml(url)}">View your order</a>`),
+	};
+}
+
+function asParagraph(block: Block | null): Block | null {
+	return block === null ? null : { text: block.text, html: paragraph(block.html) };
+}
+
+/** Two-column rows of ALREADY-ESCAPED cells. */
+function table(rows: ReadonlyArray<readonly [string, string]>): string {
+	const body = rows
+		.map(
+			([left, right]) =>
+				`<tr><td style="padding:2px 16px 2px 0">${left}</td><td style="padding:2px 0;text-align:right">${right}</td></tr>`,
+		)
+		.join("");
+	return `<table role="presentation" cellpadding="0" cellspacing="0">${body}</table>`;
+}
+
+/** C0/C1 controls (CR/LF among them) — folded to a space. */
+// oxlint-disable-next-line no-control-regex -- matching control characters IS the point
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu;
+/** Invisible format characters (zero-width, bidi overrides, BOM) — removed: a
+ *  right-to-left override would visually reorder a line. */
+const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/gu;
+
+/** One untrusted value on one line, for the plain-text part. */
+function oneLine(value: string): string {
+	return value.replace(INVISIBLE, "").replace(CONTROL, " ").replace(/\s+/gu, " ").trim();
 }
 
 /**
@@ -111,7 +359,7 @@ export function customerSafeCancellationCopy(reason: string): string | undefined
  *  the email degrades to the plain reason-free body. The admin's free-text
  *  `detail` is deliberately NEVER read here: it must not reach the customer
  *  email for ANY reason value (admin-only context). */
-function cancellationLines(cancellation: unknown): { text: string; html: string } | null {
+function cancellationLines(cancellation: unknown): Block | null {
 	if (cancellation === null || typeof cancellation !== "object") return null;
 	const c = cancellation as { reason?: unknown };
 	const reason = str(c.reason);
@@ -125,22 +373,20 @@ function cancellationLines(cancellation: unknown): { text: string; html: string 
  *  null when the cancellation refunded nothing. Unlike the reason line it is
  *  rendered whatever the reason was — the money is the buyer's, and saying it is
  *  coming reveals nothing about why the order was cancelled. */
-function cancellationRefundLine(cancellation: unknown): { text: string; html: string } | null {
+function cancellationRefundLine(cancellation: unknown, money: Money): Block | null {
 	if (cancellation === null || typeof cancellation !== "object") return null;
 	const refund = (cancellation as { refund?: unknown }).refund;
 	if (refund === null || typeof refund !== "object") return null;
 	const r = refund as { amountCents?: unknown; currency?: unknown };
-	const amount = formatMoney(r.amountCents, str(r.currency));
-	if (amount === "") return null;
+	const amount = money(r.amountCents, str(r.currency));
+	if (amount === null) return null;
 	const line = `A refund of ${amount} is on its way to your original payment method.`;
 	return { text: line, html: escapeHtml(line) };
 }
 
 /** Join optional blocks into one, or null when there are none. */
-function joinLines(
-	blocks: ReadonlyArray<{ text: string; html: string } | null>,
-): { text: string; html: string } | null {
-	const present = blocks.filter((b): b is { text: string; html: string } => b !== null);
+function joinLines(blocks: ReadonlyArray<Block | null>): Block | null {
+	const present = blocks.filter((b): b is Block => b !== null);
 	if (present.length === 0) return null;
 	return {
 		text: present.map((b) => b.text).join("\n"),
@@ -152,7 +398,7 @@ function joinLines(
  *  dispatcher passed (`buildOrderEmailData`). Returns null when the order carried
  *  no fulfillment (e.g. shipped via the bare transition) so the email degrades to
  *  the plain body rather than showing empty "Carrier:" labels. */
-function trackingLines(fulfillment: unknown): { text: string; html: string } | null {
+function trackingLines(fulfillment: unknown): Block | null {
 	if (fulfillment === null || typeof fulfillment !== "object") return null;
 	const f = fulfillment as {
 		carrier?: unknown;
@@ -221,7 +467,7 @@ const ORDER_COPY: Record<
 };
 
 /** The email data's `lines` (built by `buildOrderEmailData`) read back as
- *  `orderLabel` input. Defensive for the same reason `formatMoney` is: the data
+ *  `orderLabel` input. Defensive for the same reason the money formatter is: the data
  *  crossed the outbox's JSON boundary, so anything that is not an array of
  *  objects contributes nothing — and an order with nothing nameable renders as
  *  "Your order", never as its id. */
@@ -268,32 +514,6 @@ function latePaymentCopyFor(
 
 function str(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
-}
-
-/**
- * Minor-unit integer → major-unit display. NEVER float math on the stored value.
- *
- * `unknown` ON PURPOSE, not a missed `Cents`: the argument comes out of the
- * outbox row's loose `data` record, which crossed a JSON boundary — the brand
- * cannot survive that trip, so the check has to happen here, and it is a FULL
- * one. A non-integer (a float that "looks like" a price, a NaN from a bad parse)
- * renders NOTHING rather than a plausible-looking wrong amount — the same
- * fail-closed choice the missing-currency arm already made.
- *
- * THE SIGN IS SPLIT OFF FIRST (INC-C5 review, A8). `Math.floor` rounds toward
- * -∞ and `%` keeps the dividend's sign, so the naive split rendered -550 as
- * "-6.-50" — not a price, in an email a customer reads. Formatting the
- * MAGNITUDE and re-attaching the sign is correct on both sides of zero.
- */
-function formatMoney(cents: unknown, currency: string | undefined): string {
-	if (typeof cents !== "number" || !Number.isSafeInteger(cents) || currency === undefined) {
-		return "";
-	}
-	const sign = cents < 0 ? "-" : "";
-	const magnitude = Math.abs(cents);
-	const major = Math.floor(magnitude / 100);
-	const minor = String(magnitude % 100).padStart(2, "0");
-	return `${sign}${major}.${minor} ${currency}`;
 }
 
 function escapeHtml(value: string): string {
