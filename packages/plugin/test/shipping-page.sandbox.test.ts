@@ -1195,6 +1195,37 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
 	});
 
+	test("a free-shipping threshold on a FLAT-RATE method is refused with the reason — the domain would never apply it", async () => {
+		// `shippingCost` charges a flat rate's amount whatever the subtotal; only a
+		// free_shipping method reads `minSubtotalCents`. QA saved one anyway and the
+		// console said "Rate created", promising free shipping that never happens.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "35.00" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+	});
+
+	test("a free-shipping method still takes its threshold", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [],
+		});
+		const createForm = formFor(await openPath(["us", "free"]), "shipping:create-rate");
+		await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "50.00" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getRate("free", toCurrency("USD")))?.minSubtotalCents).toBe(5000);
+	});
+
 	test("an invalid currency code is caught at the plugin boundary — nothing is written", async () => {
 		await seedShipping();
 		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");

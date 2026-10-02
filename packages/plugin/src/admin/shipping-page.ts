@@ -1603,6 +1603,30 @@ function openCreateMethodAction() {
 
 // -- custom action: create a rate ---------------------------------------------------
 
+/**
+ * A FREE-SHIPPING THRESHOLD ONLY MEANS SOMETHING ON A `free_shipping` METHOD.
+ * The domain's `shippingCost` charges a flat rate's amount whatever the
+ * subtotal and reads `minSubtotalCents` only for `free_shipping`, so a threshold
+ * typed on a flat-rate method's rate is stored and never applied — QA saved one
+ * and the console said "Rate created", which reads as a promise of free shipping
+ * over $35 that checkout never keeps. Refused with the reason instead.
+ *
+ * Only checked when a threshold was actually entered, so the common blank case
+ * costs no read. A stored threshold on an existing flat-rate rate (written
+ * before this rule) is left alone until the operator saves that rate.
+ */
+const FLAT_RATE_THRESHOLD_REFUSAL =
+	"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.";
+
+async function isFlatRateMethod(
+	client: AdminRulesSurface,
+	zoneId: string,
+	methodId: string,
+): Promise<boolean> {
+	const methods = await client.listMethods(zoneId);
+	return methods.find((m) => m.id === methodId)?.type === "flat_rate";
+}
+
 function createRateAction() {
 	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
@@ -1642,6 +1666,13 @@ function createRateAction() {
 					title: "Rate not created",
 					description:
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+				});
+			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not created",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
 				});
 			}
 		}
@@ -1701,6 +1732,13 @@ function saveRateAction() {
 					title: "Rate not saved",
 					description:
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+				});
+			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not saved",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
 				});
 			}
 		}
