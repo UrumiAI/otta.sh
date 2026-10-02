@@ -102,9 +102,37 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	});
 
 	/** The typed ship-to fields that carry a domain length bound, and the key of
-	 *  `ORDER_ADDRESS_MAX_LENGTHS` each one reads. (The region has its own,
-	 *  tighter code-shaped maxlength, asserted below.) */
-	const BOUNDED: ReadonlyArray<string> = ["name", "line1", "line2", "city", "postalCode", "phone"];
+	 *  `ORDER_ADDRESS_MAX_LENGTHS` each one reads. The region too (QA U-14): its
+	 *  old code-shaped maxlength of 6 silently cut "Illinois" to "Illino"; the
+	 *  code SHAPE is the pattern's job, asserted below, never a truncation's. */
+	const BOUNDED: ReadonlyArray<string> = [
+		"name",
+		"line1",
+		"line2",
+		"city",
+		"region",
+		"postalCode",
+		"phone",
+	];
+
+	test("every region input says what it wants instead of cutting the text short (QA U-14)", () => {
+		// Either name: fix/checkout-resume-and-values renames the delivery form's
+		// region input `deliveryRegion`; the rule holds for both inputs either way.
+		const regions = [...VIEW.matchAll(/<input[^>]*name="(?:region|deliveryRegion)"[^>]*>/g)]
+			.map((m) => m[0])
+			.filter((tag) => !tag.includes('type="hidden"'));
+		expect(regions).toHaveLength(2);
+		for (const region of regions) {
+			expect(region).not.toMatch(/maxlength="\d+"/);
+			expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
+			// A name ("Illinois") is refused at the field by the pattern, and the
+			// browser's message quotes the title — which names the code to type.
+			expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
+			expect(region).toMatch(/title="[^"]*code[^"]*IL[^"]*"/);
+			expect(region).toContain('autocapitalize="characters"');
+			expect(region).toContain('spellcheck="false"');
+		}
+	});
 
 	test.each(BOUNDED)(
 		"the ship-to field %s is bounded by the domain's own limit — maxlength from ORDER_ADDRESS_MAX_LENGTHS",
@@ -368,7 +396,7 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 	test("it asks for a country (select) and a region CODE, and echoes the priced destination as fromCountry/fromRegion", () => {
 		expect(DELIVERY).toMatch(/<select[^>]*name="country"/);
 		const region = /<input[^>]*name="region"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
-		expect(region).toContain('maxlength="6"');
+		expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
 		expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
 		expect(DELIVERY).toMatch(/State\/province code/);
 		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="fromCountry"/);

@@ -200,8 +200,11 @@ const {
 									id="delivery-region"
 									name="region"
 									autocomplete="address-level1"
-									maxlength="6"
+									maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
 									pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+									title="The state or province code, e.g. IL for Illinois"
+									autocapitalize="characters"
+									spellcheck="false"
 									value={regionValue}
 									aria-describedby="region-note"
 								/>
@@ -391,8 +394,11 @@ const {
 													type="text"
 													name="region"
 													autocomplete="address-level1"
-													maxlength="6"
+													maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
 													pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+													title="The state or province code, e.g. IL for Illinois"
+													autocapitalize="characters"
+													spellcheck="false"
 												/>
 											</label>
 										</>
