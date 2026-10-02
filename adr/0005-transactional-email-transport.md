@@ -123,3 +123,22 @@ unchanged; what changes is **when the first delivery attempt happens**.
   row is still unattempted, and the redelivery is the first chance. When nothing is due, a
   replay costs one read of the order document, because the sender (and its kv reads) is
   built only once a row has been claimed.
+
+## Amended 2026-10-02 (second) — admin writes send their email inline too
+
+[ADR-0026](./0026-admin-order-actions-never-claim-money-that-did-not-move.md) (QA T1-6). The
+amendment above gave the settle routes an inline first attempt. The admin console's order writes
+now make the same attempt: a status move, a fulfilment, a cancel or a refund that enqueues a buyer
+email ends with `sendOrderEmailsNow` for that order. The rules above hold for this caller too:
+
+- the claim is order-scoped and takes first attempts only, through the same drain;
+- the budget is the WRITE's one deadline (`settle-deadline.ts`), fixed as the write starts, and
+  the wait is never more than 5 s; an inline timeout is cut short, never the provider's fault;
+- the lease is 1 minute;
+- failures are swallowed and logged, and never fail the write;
+- the cron leg remains the at-least-once backstop.
+
+Two things are new. `sendOrderEmailsNow` resolves to the rows it delivered while the request was
+waiting, and the dispatchers gained `onSent(row)`. With these the console says "the buyer has
+been emailed" only when the row the write enqueued was delivered. The email goes out in click
+order: each write sends what is due for that order, oldest first.

@@ -2214,6 +2214,24 @@ One consequence worth knowing before you write a test: a DA-7 line quotes the co
 
 ---
 
+### 8.1 What an admin write says about the buyer's email (QA T1-6, ADR-0026)
+
+Every Orders write that enqueues a buyer email — a status move, a fulfilment, a cancel, a refund —
+sends it **inline** before it answers (`sendOrderEmailsNow`, budgeted from the write's start;
+ADR-0005's second 2026-10-02 amendment), so the email goes with the click and in click order rather
+than on the cron's next 15-minute tick. The write's result carries `email`, and the notice follows
+it — **never a blanket "the buyer has been emailed"**:
+
+| `email` | Sentence in the notice |
+|---|---|
+| `sent` — the row this write enqueued was delivered | *The buyer has been emailed.* (fulfilment: *…emailed their tracking.*) |
+| `queued` — the provider failed or was slow; the cron sends it | *The buyer's email is queued — it will go out within a few minutes.* |
+| `unconfigured` — no email provider in this bundle | *No email was sent — this store has no email provider set up.* |
+| absent — the write enqueued none (a replay; Mark refunded) | nothing about email; Mark refunded says *no money was moved and the buyer was not emailed* |
+
+A status move therefore answers with a notice (`Order marked <state>` + the sentence) where it used
+to answer `null`. The inline send is best-effort and bounded and can never fail the write.
+
 ## 9. Money, dates, IDs
 
 **M-1 — money is always formatted, never raw.** Every money value reaching a screen goes through

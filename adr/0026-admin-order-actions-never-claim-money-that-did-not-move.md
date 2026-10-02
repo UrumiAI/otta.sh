@@ -172,3 +172,37 @@ next step (contact the buyer, then stop the shipment or Mark refunded). The outc
 - A late payment's automatic refund (ADR-0022/0008, `settleOrder`) is recorded with its own
   purpose, `late-payment`. Only a `refund`-purpose row can drive `→ refunded`, so neither a
   cancellation's refund nor a late payment's can flip an order.
+
+## Amended 2026-10-02 — admin writes send their email inline; every refund email states its amount
+
+QA T1-6: admin moves only enqueued their email. The cron sent it up to 15 minutes later, out of
+order when several were due, while the console said the buyer had been emailed. A partial refund
+sent no email at all.
+
+- **Inline, truthful.** Each admin write that enqueues a buyer email ends with
+  `sendOrderEmailsNow` for that order. That covers a status move, a fulfilment, a cancel and a
+  refund. It goes through the same order-scoped drain the settle routes use (first attempts only,
+  inline timeouts cut short, the cron as backstop) and is bounded by the write's ONE deadline,
+  fixed as the write starts (`settle-deadline.ts`) — so a slow refund leaves the email only what
+  is left. It is best-effort and never fails the write (ADR-0005's second 2026-10-02 amendment). The write reports `email: sent |
+  queued | unconfigured`, decided by whether the row THIS write enqueued was delivered; the
+  dispatchers' `onSent` reports which rows went out. The console says "emailed" only for `sent`,
+  "queued — it will go out within a few minutes" for `queued`, and "no email provider" for
+  `unconfigured`.
+- **Which refunds email the buyer.** An admin refund in its own right (`purpose: "refund"`) that
+  leaves money captured emails the buyer with `order-partially-refunded`, through a
+  `refund-issued` NOTICE row appended in the write that finalizes the refund. That covers a gateway refund and also a MANUAL refund recorded in Money → Refunds,
+  because recording one is the operator attesting the money was sent. Its wording is neutral about
+  how the money went back ("We've issued a partial refund for your order"), since a manual x402
+  refund goes to a wallet. A refund that reaches the ceiling is announced by the `refunded` email,
+  which states Σ refunded. Two things never email: a Mark refunded, because it attests nothing
+  and moves no money (Decision 3), and a cancellation's refund, which the cancelled email carries.
+  The exception is a cancellation that lost the race to a shipment: no cancelled email will go,
+  so its refund announces itself with the same `refund-issued` notice (`enqueueNotice`).
+- **One outbox mechanism for every non-state email.** The late-payment refund's notice and the
+  admin refund's are the same kind of row (`OutboxEmail.notice`): one rule keeps them out of the
+  per-state first-wins lookup, one render path states "Refunded: X" for every refund email (the
+  `refunded` state email gets the ledger's Σ), and the dedupe key is (orderId, kind, refundId) —
+  so each refund announces itself once, and a late payment's notice now carries its refund id.
+  A late-payment refund has its own purpose (`late-payment`) and sends only its notice: exactly
+  one email, pinned in the late-payment contract.
