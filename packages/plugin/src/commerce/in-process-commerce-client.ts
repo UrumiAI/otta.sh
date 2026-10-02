@@ -761,6 +761,15 @@ export class InProcessCommerceClient implements CommerceClient {
 		return { ok: true, orders: orders.map(serializeOrderSummary) };
 	}
 
+	async getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>> {
+		const customerId = await this.#stores.sessionStore.validate(sessionToken);
+		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		const customer = await this.#stores.customerStore.get(customerId);
+		// A session whose customer is gone answers like any other unusable bearer.
+		if (customer === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		return { ok: true, email: customer.email };
+	}
+
 	/** A foreign or unknown order is NOT_FOUND, never a refusal: the answer must
 	 *  not tell a caller that somebody else's order exists. */
 	async getMyOrder(

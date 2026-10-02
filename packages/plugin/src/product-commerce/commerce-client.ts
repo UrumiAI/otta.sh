@@ -351,6 +351,13 @@ export interface CommerceClient {
 		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	>;
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
+	/**
+	 * Who the session is: its customer's email, read server-side off the session
+	 * (never caller-named). For a storefront that greets a signed-in shopper or
+	 * prefills their checkout; an unusable bearer, or one whose customer is gone,
+	 * is UNAUTHENTICATED.
+	 */
+	getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>>;
 	// ── end Phase 5 customer account ──────────────────────────────────────
 
 	// ── Delivery authorization (ADR-0011) ─────────────────────────────────
