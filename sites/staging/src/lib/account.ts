@@ -304,7 +304,7 @@ export function orderRefundedNote(refundedCents: number, currencyCode: string): 
 	return refundedCents > 0 ? `Refunded ${orderMoney(refundedCents, currencyCode)}` : null;
 }
 
-const PLACED_ON = new Intl.DateTimeFormat("en-US", {
+const PLACED_ON = new Intl.DateTimeFormat(SITE_LOCALE, {
 	month: "short",
 	day: "numeric",
 	year: "numeric",
