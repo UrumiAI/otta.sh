@@ -253,6 +253,28 @@ export class EmdashCartStore implements CartStore {
 		return result;
 	}
 
+	/**
+	 * Retire an `add` claim the domain decided `OUT_OF_STOCK` (see the port). It
+	 * is marked `abandoned`, the flag the sweep already skips, in one
+	 * compare-and-set that also recomputes `holdExpiresAt` — which is the point:
+	 * an outstanding claim contributes its (past) `claimedAt` to that deadline,
+	 * so until it is retired the cart is a sweep candidate on every tick.
+	 */
+	async abandonClaim(cartId: string, key: IdempotencyKey): Promise<void> {
+		await this.#casCart<void>("abandonClaim", async () => {
+			const current = await this.#carts.getVersioned(cartId);
+			if (current === null) return casDone<void>(undefined);
+			const doc = normalizeCartDoc(current.value);
+			const record = doc.mutations[key];
+			if (record === undefined || record.completed || record.abandoned === true) {
+				return casDone<void>(undefined);
+			}
+			const next = this.#withMutations(doc, { [key]: { ...record, abandoned: true } });
+			const written = await this.#carts.compareAndSet(cartId, current.revision, next);
+			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
+		});
+	}
+
 	// -- line mutations --------------------------------------------------------
 
 	async upsertLine(input: UpsertLineInput): Promise<CartLine> {
@@ -702,8 +724,9 @@ export class EmdashCartStore implements CartStore {
 				lines[key] = line;
 			}
 			// An outstanding `add` claim is owed UNLESS its reserve was DECIDED with no
-			// reservation: an OUT_OF_STOCK add leaves its claim incomplete forever (the
-			// domain never completes a failed add), yet a terminal reserve key is
+			// reservation. The domain now retires such a claim itself (`abandonClaim`),
+			// but a claim written before it did, or one whose retirement did not land,
+			// is still incomplete and unretired here — yet a terminal reserve key is
 			// once-only — a replay returns the recorded answer — so that claim can
 			// never mint a hold. It is the same fact `#collectExpired` reads to skip
 			// it; left in, it would pin the deadline at its `claimedAt` and keep the
@@ -767,7 +790,8 @@ export class EmdashCartStore implements CartStore {
 			if (record.claimedAt > cutoff) continue;
 			// A claim with no line: the reserve key document says whether it ever
 			// minted a reservation. A decided OUT_OF_STOCK never did, so there is
-			// nothing to reap and the claim simply costs this one read per sweep.
+			// nothing to reap. The domain retires such a claim as it decides it
+			// (`abandonClaim`), so only one it could not retire costs this read.
 			const reservationId = reservationIdOf(await this.#reservationKeys.get(key));
 			if (reservationId !== null) found.add(reservationId);
 		}
@@ -973,6 +997,7 @@ function toRecorded(
 		lineId: record.lineId,
 		resultingQty: record.resultingQty,
 		completed: record.completed,
+		...(record.abandoned === true ? { abandoned: true } : {}),
 	};
 }
 

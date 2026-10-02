@@ -35,6 +35,30 @@ export interface CartStore {
 	 */
 	claimMutation(input: ClaimMutationInput): Promise<ClaimMutationResult>;
 	/**
+	 * Retire an `add` claim whose reserve was DECIDED with no reservation
+	 * (`OUT_OF_STOCK`), so it stops being outstanding work for the sweep.
+	 *
+	 * The claim exists so a crash between it and the line write leaves a marker
+	 * the sweep can follow to a dangling hold. A decided-out-of-stock reserve has
+	 * no hold and never will — the reserve key is once-only, so every replay reads
+	 * back the same refusal — yet the claim stayed outstanding for good, and an
+	 * adapter that indexes outstanding claims for its sweep (the document store's
+	 * `holdExpiresAt`) kept that cart listed and re-read it on every tick.
+	 *
+	 * The record is RETIRED, never completed and never deleted: it reads back
+	 * `completed: false, abandoned: true`, so a same-key replay resumes, re-reads
+	 * the reserve's refusal and answers `OUT_OF_STOCK` again. An adapter may bound
+	 * how many retired records it keeps; once one is evicted, a very late replay of
+	 * its key finds no record and runs as a fresh add — which, if the cart has
+	 * since gained a line for that sku, is an increment of that line answered with
+	 * current truth, exactly the residual an evicted COMPLETED record already has.
+	 * Idempotent; a no-op for an absent key, an unknown cart, or a record that is
+	 * completed or already retired. The caller must only retire a claim whose
+	 * reserve answered not-ok: retiring one that may still own a hold would hide
+	 * that hold from the sweep.
+	 */
+	abandonClaim(cartId: string, key: IdempotencyKey): Promise<void>;
+	/**
 	 * Write/replace the line for `input.sku` and mark the `input.key` ledger
 	 * entry completed (recording the resulting line). Also stamps the
 	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep —
@@ -127,6 +151,10 @@ export interface RecordedCartMutation {
 	/** False until the mutation's final write landed; a replay of an incomplete
 	 *  entry RESUMES the choreography instead of short-circuiting. */
 	completed: boolean;
+	/** True once `abandonClaim` (or the sweep) retired an incomplete claim: it is
+	 *  no longer outstanding work. Informational — a replay still resumes on
+	 *  `completed: false`. Absent on every other record. */
+	abandoned?: boolean;
 }
 
 export interface ClaimMutationInput {

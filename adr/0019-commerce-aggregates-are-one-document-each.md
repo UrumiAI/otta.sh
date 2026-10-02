@@ -1253,3 +1253,26 @@ as adoptable where the port, the SQL reference and the document adapter do not �
 follow-ups in the domain, outside this record. The mapping of the retryable contention error to a
 retryable HTTP response is still owed by the route increments. And §5's substance is unchanged: the
 descriptor still declares no storage, so §4's lists become a **pinned** read contract only when it does.
+
+## Amendment 2026-10-02 — a cart add decided out of stock retires its claim
+
+**What changed.** `CartStore` gains `abandonClaim(cartId, key)`, and `addLine` calls it the moment
+`reserve` answers `OUT_OF_STOCK`. The add's ledger record is retired — on the document store, marked
+`abandoned`, the flag the sweep already skips — in the same compare-and-set that recomputes the cart's
+`holdExpiresAt`.
+
+**Why.** §7.7's candidate filter folds every outstanding `add` claim into `holdExpiresAt` at its
+`claimedAt`, because a claim may front a hold whose line write never landed. An add refused
+`OUT_OF_STOCK` claimed its key, then had its reserve decided with no reservation, and the domain never
+completed or retired that claim — so it pinned the cart's deadline in the past, and every expiry tick
+listed the cart and re-read its reserve key, for good (QA U-16). The per-document re-check already
+refused to reap anything (a terminal reserve key with `reservationId: null` names no hold), so this
+was never a correctness fault, only unbounded sweep work; but it grew with every refused add.
+
+**What did not change.** The record is retired, never completed or deleted: it still reads back
+`completed: false`, so a same-key replay resumes, reads the reserve key's recorded refusal and answers
+`OUT_OF_STOCK` again — the replay contract is untouched, and `cart-store-contract` pins it. Retiring is
+safe only because the reserve was DECIDED: the key is once-only, so no hold can ever exist under it.
+The §7.7 re-check of an un-retired decided claim stays, for records written before this change and for
+a retirement that did not land. The abandoned bound (16 per cart) now also carries these records;
+evicting one is equally safe, since a late replay re-claims and reads back the same refusal.
