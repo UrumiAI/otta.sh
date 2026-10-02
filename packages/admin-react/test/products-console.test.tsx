@@ -151,16 +151,14 @@ beforeEach(() => {
 });
 
 describe("Pricing & inventory is not a page any more (ADR-0014, amendment 2026-10-01)", () => {
-	test("the sidebar offers no `/products` page; the editor panel and list columns replace it", () => {
+	test("the sidebar offers no `/products` page; the editor's cards and the list columns replace it", () => {
 		expect(OTTA_CONSOLE_ADMIN_PAGES.map((page) => page.path)).not.toContain("/products");
 		expect(Object.keys(admin.pages as Record<string, unknown>)).not.toContain("/products");
 		const exported = admin as unknown as {
-			contentEditorPanels: readonly { id: string; collections: readonly string[] }[];
+			fields: Record<string, unknown>;
 			contentListColumns: readonly { id: string; collections: readonly string[] }[];
 		};
-		expect(exported.contentEditorPanels.map((p) => [p.id, p.collections])).toEqual([
-			["pricing-stock", ["products"]],
-		]);
+		expect(Object.keys(exported.fields)).toEqual(["pricing"]);
 		expect(exported.contentListColumns.map((c) => [c.id, c.collections])).toEqual([
 			["price", ["products"]],
 			["stock", ["products"]],

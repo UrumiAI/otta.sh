@@ -9,7 +9,7 @@
  * FRESHNESS. The key cannot see a commerce edit: a price save or a stock
  * movement changes the commerce row, not the CMS entry's `updatedAt`. So a
  * shared answer is kept only briefly (`FRESH_MS`) — long enough for one page's
- * cells to share it — and the Pricing & stock panel forgets every shared page
+ * cells to share it — and the Pricing & stock cards forget every shared page
  * after each of its writes, so returning to the list after an edit reads again.
  */
 import * as React from "react";

@@ -10,7 +10,7 @@
  * content document a SECOND writer of `product_commerce`'s columns, and every
  * publish reverted whatever the admin console had edited. The field, the
  * widget and its binding are gone; commercial fields are edited only in the
- * product's Pricing & stock panel. The "no commerce field" test below is the
+ * product's Pricing & stock section. The "no commerce field" test below is the
  * regression guard — re-adding one anywhere in this collection recreates the
  * second writer.
  */
@@ -78,15 +78,33 @@ describe("seed/seed.json", () => {
 		// carry — `SeedField` has no `description` key, only `SeedCollection` does
 		// — and em-dash surfaces it on Admin → Content Types, not in the editor.
 		// Weak, but better than a repo README a store operator never reads.
-		expect(products?.description).toMatch(/Pricing & stock panel/);
+		expect(products?.description).toMatch(/Pricing & stock section/);
 	});
 
 	test("declares NO commerce field — the CMS stores no commercial data (PR 1b)", () => {
 		const slugs = products?.fields.map((f) => f.slug) ?? [];
 		expect(slugs).not.toContain("commerce");
 		// Exactly the content field set, nothing else: a differently-named bag
-		// would be the same bug wearing a different hat.
-		expect(slugs).toEqual(["title", "description", "images", "variants"]);
+		// would be the same bug wearing a different hat. The ONE addition is
+		// `pricing`, and it is not a bag: it only marks where the editor draws the
+		// Pricing & stock cards (ADR-0014, amendment 2026-10-01). It is pinned to
+		// that role below — a JSON field rendered by `otta-console:pricing`, with
+		// no value in any seeded entry.
+		expect(slugs).toEqual(["title", "description", "images", "pricing", "variants"]);
+	});
+
+	test("`pricing` is a placeholder for the Pricing & stock cards, and holds no data", () => {
+		const pricing = products?.fields.find((f) => f.slug === "pricing") as
+			| { type?: string; widget?: string; required?: boolean }
+			| undefined;
+		expect(pricing).toMatchObject({ type: "json", widget: "otta-console:pricing" });
+		expect(pricing?.required).not.toBe(true);
+		const entries =
+			(seed as { content?: Record<string, Array<{ data?: Record<string, unknown> }>> }).content?.[
+				"products"
+			] ?? [];
+		expect(entries.length).toBeGreaterThan(0);
+		for (const entry of entries) expect(entry.data ?? {}).not.toHaveProperty("pricing");
 	});
 
 	// -- the variant repeater (ADR-0016) -------------------------------------
@@ -143,14 +161,17 @@ describe("seed/seed.json", () => {
 		}
 	});
 
-	test("binds NO plugin field widget — the plugin registers none (PR 1b)", () => {
+	test("binds exactly ONE plugin field widget — the Pricing & stock cards, on the placeholder field", () => {
 		// The binding, not the field type, is what mounts a plugin widget in
-		// em-dash's `ContentEditor` (`if (field.widget)`). With no binding
-		// anywhere, no widget can mount, so the content editor cannot become a
-		// commerce editor again by accident.
-		for (const field of products?.fields ?? []) {
-			expect(field.widget).toBeUndefined();
-		}
+		// em-dash's `ContentEditor` (`if (field.widget)`). PR 1b removed every
+		// binding so the content editor could not become a commerce editor that
+		// STORES commerce data again. ADR-0014's amendment of 2026-10-01 adds back
+		// exactly one, on purpose: the `pricing` placeholder, whose editor writes
+		// through the otta admin route and never into the field (pinned above).
+		const bound = (products?.fields ?? [])
+			.filter((field) => field.widget !== undefined)
+			.map((field) => [field.slug, field.widget]);
+		expect(bound).toEqual([["pricing", "otta-console:pricing"]]);
 	});
 
 	test("sample entries (browsable catalog on first boot) are published products", () => {

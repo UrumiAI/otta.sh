@@ -1,22 +1,21 @@
 /**
- * The product editor's Pricing & stock panel (ADR-0014, amendment 2026-10-01).
+ * The product editor's Pricing & stock section (ADR-0014, amendment 2026-10-01).
  *
- * EmDash renders it as a section of a SAVED product's settings column, under a
- * host-drawn "Pricing & stock" heading; it never mounts for a new entry. It edits
- * what the retired Pricing & inventory page edited — price, compare-at, cost,
- * SKU, stock, product type, tax class, weight and size — through the same `otta`
- * admin route and the same `products:*` writes, so a merchant prices a product
- * where they wrote it.
+ * It sits in the MAIN column of the product editor, under the content fields,
+ * as three cards — Pricing, Inventory, Shipping & tax — the way the large
+ * commerce admins lay a product out. EmDash renders it as the custom editor
+ * (`fields.pricing`) of the products collection's `pricing` field; that field is
+ * a placeholder that only says WHERE the cards go and never holds data: the
+ * section never calls the field's `onChange`, and everything it edits lives in
+ * the commerce store through the `otta` admin route, as before.
  *
  * ONE SAVE for every field, and stock moves on its own buttons, as a shop owner
  * expects: a price is a setting you edit and save, a stock count is something
  * you add to or take from. Removing stock asks first; adding does not.
  *
- * THE RECORD FOLLOWS THE EDITOR. EmDash re-renders the panel with a new
- * `entry.updatedAt` after every CMS save, and every CMS save also moves the
- * commerce row's watermark (the sync touches it). So the panel re-reads on that
- * change; a draft the merchant has typed survives the re-read and is saved
- * against the new watermark, because a CMS save changes no field this panel owns.
+ * READ, MERGE, WRITE. A field editor is not told when the CMS saves the entry —
+ * which moves the commerce row's watermark — so a save first re-reads the
+ * product and keeps only the merchant's own edits on top of it (`mergeDraft`).
  *
  * Every decision about a value lives in `./pricing-model.ts`; this file wires
  * them up.
@@ -27,7 +26,9 @@ import {
 	isFailure,
 	performAction,
 	PRODUCTS_ACT_SUBJECT,
+	type ActPayload,
 	type ProductRecord,
+	type Result,
 	type TaxClass,
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
@@ -50,12 +51,44 @@ import {
 } from "./pricing-model.js";
 import { parseStockQty } from "@otta-sh/admin-presentation";
 
-/** The part of EmDash's `ContentEditorPanelContext` this panel reads. Declared
- *  structurally: this package does not depend on `@emdash-cms/admin`. */
-export interface PricingPanelProps {
-	readonly collection: string;
-	readonly entry: { readonly id: string; readonly updatedAt?: string };
-	readonly locale?: string;
+/** What EmDash hands a plugin field editor. Declared structurally: this
+ *  package does not depend on `@emdash-cms/admin`. `onChange` is never called —
+ *  the field holds no data (see the module doc). */
+export interface PricingFieldProps {
+	readonly id?: string;
+	readonly label?: string;
+	readonly value?: unknown;
+	readonly onChange?: (value: unknown) => void;
+}
+
+/**
+ * The product id of the entry the editor has open, read from the editor's own
+ * address (`…/content/<collection>/<id>`), because EmDash gives a field editor
+ * the field's value and nothing about the entry. `null` for a new, unsaved
+ * product (`…/new`) and for any address that is not a product editor.
+ */
+export function productIdFromPath(pathname: string): string | null {
+	const match = /\/content\/products\/([^/?#]+)\/?$/.exec(pathname);
+	if (match === null) return null;
+	const id = decodeURIComponent(match[1] ?? "");
+	return id === "new" || id.length === 0 ? null : id;
+}
+
+/** The field editor EmDash mounts in the product editor's main column. */
+export function PricingStockField(_props: PricingFieldProps): React.ReactElement {
+	usePricingStyles();
+	const productId = productIdFromPath(globalThis.location?.pathname ?? "");
+	if (productId === null) {
+		return (
+			<section className="otta-pricing otta-pricing-card" aria-label="Pricing & stock">
+				<h3 className="otta-pricing-card-title">Pricing &amp; stock</h3>
+				<p className="otta-pricing-hint">
+					Save this product first, then set its price and stock here.
+				</p>
+			</section>
+		);
+	}
+	return <PricingStockEditor key={productId} productId={productId} />;
 }
 
 type Loaded = {
@@ -146,8 +179,7 @@ function MoneyInput({
 	);
 }
 
-export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElement {
-	const productId = entry.id;
+export function PricingStockEditor({ productId }: { productId: string }): React.ReactElement {
 	usePricingStyles();
 	const idBase = React.useId();
 	const [load, setLoad] = React.useState<LoadState>({ status: "loading" });
@@ -230,8 +262,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 		return () => {
 			cancelled = true;
 		};
-		// `entry.updatedAt` is in the list on purpose: a CMS save moves the watermark.
-	}, [productId, entry.updatedAt, reload]);
+	}, [productId, reload]);
 
 	if (load.status === "loading" || (load.status === "ready" && draft === null)) {
 		return (
@@ -316,37 +347,69 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 		}
 		setSaving(true);
 		setSaveStatus(null);
-		void performAction("products:save", savePayload(p, d), PRODUCTS_ACT_SUBJECT).then((result) => {
-			setSaving(false);
-			if (isFailure(result)) {
-				setSaveStatus({ tone: "fail", text: `${result.title}. ${result.description}` });
-				return;
-			}
-			const notice = result.notice;
-			if (notice !== null && notice.variant === "error") {
-				// SOMEONE ELSE SAVED FIRST: the record moved and the notice promises the
-				// latest values, so the form re-seeds. Every other refusal declined a
-				// VALUE and nothing moved: the merchant's typing stays — beside the SKU
-				// when it is about the SKU.
-				if (result.recordMoved === true) {
+		// READ, MERGE, THEN WRITE. In the editor's main column nothing tells this
+		// section that the CMS just saved the entry (which moves the commerce
+		// watermark), so the save fetches the latest record first, keeps only the
+		// merchant's own edits on top of it (`mergeDraft`), and writes against that
+		// fresh watermark. A field changed on both sides stops the save and says so.
+		void fetchProductDetail(productId)
+			.then((fresh): Result<ActPayload> | "conflict" | Promise<Result<ActPayload>> => {
+				if (isFailure(fresh)) return fresh;
+				const latest = fresh.product;
+				const merged = mergeDraft(p, latest, d);
+				setLoad({
+					status: "ready",
+					record: latest,
+					taxClasses: fresh.taxClasses,
+					threshold: fresh.threshold,
+				});
+				setDraft(merged.draft);
+				if (merged.conflict) return "conflict" as const;
+				return performAction(
+					"products:save",
+					savePayload(latest, merged.draft),
+					PRODUCTS_ACT_SUBJECT,
+				);
+			})
+			.then((result) => {
+				setSaving(false);
+				if (result === "conflict") {
+					setTouched(new Set());
+					setSaveStatus({
+						tone: "fail",
+						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
+					});
+					return;
+				}
+				if (isFailure(result)) {
+					setSaveStatus({ tone: "fail", text: `${result.title}. ${result.description}` });
+					return;
+				}
+				const notice = result.notice;
+				if (notice !== null && notice.variant === "error") {
+					// SOMEONE ELSE SAVED FIRST: the record moved and the notice promises the
+					// latest values, so the form re-seeds. Every other refusal declined a
+					// VALUE and nothing moved: the merchant's typing stays — beside the SKU
+					// when it is about the SKU.
+					if (result.recordMoved === true) {
+						setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
+						reseed.current = true;
+						setReload((n) => n + 1);
+						return;
+					}
+					if (result.field === "sku") {
+						setSkuRefusal(notice.description);
+						setSaveStatus({ tone: "fail", text: notice.title });
+						return;
+					}
 					setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
-					reseed.current = true;
-					setReload((n) => n + 1);
 					return;
 				}
-				if (result.field === "sku") {
-					setSkuRefusal(notice.description);
-					setSaveStatus({ tone: "fail", text: notice.title });
-					return;
-				}
-				setSaveStatus({ tone: "fail", text: `${notice.title}. ${notice.description}` });
-				return;
-			}
-			setSaveStatus({ tone: "ok", text: "Saved" });
-			forgetSummaries();
-			reseed.current = true;
-			setReload((n) => n + 1);
-		});
+				setSaveStatus({ tone: "ok", text: "Saved" });
+				forgetSummaries();
+				reseed.current = true;
+				setReload((n) => n + 1);
+			});
 	};
 
 	const move = (actionId: "products:restock" | "products:remove-stock", n: number): void => {
@@ -412,106 +475,122 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			: (taxClasses.find((t) => t.id === d.taxClass)?.name ?? d.taxClass);
 
 	return (
-		<div className="otta-pricing" data-testid="otta-pricing-panel" ref={panelRef}>
+		<div
+			className="otta-pricing"
+			data-testid="otta-pricing-panel"
+			ref={panelRef}
+			onKeyDown={(event) => {
+				// These inputs sit inside the CMS editor's own <form>: Enter would
+				// submit THAT form and save the content instead of this section.
+				if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+					event.preventDefault();
+					if (dirty && !saving) save();
+				}
+			}}
+		>
 			<ConsoleStyles />
 
-			{!priced && (
-				<div className="otta-pricing-callout" data-tone="warn">
-					<span>Add a price so customers can buy this product.</span>
-				</div>
-			)}
-
-			<div className="otta-pricing-section">
-				<MoneyInput
-					id={id("price")}
-					label="Price"
-					currency={currency}
-					value={d.price}
-					problem={shown.price}
-					onChange={set("price")}
-				/>
+			<section className="otta-pricing-card" aria-labelledby={id("h-pricing")}>
+				<h3 id={id("h-pricing")} className="otta-pricing-card-title">
+					Pricing
+				</h3>
 				{!priced && (
-					<div className="otta-pricing-field">
-						<label className="otta-pricing-label" htmlFor={id("currency")}>
-							Currency
-						</label>
-						<div className="otta-pricing-input">
-							<select
-								id={id("currency")}
-								value={d.currency}
-								onChange={(event) => {
-									set("currency")(event.target.value);
-								}}
-							>
-								{CURRENCY_CHOICES.map((code) => (
-									<option key={code} value={code}>
-										{code}
-									</option>
-								))}
-							</select>
-						</div>
-						<span className="otta-pricing-hint">Can't be changed once the product is priced.</span>
+					<div className="otta-pricing-callout" data-tone="warn">
+						<span>Add a price so customers can buy this product.</span>
 					</div>
 				)}
-				<div className="otta-pricing-field">
+				<div className="otta-pricing-grid">
 					<MoneyInput
-						id={id("compare")}
-						label="Compare-at price"
-						optional
+						id={id("price")}
+						label="Price"
 						currency={currency}
-						value={d.compareAt}
-						problem={shown.compareAt}
-						describedBy={id("compare-note")}
-						onChange={set("compareAt")}
+						value={d.price}
+						problem={shown.price}
+						onChange={set("price")}
 					/>
-					{shown.compareAt === undefined && (
-						<span id={id("compare-note")} className="otta-pricing-hint otta-pricing-sale">
-							{sale === null ? (
-								"Set a higher “was” price to show this product on sale."
-							) : (
-								<>
-									Shown as a sale: <s>{sale.was}</s> <strong>{sale.now}</strong>
-								</>
-							)}
-						</span>
-					)}
-				</div>
-				<div className="otta-pricing-field">
-					<MoneyInput
-						id={id("cost")}
-						label="Cost per item"
-						optional
-						currency={currency}
-						value={d.unitCost}
-						problem={shown.unitCost}
-						describedBy={id("cost-note")}
-						onChange={set("unitCost")}
-					/>
-					{shown.unitCost === undefined &&
-						(margin === null ? (
-							<span id={id("cost-note")} className="otta-pricing-hint">
-								Customers won't see this.
-							</span>
-						) : (
-							<div id={id("cost-note")} className="otta-pricing-margin">
-								<span>
-									Profit <strong>{margin.profit}</strong>
-								</span>
-								<span>
-									Margin <strong>{margin.margin}</strong>
-								</span>
+					{!priced && (
+						<div className="otta-pricing-field">
+							<label className="otta-pricing-label" htmlFor={id("currency")}>
+								Currency
+							</label>
+							<div className="otta-pricing-input">
+								<select
+									id={id("currency")}
+									value={d.currency}
+									onChange={(event) => {
+										set("currency")(event.target.value);
+									}}
+								>
+									{CURRENCY_CHOICES.map((code) => (
+										<option key={code} value={code}>
+											{code}
+										</option>
+									))}
+								</select>
 							</div>
-						))}
+							<span className="otta-pricing-hint">
+								Can't be changed once the product is priced.
+							</span>
+						</div>
+					)}
+					<div className="otta-pricing-field">
+						<MoneyInput
+							id={id("compare")}
+							label="Compare-at price"
+							optional
+							currency={currency}
+							value={d.compareAt}
+							problem={shown.compareAt}
+							describedBy={id("compare-note")}
+							onChange={set("compareAt")}
+						/>
+						{shown.compareAt === undefined && (
+							<span id={id("compare-note")} className="otta-pricing-hint otta-pricing-sale">
+								{sale === null ? (
+									"Set a higher “was” price to show this product on sale."
+								) : (
+									<>
+										Shown as a sale: <s>{sale.was}</s> <strong>{sale.now}</strong>
+									</>
+								)}
+							</span>
+						)}
+					</div>
+					<div className="otta-pricing-field">
+						<MoneyInput
+							id={id("cost")}
+							label="Cost per item"
+							optional
+							currency={currency}
+							value={d.unitCost}
+							problem={shown.unitCost}
+							describedBy={id("cost-note")}
+							onChange={set("unitCost")}
+						/>
+						{shown.unitCost === undefined &&
+							(margin === null ? (
+								<span id={id("cost-note")} className="otta-pricing-hint">
+									Customers won't see this.
+								</span>
+							) : (
+								<div id={id("cost-note")} className="otta-pricing-margin">
+									<span>
+										Profit <strong>{margin.profit}</strong>
+									</span>
+									<span>
+										Margin <strong>{margin.margin}</strong>
+									</span>
+								</div>
+							))}
+					</div>
 				</div>
-			</div>
+			</section>
 
-			<hr className="otta-pricing-rule" />
-
-			<div className="otta-pricing-section">
+			<section className="otta-pricing-card" aria-labelledby={id("h-inventory")}>
 				<div className="otta-pricing-head">
-					<h4 className="otta-pricing-label" style={{ margin: 0, fontSize: "inherit" }}>
+					<h3 id={id("h-inventory")} className="otta-pricing-card-title">
 						Inventory
-					</h4>
+					</h3>
 					{hasSku && (
 						<span
 							className="otta-pricing-badge"
@@ -524,103 +603,105 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 					)}
 				</div>
 
-				{hasSku && p.onHand !== null && (
-					<>
-						<p className="otta-pricing-count">
-							<strong data-testid="otta-on-hand">{p.onHand}</strong>
-							<span>in stock</span>
-						</p>
-						<div className="otta-pricing-field">
-							<label className="otta-pricing-hint" htmlFor={id("qty")}>
-								Add or remove stock
-							</label>
-							<div className="otta-pricing-stockrow">
-								<input
-									id={id("qty")}
-									className="otta-pricing-qty"
-									inputMode="numeric"
-									autoComplete="off"
-									value={qty}
-									aria-describedby={id("stock-msg")}
-									onChange={(event) => {
-										setQty(event.target.value);
-										setStockMsg(null);
-									}}
-								/>
-								<button
-									type="button"
-									className="otta-pricing-btn"
-									data-grow="true"
-									disabled={moving}
-									onClick={() => {
-										startMove("add");
-									}}
-								>
-									+ Add
-								</button>
-								<button
-									type="button"
-									className="otta-pricing-btn"
-									data-grow="true"
-									disabled={moving}
-									onClick={() => {
-										startMove("remove");
-									}}
-								>
-									− Remove
-								</button>
-							</div>
-							<span
-								id={id("stock-msg")}
-								className="otta-pricing-status"
-								role="status"
-								data-tone={stockMsg?.tone}
-							>
-								{stockMsg?.text ?? ""}
-							</span>
-						</div>
-					</>
-				)}
-				{hasSku && p.onHand === null && (
-					<p className="otta-pricing-hint">
-						Stock isn't tracked for this SKU yet. Contact your developer to set it up.
-					</p>
-				)}
-
-				<div className="otta-pricing-field">
-					<label className="otta-pricing-label" htmlFor={id("sku")}>
-						SKU <span className="otta-pricing-optional">· your code for this product</span>
-					</label>
-					<div className="otta-pricing-input" data-invalid={skuProblem !== null}>
-						<input
-							id={id("sku")}
-							autoComplete="off"
-							placeholder="e.g. TEE-BLACK-M"
-							value={d.sku}
-							aria-invalid={skuProblem !== null}
-							aria-describedby={id("sku-note")}
-							onChange={(event) => {
-								set("sku")(event.target.value);
-							}}
-						/>
+				<div className="otta-pricing-grid">
+					<div className="otta-pricing-field">
+						{hasSku && p.onHand !== null && (
+							<>
+								<p className="otta-pricing-count">
+									<strong data-testid="otta-on-hand">{p.onHand}</strong>
+									<span>in stock</span>
+								</p>
+								<div className="otta-pricing-field">
+									<label className="otta-pricing-hint" htmlFor={id("qty")}>
+										Add or remove stock
+									</label>
+									<div className="otta-pricing-stockrow">
+										<input
+											id={id("qty")}
+											className="otta-pricing-qty"
+											inputMode="numeric"
+											autoComplete="off"
+											value={qty}
+											aria-describedby={id("stock-msg")}
+											onChange={(event) => {
+												setQty(event.target.value);
+												setStockMsg(null);
+											}}
+										/>
+										<button
+											type="button"
+											className="otta-pricing-btn"
+											data-grow="true"
+											disabled={moving}
+											onClick={() => {
+												startMove("add");
+											}}
+										>
+											+ Add
+										</button>
+										<button
+											type="button"
+											className="otta-pricing-btn"
+											data-grow="true"
+											disabled={moving}
+											onClick={() => {
+												startMove("remove");
+											}}
+										>
+											− Remove
+										</button>
+									</div>
+									<span
+										id={id("stock-msg")}
+										className="otta-pricing-status"
+										role="status"
+										data-tone={stockMsg?.tone}
+									>
+										{stockMsg?.text ?? ""}
+									</span>
+								</div>
+							</>
+						)}
+						{hasSku && p.onHand === null && (
+							<p className="otta-pricing-hint">
+								Stock isn't tracked for this SKU yet. Contact your developer to set it up.
+							</p>
+						)}
 					</div>
-					{skuProblem !== null ? (
-						<span id={id("sku-note")} className="otta-pricing-error">
-							{skuProblem}
-						</span>
-					) : (
-						!hasSku && (
-							<span id={id("sku-note")} className="otta-pricing-hint">
-								Add a SKU and save to start tracking stock.
+					<div className="otta-pricing-field">
+						<label className="otta-pricing-label" htmlFor={id("sku")}>
+							SKU <span className="otta-pricing-optional">· your code for this product</span>
+						</label>
+						<div className="otta-pricing-input" data-invalid={skuProblem !== null}>
+							<input
+								id={id("sku")}
+								autoComplete="off"
+								placeholder="e.g. TEE-BLACK-M"
+								value={d.sku}
+								aria-invalid={skuProblem !== null}
+								aria-describedby={id("sku-note")}
+								onChange={(event) => {
+									set("sku")(event.target.value);
+								}}
+							/>
+						</div>
+						{skuProblem !== null ? (
+							<span id={id("sku-note")} className="otta-pricing-error">
+								{skuProblem}
 							</span>
-						)
-					)}
+						) : (
+							!hasSku && (
+								<span id={id("sku-note")} className="otta-pricing-hint">
+									Add a SKU and save to start tracking stock.
+								</span>
+							)
+						)}
+					</div>
 				</div>
-			</div>
-
-			<hr className="otta-pricing-rule" />
+			</section>
 
 			<details
+				className="otta-pricing-card"
 				open={shippingOpen}
 				onToggle={(event) => {
 					setShippingOpen(event.currentTarget.open);
@@ -628,7 +709,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 			>
 				<summary>
 					<span className="otta-pricing-summary">
-						<strong>Shipping &amp; tax</strong>
+						<h3 className="otta-pricing-card-title">Shipping &amp; tax</h3>
 						<span>
 							{kindLabel}
 							{weightNote} · {taxName}
@@ -767,7 +848,7 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 					aria-busy={saving}
 					onClick={save}
 				>
-					{saving ? "Saving…" : "Save"}
+					{saving ? "Saving…" : "Save pricing & stock"}
 				</button>
 				<span className="otta-pricing-status" role="status" data-tone={saveStatus?.tone ?? "muted"}>
 					{saveStatus?.text ?? (dirty ? "Not saved yet — use this Save button" : "")}
@@ -793,15 +874,6 @@ export function PricingStockPanel({ entry }: PricingPanelProps): React.ReactElem
 	);
 }
 
-/** The extension EmDash discovers on the admin module (`contentEditorPanels`).
- *  `minRole: 50` (ADMIN): the `otta` admin route requires `plugins:manage`, so a
- *  lower role would only be shown controls that answer 403. It hides; the route
- *  authorizes. */
-export const PRICING_PANEL = {
-	id: "pricing-stock",
-	title: "Pricing & stock",
-	collections: ["products"],
-	minRole: 50,
-	order: 10,
-	component: PricingStockPanel,
-} as const;
+/** The field editor EmDash discovers on the admin module (`fields`), named by a
+ *  field's `widget: "otta-console:pricing"`. */
+export const PRICING_FIELD_WIDGET = "pricing";

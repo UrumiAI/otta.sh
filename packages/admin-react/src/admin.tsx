@@ -38,7 +38,7 @@
 import type { PluginAdminExports } from "emdash";
 import { OrdersScreen } from "./orders/orders-screen.js";
 import { PRICING_COLUMNS } from "./products/pricing-columns.js";
-import { PRICING_PANEL } from "./products/pricing-panel.js";
+import { PRICING_FIELD_WIDGET, PricingStockField } from "./products/pricing-panel.js";
 import { ThemesScreen } from "./themes/themes-screen.js";
 
 /**
@@ -59,10 +59,13 @@ export const pages = {
 
 /**
  * Pricing & inventory lives INSIDE the products collection's own screens
- * (ADR-0014, amendment 2026-10-01): a Pricing & stock panel on a saved product
- * and Price / Stock columns on the list. EmDash discovers both as named exports
- * of this module — they need no `admin.pages` entry, and so no sidebar item.
+ * (ADR-0014, amendment 2026-10-01): Pricing, Inventory and Shipping & tax cards
+ * in the product editor's main column, and Price / Stock columns on the list.
+ * EmDash discovers both as named exports of this module — the cards as the
+ * custom editor of the products collection's `pricing` field
+ * (`widget: "otta-console:pricing"`), the columns by collection — so neither
+ * needs an `admin.pages` entry or a sidebar item.
  */
-export const contentEditorPanels = [PRICING_PANEL];
+export const fields = { [PRICING_FIELD_WIDGET]: PricingStockField };
 
 export const contentListColumns = PRICING_COLUMNS;

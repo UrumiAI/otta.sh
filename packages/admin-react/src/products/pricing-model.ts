@@ -1,5 +1,5 @@
 /**
- * What the Pricing & stock panel decides, as pure functions (ADR-0014, amendment
+ * What the Pricing & stock cards decide, as pure functions (ADR-0014, amendment
  * 2026-10-01).
  *
  * The panel sits in the product editor's settings column and edits the

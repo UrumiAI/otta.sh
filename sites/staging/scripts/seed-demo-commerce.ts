@@ -663,7 +663,7 @@ export async function seedOneProduct(row: DemoRow, deps: SeedDeps): Promise<Seed
 	const afterPricing = await readCommerce(row, deps);
 	if (afterPricing === null || afterPricing.onHand === null) {
 		throw new Error(
-			`${row.slug} was priced (sku ${row.sku}) but has no inventory record to stock. It will be listed and unbuyable; add stock from the product's Pricing & stock panel.`,
+			`${row.slug} was priced (sku ${row.sku}) but has no inventory record to stock. It will be listed and unbuyable; add stock from the product's Pricing & stock cards.`,
 		);
 	}
 	let stocked = 0;

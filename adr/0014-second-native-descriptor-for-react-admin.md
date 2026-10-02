@@ -19,7 +19,8 @@
   is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
   Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
 - Amended: 2026-10-01 — **Decision 6 only**: Pricing & inventory leaves the sidebar. Its fields
-  move into a **content editor panel** and **content-list columns** on the `products` collection,
+  move into **Pricing, Inventory and Shipping & tax cards** in the product editor's main column and
+  **content-list columns** on the `products` collection,
   served by `otta-console`, and the `/products` page is retired. See "Amendment 2026-10-01" at the
   end.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
@@ -336,42 +337,58 @@ the Settings radio being removed; or the Themes screen acquiring a write other t
 images under **Content › Products**, and its price and stock in **Pricing & inventory**, a page at
 the bottom of the sidebar under "Plugins". Merchants read that as two different products. EmDash
 cannot merge two sidebar items or move a plugin page into the Content group (emdash-cms/emdash
-#1023 is open), but since 0.38 a native plugin can contribute two surfaces that sit **inside the
-collection's own screens**:
+#1023 is open), but a native plugin can contribute surfaces that sit **inside the collection's own
+screens**:
 
-- a **content editor panel** (`contentEditorPanels`), a section of a saved entry's settings
-  column; and
+- a **field editor** (`fields` on the admin module), which EmDash draws in the editor's MAIN column
+  for any field whose `widget` names it; and
 - **content-list columns** (`contentListColumns`), read-only cells in the collection's list.
 
-So `otta-console` now exports a **Pricing & stock** panel and **Price** / **Stock** columns, both
-scoped to the `products` collection, and the `/products` page ("Pricing & inventory") is
-**retired**: it leaves `admin.pages`, the sidebar and the console-screens registry. Decision 6's
+So the products collection gains one field, `pricing` (`json`, `widget: "otta-console:pricing"`),
+placed after Images, and `otta-console`'s `fields.pricing` draws **Pricing**, **Inventory** and
+**Shipping & tax** cards there — the layout the large commerce admins use. `otta-console` also
+exports **Price** / **Stock** columns. The `/products` page ("Pricing & inventory") is **retired**:
+it leaves `admin.pages`, the sidebar and the console-screens registry.
+
+A content editor panel (`contentEditorPanels`) was built first and rejected for placement: EmDash
+puts plugin panels after all of its own settings sections, with no default-position option, so the
+merchant had to scroll the side column to find the price.
+
+**The `pricing` field holds no data.** It only marks where the cards go: the editor never calls the
+field's `onChange`, no seeded entry carries a value, and every value the cards show or change lives
+in the commerce store, as before (PR 1b's rule, kept). `seed.test.ts` pins the field's role, and
+the binding is the only plugin widget bound on the collection. A store created before this change
+adds the field once in **Admin › Content Types › Products** (a JSON field, slug `pricing`, widget
+"Pricing & stock"); new stores get it from the seed. Decision 6's
 scope is unchanged in kind — the same fields, edited by the same writes — and only the place they
 are edited moves.
 
 **What does not change.**
 
 - **One data path (Decision 3).** Both surfaces call the existing `otta` admin route with
-  `otta_console_read` / `otta_console_act`. The panel reads `products.detail`, moves stock with
+  `otta_console_read` / `otta_console_act`. The cards read `products.detail`, move stock with
   the retired page's `products:restock` / `products:remove-stock`, and saves through one new
   action id, `products:save`, which runs the same sparse save handler as the page's three split
-  saves (same watermark, same content-derived idempotency key) with every field the panel owns. The columns read
+  saves (same watermark, same content-derived idempotency key) with every field the cards own. A
+  field editor is not told when the CMS saves the entry (which moves the commerce watermark), so a
+  save re-reads the product first and keeps only the merchant's own edits on top of it. The columns read
   one new resource on that same route, `products.summaries`: the price and on-hand of a bounded
   list of product ids, which is the page of rows the list is showing. It is a read on the existing
   authenticated route, not a new route, capability or host.
 - **CMS ownership (ADR-0013).** Title, description, images and publish status stay the CMS's. The
-  panel offers no title and no active flag, exactly as the retired page did; the product id is the
-  CMS entry id, so the panel needs no mapping.
-- **Who sees them.** The `otta` admin route requires `plugins:manage` (ADMIN). The panel and the
-  columns declare `minRole: 50` so an editor below ADMIN is never shown controls that would answer
-  403. `minRole` only hides; the route remains the authorization boundary.
+  cards offer no title and no active flag, exactly as the retired page did; the product id is the
+  CMS entry id, which the cards read from the editor's address (`…/content/products/<id>`) because
+  EmDash gives a field editor the field's value and nothing about the entry.
+- **Who sees them.** The `otta` admin route requires `plugins:manage` (ADMIN), and remains the
+  authorization boundary. The columns declare `minRole: 50`. A field editor has no `minRole`, so a
+  user below ADMIN who can edit products sees the cards and gets the route's 403 copy ("ask an
+  administrator to grant the plugins:manage permission") — refused, never written.
 - **No component library**, as before: inline styles over the admin's Kumo custom properties
   with theme-neutral fallbacks.
 
-**What gets harder.** EmDash mounts a panel only on a **saved** entry, so a new product is saved
-once before the panel appears and it can be priced. EmDash also places plugin panels after its own
-settings sections and offers no default position; a merchant can drag the panel up, and EmDash
-remembers that per user and browser. The columns are read-only, so stock and price are
+**What gets harder.** A new product has no id yet, so it is saved once before it can be priced; the
+cards say so. The cards depend on the editor's address shape and on the `pricing` field existing on
+the collection; without the field there is nowhere to draw them. The columns are read-only, so stock and price are
 changed from the product, not from the list. A merchant who wants a dedicated stock-taking table
 has none until one is justified on its own.
 
@@ -380,6 +397,7 @@ has none until one is justified on its own.
 tree, unregistered, because the shared console tests use them as their fixture. Moving those tests
 onto Orders and deleting the modules is the next change.
 
-**Reopens this amendment:** a panel or column offering a CMS-owned field; either surface reading or
-writing through anything but the `otta` admin route; or the retired page returning beside the panel.
+**Reopens this amendment:** the `pricing` field storing a value; a card or column offering a
+CMS-owned field; either surface reading or
+writing through anything but the `otta` admin route; or the retired page returning beside the cards.
 

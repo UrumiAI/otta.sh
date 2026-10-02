@@ -108,7 +108,7 @@ in-process leniency.
   `adminEntry` (or `componentsEntry`) throws at build time (EmDash's Astro integration).
   `@otta-sh/plugin` registers `format: "standard"` (ADR-0006), and its admin pages — Reports,
   Settings, Coupons, Tax, Shipping — are Block Kit `elements`. Orders and Themes are React
-  pages, and pricing and stock a React panel and list columns inside the products collection,
+  pages, and pricing and stock React cards in the product editor and list columns inside the products collection,
   all in `@otta-sh/admin-react` on the separate `otta-console` native descriptor (ADR-0014),
   which replaced the duplicated Block Kit screens (ADR-0015);
   `@otta-sh/admin-presentation` holds the pure presentation primitives both surfaces share.

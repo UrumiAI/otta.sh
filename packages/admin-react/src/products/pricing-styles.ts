@@ -1,5 +1,5 @@
 /**
- * The Pricing & stock panel's and the Products list columns' stylesheet
+ * The Pricing & stock cards' and the Products list columns' stylesheet
  * (ADR-0014, amendment 2026-10-01).
  *
  * Both surfaces render INSIDE EmDash's own screens — the product editor's
@@ -44,6 +44,24 @@ export const PRICING_STYLES = `
 	text-align: start;
 }
 .otta-pricing p { margin: 0; }
+/* ── cards: the main-column layout ─────────────────────────────────────── */
+.otta-pricing { container-type: inline-size; }
+.otta-pricing-card {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 18px 20px;
+	border: 1px solid var(--op-line);
+	border-radius: 12px;
+	background: var(--op-card);
+	box-shadow: 0 1px 2px var(--color-kumo-shadow-drop, rgba(0, 0, 0, 0.05));
+}
+.otta-pricing-card-title { margin: 0; font-size: 15px; line-height: 20px; font-weight: 650; }
+.otta-pricing-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px 16px; }
+@container (min-width: 520px) {
+	.otta-pricing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+details.otta-pricing-card > summary .otta-pricing-card-title { font-size: 15px; }
 .otta-pricing-section { display: flex; flex-direction: column; gap: 12px; }
 .otta-pricing-rule { block-size: 1px; background: var(--op-hairline); border: 0; margin: 0; }
 .otta-pricing-field { display: flex; flex-direction: column; gap: 6px; }
@@ -172,7 +190,7 @@ export const PRICING_STYLES = `
 .otta-pricing details[open] > summary svg { transform: rotate(180deg); }
 .otta-pricing-summary { display: flex; flex-direction: column; gap: 2px; }
 .otta-pricing-summary span { font-size: 13px; color: var(--op-subtle); }
-.otta-pricing-details { display: flex; flex-direction: column; gap: 12px; padding-block-start: 12px; }
+.otta-pricing-details { display: flex; flex-direction: column; gap: 14px; padding-block-start: 4px; }
 .otta-pricing-segment {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -199,7 +217,7 @@ export const PRICING_STYLES = `
 	outline-offset: 2px;
 }
 .otta-pricing-sizes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.otta-pricing-footer { display: flex; align-items: center; gap: 12px; }
+.otta-pricing-footer { display: flex; align-items: center; justify-content: flex-start; gap: 12px; flex-direction: row-reverse; }
 @media (prefers-reduced-motion: reduce) {
 	.otta-pricing details > summary svg { transition: none; }
 }

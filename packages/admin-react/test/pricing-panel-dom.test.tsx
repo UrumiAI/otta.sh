@@ -16,7 +16,9 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { PricingStockPanel, PRICING_PANEL } = await import("../src/products/pricing-panel.js");
+const { PricingStockEditor, PricingStockField, productIdFromPath } =
+	await import("../src/products/pricing-panel.js");
+const admin = await import("../src/admin.js");
 type ProductRecord = import("../src/console-api.js").ProductRecord;
 
 const BASE: ProductRecord = {
@@ -72,7 +74,6 @@ function writes(): Array<Record<string, unknown>> {
 }
 
 let mounted: Mounted | null = null;
-let entryUpdatedAt = "2026-09-30T09:59:00.000Z";
 
 async function flush(): Promise<void> {
 	// Reads arrive through promise chains a single `act` does not outlive.
@@ -82,9 +83,7 @@ async function flush(): Promise<void> {
 }
 
 function panel(): React.ReactElement {
-	return (
-		<PricingStockPanel collection="products" entry={{ id: "p_tee", updatedAt: entryUpdatedAt }} />
-	);
+	return <PricingStockEditor productId="p_tee" />;
 }
 
 async function mountPanel(): Promise<HTMLElement> {
@@ -122,7 +121,6 @@ function button(container: HTMLElement, name: string): HTMLButtonElement {
 
 beforeEach(() => {
 	apiFetch.mockReset();
-	entryUpdatedAt = "2026-09-30T09:59:00.000Z";
 });
 
 afterEach(async () => {
@@ -130,13 +128,46 @@ afterEach(async () => {
 	mounted = null;
 });
 
-test("declares itself for the products collection, to admins only", () => {
-	expect(PRICING_PANEL).toMatchObject({
-		id: "pricing-stock",
-		title: "Pricing & stock",
-		collections: ["products"],
-		minRole: 50,
-	});
+test("is the products collection's `pricing` field editor, found by its widget name", () => {
+	expect((admin as unknown as { fields: Record<string, unknown> }).fields["pricing"]).toBe(
+		PricingStockField,
+	);
+	expect(
+		(admin as unknown as { contentEditorPanels?: unknown }).contentEditorPanels,
+	).toBeUndefined();
+});
+
+test("finds the product from the editor's own address, and knows a new one has none", () => {
+	expect(productIdFromPath("/_emdash/admin/content/products/01M3VQ9NGSF8Z48RY9FAR1B6R4")).toBe(
+		"01M3VQ9NGSF8Z48RY9FAR1B6R4",
+	);
+	expect(productIdFromPath("/_emdash/admin/content/products/new")).toBeNull();
+	expect(productIdFromPath("/_emdash/admin/content/pages/abc")).toBeNull();
+	expect(productIdFromPath("/_emdash/admin/content/products")).toBeNull();
+});
+
+test("on a new product it asks for a save first, reads nothing, and never writes the field", async () => {
+	window.history.replaceState(null, "", "/_emdash/admin/content/products/new");
+	const onChange = vi.fn();
+	mounted = await mount(<PricingStockField value={null} onChange={onChange} />);
+	expect(mounted.container.textContent).toContain(
+		"Save this product first, then set its price and stock here.",
+	);
+	expect(apiFetch).not.toHaveBeenCalled();
+	expect(onChange).not.toHaveBeenCalled();
+});
+
+test("on a saved product it mounts the editor for that product", async () => {
+	window.history.replaceState(null, "", "/_emdash/admin/content/products/p_tee");
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const onChange = vi.fn();
+	const node = <PricingStockField value={null} onChange={onChange} />;
+	mounted = await mount(node);
+	for (let i = 0; i < 3; i++) await mounted.rerender(node);
+	expect(sent()[0]).toMatchObject({ resource: "products.detail", productId: "p_tee" });
+	expect(input(mounted.container, "Price").value).toBe("32.00");
+	// The field is a placeholder: the section never writes a value into the CMS.
+	expect(onChange).not.toHaveBeenCalled();
 });
 
 test("reads the product by its CMS entry id and shows price, sale, margin and stock", async () => {
@@ -150,7 +181,7 @@ test("reads the product by its CMS entry id and shows price, sale, margin and st
 	expect(c.querySelector('[data-testid="otta-on-hand"]')?.textContent).toBe("24");
 	expect(c.querySelector('[data-testid="otta-stock-badge"]')?.textContent).toBe("In stock");
 	// Nothing changed yet, so there is nothing to save.
-	expect(button(c, "Save").disabled).toBe(true);
+	expect(button(c, "Save pricing & stock").disabled).toBe(true);
 });
 
 test("one Save sends every field with the loaded watermark, then re-reads", async () => {
@@ -165,7 +196,7 @@ test("one Save sends every field with the loaded watermark, then re-reads", asyn
 	const c = await mountPanel();
 	await type(input(c, "Price"), "29");
 	expect(c.textContent).toContain("Not saved yet");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 
 	expect(writes()).toEqual([
@@ -183,7 +214,8 @@ test("one Save sends every field with the loaded watermark, then re-reads", asyn
 		},
 	]);
 	expect(c.textContent).toContain("Saved");
-	expect(sent().filter((b) => b["resource"] === "products.detail")).toHaveLength(2);
+	// Read on mount, read again just before the write, read after it.
+	expect(sent().filter((b) => b["resource"] === "products.detail")).toHaveLength(3);
 });
 
 test("when someone else saved first, the panel shows the latest values, as the refusal says", async () => {
@@ -205,12 +237,14 @@ test("when someone else saved first, the panel shows the latest values, as the r
 		}
 		reads += 1;
 		return Promise.resolve(
-			detail(reads > 1 ? { priceCents: 3500, updatedAt: "2026-09-30T12:00:00.000Z" } : {}),
+			// Mount, then the save's own read; only AFTER the refused write has the
+			// row moved to 35.
+			detail(reads > 2 ? { priceCents: 3500, updatedAt: "2026-09-30T12:00:00.000Z" } : {}),
 		);
 	});
 	const c = await mountPanel();
 	await type(input(c, "Price"), "29");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(input(c, "Price").value).toBe("35.00");
 	expect(c.textContent).toContain("This product changed since you opened it");
@@ -220,7 +254,7 @@ test("a cleared SKU is refused beside the SKU, and focus goes there", async () =
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();
 	await type(input(c, "SKU"), "");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await React.act(async () => {
 		await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
 	});
@@ -237,7 +271,7 @@ test("a problem inside the folded Shipping & tax section opens it", async () => 
 	const details = c.querySelector("details");
 	expect(details?.open).toBe(false);
 	await type(input(c, "Weight"), "");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	expect(details?.open).toBe(true);
 	expect(c.textContent).toContain("Can be changed but not removed");
 });
@@ -247,7 +281,7 @@ test("a wrong amount is said in plain words and nothing is sent", async () => {
 	const c = await mountPanel();
 	await type(input(c, "Price"), "29,99");
 	expect(c.textContent).toContain("Enter a price like 24.99");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	expect(writes()).toEqual([]);
 	expect(c.textContent).toContain("Fix the highlighted fields to save");
 });
@@ -271,7 +305,7 @@ test("a SKU the store refuses keeps what was typed, with the reason beside the S
 	});
 	const c = await mountPanel();
 	await type(input(c, "SKU"), "MUG");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(input(c, "SKU").value).toBe("MUG");
 	expect(c.textContent).toContain('Another product uses "MUG".');
@@ -292,12 +326,12 @@ test("an unpriced product asks for a price and saves it in the currency the merc
 	expect(currency.value).toBe("USD");
 	await type(currency, "EUR");
 	await type(input(c, "Price"), "18");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
-test("after a CMS save, the panel's next save carries the NEW watermark and keeps only the merchant's edits", async () => {
+test("Save reads the product first: it writes against the NEW watermark and keeps only the merchant's edits", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		return Promise.resolve(
@@ -308,8 +342,9 @@ test("after a CMS save, the panel's next save carries the NEW watermark and keep
 	});
 	const c = await mountPanel();
 	await type(input(c, "Price"), "30");
-	// The CMS save landed a newer row: a new watermark, and another admin's new
-	// weight the merchant never touched.
+	// Meanwhile the row moved — a CMS save (new watermark) and another admin's
+	// new weight the merchant never touched. Nothing tells the section; its
+	// save's own read finds out.
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		return Promise.resolve(
@@ -318,9 +353,7 @@ test("after a CMS save, the panel's next save carries the NEW watermark and keep
 				: detail({ weightGrams: 450, updatedAt: "2026-09-30T11:00:00.000Z" }),
 		);
 	});
-	entryUpdatedAt = "2026-09-30T11:00:00.000Z";
-	await flush();
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(writes()[0]?.["value"]).toMatchObject({
 		expectedUpdatedAt: "2026-09-30T11:00:00.000Z",
@@ -348,7 +381,7 @@ test("a refusal that declines a value keeps what the merchant typed", async () =
 	});
 	const c = await mountPanel();
 	await type(input(c, "Price"), "31");
-	await fire(button(c, "Save"), "click");
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(input(c, "Price").value).toBe("31");
 	expect(c.textContent).toContain("Invalid value. Price must be greater than zero.");
@@ -394,17 +427,21 @@ test("Remove asks first, and never offers to take more than there is", async () 
 	expect(writes()).toEqual([]);
 });
 
-test("a CMS save re-reads the record but keeps what the merchant typed", async () => {
+test("a field changed elsewhere since the merchant started stops the save, and says so", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();
 	await type(input(c, "Price"), "30");
+	await type(input(c, "SKU"), "TEE-2");
 	apiFetch.mockImplementation(() =>
-		Promise.resolve(detail({ updatedAt: "2026-09-30T11:00:00.000Z" })),
+		Promise.resolve(detail({ priceCents: 3500, updatedAt: "2026-09-30T11:00:00.000Z" })),
 	);
-	entryUpdatedAt = "2026-09-30T11:00:00.000Z";
+	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
-	expect(sent().filter((b) => b["resource"] === "products.detail")).toHaveLength(2);
-	expect(input(c, "Price").value).toBe("30");
+	expect(writes()).toEqual([]);
+	expect(c.textContent).toContain("Someone else changed this product while you were editing.");
+	// The store's price for the clashing field; the merchant's SKU edit survives.
+	expect(input(c, "Price").value).toBe("35.00");
+	expect(input(c, "SKU").value).toBe("TEE-2");
 });
 
 test("a product in the trash is read-only", async () => {

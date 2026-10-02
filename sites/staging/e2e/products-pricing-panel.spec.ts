@@ -6,8 +6,8 @@
  * (`packages/admin-react/test/pricing-*.test.tsx`) and the route itself in the
  * workerd sandbox (`products-console-route.sandbox.test.ts`). What only a
  * browser can prove is that EMDASH DISCOVERS THEM: that the admin module's
- * `contentEditorPanels` and `contentListColumns` exports reach the collection
- * list and a saved product's editor, and that the sidebar no longer offers a
+ * `fields.pricing` editor and `contentListColumns` exports reach a saved
+ * product's editor (main column) and the collection list, and that the sidebar no longer offers a
  * Pricing & inventory page.
  *
  * IT WRITES. It prices and restocks the first product on the list, so point it
@@ -61,7 +61,7 @@ test.describe("pricing and stock live in the products collection", () => {
 		});
 	});
 
-	test("a saved product's editor has the Pricing & stock panel, and it saves and restocks", async ({
+	test("a saved product's editor shows the Pricing & stock cards in its main column, and they save and restock", async ({
 		adminPage,
 	}, info) => {
 		await openList(adminPage);
@@ -71,14 +71,19 @@ test.describe("pricing and stock live in the products collection", () => {
 
 		const panel = adminPage.getByTestId("otta-pricing-panel");
 		await expect(panel).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
-		await expect(adminPage.getByRole("heading", { name: "Pricing & stock" })).toBeVisible();
+		await expect(panel.getByRole("heading", { name: "Pricing", exact: true })).toBeVisible();
+		await expect(panel.getByRole("heading", { name: "Inventory" })).toBeVisible();
+		// In the MAIN column, not the settings sidebar.
+		await expect(
+			adminPage.getByRole("complementary").getByTestId("otta-pricing-panel"),
+		).toHaveCount(0);
 
 		// One Save: a new price, then the panel re-reads and settles.
 		const price = panel.getByLabel("Price", { exact: true });
 		const next = (await price.inputValue()) === "27.00" ? "28.00" : "27.00";
 		await price.fill(next);
 		await expect(panel.getByText(/Not saved yet/)).toBeVisible();
-		await panel.getByRole("button", { name: "Save", exact: true }).click();
+		await panel.getByRole("button", { name: "Save pricing & stock" }).click();
 		await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 		await expect(price).toHaveValue(next);
 

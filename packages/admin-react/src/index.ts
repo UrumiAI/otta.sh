@@ -82,7 +82,7 @@ export const ORDERS_PAGE = {
 /*
  * There is no Pricing & inventory PAGE any more. INC-21 migrated it here and
  * ADR-0014's amendment of 2026-10-01 moved it again, into the products
- * collection's own editor (a Pricing & stock panel) and list (Price and Stock
+ * collection's own editor (Pricing & stock cards) and list (Price and Stock
  * columns) — see `./admin.tsx`. A merchant prices a product where they wrote it,
  * and the sidebar no longer offers a second "products" screen under Plugins.
  */
@@ -112,6 +112,12 @@ export const THEMES_PAGE = {
  * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
  * gate.
  */
+/** The field editors this plugin contributes. A products field declared with
+ *  `widget: "otta-console:pricing"` renders the Pricing & stock cards. */
+export const OTTA_CONSOLE_FIELD_WIDGETS = [
+	{ name: "pricing", label: "Pricing & stock", fieldTypes: ["json"] },
+] as const;
+
 export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE, THEMES_PAGE];
 
 /**
@@ -136,6 +142,13 @@ export function createPlugin(_options: Record<string, unknown> = {}): ResolvedPl
 		admin: {
 			entry: OTTA_CONSOLE_ADMIN_ENTRY,
 			pages: [...OTTA_CONSOLE_ADMIN_PAGES],
+			// The products editor's Pricing & stock cards: a React field editor
+			// (`./admin.tsx`'s `fields.pricing`), declared so EmDash's Content Types
+			// screen can offer it for a field (ADR-0014, amendment 2026-10-01).
+			fieldWidgets: OTTA_CONSOLE_FIELD_WIDGETS.map((widget) => ({
+				...widget,
+				fieldTypes: [...widget.fieldTypes],
+			})),
 		},
 	});
 }
