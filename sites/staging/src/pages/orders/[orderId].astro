@@ -63,6 +63,7 @@ import {
 	MAX_ORDER_POLLS,
 	ORDER_POLL_SECONDS,
 	orderPollHop,
+	orderPollKey,
 	recordOrderPollHop,
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
@@ -140,10 +141,17 @@ const holdLapsed =
  * same URL (so it replaces the history entry rather than adding one). The
  * response is already private (keepPrivate, above).
  */
+/* Keyed on the order AND the payment it came back from, so a second return
+   within the cookie's lifetime gets its full run (the intent id, never the
+   client secret, and only into an HttpOnly cookie — never the markup). */
+const pollKey =
+	order === null
+		? null
+		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
 const pollHop =
-	order !== null && isPending && returnedFromStripe ? orderPollHop(Astro.cookies, order.id) : 1;
+	pollKey !== null && isPending && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
 const shouldPoll = shouldPollOrder({ state, returnedFromStripe, hop: pollHop });
-if (shouldPoll && order !== null) recordOrderPollHop(Astro.cookies, order.id, pollHop);
+if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
 /* "Check again" reloads this same URL too: `""` is the document's own address,
    which keeps the confirming copy for a buyer back from Stripe, adds no history
    entry, and echoes none of the redirect parameters into the markup. */

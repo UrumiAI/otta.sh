@@ -17,6 +17,7 @@ import {
 	MAX_ORDER_POLLS,
 	ORDER_POLL_COOKIE_NAME,
 	orderPollHop,
+	orderPollKey,
 	recordOrderPollHop,
 	shouldPollOrder,
 } from "../src/lib/order-poll.js";
@@ -65,6 +66,23 @@ describe("orderPollHop — which hop this render is", () => {
 			expect(orderPollHop(jar(raw), "ord-1")).toBe(1);
 		},
 	);
+});
+
+describe("orderPollKey — a fresh return from Stripe gets its full polls", () => {
+	test("the count is keyed on the order AND the payment it came back from", () => {
+		const cookies = jar();
+		const first = orderPollKey("ord-1", "pi_first");
+		recordOrderPollHop(cookies, first, MAX_ORDER_POLLS);
+		expect(orderPollHop(cookies, first)).toBe(MAX_ORDER_POLLS + 1);
+		// A second return within the cookie's two minutes (another card, another
+		// attempt) is a new payment: it starts again at hop 1.
+		expect(orderPollHop(cookies, orderPollKey("ord-1", "pi_second"))).toBe(1);
+	});
+
+	test("the key carries no client secret — only the order id and the intent id", () => {
+		expect(orderPollKey("ord-1", "pi_123")).toBe("ord-1/pi_123");
+		expect(orderPollKey("ord-1", null)).toBe("ord-1");
+	});
 });
 
 describe("recordOrderPollHop — the cookie", () => {
@@ -125,6 +143,9 @@ describe("the order page polls without piling up history", () => {
 	});
 
 	test("the poll decision is shouldPollOrder's, and its count is the cookie's", () => {
+		expect(frontmatter).toMatch(
+			/orderPollKey\(order\.id, Astro\.url\.searchParams\.get\("payment_intent"\)\)/,
+		);
 		expect(frontmatter).toMatch(/shouldPollOrder\(/);
 		expect(frontmatter).toMatch(/orderPollHop\(/);
 		expect(frontmatter).toMatch(/recordOrderPollHop\(/);

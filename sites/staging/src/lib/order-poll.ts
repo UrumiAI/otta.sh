@@ -38,12 +38,25 @@ const ORDER_POLL_COOKIE_MAX_AGE_SECONDS = 120;
 /** A count no honest run of this page reaches; anything above it is garbage. */
 const MAX_PLAUSIBLE_HOP = 10_000;
 
+/**
+ * What the count is kept FOR: this order and the payment the buyer came back
+ * from (Stripe's `payment_intent` id — an identifier, not the client secret). A
+ * second return within the cookie's lifetime — another card, another attempt —
+ * is a new payment and gets its full run of polls instead of the first one's
+ * leftovers.
+ */
+export function orderPollKey(orderId: string, paymentIntent: string | null): string {
+	return paymentIntent === null || paymentIntent.length === 0
+		? orderId
+		: `${orderId}/${paymentIntent}`;
+}
+
 /** This render's hop: 1 on arrival, or one past the count the cookie holds for
- *  THIS order. Anything malformed starts again at 1. */
-export function orderPollHop(cookies: CookieReader, orderId: string): number {
+ *  THIS key ({@link orderPollKey}). Anything malformed starts again at 1. */
+export function orderPollHop(cookies: CookieReader, key: string): number {
 	const raw = cookies.get(ORDER_POLL_COOKIE_NAME)?.value ?? "";
 	const split = raw.lastIndexOf(":");
-	if (split <= 0 || raw.slice(0, split) !== orderId) return 1;
+	if (split <= 0 || raw.slice(0, split) !== key) return 1;
 	const digits = raw.slice(split + 1);
 	if (!/^\d{1,5}$/.test(digits)) return 1;
 	const last = Number(digits);
@@ -51,12 +64,12 @@ export function orderPollHop(cookies: CookieReader, orderId: string): number {
 }
 
 /**
- * Remember that this order's page rendered hop `hop`. HttpOnly (no script reads
+ * Remember that this key's page rendered hop `hop`. HttpOnly (no script reads
  * it), `SameSite=Lax` because the first hop is Stripe's top-level redirect back,
  * and `path=/orders/` so it rides no other request.
  */
-export function recordOrderPollHop(cookies: CookieWriter, orderId: string, hop: number): void {
-	cookies.set(ORDER_POLL_COOKIE_NAME, `${orderId}:${String(hop)}`, {
+export function recordOrderPollHop(cookies: CookieWriter, key: string, hop: number): void {
+	cookies.set(ORDER_POLL_COOKIE_NAME, `${key}:${String(hop)}`, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "lax",
