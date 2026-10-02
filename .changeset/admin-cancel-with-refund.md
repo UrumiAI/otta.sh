@@ -54,3 +54,14 @@ cancel-with-refund amendment; ADR-0008 amended).
     stock** (ticked).
   - The group offers no cancel control when Otta cannot issue the refund, or when the refund
     ledger could not be loaded. An unknown amount never reads as "nothing is refunded".
+- **Hardening (review round 1).**
+  - An open commit bracket is closed whatever the restock choice, so an unticked Return to stock
+    never gets units back through the release.
+  - The first attempt's restock choice is stored on the cancellation's refund row (`restock`),
+    so a retry keeps it.
+  - A failure after the refund answers `CANCEL_INCOMPLETE_AFTER_REFUND` (flagged, retry-safe)
+    instead of throwing.
+  - A lost hold that was not released is reported as `HOLD_UNKNOWN`
+    (`ReservationCommitLostError.state`).
+  - The lost-race notice names the state the order moved to (`movedTo`).
+  - The not-automatic copy notes that a full manual refund closes the order.

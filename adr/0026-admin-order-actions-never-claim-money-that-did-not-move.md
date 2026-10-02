@@ -148,10 +148,24 @@ next step (contact the buyer, then stop the shipment or Mark refunded). The outc
   The hint says this too.
 - The manual paths never restock. A refund recorded in Money → Refunds and a Mark refunded both
   leave stock untouched.
-- `restocked` on the envelope reflects the restock records this cancellation replayed. If an
-  operator retries a crashed cancellation with the box flipped from ticked to unticked, the units
-  are already back but the envelope says `false`.
+- `restocked` on the envelope reflects the restock records this cancellation replayed.
 - A cancellation refunds the whole remainder. Partial or line-level cancellation is out of scope.
+- **Restock comes before the flip, on purpose** — the flip is the commit point, so a crash
+  before it must leave the order paid and retryable. The cost: in the race where the order ships
+  between the restock and the flip, units that just shipped are counted back into stock. That
+  case is flagged with what was refunded and restocked, and the notice names the state the order
+  moved to, so a person corrects the count.
+- **An open commit bracket is closed whatever the checkbox says.** A still-`adopted` hold is
+  committed on every cancel of a paid order, so the flip's release cannot return its units when
+  Return to stock was unticked; only the restock follows the choice.
+- **The first attempt's restock choice is kept.** It is stored on the cancellation's refund row,
+  so a retry after a crash restocks (or not) as the first attempt did, and the envelope says what
+  happened. A cancellation that refunds nothing has no row to carry it; its retry follows the
+  checkbox.
+- **A failure after the refund is an outcome, not a throw.** If the restock or the flip fails once
+  the refund has gone through, the order is flagged ("did not finish") and the console says
+  "Refunded X, but the cancel didn't finish — click Cancel order again (it will not refund
+  twice)" (`CANCEL_INCOMPLETE_AFTER_REFUND`).
 - A late payment's automatic refund (ADR-0022/0008, `settleOrder`) is recorded with its own
   purpose, `late-payment`. Only a `refund`-purpose row can drive `→ refunded`, so neither a
   cancellation's refund nor a late payment's can flip an order.
