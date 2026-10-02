@@ -1018,6 +1018,21 @@ function rateDetailFailClosed() {
 // with the Coupons console (extracted at the second consumer, the same
 // precedent as `money-input.ts`).
 
+/**
+ * A tax rate is 0–100% — the port's documented `rateBps` range (0–10000). The
+ * shared percent parser accepts up to 1000% because it also serves coupons, and
+ * the copy here used to advertise "0 to 1000", which is how QA saved a 150% tax.
+ * The rules client refuses the same range, so this only decides the words.
+ */
+const MAX_TAX_RATE_BPS = 10_000;
+const TAX_PERCENT_HINT =
+	"Rate must be a percent from 0 to 100, like 7.25 (up to two decimal places).";
+
+function parseTaxPercent(input: string): number | null {
+	const bps = parsePercentToBps(input);
+	return bps !== null && bps <= MAX_TAX_RATE_BPS ? bps : null;
+}
+
 // -- custom action: create a tax class ----------------------------------------
 
 function createClassAction() {
@@ -1207,10 +1222,8 @@ function createRateAction() {
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
-		const bps = parsePercentToBps(readString(values.ratePercent) ?? "");
-		if (bps === null) {
-			return err("Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).");
-		}
+		const bps = parseTaxPercent(readString(values.ratePercent) ?? "");
+		if (bps === null) return err(TAX_PERCENT_HINT);
 		const result = await client.createTaxRate({
 			id,
 			taxClassId: classId,
@@ -1268,12 +1281,12 @@ function saveRateAction() {
 		}
 		const expectedRateBps = Number.parseInt(expectedRateBpsRaw, 10);
 		const values = input.values ?? {};
-		const bps = parsePercentToBps(readString(values.ratePercent) ?? "");
+		const bps = parseTaxPercent(readString(values.ratePercent) ?? "");
 		if (bps === null) {
 			return showList([classId], {
 				variant: "error",
 				title: "Rate not saved",
-				description: "Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).",
+				description: TAX_PERCENT_HINT,
 			});
 		}
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;

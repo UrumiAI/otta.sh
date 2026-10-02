@@ -4288,6 +4288,24 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.deleteZone("z1")).toEqual({ ok: true });
 		});
 
+		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
+			await client.createZone({ id: "cap-z", name: "Cap" });
+			await client.createTaxClass({ id: "cap-c", name: "Cap" });
+			const rate = { id: "cap-t", taxClassId: "cap-c", zoneId: "cap-z", rateBps: 10_001 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "rateBps",
+			});
+			expect((await client.createTaxRate({ ...rate, rateBps: 10_000 })).ok).toBe(true);
+			await expect(
+				client.updateTaxRate("cap-t", {
+					rateBps: 15_000,
+					appliesToShipping: false,
+					expectedRateBps: 10_000,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
