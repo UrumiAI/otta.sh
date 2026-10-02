@@ -711,11 +711,11 @@ function skippedSentence(
 function lostEmailSentence(email: InlineEmailStatus | undefined): string {
 	switch (email) {
 		case "sent":
-			return " The buyer has been emailed about the refund.";
+			return " Buyer emailed about the refund.";
 		case "queued":
-			return " The buyer’s refund email is queued and will be retried automatically.";
+			return " Refund email queued; retried automatically.";
 		case "unconfigured":
-			return " No email was sent — this store has no email provider set up.";
+			return " No email sent: no email provider set up.";
 		default:
 			return "";
 	}
@@ -751,19 +751,22 @@ function cancelLostNotice(
 	movedTo: string | null,
 	email: InlineEmailStatus | undefined,
 ): Notice {
+	// Terse on purpose: what moved, where the order went, the WARNING, then the email
+	// status — in that order and short enough that fitting the banner never cuts the
+	// warning (it is the operator's next step).
 	const money =
 		refund === null
-			? "The order was not cancelled"
-			: `${formatTotal(refund.amountCents, refund.currency)} was refunded, but the order was not cancelled`;
+			? `The order moved to ${movedTo ?? "another state"} first and was not cancelled;`
+			: `Refunded ${formatTotal(refund.amountCents, refund.currency)}, but the order moved to ${movedTo ?? "another state"} first and was not cancelled;`;
 	const stock =
 		restockedUnits === 0
-			? "nothing was returned to stock"
-			: `${String(restockedUnits)} item${restockedUnits === 1 ? " was" : "s were"} returned to stock`;
+			? " nothing restocked."
+			: ` ${String(restockedUnits)} item${restockedUnits === 1 ? "" : "s"} restocked.`;
 	return {
 		variant: "error",
 		title: "Refunded, but the order was not cancelled",
 		description: fit(
-			`${money} — it moved to ${movedTo ?? "another state"} first, and ${stock}.${lostEmailSentence(email)} It is flagged: contact the buyer and check the order; don’t ship or refund it again unchecked.`,
+			`${money}${stock} Flagged — contact the buyer; don’t ship or refund it again unchecked.${lostEmailSentence(email)}`,
 			BANNER_BUDGET,
 		),
 	};

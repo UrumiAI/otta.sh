@@ -74,7 +74,7 @@ describe("the cancel notices when the money and the order part ways", () => {
 		const description = String(result.notice?.description);
 		expect(description).toContain("moved to delivered");
 		expect(description).not.toContain("shipped first");
-		expect(description).toContain("1 item was returned to stock");
+		expect(description).toContain("1 item restocked");
 	});
 
 	test("a refund Otta cannot issue: a full manual refund closes the order, so restock by hand", async () => {
@@ -127,12 +127,17 @@ describe("the cancel notices when the money and the order part ways", () => {
 			movedTo: "shipped",
 		};
 		const sent = await cancel({ ...outcome, email: "sent" });
-		expect(String(sent.notice?.description)).toContain(
-			"The buyer has been emailed about the refund.",
-		);
+		expect(String(sent.notice?.description)).toContain("Buyer emailed about the refund.");
 		const queued = await cancel({ ...outcome, email: "queued" });
 		expect(String(queued.notice?.description)).toContain(
-			"The buyer’s refund email is queued and will be retried automatically.",
+			"Refund email queued; retried automatically.",
 		);
+		// The warning is never what fitting the banner cuts.
+		for (const result of [sent, queued]) {
+			expect(String(result.notice?.description)).toContain(
+				"don’t ship or refund it again unchecked",
+			);
+			expect(String(result.notice?.description).endsWith("…")).toBe(false);
+		}
 	});
 });
