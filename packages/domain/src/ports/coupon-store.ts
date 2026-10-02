@@ -35,6 +35,13 @@ export interface CouponStore {
 	 * `redeem`/`release`) is NEVER touched by this admin edit, so an edit and a
 	 * concurrent redemption cannot corrupt each other. Unknown `couponId` →
 	 * `not_found` (an edit is not a create; no row minted).
+	 *
+	 * THE ONE WRITER THAT IS NOT A FORM: the admin's RETIRE (`retireCoupon` in the
+	 * plugin) reads the coupon and writes every field back with only the window
+	 * changed. Under LWW an edit landing between that read and that write loses
+	 * its economics to the values retire read. The window is a read-to-write gap
+	 * on a rare administrative act, accepted for the same reasons as above, and
+	 * pinned by a test so a future CAS here changes it on purpose.
 	 */
 	update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult>;
 

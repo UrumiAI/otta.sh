@@ -2153,8 +2153,8 @@ in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
 an action, render **no control** plus one `context` line stating the reason and the alternative.
 Never a "disabled" button (R-11 — and after the foundation, a compile error).
 
-The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it.**
-The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
+The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it**
+(`withheldDeleteContext` in `coupons-page.ts`, which pluralises the count — `1 time` / `3 times`):
 
 > `This coupon has been redeemed 3 times — deletion is blocked to keep the redemption audit
 > trail. To stop it at checkout, use Retire coupon.`
@@ -2675,12 +2675,22 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │  actions    (cond status ≠ expired) block_id coupons:retire-action
 │             [ "Retire coupon" style danger  value {couponId, code}
 │                 confirm{ title "Retire SUMMER25?", text "Checkout stops accepting this
-│                   code now. Placed orders keep their discount; set a later expiry in Edit
-│                   to reopen it.", confirm "Yes, retire", deny "Keep it" } ]
-│             ← RETIRE = expiresAt := now (a future startsAt is dropped). The domain's own
-│               window, so no `retired` state exists on the port; works on a REDEEMED
-│               coupon, which delete cannot touch. Re-reads the coupon before its LWW
-│               full-replace write so it changes only the window.  ← ADDED (QA 2026-10-02)
+│                   code now, even for a shopper mid-checkout. Placed orders keep their
+│                   discount; a later expiry in Edit reopens it.",
+│                   confirm "Yes, retire", deny "Keep it" } ]
+│             ← RETIRE = expiresAt := now on the STORES' clock (`retireCoupon` on the rules
+│               surface; a future startsAt is dropped; instants compared parsed, never as
+│               strings). The domain's own window, so no `retired` state exists on the
+│               port; works on a REDEEMED coupon, which delete cannot touch. A shopper who
+│               already applied the code is refused on the next quote with the ordinary
+│               COUPON_NOT_ACTIVE ("isn't active right now — it may have expired").
+│               The success notice names the replaced window, so reopening is a copy job.
+│               Re-reads before its LWW full-replace write; an edit landing in the
+│               read-to-write gap is lost (documented on `CouponStore.update`, pinned by
+│               `coupon-retire.test.ts`).
+│             ← FOLLOW-UP: reporting cannot tell a RETIRED coupon from one that expired on
+│               schedule — both are just a past `expiresAt`. A `retiredAt` stamp would be
+│               the port change that buys it.                    ← ADDED (QA 2026-10-02)
 │
 └─ panel "Redemptions"
      fields     block_id coupons:uses     Redemptions | Max uses ·

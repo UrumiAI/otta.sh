@@ -1665,6 +1665,9 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const confirm = confirmOf(retire);
 		expect(confirm.title).toBe("Retire LIVE10?");
 		expect(String(confirm.text).length).toBeLessThanOrEqual(200);
+		// A shopper mid-checkout with the code applied is refused on their next
+		// quote; the confirm says so before the click.
+		expect(String(confirm.text)).toMatch(/mid-checkout/i);
 
 		const before = Date.now();
 		const after = await click(retire);
@@ -1686,6 +1689,8 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			"Coupon retired",
 			"This coupon is expired",
 		]);
+		// The window it replaced is in the notice, so reopening it is a copy job.
+		expect(String(topLevelBanners(after)[0]?.description)).toMatch(/Was valid from 1 Jan 2026/);
 		// And it is not offered again on a coupon that has already ended.
 		expect(actionButtons(after).some((e) => e.action_id === "coupons:retire")).toBe(false);
 	});

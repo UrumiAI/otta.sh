@@ -1033,8 +1033,9 @@ function retireCouponActions(detail: CouponSummaryWire): ActionsBlock {
 		value: { couponId: detail.id, code: detail.code },
 		confirm: {
 			title: fitLabel(`Retire ${detail.code}?`),
-			// 138 chars ≤ 200 (X-11).
-			text: "Checkout stops accepting this code now. Placed orders keep their discount; set a later expiry in Edit to reopen it.",
+			// ≤ 200 (X-11). "Mid-checkout": a shopper who already applied the code
+			// is refused on their next quote (COUPON_NOT_ACTIVE).
+			text: "Checkout stops accepting this code now, even for a shopper mid-checkout. Placed orders keep their discount; a later expiry in Edit reopens it.",
 			confirm: "Yes, retire",
 			deny: "Keep it",
 			style: "danger",
@@ -1939,15 +1940,9 @@ function deleteCouponOutcome(
 // -- custom action: retire a coupon (expiry := now) ------------------------------
 
 /**
- * Re-reads the coupon FIRST and writes back every field it holds, changing only
- * the window. The port's edit is a last-writer-wins full replace with no
- * partial form, so retiring from the values the button rendered with would roll
- * back any edit saved since; the fresh read narrows that to the read-to-write
- * gap every LWW coupon edit already accepts (`CouponStore.update`'s doc).
- *
- * A start date still in the future is DROPPED: `[future, now)` is an inverted
- * window that would read `scheduled` until the start passed and only then
- * `expired`, for a coupon the operator just ended.
+ * The console half of RETIRE: the client owns the read-then-write, the clock and
+ * the window rules (`InProcessAdminRulesClient.retireCoupon`); this renders the
+ * outcome, naming the window that was replaced.
  */
 function retireCouponAction() {
 	return customAction<AdminRulesSurface>(async ({ input, client, showLeaf, showList }) => {
@@ -1955,34 +1950,31 @@ function retireCouponAction() {
 		const couponId = readString(payload?.couponId);
 		const code = readString(payload?.code);
 		if (couponId === undefined || code === undefined) return showList();
-		const page = await client.listCoupons({ search: code }, { limit: 2 });
-		const current = page.coupons.find((c) => c.id === couponId);
-		if (current === undefined) {
-			return showList(undefined, {
-				variant: "error",
-				title: "Coupon not found",
-				description: "This coupon no longer exists — it may have been deleted.",
-			});
-		}
-		const now = new Date().toISOString();
-		const result = await client.updateCoupon(couponId, {
-			amountCents: current.amountCents,
-			rateBps: current.rateBps,
-			capCents: current.capCents,
-			minSubtotalCents: current.minSubtotalCents,
-			startsAt: current.startsAt !== null && current.startsAt > now ? null : current.startsAt,
-			expiresAt: now,
-			maxUses: current.maxUses,
-			maxUsesPerCustomer: current.maxUsesPerCustomer,
-		});
+		// The CLIENT stamps the instant, on the stores' clock — the one checkout
+		// validates against — and re-reads before its write (see `retireCoupon`).
+		const result = await client.retireCoupon(couponId);
 		if (result.ok) {
-			return showLeaf([current.code], {
+			const { previous, coupon } = result.value;
+			return showLeaf([coupon.code], {
 				variant: "default",
 				title: "Coupon retired",
-				description: `Checkout no longer accepts "${current.code}". Placed orders keep their discount. To reopen it, set a later expiry date in Edit.`,
+				// The replaced window, so reopening it is a copy job rather than a
+				// memory test.
+				description: `Checkout no longer accepts "${coupon.code}". Was valid ${couponWindowSummary(previous.startsAt, previous.expiresAt)} — set that back in Edit to reopen it. Placed orders keep their discount.`,
 			});
 		}
-		return saveCouponOutcome(result, current.code, showLeaf, showList);
+		if (result.reason === "already_ended") {
+			return showLeaf([code], {
+				variant: "default",
+				title: "Already ended",
+				description: "This coupon's expiry had already passed — nothing was changed.",
+			});
+		}
+		return showList(undefined, {
+			variant: "error",
+			title: "Coupon not found",
+			description: "This coupon no longer exists — it may have been deleted.",
+		});
 	});
 }
 

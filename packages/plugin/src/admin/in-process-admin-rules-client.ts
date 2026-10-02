@@ -105,6 +105,7 @@ import type {
 	AdminRulesSurface,
 	CouponEdit,
 	CouponInput,
+	CouponRetireResult,
 	CouponSummaryWire,
 	CouponsListFilter,
 	CouponsListResult,
@@ -589,6 +590,59 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		return res.ok
 			? { ok: true, value: toCouponWire(res.coupon) }
 			: { ok: false, reason: "not_found" };
+	}
+
+	/**
+	 * End a coupon NOW — `expiresAt` := the stores' own clock (the one checkout's
+	 * `validateCoupon` is handed), never the caller's wall time.
+	 *
+	 * Instants are compared PARSED (`Date.parse`), never as strings: the window
+	 * fields are free text up to 64 chars, and `…12:00:00Z` sorts after
+	 * `…12:00:00.500Z` as a string while being the earlier instant.
+	 *
+	 * A start still in the future is DROPPED — `[future, now)` is an inverted window
+	 * that would read `scheduled` for a coupon the operator just ended. Every other
+	 * field is written back as READ, because the port's edit is a last-writer-wins
+	 * full replace: the read narrows the window in which a concurrent edit is lost
+	 * to the read-to-write gap, and does not close it (`CouponStore.update`'s doc;
+	 * pinned by `coupon-retire.test.ts`).
+	 */
+	async retireCoupon(couponId: string): Promise<CouponRetireResult> {
+		requireIdToken("couponId", couponId);
+		const current = await this.#stores.couponStore.findById(couponId);
+		if (current === null) return { ok: false, reason: "not_found" };
+		const now = this.#stores.clock.now();
+		const at = now.getTime();
+		if (current.expiresAt !== null && Date.parse(current.expiresAt) <= at) {
+			return { ok: false, reason: "already_ended" };
+		}
+		// NaN IS HANDLED BY DESIGN, not by accident. The window fields are free text
+		// (≤64 chars, never instant-parsed on write), so a stored bound may not parse.
+		// `NaN <= at` and `NaN > at` are both false: an unparseable EXPIRY reads as
+		// not-yet-ended, so retire replaces it with a real instant (which is what the
+		// operator asked for); an unparseable START is not "in the future", so it is
+		// kept as stored — retire changes only the bound it must.
+		const futureStart = current.startsAt !== null && Date.parse(current.startsAt) > at;
+		const retiredAt = now.toISOString();
+		const res = await this.#stores.couponStore.update(couponId, {
+			amountCents: current.amountCents,
+			rateBps: current.rateBps,
+			capCents: current.capCents,
+			minSubtotalCents: current.minSubtotalCents,
+			startsAt: futureStart ? null : current.startsAt,
+			expiresAt: retiredAt,
+			maxUses: current.maxUses,
+			maxUsesPerCustomer: current.maxUsesPerCustomer,
+		});
+		if (!res.ok) return { ok: false, reason: "not_found" };
+		return {
+			ok: true,
+			value: {
+				coupon: toCouponWire(res.coupon),
+				retiredAt,
+				previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
+			},
+		};
 	}
 
 	/** Idempotent delete, guarded by live redemptions (`in_use_by_redemptions`) —
