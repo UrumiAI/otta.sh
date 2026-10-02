@@ -213,7 +213,11 @@ export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from ".
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
+	adminNextStates,
+	manualPaymentAllowed,
 	transitionOrder,
+	transitionOrderAsAdmin,
+	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
 	type DispatchOrderEmailsOptions,
 	type TransitionOrderCommand,
