@@ -36,9 +36,9 @@ const { order, errorMessage } = Astro.props.model;
 		</>
 	) : (
 		<>
-			<h1 class="account-order-title">
-				Order <span class="u-mono account-order-ref">{order.id}</span>
-			</h1>
+			{/* The order's products, not its id: the UUID names nothing the
+			    shopper bought, and the receipt below says the rest. */}
+			<h1 class="account-order-title">{order.label}</h1>
 			<p class="account-order-state">{order.state}</p>
 
 			<div class="account-order-cols">

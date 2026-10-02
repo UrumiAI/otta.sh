@@ -24,7 +24,9 @@ Three rules fall out, and everything else follows from them:
 
 1. **Tempering colours are state, never decoration.** A hue means one thing, everywhere.
 2. **Money is set in mono, and nothing else is.** Prices, quantities, SKUs, stock,
-   countdowns, order references. Tabular figures so columns align for free.
+   countdowns. Tabular figures so columns align for free. An order is not a code to the
+   shopper: it is named by its products (`orderLabel` — "Otta Tee and 2 more") in the body
+   face, and its id is never shown on a customer page.
 3. **One hairline, never a box.** A single 1px rule is the only divider. No card borders,
    no shadows, 2px radius maximum.
 
@@ -172,7 +174,7 @@ Build these in `src/components/`. Each renders one view-model field group and no
 | `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
 | `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring |
 | `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. `/checkout` omits it — the row is still a cart line, the wire carries no title, and the shopper picked the thing a moment ago. `/orders/<id>` passes it, because there the same block is a **receipt** and the title is the purchase-time snapshot the order froze |
-| `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline |
+| `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline; optionally an `Order` row naming the order by its products (`orderLabel`), never its id |
 | `Notice` | Degraded/error. Dashed bronze rules top and bottom, a dashed mark, **no filled background** |
 | `QtyField` | Mono numeric input |
 
@@ -267,8 +269,14 @@ Compare each against the matching frame in the mockup.
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
 | `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
 | `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals. The "keep this link" line also links to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line also links to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
 | `404.astro` | Same empty-state language as the others |
+
+**An order is named by its products, never its id.** The stamp's `Order` row, the account
+list's links and the account order heading all print `orderLabel` ("Otta Tee and 2 more");
+the id stays in URLs only. This changed the theme contract (`src/themes/contract.ts`), which
+breaks a theme written against the old one: `AccountOrderRow` and `AccountOrderModel.order`
+lost `id` (now `label`), and `OrderModel` gained `orderLabel`.
 
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page
 shipped it; both halves were wrong at once. The item count sums units while the held count

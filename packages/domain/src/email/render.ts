@@ -1,3 +1,4 @@
+import { orderLabel, type OrderLabelLine } from "../orders/order-label.js";
 import type { EmailTemplate } from "../ports/email-sender.js";
 
 export interface RenderedEmail {
@@ -35,10 +36,14 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 		};
 	}
 
-	const orderId = str(data["orderId"]) ?? "";
+	// The order is named by WHAT WAS BOUGHT, never by its id (`orderLabel`): the
+	// recipient is the buyer, and a UUID names nothing they bought. The id still
+	// travels in `data.orderId` — the dispatcher keys on it — it is just not
+	// rendered. The label is plain text: escaped below like every other value.
+	const label = orderLabel(labelLines(data["lines"]));
 	const total = formatMoney(data["totalCents"], str(data["currency"]));
 	const copy = ORDER_COPY[template];
-	const subject = `${copy.subject} — order ${orderId}`;
+	const subject = `${copy.subject} — ${label}`;
 	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
 	// is no longer an empty "on its way" — rendered only when the order was
 	// fulfilled and the data carries it (any other template ignores fulfillment).
@@ -53,13 +58,12 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
 	const extra = tracking ?? cancellation;
 	const text =
-		`${copy.body}\n\nOrder: ${orderId}\nTotal: ${total}` +
-		(extra !== null ? `\n${extra.text}` : "");
+		`${copy.body}\n\nOrder: ${label}\nTotal: ${total}` + (extra !== null ? `\n${extra.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>Total: ${escapeHtml(total)}` +
+			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(label)}<br>Total: ${escapeHtml(total)}` +
 				(extra !== null ? `<br>${extra.html}` : ""),
 		),
 	};
@@ -154,6 +158,25 @@ const ORDER_COPY: Record<
 		body: "Your checkout session expired and the items were released back to stock — you're welcome to try again.",
 	},
 };
+
+/** The email data's `lines` (built by `buildOrderEmailData`) read back as
+ *  `orderLabel` input. Defensive for the same reason `formatMoney` is: the data
+ *  crossed the outbox's JSON boundary, so anything that is not an array of
+ *  objects contributes nothing — and an order with nothing nameable renders as
+ *  "Your order", never as its id. */
+function labelLines(lines: unknown): OrderLabelLine[] {
+	if (!Array.isArray(lines)) return [];
+	return lines.flatMap((line: unknown) => {
+		if (line === null || typeof line !== "object") return [];
+		const l = line as { title?: unknown; quantity?: unknown };
+		return [
+			{
+				title: str(l.title) ?? null,
+				quantity: typeof l.quantity === "number" ? l.quantity : 1,
+			},
+		];
+	});
+}
 
 function str(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;

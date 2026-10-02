@@ -21,8 +21,13 @@ interface Props extends HTMLAttributes<"div"> {
 	headline: string;
 	/** What it means and what happens next. */
 	body?: string | null;
-	/** The order reference, set in mono. */
-	reference?: string | null;
+	/**
+	 * WHAT the order is: its products (`orderLabel` — "Otta Tee and 2 more"),
+	 * built by the page. Never the order id: a shopper is not shown the UUID,
+	 * which names nothing they bought. Set in the body face, not mono — mono is
+	 * for figures and codes (TEMPERED.md §1 rule 2), and this is neither.
+	 */
+	orderLabel?: string | null;
 	/**
 	 * The confirmation page's h1; a gallery or a summary card uses h2.
 	 *
@@ -53,11 +58,16 @@ const {
 	state,
 	headline,
 	body = null,
-	reference = null,
+	orderLabel = null,
 	level = "h1",
 	class: className,
+	/* The retired `reference` prop (it carried the order id), destructured only
+	   to be DROPPED: left in `rest`, a stale caller's id would be spread onto
+	   the root as an attribute — in the DOM, if not on screen. The type no
+	   longer declares it, so this is belt and braces for an untyped caller. */
+	reference: _reference,
 	...rest
-} = Astro.props;
+} = Astro.props as Props & { reference?: unknown };
 /* Astro renders a capitalised identifier as a component, which is how the
    heading level becomes a prop. */
 const Heading = level;
@@ -69,10 +79,10 @@ const rule = RULES[state];
 	<Heading class="headline">{headline}</Heading>
 	{body !== null && body !== "" && <p class="body">{body}</p>}
 	{
-		reference !== null && reference !== "" && (
-			<span class="ref">
-				<span class="u-label">Reference</span>
-				<span class="u-mono ref-value">{reference}</span>
+		orderLabel !== null && orderLabel !== "" && (
+			<span class="order">
+				<span class="u-label">Order</span>
+				<span class="order-value">{orderLabel}</span>
 			</span>
 		)
 	}
@@ -115,15 +125,18 @@ const rule = RULES[state];
 		max-width: 52ch;
 	}
 
-	.ref {
+	.order {
 		display: flex;
 		align-items: baseline;
 		gap: 0.625rem;
 		padding-top: 0.25rem;
 	}
 
-	.ref-value {
-		font-size: 0.75rem;
+	/* A product title in the body face: it names the thing, so it reads like
+	   the receipt's titles below it rather than like a code. `anywhere` because
+	   a long title must wrap inside the stamp, never widen the page. */
+	.order-value {
+		font-size: 0.875rem;
 		color: var(--u-ink);
 		overflow-wrap: anywhere;
 	}

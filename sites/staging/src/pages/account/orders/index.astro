@@ -12,7 +12,7 @@
  * response is `private, no-store`, so neither a shared cache nor the back button
  * after logout can replay it.
  */
-import { ACCOUNT_ORDERS_ROUTE, type AccountOrdersResult } from "@otta-sh/plugin";
+import { ACCOUNT_ORDERS_ROUTE, orderLabel, type AccountOrdersResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
@@ -50,7 +50,9 @@ const rows =
 	orders?.map((order) => {
 		const items = order.lines.reduce((sum, line) => sum + line.quantity, 0);
 		return {
-			id: order.id,
+			/* Named by what was bought, never by the id (`orderLabel`); the id
+			   stays where a machine reads it — the href. */
+			label: orderLabel(order.lines),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
 			state: orderStateLabel(order.state),
 			items: items === 1 ? "1 item" : `${items} items`,

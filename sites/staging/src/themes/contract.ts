@@ -404,6 +404,13 @@ export interface OrderModel {
 	order: PublicOrderView | null;
 	/** What the page is willing to say about the order's state — `null` ⇔ no order. */
 	stamp: OrderStampCopy | null;
+	/**
+	 * What the order IS, in the shopper's words — its products (`orderLabel`:
+	 * "Otta Tee and 2 more"), never its id. `null` ⇔ no order. `order` above
+	 * still carries the id (the plugin's view model, untouched — ADR-0003); a
+	 * view prints this instead.
+	 */
+	orderLabel: string | null;
 	/** The failure copy for the no-order arm (BUSY / not found / unavailable). */
 	failureMessage: string;
 	/** The bounded meta-refresh poll is running (the page emits the refresh). */
@@ -443,8 +450,14 @@ export interface AccountVerifyModel {
 	invalidMessage: string;
 }
 
+/**
+ * One order in the signed-in list. It carries NO id: the row is named by its
+ * products (`label`) and the id lives only inside `href`, so a view has nothing
+ * to print but the label — a shopper is never shown the order UUID.
+ */
 export interface AccountOrderRow {
-	id: string;
+	/** The order's products (`orderLabel`), the link text. */
+	label: string;
 	href: string;
 	state: string;
 	/** "1 item" / "3 items". */
@@ -461,7 +474,8 @@ export interface AccountOrdersModel {
 export interface AccountOrderModel {
 	/** `null` ⇔ not found / unreadable; `errorMessage` then says which. */
 	order: {
-		id: string;
+		/** The order's products (`orderLabel`) — the heading. No id: see `AccountOrderRow`. */
+		label: string;
 		state: string;
 		ledgerRows: LedgerLine[];
 		totals: readonly { label: string; value: string }[];
