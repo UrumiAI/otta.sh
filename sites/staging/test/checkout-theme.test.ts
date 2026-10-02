@@ -228,10 +228,15 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		expect(notice).not.toMatch(/charged|no charge/i);
 		// A charge on a failed/expired order goes to manual reconciliation, where
 		// the merchant may refund it OR complete the order — so the page promises
-		// neither; it tells the buyer who to contact and with what.
+		// neither; it tells the buyer who to contact and with what. "With what"
+		// is the EMAIL they ordered with — not an order number: the shopper is
+		// never shown the order id (it is a UUID that names nothing they bought),
+		// so a sentence asking them to quote one would send them looking for a
+		// thing no page gives them.
 		const text = notice.replace(/\s+/g, " ");
 		expect(text).not.toMatch(/the store will refund/i);
-		expect(text).toMatch(/contact the store with your order number/i);
+		expect(text).toMatch(/contact the store with the email address you ordered with/i);
+		expect(text).not.toMatch(/order number|order id|reference/i);
 		expect(text).toMatch(/refund it or complete your order/i);
 		expect(notice).toContain("href={`/orders/${encodeURIComponent(locked.id)}`}");
 	});

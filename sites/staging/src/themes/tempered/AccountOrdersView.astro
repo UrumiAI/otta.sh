@@ -38,8 +38,10 @@ const { errorMessage, rows } = Astro.props.model;
 		<ul class="account-orders-list">
 			{rows.map((row) => (
 				<li class="account-orders-row">
-					<a class="account-orders-ref u-mono" href={row.href}>
-						{row.id}
+					{/* Named by its products, not the order id — a shopper is never
+					    shown the UUID. The link is how they open it. */}
+					<a class="account-orders-name" href={row.href}>
+						{row.label}
 					</a>
 					<span class="account-orders-state">{row.state}</span>
 					<span class="account-orders-items">{row.items}</span>

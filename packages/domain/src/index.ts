@@ -231,6 +231,15 @@ export {
 // of a template + explicit data — no IO, no store reach-back — so it does not
 // widen the domain's purity contract by one byte.
 export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from "./email/render.js";
+// The shopper-facing name of an order (its products, never its id) — one pure
+// function shared by the order emails and, through `@otta-sh/plugin`, the
+// storefront, so the two cannot spell the same order differently.
+export {
+	ORDER_LABEL_FALLBACK,
+	ORDER_LABEL_TITLE_MAX_LENGTH,
+	orderLabel,
+	type OrderLabelLine,
+} from "./orders/order-label.js";
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,

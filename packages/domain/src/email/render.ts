@@ -1,3 +1,4 @@
+import { orderLabel, type OrderLabelLine } from "../orders/order-label.js";
 import type { EmailTemplate } from "../ports/email-sender.js";
 
 export interface RenderedEmail {
@@ -35,7 +36,11 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 		};
 	}
 
-	const orderId = str(data["orderId"]) ?? "";
+	// The order is named by WHAT WAS BOUGHT, never by its id (`orderLabel`): the
+	// recipient is the buyer, and a UUID names nothing they bought. The id still
+	// travels in `data.orderId` — the dispatcher keys on it — it is just not
+	// rendered. The label is plain text: escaped below like every other value.
+	const label = orderLabel(labelLines(data["lines"]));
 	// A refund email states its OWN figure (`noticeAmountCents`, the refunded money),
 	// not the order total — a late capture or a partial refund differs from it.
 	// Labelled for what it is. The ONE "amount refunded" path: notices (late payment,
@@ -46,7 +51,7 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 		: formatMoney(data["totalCents"], str(data["currency"]));
 	const totalLabel = isNotice ? "Refunded" : "Total";
 	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
-	const subject = `${copy.subject} — order ${orderId}`;
+	const subject = `${copy.subject} — ${label}`;
 	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
 	// is no longer an empty "on its way" — rendered only when the order was
 	// fulfilled and the data carries it (any other template ignores fulfillment).
@@ -66,13 +71,13 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 			: null;
 	const extra = tracking ?? cancellation;
 	const text =
-		`${copy.body}\n\nOrder: ${orderId}\n${totalLabel}: ${total}` +
+		`${copy.body}\n\nOrder: ${label}\n${totalLabel}: ${total}` +
 		(extra !== null ? `\n${extra.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>${totalLabel}: ${escapeHtml(total)}` +
+			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(label)}<br>${totalLabel}: ${escapeHtml(total)}` +
 				(extra !== null ? `<br>${extra.html}` : ""),
 		),
 	};
@@ -214,6 +219,25 @@ const ORDER_COPY: Record<
 		body: "We've issued a refund for your order.",
 	},
 };
+
+/** The email data's `lines` (built by `buildOrderEmailData`) read back as
+ *  `orderLabel` input. Defensive for the same reason `formatMoney` is: the data
+ *  crossed the outbox's JSON boundary, so anything that is not an array of
+ *  objects contributes nothing — and an order with nothing nameable renders as
+ *  "Your order", never as its id. */
+function labelLines(lines: unknown): OrderLabelLine[] {
+	if (!Array.isArray(lines)) return [];
+	return lines.flatMap((line: unknown) => {
+		if (line === null || typeof line !== "object") return [];
+		const l = line as { title?: unknown; quantity?: unknown };
+		return [
+			{
+				title: str(l.title) ?? null,
+				quantity: typeof l.quantity === "number" ? l.quantity : 1,
+			},
+		];
+	});
+}
 
 /**
  * The late-payment notice names WHY the order could not take the money. The table

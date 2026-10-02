@@ -274,6 +274,93 @@ describe("renderEmail customer-login-link", () => {
 	});
 });
 
+// The buyer never sees the order id (a UUID names nothing they bought): every
+// order email names the order by its products — `orderLabel` over the lines
+// `buildOrderEmailData` already passes — in the subject AND both bodies. The id
+// stays in `data.orderId` for the dispatcher; it simply is not rendered.
+describe("renderEmail names the order by its products, never its id", () => {
+	const ORDER_ID = "0b6f1c2e-9a4d-4e57-8f1a-3c2d1e0f9a8b";
+	const templates = [
+		"order-confirmation",
+		"order-processing",
+		"order-shipped",
+		"order-delivered",
+		"order-completed",
+		"order-cancelled",
+		"order-refunded",
+		"order-expired",
+	] as const;
+	const data = {
+		orderId: ORDER_ID,
+		currency: "USD",
+		totalCents: 4500,
+		lines: [
+			{ sku: "TEE-M", title: "Otta Tee", quantity: 2, unitPriceCents: 1500 },
+			{ sku: "MUG", title: "Otta Mug", quantity: 1, unitPriceCents: 1500 },
+		],
+	};
+
+	test.each(templates)("%s: no order id in the subject, text or HTML", (template) => {
+		const rendered = renderEmail(template, data);
+		for (const part of [rendered.subject, rendered.text, rendered.html]) {
+			expect(part).not.toContain(ORDER_ID);
+		}
+	});
+
+	test.each(templates)("%s: the product label is in the subject, text and HTML", (template) => {
+		const rendered = renderEmail(template, data);
+		expect(rendered.subject).toContain("Otta Tee and 1 more");
+		expect(rendered.text).toContain("Otta Tee and 1 more");
+		expect(rendered.html).toContain("Otta Tee and 1 more");
+	});
+
+	test("a single line names its title and quantity", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "TEE-M", title: "Otta Tee", quantity: 3, unitPriceCents: 1500 }],
+		});
+		expect(rendered.subject).toBe("Order confirmed — Otta Tee × 3");
+		expect(rendered.text).toContain("Order: Otta Tee × 3");
+	});
+
+	test("no lines (or no usable titles) falls back to 'Your order', still without the id", () => {
+		const rendered = renderEmail("order-confirmation", { ...data, lines: [] });
+		expect(rendered.subject).toBe("Order confirmed — Your order");
+		expect(rendered.text).not.toContain(ORDER_ID);
+		const malformed = renderEmail("order-confirmation", { ...data, lines: "not-an-array" });
+		expect(malformed.subject).toBe("Order confirmed — Your order");
+	});
+
+	test("a title with CR/LF or control characters never breaks the subject onto two lines", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "Otta\r\nTee\u0000", quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.subject).toBe("Order confirmed — Otta Tee");
+		// oxlint-disable-next-line no-control-regex -- asserting control characters are absent is the point
+		expect(rendered.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
+	});
+
+	test("a 500-character title is clamped in the subject", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "y".repeat(500), quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.subject.length).toBeLessThan(120);
+		expect(rendered.subject).toMatch(/y…$/);
+	});
+
+	test("the label is HTML-escaped in the HTML body", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "<b>Tee</b> & Co", quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.html).toContain("&lt;b&gt;Tee&lt;/b&gt; &amp; Co");
+		expect(rendered.html).not.toContain("<b>Tee</b>");
+		expect(rendered.text).toContain("<b>Tee</b> & Co");
+	});
+});
+
 // QA T1-6: a refund email states the amount REFUNDED — not the order total — and
 // every refund email states it the same way (`Refunded: X`, the notice path).
 describe("renderEmail refund emails", () => {
@@ -285,7 +372,8 @@ describe("renderEmail refund emails", () => {
 			noticeAmountCents: 600,
 			noticeCurrency: "USD",
 		});
-		expect(rendered.subject).toBe("Refund issued — order ord-1");
+		// Named by its products (order-label-not-id); with no lines, "Your order".
+		expect(rendered.subject).toBe("Refund issued — Your order");
 		// Neutral: it also announces a FULL refund on an order that cannot flip to
 		// refunded (a cancellation that lost the race to a shipment).
 		expect(rendered.text).toContain("We've issued a refund for your order.");

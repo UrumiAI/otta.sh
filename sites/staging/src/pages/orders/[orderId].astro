@@ -38,7 +38,7 @@
  * theme's `OrderView` since Phase 3, and `checkout-client-js.test.ts` walks
  * page → shell → registry → every view for exactly that.
  */
-import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import { orderLabel, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
@@ -177,6 +177,16 @@ const sumRows =
 				{ label: "Shipping", amount: order.totals.shipping },
 				{ label: "Tax", amount: order.totals.tax },
 			];
+/** The order's name for the shopper: what was bought, never the order id (a
+ *  UUID that names nothing to them). The SAME function names the order in its
+ *  emails, so the page and the inbox agree. `PublicOrderView` lines say `qty`;
+ *  `orderLabel` takes `quantity` — mapped here rather than widened there. The id
+ *  keeps every machine job it has on this page: the URL, the poll URL. */
+const label =
+	order === null
+		? null
+		: orderLabel(order.lines.map((line) => ({ title: line.title, quantity: line.qty })));
+
 /**
  * The model. Everything the view prints is decided above — including the
  * failure sentence, so BUSY / not-found / unavailable stay the page's call.
@@ -185,6 +195,7 @@ const sumRows =
 const model: OrderModel = {
 	order,
 	stamp,
+	orderLabel: label,
 	failureMessage: busy
 		? cartErrorMessage(BUSY)
 		: result !== null && !result.ok && "reason" in result
@@ -208,7 +219,7 @@ const model: OrderModel = {
 <Storefront
 	view="order"
 	model={model}
-	title={order === null ? "Order" : `Order ${order.id}`}
+	title={label ?? "Order"}
 	currency={order?.currency ?? null}
 >
 	<meta name="referrer" content="no-referrer" slot="head" />

@@ -926,7 +926,9 @@
 	font-size: 0.875rem;
 }
 
-[data-theme-id] .account-orders-ref {
+/* The order's products, in the body face: a name, not a code, so not mono
+   (TEMPERED.md §1 rule 2). `anywhere` keeps a long title inside its column. */
+[data-theme-id] .account-orders-name {
 	color: var(--u-ink);
 	overflow-wrap: anywhere;
 }
@@ -970,9 +972,10 @@
 	letter-spacing: -0.025em;
 	line-height: 1;
 	margin: 0 0 0.75rem;
-}
-[data-theme-id] .account-order-ref {
-	font-size: 0.6em;
+	/* The heading is the order's products now, not a short id: a long title
+	   balances across lines like the confirmation's stamp, and an unbroken one
+	   wraps rather than widening the page. */
+	text-wrap: balance;
 	overflow-wrap: anywhere;
 }
 
