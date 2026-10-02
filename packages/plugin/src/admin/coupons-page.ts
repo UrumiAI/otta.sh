@@ -25,6 +25,7 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { isIdToken } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
@@ -1722,6 +1723,13 @@ function createCouponAction() {
 			if (/\s/.test(code)) {
 				return err(
 					`A coupon code can't contain spaces — shoppers type it at checkout. Try "${code.replace(/\s+/g, "-")}".`,
+				);
+			}
+			// Printable ASCII, as the client requires (ADR-0025: case folding is exact
+			// only there).
+			if (!isIdToken(code)) {
+				return err(
+					"A coupon code can only use plain letters, digits and punctuation — no accented letters or symbols.",
 				);
 			}
 			if (type !== "fixed_amount" && type !== "percentage") {

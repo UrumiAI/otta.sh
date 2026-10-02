@@ -456,10 +456,15 @@ function humanFieldName(field: string): string {
 function humanReason(reason: string): string {
 	// The boundary's one reason covers BOTH a space and a non-ASCII character
 	// (`ID_CHARSET`), and this net has only the reason, not the value — so the
-	// words name both, in `id-input.ts`'s vocabulary.
-	return reason === "must be printable ASCII with no whitespace"
-		? "can only use plain letters, digits and punctuation — no spaces or accented characters"
-		: reason;
+	// words name both, in `id-input.ts`'s vocabulary. A coupon code's own ASCII
+	// reason (ADR-0025) gets the console's create-screen wording.
+	if (reason === "must be printable ASCII with no whitespace") {
+		return "can only use plain letters, digits and punctuation — no spaces or accented characters";
+	}
+	if (reason === "must be printable ASCII") {
+		return "can only use plain letters, digits and punctuation — no accented letters or symbols";
+	}
+	return reason;
 }
 
 /** Client methods that only READ: a read verb followed by a capital or nothing

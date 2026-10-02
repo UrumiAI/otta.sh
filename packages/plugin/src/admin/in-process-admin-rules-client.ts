@@ -104,6 +104,7 @@ import {
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
+	isIdToken,
 	requireBoundedText,
 	requireCurrencyCode,
 	requireIdToken,
@@ -549,8 +550,16 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		// downstream could tell `QA ADMIN` from `QA  ADMIN`. Refused at CREATE only:
 		// a code is immutable, so an existing coupon minted before this rule keeps
 		// being readable and redeemable exactly as it was issued.
+		//
+		// AND PRINTABLE ASCII ONLY — the ID charset (`isIdToken`). Codes match
+		// case-insensitively (ADR-0025) and `toLowerCase` is an exact fold only on
+		// ASCII; on other scripts "the same code" would hinge on Unicode
+		// normalisation that a shopper's keyboard need not share with the merchant's.
 		if (/\s/.test(input.code)) {
 			throw new CommerceInputError("code", "must not contain spaces");
+		}
+		if (!isIdToken(input.code)) {
+			throw new CommerceInputError("code", "must be printable ASCII");
 		}
 		const type = requireCouponType(input.type);
 		const amountCents = optionalNonNegative("amountCents", input.amountCents);

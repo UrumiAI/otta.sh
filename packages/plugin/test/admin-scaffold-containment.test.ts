@@ -274,6 +274,20 @@ describe("containment: a REFUSED INPUT is a validation message, never 'outcome u
 		);
 	});
 
+	test("a coupon code refused for non-ASCII reads in words too", async () => {
+		const { actions, handler } = screen("contain-input-ascii", {
+			custom: () => Promise.reject(new CommerceInputError("code", "must be printable ASCII")),
+		});
+		const res = await run(handler, {
+			type: "form_submit",
+			action_id: actions.custom("boom"),
+			values: {},
+		});
+		expect(String(bannerOf(res)?.description)).toBe(
+			"The code can only use plain letters, digits and punctuation — no accented letters or symbols. Nothing was changed.",
+		);
+	});
+
 	test("an error that merely LOOKS similar but carries no INVALID_INPUT code is still 'outcome unknown'", async () => {
 		const { actions, handler } = screen("contain-input-lookalike", {
 			custom: () =>

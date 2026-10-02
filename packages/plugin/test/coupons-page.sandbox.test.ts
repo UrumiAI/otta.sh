@@ -911,6 +911,25 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await stored("qa-c2")).toBeNull();
 	});
 
+	test("a coupon CODE with an accented letter is refused on the create screen", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-ete",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/plain letters, digits and punctuation/);
+		expect(await stored("qa-ete")).toBeNull();
+	});
+
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { coupons: [] as CouponRow[] };
 		await boot(state);

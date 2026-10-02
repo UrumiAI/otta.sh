@@ -4385,6 +4385,20 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.getCoupon("QA ADMIN")).toBeNull();
 		});
 
+		test("a coupon code outside printable ASCII is refused, so case folding is exact for every new code", async () => {
+			// `toLowerCase` is an exact fold on ASCII; on other scripts "the same code"
+			// would depend on Unicode normalisation a shopper's keyboard does not share.
+			await expect(
+				client.createCoupon({
+					id: "uni-cpn",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
