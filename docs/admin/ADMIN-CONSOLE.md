@@ -2836,7 +2836,10 @@ banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only sh
             your zones list" + the covered codes (ADR-0021 §4). Steps down to a `context`
             line when the notice and the region warnings already fill X-31's two banners.
             The FIRST zone's create screen adds banner ship:first-zone and a required
-            toggle `ackFirstZone` (a form submit has no `confirm`).  ← ADDED (QA 2026-10-02)
+            toggle `ackFirstZone` (a form submit has no `confirm`). Deleting the LAST zone
+            says, in its confirm, that checkout ships anywhere again. Both are CONSOLE
+            guards: the rules client and stores accept the write unprompted.
+                                                                   ← ADDED (QA 2026-10-02)
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to

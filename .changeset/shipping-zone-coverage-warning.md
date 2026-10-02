@@ -9,3 +9,7 @@ screen said so — QA created a Japan-only zone and every other country started 
 ships to addresses your zones list" warning with the covered codes, and the first zone's
 create screen warns and requires an acknowledgement toggle (re-checked against a fresh
 zones read) before it saves. The matching rule itself is unchanged.
+
+Deleting the last zone now says, in its confirm, that checkout will ship physical items
+anywhere again (no address check, shipping or tax). Both guards are console-only; the
+rules client accepts the writes unprompted.

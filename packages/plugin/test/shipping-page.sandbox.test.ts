@@ -599,6 +599,27 @@ describe("admin Shipping console — the first zone turns on address matching (A
 		expect((await shippingRules.getZone("jp"))?.regions).toEqual(["JP"]);
 	});
 
+	test("deleting the LAST zone warns that checkout will ship anywhere again; deleting one of several does not", async () => {
+		// The mirror of the first-zone warning: removing the only zone switches
+		// checkout back to "no zones" — no address check, no shipping, no tax.
+		await seedShipping({
+			zones: [{ id: "jp", name: "Japan", regions: ["JP"] }],
+			methods: [],
+			rates: [],
+		});
+		const only = buttons(groupBlocks(await loadZones(), "ship:zone:jp")).find(
+			(b) => b.action_id === "shipping:delete-zone",
+		);
+		expect(String(confirmOf(only).text)).toMatch(/only zone.*ship.*anywhere again/i);
+		expect(String(confirmOf(only).text).length).toBeLessThanOrEqual(200);
+
+		await seedShipping();
+		const oneOfTwo = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+			(b) => b.action_id === "shipping:delete-zone",
+		);
+		expect(String(confirmOf(oneOfTwo).text)).not.toMatch(/anywhere again/i);
+	});
+
 	test("once a zone exists, later zones need no acknowledgement", async () => {
 		await seedShipping();
 		const screen = await openNewZoneScreen();

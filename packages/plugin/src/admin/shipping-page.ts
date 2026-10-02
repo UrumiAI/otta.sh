@@ -410,7 +410,7 @@ function zonesBlocks(
 	}
 
 	if (isRegistryAccordion(nextToken, zones.length)) {
-		for (const zone of zones) blocks.push(zoneAccordion(zone));
+		for (const zone of zones) blocks.push(zoneAccordion(zone, zones.length === 1));
 	} else {
 		blocks.push(zonesFallbackTable(zones));
 		blocks.push(openZoneForm(zones));
@@ -447,7 +447,7 @@ function createActionBlock(
 
 /** One zone's per-row group (L-9): edit form, the "View methods" drill-in
  *  (§12.7), and delete — all collapsed (L-9's own "zero open groups" rule). */
-function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
+function zoneAccordion(zone: ShippingZoneWire, onlyZone: boolean): AccordionBlock {
 	return {
 		type: "accordion",
 		label: `${zone.id} — ${zone.name}`,
@@ -475,7 +475,7 @@ function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
 					},
 				],
 			},
-			deleteZoneActions(zone),
+			deleteZoneActions(zone, onlyZone),
 		],
 	};
 }
@@ -514,7 +514,14 @@ function editZoneForm(zone: ShippingZoneWire): FormBlock {
 	});
 }
 
-function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
+/**
+ * `onlyZone`: deleting the LAST zone is the mirror of creating the first
+ * (FIRST_ZONE_WARNING) — ADR-0021 §4's "no zones" mode returns, and checkout
+ * ships physical items anywhere with no address check, shipping charge or tax.
+ * The confirm says so. Decided from this render's registry read, so like the
+ * first-zone acknowledgement it is a CONSOLE guard, not a store rule.
+ */
+function deleteZoneActions(zone: ShippingZoneWire, onlyZone: boolean): ActionsBlock {
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE_ZONE,
@@ -523,7 +530,9 @@ function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
 		value: { zoneId: zone.id },
 		confirm: {
 			title: `Delete zone ${zone.id}?`,
-			text: "This only works while the zone has no shipping methods — delete those first if this fails. This cannot be undone.",
+			text: onlyZone
+				? "This is your only zone: without it, checkout ships physical items anywhere again, with no shipping charge or tax. It only works once the zone has no methods."
+				: "This only works while the zone has no shipping methods — delete those first if this fails. This cannot be undone.",
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -569,6 +578,10 @@ function newZoneScreen(
  * acknowledgement is a required toggle on the form itself, checked server-side
  * against a FRESH zones read — a second tab having created a zone meanwhile
  * means this one is no longer the first.
+ *
+ * CONSOLE-ONLY. The rules client and the stores still create a first zone
+ * without any acknowledgement — the matching rule is ADR-0021's and nothing
+ * below the console has an operator to warn.
  */
 const FIRST_ZONE_WARNING: BannerBlock = {
 	type: "banner",
