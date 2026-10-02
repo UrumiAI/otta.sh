@@ -21,7 +21,12 @@ import {
 	makeEmailSender,
 	makeLoginEmailSender,
 } from "../src/email/ctx-http-email-sender.js";
-import { orderPageUrl, storefrontEmailMoney } from "../src/email/email-render-context.js";
+import {
+	orderPageUrl,
+	storefrontEmailMoney,
+	storefrontOriginOf,
+} from "../src/email/email-render-context.js";
+import { STOREFRONT_LOCALE } from "../src/index.js";
 import { NOT_CALCULATED_LABEL } from "../src/storefront/checkout-view-model.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
@@ -162,7 +167,7 @@ describe("order emails on the wire", () => {
 		});
 		expect(sent[0]?.text).toContain("Goa Beans × 3 — ₹1,234.50");
 		expect(sent[0]?.text).toContain("Tax: ₹222.21");
-		expect(sent[0]?.text).toContain("Order total: ₹1,456.71");
+		expect(sent[0]?.text).toContain("Paid: ₹1,456.71");
 		expect(sent[0]?.text).not.toContain("INR");
 	});
 
@@ -192,8 +197,46 @@ describe("order emails on the wire", () => {
 		expect(sent[0]?.html).not.toContain("<a ");
 	});
 
+	test("the HTML part declares the storefront's locale, and the store signs off", async () => {
+		const { ctx, sent } = makeCtx();
+		await sender(ctx, { storeName: "Goa Coffee" }).send({
+			to: "buyer@example.com" as never,
+			template: "order-confirmation",
+			data: usdOrder,
+			idempotencyKey: "row-7",
+		});
+		expect(STOREFRONT_LOCALE).toBe("en");
+		expect(sent[0]?.html.startsWith(`<div lang="${STOREFRONT_LOCALE}">`)).toBe(true);
+		expect(sent[0]?.text.endsWith("— Goa Coffee")).toBe(true);
+	});
+
 	test("the email's 'Not calculated' is the storefront's own label", () => {
 		expect(EMAIL_NOT_CALCULATED_LABEL).toBe(NOT_CALCULATED_LABEL);
+	});
+});
+
+describe("the storefront origin a bearer link may use", () => {
+	test("https: the origin, whatever path the sign-in page has", () => {
+		expect(storefrontOriginOf("https://shop.example/account/verify")).toBe("https://shop.example");
+		expect(storefrontOriginOf("https://shop.example:8443/x/account/verify")).toBe(
+			"https://shop.example:8443",
+		);
+	});
+
+	test("http: only on this machine — a bearer link must not travel in clear text", () => {
+		expect(storefrontOriginOf("http://shop.example/account/verify")).toBeUndefined();
+		expect(storefrontOriginOf("http://localhost:4700/account/verify")).toBe(
+			"http://localhost:4700",
+		);
+		expect(storefrontOriginOf("http://127.0.0.1:4700/account/verify")).toBe(
+			"http://127.0.0.1:4700",
+		);
+	});
+
+	test("anything else: no origin, so no link", () => {
+		expect(storefrontOriginOf(undefined)).toBeUndefined();
+		expect(storefrontOriginOf("javascript:alert(1)")).toBeUndefined();
+		expect(storefrontOriginOf("https://user:pw@shop.example/account/verify")).toBeUndefined();
 	});
 });
 

@@ -437,6 +437,8 @@ export {
 	type ShippingSelectionReason,
 	type UncalculatedReason,
 } from "./storefront/checkout-view-model.js";
+// The storefront's one locale — the site's `SITE_LOCALE` and the order emails share it.
+export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.

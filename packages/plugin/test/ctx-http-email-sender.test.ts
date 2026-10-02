@@ -27,6 +27,7 @@
  */
 import { renderEmail, type EmailTemplate } from "@otta-sh/domain";
 import { storefrontEmailMoney } from "../src/email/email-render-context.js";
+import { STOREFRONT_LOCALE } from "../src/storefront/route-input.js";
 import { describe, expect, test } from "vitest";
 import {
 	CtxHttpEmailSender,
@@ -111,9 +112,10 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 		expect(call?.init?.method).toBe("POST");
 		const body = JSON.parse(String(call?.init?.body)) as Record<string, unknown>;
 		// No store name and no storefront origin on this sender: the storefront's
-		// money formatter is the whole context.
+		// money formatter and locale are the whole context.
 		const rendered = renderEmail(input.template, input.data, {
 			formatMoney: storefrontEmailMoney,
+			locale: STOREFRONT_LOCALE,
 		});
 		expect(body).toEqual({
 			from: "shop@example.test",

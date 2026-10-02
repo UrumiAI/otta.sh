@@ -50,6 +50,7 @@ import {
 } from "@otta-sh/domain";
 import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
+import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { PluginContext } from "../types.js";
 import {
 	orderPageUrl,
@@ -141,6 +142,7 @@ export class CtxHttpEmailSender implements EmailSender {
 		const orderId = input.data["orderId"];
 		const rendered = renderEmail(input.template, input.data, {
 			formatMoney: storefrontEmailMoney,
+			locale: STOREFRONT_LOCALE,
 			storeName: this.#storeName,
 			orderPageUrl:
 				input.template !== "customer-login-link" &&

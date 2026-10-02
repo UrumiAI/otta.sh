@@ -6,19 +6,19 @@
  * storefront does.
  */
 import { cents, currency, formatMoney } from "@otta-sh/admin-presentation";
-import { DEFAULT_LOCALE } from "../storefront/route-input.js";
+import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import { isValidLoginLinkUrl } from "../storefront/login-link.js";
 
 /**
  * Money in an email, formatted by the storefront's own formatter at the
- * storefront's locale (`DEFAULT_LOCALE`, which is what the site's `SITE_LOCALE`
- * resolves to): "$100.00", "₹1,234.50", "¥1,500". `null` when the amount or
+ * storefront's locale (`STOREFRONT_LOCALE`, which the site's `SITE_LOCALE`
+ * re-exports): "$100.00", "₹1,234.50", "¥1,500". `null` when the amount or
  * the currency code cannot be formatted — the renderer then leaves the figure
  * out rather than print raw minor units.
  */
 export function storefrontEmailMoney(minorUnits: number, currencyCode: string): string | null {
 	try {
-		return formatMoney(cents(minorUnits), currency(currencyCode), DEFAULT_LOCALE);
+		return formatMoney(cents(minorUnits), currency(currencyCode), STOREFRONT_LOCALE);
 	} catch {
 		return null;
 	}
@@ -32,6 +32,11 @@ export function storefrontEmailMoney(minorUnits: number, currencyCode: string): 
  * storefront's public address, it is validated on save and on use
  * (`isValidLoginLinkUrl`: absolute http(s), no credentials), and the storefront
  * serves every page from its origin's root (`/account/verify`, `/orders/<id>`).
+ * ASSUMPTIONS, documented in DEPLOYMENT.md: the storefront is served from the
+ * ROOT of that origin (any path on the sign-in page URL is dropped — the site's
+ * own links are root-absolute), and the link is https. An `http:` origin is
+ * accepted only for this machine (`localhost`, `127.0.0.1`, `[::1]`): the order
+ * link is a bearer link, and a production http URL would send it in clear text.
  * NEVER a request's `Host`: an order email can be sent from a webhook, an admin
  * action or the cron, none of which knows the shopper's storefront, and a
  * forged `Host` must not be able to point a buyer's email at another site.
@@ -39,8 +44,13 @@ export function storefrontEmailMoney(minorUnits: number, currencyCode: string): 
  */
 export function storefrontOriginOf(signInPageUrl: string | undefined): string | undefined {
 	if (signInPageUrl === undefined || !isValidLoginLinkUrl(signInPageUrl)) return undefined;
-	return new URL(signInPageUrl).origin;
+	const url = new URL(signInPageUrl);
+	if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) return undefined;
+	return url.origin;
 }
+
+/** The hosts an `http:` storefront origin may name: this machine only. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
  * The order's page on the storefront: `<origin>/orders/<id>` — the SAME URL the
