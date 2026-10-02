@@ -17,9 +17,14 @@ import {
 } from "@otta-sh/plugin";
 
 /** The one notice a link request ends on, whatever the plugin knows about the
- *  address — the page must not become an account oracle (ADR-0004). */
+ *  address — the page must not become an account oracle (ADR-0004). It must
+ *  also be TRUE for every address: a link goes to a new address too (redeeming
+ *  it creates the account), so an "if an account exists" hedge would tell a
+ *  first-time shopper they get nothing, while the sign-in page tells them the
+ *  same link signs them up. The view leads it with "Check your inbox.", so it
+ *  must not open with those words again. */
 export const LOGIN_LINK_SENT_COPY =
-	"If an account exists for that address, we've sent a sign-in link. It works once and expires in 15 minutes.";
+	"A sign-in link is on its way. It works once and expires in 15 minutes. If it doesn't arrive, check the address and request another.";
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
  *  never be stored by a shared cache, nor replayed from the back/forward cache
@@ -28,6 +33,11 @@ export const ACCOUNT_NO_STORE = "private, no-store";
 
 /** Where a signed-in customer lands, and where the header's "Account" points. */
 export const ACCOUNT_HOME_PATH = "/account/orders";
+
+/** The sign-in page. It renders with a session open too, and its link's verify
+ *  step is what joins a guest order to the account (verifyLogin's
+ *  linkGuestOrders) — so it is where "sign in to see this order" must point. */
+export const ACCOUNT_LOGIN_PATH = "/account/login";
 
 export interface SessionCookieOptions {
 	httpOnly: boolean;

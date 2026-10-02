@@ -20,14 +20,16 @@ interface Props {
 const { usable, challenge, token, invalidMessage } = Astro.props.model;
 ---
 
-<h1 class="account-verify-title">Sign in</h1>
+<h1 class="account-verify-title">Sign in or create an account</h1>
 
 {
 	usable ? (
 		<form method="POST" action="/account/verify/confirm" class="account-verify-form">
 			<input type="hidden" name="challenge" value={challenge} />
 			<input type="hidden" name="token" value={token} />
-			<p class="account-verify-lede">Continue to finish signing in. The link works once.</p>
+			<p class="account-verify-lede">
+				Continue to finish signing in. A new address gets its account here. The link works once.
+			</p>
 			<div>
 				<button type="submit" class="u-btn">
 					Continue signing in

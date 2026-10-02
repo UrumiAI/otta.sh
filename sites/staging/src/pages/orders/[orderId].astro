@@ -40,6 +40,7 @@
 import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
+import { ACCOUNT_LOGIN_PATH } from "../../lib/account.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -213,6 +214,7 @@ const model: OrderModel = {
 	ledgerRows,
 	sumRows,
 	totalLabel: order === null ? "Total" : (TOTAL_LABEL[order.state] ?? "Total"),
+	accountSignInHref: ACCOUNT_LOGIN_PATH,
 };
 ---
 

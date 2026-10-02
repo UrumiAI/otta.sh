@@ -96,7 +96,7 @@ admin console's **Settings** page instead.
   page must rate-limit and/or tokenize access to it rather than exposing raw probing.
 - **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
   `/account/login` (email form → `POST /account/login/request` → the same generic
-  "if an account exists…" notice for every address), `/account/verify` (where the
+  "check your inbox" notice for every address), `/account/verify` (where the
   emailed link lands — it renders a button and redeems NOTHING on the GET, so a
   mail scanner's pre-fetch cannot spend the single-use token; `POST
   /account/verify/confirm` redeems it and applies the plugin's session-cookie

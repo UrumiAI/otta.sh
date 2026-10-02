@@ -368,7 +368,12 @@ describe("account copy and formatting", () => {
 	});
 
 	test("the sent notice never says whether the account exists", () => {
-		expect(LOGIN_LINK_SENT_COPY).toMatch(/^If an account exists/);
+		// One constant for every address, and no hedge on existence: a new address
+		// is sent a link too, and the sign-in page says so.
+		expect(LOGIN_LINK_SENT_COPY).toMatch(/^A sign-in link is on its way\./);
+		// The view leads the notice with "Check your inbox." — never say it twice.
+		expect(LOGIN_LINK_SENT_COPY).not.toMatch(/^check your inbox/i);
+		expect(LOGIN_LINK_SENT_COPY).not.toMatch(/account exists|if an account|no account/i);
 	});
 
 	test("order money is formatted from integer minor units, and garbage renders a dash", () => {
@@ -447,12 +452,42 @@ describe.each(viewCases("accountVerify"))("the verify view %s", (_label, { sourc
 	test("sets no referrer policy of its own — `same-origin` is the page's, in <head>", () => {
 		expect(source).not.toContain('name="referrer"');
 	});
+
+	// Redeeming the link is the step that creates a new address's account, so it
+	// must not fall back to members-only wording one click after the sign-in page.
+	test("the heading matches the sign-in page's", () => {
+		expect(templateOf(source)).toMatch(/<h1[^>]*>\s*Sign in or create an account\s*<\/h1>/);
+	});
 });
 
 describe.each(viewCases("accountLogin"))("the sign-in view %s", (_label, { source }) => {
 	test("posts to the request endpoint", () => {
 		expect(templateOf(source)).toMatch(
 			/<form[^>]*method="POST"[^>]*action="\/account\/login\/request"/,
+		);
+	});
+
+	// The magic link is also the sign-up: a new address gets an account when its
+	// link is redeemed. A heading that says only "Sign in" reads as members-only.
+	test("the heading offers sign-up as well as sign-in", () => {
+		expect(templateOf(source)).toMatch(/<h1[^>]*>\s*Sign in or create an account\s*<\/h1>/);
+	});
+});
+
+describe.each(viewCases("order"))("the order view %s", (_label, { source }) => {
+	// The confirmation is where a shopper next looks for their order; sign-in is
+	// where it joins their order list, findable after this tab closes.
+	test("the keep-this-link line links to sign-in, from the model", () => {
+		expect(templateOf(source)).toMatch(
+			/<p class="order-keep">[\s\S]*?<a href=\{accountSignInHref\}>[^<]+<\/a>[\s\S]*?<\/p>/,
+		);
+	});
+});
+
+describe("the order page", () => {
+	test("hands the view the sign-in page, not a path of the theme's own", () => {
+		expect(splitAstro(page("orders/[orderId].astro")).frontmatter).toMatch(
+			/accountSignInHref: ACCOUNT_LOGIN_PATH\b/,
 		);
 	});
 });
