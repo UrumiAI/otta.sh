@@ -40,7 +40,8 @@ const {
 	nextPollUrl,
 	hasActions,
 	canCheckAgain,
-	canResume,
+	resumeHref,
+	resumeError,
 	deadEnd,
 	ledgerRows,
 	sumRows,
@@ -106,6 +107,12 @@ const {
 				</p>
 			)}
 
+			{resumeError !== null && (
+				<div class="order-alert">
+					<Notice>{resumeError}</Notice>
+				</div>
+			)}
+
 			{hasActions && (
 				<div class="order-actions">
 					{canCheckAgain && (
@@ -113,8 +120,10 @@ const {
 							Check again
 						</a>
 					)}
-					{canResume && (
-						<a class="u-btn u-btn-ghost" href="/checkout">
+					{/* The page's resume path, which needs no cart cookie: it works on
+					    any device that has this order's link (QA U-2). */}
+					{resumeHref !== null && (
+						<a class="u-btn u-btn-ghost" href={resumeHref}>
 							Complete payment
 						</a>
 					)}

@@ -231,9 +231,10 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		);
 	});
 
-	test("the lock notice says the coupon AND the delivery address can no longer be changed", () => {
-		expect(VIEW).toContain(
-			"Its coupon and delivery address can no longer be changed. To change them, start a new cart.",
+	test("the lock notice says the email, the coupon AND the delivery address can no longer be changed", () => {
+		// QA U-2 added the email: the locked review no longer offers an email field.
+		expect(VIEW).toMatch(
+			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart\./,
 		);
 	});
 
@@ -281,20 +282,21 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	 * unchanged") would be wrong on both counts there.
 	 */
 	test("locked + payment not configured renders the LOCKED variant, with no money or cart claim", () => {
+		// QA U-2: the locked review is its own block (no place form, no email
+		// field); its not-configured notice lives there, and the place form's
+		// unlocked notice is unchanged.
 		const template = templateOf(VIEW);
-		const payment = template.indexOf("paymentConfigured ?");
-		const fork = template.indexOf(") : locked !== null ? (", payment);
-		expect(payment, "no paymentConfigured branch").toBeGreaterThan(-1);
-		expect(fork, "no locked branch under paymentConfigured").toBeGreaterThan(payment);
-		const lockedEnd = template.indexOf("</Notice>", fork) + "</Notice>".length;
-		const unlockedEnd = template.indexOf("</Notice>", lockedEnd) + "</Notice>".length;
-		const lockedVariant = shown(template.slice(fork, lockedEnd));
-		const unlockedVariant = shown(template.slice(lockedEnd, unlockedEnd));
+		const lockedStart = template.indexOf("locked !== null && !ended && (");
+		const placeStart = template.indexOf("locked === null && !ended && (");
+		expect(lockedStart, "no locked block").toBeGreaterThan(-1);
+		expect(placeStart, "no unlocked place form").toBeGreaterThan(lockedStart);
+		const lockedVariant = shown(template.slice(lockedStart, placeStart));
 		expect(lockedVariant).toContain(
 			"Card payment isn't set up on this store, so this order can't be paid right now.",
 		);
 		expect(lockedVariant).not.toMatch(/charged|cart is unchanged/i);
-		// The unlocked variant is unchanged.
+		expect(lockedVariant).not.toMatch(/name="email"/);
+		const unlockedVariant = shown(template.slice(placeStart));
 		expect(unlockedVariant).toContain(
 			"This order can't be placed. Nothing has been charged and your cart is unchanged.",
 		);
@@ -410,8 +412,12 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 	});
 
 	test("the place form echoes the priced METHOD and DESTINATION as hidden fields — never on the locked page", () => {
+		// The place form itself is unlocked-only (QA U-2), so the echo inside it is too.
+		expect(VIEW).toMatch(
+			/locked === null && !ended && \(\s*<form method="POST" action="\/checkout\/place"/,
+		);
 		expect(PLACE).toMatch(
-			/locked === null && summary\.selection\.shippingMethodId !== null && \(\s*<input[^>]*type="hidden"[^>]*name="shippingMethodId"[^>]*value=\{summary\.selection\.shippingMethodId\}/,
+			/summary\.selection\.shippingMethodId !== null && \(\s*<input[^>]*type="hidden"[^>]*name="shippingMethodId"[^>]*value=\{summary\.selection\.shippingMethodId\}/,
 		);
 		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="addressMode"[^>]*value="zoned"/);
 		expect(PLACE).toMatch(
@@ -436,7 +442,11 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		// showDelivery / showAddress both require `locked === null` (above); the
 		// submit's gate is readyToPlace, which the plugin sets from phase === payable.
 		expect(VIEW).not.toMatch(/locked !== null && \(\s*<form[^>]*id="delivery"/);
-		expect(VIEW).toContain("start a new cart");
+		expect(VIEW).toMatch(/start a\s+new cart/);
+		// QA U-2: the locked review's pay button is the resume LINK.
+		expect(VIEW).toMatch(
+			/summary\.readyToPlace && \(\s*<div>\s*<a class="u-btn" href=\{locked\.resumeHref\}>/,
+		);
 	});
 });
 describe("/checkout — delivery (ADR-0021): the page's half", () => {

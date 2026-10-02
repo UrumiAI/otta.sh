@@ -46,6 +46,8 @@ import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEmailNote, currentSessionToken, signedInEmail } from "../../lib/account.js";
 import { keepPrivate } from "../../lib/no-store.js";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { resumeHref } from "../../lib/checkout-resume.js";
+import { reviewErrorToken } from "../../lib/checkout-review.js";
 import {
 	readCouponParam,
 	readDestinationParams,
@@ -133,6 +135,11 @@ const checkedOut = error === "CART_CHECKED_OUT";
 const locked = summary.orderCreated ? summary.order : null;
 const ended = locked?.phase === "ended";
 
+/** The `?error=` this render may show. A LOCKED review drops it: a place-time
+ *  refusal describes a form that is no longer here — typically the history entry
+ *  Back returns to from the pay page (QA U-2). */
+const shownError = reviewErrorToken(error, locked !== null);
+
 /** The coupon refusal to explain, from the plugin or from the cap check above.
  *  Its code goes back into the field so a typo can be fixed. */
 const couponError = summary.selectionErrors.coupon ?? coupon.rejected ?? null;
@@ -216,9 +223,9 @@ const sumRows = [
  */
 const model: CheckoutModel = {
 	summary,
-	errorMessage: error !== null ? cartErrorMessage(error) : null,
+	errorMessage: shownError !== null ? cartErrorMessage(shownError) : null,
 	checkedOut,
-	locked: locked === null ? null : { id: locked.id },
+	locked: locked === null ? null : { id: locked.id, resumeHref: resumeHref(locked.id) },
 	ended,
 	couponValue,
 	couponError: couponError !== null ? cartErrorMessage(couponError.reason) : null,

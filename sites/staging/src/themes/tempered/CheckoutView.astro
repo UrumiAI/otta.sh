@@ -88,7 +88,8 @@ const {
 				</Notice>
 			) : (
 				<Notice lead="Your order has already been created.">
-					Its coupon and delivery address can no longer be changed. To change them, start a new cart.
+					Its email, coupon and delivery address can no longer be changed. To change them, start a
+					new cart.
 				</Notice>
 			)}
 		</div>
@@ -244,8 +245,36 @@ const {
 			)
 		}
 
+		{/* LOCKED and still payable: the order exists, so there is nothing left
+		    to fill in — no email field (the order keeps the one it was placed
+		    with, and a typed one would be silently ignored), no address. The way
+		    on is the page's resume path, which re-stashes the order's own intent
+		    and shows its email on the pay step. */}
 		{
-			!ended && (
+			locked !== null && !ended && (
+				<div class="checkout-details">
+					{paymentConfigured ? (
+						summary.readyToPlace && (
+							<div>
+								<a class="u-btn" href={locked.resumeHref}>
+									Continue to payment
+								</a>
+							</div>
+						)
+					) : (
+						/* LOCKED: an order exists and the cart is checked out, so the
+						   unlocked copy's "nothing has been charged" and "your cart is
+						   unchanged" would both be wrong here. */
+						<Notice>
+							Card payment isn't set up on this store, so this order can't be paid right now.
+						</Notice>
+					)}
+				</div>
+			)
+		}
+
+		{
+			locked === null && !ended && (
 				<form method="POST" action="/checkout/place" class="checkout-details">
 					{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
 					    replays into the SAME order and the same PaymentIntent instead of
@@ -256,10 +285,8 @@ const {
 					{summary.selection.couponCode !== null && (
 						<input type="hidden" name="couponCode" value={summary.selection.couponCode} />
 					)}
-					{/* The method the totals were priced with. NOT on the locked page: the
-					    same-key place replays the order before it would look at one, and
-					    the locked form sends key, email and coupon only. */}
-					{locked === null && summary.selection.shippingMethodId !== null && (
+					{/* The method the totals were priced with. */}
+					{summary.selection.shippingMethodId !== null && (
 						<input
 							type="hidden"
 							name="shippingMethodId"
@@ -288,9 +315,8 @@ const {
 						<span class="checkout-note" id="email-note">{emailNote}</span>
 					</div>
 
-					{/* LOCKED: the order's ship-to is fixed — a same-key place replays the
-					    order and would silently drop an address typed here. The email above
-					    stays: place.ts requires it. A digital-only cart ships nothing. */}
+					{/* A digital-only cart ships nothing. (A LOCKED order's ship-to is
+					    fixed, and a locked review renders no place form at all.) */}
 					{
 						showAddress && (
 							<fieldset class="checkout-group">
@@ -412,7 +438,7 @@ const {
 					}
 
 					{
-						chosenOption !== null && locked === null && (
+						chosenOption !== null && (
 							<p class="checkout-note checkout-delivery-line">
 								Delivery: {chosenOption.label} ({chosenOption.price})
 							</p>
@@ -430,13 +456,6 @@ const {
 							) : (
 								<Notice>{notReadyCopy}</Notice>
 							)
-						) : locked !== null ? (
-							/* LOCKED: an order exists and the cart is checked out, so the
-							   unlocked copy's "nothing has been charged" and "your cart is
-							   unchanged" would both be wrong here. */
-							<Notice>
-								Card payment isn't set up on this store, so this order can't be paid right now.
-							</Notice>
 						) : (
 							/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
 							   rather than restated here (§10). */

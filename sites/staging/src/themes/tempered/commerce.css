@@ -637,6 +637,16 @@
 	color: var(--u-mute);
 	max-width: 46ch;
 }
+
+/* The order's email (a hint) and its hold deadline, read-only lines above the
+   card fields (QA U-2, U-14). */
+[data-theme-id] .pay-email,
+[data-theme-id] .pay-hold {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	max-width: 46ch;
+}
 /* Continuous, not the dashed bronze a Notice uses: this is a statement of
    fact, not a degraded state. */
 [data-theme-id] .pay-trust-mark {

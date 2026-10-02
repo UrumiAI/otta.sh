@@ -49,6 +49,7 @@ import {
 } from "../../lib/account.js";
 import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { keepPrivate } from "../../lib/no-store.js";
 import { orderStamp } from "../../lib/order-stamp.js";
@@ -85,8 +86,8 @@ if (order === null) Astro.response.status = result !== null && !result.ok ? 404 
 /* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
    spent: it can never produce another order. If the cart cookie still names it,
    forget it here, so the shopper's next "Add to cart" starts a new cart instead
-   of failing CART_CHECKED_OUT. A PENDING order's cart is kept: "Complete payment"
-   resumes through /checkout, which rebuilds from that cookie (cart-rotation.ts).
+   of failing CART_CHECKED_OUT. A PENDING order's cart is kept: the cart page's
+   way back to its checkout is built from that cookie (cart-rotation.ts).
    The response is already private (keepPrivate, above). */
 if (order !== null) {
 	await forgetSpentCart(
@@ -185,15 +186,26 @@ const ownsOrder =
 		Astro.url,
 	));
 
-/* Resuming a PENDING order is different, and still goes through /checkout
-   rather than straight to /checkout/pay: the stash was just deleted above, so
-   the pay page has no client secret to mount. Re-submitting the review form
-   replays `checkout:<cartId>` — the same order, and through Stripe's own
-   idempotency the same PaymentIntent and the same client secret — which
-   re-stashes it. The stable key is what makes resuming possible at all. */
+/* Resuming a PENDING order goes through the page-owned resume path
+   (`/checkout/resume?order=…`, QA U-2), not through /checkout: the review
+   rebuilds from the CART cookie, which another device — or this one after the
+   cart rotated — does not have. The resume needs only this order's id, the
+   same capability this page reads with; the plugin replays the order's own
+   checkout on its own key, so the pay page gets the same PaymentIntent and the
+   same client secret, re-stashed. The stash was just deleted above; the resume
+   writes it again. */
 const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
 const canCheckAgain = isPending && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
+
+/** A resume that could not reach the pay page says why here — only for the
+ *  tokens the resume endpoint sends (`ORDER_PAGE_RESUME_ERRORS`), and only while
+ *  the order can still be resumed: for any other state the stamp is the answer. */
+const resumeErrorToken = Astro.url.searchParams.get("error");
+const resumeError =
+	canResume && resumeErrorToken !== null && ORDER_PAGE_RESUME_ERRORS.has(resumeErrorToken)
+		? cartErrorMessage(resumeErrorToken)
+		: null;
 
 /** The order's lines are a RECEIPT, so they carry the purchase-time title
  *  snapshot as well as the SKU — unlike /checkout, where the cart wire has no
@@ -252,7 +264,8 @@ const model: OrderModel = {
 	nextPollUrl,
 	hasActions,
 	canCheckAgain,
-	canResume,
+	resumeHref: canResume && order !== null ? resumeHref(order.id) : null,
+	resumeError,
 	deadEnd,
 	ledgerRows,
 	sumRows,

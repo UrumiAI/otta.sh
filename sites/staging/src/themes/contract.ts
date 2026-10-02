@@ -353,6 +353,9 @@ export interface CartModel {
 /** The order a review is locked to (it has already been created). */
 export interface CheckoutLockedModel {
 	id: string;
+	/** The way on for a locked, payable order: the page-owned resume path
+	 *  (QA U-2) — a link, never a form re-asking for the email the order keeps. */
+	resumeHref: string;
 }
 
 export interface CheckoutModel {
@@ -410,6 +413,12 @@ export interface PayModel {
 	notConfiguredLead: string;
 	/** Where "View your order" goes. */
 	orderPath: string;
+	/**
+	 * The email the order was placed with, as a hint (`j•••@g•••.com`) — shown
+	 * READ-ONLY on a resumed payment (QA U-2), where the order keeps its email
+	 * and nothing on this step can change it. `null` when the stash carries none.
+	 */
+	emailHint: string | null;
 }
 
 export interface OrderStampCopy {
@@ -440,7 +449,16 @@ export interface OrderModel {
 	nextPollUrl: string;
 	hasActions: boolean;
 	canCheckAgain: boolean;
-	canResume: boolean;
+	/**
+	 * "Complete payment"'s target — the page-owned resume path
+	 * (`/checkout/resume?order=…`, QA U-2), which works on any device. `null` ⇔
+	 * the order cannot be resumed (not pending, past its hold, or just back from
+	 * Stripe). A view links to this and never invents a path of its own.
+	 */
+	resumeHref: string | null;
+	/** Why the last "Complete payment" did not reach the pay page, when the page
+	 *  knows (a payment that could not be started) — copy, already mapped. */
+	resumeError: string | null;
 	deadEnd: boolean;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];
