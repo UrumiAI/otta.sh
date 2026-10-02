@@ -35,6 +35,9 @@ export interface EmailRenderContext {
 	 * Absent when the store's public URL is not configured: then no link at all.
 	 */
 	orderPageUrl?: string | undefined;
+	/** The storefront's locale (BCP 47), declared on the HTML part's wrapper so a
+	 *  client picks the right hyphenation, voice and font fallbacks. */
+	locale?: string | undefined;
 }
 
 /** What an uncalculated shipping or tax row says — the storefront's own
@@ -113,15 +116,16 @@ export function renderEmail(
 		asParagraph(tracking ?? cancellation),
 		{ text: `Order: ${label}`, html: paragraph(`<strong>${escapeHtml(label)}</strong>`) },
 		lineItems(data["lines"], str(data["currency"]), money),
-		totalsBlock(data, money),
-		addressBlock(data["shippingAddress"]),
+		totalsBlock(data, money, refunded !== null),
+		DELIVERY_TEMPLATES.has(template) ? addressBlock(data["shippingAddress"]) : null,
 		orderLink(context.orderPageUrl),
+		signOff(context.storeName),
 	];
 	const present = sections.filter((s): s is Block => s !== null);
 	return {
 		subject,
 		text: present.map((s) => s.text).join("\n\n"),
-		html: present.map((s) => s.html).join(""),
+		html: withLang(present.map((s) => s.html).join(""), context.locale),
 	};
 }
 
@@ -151,7 +155,7 @@ function renderLoginLink(
 		return {
 			subject,
 			text: `${intro}\n\n${ignore}`,
-			html: paragraph(escapeHtml(intro)) + paragraph(escapeHtml(ignore)),
+			html: withLang(paragraph(escapeHtml(intro)) + paragraph(escapeHtml(ignore)), context.locale),
 		};
 	}
 	// The href is escaped exactly like text: the URL is built from operator config
@@ -161,13 +165,18 @@ function renderLoginLink(
 	return {
 		subject,
 		text: `${intro}\n\n${action}: ${loginUrl}\n\n${ignore}`,
-		html:
+		html: withLang(
 			paragraph(escapeHtml(intro)) +
-			paragraph(`<a href="${href}">${escapeHtml(action)}</a>`) +
-			paragraph(`If the link doesn't work, copy this link into your browser:<br>${href}`) +
-			paragraph(escapeHtml(ignore)),
+				paragraph(`<a href="${href}">${escapeHtml(action)}</a>`) +
+				paragraph(`If the link doesn't work, copy this link into your browser:<br>${href}`) +
+				paragraph(escapeHtml(ignore)),
+			context.locale,
+		),
 	};
 }
+
+/** What a line with no usable title is called. */
+const UNTITLED_LINE = "Item";
 
 /** Money as the renderer uses it: data's loose values in, a display string or
  *  `null` out. Validates what crossed the outbox's JSON boundary — a non-integer
@@ -199,11 +208,11 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
 	const rows = lines.flatMap((line: unknown) => {
 		if (line === null || typeof line !== "object") return [];
 		const l = line as { title?: unknown; quantity?: unknown; unitPriceCents?: unknown };
-		const title = oneLine(str(l.title) ?? "");
+		// A blank title still names a line the buyer paid for: "Item", never a
+		// silently shorter list.
+		const title = oneLine(str(l.title) ?? "") || UNTITLED_LINE;
 		const quantity = l.quantity;
-		if (title.length === 0 || typeof quantity !== "number" || !Number.isSafeInteger(quantity)) {
-			return [];
-		}
+		if (typeof quantity !== "number" || !Number.isSafeInteger(quantity)) return [];
 		const unit = l.unitPriceCents;
 		const lineTotal =
 			typeof unit === "number" && Number.isSafeInteger(unit * quantity)
@@ -230,16 +239,24 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
 
 /**
  * Subtotal, discount (with its coupon code), shipping, tax and total, AS THE
- * ORDER RECORDED THEM — the same rows the order page shows, by the same rules:
- *  - shipping and tax that were never calculated (`shippingCalculated` /
- *    `taxCalculated`, which `buildOrderEmailData` derives exactly as the order
- *    page's `orderTotalsFlags` does) read {@link EMAIL_NOT_CALCULATED_LABEL};
- *    a calculated zero is money. A non-zero amount is always shown, whatever
- *    the flag says: money charged is never hidden.
- *  - no discount and no coupon: no discount row at all.
+ * ORDER RECORDED THEM — the order page's own rows (`pages/orders/[orderId].astro`
+ * over `buildCheckoutTotals` / `orderTotalsFlags`), with its labels and sign:
+ *  - "Discount · CODE" when a coupon was applied (a coupon that took nothing off
+ *    is a real "$0.00"), "Discount" for a discount with no code, and the page's
+ *    "No coupon applied" when there is neither. The amount is UNSIGNED, as on
+ *    the page — the row's name says it comes off.
+ *  - shipping and tax read {@link EMAIL_NOT_CALCULATED_LABEL} whenever their flag
+ *    (`shippingCalculated` / `taxCalculated`, derived exactly as the page's
+ *    `orderTotalsFlags`) is not set — whatever the amount, as on the page. (An
+ *    amount without a flag cannot be created: shipping is only priced with a
+ *    method, tax only with a zone.) A calculated zero is money.
+ *  - the total is "Paid" on a paid order and "Total" otherwise (the page's
+ *    `TOTAL_LABEL`). ONE DELIBERATE DIVERGENCE: an email that leads with a
+ *    "Refunded: X" figure labels it "Order total", so the order's total can
+ *    never be read as the money coming back.
  * A row whose amount cannot be formatted is left out rather than shown wrong.
  */
-function totalsBlock(data: Record<string, unknown>, money: Money): Block | null {
+function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: boolean): Block | null {
 	const currency = str(data["currency"]);
 	const rows: Array<[string, string]> = [];
 	const push = (label: string, value: string | null) => {
@@ -249,13 +266,15 @@ function totalsBlock(data: Record<string, unknown>, money: Money): Block | null 
 	const coupon = str(data["appliedCouponCode"]);
 	const discount = data["discountCents"];
 	if (coupon !== undefined || (typeof discount === "number" && discount > 0)) {
-		const amount = typeof discount === "number" ? money(-discount, currency) : null;
-		const name = coupon !== undefined ? `Discount (${oneLine(coupon)})` : "Discount";
-		push(name, amount);
+		const name = coupon !== undefined ? `Discount · ${oneLine(coupon)}` : "Discount";
+		push(name, money(discount, currency));
+	} else {
+		push("Discount", NO_COUPON_LABEL);
 	}
 	push("Shipping", calculated(data["shippingCents"], data["shippingCalculated"], currency, money));
 	push("Tax", calculated(data["taxCents"], data["taxCalculated"], currency, money));
-	push("Order total", money(data["totalCents"], currency));
+	const totalLabel = isRefund ? "Order total" : data["state"] === "paid" ? "Paid" : "Total";
+	push(totalLabel, money(data["totalCents"], currency));
 	if (rows.length === 0) return null;
 	return {
 		text: rows.map(([label, value]) => `${label}: ${value}`).join("\n"),
@@ -263,15 +282,29 @@ function totalsBlock(data: Record<string, unknown>, money: Money): Block | null 
 	};
 }
 
+/** The order page's discount row when no coupon was applied (its `fallback`). */
+const NO_COUPON_LABEL = "No coupon applied";
+
 function calculated(
 	amount: unknown,
 	flag: unknown,
 	currency: string | undefined,
 	money: Money,
 ): string | null {
-	if (flag === true || (typeof amount === "number" && amount !== 0)) return money(amount, currency);
-	return EMAIL_NOT_CALCULATED_LABEL;
+	return flag === true ? money(amount, currency) : EMAIL_NOT_CALCULATED_LABEL;
 }
+
+/**
+ * The templates that show the ship-to: the ones where a delivery is still live.
+ * On an expired, cancelled, refunded or completed order nothing is (still) going
+ * to that address, and printing it would read like a promise that something is.
+ */
+const DELIVERY_TEMPLATES: ReadonlySet<EmailTemplate> = new Set<EmailTemplate>([
+	"order-confirmation",
+	"order-processing",
+	"order-shipped",
+	"order-delivered",
+]);
 
 /** The ship-to snapshot, or null when the order has none (a digital-only order,
  *  or one placed before addresses were captured). Contact fields are not shown. */
@@ -302,6 +335,21 @@ function orderLink(url: string | undefined): Block | null {
 		text: `View your order: ${url}`,
 		html: paragraph(`<a href="${escapeHtml(url)}">View your order</a>`),
 	};
+}
+
+/** "— <store>", the order email's last line, or null when the store has no
+ *  display name. */
+function signOff(storeName: string | undefined): Block | null {
+	const store = storeName !== undefined ? oneLine(storeName) : "";
+	if (store.length === 0) return null;
+	return { text: `— ${store}`, html: paragraph(`— ${escapeHtml(store)}`) };
+}
+
+/** The HTML part in one element that declares its language, or as-is when the
+ *  caller passed no locale. */
+function withLang(html: string, locale: string | undefined): string {
+	if (locale === undefined || locale.length === 0) return html;
+	return `<div lang="${escapeHtml(locale)}">${html}</div>`;
 }
 
 function asParagraph(block: Block | null): Block | null {
@@ -405,10 +453,16 @@ function trackingLines(fulfillment: unknown): Block | null {
 		trackingNumber?: unknown;
 		trackingUrl?: unknown;
 	};
-	const carrier = str(f.carrier);
-	const trackingNumber = str(f.trackingNumber);
+	// Admin free text: folded onto one line, so a CR/LF in a carrier name cannot
+	// forge a line of its own in the plain-text part.
+	const folded = (value: unknown) => {
+		const text = oneLine(str(value) ?? "");
+		return text.length > 0 ? text : undefined;
+	};
+	const carrier = folded(f.carrier);
+	const trackingNumber = folded(f.trackingNumber);
 	if (carrier === undefined && trackingNumber === undefined) return null;
-	const trackingUrl = str(f.trackingUrl);
+	const trackingUrl = folded(f.trackingUrl);
 	const textParts: string[] = [];
 	const htmlParts: string[] = [];
 	if (carrier !== undefined) {

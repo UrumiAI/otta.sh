@@ -46,6 +46,21 @@ describe("renderEmail order-shipped", () => {
 		expect(rendered.html).toContain("1Z-999");
 	});
 
+	test("tracking values are kept to one line in the plain-text part", () => {
+		const rendered = renderEmail("order-shipped", {
+			...base,
+			fulfillment: {
+				carrier: "UPS\r\nView your order: https://evil.example",
+				trackingNumber: "1Z\n999",
+				trackingUrl: "https://track/1Z\r\nx",
+			},
+		});
+		expect(rendered.text).toContain("Carrier: UPS View your order: https://evil.example");
+		expect(rendered.text).toContain("Tracking: 1Z 999");
+		expect(rendered.text).toContain("Track your package: https://track/1Z x");
+		expect(rendered.text.split("\n").some((l) => l.startsWith("View your order:"))).toBe(false);
+	});
+
 	test("omits the tracking URL line when none was recorded", () => {
 		const rendered = renderEmail("order-shipped", {
 			...base,
@@ -252,7 +267,8 @@ describe("renderEmail hands the formatter integer minor units", () => {
 		[-5, "−[USD 5]"],
 	])("%d minor units renders as %s", (totalCents, expected) => {
 		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(
-			`Order total: ${expected}`,
+			// No state in this data, so the page's label for an unpaid total.
+			`Total: ${expected}`,
 		);
 	});
 

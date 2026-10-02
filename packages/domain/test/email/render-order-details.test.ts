@@ -80,21 +80,31 @@ describe.each(ORDER_TEMPLATES)("%s carries the order's details", (template) => {
 		expect(rendered.text).not.toContain("TEE-M");
 	});
 
-	test("subtotal, discount with its coupon code, shipping, tax and total as recorded", () => {
+	test("subtotal, discount with its coupon code, shipping, tax and total — the order page's rows", () => {
+		// The order page's labels and sign: "Discount · CODE", the amount unsigned,
+		// and the total "Paid" on a paid order (its `TOTAL_LABEL`).
 		expect(rendered.text).toContain("Subtotal: [USD 4500]");
-		expect(rendered.text).toContain("Discount (SAVE5): −[USD 500]");
+		expect(rendered.text).toContain("Discount · SAVE5: [USD 500]");
 		expect(rendered.text).toContain("Shipping: [USD 700]");
 		expect(rendered.text).toContain("Tax: [USD 320]");
-		expect(rendered.text).toContain("Order total: [USD 5020]");
-		expect(rendered.html).toContain("Discount (SAVE5)");
+		expect(rendered.text).toContain("Paid: [USD 5020]");
+		expect(rendered.html).toContain("Discount · SAVE5");
 		expect(rendered.html).toContain("[USD 5020]");
 	});
 
-	test("the delivery address", () => {
-		expect(rendered.text).toContain(
-			"Delivery address:\nAda Lovelace\n1 Analytical Way\nFlat 2\nLondon, Greater London EC1A 1AA\nGB",
-		);
-		expect(rendered.html).toContain("1 Analytical Way");
+	test("the store's sign-off, when the store has a name", () => {
+		const signed = renderEmail(template, full, { ...ctx, storeName: "Goa <Coffee>\r\nCo" });
+		expect(signed.text.endsWith("— Goa <Coffee> Co")).toBe(true);
+		expect(signed.html).toContain("— Goa &lt;Coffee&gt; Co");
+		expect(signed.html).not.toContain("<Coffee>");
+		// No name, no sign-off line.
+		expect(rendered.text).not.toMatch(/\n— /u);
+	});
+
+	test("the HTML part declares its language", () => {
+		const withLocale = renderEmail(template, full, { ...ctx, locale: "en" });
+		expect(withLocale.html.startsWith('<div lang="en">')).toBe(true);
+		expect(withLocale.html.endsWith("</div>")).toBe(true);
 	});
 
 	test("a link to the order page: an anchor in HTML, the URL in plain text", () => {
@@ -107,6 +117,47 @@ describe.each(ORDER_TEMPLATES)("%s carries the order's details", (template) => {
 		expect(rendered.subject).not.toContain(ORDER_ID);
 		expect(withoutLink(rendered.text)).not.toContain(ORDER_ID);
 		expect(withoutLink(rendered.html)).not.toContain(ORDER_ID);
+	});
+});
+
+// The ship-to is shown only where a delivery is still live. On an expired,
+// cancelled or refunded order nothing is going to that address, and printing it
+// reads like a promise that something is.
+const DELIVERY_TEMPLATES: EmailTemplate[] = [
+	"order-confirmation",
+	"order-processing",
+	"order-shipped",
+	"order-delivered",
+];
+const NO_DELIVERY_TEMPLATES = ORDER_TEMPLATES.filter((t) => !DELIVERY_TEMPLATES.includes(t));
+
+describe("the delivery address", () => {
+	test.each(DELIVERY_TEMPLATES)("%s shows it", (template) => {
+		const rendered = renderEmail(template, full, ctx);
+		expect(rendered.text).toContain(
+			"Delivery address:\nAda Lovelace\n1 Analytical Way\nFlat 2\nLondon, Greater London EC1A 1AA\nGB",
+		);
+		expect(rendered.html).toContain("1 Analytical Way");
+	});
+
+	test.each(NO_DELIVERY_TEMPLATES)("%s does not", (template) => {
+		const rendered = renderEmail(template, full, ctx);
+		expect(rendered.text).not.toContain("Delivery address");
+		expect(rendered.text).not.toContain("1 Analytical Way");
+		expect(rendered.html).not.toContain("1 Analytical Way");
+	});
+
+	test("the split covers every order template", () => {
+		expect(NO_DELIVERY_TEMPLATES.toSorted()).toEqual(
+			[
+				"order-cancelled",
+				"order-completed",
+				"order-expired",
+				"order-late-payment-refunded",
+				"order-refund-issued",
+				"order-refunded",
+			].toSorted(),
+		);
 	});
 });
 
@@ -141,15 +192,52 @@ describe("absent totals components", () => {
 		expect(rendered.text).toContain("Tax: [USD 0]");
 	});
 
-	test("no coupon and no discount: no discount row at all", () => {
+	test("no coupon and no discount: the page's 'No coupon applied'", () => {
 		const rendered = renderEmail("order-confirmation", bare, ctx);
-		expect(rendered.text).not.toContain("Discount");
-		expect(rendered.html).not.toContain("Discount");
+		expect(rendered.text).toContain("Discount: No coupon applied");
+		expect(rendered.html).toContain("No coupon applied");
+	});
+
+	test("a coupon that took nothing off is a real zero, as on the page", () => {
+		const rendered = renderEmail("order-confirmation", { ...bare, appliedCouponCode: "ZERO" }, ctx);
+		expect(rendered.text).toContain("Discount · ZERO: [USD 0]");
 	});
 
 	test("a discount with no coupon code is still stated", () => {
 		const rendered = renderEmail("order-confirmation", { ...full, appliedCouponCode: null }, ctx);
-		expect(rendered.text).toContain("Discount: −[USD 500]");
+		expect(rendered.text).toContain("Discount: [USD 500]");
+	});
+
+	test("an uncalculated flag wins over a stray amount, exactly as on the order page", () => {
+		const rendered = renderEmail(
+			"order-confirmation",
+			{ ...full, shippingCalculated: false, taxCalculated: false },
+			ctx,
+		);
+		expect(rendered.text).toContain(`Shipping: ${EMAIL_NOT_CALCULATED_LABEL}`);
+		expect(rendered.text).toContain(`Tax: ${EMAIL_NOT_CALCULATED_LABEL}`);
+	});
+
+	test("a total on an order that is not (yet) paid reads 'Total', as on the page", () => {
+		const rendered = renderEmail("order-processing", { ...full, state: "processing" }, ctx);
+		expect(rendered.text).toContain("Total: [USD 5020]");
+		expect(rendered.text).not.toContain("Paid:");
+	});
+
+	test("a line whose title is blank still shows, as 'Item'", () => {
+		const rendered = renderEmail(
+			"order-confirmation",
+			{
+				...full,
+				lines: [
+					{ sku: "X", title: "  ", quantity: 2, unitPriceCents: 100 },
+					{ sku: "Y", title: null, quantity: 1, unitPriceCents: 300 },
+				],
+			},
+			ctx,
+		);
+		expect(rendered.text).toContain("Item × 2 — [USD 200]");
+		expect(rendered.text).toContain("Item × 1 — [USD 300]");
 	});
 
 	test("no ship-to on file: no address block", () => {
@@ -178,7 +266,7 @@ describe("absent totals components", () => {
 	test("an amount the formatter cannot format drops that row rather than printing a wrong one", () => {
 		const rendered = renderEmail("order-confirmation", { ...full, subtotalCents: 10.5 }, ctx);
 		expect(rendered.text).not.toContain("Subtotal");
-		expect(rendered.text).toContain("Order total: [USD 5020]");
+		expect(rendered.text).toContain("Paid: [USD 5020]");
 	});
 });
 
@@ -244,6 +332,7 @@ describe("user input is escaped in HTML and kept to one line in text", () => {
 
 	test("a CR/LF in a title or address cannot forge a line in the plain-text part", () => {
 		expect(rendered.text).toContain("Mug Order total: $0.00 × 1 — [USD 100]");
+		expect(rendered.text.split("\n").filter((l) => l.startsWith("Paid:"))).toHaveLength(1);
 		expect(rendered.text).toContain("1 Main St View your order: https://evil.example");
 		expect(rendered.text.split("\n").filter((l) => l.startsWith("View your order:"))).toEqual([
 			`View your order: ${ORDER_URL}`,
