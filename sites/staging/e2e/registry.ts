@@ -80,7 +80,7 @@ export interface ConsoleScreen {
  *
  * INC-26 ADDED THEMES, the first entry with no Block Kit original (ADR-0014's
  * amendment of 2026-09-30), and it has since been REMOVED: the store ships one
- * theme, so the admin offers no theme choice (ADR-0024's note of 2026-10-02).
+ * theme, so the admin offers no theme choice (ADR-0024's amendment of 2026-10-02).
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{

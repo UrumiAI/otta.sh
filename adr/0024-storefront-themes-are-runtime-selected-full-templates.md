@@ -226,6 +226,10 @@ Decision 10's list now reads as history: only `tempered` ships here, and it rema
 the fallback. A stored `settings:storeTheme` naming a removed id falls back to Tempered, as the
 Consequences already state for any id a later build drops.
 
+*(The admin-facing part of the next paragraph — the admin preview, the `__OTTA_STORE_THEMES__`
+define, the Store theme setting and the Themes screen — is superseded by the amendment of
+2026-10-02, which removes them.)*
+
 The theme system stays whole — the contract, manifest, registry, resolver, shell, the admin preview,
 the opt-in chrome bag read (`chrome.cartLines`, `lib/bag.ts`, `forms/CartLineFields.astro`), the
 `__OTTA_STORE_THEMES__` define, the plugin's Store theme setting and the admin Themes screen — as the
@@ -243,10 +247,14 @@ repo, for a merchant who asks for one. So the admin-facing half of this decision
   the "Previewing …" pill and the middleware branch that decided it), the Settings **"Store theme"**
   radio and its `save-theme` action, and the `__OTTA_STORE_THEMES__` define that fed both pickers.
   Decision 2 and the 2026-09-30 Themes-screen amendment are retired with them.
-- **Kept, unchanged:** the contract, manifest, registry, shell, the opt-in chrome bag read, the dev
-  `?theme=` override and the resolver — which still reads the stored `settings:storeTheme` and falls
-  back to Tempered. That read is the hook an external theme uses: whatever installs one registers it
-  here and activates it; until then every request renders Tempered.
+- **Also removed:** the Themes-card metadata (`description` and `preview` on manifest entries), the
+  `tempered.webp` screenshot, `scripts/capture-theme-previews.ts` and its test — the admin cards were
+  their only reader.
+- **Kept, unchanged:** the contract, manifest (`id`, `label`), registry, shell, the opt-in chrome
+  bag read, the dev `?theme=` override and the resolver — which still reads the stored
+  `settings:storeTheme` and falls back to Tempered. **Nothing in this repo writes that setting any
+  more**: activating a theme from the separate themes repo needs a write path that ships with it
+  (or a later change here). Until one exists, every request renders Tempered.
 
 Reopens this amendment: a second theme shipping in this repo, or a request for merchants to choose
 one in the admin — at which point a picker is designed for it, not restored by default.

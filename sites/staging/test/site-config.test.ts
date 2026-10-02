@@ -783,7 +783,7 @@ describe("astro.config", () => {
 	test(
 		"no storefront theme list is baked into the build: the admin offers no theme choice",
 		async () => {
-			// ADR-0024's note of 2026-10-02: the store ships one theme (Tempered), and
+			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered), and
 			// the admin's Themes screen and Settings "Store theme" radio — the only
 			// readers of this define — are gone with it.
 			const config = (await import("../astro.config.js")).default;

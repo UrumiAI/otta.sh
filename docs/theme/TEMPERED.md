@@ -5,7 +5,7 @@ Design direction for `sites/staging`, approved 2026-07-28. This file is the **sp
 browser and compare against it as you build. Where the two disagree, the mockup wins for
 *appearance* and this file wins for *rules*.
 
-Tempered is one of several storefront themes, and the default; see
+Tempered is the storefront theme this repo ships (others come from a separate themes repo); see
 [ADR-0024](../../adr/0024-storefront-themes-are-runtime-selected-full-templates.md).
 
 ADR-0003 stands: the plugin serves JSON view models, the active theme owns every byte of

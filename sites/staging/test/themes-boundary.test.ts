@@ -139,7 +139,7 @@ describe("the theme list has one source", () => {
 		expect(THEME_DIRS).toEqual(STORE_THEMES.map((theme) => theme.id).toSorted());
 	});
 
-	test("the manifest is pure data — astro.config imports it, so it may import nothing", () => {
+	test("the manifest is pure data — it may import nothing", () => {
 		expect(code("themes/manifest.ts")).not.toMatch(/^\s*import\s/m);
 	});
 });

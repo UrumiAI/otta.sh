@@ -196,7 +196,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(`${String(banner?.title)} ${String(banner?.description)}`).toMatch(/1–200 characters/);
 	});
 
-	test("Settings offers no store-theme choice: the store ships one theme (ADR-0024, note 2026-10-02)", async () => {
+	test("Settings offers no store-theme choice: the store ships one theme (ADR-0024, amendment 2026-10-02)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const loaded = blocksOf(

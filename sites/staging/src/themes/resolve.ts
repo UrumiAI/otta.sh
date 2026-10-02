@@ -1,8 +1,9 @@
 /**
  * Which theme renders THIS request.
  *
- * THE SETTING. The merchant picks a theme in the plugin's admin Settings form
- * (its "Store theme" radio), which writes plugin kv `settings:storeTheme`.
+ * THE SETTING. The active theme is plugin kv `settings:storeTheme`. Nothing in
+ * this repo writes it today (the admin's picker was removed — see below); a
+ * theme installed from the separate themes repo must ship its own write path.
  * EmDash's `createKVAccess` prefixes every plugin kv key with `plugin:<id>:`,
  * so the row lands in the options table as `plugin:otta:settings:storeTheme` —
  * and EmDash's public `getPluginSetting(pluginId, key)` reads exactly
@@ -27,7 +28,7 @@
  *
  * NO ADMIN PICKER. The store ships one theme, Tempered; the admin's Themes
  * screen, its live preview and the Settings "Store theme" choice were removed
- * (ADR-0024's note of 2026-10-02). The stored setting is still READ, so a theme
+ * (ADR-0024's amendment of 2026-10-02). The stored setting is still READ, so a theme
  * installed from the separate themes repo can be activated by whatever ships
  * with it; anything unknown falls back to Tempered.
  */
