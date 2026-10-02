@@ -109,6 +109,71 @@ export function cartStoreContract(
 			expect(cart?.lines).toHaveLength(0);
 		});
 
+		// ── an add DECIDED out of stock retires its claim (QA U-16) ─────────
+		// The add claims its key before it reserves, so a crash between the two
+		// leaves a marker the sweep can follow to a dangling hold. An add whose
+		// reserve was decided OUT_OF_STOCK has no hold and never will (the reserve
+		// key is once-only), yet its claim stayed outstanding forever: on the
+		// document store it pinned the cart's sweep deadline in the past and was
+		// re-read on every tick. The use-case now retires it with `abandonClaim`.
+		// What must NOT change is the replay: the same key still answers
+		// OUT_OF_STOCK, writes no line and moves no stock.
+
+		test("an out-of-stock add's same-key replay still answers OUT_OF_STOCK and moves nothing", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 3);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			expect(first).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(replay).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(3);
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			// The probe that catches an adapter whose abandonClaim does nothing: the
+			// claim reads back RETIRED — still not completed, so replays resume.
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("k1"))).toMatchObject({
+				kind: "add",
+				completed: false,
+				abandoned: true,
+			});
+
+			// A fresh key for a quantity that fits is unaffected.
+			const fits = await addLine(h.deps, cartId, sku("SKU-1"), null, 3, idempotencyKey("k2"));
+			expect(fits.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(0);
+		});
+
+		test("abandonClaim never touches a COMPLETED add — its replay still returns the line", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 5);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			await h.deps.cartStore.abandonClaim(cartId, idempotencyKey("k1"));
+
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			expect(replay.ok).toBe(true);
+			if (!replay.ok) return;
+			expect(replay.line.lineId).toBe(first.line.lineId);
+			expect(await h.onHand("SKU-1")).toBe(3);
+			const recorded = await h.deps.cartStore.recordedMutation(idempotencyKey("k1"));
+			expect(recorded?.completed).toBe(true);
+			expect(recorded?.abandoned).not.toBe(true);
+		});
+
+		test("abandonClaim of an unknown key, or on an unknown cart, is a quiet no-op", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			await expect(
+				h.deps.cartStore.abandonClaim(cartId, idempotencyKey("never-claimed")),
+			).resolves.toBeUndefined();
+			await expect(
+				h.deps.cartStore.abandonClaim("no-such-cart", idempotencyKey("k1")),
+			).resolves.toBeUndefined();
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("never-claimed"))).toBeNull();
+		});
+
 		test("add is idempotent — a replayed add returns the same line and decrements once", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);

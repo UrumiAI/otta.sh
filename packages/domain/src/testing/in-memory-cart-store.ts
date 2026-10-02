@@ -52,6 +52,10 @@ interface LedgerRow {
 	lineId: string | null;
 	resultingQty: number | null;
 	completed: boolean;
+	/** Retired by `abandonClaim`. This fake's sweep never lists claims (it
+	 *  tracks holds by deadline), so the flag changes no answer here — it is
+	 *  kept so the fake records the same ledger fact the real store does. */
+	abandoned?: boolean;
 }
 
 export interface InMemoryCartStoreOptions {
@@ -143,6 +147,12 @@ export class InMemoryCartStore implements CartStore {
 			completed: false,
 		});
 		return { claimed: true };
+	}
+
+	async abandonClaim(cartId: string, key: IdempotencyKey): Promise<void> {
+		const row = this.#ledger.get(key);
+		if (row === undefined || row.cartId !== cartId || row.completed) return;
+		row.abandoned = true;
 	}
 
 	async upsertLine(input: UpsertLineInput): Promise<CartLine> {
@@ -294,6 +304,7 @@ export class InMemoryCartStore implements CartStore {
 			lineId: row.lineId,
 			resultingQty: row.resultingQty,
 			completed: row.completed,
+			...(row.abandoned === true ? { abandoned: true } : {}),
 		};
 	}
 
