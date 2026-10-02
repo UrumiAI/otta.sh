@@ -821,6 +821,11 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		});
 		expect(await stored("c-x"), "nothing is written").toBeNull();
 		expect(bannerOf(blocksOf(fixedWithRate))?.variant).toBe("error");
+		// Operator copy names the type in words, never the `fixed_amount` enum.
+		expect(String(bannerOf(blocksOf(fixedWithRate))?.description)).toContain(
+			"a fixed-amount coupon",
+		);
+		expect(String(bannerOf(blocksOf(fixedWithRate))?.description)).not.toContain("fixed_amount");
 
 		const pctWithAmount = await sandbox!.invokeRoute("admin", {
 			type: "form_submit",

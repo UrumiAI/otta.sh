@@ -1515,7 +1515,7 @@ function parseEconomics(
 		if (rateRaw.length > 0 || capRaw.length > 0) {
 			return {
 				ok: false,
-				message: "Leave the percentage-only fields (rate, cap) blank for a fixed_amount coupon.",
+				message: "Leave the percentage-only fields (rate, cap) blank for a fixed-amount coupon.",
 			};
 		}
 		const amountCents = parseMinorUnitsInput(amountRaw, { allowZero: false });
@@ -1523,7 +1523,7 @@ function parseEconomics(
 			return {
 				ok: false,
 				message:
-					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed_amount coupon cannot leave it unset.",
+					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed-amount coupon cannot leave it unset.",
 			};
 		}
 		let currency: string | null = null;
