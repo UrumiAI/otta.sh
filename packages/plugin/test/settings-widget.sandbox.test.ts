@@ -745,8 +745,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 				values: { emailFrom: "orders@boutique.otta.sh", loginLinkUrl: bad },
 			});
 			expect(JSON.stringify(refused)).toContain("Nothing was saved");
-			// The banner names the field and the shape, never the rejected value.
-			expect(JSON.stringify(refused)).not.toContain("user:pw");
+			// The banner names the field and the shape, never the rejected value
+			// (the FORM keeps what was typed, so it can be corrected).
+			const banner = findBlocks(blocksOf(refused), "banner").find((b) => b.variant === "error");
+			expect(JSON.stringify(banner)).not.toContain("user:pw");
 		}
 		const after = formFor(
 			blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" })),

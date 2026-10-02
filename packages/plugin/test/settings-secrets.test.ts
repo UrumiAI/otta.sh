@@ -35,9 +35,12 @@ import {
 	WEBHOOK_EDGE_TOKEN_KEY,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "../src/payment-secrets.js";
+import { EMAIL_FROM_KEY } from "../src/email/ctx-http-email-sender.js";
+import { X402_PAYTO_KEY } from "../src/payments/x402-wiring.js";
+import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
-import { field, findBlocks, formFor, type LooseBlock } from "./helpers/blocks.js";
+import { contextTexts, field, findBlocks, formFor, type LooseBlock } from "./helpers/blocks.js";
 
 const req = { method: "POST", url: "/route", headers: {} };
 
@@ -424,5 +427,113 @@ describe("Settings: removing a key", () => {
 			expect(String(banner?.description)).toContain("Nothing was removed");
 		}
 		expect(kv.get(STRIPE_SECRET_KEY_KEY)).toBe(SK_TEST);
+	});
+});
+
+// -- review nits (round 1) --------------------------------------------------------
+
+describe("Settings: review nits", () => {
+	test("each key's expected shape is visible help text, not only a placeholder", async () => {
+		const page = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_TEST }).ctx, {
+			type: "page_load",
+			page: "/settings",
+		});
+		const help = contextTexts(page.blocks).join("\n");
+		// Shown whether or not the key is set — a set key's placeholder no longer
+		// carries the shape.
+		expect(help).toContain("Starts with sk_live_ or sk_test_");
+		expect(help).toContain("Starts with whsec_");
+	});
+
+	test("Remove on a key that is not stored says so, and claims no removal", async () => {
+		const { ctx } = makeCtx();
+		const outcome = await invoke(ctx, {
+			type: "block_action",
+			action_id: "clear-payment-secret",
+			value: { secret: "stripeSecretKey" },
+		});
+		const banner = findBlocks(outcome.blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("No Stripe secret key was stored — nothing was removed.");
+		expect(banner?.variant).toBe("default");
+		expect(outcome.toast).toEqual({ message: "Nothing removed", type: "info" });
+	});
+
+	test("after Remove, the notice says where to find the key again", async () => {
+		const stripe = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_TEST }).ctx, {
+			type: "block_action",
+			action_id: "clear-payment-secret",
+			value: { secret: "stripeSecretKey" },
+		});
+		expect(String(findBlocks(stripe.blocks, "banner")[0]?.description)).toContain(
+			"Stripe Dashboard → Developers → API keys",
+		);
+		const webhook = await invoke(makeCtx({ [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC }).ctx, {
+			type: "block_action",
+			action_id: "clear-payment-secret",
+			value: { secret: "stripeWebhookSecret" },
+		});
+		expect(String(findBlocks(webhook.blocks, "banner")[0]?.description)).toContain(
+			"Stripe Dashboard → Developers → Webhooks",
+		);
+		assertBlockContract(webhook.blocks, { screen: "settings", level: "list" });
+	});
+
+	test("a stored clear-text sign-in page saved before the https rule is flagged, not blocked", async () => {
+		const flagged = await invoke(
+			makeCtx({ [LOGIN_LINK_URL_KEY]: "http://shop.otta.sh/account/verify" }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		assertBlockContract(flagged.blocks, { screen: "settings", level: "list" });
+		const warning = findBlocks(flagged.blocks, "banner").find((b) => b.variant === "alert");
+		expect(String(warning?.description)).toContain(
+			"This address was saved before https was required — update it; sign-in links currently go out over http.",
+		);
+
+		for (const fine of [
+			"https://shop.otta.sh/account/verify",
+			"http://localhost:4700/account/verify",
+			"",
+		]) {
+			const page = await invoke(makeCtx({ [LOGIN_LINK_URL_KEY]: fine }).ctx, {
+				type: "page_load",
+				page: "/settings",
+			});
+			expect(JSON.stringify(page), fine).not.toContain("saved before https was required");
+		}
+	});
+
+	test("a payment-settings refusal names EVERY problem and keeps what was typed", async () => {
+		const { ctx, kv } = makeCtx();
+		const typed = {
+			emailFrom: "orders@shop.local",
+			loginLinkUrl: "http://shop.otta.sh/account/verify",
+			x402PayTo: "my-wallet",
+			x402Accepts: "eip155:8453",
+		};
+		const outcome = await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: typed,
+		});
+		assertBlockContract(outcome.blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(outcome.blocks, "banner").find((b) => b.variant === "error");
+		const description = String(banner?.description);
+		expect(description).toContain("x402 destination wallet");
+		expect(description).toContain("sign-in page address");
+		expect(description).toContain("from-address");
+		expect(description).toContain("Nothing was saved");
+		// Each rule is stated in full beside the form.
+		const help = contextTexts(outcome.blocks).join("\n");
+		expect(help).toContain("0x followed by 40 hex characters");
+		expect(help).toContain("https://");
+		expect(help).toContain("xn--");
+		// J6: the form keeps exactly what was typed.
+		const form = formFor(outcome.blocks, "save-payment-settings");
+		for (const [fieldId, value] of Object.entries(typed)) {
+			expect(field(form, fieldId)?.initial_value, fieldId).toBe(value);
+		}
+		for (const key of [EMAIL_FROM_KEY, LOGIN_LINK_URL_KEY, X402_PAYTO_KEY]) {
+			expect(kv.has(key), key).toBe(false);
+		}
 	});
 });

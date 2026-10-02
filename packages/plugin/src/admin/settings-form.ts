@@ -12,7 +12,11 @@ import {
 	type SecretShapeCheck,
 	stripeKeyMode,
 } from "../payment-secret-shapes.js";
-import { isSavableLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../storefront/login-link.js";
+import {
+	isSavableLoginLinkUrl,
+	isValidLoginLinkUrl,
+	LOGIN_LINK_URL_KEY,
+} from "../storefront/login-link.js";
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
@@ -143,6 +147,11 @@ interface SecretFieldSpec {
 	check: (raw: string) => SecretShapeCheck;
 	/** What stops working when this key is removed — the confirm dialog's text. */
 	removeEffect: string;
+	/** The shape, as visible help text above the field (a set key's placeholder
+	 *  no longer shows it). */
+	shapeHelp: string;
+	/** Where the operator finds the key again — named after a Remove. */
+	whereToFind: string;
 }
 
 const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
@@ -156,6 +165,9 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		hint: "sk_live_… or sk_test_…",
 		check: checkStripeSecretKey,
 		removeEffect: "Card payments and refunds stop working until a new key is saved.",
+		shapeHelp:
+			"Starts with sk_live_ or sk_test_ (rk_live_ / rk_test_ for a restricted key). Not the publishable pk_ key.",
+		whereToFind: "Stripe Dashboard → Developers → API keys",
 	},
 	{
 		actionId: "save-stripe-webhook-secret",
@@ -166,6 +178,8 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		noun: "Stripe webhook signing secret",
 		hint: "whsec_…",
 		check: checkStripeWebhookSecret,
+		shapeHelp: "Starts with whsec_ — the signing secret of your webhook endpoint.",
+		whereToFind: "Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret",
 		removeEffect:
 			"Card orders stop being marked paid when Stripe reports a payment, until a new secret is saved.",
 	},
@@ -183,6 +197,12 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// (`IN_PROCESS_EGRESS_URLS`), so the shape is too.
 		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl),
 		removeEffect: "Order and sign-in emails stop sending until a new key is saved.",
+		shapeHelp: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Starts with re_ — a Resend API key."
+			: "Your email provider's API key: one line, no spaces.",
+		whereToFind: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Resend → API Keys"
+			: "your email provider's dashboard",
 	},
 	{
 		actionId: "save-x402-facilitator-secret",
@@ -202,6 +222,8 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		hint: "Your x402 facilitator's API key",
 		check: checkOpaqueToken,
 		removeEffect: "Crypto (x402) checkout stops working until a new key is saved.",
+		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
+		whereToFind: "your x402 facilitator's dashboard",
 	},
 	{
 		// INC-C1b. Not a renamed service env var like the four above — it is the
@@ -222,6 +244,9 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		check: checkOpaqueToken,
 		removeEffect:
 			"Stripe webhooks are then checked by their Stripe signature alone, which still refuses forgeries.",
+		shapeHelp:
+			"Optional. The token your storefront sends with Stripe webhooks: one line, no spaces.",
+		whereToFind: "your storefront's deployment settings",
 	},
 ];
 
@@ -431,6 +456,12 @@ function secretNotice(spec: SecretFieldSpec, entered: boolean): Notice {
 			};
 }
 
+/** "a, b and c". */
+function joinNames(names: readonly string[]): string {
+	if (names.length <= 1) return names.join("");
+	return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
+}
+
 /** "Email API key" → "email API key" mid-sentence; a name that starts with a
  *  proper noun or a code ("Stripe…", "x402…") is left alone. */
 function lowerFirst(noun: string): string {
@@ -523,7 +554,8 @@ export function createSettingsFormHandler(
 		ctx: PluginContext,
 		client: ReportingSettingsSurface,
 		notice?: Notice,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, storeThemes, notice);
+		paymentRefusal?: PaymentRefusal,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, storeThemes, notice, paymentRefusal);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -682,11 +714,21 @@ export function createSettingsFormHandler(
 				});
 				return { ...page, toast: { message: "Key not removed", type: "error" } };
 			}
+			// Nothing stored: say so rather than claim a removal (a second click, or
+			// a page left open while someone else removed it).
+			if ((await readWriteOnlySecret(ctx, spec.kvKey)) === undefined) {
+				const page = await renderPage(ctx, client, {
+					variant: "default",
+					title: `No ${lowerFirst(spec.noun)} was stored — nothing was removed.`,
+					description: "There was no saved key to remove, so nothing changed.",
+				});
+				return { ...page, toast: { message: "Nothing removed", type: "info" } };
+			}
 			await ctx.kv.delete(spec.kvKey);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: `${spec.noun} removed`,
-				description: `${spec.removeEffect} Enter a new one above to set it again.`,
+				description: `${spec.removeEffect} To set it again, copy it from ${spec.whereToFind} and enter it above.`,
 			});
 			return {
 				...page,
@@ -718,45 +760,61 @@ export function createSettingsFormHandler(
 					return typeof raw === "string" ? [[spec.kvKey, raw.trim()] as const] : [];
 				}),
 			);
+			// Review nit: EVERY broken rule is collected, so the operator fixes them
+			// in one pass. Each names the FIELD and the SHAPE, never the rejected
+			// value (the form, not the banner, keeps what was typed).
+			const problems: Array<{ field: string; rule: string }> = [];
 			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";
 			if (payTo.length > 0 && !isPlausiblePayTo(payTo)) {
-				// Names the FIELD and the SHAPE, never the rejected value — the value
-				// is an address, not a secret, but echoing rejected input back into a
-				// banner is how a screen grows an injection surface it never needed.
-				return renderPage(ctx, client, {
-					variant: "error",
-					title: "Payment settings not saved",
-					description:
-						"The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed). Nothing was saved.",
+				problems.push({
+					field: "the x402 destination wallet",
+					rule: "The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed).",
 				});
 			}
 			// Issue #306: the sign-in link page must be an absolute URL with no
 			// credentials — the emailed token rides on it. U-8: and https, or http
 			// only on this machine, so that token never crosses a network in clear
-			// text (`isSavableLoginLinkUrl`). Same all-or-nothing refusal.
+			// text (`isSavableLoginLinkUrl`).
 			const loginLinkUrl = submitted.get(LOGIN_LINK_URL_KEY) ?? "";
 			if (loginLinkUrl.length > 0 && !isSavableLoginLinkUrl(loginLinkUrl)) {
-				return renderPage(ctx, client, {
-					variant: "error",
-					title: "Payment settings not saved",
-					description:
-						"The sign-in page address must be a full https:// address (http:// only for localhost) with no username or password. Nothing was saved.",
+				problems.push({
+					field: "the sign-in page address",
+					rule: "The sign-in page address must be a full https:// address (http:// only for localhost) with no username or password.",
 				});
 			}
 			// The from-address must be one a real provider will send from: a bare
 			// `addr@domain` or `Name <addr@domain>`, on a domain that is not a
-			// reserved name (`.local`, `.test`, `example.com`, …). Saving one used to
-			// leave an outbox whose every send the provider refused, behind a screen
-			// that said "saved". EMPTY stays allowed — clearing the box falls back to
-			// the dev default, which a local mail catcher accepts.
+			// reserved name (`.local`, `.test`, `example.com`, …). EMPTY stays
+			// allowed — clearing the box falls back to the dev default, which a local
+			// mail catcher accepts.
 			const emailFrom = submitted.get(EMAIL_FROM_KEY) ?? "";
 			if (emailFrom.length > 0 && !isDeliverableFromAddress(emailFrom)) {
-				return renderPage(ctx, client, {
-					variant: "error",
-					title: "Payment settings not saved",
-					description:
-						"The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form). Nothing was saved.",
+				problems.push({
+					field: "the order email from-address",
+					rule: "The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form).",
 				});
+			}
+			if (problems.length > 0) {
+				// One problem: its rule IS the banner. Several: the banner names them
+				// all (the 240-character budget cannot hold every rule) and each rule
+				// is stated in full beside the form.
+				const [only] = problems;
+				const description =
+					problems.length === 1 && only !== undefined
+						? `${only.rule} Nothing was saved.`
+						: `${String(problems.length)} settings need fixing: ${joinNames(problems.map((p) => p.field))}. Each rule is stated above the form. Nothing was saved.`;
+				const typed = new Map(
+					PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
+						const raw = input.values?.[spec.fieldId];
+						return typeof raw === "string" ? [[spec.kvKey, raw] as const] : [];
+					}),
+				);
+				return renderPage(
+					ctx,
+					client,
+					{ variant: "error", title: "Payment settings not saved", description },
+					{ problems: problems.map((p) => p.rule), typed },
+				);
 			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
 			const page = await renderPage(ctx, client, {
@@ -878,6 +936,7 @@ async function renderSettingsPage(
 	client: ReportingSettingsSurface,
 	storeThemes: readonly StoreTheme[] | undefined,
 	notice?: Notice,
+	paymentRefusal?: PaymentRefusal,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx, storeThemes);
 	try {
@@ -890,11 +949,18 @@ async function renderSettingsPage(
 				settings: formValuesOf(settings),
 				persisted: settings,
 				notice,
+				paymentRefusal,
 			}),
 		};
 	} catch {
 		return {
-			blocks: buildSettingsBlocks({ ...state, settings: undefined, persisted: undefined, notice }),
+			blocks: buildSettingsBlocks({
+				...state,
+				settings: undefined,
+				persisted: undefined,
+				notice,
+				paymentRefusal,
+			}),
 		};
 	}
 }
@@ -1032,6 +1098,7 @@ function buildSettingsBlocks(args: {
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
 	notice?: Notice;
+	paymentRefusal?: PaymentRefusal;
 }): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "Settings" },
@@ -1044,7 +1111,7 @@ function buildSettingsBlocks(args: {
 	blocks.push(
 		storeGroup(args.displayName, args.storeThemes, args.storeTheme),
 		checkoutGroup(args.settings, args.persisted),
-		paymentsGroup(args.paymentSecrets, args.plainSettings),
+		paymentsGroup(args.paymentSecrets, args.plainSettings, args.paymentRefusal),
 	);
 	return blocks;
 }
@@ -1247,6 +1314,7 @@ function checkoutGroup(
 function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	refusal?: PaymentRefusal,
 ): AccordionBlock {
 	return {
 		type: "accordion",
@@ -1260,8 +1328,9 @@ function paymentsGroup(
 			},
 			...PAYMENT_SECRET_FIELDS.flatMap((spec) => {
 				const secret = state.get(spec.kvKey);
+				const help: Block = { type: "context", text: spec.shapeHelp };
 				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
-				return secret?.set === true ? [form, removeSecretActions(spec)] : [form];
+				return secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
 			}),
 			// INC-C5: the non-secret companions, LAST so the group still reads
 			// keys-first, and visibly a different kind of field — these prefill with
@@ -1270,9 +1339,35 @@ function paymentsGroup(
 				type: "context",
 				text: "The settings below are shown as saved. Crypto (x402) checkout stays off until a destination wallet is set.",
 			},
-			plainSettingsForm(plain),
+			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
+			// A refused save states each rule in full beside the form, and the form
+			// keeps what was typed (J6).
+			...(refusal?.problems ?? []).map((problem): Block => ({ type: "context", text: problem })),
+			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
 	};
+}
+
+/** A refused payment-settings save: every rule broken, and what was typed. */
+interface PaymentRefusal {
+	problems: string[];
+	typed: Map<string, string>;
+}
+
+/** Review nit: a STORED sign-in page that is valid but clear text off this
+ *  machine was saved before the https rule. It is still used (the send path
+ *  keeps `isValidLoginLinkUrl`), so the screen says so rather than blocking it. */
+function legacySignInWarning(stored: string): Block[] {
+	if (stored === "" || !isValidLoginLinkUrl(stored) || isSavableLoginLinkUrl(stored)) return [];
+	return [
+		{
+			type: "banner",
+			variant: "alert",
+			title: "Sign-in page address needs https",
+			description:
+				"This address was saved before https was required — update it; sign-in links currently go out over http.",
+		},
+	];
 }
 
 /** The three non-secret payment/email settings, as ONE form. Prefilled from kv —

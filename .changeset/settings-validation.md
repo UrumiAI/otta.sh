@@ -22,6 +22,10 @@ Admin Settings checks what it saves and says what it holds (QA U-8).
 - **The sign-in page address must be `https://`** (or `http://` on localhost, 127.0.0.1 or
   [::1]) to be saved, because the emailed link carries a sign-in token. A value saved before
   this release is still used.
+- Each key shows its expected shape as help text above the field. Remove on a key that is not
+  stored says so, and after a removal the notice says where to find the key again. A stored
+  clear-text sign-in page saved before the https rule shows a warning (sending is not blocked).
+  A refused payment-settings save names every problem at once and keeps what was typed.
 - **Plain wording.** Labels and help text no longer say "service", "write-only", "TTL" or
   "CAIP-2". Two labels and a button changed: "Cart hold time (minutes)", "Sign-in page
   address", "Save checkout settings". Action ids and field ids are unchanged.

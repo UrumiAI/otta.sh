@@ -3070,6 +3070,8 @@ accordion   block_id settings:payments
             default_open FALSE
             └─ context "Keys are never shown once saved. Leave a field blank to keep the
                         key you saved before."                                    (≤200)
+               per credential: context (the expected shape, e.g. "Starts with sk_live_ or
+                     sk_test_ …"), then its form:
                form × 5, one per credential, each cf{"settings:<actionId>",
                      {gen:"<save generation>"}}                          ← AMENDED (INC-09)
                      secret_input "Stripe secret key — set|not set"
@@ -3090,8 +3092,14 @@ accordion   block_id settings:payments
                actions (only under a SET key)
                      button "Remove <noun>" danger, confirm states what stops working
                                                          → clear-payment-secret {secret}
+                     ← a removal notice names where to find the key again; a Remove on
+                       a key not stored answers "No <key> was stored — nothing was removed."
                context "The settings below are shown as saved. Crypto (x402) checkout
                         stays off until a destination wallet is set."
+               banner alert (cond) a stored http sign-in page saved before the https
+                     rule: "This address was saved before https was required — …"
+               context × n (cond, on a refused save) each broken rule in full; the banner
+                     names every field, and the form keeps what was typed (J6)
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
                      text_input "Order email from-address"
                                         placeholder "Your Shop <orders@yourdomain.com>"
