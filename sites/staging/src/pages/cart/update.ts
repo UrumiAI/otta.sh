@@ -24,6 +24,8 @@ import {
 	formPositiveInt,
 	formString,
 	isBusyResult,
+	notAFormResponse,
+	readFormBody,
 } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
@@ -32,7 +34,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const lineId = formString(form.get("lineId"));
 	const qty = formPositiveInt(form.get("qty"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));

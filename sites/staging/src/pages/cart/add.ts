@@ -36,6 +36,8 @@ import {
 	formPositiveInt,
 	formString,
 	isBusyResult,
+	notAFormResponse,
+	readFormBody,
 	safeReturnPath,
 } from "../../lib/otta-api.js";
 
@@ -45,7 +47,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const sku = formString(form.get("sku"));
 	// The CMS content id (join key to product_commerce) minted into the PDP
 	// add-to-cart slot — forwarded so the cart line is priceable/quotable/

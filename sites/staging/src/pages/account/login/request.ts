@@ -14,7 +14,13 @@ import type { APIRoute } from "astro";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { isPlausibleEmail } from "../../../lib/email.js";
 import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
-import { busyResponse, dispatchOttaRoute, isBusyResult } from "../../../lib/otta-api.js";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../../lib/otta-api.js";
 
 const LOGIN_PATH = "/account/login";
 
@@ -25,7 +31,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const raw = form.get("email");
 	// Trim only, never lowercase — the address is the customer's own identifier.
 	const email = typeof raw === "string" ? raw.trim() : "";
