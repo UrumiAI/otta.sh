@@ -133,6 +133,7 @@ export {
 	ReservationNotFoundError,
 	ReservationNotHeldError,
 	StockMovementMismatchError,
+	assertStockMovementOptions,
 	type AdoptInput,
 	type AdoptManyInput,
 	type AdoptManyResult,
@@ -141,6 +142,9 @@ export {
 	type InventoryStore,
 	type ReserveResult,
 	type RestockResult,
+	type StaleOnHandResult,
+	type StockMovementApplied,
+	type StockMovementOptions,
 	type StockRemovalResult,
 } from "./ports/inventory-store.js";
 export type {
