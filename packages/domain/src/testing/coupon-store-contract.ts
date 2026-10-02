@@ -86,6 +86,27 @@ export function couponStoreContract(
 			expect(await store.findByCode("NOPE")).toBeNull();
 		});
 
+		test("findByCode matches a code whatever its case — the shopper's `save5` is the merchant's `SAVE5`", async () => {
+			// ONE RULE FOR CODES, end to end. Codes are unique after case folding (a
+			// store refuses `save5` beside `SAVE5`), the admin search is
+			// case-insensitive, and so is the checkout lookup — a shopper typing a
+			// code in lower case is not typing a different code. The record keeps the
+			// spelling the merchant chose; that is what an order snapshots.
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			expect((await store.findByCode("save5"))?.code).toBe("SAVE5");
+			expect((await store.findByCode("Save5"))?.id).toBe("c1");
+			expect(await store.findByCode("save50")).toBeNull();
+		});
+
+		test("create refuses a code that differs from a live coupon's only in case", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await expect(store.create(fixedCoupon({ id: "c-lower", code: "save5" }))).rejects.toThrow();
+			expect(await store.findById("c-lower")).toBeNull();
+			expect((await store.findByCode("save5"))?.id).toBe("c1");
+		});
+
 		test("percentage coupon round-trips rateBps + cap", async () => {
 			const { store } = await makeStore();
 			await store.create(

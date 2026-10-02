@@ -12,7 +12,18 @@ import type { CouponType } from "../pricing/types.js";
  */
 export interface CouponStore {
 	create(input: CreateCouponInput): Promise<CouponRecord>;
-	/** The full record for validation (dates, min-subtotal, exhaustion), or null. */
+	/**
+	 * The full record for validation (dates, min-subtotal, exhaustion), or null.
+	 *
+	 * CASE-INSENSITIVE. Codes are unique after case folding (`create` refuses a
+	 * code that differs from a live coupon's only in case), so a folded match
+	 * names at most one coupon — and a shopper typing `save5` for the merchant's
+	 * `SAVE5` is not typing a different code. The admin list's search was already
+	 * case-insensitive; checkout matching case-sensitively was the one place the
+	 * rule split, and QA found the console promising one behaviour and checkout
+	 * applying the other. The returned record carries the merchant's own spelling,
+	 * which is what an order snapshots.
+	 */
 	findByCode(code: string): Promise<CouponRecord | null>;
 	findById(couponId: string): Promise<CouponRecord | null>;
 
