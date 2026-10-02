@@ -91,22 +91,24 @@ test.describe("checkout in the browser", () => {
 		// A store with zones asks where the order goes first (ADR-0021): choose a
 		// country, then the first enabled delivery option, so the review is
 		// ready to place.
-		const delivery = page.locator("form#delivery");
+		// The delivery block's fields and Update button belong to the place form
+		// (QA U-1), under their own names.
+		const delivery = page.locator("#delivery");
 		if ((await delivery.count()) > 0) {
-			const deliveryCountry = delivery.locator('select[name="country"]');
+			const deliveryCountry = delivery.locator('select[name="deliveryCountry"]');
 			if ((await deliveryCountry.inputValue()) === "") {
 				await deliveryCountry.selectOption("US");
 				await Promise.all([
 					page.waitForURL(/\/checkout\?/),
-					delivery.locator('button[type="submit"]').click(),
+					delivery.locator('button[value="update-delivery"]').click(),
 				]);
 			}
-			const method = delivery.locator('input[name="method"]:not([disabled])').first();
+			const method = delivery.locator('input[name="deliveryMethod"]:not([disabled])').first();
 			if ((await method.count()) > 0 && !(await method.isChecked())) {
 				await method.check();
 				await Promise.all([
 					page.waitForURL(/method=/),
-					delivery.locator('button[type="submit"]').click(),
+					delivery.locator('button[value="update-delivery"]').click(),
 				]);
 			}
 		}
@@ -119,6 +121,8 @@ test.describe("checkout in the browser", () => {
 		expect(page.url(), "the review dropped the coupon from its URL").toContain(COUPON);
 
 		const form = page.locator('form[action="/checkout/place"]');
+		// The visible "Continue to payment" — not the hidden Enter button, which
+		// sits outside the form element (form= attribute) anyway.
 		const submit = form.locator('button[type="submit"]');
 		if ((await submit.count()) === 0) {
 			const why = (await form.textContent())?.replace(/\s+/g, " ").trim() ?? "(no place form)";
