@@ -267,7 +267,9 @@ function readFilter(raw: unknown): OrdersFilterForm {
 	const period = readString(record["period"]);
 	const from = readString(record["from"]);
 	const to = readString(record["to"]);
-	const search = readString(record["search"]);
+	// Trimmed: a surrounding space is never part of an id, an email or a SKU, and
+	// the store's PREFIX match would otherwise search for rows starting with one.
+	const search = readString(record["search"])?.trim();
 	const knownPeriod =
 		period !== undefined &&
 		(period === "custom" || PERIOD_PRESETS.some((preset) => preset.key === period))

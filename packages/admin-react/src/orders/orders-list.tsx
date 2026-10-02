@@ -187,6 +187,12 @@ export function activeFilterParts(filter: OrdersFilter, periodLabel: string): st
  *  `readFilter` expects to receive. */
 function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 	const custom = draft.period === "custom";
+	// TRIMMED HERE, ONCE, because this is the value both the request and the
+	// active-filter summary are built from. Untrimmed, `  qa@x.com  ` was sent
+	// with its spaces — and the store's PREFIX match found nothing starting with
+	// a space — while the summary, rendered as HTML, collapsed them and showed
+	// the very term that "matched nothing". A whitespace-only search is no search.
+	const search = draft.search?.trim();
 	return {
 		...(draft.status !== undefined && draft.status !== statusAny && draft.status.length > 0
 			? { status: draft.status }
@@ -194,7 +200,7 @@ function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 		...(draft.period !== undefined && draft.period !== statusAny ? { period: draft.period } : {}),
 		...(custom && draft.from !== undefined && draft.from.length > 0 ? { from: draft.from } : {}),
 		...(custom && draft.to !== undefined && draft.to.length > 0 ? { to: draft.to } : {}),
-		...(draft.search !== undefined && draft.search.length > 0 ? { search: draft.search } : {}),
+		...(search !== undefined && search.length > 0 ? { search } : {}),
 	};
 }
 

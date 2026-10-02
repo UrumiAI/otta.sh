@@ -200,6 +200,16 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(rowsOf(result)).toHaveLength(3);
 	});
 
+	test("a search term with surrounding spaces is TRIMMED before it reaches the store's prefix match", async () => {
+		// Defence in depth behind the console's own trim: a request carrying
+		// `  tag  ` must not be a search for orders starting with a space.
+		const tag = "trimmedsearch";
+		await seedOrder({ tag });
+		const result = await list({ search: `  ${tag}  ` });
+		expect(rowsOf(result)).toHaveLength(1);
+		expect(result["total"]).toBe(1);
+	});
+
 	test("the filter vocabulary is SENT as data, so the console holds no copy of it", async () => {
 		const result = await list({ search: "vocabulary-matches-nothing" });
 		const vocabulary = result["vocabulary"] as Record<string, unknown>;
