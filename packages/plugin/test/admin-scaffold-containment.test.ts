@@ -7,6 +7,7 @@ import {
 	screenActions,
 	type ListDetailInput,
 } from "../src/admin/scaffold/index.js";
+import { CommerceInputError } from "../src/commerce/commerce-input.js";
 import type { Block, BlockResponse, PluginContext } from "../src/types.js";
 
 /**
@@ -227,5 +228,62 @@ describe("containment: the compound double fault keeps the outcome-unknown warni
 		});
 		expect(bannerOf(res)?.title).toBe("Action outcome unknown");
 		expect(headerText(res)).toBe("Healthy"); // the root list rendered beneath it
+	});
+});
+
+describe("containment: a REFUSED INPUT is a validation message, never 'outcome unknown'", () => {
+	// `CommerceInputError` is thrown by the commerce boundary BEFORE anything is
+	// read or written (`commerce-input.ts`), so "the action may already have been
+	// applied" is false for it — and QA found that sentence on an operator's typo
+	// (a zone id with a space in it). Only a failure whose outcome genuinely is
+	// unknown may say so.
+	test("a custom action rejecting with CommerceInputError renders a 'not saved' banner naming the field, over a working screen", async () => {
+		const { actions, handler } = screen("contain-input", {
+			custom: () =>
+				Promise.reject(new CommerceInputError("id", "must be printable ASCII with no whitespace")),
+		});
+		const res = await run(handler, {
+			type: "form_submit",
+			action_id: actions.custom("boom"),
+			values: {},
+		});
+		const banner = bannerOf(res);
+		expect(banner?.title).toBe("Not saved — check what you entered");
+		expect(String(banner?.description)).toBe(
+			"The ID can't contain spaces or control characters. Nothing was changed.",
+		);
+		expect(String(banner?.description)).not.toMatch(
+			/outcome unknown|may already have been applied/i,
+		);
+		expect(res.toast).toEqual({ message: "Not saved — check what you entered", type: "error" });
+		expect(headerText(res)).toBe("Healthy");
+	});
+
+	test("the field is named in words, and a reason with no rewrite passes through", async () => {
+		const { actions, handler } = screen("contain-input-field", {
+			custom: () =>
+				Promise.reject(new CommerceInputError("taxClassId", "must be at most 200 characters")),
+		});
+		const res = await run(handler, {
+			type: "form_submit",
+			action_id: actions.custom("boom"),
+			values: {},
+		});
+		expect(String(bannerOf(res)?.description)).toBe(
+			"The tax class ID must be at most 200 characters. Nothing was changed.",
+		);
+	});
+
+	test("an error that merely LOOKS similar but carries no INVALID_INPUT code is still 'outcome unknown'", async () => {
+		const { actions, handler } = screen("contain-input-lookalike", {
+			custom: () =>
+				Promise.reject(new Error("invalid id: must be printable ASCII with no whitespace")),
+		});
+		const res = await run(handler, {
+			type: "form_submit",
+			action_id: actions.custom("boom"),
+			values: {},
+		});
+		expect(bannerOf(res)?.title).toBe("Action outcome unknown");
 	});
 });

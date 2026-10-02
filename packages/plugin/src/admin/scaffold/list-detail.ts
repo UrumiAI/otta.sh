@@ -9,6 +9,7 @@ import type {
 	PluginContext,
 	RouteHandler,
 } from "../../types.js";
+import { isCommerceInputError } from "../../commerce/commerce-input.js";
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
@@ -413,6 +414,51 @@ const ACTION_OUTCOME_UNKNOWN: Notice = {
 		"The action may already have been applied, but this screen could not be rebuilt afterwards. Re-check the record before retrying.",
 };
 
+/** The banner/toast title for a refused input (see {@link inputRefusedNotice}). */
+const INPUT_REFUSED_TITLE = "Not saved — check what you entered";
+
+/**
+ * The notice for a custom action the commerce boundary REFUSED.
+ *
+ * WHY IT IS NOT {@link ACTION_OUTCOME_UNKNOWN}. `CommerceInputError` is thrown by
+ * the input checks in `commerce-input.ts` (and the clients' own bounds) BEFORE any
+ * read or write — that is the class's documented contract — so the outcome is
+ * KNOWN: nothing happened. QA found "the action may already have been applied" on
+ * an operator's typo (a zone id with a space in it), which sends them off to audit
+ * a record that was never touched. Screens should catch such input themselves and
+ * keep the draft; this is the net for the ones that slip through, and it states
+ * the refusal in the operator's terms rather than the boundary's.
+ *
+ * Matched STRUCTURALLY (`code === "INVALID_INPUT"`), never by message text: a
+ * look-alike error with no code is still an unknown outcome.
+ */
+function inputRefusedNotice(field: string, reason: string): Notice {
+	return {
+		variant: "error",
+		title: INPUT_REFUSED_TITLE,
+		description: `The ${humanFieldName(field)} ${humanReason(reason)}. Nothing was changed.`,
+	};
+}
+
+/** `taxClassId` → `tax class ID`, `rates[].amount` → `rates amount`. A field name
+ *  is the boundary's word for an input, and the banner is for an operator. */
+function humanFieldName(field: string): string {
+	return field
+		.replace(/\[\]/g, "")
+		.split(".")
+		.flatMap((part) => part.split(/(?=[A-Z])/))
+		.map((word) => (word.toLowerCase() === "id" ? "ID" : word.toLowerCase()))
+		.join(" ");
+}
+
+/** The one boundary reason an operator can actually trip from a text field gets
+ *  words they can act on; every other reason is already plain. */
+function humanReason(reason: string): string {
+	return reason === "must be printable ASCII with no whitespace"
+		? "can't contain spaces or control characters"
+		: reason;
+}
+
 /**
  * Build the single `RouteHandler` for a list/detail screen. The returned
  * handler is what the admin-route dispatcher forwards `open`/`back`/`page`/
@@ -642,6 +688,22 @@ function createDispatcher<RenderState>(
 							: renderPath(path, notice, renderState),
 				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
 			} catch (err) {
+				// A REFUSED INPUT is the exception to everything below: it was refused
+				// before any read or write (see `inputRefusedNotice`), so its outcome is
+				// known, and saying otherwise is the scary-and-false banner QA reported.
+				if (isCommerceInputError(err)) {
+					let refusedBlocks: Block[];
+					try {
+						refusedBlocks = (await rootList()).blocks;
+					} catch (fallbackErr) {
+						console.error("[otta] admin custom action fallback render failed:", fallbackErr);
+						refusedBlocks = [];
+					}
+					return {
+						blocks: [noticeBanner(inputRefusedNotice(err.field, err.reason)), ...refusedBlocks],
+						toast: { message: INPUT_REFUSED_TITLE, type: "error" as const },
+					};
+				}
 				// A custom action is the one place a SIDE EFFECT may already have
 				// applied, so this cannot be a silent fallback: the mutation might have
 				// committed and only the re-render failed. Log it (the operator's banner
