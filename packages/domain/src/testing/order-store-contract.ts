@@ -440,6 +440,94 @@ export function orderStoreContract(
 			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
 		});
 
+		// -- Payment intents (late-payment prevention) ----------------------------
+
+		test("recordPaymentIntent is idempotent per (order, intent), due at the hold, listed in recording order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.listPaymentIntents(orderId("ord-1"))).toEqual([]);
+			const record = (intentId: string) =>
+				store.recordPaymentIntent({ orderId: orderId("ord-1"), gateway: "stripe", intentId });
+			await record("pi_a");
+			await record("pi_a"); // a checkout replay re-issuing the SAME intent
+			await record("pi_b"); // a second intent (Stripe's ~24 h key expiry)
+
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => [i.gateway, i.intentId, i.cancelDueAt, i.cancelOutcome])).toEqual([
+				["stripe", "pi_a", "2026-07-10T00:15:00.000Z", null],
+				["stripe", "pi_b", "2026-07-10T00:15:00.000Z", null],
+			]);
+			expect(intents[0]?.cancelAttempts).toBe(0);
+			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
+		});
+
+		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					holdExpiresAt: "2026-07-10T00:05:00.000Z",
+				}),
+			);
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-2"),
+				gateway: "stripe",
+				intentId: "pi_2",
+			});
+
+			expect(await store.listIntentCancelsDue("2026-07-10T00:01:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+
+			await store.updatePaymentIntentCancel(orderId("ord-2"), "pi_2", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			await store.updatePaymentIntentCancel(orderId("ord-1"), "pi_1", {
+				cancelDueAt: "2026-07-10T02:00:00.000Z",
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T03:00:00.000Z", 10)).toEqual([
+				orderId("ord-1"),
+			]);
+			const [pi2] = await store.listPaymentIntents(orderId("ord-2"));
+			expect([pi2?.cancelOutcome, pi2?.cancelAttempts, pi2?.cancelDueAt]).toEqual([
+				"cancelled",
+				1,
+				null,
+			]);
+		});
+
+		test("the pending → paid flip resolves the order's unresolved intents as not_needed — a paid order owes no cancel", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			expect(await store.markPaid(orderId("ord-1"))).toBe(true);
+
+			const [intent] = await store.listPaymentIntents(orderId("ord-1"));
+			expect([intent?.cancelOutcome, intent?.cancelDueAt]).toEqual(["not_needed", null]);
+			expect(await store.listIntentCancelsDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+		});
+
 		// -- Notices: non-transition emails on the outbox --------------------------
 
 		test("enqueueNotice is first-wins per (order, notice kind), carries its own payload, and is claimed beside the state rows", async () => {

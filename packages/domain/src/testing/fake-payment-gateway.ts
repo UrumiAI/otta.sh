@@ -2,6 +2,8 @@ import { cents, currency } from "../money/cents.js";
 import { orderId as brandOrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
 import type {
+	CancelIntentInput,
+	CancelIntentResult,
 	ClientAction,
 	ConfirmationResult,
 	CreateIntentInput,
@@ -46,6 +48,12 @@ export class FakePaymentGateway implements PaymentGateway {
 	/** Overrides the default success result when set (drives the error-taxonomy /
 	 *  fail-closed cases without a real transport). */
 	#refundResult: RefundResult | undefined;
+	/** Every `cancelIntent` input, in order — lets the late-payment contract assert
+	 *  WHICH intent an expiry withdrew, and that a re-sweep asked nothing again. */
+	readonly cancelCalls: CancelIntentInput[] = [];
+	/** Overrides the default cancel outcome: a typed result, or an `Error` the
+	 *  call THROWS — the two ways a real gateway can let a caller down. */
+	#cancelResult: CancelIntentResult | Error | undefined;
 
 	constructor(options: { id?: PaymentMethod; secret?: string; refundable?: boolean } = {}) {
 		this.id = options.id ?? "stripe";
@@ -65,6 +73,24 @@ export class FakePaymentGateway implements PaymentGateway {
 	 *  retryable-failure-then-redelivery case. */
 	clearRefundResult(): void {
 		this.#refundResult = undefined;
+	}
+
+	/** Force every later `cancelIntent` to answer `result`, or to throw it. */
+	setCancelResult(result: CancelIntentResult | Error): void {
+		this.#cancelResult = result;
+	}
+
+	/**
+	 * Mirrors the real adapters' capabilities: a Stripe-shaped fake cancels, an
+	 * x402-shaped one has no standing intent and answers `UNSUPPORTED` (exactly as
+	 * `X402PaymentGateway` does), unless a test forced an outcome.
+	 */
+	async cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult> {
+		this.cancelCalls.push(input);
+		if (this.#cancelResult instanceof Error) throw this.#cancelResult;
+		if (this.#cancelResult !== undefined) return this.#cancelResult;
+		if (this.id === "x402") return { ok: false, reason: "UNSUPPORTED" };
+		return { ok: true, outcome: "cancelled" };
 	}
 
 	async refund(input: RefundInput): Promise<RefundResult> {

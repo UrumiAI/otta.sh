@@ -597,6 +597,11 @@ describeEachDialect("order flow", (ctx) => {
 			expire: (id, at) => h.store.expire(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),
+			recordPaymentIntent: (i) => h.store.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.store.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.store.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.store.updatePaymentIntentCancel(id, intent, u),
 			readOrderLedger: (id) => h.store.readOrderLedger(id),
 			scheduleRefundRetry: (id, key, retry) => h.store.scheduleRefundRetry(id, key, retry),
 			listRefundRetriesDue: (now, limit) => h.store.listRefundRetriesDue(now, limit),

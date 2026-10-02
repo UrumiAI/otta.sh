@@ -31,10 +31,13 @@ import type {
 	OrderLedger,
 	RefundRetry,
 	RefundRetrySchedule,
+	PaymentIntentCancelUpdate,
+	PaymentIntentRecord,
 	OrderNoticeInput,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordPaymentIntentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
 	RefundRecord,
@@ -121,6 +124,8 @@ export class InMemoryOrderStore implements OrderStore {
 	#orders = new Map<string, StoredOrder>();
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
+	/** Payment intents per order, in recording order (`recordPaymentIntent`). */
+	#intents = new Map<string, PaymentIntentRecord[]>();
 	/** Scheduled late-payment refund retries, per order then per refund key. */
 	#refundRetries = new Map<string, Map<string, RefundRetrySchedule>>();
 	/** Append-only refunds ledger — the fake analogue of the `refunds` table
@@ -249,6 +254,57 @@ export class InMemoryOrderStore implements OrderStore {
 		});
 	}
 
+	async recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void> {
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) throw new Error(`recordPaymentIntent: no order ${input.orderId}`);
+		const list = this.#intents.get(input.orderId) ?? [];
+		if (list.some((i) => i.intentId === input.intentId)) return; // idempotent
+		const paid = stored.order.state !== "pending";
+		list.push({
+			gateway: input.gateway,
+			intentId: input.intentId,
+			recordedAt: this.#clock.now().toISOString(),
+			// Due at the hold — unless the order already left `pending` paid-ish, which
+			// the real adapter mirrors: only a pending order's intent can still be paid.
+			cancelDueAt: paid ? null : stored.order.holdExpiresAt,
+			cancelAttempts: 0,
+			cancelOutcome: paid ? "not_needed" : null,
+		});
+		this.#intents.set(input.orderId, list);
+	}
+
+	async listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]> {
+		return (this.#intents.get(orderId) ?? []).map((i) => ({ ...i }));
+	}
+
+	async listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]> {
+		const due: [string, string][] = [];
+		for (const [id, list] of this.#intents) {
+			let earliest: string | null = null;
+			for (const i of list) {
+				if (i.cancelOutcome !== null || i.cancelDueAt === null) continue;
+				if (earliest === null || i.cancelDueAt < earliest) earliest = i.cancelDueAt;
+			}
+			if (earliest !== null && earliest <= now) due.push([id, earliest]);
+		}
+		return due
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
+	}
+
+	async updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void> {
+		const intent = this.#intents.get(orderId)?.find((i) => i.intentId === intentId);
+		if (intent === undefined) return;
+		intent.cancelDueAt = update.cancelDueAt;
+		intent.cancelAttempts = update.cancelAttempts;
+		intent.cancelOutcome = update.cancelOutcome;
+	}
+
 	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
 		const order = await this.getById(orderId);
 		if (order === null) return null;
@@ -258,6 +314,7 @@ export class InMemoryOrderStore implements OrderStore {
 			payments: await this.getCapturedPayments(orderId),
 			refunds: await this.listRefunds(orderId),
 			refundRetries: this.#retriesOf(orderId),
+			paymentIntents: await this.listPaymentIntents(orderId),
 		};
 	}
 
@@ -951,6 +1008,15 @@ export class InMemoryOrderStore implements OrderStore {
 		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
 		// no modeled who (markPaid/transition).
 		this.#appendEvent(orderId, from, to, null);
+		// A PAID order owes no intent cancels: resolve its unresolved intents in the
+		// same step as the flip, exactly as the real adapter does in the same write.
+		if (to === "paid") {
+			for (const intent of this.#intents.get(orderId) ?? []) {
+				if (intent.cancelOutcome !== null) continue;
+				intent.cancelDueAt = null;
+				intent.cancelOutcome = "not_needed";
+			}
+		}
 		// markPaid passes no explicit flag → enqueue iff the target state has a
 		// template (paid ⇒ yes); `transition` passes it explicitly.
 		const shouldEnqueue = enqueue ?? emailTemplateForState(to) !== null;

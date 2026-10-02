@@ -3,6 +3,8 @@ import {
 	currency as toCurrency,
 	orderId as toOrderId,
 	PaymentIntentError,
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type Clock,
 	type ConfirmationResult,
@@ -229,7 +231,7 @@ export interface StripePaymentGatewayOptions {
 }
 
 /**
- * The outbound Stripe transport the live paths drive (ADR-0008). Three calls, all
+ * The outbound Stripe transport the live paths drive (ADR-0008). Four calls, all
  * requiring the real `secretKey`:
  *  - `createPaymentIntent` — `POST /v1/payment_intents`, the money-IN call
  *    `createIntent` makes once a `secretKey` is configured.
@@ -238,6 +240,8 @@ export interface StripePaymentGatewayOptions {
  *    fail closed on divergence BEFORE issuing anything.
  *  - `createRefund` — `POST /v1/refunds`, passing our `idempotencyKey` as Stripe's
  *    native `Idempotency-Key`.
+ *  - `cancelPaymentIntent` — `POST /v1/payment_intents/{id}/cancel`, withdrawing an
+ *    expired order's unpaid intent (optional on the seam; see its doc).
  *
  * Every method returns a NORMALIZED result with an explicit error CLASS — never a
  * thrown Stripe SDK error — so the adapter maps a clean taxonomy (retryable /
@@ -265,7 +269,36 @@ export interface StripeTransport {
 	createPaymentIntent(
 		input: StripeCreatePaymentIntentInput,
 	): Promise<StripeCreatePaymentIntentResult>;
+	/**
+	 * Withdraw an unpaid PaymentIntent — `POST /v1/payment_intents/{id}/cancel`
+	 * with `cancellation_reason=abandoned`, our `idempotencyKey` as Stripe's
+	 * native `Idempotency-Key`. Late-payment PREVENTION: an expired order's intent
+	 * must stop being payable.
+	 *
+	 * OPTIONAL on the interface, deliberately: it is the transport TEST SEAM's
+	 * newest verb, and a seam implementation written before it existed must keep
+	 * compiling and keep working. The gateway treats an absent method exactly like
+	 * an absent credential — `UNSUPPORTED`, never a throw — and the default
+	 * {@link createStripeHttpTransport} always provides it.
+	 */
+	cancelPaymentIntent?(input: {
+		intentId: string;
+		idempotencyKey: string;
+		secretKey: string;
+	}): Promise<StripeCancelPaymentIntentResult>;
 }
+
+/**
+ * A `cancelPaymentIntent` result. `not_cancellable` is Stripe's
+ * `payment_intent_unexpected_state`: the intent already succeeded (the buyer paid
+ * at the instant the order expired — the settle path refunds it) or was cancelled
+ * before — a no-op, not an error. Failures are only `retryable` / `terminal`:
+ * cancelling moves no money and the native key dedupes a replay, so there is no
+ * ambiguous class.
+ */
+export type StripeCancelPaymentIntentResult =
+	| { ok: true; outcome: "cancelled" | "not_cancellable" }
+	| { ok: false; class: "retryable" | "terminal" };
 
 /**
  * A recipient in STRIPE's own vocabulary — the adapter's translation of the
@@ -457,6 +490,28 @@ export class StripePaymentGateway implements PaymentGateway {
 			amount: cents(created.amountCents),
 			currency: toCurrency(created.currency.toUpperCase()),
 		};
+	}
+
+	/**
+	 * Withdraw an unpaid PaymentIntent (late-payment prevention; see the port's
+	 * `cancelIntent`). Live only: without a `secretKey` every intent this adapter
+	 * ever minted is the OFFLINE deterministic handle, which Stripe has never heard
+	 * of — so the honest answer is `UNSUPPORTED`, never a call that would 404.
+	 * `not_cancellable` passes straight through as a success: an intent that
+	 * already succeeded is the late-payment refund path's job, not an error here.
+	 */
+	async cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult> {
+		const cancel = this.#transport?.cancelPaymentIntent;
+		if (this.#secretKey === undefined || this.#transport === undefined || cancel === undefined) {
+			return { ok: false, reason: "UNSUPPORTED" };
+		}
+		const res = await cancel.call(this.#transport, {
+			intentId: input.intentId,
+			idempotencyKey: input.idempotencyKey,
+			secretKey: this.#secretKey,
+		});
+		if (res.ok) return { ok: true, outcome: res.outcome };
+		return { ok: false, reason: res.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
 	}
 
 	/**
@@ -741,6 +796,12 @@ const STRIPE_API_BASE = "https://api.stripe.com";
  *  refund. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Wall-clock bound on a PaymentIntent CANCEL — short on purpose. A cancel is
+ *  best-effort prevention drained by a cron leg: a stall must cost that leg a few
+ *  seconds, not the 30 s a buyer-facing call is allowed, and a timeout is just a
+ *  transient failure the sweep retries on a later tick. */
+export const DEFAULT_CANCEL_TIMEOUT_MS = 3_000;
+
 /**
  * The Stripe API version pinned on every live call via the `Stripe-Version`
  * header, so a change to the account's default version can never move a response
@@ -771,6 +832,9 @@ export interface StripeHttpTransportOptions {
 	/** A FIXED timeout for `createRefund` alone (see the gateway's
 	 *  `refundCreateTimeoutMs`). Default: `requestTimeoutMs`. */
 	createRefundTimeoutMs?: number;
+	/** Timeout for `cancelPaymentIntent` alone — capped, at each call, by
+	 *  `requestTimeoutMs`. Defaults to {@link DEFAULT_CANCEL_TIMEOUT_MS}. */
+	cancelTimeoutMs?: number;
 }
 
 /**
@@ -802,6 +866,8 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 		options.createRefundTimeoutMs !== undefined
 			? Math.max(1, options.createRefundTimeoutMs)
 			: timeoutOf();
+	const cancelCapMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
+	const cancelTimeoutOf = (): number => Math.min(cancelCapMs, timeoutOf());
 
 	return {
 		async createPaymentIntent({
@@ -971,6 +1037,52 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			const refund = createdRefundOf(body);
 			if (refund === null) return { ok: false, class: "ambiguous" };
 			return { ok: true, ...refund };
+		},
+
+		async cancelPaymentIntent({
+			intentId,
+			idempotencyKey,
+			secretKey,
+		}): Promise<StripeCancelPaymentIntentResult> {
+			const form = new URLSearchParams();
+			// `abandoned` is Stripe's own reason for "the buyer never completed it" —
+			// what an expired checkout is — and it is what the merchant's dashboard shows.
+			form.set("cancellation_reason", "abandoned");
+			let res: Response;
+			try {
+				// The id is PATH-ESCAPED: it is ours (recorded at checkout), but a value
+				// that reached a URL path unescaped could retarget the POST to another
+				// endpoint under the same secret key.
+				res = await doFetch(`${base}/v1/payment_intents/${encodeURIComponent(intentId)}/cancel`, {
+					method: "POST",
+					headers: {
+						...stripeHeaders(secretKey),
+						"content-type": "application/x-www-form-urlencoded",
+						// Stripe's NATIVE idempotency — a re-swept cancel re-calls nothing.
+						"idempotency-key": idempotencyKey,
+					},
+					body: form.toString(),
+					// SHORT, and shorter than the other calls: a cancel is best-effort
+					// prevention run by a cron leg, a stall must cost the leg seconds, not
+					// half a minute, and a timeout is simply retried on a later tick.
+					signal: AbortSignal.timeout(cancelTimeoutOf()),
+				});
+			} catch {
+				// Network error / abort-timeout. Retryable, never ambiguous: whatever
+				// Stripe did, no money moved, and a same-key retry is answered from its
+				// idempotency cache.
+				return { ok: false, class: "retryable" };
+			}
+			if (res.ok) return { ok: true, outcome: "cancelled" };
+			if (res.status >= 500 || res.status === 429 || res.status === 409) {
+				return { ok: false, class: "retryable" };
+			}
+			// A succeeded (or already-cancelled) intent cannot be cancelled. That is the
+			// race prevention is allowed to lose — not a failure to report.
+			if ((await stripeErrorCode(res)) === "payment_intent_unexpected_state") {
+				return { ok: true, outcome: "not_cancellable" };
+			}
+			return { ok: false, class: "terminal" };
 		},
 	};
 }

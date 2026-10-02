@@ -82,6 +82,7 @@ import type {
 	OrderFulfillment,
 	OrderNoticeInput,
 	RefundRetrySchedule,
+	PaymentIntentCancelOutcome,
 	OrderState,
 	PaymentMethod,
 	ProductId,
@@ -203,6 +204,8 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"refundRetryAt",
 			// The late-refund give-up escalation's age scan (`listRefundRetriesStale`).
 			"refundRetrySince",
+			// The intent-cancel sweep's due scan (`listIntentCancelsDue`).
+			"intentCancelDueAt",
 			["state", "createdAt"],
 		],
 	},
@@ -312,6 +315,22 @@ export interface OutboxEntryDoc {
 	 * {@link findOutboxEntry}.
 	 */
 	notice?: OrderNoticeInput;
+}
+
+/**
+ * One payment intent the order's checkout minted (`recordPaymentIntent`), kept so
+ * the intent-cancel sweep can withdraw it at the gateway. Keyed within the array by
+ * `intentId`: a checkout replay that re-issues the same intent appends nothing. The
+ * cancel bookkeeping rides the entry; {@link OrderDoc.intentCancelDueAt} indexes it.
+ */
+export interface PaymentIntentEntryDoc {
+	gateway: PaymentMethod;
+	intentId: string;
+	recordedAt: string;
+	/** When the sweep should next look; `null` once resolved. */
+	cancelDueAt: string | null;
+	cancelAttempts: number;
+	cancelOutcome: PaymentIntentCancelOutcome | null;
 }
 
 /**
@@ -501,6 +520,21 @@ export interface OrderDoc {
 	 * {@link refundRetryAt}.
 	 */
 	refundRetrySince?: string | null;
+	/**
+	 * Payment intents the checkout minted, keyed by `intentId` — what the
+	 * intent-cancel sweep withdraws. OPTIONAL on the stored shape because every
+	 * document written before late-payment prevention lacks it; read as empty (that
+	 * order's intent is simply not cancelled, and a late payment on it is refunded
+	 * at settle instead).
+	 */
+	paymentIntents?: PaymentIntentEntryDoc[];
+	/**
+	 * DECLARED INDEX. The earliest `cancelDueAt` over the UNRESOLVED intents, or
+	 * `null` when none is owed — the sweep's due scan (`listIntentCancelsDue`), since
+	 * the filter algebra cannot reach into `paymentIntents[]`. DERIVED on every write
+	 * that touches the array ({@link computeIntentCancelDueAt}), never incremented.
+	 */
+	intentCancelDueAt?: string | null;
 	/** The refunds ledger; the ceiling is arbitrated against it in place. */
 	refunds: RefundEntryDoc[];
 	/**
@@ -664,6 +698,8 @@ export function normalizeOrderDoc(doc: OrderDoc): OrderDoc {
 		refundRetries: doc.refundRetries ?? {},
 		refundRetryAt: doc.refundRetryAt ?? null,
 		refundRetrySince: doc.refundRetrySince ?? null,
+		paymentIntents: doc.paymentIntents ?? [],
+		intentCancelDueAt: doc.intentCancelDueAt ?? null,
 		refunds: doc.refunds ?? [],
 	};
 }
@@ -892,4 +928,29 @@ export function computeRefundRetrySince(
 		if (oldest === null || retry.since < oldest) oldest = retry.since;
 	}
 	return oldest;
+}
+
+/** Recompute {@link OrderDoc.intentCancelDueAt}: the earliest `cancelDueAt` over the
+ *  unresolved intents, else `null`. */
+export function computeIntentCancelDueAt(
+	intents: readonly PaymentIntentEntryDoc[] | undefined,
+): string | null {
+	let earliest: string | null = null;
+	for (const intent of intents ?? []) {
+		if (intent.cancelOutcome !== null || intent.cancelDueAt === null) continue;
+		if (earliest === null || intent.cancelDueAt < earliest) earliest = intent.cancelDueAt;
+	}
+	return earliest;
+}
+
+/** A paid order owes no intent cancels: every unresolved intent resolves
+ *  `not_needed`. Pure; the paid flip applies it in its own write. */
+export function resolveIntentsOnPaid(
+	intents: readonly PaymentIntentEntryDoc[] | undefined,
+): PaymentIntentEntryDoc[] {
+	return (intents ?? []).map((intent) =>
+		intent.cancelOutcome !== null
+			? intent
+			: { ...intent, cancelDueAt: null, cancelOutcome: "not_needed" as const },
+	);
 }

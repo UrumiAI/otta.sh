@@ -154,6 +154,7 @@ function issuesThenCrashes(inner: FakePaymentGateway): PaymentGateway {
 		refundable: true,
 		createIntent: (i) => inner.createIntent(i),
 		verifyConfirmation: (raw) => inner.verifyConfirmation(raw),
+		cancelIntent: (input) => inner.cancelIntent(input),
 		async refund(input: RefundInput): Promise<RefundResult> {
 			await inner.refund(input);
 			throw new Error("connection reset after the refund was issued");
@@ -488,6 +489,7 @@ export function latePaymentContract(
 				refundable: true,
 				createIntent: (i) => gateway.createIntent(i),
 				verifyConfirmation: (raw) => gateway.verifyConfirmation(raw),
+				cancelIntent: (i) => gateway.cancelIntent(i),
 				async refund(input: RefundInput): Promise<RefundResult> {
 					return input.providerRef === "pi_3e_a"
 						? {

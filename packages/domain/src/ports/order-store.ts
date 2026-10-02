@@ -59,6 +59,57 @@ export interface OrderStore {
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 
+	// -- Payment intents (late-payment prevention) ----------------------------
+
+	/**
+	 * Remember a payment intent the gateway minted for this order — idempotent on
+	 * `(orderId, intentId)`: a checkout replay that re-issues the SAME intent (the
+	 * provider's native idempotency) records nothing new.
+	 *
+	 * WHY THE ORDER HAS TO REMEMBER IT. The intent id used to live only in the
+	 * checkout reply and the buyer's pay-page cookie, so when the order expired
+	 * nothing on the server could name the intent to cancel — and a buyer who kept
+	 * the pay page open could still pay an order whose stock was already back on
+	 * sale.
+	 *
+	 * DUE AT THE HOLD. A new intent is recorded with `cancelDueAt` = the order's
+	 * `holdExpiresAt`: the instant from which, unless the order was paid, it should
+	 * no longer be payable. The intent-cancel sweep (`cancelDueIntents`) drains due
+	 * intents through {@link listIntentCancelsDue}; an order that is PAID owes no
+	 * cancel, so the guarded `pending → paid` flip resolves its unresolved intents
+	 * (`not_needed`) in the same write, and they never reach the sweep.
+	 *
+	 * A LIST, not a field: Stripe expires idempotency keys after ~24 h, so a very
+	 * late checkout replay can mint a second intent for the same order, and every
+	 * intent that can still be paid is one that must be cancelled.
+	 */
+	recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void>;
+	/** The intents recorded for this order, oldest first (empty when none). */
+	listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]>;
+	/**
+	 * Orders holding at least one UNRESOLVED intent whose `cancelDueAt <= now`,
+	 * earliest first, at most `limit` — the intent-cancel sweep's batch.
+	 */
+	listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]>;
+	/**
+	 * Write one intent's cancel bookkeeping: reschedule it (`cancelDueAt` set,
+	 * `cancelOutcome` null), or resolve it (`cancelDueAt` null, an outcome set). A
+	 * resolved intent leaves the due index for good. No-op for an unknown order or
+	 * intent. Last-writer-wins on the entry; the domain owns the policy.
+	 *
+	 * THE RACE THIS ALLOWS IS HARMLESS. Two writers can meet on one entry — two
+	 * overlapping sweep runs, or an unpaid cancel expediting an intent while a sweep
+	 * reschedules it — and the later write wins outright. Every outcome of that is
+	 * safe: the worst is one extra (idempotently-keyed, so deduplicated by Stripe)
+	 * cancel call, or an intent looked at a little later than it could have been.
+	 * Nothing here moves money; a payment that slips through is refunded at settle.
+	 */
+	updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void>;
+
 	// -- Refunds ledger (ADR-0008) --------------------------------------------
 
 	/**
@@ -567,6 +618,51 @@ export interface RefundRetry extends RefundRetrySchedule {
 	idempotencyKey: IdempotencyKey;
 }
 
+/** Remember one gateway-minted payment intent against its order. */
+export interface RecordPaymentIntentInput {
+	orderId: OrderId;
+	gateway: PaymentMethod;
+	/** The provider's intent id (`pi_…` for Stripe). */
+	intentId: string;
+}
+
+/**
+ * How an intent's cancel ended:
+ *  - `cancelled` / `not_cancellable` — the provider withdrew it / it was already
+ *    final (succeeded or cancelled);
+ *  - `unsupported` — the gateway holds no standing intent or no credential;
+ *  - `not_needed` — the order was paid (or vanished): there is nothing to withdraw;
+ *  - `failed` — a terminal refusal, or retries exhausted. Logged; the late-payment
+ *    refund remains the backstop.
+ */
+export type PaymentIntentCancelOutcome =
+	| "cancelled"
+	| "not_cancellable"
+	| "unsupported"
+	| "not_needed"
+	| "failed";
+
+/** A payment intent recorded for an order ({@link OrderStore.recordPaymentIntent}). */
+export interface PaymentIntentRecord {
+	gateway: PaymentMethod;
+	intentId: string;
+	/** ISO-8601 UTC — the store clock when it was first recorded. */
+	recordedAt: string;
+	/** When the sweep should next look at it; `null` once resolved. */
+	cancelDueAt: string | null;
+	/** Cancel attempts the sweep has made (transient failures count). */
+	cancelAttempts: number;
+	/** How it ended; `null` while unresolved. */
+	cancelOutcome: PaymentIntentCancelOutcome | null;
+}
+
+/** One intent's next cancel bookkeeping ({@link OrderStore.updatePaymentIntentCancel}). */
+export interface PaymentIntentCancelUpdate {
+	cancelDueAt: string | null;
+	cancelAttempts: number;
+	cancelOutcome: PaymentIntentCancelOutcome | null;
+}
+
 /** The order with its ledgers, as {@link OrderStore.readOrderLedger} returns it. */
 export interface OrderLedger {
 	order: Order;
@@ -575,6 +671,8 @@ export interface OrderLedger {
 	refunds: RefundRecord[];
 	/** The order's scheduled late-payment refund retries, by key order. */
 	refundRetries: RefundRetry[];
+	/** The payment intents its checkout recorded, oldest first. */
+	paymentIntents: PaymentIntentRecord[];
 }
 
 /** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */

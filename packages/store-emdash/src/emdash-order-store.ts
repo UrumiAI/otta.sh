@@ -149,6 +149,8 @@ import {
 	type OrderNoticeInput,
 	type RefundRetry,
 	type RefundRetrySchedule,
+	type PaymentIntentCancelUpdate,
+	type PaymentIntentRecord,
 	type OrderSummary,
 	type OrderState,
 	type OrderStore,
@@ -160,6 +162,7 @@ import {
 	type RecordFulfillmentStoreResult,
 	ReservationNotFoundError,
 	type RecordPaymentInput,
+	type RecordPaymentIntentInput,
 	type RefundStatus,
 	type RecordRefundInput,
 	type RecordRefundStoreResult,
@@ -189,6 +192,7 @@ import {
 	computeEmailDueAt,
 	computeRefundRetryAt,
 	computeRefundRetrySince,
+	computeIntentCancelDueAt,
 	computeHoldsPendingAt,
 	customerKeyFor,
 	finalizedRefundTotal,
@@ -200,6 +204,7 @@ import {
 	isOutstanding,
 	newHoldIntent,
 	normalizeOrderDoc,
+	resolveIntentsOnPaid,
 	ORDER_KEYS_COLLECTION,
 	type OrderDoc,
 	type OrderItemDoc,
@@ -598,6 +603,94 @@ export class EmdashOrderStore implements OrderStore {
 		});
 	}
 
+	// -- payment intents (late-payment prevention) ----------------------------
+
+	async recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void> {
+		// Keyed WITHIN the order's own document by `intentId`, in one compare-and-set:
+		// unlike `payments.provider_ref` there is no global uniqueness to defend — an
+		// intent id only ever names the order whose checkout minted it, and nothing
+		// sums over intents — so no claim document is owed.
+		await this.#casOrder<void>("recordPaymentIntent", async () => {
+			const current = await this.#orders.getVersioned(input.orderId);
+			// The same choice `recordPayment` makes: an intent recorded nowhere while
+			// the call reports success is worse than a loud throw (the caller logs it).
+			if (current === null) throw new OrderNotFoundError(input.orderId, "recordPaymentIntent");
+			const doc = normalizeOrderDoc(current.value);
+			const intents = doc.paymentIntents ?? [];
+			if (intents.some((intent) => intent.intentId === input.intentId)) return casDone(undefined);
+			const now = this.#clock.now().toISOString();
+			// Due at the hold — the instant from which an unpaid order's intent should no
+			// longer be payable. An order that already left `pending` (a replay after a
+			// settle) owes nothing: only a pending order's intent can still be paid.
+			const pending = doc.state === "pending";
+			const paymentIntents = [
+				...intents,
+				{
+					gateway: input.gateway,
+					intentId: input.intentId,
+					recordedAt: now,
+					cancelDueAt: pending ? doc.holdExpiresAt : null,
+					cancelAttempts: 0,
+					cancelOutcome: pending ? null : ("not_needed" as const),
+				},
+			];
+			const written = await this.#orders.compareAndSet(input.orderId, current.revision, {
+				...doc,
+				paymentIntents,
+				intentCancelDueAt: computeIntentCancelDueAt(paymentIntents),
+				updatedAt: now,
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	async listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]> {
+		const doc = await this.#orders.get(orderId);
+		return doc === null ? [] : intentsOf(normalizeOrderDoc(doc));
+	}
+
+	async listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `intentCancelDueAt` index, earliest first —
+		// the sweep's batch IS the limit; what this tick does not reach, the next does.
+		const result = await this.#orders.query({
+			where: { intentCancelDueAt: { lte: now } },
+			orderBy: { intentCancelDueAt: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			// A page read is not a lock: re-check what the index promised.
+			const due = data.intentCancelDueAt ?? null;
+			if (due !== null && due <= now) ids.push(data.orderId as OrderId);
+		}
+		return ids;
+	}
+
+	async updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void> {
+		await this.#casOrder<void>("updatePaymentIntentCancel", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeOrderDoc(current.value);
+			const intents = doc.paymentIntents ?? [];
+			if (!intents.some((intent) => intent.intentId === intentId)) return casDone(undefined);
+			const paymentIntents = intents.map((intent) =>
+				intent.intentId === intentId ? { ...intent, ...update } : intent,
+			);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				paymentIntents,
+				// Derived in the SAME write — the only way the due scan stays exact.
+				intentCancelDueAt: computeIntentCancelDueAt(paymentIntents),
+				updatedAt: this.#clock.now().toISOString(),
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
 	// -- late-payment support ---------------------------------------------------
 
 	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
@@ -621,6 +714,7 @@ export class EmdashOrderStore implements OrderStore {
 						since: retry.since,
 					}),
 				),
+			paymentIntents: intentsOf(doc),
 		};
 	}
 
@@ -1836,9 +1930,19 @@ export class EmdashOrderStore implements OrderStore {
 						]
 					: doc.emailOutbox,
 		};
+		// A PAID order owes no intent cancels: its unresolved intents resolve
+		// `not_needed` in the flip's own write, so they never reach the cancel sweep.
+		const intents =
+			input.toState === "paid" ? resolveIntentsOnPaid(doc.paymentIntents) : doc.paymentIntents;
 		// R2's denormalized due time, derived in the SAME write that enqueued the entry
 		// — the only way `claimNextEmail` can find it.
-		return { ...next, emailDueAt: computeEmailDueAt(next) };
+		return {
+			...next,
+			emailDueAt: computeEmailDueAt(next),
+			...(intents === undefined
+				? {}
+				: { paymentIntents: intents, intentCancelDueAt: computeIntentCancelDueAt(intents) }),
+		};
 	}
 
 	/** Mark one hold intent complete. Idempotent; a missing intent is a no-op. */
@@ -2308,6 +2412,18 @@ function eventsOf(doc: OrderDoc, orderId: OrderId): OrderEvent[] {
 			toState: event.toState,
 			actor: event.actor,
 		}));
+}
+
+/** The order's recorded payment intents, as the port names them. */
+function intentsOf(doc: OrderDoc): PaymentIntentRecord[] {
+	return (doc.paymentIntents ?? []).map((intent) => ({
+		gateway: intent.gateway,
+		intentId: intent.intentId,
+		recordedAt: intent.recordedAt,
+		cancelDueAt: intent.cancelDueAt,
+		cancelAttempts: intent.cancelAttempts,
+		cancelOutcome: intent.cancelOutcome,
+	}));
 }
 
 /** The order's captured payments, as the port names them. */

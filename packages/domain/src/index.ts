@@ -169,9 +169,13 @@ export type {
 	OrderNoticeInput,
 	OutboxEmail,
 	ReleaseEmailClaimOptions,
+	PaymentIntentCancelOutcome,
+	PaymentIntentCancelUpdate,
+	PaymentIntentRecord,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordPaymentIntentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
 	FinalizeRefundInput,
@@ -263,6 +267,8 @@ export type {
 } from "./ports/payment-event-store.js";
 export {
 	PaymentIntentError,
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -368,6 +374,13 @@ export {
 } from "./orders/order-timeline.js";
 export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export {
+	cancelDueIntents,
+	DEFAULT_INTENT_CANCEL_BATCH,
+	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
+	type CancelDueIntentsDeps,
+	type CancelDueIntentsOptions,
+} from "./orders/cancel-due-intents.js";
 export {
 	classifyLatePayment,
 	escalateStaleLateRefunds,

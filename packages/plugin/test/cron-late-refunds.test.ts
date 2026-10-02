@@ -257,6 +257,7 @@ describe("cron late-refunds", () => {
 			refundable: true,
 			createIntent: (i) => stripe.createIntent(i),
 			verifyConfirmation: (raw) => stripe.verifyConfirmation(raw),
+			cancelIntent: (input) => stripe.cancelIntent(input),
 			async refund(input) {
 				t += 60_000;
 				return stripe.refund(input);

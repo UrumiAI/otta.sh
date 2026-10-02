@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: ten legs, one tick (INC-C4).
+ * The scheduled sweep: eleven legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -138,6 +138,7 @@
  */
 import {
 	assertSweepLimit,
+	cancelDueIntents,
 	DEFAULT_COUPON_GRACE_MS,
 	dispatchOrderEmails,
 	EmailSendTimeoutError,
@@ -180,10 +181,12 @@ import type { PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import { type LegBudget, type LegShare, TickBudget, WHOLE_TICK } from "./tick-budget.js";
 
-/** The ten legs in PRIORITY order, since a tick that runs out of budget defers
+/** The eleven legs in PRIORITY order, since a tick that runs out of budget defers
  *  whatever is left: the three critical legs (the outbox, then the two expiry
  *  legs — which of the three LEADS rotates by minute, see the head comment), then
- *  the self-narrowing completers, then the four scans, then the BEST-EFFORT
+ *  the intent-cancel drain (late-payment PREVENTION, right behind the expiry it
+ *  follows, so an order expired this tick has its intent withdrawn this tick),
+ *  then the self-narrowing completers, then the four scans, then the BEST-EFFORT
  *  `late-refunds` retry (ADR-0022's 2026-10-02 amendment) — last, because a
  *  Stripe round trip is the most expensive unit any leg has and nothing a
  *  customer is waiting on may be deferred for it. `coupon-orphans` must stay
@@ -193,6 +196,7 @@ export const SWEEP_LEGS = [
 	"order-emails",
 	"expire-holds",
 	"expire-orders",
+	"cancel-intents",
 	"hold-intents",
 	"prune-challenges",
 	"sku-transfers",
@@ -315,6 +319,12 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// and its unit minimum — room for a pre-flight, a WHOLE create and the writes
 	// after it (`LATE_REFUND_MIN_UNIT_MS`) — is what bounds it.
 	"late-refunds": { time: 1, queries: 0.4 },
+	// Prevention, best-effort: a small, cheap unit (one ledger read, one Stripe
+	// cancel, one write), capped so a Stripe stall costs a fifth of the tick at
+	// most. Not critical — a cancel it does not reach is still covered by the
+	// late-payment refund — so `minimumQueryBudget` ignores it. On the Workers Free
+	// preset under an expiry backlog it waits behind the critical legs.
+	"cancel-intents": { time: 0.2, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
@@ -352,6 +362,11 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// subrequests, finalize with its reporting write) and the resolve, retry
 		// clear and notice that follow — the TRIMMED resume, measured at 20.
 		"late-refunds": { entry: 5, unit: 20 },
+		// entry: resolving the gateways (their secret kv reads) — once, only when a
+		// unit needs them; the due list is the leg's due check, charged before this.
+		// unit: one order's ledger read, the Stripe cancel (one subrequest) and the
+		// intent's bookkeeping write.
+		"cancel-intents": { entry: 5, unit: 5 },
 	};
 
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
@@ -375,6 +390,7 @@ export function batchesFor(queryBudget: number): {
 	expiry: number;
 	email: number;
 	lateRefunds: number;
+	intentCancels: number;
 } {
 	const holds = LEG_QUERY_COSTS["expire-holds"].unit + 2;
 	const emails = LEG_QUERY_COSTS["order-emails"].unit;
@@ -390,12 +406,22 @@ export function batchesFor(queryBudget: number): {
 			1,
 			5,
 		),
+		intentCancels: clampInt(
+			(queryBudget * (LEG_SHARES["cancel-intents"]?.queries ?? 1)) /
+				LEG_QUERY_COSTS["cancel-intents"].unit,
+			1,
+			10,
+		),
 	};
 }
 
 function clampInt(value: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, Math.floor(value)));
 }
+
+/** The Stripe cancel's bound — fixed, never clipped: a cancel is started only with
+ *  at least this much left, so its timeout is always the provider's. */
+const INTENT_CANCEL_CALL_MS = 1_500;
 
 /** One late-refund ESCALATION (give-up, no provider call), MEASURED. */
 export const LATE_REFUND_ESCALATION_UNIT = 8;
@@ -588,6 +614,9 @@ export interface CommerceSweepOptions {
 	/** Most orders the `late-refunds` leg resumes per tick. Default: scaled from
 	 *  the query budget (`batchesFor`) — 1 to 5. */
 	readonly lateRefundBatch?: number;
+	/** Most orders the `cancel-intents` leg examines per tick. Default: scaled from
+	 *  the query budget (`batchesFor`) — 1 to 10. */
+	readonly intentCancelBatch?: number;
 	readonly emailSenderFactory?: (
 		requestTimeoutMs: () => number,
 	) => Promise<EmailSender | undefined>;
@@ -681,6 +710,7 @@ export async function runCommerceSweeps(
 	const expiryLimit = options.expiryBatchLimit ?? batches.expiry;
 	const emailLimit = options.emailBatchLimit ?? batches.email;
 	const lateRefundLimit = options.lateRefundBatch ?? batches.lateRefunds;
+	const intentCancelLimit = options.intentCancelBatch ?? batches.intentCancels;
 	const state = await readState(cursors);
 	let stateChanged = false;
 	const legs: SweepLegOutcome[] = [];
@@ -938,9 +968,12 @@ export async function runCommerceSweeps(
 	//    handed to a human within a tick of passing the limit, instead of
 	//    "retrying" forever.
 	// The due check is one query, so an idle tick pays exactly that.
+	// IDLE_TICK_QUERIES was measured before `cancel-intents` existed; its idle due
+	// check is one more query ahead of this leg.
 	const lateRefundsMustLead =
 		queryBudget <
 		IDLE_TICK_QUERIES +
+			1 +
 			1 +
 			LEG_QUERY_COSTS["late-refunds"].entry +
 			LEG_QUERY_COSTS["late-refunds"].unit +
@@ -982,6 +1015,47 @@ export async function runCommerceSweeps(
 	for (let k = 0; k < critical.length; k++) {
 		await critical[(lead + k) % critical.length]!();
 	}
+
+	// The due check IS the leg's list, read once and handed to the domain.
+	let intentCancelsDue: Promise<readonly OrderId[]> | undefined;
+	const intentCancelsDueIds = (): Promise<readonly OrderId[]> =>
+		(intentCancelsDue ??= stores.orderStore.listIntentCancelsDue(nowIso, intentCancelLimit));
+	await run(
+		"cancel-intents",
+		async (legBudget) => {
+			// Late-payment PREVENTION, in its own leg — never inside `expire-orders`, so
+			// a provider's latency or outage can never slow the stock release. Drains the
+			// intents that came DUE (at their order's hold, or at an unpaid cancel); each
+			// unit admitted by the tick's gate with room for one WHOLE cancel, the
+			// gateways resolved once (from the counted context) and only when a unit
+			// needs them. A cancel is never started with less than
+			// `INTENT_CANCEL_CALL_MS` left and is never clipped below it — so a timeout
+			// is always the provider's, and the tick running out costs no attempt. A
+			// transient failure is rescheduled by the domain and retried by this leg on
+			// a later tick — nothing else retries it.
+			assertSweepLimit(intentCancelLimit);
+			const gate = legBudget.gate(INTENT_CANCEL_CALL_MS, LEG_QUERY_COSTS["cancel-intents"].unit);
+			const count = await cancelDueIntents(
+				{
+					orderStore: stores.orderStore,
+					clock: { now: () => now },
+					gateways: sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
+				},
+				{
+					limit: intentCancelLimit,
+					shouldContinue: gate,
+					due: await intentCancelsDueIds(),
+					canStartCancel: () => {
+						const ok = legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS;
+						if (!ok) legBudget.stopped = true;
+						return ok;
+					},
+				},
+			);
+			return legResult(count, legBudget.stopped || count >= intentCancelLimit);
+		},
+		{ isDue: async () => (await intentCancelsDueIds()).length > 0 },
+	);
 
 	await run(
 		"hold-intents",

@@ -319,6 +319,11 @@ describe("settleOrder", () => {
 			expire: (id, at) => h.orderStore.expire(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
+			recordPaymentIntent: (i) => h.orderStore.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.orderStore.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.orderStore.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.orderStore.updatePaymentIntentCancel(id, intent, u),
 			readOrderLedger: (id) => h.orderStore.readOrderLedger(id),
 			scheduleRefundRetry: (id, key, retry) => h.orderStore.scheduleRefundRetry(id, key, retry),
 			listRefundRetriesDue: (now, limit) => h.orderStore.listRefundRetriesDue(now, limit),

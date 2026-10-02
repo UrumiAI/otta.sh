@@ -170,6 +170,7 @@ export async function createOrderFromCart(
 			logIntentFailure(err, already.id);
 			return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
 		}
+		await rememberIntent(deps, already, intent);
 		return { ok: true, order: already, intent };
 	}
 
@@ -505,6 +506,7 @@ async function finalizeOrder(
 	//    in `finishCheckout`'s lost-hold branch).
 	try {
 		const intent = await ctx.gateway.createIntent(intentInput);
+		await rememberIntent(deps, order, intent);
 		return { ok: true, order, intent };
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
@@ -707,6 +709,42 @@ function leftCheckoutWindow(order: Order, gateway: PaymentGateway): CreateOrderF
 		order,
 		intent: { gateway: gateway.id, intentId: "", clientAction: { kind: "none" } },
 	};
+}
+
+/**
+ * Record the intent the gateway just minted against its order, so the expiry
+ * sweep (and an unpaid cancel) can withdraw it later — the checkout reply and the
+ * buyer's pay-page cookie are otherwise the only places its id ever lives.
+ *
+ * Runs on the fresh path AND the replay, because a call can die between the
+ * gateway answering and this write; the store dedupes on `(orderId, intentId)`,
+ * so the replay that re-issues the SAME intent records nothing new.
+ *
+ * BEST-EFFORT: a failed write is logged and the checkout still succeeds. The
+ * buyer already holds a payable intent at this point — failing the checkout over
+ * bookkeeping would not un-mint it, it would only send them to retry the same
+ * key. An intent this misses is not cancelled at expiry, and a payment on it
+ * takes `settleOrder`'s late-payment refund path: prevention narrows, the refund
+ * guarantees. An empty id (no intent was minted) is skipped.
+ */
+async function rememberIntent(
+	deps: CreateOrderDeps,
+	order: Order,
+	intent: PaymentIntentHandle,
+): Promise<void> {
+	if (intent.intentId.length === 0) return;
+	try {
+		await deps.orderStore.recordPaymentIntent({
+			orderId: order.id,
+			gateway: intent.gateway,
+			intentId: intent.intentId,
+		});
+	} catch (err) {
+		console.error(
+			`[domain] could not record payment intent ${intent.intentId} for order ${order.id}; it will not be cancelled if the order expires`,
+			{ error: err instanceof Error ? err.message : String(err) },
+		);
+	}
 }
 
 /**

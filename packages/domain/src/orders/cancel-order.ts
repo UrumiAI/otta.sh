@@ -108,7 +108,14 @@ export async function cancelOrder(
 		// `recordFulfillment`.
 		enqueueEmail: emailTemplateForState("cancelled") !== null,
 	});
-	if (res.cancelled) return { ok: true, cancelled: true, order: res.order ?? order };
+	if (res.cancelled) {
+		// An order cancelled while UNPAID still has a payable intent, due only at its
+		// hold deadline. Make it due NOW so the intent-cancel sweep withdraws it on
+		// its next tick (`cancelDueIntents`). From `paid`/`processing` the intent
+		// already succeeded — nothing to withdraw, and refunding is the admin's act.
+		if (order.state === "pending") await expediteIntentCancels(deps, cmd.orderId, res.order);
+		return { ok: true, cancelled: true, order: res.order ?? order };
+	}
 
 	// The guarded flip missed (0 rows) — someone moved the order out of
 	// `fromState` between our read and the UPDATE. Disambiguate on the fresh row:
@@ -120,4 +127,35 @@ export async function cancelOrder(
 		return { ok: true, cancelled: false, order: fresh };
 	}
 	return { ok: false, reason: "NOT_CANCELLABLE" };
+}
+
+/**
+ * Bring an unpaid-cancelled order's unresolved intents due to the cancellation
+ * instant (the store-stamped `updatedAt` of the flip, so no clock is needed here).
+ * BEST-EFFORT: the cancellation is already durable; a failed write only leaves the
+ * intent due at its hold, which the sweep reaches anyway, and a payment that lands
+ * meanwhile is refunded at settle. Logged, never thrown.
+ */
+async function expediteIntentCancels(
+	deps: CancelOrderDeps,
+	orderId: CancelOrderCommand["orderId"],
+	after: Order | null,
+): Promise<void> {
+	if (after === null) return;
+	const at = after.updatedAt;
+	try {
+		for (const intent of await deps.orderStore.listPaymentIntents(orderId)) {
+			if (intent.cancelOutcome !== null) continue;
+			if (intent.cancelDueAt !== null && intent.cancelDueAt <= at) continue;
+			await deps.orderStore.updatePaymentIntentCancel(orderId, intent.intentId, {
+				cancelDueAt: at,
+				cancelAttempts: intent.cancelAttempts,
+				cancelOutcome: null,
+			});
+		}
+	} catch (err) {
+		console.error(`[domain] could not expedite the intent cancels of cancelled order ${orderId}`, {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 }

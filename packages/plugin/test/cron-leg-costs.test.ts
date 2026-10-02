@@ -24,6 +24,7 @@ import {
 	sku as toSku,
 	money,
 	escalateStaleLateRefunds,
+	cancelDueIntents,
 	retryLatePaymentRefunds,
 	settleOrder,
 	type PaymentGateway,
@@ -346,6 +347,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			refundable: true,
 			createIntent: (i) => fake.createIntent(i),
 			verifyConfirmation: (raw) => fake.verifyConfirmation(raw),
+			cancelIntent: (input) => fake.cancelIntent(input),
 			async refund(input) {
 				counter.calls += 2;
 				return fake.refund(input);
@@ -414,6 +416,64 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used - 1, `measured ${String(used - 1)}`).toBeLessThanOrEqual(
 			LATE_REFUND_ESCALATION_UNIT,
 		);
+	});
+
+	test("cancel-intents: one expired order's intent withdrawn (ledger, the Stripe cancel, the bookkeeping)", async () => {
+		const placed = await placeOrder(
+			"cancel-intent",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+		);
+		const s = counted();
+		const id = toOrderId(placed.id);
+		await s.orderStore.recordPaymentIntent({
+			orderId: id,
+			gateway: "stripe",
+			intentId: "pi_cost_cancel",
+		});
+		await s.orderStore.expire(id, new Date().toISOString());
+		const fake = new FakePaymentGateway({ id: "stripe" });
+		// A real Stripe cancel is one subrequest.
+		const stripe: PaymentGateway = {
+			id: "stripe",
+			refundable: true,
+			createIntent: (i) => fake.createIntent(i),
+			verifyConfirmation: (raw) => fake.verifyConfirmation(raw),
+			refund: (i) => fake.refund(i),
+			async cancelIntent(input) {
+				counter.calls += 1;
+				return fake.cancelIntent(input);
+			},
+		};
+		const due = await s.orderStore.listIntentCancelsDue(new Date().toISOString(), 1);
+		// The due list is the leg's due check; the unit is everything after it.
+		const used = await cost(() =>
+			cancelDueIntents(
+				{
+					orderStore: s.orderStore,
+					clock: { now: () => new Date() },
+					gateways: () => ({ stripe }),
+				},
+				{ limit: 1, due },
+			),
+		);
+		expect(fake.cancelCalls).toHaveLength(1);
+		expect(used, `measured ${String(used)}`).toBeLessThanOrEqual(
+			LEG_QUERY_COSTS["cancel-intents"].unit,
+		);
+	});
+
+	test("cancel-intents entry: resolving the deployment's gateways (their secret reads)", async () => {
+		const ctx = {
+			http: { fetch: () => Promise.reject(new Error("no egress")) },
+			kv: {
+				async get() {
+					counter.calls++;
+					return null;
+				},
+			},
+		} as unknown as PluginContext;
+		const used = await cost(() => resolvePaymentGateways(ctx));
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["cancel-intents"].entry);
 	});
 
 	test("late-refunds entry: resolving the deployment's gateways (their secret reads)", async () => {
