@@ -476,8 +476,9 @@ export class InMemoryOrderStore implements OrderStore {
 		// FULL refund (finalized Σ reached the ceiling) → drive → refunded atomically
 		// with the ledger row (actor = the refunder). Finalized path only — a held
 		// reservation never flips; the finalized prior counts 'recorded' rows.
-		// A cancellation's refund never flips: the cancellation closes the order.
-		if (opts.driveFlip && refund.purpose !== "cancellation") {
+		// Only an admin refund in its own right flips: a cancellation closes its order
+		// itself, and a late payment's order is already terminal.
+		if (opts.driveFlip && (refund.purpose ?? "refund") === "refund") {
 			const finalizedTotal = this.#refunds
 				.filter((r) => r.orderId === input.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
@@ -555,7 +556,7 @@ export class InMemoryOrderStore implements OrderStore {
 				.filter((r) => r.orderId === row.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
 			if (
-				row.purpose !== "cancellation" &&
+				(row.purpose ?? "refund") === "refund" &&
 				finalizedTotal === ceiling &&
 				isLegalOrderTransition(stored.order.state, "refunded")
 			) {

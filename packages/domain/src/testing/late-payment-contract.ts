@@ -198,6 +198,9 @@ export function latePaymentContract(
 			expect(gateway.refundCalls[0]?.idempotencyKey).toBe(latePaymentRefundKey(s.intentId));
 			const refunds = await store.listRefunds(s.order.id);
 			expect(refunds.map((r) => [r.amount, r.status])).toEqual([[TOTAL_CENTS, "recorded"]]);
+			// Its own purpose: neither an admin refund (which would email "refund issued")
+			// nor a cancellation's (ADR-0026). The late-payment notice is its one email.
+			expect(refunds[0]?.purpose).toBe("late-payment");
 			expect(await store.getCapturedPayments(s.order.id)).toHaveLength(1);
 
 			const after = await state(h, s.order.id);

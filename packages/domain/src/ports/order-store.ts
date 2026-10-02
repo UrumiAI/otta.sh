@@ -1141,8 +1141,12 @@ export type RefundKind = "gateway" | "manual";
  *    other row but NEVER drives `→ refunded`: the cancellation is what closes the
  *    order, and `refunded` is terminal, so flipping first would make the cancel
  *    illegal and send the buyer a second email.
+ *  - `late-payment` — the automatic refund of a payment that landed after the order
+ *    had expired or been cancelled unpaid (`settleOrder`, ADR-0022). Its order is
+ *    already terminal, so it never flips anything, and the buyer hears about it
+ *    through its own `late-payment-refunded` notice — never an admin-refund email.
  */
-export type RefundPurpose = "refund" | "cancellation";
+export type RefundPurpose = "refund" | "cancellation" | "late-payment";
 
 /**
  * A refund row's lifecycle (ADR-0008, reserve-before-issue):

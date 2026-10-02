@@ -332,6 +332,7 @@ export async function refundLatePayment(
 		refundedBy: LATE_PAYMENT_REFUNDED_BY,
 		idempotencyKey: key,
 		providerRef: capture.providerRef,
+		purpose: "late-payment",
 	});
 	if (res.ok) return finish(deps, order.id, capture, res.refund);
 
@@ -685,6 +686,7 @@ async function resumeReservedLateRefund(
 			refundedBy: LATE_PAYMENT_REFUNDED_BY,
 			idempotencyKey: unit.retry.idempotencyKey,
 			providerRef: capture.providerRef,
+			purpose: "late-payment",
 		},
 		ledger,
 	);

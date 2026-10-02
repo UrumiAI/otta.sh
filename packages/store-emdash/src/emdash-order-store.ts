@@ -1017,7 +1017,7 @@ export class EmdashOrderStore implements OrderStore {
 				);
 				let fullyRefunded = false;
 				if (
-					entry.purpose !== "cancellation" &&
+					(entry.purpose ?? "refund") === "refund" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
@@ -1755,10 +1755,11 @@ export class EmdashOrderStore implements OrderStore {
 				// transform every other state change uses — so the state, the audit event,
 				// the outbox entry and the ledger row commit together. Only the FINALIZED
 				// sum counts: a held reservation never flips an order.
-				// A cancellation's refund never flips: the cancellation closes the order.
+				// Only an admin refund in its own right flips: a cancellation closes its order
+				// itself, and a late payment's order is already terminal.
 				if (
 					driveFlip &&
-					intent.purpose !== "cancellation" &&
+					(intent.purpose ?? "refund") === "refund" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
