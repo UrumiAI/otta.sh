@@ -142,6 +142,7 @@ import {
 	requireCurrencyCode,
 	requireDestination,
 	LOGIN_TOKEN_MAX,
+	BUYER_REF_MAX,
 	requireIdToken,
 	requireIdempotencyKey,
 	requireMoney,
@@ -916,7 +917,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	async createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
 		requireIdempotencyKey(idempotencyKey);
-		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
+		requireBoundedText("buyerRef", input.buyerRef, 1, BUYER_REF_MAX);
 		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);

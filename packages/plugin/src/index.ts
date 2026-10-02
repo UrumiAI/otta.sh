@@ -423,9 +423,16 @@ export {
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
 export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
+// The ship-to's per-field length bounds the domain enforces, for a site that
+// bounds its address inputs and refuses an over-long field as the address
+// error it is rather than a generic one.
+export { ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 // The shopper-facing cart quantity cap the routes enforce, for a site that
 // bounds its quantity field and names the limit instead of a generic failure.
 export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
+// The checkout email's (buyerRef's) bound the place route enforces, for a
+// site's email field.
+export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
 	type CheckoutFailureReason,
 	type CheckoutResult,

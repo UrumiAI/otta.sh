@@ -67,7 +67,7 @@
  * here to carry one, and a caller branches on the code.
  */
 
-import { isCodeShapedRegion } from "@otta-sh/domain";
+import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -93,6 +93,11 @@ export function isIdToken(value: string): boolean {
 /** A sign-in link token's ceiling. Exported so the verify route answers an
  *  over-long token as an invalid link instead of letting this client throw. */
 export const LOGIN_TOKEN_MAX = 400;
+
+/** A checkout's `buyerRef` (the buyer's email) ceiling — the wire schema's
+ *  `z.string().min(1).max(320)`. Exported so the place route's parser and a
+ *  storefront's email field use this one number. */
+export const BUYER_REF_MAX = 320;
 
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
@@ -270,20 +275,24 @@ export function requireShippingAddress(address: {
 	email?: string;
 	phone?: string;
 }): void {
-	requireBoundedText("shippingAddress.name", address.name, 1, 200);
-	requireBoundedText("shippingAddress.line1", address.line1, 1, 200);
+	// The domain's own bounds (ORDER_ADDRESS_MAX_LENGTHS), never copied literals:
+	// a bound that drifted from the domain's would refuse what it accepts, or
+	// let through what it then refuses as a generic failure.
+	const max = ORDER_ADDRESS_MAX_LENGTHS;
+	requireBoundedText("shippingAddress.name", address.name, 1, max.name);
+	requireBoundedText("shippingAddress.line1", address.line1, 1, max.line1);
 	if (address.line2 !== undefined)
-		requireBoundedText("shippingAddress.line2", address.line2, 0, 200);
-	requireBoundedText("shippingAddress.city", address.city, 1, 120);
+		requireBoundedText("shippingAddress.line2", address.line2, 0, max.line2);
+	requireBoundedText("shippingAddress.city", address.city, 1, max.city);
 	if (address.region !== undefined)
-		requireBoundedText("shippingAddress.region", address.region, 0, 120);
-	requireBoundedText("shippingAddress.postalCode", address.postalCode, 1, 32);
-	requireBoundedText("shippingAddress.country", address.country, 1, 100);
+		requireBoundedText("shippingAddress.region", address.region, 0, max.region);
+	requireBoundedText("shippingAddress.postalCode", address.postalCode, 1, max.postalCode);
+	requireBoundedText("shippingAddress.country", address.country, 1, max.country);
 	requireCodeShapes("shippingAddress", address.country, address.region);
 	if (address.email !== undefined)
-		requireBoundedText("shippingAddress.email", address.email, 0, 320);
+		requireBoundedText("shippingAddress.email", address.email, 0, max.email);
 	if (address.phone !== undefined)
-		requireBoundedText("shippingAddress.phone", address.phone, 0, 64);
+		requireBoundedText("shippingAddress.phone", address.phone, 0, max.phone);
 }
 
 /**

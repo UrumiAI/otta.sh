@@ -18,6 +18,7 @@
  *
  * Styles: `commerce.css` (`checkout-*`).
  */
+import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
 import StepTrack from "../../components/StepTrack.astro";
@@ -276,6 +277,7 @@ const {
 							name="email"
 							required
 							autocomplete="email"
+							maxlength={BUYER_REF_MAX}
 							aria-describedby="email-note"
 						/>
 						<span class="checkout-note" id="email-note">
@@ -320,30 +322,55 @@ const {
 										<span class="u-label">
 											Full name{summary.addressRequired && <span class="checkout-req">required</span>}
 										</span>
-										<input type="text" name="name" autocomplete="name" />
+										<input
+											type="text"
+											name="name"
+											autocomplete="name"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.name}
+										/>
 									</label>
 									<label class="checkout-field checkout-span2">
 										<span class="u-label">
 											Address line 1
 											{summary.addressRequired && <span class="checkout-req">required</span>}
 										</span>
-										<input type="text" name="line1" autocomplete="address-line1" />
+										<input
+											type="text"
+											name="line1"
+											autocomplete="address-line1"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line1}
+										/>
 									</label>
 									<label class="checkout-field checkout-span2">
 										<span class="u-label">Address line 2</span>
-										<input type="text" name="line2" autocomplete="address-line2" />
+										<input
+											type="text"
+											name="line2"
+											autocomplete="address-line2"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line2}
+										/>
 									</label>
 									<label class="checkout-field">
 										<span class="u-label">
 											City{summary.addressRequired && <span class="checkout-req">required</span>}
 										</span>
-										<input type="text" name="city" autocomplete="address-level2" />
+										<input
+											type="text"
+											name="city"
+											autocomplete="address-level2"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.city}
+										/>
 									</label>
 									<label class="checkout-field">
 										<span class="u-label">
 											Postal code{summary.addressRequired && <span class="checkout-req">required</span>}
 										</span>
-										<input type="text" name="postalCode" autocomplete="postal-code" />
+										<input
+											type="text"
+											name="postalCode"
+											autocomplete="postal-code"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.postalCode}
+										/>
 									</label>
 									{!showDelivery && (
 										<>
@@ -370,7 +397,12 @@ const {
 									)}
 									<label class="checkout-field checkout-span2">
 										<span class="u-label">Phone</span>
-										<input type="tel" name="phone" autocomplete="tel" />
+										<input
+											type="tel"
+											name="phone"
+											autocomplete="tel"
+											maxlength={ORDER_ADDRESS_MAX_LENGTHS.phone}
+										/>
 									</label>
 								</div>
 							</fieldset>

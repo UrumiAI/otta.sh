@@ -47,6 +47,7 @@ import {
 	type CartPricingWire,
 } from "./cart-pricing.js";
 import {
+	exceedsAddressBounds,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -535,7 +536,17 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 	return (routeCtx, ctx): Promise<CheckoutPlaceRouteResult> =>
 		renderGuard(STOREFRONT_CHECKOUT_PLACE_ROUTE, async () => {
 			const input = parseCheckoutPlaceInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null) {
+				// Everything else is well-formed and only the ship-to has a field over
+				// the domain's bound: that is the buyer's address being too long, the
+				// typed INVALID_SHIPPING_ADDRESS the domain would give — not a malformed
+				// call (QA U-6).
+				const { shippingAddress, ...rest } = routeCtx.input;
+				if (exceedsAddressBounds(shippingAddress) && parseCheckoutPlaceInput(rest) !== null) {
+					return { ok: false as const, reason: "INVALID_SHIPPING_ADDRESS" as const };
+				}
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.createOrder(
