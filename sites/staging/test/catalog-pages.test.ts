@@ -451,7 +451,7 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(/holdNote: holdNote\(cartHoldMinutes\)/);
 		expect(PDP_VIEW).toMatch(/<p class="pdp-hold-note">\s*\{model\.purchase\.holdNote\}/);
 		for (const source of [PDP, PDP_VIEW]) {
-			expect(source).not.toContain("holds one in stock for 15 minutes");
+			expect(source).not.toContain("for 15 minutes");
 			expect(source).not.toContain("CART_HOLD_TTL_MS");
 		}
 	});
