@@ -16,8 +16,8 @@
  *     must not have quietly changed what it posts.
  *
  * What is NOT here: the tape's rows, the catalog counts and the headline
- * fallbacks. Those moved to `src/lib/tape.ts` and are covered BEHAVIOURALLY in
- * `tape.test.ts` — a grep for `slice(0, TAPE_ROWS)` proved a line existed, not
+ * fallbacks. Those moved to `src/lib/tape.ts` and `src/lib/store-settings.ts`
+ * and are covered BEHAVIOURALLY in `tape.test.ts` / `store-settings.test.ts` — a grep for `slice(0, TAPE_ROWS)` proved a line existed, not
  * that a seventh product was dropped.
  *
  * Rendered behaviour (layout, focus rings, the dark palette) is verified in a
@@ -256,7 +256,7 @@ describe("§8 — the home hero and its degraded rule", () => {
 			expect(frontmatter, `${call} is read outside a try/catch`).toMatch(guard);
 		}
 		// And a thrown settings read must not become a placeholder name: the
-		// fallback is `{}`, which `storeThesis` already resolves (see tape.ts).
+		// fallback is `{}`, which `storeThesis` already resolves (see store-settings.ts).
 		expect(HOME).toMatch(/let settings: StoreSettings = \{\}/);
 		// The collection's non-throwing arm is inspected too, not just awaited.
 		expect(HOME).toContain("collection.error === undefined");

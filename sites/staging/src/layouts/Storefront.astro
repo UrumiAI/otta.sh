@@ -49,6 +49,8 @@ import type {
 import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
 import { requestThemePreview, themePreviewExitHref } from "../lib/theme-preview.js";
 import { readBag } from "../lib/bag.js";
+import { documentTitle } from "../lib/document-title.js";
+import { storeTitle } from "../lib/store-settings.js";
 import { STORE_THEMES } from "../themes/manifest.js";
 import { activeTheme } from "../themes/resolve.js";
 
@@ -178,8 +180,11 @@ const bagPending = drawsBag
 	: null;
 
 await settingsRead;
-const siteTitle = settings.title ?? "Otta";
-const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+/* The store's name by the ONE rule the home page also titles itself with
+   (`storeTitle`: a blank or padded setting reads as unset, "Otta" as the
+   fallback), so the shell and the home page cannot disagree about it. */
+const siteTitle = storeTitle(settings);
+const fullTitle = documentTitle(title, siteTitle);
 
 const bag = bagPending === null ? null : await bagPending;
 /* The page's own count wins; the bag's read fills it in where the page read none. */

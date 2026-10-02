@@ -25,16 +25,13 @@ import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../layouts/Storefront.astro";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../lib/products.js";
+import { exactCount, shopLinkLabel, tapeRows, TAPE_FETCH_LIMIT } from "../lib/tape.js";
 import {
-	exactCount,
-	shopLinkLabel,
 	storeDescription,
 	storeThesis,
 	storeTitle,
-	tapeRows,
-	TAPE_FETCH_LIMIT,
 	type StoreSettings,
-} from "../lib/tape.js";
+} from "../lib/store-settings.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../lib/otta-api.js";
 import type { HomeModel } from "../themes/contract.js";
 

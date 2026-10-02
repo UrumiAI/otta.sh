@@ -44,9 +44,6 @@ export const TAPE_ROWS = 6;
  */
 export const TAPE_FETCH_LIMIT = TAPE_ROWS * 2;
 
-/** The name a store falls back to when it has neither tagline nor title. */
-export const FALLBACK_THESIS = "Otta";
-
 export interface TapeRow {
 	/** The sku — the store's own name for the thing. A product with no
 	 *  commerce row never reaches this list, so the title fallback is a
@@ -153,46 +150,4 @@ export function itemCountLabel(count: number | null): string | null {
 export function shopLinkLabel(count: number | null): string {
 	if (count === null) return "Shop everything";
 	return count > 1 ? `Shop all ${count} items` : "Shop";
-}
-
-/** The subset of EmDash site settings the home page reads. */
-export interface StoreSettings {
-	title?: string | undefined;
-	tagline?: string | undefined;
-}
-
-/** A setting the operator left blank is the same as one they never set. A
- *  `??` chain disagrees — `""` is not nullish — and an operator who clears the
- *  tagline field gets the biggest type on the site rendering nothing.
- *
- *  Format characters go before the trim, not after: `trim` strips whitespace,
- *  and a zero-width space (U+200B) is not whitespace. A field cleared by
- *  selecting and deleting in a rich editor routinely keeps one behind, and it
- *  would otherwise be a "set" tagline that renders as an empty `<h1>` — the
- *  exact bug this function exists to prevent, arriving by another door. */
-function filled(value: string | undefined): string {
-	return (value ?? "").replace(/\p{Cf}/gu, "").trim();
-}
-
-/**
- * The line the home page sets in its loudest type.
- *
- * The store's own tagline where it has one; its name where it does not — the
- * wordmark above already carries the name, so repeating it there wastes the
- * page's biggest type on a word the shopper just read, but a nameless headline
- * is worse.
- */
-export function storeThesis(settings: StoreSettings): string {
-	return filled(settings.tagline) || filled(settings.title) || FALLBACK_THESIS;
-}
-
-/** The `<title>` the page sets. */
-export function storeTitle(settings: StoreSettings): string {
-	return filled(settings.title) || FALLBACK_THESIS;
-}
-
-/** The meta description, or `undefined` — a blank tagline must not become a
- *  `<meta content="">`, which is worse for a search engine than no tag. */
-export function storeDescription(settings: StoreSettings): string | undefined {
-	return filled(settings.tagline) || undefined;
 }
