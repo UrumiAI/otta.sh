@@ -4878,7 +4878,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		});
 
 		test("a coupon window bound is STORED canonically, so an untouched save can never move it", async () => {
-			const windowOf = async (code: string) =>
+			const storedWindowOf = async (code: string) =>
 				(await client.listCoupons({ search: code })).coupons[0];
 			const base = { type: "fixed_amount", amountCents: 500, currency: "USD" };
 			expect(
@@ -4901,8 +4901,8 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					})
 				).ok,
 			).toBe(true);
-			expect((await windowOf("CANONZ"))?.startsAt).toBe("2026-10-02T12:00:00.000Z");
-			expect((await windowOf("CANONOFF"))?.expiresAt).toBe("2026-10-02T12:00:00.000Z");
+			expect((await storedWindowOf("CANONZ"))?.startsAt).toBe("2026-10-02T12:00:00.000Z");
+			expect((await storedWindowOf("CANONOFF"))?.expiresAt).toBe("2026-10-02T12:00:00.000Z");
 			// ISO's end-of-day `24:00` is accepted and stored as the next midnight it denotes.
 			expect(
 				(
@@ -4912,7 +4912,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					})
 				).ok,
 			).toBe(true);
-			expect((await windowOf("CANONZ"))?.expiresAt).toBe("2026-10-03T00:00:00.000Z");
+			expect((await storedWindowOf("CANONZ"))?.expiresAt).toBe("2026-10-03T00:00:00.000Z");
 		});
 
 		test("a coupon window bound that is not a zoned ISO instant is refused on create and edit", async () => {
@@ -5054,7 +5054,9 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		test("retireCoupon on a coupon that already ended answers already_ended and writes nothing", async () => {
 			await retirable("ret-old", { expiresAt: "2000-01-01T00:00:00Z" });
 			expect(await client.retireCoupon("ret-old")).toEqual({ ok: false, reason: "already_ended" });
-			expect((await windowOf("RET-OLD"))?.expiresAt).toBe("2000-01-01T00:00:00Z");
+			// Unchanged since its create, which stores the bound canonically
+			// (fix/coupon-window-compare): "…00Z" is kept as "…00.000Z".
+			expect((await windowOf("RET-OLD"))?.expiresAt).toBe("2000-01-01T00:00:00.000Z");
 		});
 
 		test("retireCoupon on an unknown coupon is not_found", async () => {
