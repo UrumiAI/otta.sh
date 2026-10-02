@@ -137,6 +137,7 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "../commerce/in-process-commerce-stores.js";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import type { PluginContext } from "../types.js";
 import type {
 	AddNoteResult,
@@ -411,6 +412,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				inventoryStore: this.#stores.inventory,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				// A busy store after the refund reads "the store was busy", not "did not finish".
+				isRetryable: isRetryableStorageBusy,
 			},
 			gateway,
 			{
@@ -456,6 +459,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 					status: 409,
 					reason: res.reason,
 					refund: { amountCents: res.refund.amount, currency: res.refund.currency },
+					retryable: res.retryable,
 				};
 			case "ORDER_NOT_FOUND":
 				return { ok: false, status: 404, reason: res.reason };

@@ -604,7 +604,7 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 		);
 	}
 	if (!result.ok && result.reason === "CANCEL_INCOMPLETE_AFTER_REFUND" && result.refund) {
-		return applied(cancelIncompleteNotice(result.refund));
+		return applied(cancelIncompleteNotice(result.refund, result.retryable === true));
 	}
 	if (!result.ok) return applied(cancelFailureNotice(result.reason, result.refundFailure));
 	if (!result.cancelled) {
@@ -662,11 +662,17 @@ function skippedSentence(skipped: ReadonlyArray<{ sku: string; quantity: number 
  * still paid and flagged; clicking Cancel order again finishes it, and its refund
  * replays under its key rather than repeating.
  */
-function cancelIncompleteNotice(refund: { amountCents: number; currency: string }): Notice {
+function cancelIncompleteNotice(
+	refund: { amountCents: number; currency: string },
+	busy: boolean,
+): Notice {
+	const money = formatTotal(refund.amountCents, refund.currency);
 	return {
 		variant: "error",
 		title: "Refunded, but the cancel didn’t finish",
-		description: `Refunded ${formatTotal(refund.amountCents, refund.currency)}, but the cancel didn’t finish — click Cancel order again (it will not refund twice).`,
+		description: busy
+			? `Refunded ${money}; the store was busy — click Cancel order again (it will not refund twice).`
+			: `Refunded ${money}, but the cancel didn’t finish — click Cancel order again (it will not refund twice).`,
 	};
 }
 

@@ -408,6 +408,9 @@ export type CancelOrderResult =
 			 *  the units restocked. */
 			refund?: { amountCents: number; currency: string } | null;
 			restockedUnits?: number;
+			/** With `reason: "CANCEL_INCOMPLETE_AFTER_REFUND"`: the failure was a busy
+			 *  store, so the copy says so. */
+			retryable?: boolean;
 			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: the state the order moved to. */
 			movedTo?: string | null;
 	  };

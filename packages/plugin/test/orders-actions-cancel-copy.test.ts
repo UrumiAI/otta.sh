@@ -103,4 +103,17 @@ describe("the cancel notices when the money and the order part ways", () => {
 		expect(description).toContain("2 items returned to stock");
 		expect(description).not.toContain("Nothing was returned to stock");
 	});
+
+	test("a busy store after the refund says so, and that clicking again will not refund twice", async () => {
+		const result = await cancel({
+			ok: false,
+			status: 409,
+			reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
+			refund: { amountCents: 2400, currency: "USD" },
+			retryable: true,
+		});
+		expect(result.notice?.description).toBe(
+			"Refunded $24.00; the store was busy — click Cancel order again (it will not refund twice).",
+		);
+	});
 });
