@@ -64,8 +64,16 @@ const { rows } = model;
 					</div>
 					{rows.map((row) => (
 						<div class="home-row" role="row">
-							<span class="u-mono home-item" role="cell">
-								{row.item}
+							{/* The NAME leads and is the link — the shelf on the front
+							    door is a way in, and a shopper shops by name. The
+							    sku drops beneath it as the reference, the Ledger's
+							    pattern. The anchor sits INSIDE the cell so the
+							    table roles stay row → cell. */}
+							<span class="home-item" role="cell">
+								<a class="home-item-link" href={row.href}>
+									{row.title}
+								</a>
+								{row.sku !== null && <span class="u-mono home-sku">{row.sku}</span>}
 							</span>
 							{/* The component, not a copy of it: the tape and the
 							    catalog card must not disagree about the same

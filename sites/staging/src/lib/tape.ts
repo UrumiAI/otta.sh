@@ -12,6 +12,7 @@
  * without a CMS, a commerce service or a DOM.
  */
 import type { ProductViewModel } from "@otta-sh/plugin";
+import { productKey } from "./products.js";
 
 /**
  * How many rows the hero tape shows.
@@ -48,10 +49,19 @@ export const TAPE_FETCH_LIMIT = TAPE_ROWS * 2;
 export const FALLBACK_THESIS = "Otta";
 
 export interface TapeRow {
-	/** The sku — the store's own name for the thing. A product with no
-	 *  commerce row never reaches this list, so the title fallback is a
-	 *  belt-and-braces for a priced product whose sku is somehow absent. */
-	item: string;
+	/**
+	 * The product's name — what the row is CALLED. The tape once printed the
+	 * sku here as "the store's own name for the thing", and QA read the result
+	 * (OTTA-STICKERS / OTTA-MUG / OTTA-TEE) as a stock sheet rather than a
+	 * shelf: a shopper shops by name.
+	 */
+	title: string;
+	/** The sku, kept as the reference beneath the name. `null` for a priced
+	 *  product whose sku is somehow absent — the name then stands alone. */
+	sku: string | null;
+	/** The product's page — the same target its catalog card links to, so the
+	 *  shelf on the front door is a way in, not a picture of one. */
+	href: string;
 	/** Pre-formatted, straight off the view model. Never assembled (§7). */
 	price: string;
 	/** The availability TOKEN in words. The view model carries no count, so the
@@ -97,7 +107,11 @@ export function tapeRows(
 			const soldOut = product.availability === "out_of_stock";
 			return [
 				{
-					item: product.sku ?? product.title,
+					title: product.title,
+					sku: product.sku,
+					/* The rule the home page's cards and the shop's use: the view
+					   model's own url, else the product's key under /products. */
+					href: product.url ?? `/products/${productKey(product)}`,
 					price: product.price.formatted,
 					stock: soldOut ? "Sold out" : product.availability === "in_stock" ? "In stock" : "",
 					soldOut,
