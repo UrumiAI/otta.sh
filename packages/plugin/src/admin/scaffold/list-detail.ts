@@ -454,9 +454,64 @@ function humanFieldName(field: string): string {
 /** The one boundary reason an operator can actually trip from a text field gets
  *  words they can act on; every other reason is already plain. */
 function humanReason(reason: string): string {
+	// The boundary's one reason covers BOTH a space and a non-ASCII character
+	// (`ID_CHARSET`), and this net has only the reason, not the value — so the
+	// words name both, in `id-input.ts`'s vocabulary.
 	return reason === "must be printable ASCII with no whitespace"
-		? "can't contain spaces or control characters"
+		? "can only use plain letters, digits and punctuation — no spaces or accented characters"
 		: reason;
+}
+
+/** Client methods that only READ: a read verb followed by a capital or nothing
+ *  (`listZones`, `get`), so `issueRefund` or `listen…` is not mistaken for one.
+ *  Everything else is treated as a possible write — the conservative default,
+ *  since a wrongly-flagged read only costs the friendlier banner, while a
+ *  wrongly-trusted write would make it lie. */
+const READ_METHOD = /^(get|list|count|find|read|load|search|has|is)(?:[A-Z]|$)/;
+
+/**
+ * Watch the client a custom action is handed, so the refusal banner's "Nothing
+ * was changed" is a STRUCTURAL fact rather than a convention every action must
+ * keep.
+ *
+ * A non-read call counts as a possible write FROM THE MOMENT IT IS CALLED — a
+ * sibling in a `Promise.all` can be refused while it is still in flight and may
+ * yet land — and is un-counted only when THAT SAME call is refused with
+ * `CommerceInputError` (whose contract is "refused before any write"). So
+ * `wrote()` is true while any write is pending or has completed.
+ *
+ * A Proxy that calls through on the REAL target (`apply(target, …)`), so a client
+ * class's private fields keep working; non-function properties pass untouched.
+ * A non-object client (a test's literal) is handed over as-is.
+ */
+function watchWrites(client: unknown): { client: unknown; wrote(): boolean } {
+	let writes = 0;
+	const wrote = (): boolean => writes > 0;
+	if (client === null || typeof client !== "object") return { client, wrote };
+	const target = client as Record<PropertyKey, unknown>;
+	const proxy = new Proxy(target, {
+		get(obj, prop) {
+			const value = Reflect.get(obj, prop, obj);
+			if (typeof value !== "function" || typeof prop !== "string" || READ_METHOD.test(prop)) {
+				return typeof value === "function" ? value.bind(obj) : value;
+			}
+			return (...args: unknown[]): unknown => {
+				writes += 1;
+				const refused = (err: unknown): never => {
+					if (isCommerceInputError(err)) writes -= 1;
+					throw err;
+				};
+				let result: unknown;
+				try {
+					result = (value as (...a: unknown[]) => unknown).apply(obj, args);
+				} catch (err) {
+					return refused(err);
+				}
+				return result instanceof Promise ? result.catch(refused) : result;
+			};
+		},
+	});
+	return { client: proxy, wrote };
 }
 
 /**
@@ -672,10 +727,11 @@ function createDispatcher<RenderState>(
 		// -- custom (side-effecting) actions --------------------------------------
 		const custom = action === undefined ? undefined : config.customActions?.[action];
 		if (custom !== undefined) {
+			const watched = watchWrites(client);
 			try {
 				return (await custom({
 					input,
-					client,
+					client: watched.client,
 					carried: readCarrier(input),
 					carriedPath: readNavPath(input),
 					// The render-state argument is forwarded UNTOUCHED and un-inspected: the
@@ -691,7 +747,10 @@ function createDispatcher<RenderState>(
 				// A REFUSED INPUT is the exception to everything below: it was refused
 				// before any read or write (see `inputRefusedNotice`), so its outcome is
 				// known, and saying otherwise is the scary-and-false banner QA reported.
-				if (isCommerceInputError(err)) {
+				// ONLY WHILE NOTHING WAS WRITTEN. "Nothing was changed" is a claim about
+				// the whole action, not about the call that threw: an action that wrote
+				// and THEN tripped a refusal has an outcome the operator must re-check.
+				if (isCommerceInputError(err) && !watched.wrote()) {
 					let refusedBlocks: Block[];
 					try {
 						refusedBlocks = (await rootList()).blocks;
