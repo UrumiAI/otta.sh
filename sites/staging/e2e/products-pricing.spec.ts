@@ -97,7 +97,7 @@ test.describe("pricing and stock live in the products collection", () => {
 		if ((await count.count()) > 0) {
 			const before = Number(await count.textContent());
 			await cardsGroup.getByLabel("Add or remove stock").fill("2");
-			await cardsGroup.getByRole("button", { name: "+ Add" }).click();
+			await cardsGroup.getByRole("button", { name: "Add", exact: true }).click();
 			await expect(count).toHaveText(String(before + 2));
 		}
 		await info.attach("pricing-cards", {

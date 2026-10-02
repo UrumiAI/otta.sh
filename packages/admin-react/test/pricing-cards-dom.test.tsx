@@ -489,7 +489,7 @@ test("Add stock is one click; it sends the count the merchant saw and reports th
 	});
 	const c = await mountPanel();
 	await type(input(c, "Add or remove stock"), "5");
-	await fire(button(c, "+ Add"), "click");
+	await fire(button(c, "Add"), "click");
 	await flush();
 	expect(writes()).toEqual([
 		{
@@ -505,12 +505,12 @@ test("Remove asks first, and never offers to take more than there is", async () 
 	apiFetch.mockImplementation(() => Promise.resolve(detail({ onHand: 3 })));
 	const c = await mountPanel();
 	await type(input(c, "Add or remove stock"), "5");
-	await fire(button(c, "− Remove"), "click");
+	await fire(button(c, "Remove"), "click");
 	expect(c.textContent).toContain("You only have 3 in stock");
 	expect(writes()).toEqual([]);
 
 	await type(input(c, "Add or remove stock"), "2");
-	await fire(button(c, "− Remove"), "click");
+	await fire(button(c, "Remove"), "click");
 	const dialog = c.querySelector('[data-testid="otta-confirm"]');
 	expect(dialog?.textContent).toContain("Remove 2 from stock?");
 	expect(dialog?.textContent).toContain("You'll have 1 left.");

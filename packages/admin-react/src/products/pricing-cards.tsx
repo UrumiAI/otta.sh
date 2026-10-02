@@ -86,12 +86,11 @@ export function PricingStockField(_props: PricingFieldProps): React.ReactElement
 	const productId = productIdFromPath(globalThis.location?.pathname ?? "");
 	if (productId === null) {
 		return (
-			<section className="otta-pricing otta-pricing-card" aria-label="Pricing & stock">
-				<h3 className="otta-pricing-card-title">Pricing &amp; stock</h3>
+			<Card title="Pricing & stock">
 				<p className="otta-pricing-hint">
 					Save this product first, then set its price and stock here.
 				</p>
-			</section>
+			</Card>
 		);
 	}
 	return <PricingStockEditor key={productId} productId={productId} />;
@@ -115,7 +114,8 @@ type LoadState =
 
 type Status = { readonly tone: "ok" | "fail" | "muted"; readonly text: string } | null;
 
-function Chevron(): React.ReactElement {
+/** One stroke icon set, drawn here: 16px box, 1.6 stroke, round caps. */
+function Icon({ d }: { d: string }): React.ReactElement {
 	return (
 		<svg
 			width="16"
@@ -128,8 +128,58 @@ function Chevron(): React.ReactElement {
 			strokeLinejoin="round"
 			aria-hidden="true"
 		>
-			<path d="M4 6l4 4 4-4" />
+			<path d={d} />
 		</svg>
+	);
+}
+const CHEVRON = "M4 6l4 4 4-4";
+const PLUS = "M8 3.5v9M3.5 8h9";
+const MINUS = "M3.5 8h9";
+const CHECK = "M3.5 8.5l3 3 6-7";
+
+/** The card frame every state sits in, so loading, refusal and trash keep the
+ *  shape of the cards they stand in for. */
+function Card({
+	title,
+	children,
+	busy,
+	alert,
+}: {
+	title: string;
+	children: React.ReactNode;
+	busy?: boolean;
+	alert?: boolean;
+}): React.ReactElement {
+	return (
+		<section
+			className="otta-pricing otta-pricing-card"
+			aria-label={title}
+			aria-busy={busy === true ? true : undefined}
+			role={alert === true ? "alert" : undefined}
+		>
+			<h3 className="otta-pricing-card-title">{title}</h3>
+			{children}
+		</section>
+	);
+}
+
+/** A field's label row: the label, and "Optional" set apart at the far end. */
+function LabelRow({
+	htmlFor,
+	children,
+	optional,
+}: {
+	htmlFor: string;
+	children: React.ReactNode;
+	optional?: boolean;
+}): React.ReactElement {
+	return (
+		<div className="otta-pricing-labelrow">
+			<label className="otta-pricing-label" htmlFor={htmlFor}>
+				{children}
+			</label>
+			{optional === true && <span className="otta-pricing-optional">Optional</span>}
+		</div>
 	);
 }
 
@@ -155,10 +205,9 @@ function MoneyInput({
 	const errorId = `${id}-error`;
 	return (
 		<div className="otta-pricing-field">
-			<label className="otta-pricing-label" htmlFor={id}>
+			<LabelRow htmlFor={id} optional={optional}>
 				{label}
-				{optional === true && <span className="otta-pricing-optional"> · optional</span>}
-			</label>
+			</LabelRow>
 			<div className="otta-pricing-input" data-invalid={problem !== undefined}>
 				<span className="otta-pricing-affix" aria-hidden="true">
 					{currency}
@@ -318,24 +367,23 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 	if (load.status === "loading" || (load.status === "ready" && draft === null)) {
 		return (
-			<div className="otta-pricing" aria-busy="true">
+			<Card title="Pricing & stock" busy>
 				<p className="otta-pricing-hint">Loading price and stock…</p>
-			</div>
+			</Card>
 		);
 	}
 	if (load.status === "failed" && load.forbidden) {
 		// A user who can edit products but is not a store admin: the route behind
 		// these cards answers 403 every time, so this is a quiet fact, not an alarm.
 		return (
-			<section className="otta-pricing otta-pricing-card" aria-label="Pricing & stock">
-				<h3 className="otta-pricing-card-title">Pricing &amp; stock</h3>
+			<Card title="Pricing & stock">
 				<p className="otta-pricing-hint">Only store admins can change price and stock.</p>
-			</section>
+			</Card>
 		);
 	}
 	if (load.status === "failed") {
 		return (
-			<div className="otta-pricing" role="alert">
+			<Card title="Pricing & stock" alert>
 				<div className="otta-pricing-callout">
 					<strong>{load.title}</strong>
 					<span>{load.description}</span>
@@ -352,19 +400,19 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						Try again
 					</button>
 				</div>
-			</div>
+			</Card>
 		);
 	}
 
 	const { record: p, taxClasses, threshold } = load;
 	if (p.deletedAt !== null) {
 		return (
-			<div className="otta-pricing">
+			<Card title="Pricing & stock">
 				<div className="otta-pricing-callout">
 					<strong>This product is in the trash</strong>
 					<span>Its price and stock can't be changed. Orders that included it are unaffected.</span>
 				</div>
-			</div>
+			</Card>
 		);
 	}
 
@@ -617,9 +665,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						/>
 						{!priced && (
 							<div className="otta-pricing-field">
-								<label className="otta-pricing-label" htmlFor={id("currency")}>
-									Currency
-								</label>
+								<LabelRow htmlFor={id("currency")}>Currency</LabelRow>
 								<div className="otta-pricing-input">
 									<select
 										id={id("currency")}
@@ -663,6 +709,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								</span>
 							)}
 						</div>
+					</div>
+					<hr className="otta-pricing-rule" />
+					<div className="otta-pricing-grid">
 						<div className="otta-pricing-field">
 							<MoneyInput
 								id={id("cost")}
@@ -671,30 +720,40 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								currency={currency}
 								value={d.unitCost}
 								problem={shown.unitCost}
-								describedBy={id("cost-note")}
+								describedBy={`${id("cost-note")} ${id("cost-margin")}`}
 								onChange={set("unitCost")}
 							/>
-							{shown.unitCost === undefined &&
-								(margin === null ? (
-									<span id={id("cost-note")} className="otta-pricing-hint">
-										Customers won't see this.
-									</span>
-								) : (
-									<div id={id("cost-note")} className="otta-pricing-margin">
-										<span>
-											Profit <strong>{margin.profit}</strong>
-										</span>
-										<span>
-											Margin <strong>{margin.margin}</strong>
-										</span>
+							{shown.unitCost === undefined && (
+								<span id={id("cost-note")} className="otta-pricing-hint">
+									Customers won't see this.
+								</span>
+							)}
+						</div>
+						<div
+							id={id("cost-margin")}
+							className="otta-pricing-readout"
+							data-empty={margin === null}
+						>
+							{margin === null ? (
+								<span className="otta-pricing-hint">
+									Add a cost to see your profit and margin on each sale.
+								</span>
+							) : (
+								<>
+									<div className="otta-pricing-stat">
+										<span>Profit</span> <strong>{margin.profit}</strong>
 									</div>
-								))}
+									<div className="otta-pricing-stat">
+										<span>Margin</span> <strong>{margin.margin}</strong>
+									</div>
+								</>
+							)}
 						</div>
 					</div>
 				</section>
 
 				<section className="otta-pricing-card" aria-labelledby={id("h-inventory")}>
-					<div className="otta-pricing-head">
+					<div className="otta-pricing-card-head">
 						<h3 id={id("h-inventory")} className="otta-pricing-card-title">
 							Inventory
 						</h3>
@@ -710,75 +769,72 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						)}
 					</div>
 
+					{hasSku && p.onHand !== null && (
+						<div className="otta-pricing-field">
+							<div className="otta-pricing-stock">
+								<p className="otta-pricing-count">
+									<strong data-testid="otta-on-hand">{p.onHand}</strong>
+									<span>in stock</span>
+								</p>
+								<div className="otta-pricing-adjust">
+									<label htmlFor={id("qty")}>Add or remove stock</label>
+									<div className="otta-pricing-stepper">
+										<button
+											type="button"
+											disabled={moving}
+											onClick={() => {
+												startMove("remove");
+											}}
+										>
+											<Icon d={MINUS} />
+											Remove
+										</button>
+										<input
+											id={id("qty")}
+											className="otta-pricing-qty"
+											inputMode="numeric"
+											autoComplete="off"
+											value={qty}
+											aria-describedby={id("stock-msg")}
+											onChange={(event) => {
+												setQty(event.target.value);
+												setStockMsg(null);
+											}}
+										/>
+										<button
+											type="button"
+											disabled={moving}
+											onClick={() => {
+												startMove("add");
+											}}
+										>
+											<Icon d={PLUS} />
+											Add
+										</button>
+									</div>
+								</div>
+							</div>
+							<span
+								id={id("stock-msg")}
+								className="otta-pricing-status"
+								role="status"
+								data-tone={stockMsg?.tone}
+							>
+								{stockMsg?.text ?? ""}
+							</span>
+						</div>
+					)}
+					{hasSku && p.onHand === null && (
+						<div className="otta-pricing-callout">
+							<span>
+								Stock isn't tracked for this SKU yet. Contact your developer to set it up.
+							</span>
+						</div>
+					)}
+
 					<div className="otta-pricing-grid">
 						<div className="otta-pricing-field">
-							{hasSku && p.onHand !== null && (
-								<>
-									<p className="otta-pricing-count">
-										<strong data-testid="otta-on-hand">{p.onHand}</strong>
-										<span>in stock</span>
-									</p>
-									<div className="otta-pricing-field">
-										<label className="otta-pricing-hint" htmlFor={id("qty")}>
-											Add or remove stock
-										</label>
-										<div className="otta-pricing-stockrow">
-											<input
-												id={id("qty")}
-												className="otta-pricing-qty"
-												inputMode="numeric"
-												autoComplete="off"
-												value={qty}
-												aria-describedby={id("stock-msg")}
-												onChange={(event) => {
-													setQty(event.target.value);
-													setStockMsg(null);
-												}}
-											/>
-											<button
-												type="button"
-												className="otta-pricing-btn"
-												data-grow="true"
-												disabled={moving}
-												onClick={() => {
-													startMove("add");
-												}}
-											>
-												+ Add
-											</button>
-											<button
-												type="button"
-												className="otta-pricing-btn"
-												data-grow="true"
-												disabled={moving}
-												onClick={() => {
-													startMove("remove");
-												}}
-											>
-												− Remove
-											</button>
-										</div>
-										<span
-											id={id("stock-msg")}
-											className="otta-pricing-status"
-											role="status"
-											data-tone={stockMsg?.tone}
-										>
-											{stockMsg?.text ?? ""}
-										</span>
-									</div>
-								</>
-							)}
-							{hasSku && p.onHand === null && (
-								<p className="otta-pricing-hint">
-									Stock isn't tracked for this SKU yet. Contact your developer to set it up.
-								</p>
-							)}
-						</div>
-						<div className="otta-pricing-field">
-							<label className="otta-pricing-label" htmlFor={id("sku")}>
-								SKU <span className="otta-pricing-optional">· your code for this product</span>
-							</label>
+							<LabelRow htmlFor={id("sku")}>SKU</LabelRow>
 							<div className="otta-pricing-input" data-invalid={skuProblem !== null}>
 								<input
 									id={id("sku")}
@@ -797,11 +853,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 									{skuProblem}
 								</span>
 							) : (
-								!hasSku && (
-									<span id={id("sku-note")} className="otta-pricing-hint">
-										Add a SKU and save to start tracking stock.
-									</span>
-								)
+								<span id={id("sku-note")} className="otta-pricing-hint">
+									{hasSku
+										? "Your own code for this product."
+										: "Add a SKU and save to start tracking stock."}
+								</span>
 							)}
 						</div>
 					</div>
@@ -822,13 +878,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								{weightNote} · {taxName}
 							</span>
 						</span>
-						<Chevron />
+						<span className="otta-pricing-chevron">
+							<Icon d={CHEVRON} />
+						</span>
 					</summary>
-					<div className="otta-pricing-details">
-						<fieldset style={{ border: 0, margin: 0, padding: 0, minInlineSize: 0 }}>
-							<legend className="otta-pricing-label" style={{ padding: 0, marginBlockEnd: 6 }}>
-								Product type
-							</legend>
+					<div className="otta-pricing-details otta-pricing-grid">
+						<fieldset className="otta-pricing-fieldset">
+							<legend className="otta-pricing-label">Product type</legend>
 							<div className="otta-pricing-segment">
 								{(["physical", "digital"] as const).map((kind) => (
 									<label key={kind} data-checked={d.productKind === kind}>
@@ -847,88 +903,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								))}
 							</div>
 						</fieldset>
-						{d.productKind !== "digital" && (
-							<>
-								<div className="otta-pricing-field">
-									<label className="otta-pricing-label" htmlFor={id("weight")}>
-										Weight
-									</label>
-									<div
-										className="otta-pricing-input"
-										data-invalid={shown.weightGrams !== undefined}
-									>
-										<input
-											id={id("weight")}
-											aria-invalid={shown.weightGrams !== undefined}
-											aria-describedby={id("weight-note")}
-											className="otta-pricing-num"
-											inputMode="numeric"
-											autoComplete="off"
-											value={d.weightGrams}
-											onChange={(event) => {
-												set("weightGrams")(event.target.value);
-											}}
-										/>
-										<span className="otta-pricing-affix">g</span>
-									</div>
-									{shown.weightGrams !== undefined ? (
-										<span id={id("weight-note")} className="otta-pricing-error">
-											{shown.weightGrams}
-										</span>
-									) : (
-										<span id={id("weight-note")} className="otta-pricing-hint">
-											Used to work out shipping costs.
-										</span>
-									)}
-								</div>
-								<div className="otta-pricing-field">
-									<span className="otta-pricing-label" id={id("size")}>
-										Size{" "}
-										<span className="otta-pricing-optional">· length × width × height, mm</span>
-									</span>
-									<div className="otta-pricing-sizes" role="group" aria-labelledby={id("size")}>
-										{(
-											[
-												["lengthMm", "Length"],
-												["widthMm", "Width"],
-												["heightMm", "Height"],
-											] as const
-										).map(([field, name]) => (
-											<div
-												key={field}
-												className="otta-pricing-input"
-												data-invalid={shown[field] !== undefined}
-											>
-												<input
-													aria-label={`${name} in millimetres`}
-													aria-invalid={shown[field] !== undefined}
-													aria-describedby={
-														shown[field] !== undefined ? id("size-error") : undefined
-													}
-													className="otta-pricing-num"
-													inputMode="numeric"
-													autoComplete="off"
-													placeholder={name}
-													value={d[field]}
-													onChange={(event) => {
-														set(field)(event.target.value);
-													}}
-												/>
-											</div>
-										))}
-									</div>
-									{(shown.lengthMm ?? shown.widthMm ?? shown.heightMm) !== undefined && (
-										<span id={id("size-error")} className="otta-pricing-error">
-											{shown.lengthMm ?? shown.widthMm ?? shown.heightMm}
-										</span>
-									)}
-								</div>
-							</>
-						)}
 						<div className="otta-pricing-field">
-							<label className="otta-pricing-label" htmlFor={id("tax")}>
-								Tax class
-							</label>
+							<LabelRow htmlFor={id("tax")}>Tax class</LabelRow>
 							<div className="otta-pricing-input">
 								<select
 									id={id("tax")}
@@ -949,11 +925,107 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								</select>
 							</div>
 						</div>
+						{d.productKind !== "digital" && (
+							<>
+								<div className="otta-pricing-field">
+									<LabelRow htmlFor={id("weight")}>Weight</LabelRow>
+									<div
+										className="otta-pricing-input"
+										data-invalid={shown.weightGrams !== undefined}
+									>
+										<input
+											id={id("weight")}
+											aria-invalid={shown.weightGrams !== undefined}
+											aria-describedby={id("weight-note")}
+											className="otta-pricing-num"
+											inputMode="numeric"
+											autoComplete="off"
+											placeholder="0"
+											value={d.weightGrams}
+											onChange={(event) => {
+												set("weightGrams")(event.target.value);
+											}}
+										/>
+										<span className="otta-pricing-affix">g</span>
+									</div>
+									{shown.weightGrams !== undefined ? (
+										<span id={id("weight-note")} className="otta-pricing-error">
+											{shown.weightGrams}
+										</span>
+									) : (
+										<span id={id("weight-note")} className="otta-pricing-hint">
+											Used to work out shipping costs.
+										</span>
+									)}
+								</div>
+								<div className="otta-pricing-field">
+									<span className="otta-pricing-label" id={id("size")}>
+										Size
+									</span>
+									<div
+										className="otta-pricing-input otta-pricing-dims"
+										role="group"
+										aria-labelledby={id("size")}
+										data-invalid={(shown.lengthMm ?? shown.widthMm ?? shown.heightMm) !== undefined}
+									>
+										{(
+											[
+												["lengthMm", "Length"],
+												["widthMm", "Width"],
+												["heightMm", "Height"],
+											] as const
+										).map(([field, name], index) => (
+											<React.Fragment key={field}>
+												{index > 0 && (
+													<span className="otta-pricing-times" aria-hidden="true">
+														×
+													</span>
+												)}
+												<input
+													aria-label={`${name} in millimetres`}
+													aria-invalid={shown[field] !== undefined}
+													aria-describedby={
+														shown[field] !== undefined ? id("size-error") : undefined
+													}
+													className="otta-pricing-num"
+													inputMode="numeric"
+													autoComplete="off"
+													placeholder={name}
+													value={d[field]}
+													onChange={(event) => {
+														set(field)(event.target.value);
+													}}
+												/>
+											</React.Fragment>
+										))}
+										<span className="otta-pricing-affix">mm</span>
+									</div>
+									{(shown.lengthMm ?? shown.widthMm ?? shown.heightMm) !== undefined && (
+										<span id={id("size-error")} className="otta-pricing-error">
+											{shown.lengthMm ?? shown.widthMm ?? shown.heightMm}
+										</span>
+									)}
+								</div>
+							</>
+						)}
 					</div>
 				</details>
 			</fieldset>
 
-			<div className="otta-pricing-footer">
+			<div className="otta-pricing-footer" data-dirty={dirty || saving}>
+				<span className="otta-pricing-status" role="status" data-tone={saveStatus?.tone ?? "muted"}>
+					{saveStatus !== null ? (
+						<>
+							{saveStatus.tone === "ok" && <Icon d={CHECK} />}
+							{saveStatus.text}
+						</>
+					) : dirty ? (
+						<>
+							<span className="otta-pricing-pending" aria-hidden="true" />
+							Price and stock changes are saved separately from the rest of the product
+						</>
+					) : null}
+				</span>
 				<button
 					ref={saveButton}
 					type="button"
@@ -965,12 +1037,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				>
 					{saving ? "Saving…" : "Save pricing & stock"}
 				</button>
-				<span className="otta-pricing-status" role="status" data-tone={saveStatus?.tone ?? "muted"}>
-					{saveStatus?.text ??
-						(dirty
-							? "Price and stock changes are saved separately — press Save pricing & stock"
-							: "")}
-				</span>
 			</div>
 
 			<ConfirmDialog
