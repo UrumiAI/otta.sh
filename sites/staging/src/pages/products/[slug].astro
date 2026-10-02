@@ -34,7 +34,7 @@ import {
 import { getEmDashEntry } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
-import { cartErrorMessage } from "../../lib/error-messages.js";
+import { cartErrorAction, cartErrorMessage } from "../../lib/error-messages.js";
 import { holdNote } from "../../lib/hold.js";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -203,6 +203,7 @@ const model: ProductModel =
 						: "Prices and stock are unavailable right now."
 					: null,
 				errorMessage: error !== null ? cartErrorMessage(error) : null,
+				errorAction: error !== null ? cartErrorAction(error) : null,
 				purchase,
 				/* Decided once, here, as the contract states it — neither
 				   purchasable nor degraded — so no view re-derives it. */

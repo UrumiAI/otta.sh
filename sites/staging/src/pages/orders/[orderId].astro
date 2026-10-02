@@ -40,8 +40,10 @@
 import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
+import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { keepPrivate } from "../../lib/no-store.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { OrderModel } from "../../themes/contract.js";
 
@@ -63,6 +65,23 @@ const result =
 
 const order = result !== null && result.ok ? result.order : null;
 if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+
+/* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
+   spent: it can never produce another order. If the cart cookie still names it,
+   forget it here, so the shopper's next "Add to cart" starts a new cart instead
+   of failing CART_CHECKED_OUT. A PENDING order's cart is kept: "Complete payment"
+   resumes through /checkout, which rebuilds from that cookie (cart-rotation.ts).
+   A response that deletes the cookie is PRIVATE: a stored copy replayed to the
+   next shopper would delete their cart. */
+if (
+	order !== null &&
+	(await forgetSpentCart(
+		{ cookies: Astro.cookies, handler: getPublicPluginApiRouteHandler(Astro.locals), url: Astro.url },
+		order,
+	))
+) {
+	keepPrivate(Astro);
+}
 /* BUSY is not "no such order": the read was refused under load (already retried
    once). 503 + short Retry-After, and the busy copy below — never a 404. */
 const busy = isBusyResult(result);

@@ -263,7 +263,7 @@ Compare each against the matching frame in the mockup.
 |---|---|
 | `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK as mono rows. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
-| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note |
+| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
 | `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
 | `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
