@@ -975,6 +975,9 @@ export class InMemoryOrderStore implements OrderStore {
 					r.notice?.kind === notice.kind &&
 					// A legacy entry (no refundId, written before refund ids existed) stands
 					// for any refund of its kind, so a replay after deploy does not re-send.
+					// The cost, accepted: a SECOND, distinct late-payment refund on an order that
+					// holds a legacy entry is not announced — exactly the old first-wins-per-kind
+					// behaviour, so no order is worse off than before refund ids existed.
 					(r.notice.refundId === undefined || r.notice.refundId === notice.refundId),
 			)
 		) {
