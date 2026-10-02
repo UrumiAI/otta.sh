@@ -183,6 +183,18 @@ export type RefundPanelMode = "empty" | "fully-refunded" | "form";
  *  from a plugin that only ever listed finalized refunds. */
 type RefundRowStatus = "recorded" | "reserved" | "unverified";
 
+/**
+ * An input in error. It sets the SAME `border` shorthand `inputStyle` does, never
+ * the `borderColor` longhand on top of it: toggling a longhand off under a live
+ * shorthand is a React style collision ("Removing borderColor border" — QA's
+ * console on the refund amount), which can leave the error border painted after
+ * the error is gone.
+ */
+const invalidInputStyle: React.CSSProperties = {
+	...inputStyle,
+	border: `1px solid ${FAIL_ACCENT}`,
+};
+
 function refundRowStatus(refund: RefundsSummary["refunds"][number]): RefundRowStatus {
 	return refund.status === "reserved" || refund.status === "unverified"
 		? refund.status
@@ -558,11 +570,7 @@ export function RefundsPanel({
 										className="otta-focusable"
 										data-testid="refund-amount"
 										ref={amountRef}
-										style={
-											amountError?.field === "amount"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "amount" ? invalidInputStyle : inputStyle}
 										placeholder="e.g. 19.99"
 										{...(amountError?.field === "amount"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
@@ -588,11 +596,7 @@ export function RefundsPanel({
 										className="otta-focusable"
 										data-testid="refund-by"
 										ref={refundedByRef}
-										style={
-											amountError?.field === "refundedBy"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "refundedBy" ? invalidInputStyle : inputStyle}
 										{...(amountError?.field === "refundedBy"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
 											: {})}

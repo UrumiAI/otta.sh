@@ -913,3 +913,34 @@ test("the refund confirm sends the FINALIZED total as its watermark", async () =
 		String(FINALIZED_CENTS),
 	);
 });
+
+test("an invalid refund amount marks its input without a shorthand/longhand style collision", async () => {
+	// QA's console: "Removing a style property during rerender (borderColor) when a
+	// conflicting property is set (border)". The invalid style spread `inputStyle`
+	// (shorthand `border`) and then set the longhand `borderColor`; clearing the
+	// error removed the longhand under a live shorthand, which React warns can
+	// leave the wrong border painted. The invalid state now sets the SAME
+	// shorthand, so nothing is ever removed from under it.
+	const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const view = await show(detailFor("paid", CAPTURED));
+		await fire(tab(view, "money"), "click");
+		await fire(one<HTMLButtonElement>(view, '[data-testid="refund-partial-submit"]'), "click");
+		const input = one<HTMLInputElement>(view, '[data-testid="refund-amount"]');
+		expect(input.getAttribute("aria-invalid")).toBe("true");
+		expect(input.style.border).toContain("solid");
+
+		await React.act(async () => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "12");
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(input.getAttribute("aria-invalid")).toBeNull();
+
+		const collisions = errors.mock.calls.filter((call) =>
+			call.some((arg) => /style property during rerender/.test(String(arg))),
+		);
+		expect(collisions).toEqual([]);
+	} finally {
+		errors.mockRestore();
+	}
+});
