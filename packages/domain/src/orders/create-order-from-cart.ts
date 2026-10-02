@@ -64,7 +64,13 @@ export interface CreateOrderCommand {
 	shippingMethodId?: string;
 	/** An optional coupon code, redeemed atomically alongside order creation. */
 	couponCode?: string;
-	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
+	/**
+	 * The signed-in customer who OWNS the order (Phase 5) — drives
+	 * `maxUsesPerCustomer` when present, and is written onto the order so it is in
+	 * their list from birth. Pass it only when the buyer reference is that
+	 * customer's own email (`checkoutOwner`); for anyone else the order is a guest
+	 * order, claimed by whoever later proves that inbox.
+	 */
 	customerId?: CustomerId;
 	/**
 	 * The shipping address the checkout submitted (ADR-0009). Validated (shape,
@@ -454,6 +460,9 @@ async function finalizeOrder(
 		idempotencyKey: command.idempotencyKey,
 		holdExpiresAt: ctx.holdExpiresAt,
 		buyerRef: command.buyerRef,
+		// The signed-in owner, when the caller resolved one (`checkoutOwner`): the
+		// order is in their list from birth rather than after their next sign-in.
+		...(command.customerId !== undefined ? { customerId: command.customerId } : {}),
 		paymentMethod: command.paymentMethod,
 		lines: ctx.lines,
 		// ADR-0009: freeze the ship-to snapshot alongside the order, in the same

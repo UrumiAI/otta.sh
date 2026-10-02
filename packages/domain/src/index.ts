@@ -228,6 +228,12 @@ export {
 	type VerifyLoginDeps,
 	type VerifyLoginResult,
 } from "./customers/auth.js";
+export {
+	checkoutOwner,
+	listCustomerOrders,
+	type CheckoutOwnerDeps,
+	type CustomerOrdersDeps,
+} from "./customers/customer-orders.js";
 export type {
 	Entitlement,
 	EntitlementQuery,

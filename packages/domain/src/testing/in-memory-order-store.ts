@@ -164,7 +164,7 @@ export class InMemoryOrderStore implements OrderStore {
 			holdExpiresAt: input.holdExpiresAt,
 			paymentMethod: input.paymentMethod,
 			buyerRef: input.buyerRef,
-			customerId: null,
+			customerId: input.customerId ?? null,
 			createdAt: now,
 			updatedAt: now,
 			lines,
@@ -576,10 +576,18 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
-		return [...this.#orders.values()]
-			.filter((s) => s.order.customerId === customerId)
-			.toSorted((a, b) => a.order.createdAt.localeCompare(b.order.createdAt))
-			.map((s) => this.#clone(s.order));
+		return (
+			[...this.#orders.values()]
+				.filter((s) => s.order.customerId === customerId)
+				// Newest first, `createdAt DESC, id DESC` — the port's order, in the same
+				// code-unit comparison the admin list uses (never `localeCompare`).
+				.toSorted(
+					(a, b) =>
+						codeUnitDesc(a.order.createdAt, b.order.createdAt) ||
+						codeUnitDesc(a.order.id, b.order.id),
+				)
+				.map((s) => this.#clone(s.order))
+		);
 	}
 
 	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
