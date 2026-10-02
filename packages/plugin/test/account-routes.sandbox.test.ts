@@ -100,7 +100,8 @@ afterAll(async () => {
 
 interface CapturedMail {
 	to: string;
-	template: string;
+	/** The template name rides as a Resend tag (`ctx-http-email-sender.ts`). */
+	tags: Array<{ name: string; value: string }>;
 	text: string;
 	html: string;
 	idempotencyKey: string;
@@ -234,7 +235,7 @@ describe("the magic-link login, end to end (workerd sandbox)", () => {
 		const mails = mailsTo(email);
 		expect(mails).toHaveLength(1);
 		const mail = mails[0];
-		expect(mail?.template).toBe("customer-login-link");
+		expect(mail?.tags).toEqual([{ name: "template", value: "customer-login-link" }]);
 		const { url, challengeId, token } = linkIn(mail);
 		// The link is the CONFIGURED page — not the (spoofed) host the request named.
 		expect(`${url.origin}${url.pathname}`).toBe(VERIFY_PAGE);

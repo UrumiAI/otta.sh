@@ -55,7 +55,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  placeholder like "0xshop" would arm no gateway and make every x402 case
  *  below pass for the wrong reason. */
 const PAY_TO = "0x00000000000000000000000000000000000000a1";
-const EMAIL_FROM = "orders@egress.example";
+const EMAIL_FROM = "orders@egress.otta.sh";
 
 /** The two paths the stub answers on. Distinct so a single responder can say
  *  which adapter it heard from — and so an assertion about "the email call"

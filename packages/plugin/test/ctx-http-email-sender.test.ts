@@ -3,12 +3,17 @@
  *
  * WHAT MOVED AND WHAT DID NOT. The port (`EmailSender`) is unchanged, the
  * rendering is unchanged (it moved verbatim from `service/src/email/render.ts`
- * to `@otta-sh/domain`, whose suite still pins every template), and the wire
- * shape is unchanged — same JSON body, same `Idempotency-Key`, same bearer.
- * The ONE thing that changed is the transport: `globalThis.fetch` inside a Node
- * service becomes `ctx.http.fetch` inside the sandboxed plugin, gated by
- * `allowedHosts`. Everything below exists to pin that the swap really was only
- * the transport.
+ * to `@otta-sh/domain`, whose suite still pins every template), and the
+ * `Idempotency-Key` and bearer are unchanged. The transport changed:
+ * `globalThis.fetch` inside a Node service becomes `ctx.http.fetch` inside the
+ * sandboxed plugin, gated by `allowedHosts`.
+ *
+ * THE BODY IS RESEND'S, EXACTLY (2026-10-02). The service-era body carried the
+ * template name as a top-level `template` STRING. Resend — the provider
+ * DEPLOYMENT.md documents — defines `template` as an OBJECT (`{ id, variables }`,
+ * a hosted template) that cannot be combined with `html`/`text`, so every send
+ * would have been refused. The name now rides as a Resend tag instead, and the
+ * first case below pins the whole body so a stray key cannot creep back in.
  *
  * REJECTED, and the plan says so explicitly (§D5): EmDash's native `ctx.email`.
  * It needs an `email:send` capability grant and a host-configured provider we do
@@ -20,7 +25,7 @@
  * port-to-`ctx.http` swap would turn every retried sweep tick into a duplicate
  * customer email — silently, since the outbox would still look correctly drained.
  */
-import { renderEmail } from "@otta-sh/domain";
+import { renderEmail, type EmailTemplate } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	CtxHttpEmailSender,
@@ -44,6 +49,8 @@ function makeCtx(
 	options: {
 		seed?: Record<string, unknown>;
 		status?: number;
+		/** The provider's response body; `"{}"` when omitted. */
+		responseBody?: string;
 		failingKeys?: ReadonlySet<string>;
 	} = {},
 ): { ctx: PluginContext; calls: Call[] } {
@@ -54,7 +61,9 @@ function makeCtx(
 		http: {
 			fetch: (url: string, init?: RequestInit) => {
 				calls.push({ url, init });
-				return Promise.resolve(new Response("{}", { status: options.status ?? 202 }));
+				return Promise.resolve(
+					new Response(options.responseBody ?? "{}", { status: options.status ?? 202 }),
+				);
 			},
 		},
 		kv: {
@@ -107,8 +116,32 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 			subject: rendered.subject,
 			text: rendered.text,
 			html: rendered.html,
-			template: input.template,
+			// The template name as a Resend tag — NOT a top-level `template`, which
+			// Resend reads as a hosted-template object and refuses beside `html`.
+			tags: [{ name: "template", value: input.template }],
 		});
+		expect(Object.hasOwn(body, "template")).toBe(false);
+	});
+
+	test("every template name is a legal Resend tag value (ASCII letters, digits, _ and -)", () => {
+		// Exhaustive by construction: `satisfies Record<EmailTemplate, true>` fails
+		// the typecheck the day a template is added without being listed here, so a
+		// new name cannot ship untested against the provider's tag charset (a tag
+		// value outside it is a 422 on EVERY send of that template).
+		const names = Object.keys({
+			"customer-login-link": true,
+			"order-confirmation": true,
+			"order-processing": true,
+			"order-shipped": true,
+			"order-delivered": true,
+			"order-completed": true,
+			"order-cancelled": true,
+			"order-refunded": true,
+			"order-expired": true,
+		} satisfies Record<EmailTemplate, true>);
+		for (const name of names) {
+			expect(name).toMatch(/^[A-Za-z0-9_-]{1,256}$/u);
+		}
 	});
 
 	test("forwards the outbox row id as Idempotency-Key — the provider's dedupe hinge", async () => {
@@ -157,6 +190,160 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 				from: "shop@example.test",
 			}).send(input),
 		).rejects.toThrow(/500/u);
+	});
+
+	/**
+	 * DIAGNOSABLE FAILURES. A bare "status 403" says nothing about WHY — and the
+	 * reasons a real provider refuses are operator-fixable and specific (an
+	 * unverified sending domain, a bad key, a sandbox account sending to a
+	 * stranger). Resend answers `{ statusCode, name, message }`; the error carries
+	 * the name and message, bounded, and nothing of the REQUEST — the login
+	 * route logs this message, and the request body holds the sign-in link.
+	 */
+	describe("a refused send says why, and only why", () => {
+		function senderFor(ctx: PluginContext): CtxHttpEmailSender {
+			return new CtxHttpEmailSender({
+				fetch: ctx.http.fetch,
+				apiUrl: API_URL,
+				from: "shop@example.test",
+				apiKey: "re_secret_key",
+			});
+		}
+
+		async function failure(status: number, responseBody: string): Promise<string> {
+			const { ctx } = makeCtx({ status, responseBody });
+			const err = await senderFor(ctx)
+				.send(input)
+				.then(
+					() => undefined,
+					(e: unknown) => e,
+				);
+			if (!(err instanceof Error)) throw new Error("expected the send to throw an Error");
+			return err.message;
+		}
+
+		test("includes the provider's error name and message from a JSON body", async () => {
+			const message = await failure(
+				403,
+				JSON.stringify({
+					statusCode: 403,
+					name: "validation_error",
+					message: "The shop.example domain is not verified.",
+				}),
+			);
+			expect(message).toContain("403");
+			expect(message).toContain("validation_error");
+			expect(message).toContain("The shop.example domain is not verified.");
+		});
+
+		test("bounds the provider's message, so a verbose body cannot flood the log", async () => {
+			const message = await failure(
+				422,
+				// Under the 4 KiB read bound, so it IS parsed — and then truncated.
+				JSON.stringify({ name: "validation_error", message: "x".repeat(3_000) }),
+			);
+			expect(message).toContain("validation_error");
+			expect(message.length).toBeLessThan(300);
+		});
+
+		test("never echoes the request: no key, no recipient, no rendered body", async () => {
+			const message = await failure(
+				403,
+				JSON.stringify({
+					name: "validation_error",
+					message: `You can only send testing emails to your own address, not ${String(input.to)}.`,
+				}),
+			);
+			expect(message).not.toContain("re_secret_key");
+			// A provider that quotes the recipient back has it redacted here.
+			expect(message).not.toContain(String(input.to));
+			expect(message).not.toContain(renderEmail(input.template, input.data).subject);
+		});
+
+		test("redacts the recipient case-insensitively", async () => {
+			const message = await failure(
+				422,
+				JSON.stringify({
+					name: "validation_error",
+					message: `Invalid \`to\` field: ${String(input.to).toUpperCase()}.`,
+				}),
+			);
+			expect(message.toLowerCase()).not.toContain(String(input.to).toLowerCase());
+			expect(message).toContain("<recipient>");
+		});
+
+		test("control characters become spaces, so a provider message cannot forge a log line", async () => {
+			const message = await failure(
+				400,
+				JSON.stringify({
+					name: "validation_error",
+					message: "bad request\r\n[otta] login email sent OK\u0000\u007f\u0085\u2028\u2029",
+				}),
+			);
+			// oxlint-disable-next-line no-control-regex -- asserting their absence IS the point
+			expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u);
+			expect(message).toContain("bad request");
+		});
+
+		test("reads at most 4 KiB of the body: a larger one contributes nothing", async () => {
+			// Bounded BEFORE JSON.parse, so a provider (or an intermediary) answering
+			// with megabytes cannot make the error path parse megabytes.
+			const huge = JSON.stringify({
+				name: "validation_error",
+				message: "ok",
+				padding: "x".repeat(10_000),
+			});
+			expect(await failure(500, huge)).toBe("email transport failed with status 500");
+		});
+
+		test("a refused LOGIN send never carries the token, even with Resend's testing-mode refusal", async () => {
+			// Resend's real wording for an account with no verified domain. It quotes
+			// the account OWNER's address — that one is not redacted (it is not the
+			// recipient), so it CAN appear in the login route's log line.
+			const token = "tok_live_9f8e7d6c5b4a";
+			const { ctx } = makeCtx({
+				status: 403,
+				responseBody: JSON.stringify({
+					statusCode: 403,
+					name: "validation_error",
+					message:
+						"You can only send testing emails to your own email address (owner@shop.otta.sh). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.",
+				}),
+			});
+			const err = await senderFor(ctx)
+				.send({
+					...input,
+					template: "customer-login-link",
+					data: {
+						loginUrl: `https://shop.otta.sh/account/verify?challenge=ch_1&token=${token}`,
+					},
+					idempotencyKey: "login:ch_1",
+				})
+				.then(
+					() => undefined,
+					(e: unknown) => e,
+				);
+			if (!(err instanceof Error)) throw new Error("expected the send to throw an Error");
+			expect(err.message).toContain("403");
+			expect(err.message).toContain("validation_error");
+			expect(err.message).not.toContain(token);
+			expect(err.message).not.toContain("account/verify");
+			expect(err.message).toContain("owner@shop.otta.sh");
+		});
+
+		test("a non-JSON body still throws with the status, and quotes none of it", async () => {
+			const message = await failure(502, "<html><body>Bad gateway at edge-17</body></html>");
+			expect(message).toContain("502");
+			expect(message).not.toContain("<html>");
+			expect(message).not.toContain("edge-17");
+		});
+
+		test("JSON without a usable name/message falls back to the bare status", async () => {
+			expect(await failure(500, JSON.stringify({ error: { nested: true } }))).toBe(
+				"email transport failed with status 500",
+			);
+			expect(await failure(500, "")).toBe("email transport failed with status 500");
+		});
 	});
 
 	test("money in the rendered body is the integer minor units it was handed", async () => {

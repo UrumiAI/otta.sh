@@ -324,13 +324,49 @@ order of appearance in a deployment's life:
   sender the console says so on every such write instead of claiming the buyer was emailed.
   Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
   API key is a write-only Settings credential, and the from-address ("Order email
-  from-address", `settings:emailFrom`, default `no-reply@otta.local`) is a readable Settings
-  field. **Magic-link login mail** goes out through the same sender, and only once Settings
+  from-address", `settings:emailFrom`) is a readable Settings field. Unset, it falls back to
+  `no-reply@otta.local` — a dev-only default that a local mail catcher accepts and no real
+  provider will send from. The Settings save refuses a from-address that is malformed,
+  carries a control character, has an IP-literal or single-label domain, or sits under a
+  reserved name: `.local`, `.localhost`, `.test`, `.example`, `.invalid`, `.internal`,
+  `.onion`, `.alt`, `example.com` / `.net` / `.org` or `home.arpa`. An internationalized
+  domain is entered in its `xn--` form. A from-address saved before this release that the
+  check refuses (e.g. a reserved domain, an unquoted comma in the name, an IP literal or a
+  Unicode domain) still sends, and is logged once per isolate (`settings:emailFrom is not a
+  deliverable address`); it must be fixed or cleared before the payment settings form will
+  save again. **Magic-link login mail** goes out through the same sender, and only once Settings
   → "Sign-in link page" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
   `/account/verify` page — the emailed link points there and never at the request's origin.
   With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
   success, issues nothing, and logs once server-side. For the reference site, set it to
   `https://<your-site>/account/verify`.
+
+> **Email provider: Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
+> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag), so
+> Resend is the supported provider. To reach real inboxes:
+>
+> 1. Build with `EMAIL_API_URL=https://api.resend.com/emails` (§4 — this also grants
+>    `api.resend.com` in `allowedHosts`).
+> 2. Add and verify your sending domain in Resend (its SPF and DKIM DNS records); a DMARC
+>    record with `p=none` is recommended to start. Without a verified domain Resend only sends
+>    from `onboarding@resend.dev`, and only to the Resend account owner's own address.
+> 3. In admin Settings, save the Resend API key and a from-address on that verified domain —
+>    `orders@yourdomain.com` or `Your Shop <orders@yourdomain.com>`.
+> 4. Set "Sign-in link page" to the public `https://<your-site>/account/verify` URL — a
+>    localhost or http URL in a customer's inbox is a dead link.
+>
+> Resend's free tier is 3,000 emails/month and 100/day. A refused send throws with Resend's
+> own error name and message (never the request). **Only the login route logs it today**:
+> a refused order email is retried and eventually parked `failed` in the outbox with no log
+> line, so check Resend's dashboard when order mail goes missing. Resend's testing-mode
+> refusal quotes the account owner's address, which can therefore appear in that log.
+>
+> Resend dedupes on `Idempotency-Key` for 24 hours, and answers **409** when a retry reuses
+> a key with a *different* body — for example after the from-address was changed while a row
+> was waiting to be retried. Such a row is refused on every retry and parks as `failed`.
+>
+> Another provider needs its own adapter behind the `EmailSender` port; pointing
+> `EMAIL_API_URL` at a non-Resend API is not supported.
 
 ## 4. Egress and `allowedHosts`
 

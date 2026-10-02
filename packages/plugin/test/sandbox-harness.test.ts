@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 const EMAIL_PATH = "/email/send";
-const EMAIL_FROM = "orders@harness.example";
+const EMAIL_FROM = "orders@harness.otta.sh";
 
 /** Places a paid order directly against the same storage the isolate's
  *  `ctx.storage` bridges to — the state the `order-emails` cron leg drains

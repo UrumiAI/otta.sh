@@ -541,7 +541,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			type: "form_submit",
 			action_id: "save-payment-settings",
 			values: {
-				emailFrom: "orders@shop.example",
+				emailFrom: "orders@shop.otta.sh",
 				x402PayTo: PAY_TO,
 				x402Accepts: "eip155:8453, eip155:1",
 			},
@@ -552,7 +552,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		assertBlockContract(loaded, { screen: "settings", level: "list" });
 		const form = formFor(loaded, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.example");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.otta.sh");
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
 	});
@@ -569,21 +569,21 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.example", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
 		});
 
 		// A submit carrying ONLY the from-address.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.example" },
+			values: { emailFrom: "hello@shop.otta.sh" },
 		});
 
 		const after = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.example");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.otta.sh");
 		// The two the submit never mentioned are UNCHANGED, not blanked.
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
@@ -593,7 +593,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.example", x402PayTo: "", x402Accepts: "" },
+			values: { emailFrom: "hello@shop.otta.sh", x402PayTo: "", x402Accepts: "" },
 		});
 		const cleared = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
@@ -609,7 +609,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const refused = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.example", x402PayTo: "my-wallet", x402Accepts: "" },
+			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: "my-wallet", x402Accepts: "" },
 		});
 		const blocks = blocksOf(refused);
 		// The whole screen comes back (S-5a: never a terminal receipt with no form).
@@ -654,7 +654,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			const refused = await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-payment-settings",
-				values: { emailFrom: "orders@boutique.example", loginLinkUrl: bad },
+				values: { emailFrom: "orders@boutique.otta.sh", loginLinkUrl: bad },
 			});
 			expect(JSON.stringify(refused)).toContain("Nothing was saved");
 			// The banner names the field and the shape, never the rejected value.
