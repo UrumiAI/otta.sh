@@ -287,17 +287,30 @@ form, because the redirect may carry no personal data (decision 6's reasoning).
   never a second of either. It answers only for a `pending` order strictly before its hold
   deadline (the pay guard's rule), and asks the provider nothing otherwise. The endpoint writes the
   ordinary `otta_checkout` stash and 303s to `/checkout/pay`, whose guard is unchanged. It is a
-  GET because the order page is `no-referrer` (a POST from it would carry `Origin: null`); the GET
+  GET because the order page is `no-referrer` (a POST from it would carry `Origin: null`); it sends
+  the cart and session cookies as the proof, and goes to the email page when neither holds. The GET
   is safe to repeat, and a cross-site navigation (`Sec-Fetch-Site: cross-site`) is sent to the
   order page without dispatching, so another site cannot make a browser write the stash.
-- **What authorises a resume: the order id, and nothing else** — the same bearer capability the
-  order page reads with. What it adds to that capability is the means to pay the order while it
-  is payable. Stated plainly, it also hands that holder the PaymentIntent's client secret, and a
-  client secret can retrieve the intent with the publishable key — including the `shipping` block
-  (name and address) the Stripe adapter sets for physical goods. That is more than the public
-  order shows. It is bounded by the hold (at most the checkout window, on a pending order) and was
-  judged acceptable for a link that already reads the order; a store that disagrees can gate the
-  resume on a second factor (the cart cookie, the signed-in owner, or the email typed again).
+- **What authorises a resume: the order id PLUS a second factor.** The id alone is the order
+  page's bearer capability, and order links sit in mailboxes and browser histories; the client
+  secret a resume hands out can retrieve the PaymentIntent with the publishable key — including
+  the `shipping` block (name and address) the Stripe adapter sets for physical goods, which the
+  public order does not show. So that widening is now gated by possession of one of:
+  - **the cart** the order was made from (this browser's cart cookie), or
+  - **a signed-in session** whose customer owns the order (the session cookie), or
+  - **the order's email**, typed on a small private page (`/checkout/resume/email`) and POSTed
+    from it to `/checkout/resume` — same origin, so the origin guard admits it and still refuses
+    a cross-site form. The plugin compares it with the order's buyer server-side, trimmed and
+    case-folded, through SHA-256 digests with no early exit; a wrong one gets one generic
+    sentence ("That email doesn't match this order."). Guesses are throttled per order — 5 per
+    15 minutes, counting every email attempt — by the sign-in throttle's own slot window
+    (`login_challenge_claims`, `liveSlots`), offered as the `AttemptThrottle` port and
+    `EmdashAttemptThrottle` adapter.
+
+  The plugin enforces this itself (`storefront/order/resume` is public), not only the site. The
+  id alone answers `PROOF_REQUIRED` and asks the provider nothing. What the order link already
+  implies — whether the order exists and whether it can still be paid — is answered before the
+  proof; nothing else is.
 - **The order's email** is shown read-only, as a hint (`j•••@g•••.com`): enough for the buyer to
   recognise, no more than the link should reveal. The locked review no longer renders an email
   field or a place form at all; its "Continue to payment" is a link to the resume path, and it
