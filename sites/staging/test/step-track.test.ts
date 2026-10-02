@@ -84,3 +84,26 @@ describe("StepTrack — the sequence is in the markup, not only in the styling",
 		expect(html.match(/class="dot"[^>]*aria-hidden="true"/g) ?? []).toHaveLength(4);
 	});
 });
+
+describe("StepTrack — a journey that stopped (QA U-13)", () => {
+	const halted = (current: string): Promise<string> =>
+		container.renderToString(StepTrack, { props: { current, halted: true } });
+
+	test("the step it stopped at is marked halted, not current-and-in-progress", async () => {
+		expect(states(await halted("payment"))).toEqual(["done", "done", "halted", undefined]);
+	});
+
+	test("it SAYS the step was not completed, and claims completion only for the steps before it", async () => {
+		const html = await halted("payment");
+		expect(html.match(/, completed/g) ?? []).toHaveLength(2); // cart + details
+		expect(html).toContain(", not completed");
+	});
+
+	test("it is still the step the shopper is on, for a screen reader", async () => {
+		expect((await halted("payment")).match(/aria-current="step"/g) ?? []).toHaveLength(1);
+	});
+
+	test("without `halted`, nothing changes", async () => {
+		expect(await track("payment")).not.toContain("not completed");
+	});
+});

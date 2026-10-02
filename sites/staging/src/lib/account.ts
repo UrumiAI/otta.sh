@@ -21,6 +21,7 @@ import {
 } from "@otta-sh/plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
+import { isOrderPayable } from "./pay-guard.js";
 
 /** The one notice a link request ends on, whatever the plugin knows about the
  *  address — the page must not become an account oracle (ADR-0004). It must
@@ -185,12 +186,48 @@ const STATE_LABELS: Record<string, string> = {
 	completed: "Completed",
 	cancelled: "Cancelled",
 	refunded: "Refunded",
-	expired: "Expired",
-	failed: "Payment failed",
+	expired: "Payment not completed — expired",
+	failed: "Payment didn't go through",
 };
 
-/** The order's state in words. An unknown state still reads, rather than
- *  leaking a snake_case token. */
-export function orderStateLabel(state: string): string {
-	return STATE_LABELS[state] ?? state.replaceAll("_", " ");
+/**
+ * The order's status in the account's words — the same facts the public order
+ * page states (`lib/order-stamp.ts`), in a phrase short enough for a list row
+ * (QA U-5: an unpaid, a declined and an expired order all read "Awaiting
+ * payment").
+ *
+ * A `pending` order is awaiting payment only while it can still BE paid
+ * (`isOrderPayable`, the pay page's own rule): a declined card leaves an order
+ * pending and payable (ADR-0022), so that is honestly still "Awaiting payment";
+ * past its hold the pay page refuses it, and the sweep is about to expire it, so
+ * it says the time ran out — as the order page does. An unknown state still
+ * reads, rather than leaking a snake_case token.
+ */
+export function accountOrderStatus(
+	order: { state: string; holdExpiresAt: string },
+	now: Date,
+): string {
+	if (order.state === "pending" && !isOrderPayable(order, now)) {
+		return "Payment not completed — time ran out";
+	}
+	return STATE_LABELS[order.state] ?? order.state.replaceAll("_", " ");
+}
+
+const PLACED_ON = new Intl.DateTimeFormat("en-US", {
+	month: "short",
+	day: "numeric",
+	year: "numeric",
+	timeZone: "UTC",
+});
+
+/**
+ * When an order was placed, as a calendar date ("Oct 2, 2026") plus the instant
+ * for a `<time datetime>`. In UTC, like every other time this server renders
+ * (`lib/hold.ts`): it cannot know the shopper's zone. `null` for an unreadable
+ * date — no date beats a wrong one.
+ */
+export function orderPlacedOn(iso: string): { text: string; iso: string } | null {
+	const instant = Date.parse(iso);
+	if (!Number.isFinite(instant)) return null;
+	return { text: PLACED_ON.format(instant), iso };
 }

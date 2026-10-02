@@ -670,8 +670,9 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 		expect(ORDER).toMatch(/title: line\.title/);
 	});
 
-	test("the total reads Paid once the order settled, by MAP not comparison", () => {
-		expect(ORDER).toContain('const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };');
+	test("the total's label is orderTotalLabel's — Paid for every captured state (order-view.test.ts)", () => {
+		expect(ORDER).toContain("orderTotalLabel(order.state)");
+		expect(ORDER).not.toMatch(/TOTAL_LABEL/);
 	});
 });
 

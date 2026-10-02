@@ -35,8 +35,9 @@ import {
 	ACCOUNT_HOME_PATH,
 	checkoutEmailNote,
 	LOGIN_LINK_SENT_COPY,
+	accountOrderStatus,
 	orderMoney,
-	orderStateLabel,
+	orderPlacedOn,
 	sessionOwnsOrder,
 	signedInEmail,
 	verifyFailureToken,
@@ -391,9 +392,65 @@ describe("account copy and formatting", () => {
 	});
 
 	test("an order state reads as words, and an unknown one is still readable", () => {
-		expect(orderStateLabel("paid")).toBe("Paid");
-		expect(orderStateLabel("pending")).toBe("Awaiting payment");
-		expect(orderStateLabel("something_new")).toBe("something new");
+		expect(accountOrderStatus({ state: "paid", holdExpiresAt: HELD }, NOW)).toBe("Paid");
+		expect(accountOrderStatus({ state: "shipped", holdExpiresAt: HELD }, NOW)).toBe("Shipped");
+		expect(accountOrderStatus({ state: "something_new", holdExpiresAt: HELD }, NOW)).toBe(
+			"something new",
+		);
+	});
+});
+
+/* QA U-5: an unpaid, a declined and an expired order all read "Awaiting payment".
+   Each now says what the order page says about it, in a list-sized phrase. */
+const NOW = new Date("2026-10-02T12:00:00.000Z");
+const HELD = "2026-10-02T12:10:00.000Z";
+const LAPSED = "2026-10-02T11:50:00.000Z";
+
+describe("accountOrderStatus — the list says what the order page says", () => {
+	test("a pending order that can still be paid is awaiting payment (a declined card leaves it so — ADR-0022)", () => {
+		expect(accountOrderStatus({ state: "pending", holdExpiresAt: HELD }, NOW)).toBe(
+			"Awaiting payment",
+		);
+	});
+
+	test("a pending order past its hold is NOT awaiting payment: the pay page refuses it", () => {
+		expect(accountOrderStatus({ state: "pending", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment not completed — time ran out",
+		);
+	});
+
+	test("expired and failed orders say the payment did not complete, and how", () => {
+		expect(accountOrderStatus({ state: "expired", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment not completed — expired",
+		);
+		expect(accountOrderStatus({ state: "failed", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment didn't go through",
+		);
+	});
+
+	test("no two of the unpaid outcomes read alike", () => {
+		const labels = [
+			accountOrderStatus({ state: "pending", holdExpiresAt: HELD }, NOW),
+			accountOrderStatus({ state: "pending", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "expired", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "failed", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "cancelled", holdExpiresAt: LAPSED }, NOW),
+		];
+		expect(new Set(labels).size).toBe(labels.length);
+	});
+});
+
+describe("orderPlacedOn — the list dates each order", () => {
+	test("a calendar date in words, named in UTC like every other server-rendered time, with the instant for <time>", () => {
+		expect(orderPlacedOn("2026-10-02T16:49:45.000Z")).toEqual({
+			text: "Oct 2, 2026",
+			iso: "2026-10-02T16:49:45.000Z",
+		});
+	});
+
+	test("an unreadable date renders nothing rather than a wrong one", () => {
+		expect(orderPlacedOn("not a date")).toBeNull();
+		expect(orderPlacedOn("")).toBeNull();
 	});
 });
 

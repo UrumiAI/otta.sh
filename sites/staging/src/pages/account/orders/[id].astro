@@ -11,10 +11,25 @@
  * The lines are the purchase-time snapshot (title and price as bought), which is
  * what a receipt must show.
  */
-import { ACCOUNT_ORDER_ROUTE, orderLabel, type AccountOrderResult } from "@otta-sh/plugin";
+import {
+	ACCOUNT_ORDER_ROUTE,
+	buildCheckoutTotals,
+	orderLabel,
+	orderTotalsFlags,
+	type AccountOrderResult,
+} from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import { currentSessionToken, orderMoney, orderStateLabel } from "../../../lib/account.js";
+import {
+	accountOrderStatus,
+	currentSessionToken,
+	orderMoney,
+	orderPlacedOn,
+} from "../../../lib/account.js";
+import { orderStamp } from "../../../lib/order-stamp.js";
+import { orderSumRows, orderTotalLabel } from "../../../lib/order-view.js";
+import { isOrderPayable } from "../../../lib/pay-guard.js";
+import { SITE_LOCALE } from "../../../lib/site-locale.js";
 import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
@@ -56,34 +71,44 @@ const ledgerRows =
 		money: orderMoney(line.unitPriceCents * line.quantity, line.currency),
 	})) ?? [];
 
-const totals =
-	order === null
-		? []
-		: [
-				["Subtotal", order.totals.subtotalCents],
-				["Discount", order.totals.discountCents],
-				["Shipping", order.totals.shippingCents],
-				["Tax", order.totals.taxCents],
-			].map(([label, amount]) => ({
-				label: label as string,
-				value: orderMoney(amount as number, order.totals.currency),
-			}));
-
 /** The order's name for the shopper — its products, never the id in the URL
  *  (`orderLabel`, the same function the order emails use). */
 const label = order === null ? "Order" : orderLabel(order.lines);
 
+let detail: AccountOrderModel["order"] = null;
+if (order !== null) {
+	/* The totals by the PUBLIC order page's own rule (QA U-5): built by the
+	   plugin's `buildCheckoutTotals` with `orderTotalsFlags`, so a component the
+	   order was never priced for reads "Not calculated" here too, never $0.00. */
+	const totals = buildCheckoutTotals(order.totals, {
+		locale: SITE_LOCALE,
+		...orderTotalsFlags(order.totals),
+	});
+	/* What the order page says about this state — including whether anything was
+	   charged on a dead order (`latePayment`) — so the two pages agree. */
+	const now = new Date();
+	const stamp = orderStamp({
+		state: order.state,
+		latePayment: order.latePayment,
+		returnedFromStripe: false,
+		holdLapsed: order.state === "pending" && !isOrderPayable(order, now),
+		polling: false,
+	});
+	detail = {
+		label,
+		state: accountOrderStatus(order, now),
+		stateNote: stamp?.body ?? null,
+		placed: orderPlacedOn(order.createdAt),
+		ledgerRows,
+		sumRows: orderSumRows(totals),
+		total: totals.total,
+		totalLabel: orderTotalLabel(order.state),
+		excludesUncalculated: totals.totalExcludesUncalculated,
+	};
+}
+
 const model: AccountOrderModel = {
-	order:
-		order === null
-			? null
-			: {
-					label,
-					state: orderStateLabel(order.state),
-					ledgerRows,
-					totals,
-					total: orderMoney(order.totals.totalCents, order.totals.currency),
-				},
+	order: detail,
 	errorMessage: cartErrorMessage(busy ? "BUSY" : notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE"),
 };
 ---

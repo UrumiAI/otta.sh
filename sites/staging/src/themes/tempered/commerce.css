@@ -963,7 +963,7 @@
 
 [data-theme-id] .account-orders-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1.4fr) 1fr auto auto;
+	grid-template-columns: minmax(0, 1.4fr) 1fr auto auto auto;
 	gap: 1rem;
 	align-items: baseline;
 	padding: 0.875rem 0;
@@ -979,8 +979,12 @@
 }
 
 [data-theme-id] .account-orders-state,
+[data-theme-id] .account-orders-date,
 [data-theme-id] .account-orders-items {
 	color: var(--u-mute);
+}
+[data-theme-id] .account-orders-date {
+	white-space: nowrap;
 }
 
 [data-theme-id] .account-orders-total {
@@ -1029,6 +1033,17 @@
 	font-size: 0.875rem;
 	color: var(--u-mute);
 }
+/* What the order page says about this state (e.g. whether anything was charged):
+   it follows the status line directly, so the status gives up its gap to it. */
+[data-theme-id] .account-order-state:has(+ .account-order-note) {
+	margin-bottom: 0.5rem;
+}
+[data-theme-id] .account-order-note {
+	margin: 0 0 2rem;
+	max-width: 36rem;
+	font-size: 0.875rem;
+	color: var(--u-ink);
+}
 
 [data-theme-id] .account-order-notice-slot {
 	margin-bottom: 1.5rem;
@@ -1057,34 +1072,6 @@
 }
 [data-theme-id] .account-order-head-label {
 	margin: 0;
-	color: var(--u-ink);
-}
-
-[data-theme-id] .account-order-totals {
-	margin: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 0.5rem;
-	font-size: 0.875rem;
-}
-[data-theme-id] .account-order-row {
-	display: flex;
-	justify-content: space-between;
-	gap: 1rem;
-}
-[data-theme-id] .account-order-row dt {
-	color: var(--u-mute);
-}
-[data-theme-id] .account-order-row dd {
-	margin: 0;
-	color: var(--u-ink);
-}
-[data-theme-id] .account-order-grand {
-	padding-top: 0.625rem;
-	border-top: var(--u-hair);
-	font-weight: 600;
-}
-[data-theme-id] .account-order-grand dt {
 	color: var(--u-ink);
 }
 

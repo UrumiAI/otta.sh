@@ -432,11 +432,21 @@ export interface OrderModel {
 	orderLabel: string | null;
 	/** The failure copy for the no-order arm (BUSY / not found / unavailable). */
 	failureMessage: string;
-	/** The bounded meta-refresh poll is running (the page emits the refresh). */
+	/**
+	 * Where the checkout tracker stands (`orderProgress`): Payment is completed
+	 * only for an order that was paid; an expired or failed order is `halted` at
+	 * Payment; `null` ⇒ draw no tracker (a cancelled order may or may not have
+	 * been paid first).
+	 */
+	progress: { current: "payment" | "order"; halted: boolean } | null;
+	/** The bounded poll is running (the page emits the same-URL refresh) — only
+	 *  while a change is expected: the buyer just came back from Stripe. */
 	shouldPoll: boolean;
 	/** Which hop of the poll this render is (1-based), and of how many. */
 	pollHop: number;
 	pollMax: number;
+	/** "Check again"'s href: `""`, this very URL, so a check REPLACES the history
+	 *  entry instead of adding one (and the redirect parameters are never echoed). */
 	nextPollUrl: string;
 	hasActions: boolean;
 	canCheckAgain: boolean;
@@ -484,7 +494,13 @@ export interface AccountOrderRow {
 	/** The order's products (`orderLabel`), the link text. */
 	label: string;
 	href: string;
+	/** The order's status in words (`accountOrderStatus`) — what the order page
+	 *  says about it, list-sized: never "Awaiting payment" for an order that can
+	 *  no longer be paid. */
 	state: string;
+	/** When it was placed ("Oct 2, 2026", UTC) and the instant for `<time>`;
+	 *  `null` when the date is unreadable. Rows arrive newest first. */
+	placed: { text: string; iso: string } | null;
 	/** "1 item" / "3 items". */
 	items: string;
 	total: string;
@@ -501,10 +517,21 @@ export interface AccountOrderModel {
 	order: {
 		/** The order's products (`orderLabel`) — the heading. No id: see `AccountOrderRow`. */
 		label: string;
+		/** Status in words, as in the list (`accountOrderStatus`). */
 		state: string;
+		/** What the order page says about this state (`orderStamp`'s body — e.g.
+		 *  whether anything was charged on an expired order), or `null`. */
+		stateNote: string | null;
+		placed: { text: string; iso: string } | null;
 		ledgerRows: LedgerLine[];
-		totals: readonly { label: string; value: string }[];
-		total: string;
+		/** The order page's own rows (`orderSumRows`): "Not calculated" where the
+		 *  order was never priced for shipping or tax, never $0.00. */
+		sumRows: SumRow[];
+		total: CheckoutAmountView;
+		/** "Paid" / "Refunded" / "Total" (`orderTotalLabel`), as on the order page. */
+		totalLabel: string;
+		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
+		excludesUncalculated: boolean;
 	} | null;
 	errorMessage: string;
 }

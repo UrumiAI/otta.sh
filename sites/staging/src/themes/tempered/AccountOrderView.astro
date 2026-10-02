@@ -5,12 +5,14 @@
  * what a receipt must show. Presentation only — `src/pages/account/orders/
  * [id].astro` reads through the session route (NOT_FOUND for an order that is
  * not theirs, the same answer as for one that does not exist), sets the status
- * and the no-store header, and formats every figure.
+ * and the no-store header, and builds every figure — the totals by the public
+ * order page's own rules (`lib/order-view.ts`), rendered by the same `Sum`.
  *
  * Styles: `commerce.css` (`account-order-*`).
  */
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
+import Sum from "../../components/Sum.astro";
 import type { AccountOrderModel } from "../contract.js";
 
 interface Props {
@@ -39,7 +41,16 @@ const { order, errorMessage } = Astro.props.model;
 			{/* The order's products, not its id: the UUID names nothing the
 			    shopper bought, and the receipt below says the rest. */}
 			<h1 class="account-order-title">{order.label}</h1>
-			<p class="account-order-state">{order.state}</p>
+			<p class="account-order-state">
+				{order.state}
+				{order.placed !== null && (
+					<>
+						{" · Placed "}
+						<time datetime={order.placed.iso}>{order.placed.text}</time>
+					</>
+				)}
+			</p>
+			{order.stateNote !== null && <p class="account-order-note">{order.stateNote}</p>}
 
 			<div class="account-order-cols">
 				<section class="account-order-panel">
@@ -53,20 +64,14 @@ const { order, errorMessage } = Astro.props.model;
 					<div class="account-order-panel-head">
 						<h2 class="u-label account-order-head-label">Totals</h2>
 					</div>
-					<dl class="account-order-totals">
-						{order.totals.map((row) => (
-							<div class="account-order-row">
-								<dt>{row.label}</dt>
-								<dd class="u-mono">{row.value}</dd>
-							</div>
-						))}
-						<div class="account-order-row account-order-grand">
-							<dt>Total</dt>
-							<dd class="u-mono">
-								{order.total}
-							</dd>
-						</div>
-					</dl>
+					{/* The order page's own totals block and rows (`orderSumRows`):
+					    "Not calculated" stays prose, never $0.00 (TEMPERED.md §7). */}
+					<Sum
+						rows={order.sumRows}
+						total={order.total}
+						totalLabel={order.totalLabel}
+						excludesUncalculated={order.excludesUncalculated}
+					/>
 				</section>
 			</div>
 		</>
