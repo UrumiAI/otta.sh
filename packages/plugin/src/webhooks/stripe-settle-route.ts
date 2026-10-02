@@ -54,8 +54,13 @@ import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenAccepted } from "../edge-token.js";
+import {
+	sendOrderEmailsNow,
+	type SendOrderEmailsNowOptions,
+} from "../email/send-order-emails-now.js";
 import { stripeWebhookSecretFromKv } from "../payment-secrets.js";
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
+import { settleDeadline } from "../settle-deadline.js";
 import type { RouteHandler } from "../types.js";
 
 /** The PUBLIC route path a forwarded Stripe webhook posts to. Named for what it
@@ -217,6 +222,12 @@ export interface StripeWebhookSettleOptions {
 	/** The settle use-case, injectable so a suite can COUNT calls (and prove the
 	 *  token gate short-circuits before any). Default: the real `settleOrder`. */
 	settle?: SettleFn;
+	/** The inline order-email dispatch's overrides — chiefly an injected sender, so a
+	 *  suite proves the confirmation goes out without any egress. Default: the sender
+	 *  built from this bundle's email API URL (none ⇒ no inline send). */
+	orderEmails?: SendOrderEmailsNowOptions;
+	/** The wall clock the request's deadline is measured on. Default: `Date.now`. */
+	now?: () => number;
 }
 
 export function createStripeWebhookSettleHandler(
@@ -224,6 +235,11 @@ export function createStripeWebhookSettleHandler(
 ): RouteHandler<StripeWebhookSettleInput> {
 	const settle = options.settle ?? (settleOrder as SettleFn);
 	return async (routeCtx, ctx): Promise<StripeWebhookSettleResult> => {
+		// The request's ONE deadline, fixed FIRST (`settle-deadline.ts`): a late
+		// payment's Stripe refund calls and the inline order-email attempt both draw on
+		// it, so their SUM — not each alone — stays under Stripe's ~10 s delivery
+		// timeout. The settle's own storage work is charged to it by running first.
+		const deadline = settleDeadline(options.now);
 		// ── GATE 1: the edge token, BEFORE anything else reads kv or allocates ──
 		// Nothing above this line touches `settings:stripeWebhookSecret`, builds a
 		// gateway, or constructs a store. A rejection here costs exactly one kv get.
@@ -261,13 +277,15 @@ export function createStripeWebhookSettleHandler(
 		//
 		// BOUNDED: the refund runs inside Stripe's own delivery, which Stripe treats
 		// as failed after ~10 s and sends again. A refund pinned to the transport's
-		// 30 s default could still be in flight when the redelivery arrives; at
-		// SETTLE_PROVIDER_TIMEOUT_MS a stalled call classifies (retryable read, or an
-		// unverified create) well inside the delivery, and the next attempt resumes
-		// the same reservation under the same key.
+		// 30 s default could still be in flight when the redelivery arrives; each call
+		// is bounded by SETTLE_PROVIDER_TIMEOUT_MS AND by what is left of the request's
+		// deadline when it starts (asked per call), so a stalled call classifies
+		// (retryable read, or an unverified create) well inside the delivery, and the
+		// next attempt resumes the same reservation under the same key.
 		const gateway =
-			(await stripeGatewayFromCtx(ctx, { requestTimeoutMs: SETTLE_PROVIDER_TIMEOUT_MS })) ??
-			new StripePaymentGateway({ webhookSecret });
+			(await stripeGatewayFromCtx(ctx, {
+				requestTimeoutMs: deadline.boundedBy(SETTLE_PROVIDER_TIMEOUT_MS),
+			})) ?? new StripePaymentGateway({ webhookSecret });
 		const stores = createInProcessCommerceStores(ctx);
 		const deps: SettleDeps = {
 			orderStore: stores.orderStore,
@@ -276,8 +294,9 @@ export function createStripeWebhookSettleHandler(
 			inventoryStore: stores.inventory,
 			clock: stores.clock,
 		};
+		let settled: SettleResult;
 		try {
-			return settleResultToResponse(await settleOnce(deps, gateway, body, stripeSignature, settle));
+			settled = await settleOnce(deps, gateway, body, stripeSignature, settle);
 		} catch (err) {
 			// STORAGE PRESSURE IS A 503, AND A 503 IS WHAT MAKES STRIPE RETRY. Before
 			// this, the throw escaped as the host's 500 — which Stripe also retries,
@@ -293,5 +312,35 @@ export function createStripeWebhookSettleHandler(
 			}
 			throw err;
 		}
+
+		// ── The order's emails, NOW — best-effort, after the settle is decided ───
+		// The confirmation used to wait for the next cron tick (up to 15 minutes); the
+		// settle has just made it due, so send it with the settlement (ADR-0005's
+		// 2026-10-02 amendment). Four properties, each load-bearing:
+		//
+		//  - OUTSIDE the BUSY→503 mapping above, and the response is computed from
+		//    `settled` alone. `sendOrderEmailsNow` never throws, but even if it could,
+		//    nothing it does may change what Stripe hears: the payment is recorded, and
+		//    a non-200 would ask Stripe to redeliver a settlement that already happened.
+		//  - On ANY ok result, `noop` included. A no-op is a redelivery, and the case
+		//    that matters is the delivery that committed the paid flip and THEN hit
+		//    storage pressure: it answered 503 and never reached this line, so its row
+		//    was never attempted and the redelivery — a no-op settle — is the first
+		//    chance to send. When nothing is due (the usual replay) the cost is one read
+		//    of the order document: the sender is built only once a row is claimed.
+		//  - FIRST ATTEMPTS ONLY. The inline claim skips any row a dispatcher has
+		//    already tried — at most one inline attempt per row, the total budget
+		//    (`maxAttempts`) unchanged — so redeliveries during a provider outage
+		//    cannot spend it and park the confirmation `failed`.
+		//  - Scoped to THIS order (`claimNextEmailForOrder`), never the global drain,
+		//    and bounded by what the refund calls left of the request's ONE deadline;
+		//    the cron leg stays the at-least-once backstop.
+		if (settled.ok && settled.order !== null) {
+			await sendOrderEmailsNow(ctx, stores, settled.order.id, {
+				...options.orderEmails,
+				deadline,
+			});
+		}
+		return settleResultToResponse(settled);
 	};
 }

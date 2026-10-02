@@ -175,7 +175,7 @@ export async function makeEmailSender(
 	options: { requestTimeoutMs?: number | (() => number) } = {},
 ): Promise<EmailSender | undefined> {
 	const apiUrl = egress.apiUrl;
-	if (apiUrl === undefined || apiUrl.length === 0) return undefined;
+	if (apiUrl === undefined || !emailSenderConfigured(egress)) return undefined;
 	const [apiKey, from] = await Promise.all([
 		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
 		readEmailFrom(ctx),
@@ -192,12 +192,25 @@ export async function makeEmailSender(
 }
 
 /**
+ * Whether {@link makeEmailSender} would build a sender for this egress — the same
+ * predicate, without its kv reads. A caller that only wants to pay for the sender
+ * once there is something to send (the settle routes' inline dispatch) asks this
+ * first, so "unconfigured" is decided before anything is claimed.
+ */
+export function emailSenderConfigured(egress: EmailSenderEgress): boolean {
+	return egress.apiUrl !== undefined && egress.apiUrl.length > 0;
+}
+
+/**
  * The ceiling on the LOGIN email's send (issue #306 review).
  *
  * Neither the login email nor the cron tick's order emails can afford
  * {@link DEFAULT_EMAIL_TIMEOUT_MS}: the tick runs inside a host hook with a 5 s
  * timeout and caps each send itself (`SWEEP_EMAIL_SEND_TIMEOUT_MS` in
- * `cron/sweeps.ts`). The login email cannot for its own reason: it is awaited inline on the login-request route, and a
+ * `cron/sweeps.ts`), and the settle routes' INLINE attempt at a just-paid order's
+ * email caps each send at `ORDER_EMAIL_INLINE_TIMEOUT_MS`, defined as this constant
+ * (`send-order-emails-now.ts`). The login email cannot for its own reason: it is
+ * awaited inline on the login-request route, and a
  * THROTTLED request skips the send altogether. With a 30 s ceiling a slow provider
  * would make a sent request seconds slower than a throttled one — the latency
  * itself would say which it was. Bounding the send keeps that gap small; it does
