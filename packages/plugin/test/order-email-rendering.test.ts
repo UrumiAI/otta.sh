@@ -28,7 +28,7 @@ import {
 } from "../src/email/email-render-context.js";
 import { STOREFRONT_LOCALE } from "../src/index.js";
 import { NOT_CALCULATED_LABEL } from "../src/storefront/checkout-view-model.js";
-import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
+import { isSavableLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 
 interface Sent {
@@ -237,6 +237,23 @@ describe("the storefront origin a bearer link may use", () => {
 		expect(storefrontOriginOf(undefined)).toBeUndefined();
 		expect(storefrontOriginOf("javascript:alert(1)")).toBeUndefined();
 		expect(storefrontOriginOf("https://user:pw@shop.example/account/verify")).toBeUndefined();
+	});
+
+	test("an order link exists exactly when Settings would save the sign-in page — one https-or-loopback rule", () => {
+		for (const url of [
+			"https://shop.example/account/verify",
+			"http://shop.example/account/verify",
+			"http://localhost:4700/account/verify",
+			"http://127.0.0.1:4700/account/verify",
+			"http://[::1]:4700/account/verify",
+			"http://localhost.example/account/verify",
+			"http://127.0.0.2/account/verify",
+			"ftp://shop.example/account/verify",
+			"https://user:pw@shop.example/account/verify",
+			"not a url",
+		]) {
+			expect(storefrontOriginOf(url) !== undefined, url).toBe(isSavableLoginLinkUrl(url));
+		}
 	});
 });
 

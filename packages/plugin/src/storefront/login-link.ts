@@ -63,8 +63,8 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "
  * What the Settings SAVE accepts (U-8): a {@link isValidLoginLinkUrl} URL that
  * is also `https:`, or `http:` on this machine. The emailed link carries a
  * sign-in token, so a clear-text page anywhere else would send it across the
- * network readable. Matches the rule the order emails apply to the storefront
- * origin they derive from this setting.
+ * network readable. The order emails derive their storefront origin through
+ * this same function (`storefrontOriginOf`), so the two cannot drift.
  *
  * The SEND path keeps {@link isValidLoginLinkUrl}: a value saved before this
  * rule existed is still used rather than silently turning sign-in off.
