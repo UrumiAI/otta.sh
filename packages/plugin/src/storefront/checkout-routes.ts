@@ -24,7 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
-import { isIdToken } from "../commerce/commerce-input.js";
+import { BUYER_REF_MAX, isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -38,6 +38,7 @@ import type {
 	QuoteFailureReason,
 	QuoteRequestWire,
 	QuoteResult,
+	ResumeProof,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -87,6 +88,10 @@ import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pd
 export const STOREFRONT_CHECKOUT_SUMMARY_ROUTE = "storefront/checkout/summary";
 export const STOREFRONT_CHECKOUT_PLACE_ROUTE = "storefront/checkout/place";
 export const STOREFRONT_ORDER_ROUTE = "storefront/order";
+/** The order page's "Complete payment" (QA U-2): the pending order's own intent,
+ *  from the order id plus a second factor (cart, owning session or email); the
+ *  id alone is `PROOF_REQUIRED`. */
+export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
 
 /** The one payment method this slice offers. x402's `x402_challenge` client
  *  action is a second flow, out of scope (plan §7.2). */
@@ -129,6 +134,15 @@ export interface CheckoutPlaceRouteInput {
 export interface OrderRouteInput {
 	orderId?: unknown;
 	locale?: unknown;
+}
+
+/** The order id, the SECOND FACTOR (any one of cart, session, email — see
+ *  `commerce/resume-proof.ts`) and the locale the total is formatted in. Nothing
+ *  else in the input is read. */
+export interface OrderResumeRouteInput extends OrderRouteInput {
+	cartId?: unknown;
+	sessionToken?: unknown;
+	email?: unknown;
 }
 
 /** What the totals were computed WITH — the form echoes it, so the place
@@ -262,6 +276,31 @@ export type OrderRouteResult =
 	| { ok: true; order: PublicOrderView }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
+	| RenderGuardFailure;
+
+export type OrderResumeRouteResult =
+	| {
+			ok: true;
+			orderId: string;
+			/** Passed through UNMODIFIED, like the place route's. */
+			clientAction: ClientActionWire;
+			/** The order's own total — absent only when it could not be formatted
+			 *  (the same load-bearing optionality as the place route's). */
+			total?: CartMoneyWire;
+			/** The order's email as a hint (`j•••@g•••.com`), never the address. */
+			buyerRefHint: string;
+	  }
+	| { ok: false; error: "INVALID_INPUT" }
+	| {
+			ok: false;
+			reason:
+				| "ORDER_NOT_FOUND"
+				| "ORDER_NOT_PAYABLE"
+				| "PROOF_REQUIRED"
+				| "EMAIL_MISMATCH"
+				| "THROTTLED"
+				| CheckoutFailureReason;
+	  }
 	| RenderGuardFailure;
 
 /**
@@ -662,5 +701,82 @@ export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 
 			return { ok: true as const, order: buildOrderView(result.order, input.locale) };
+		});
+}
+
+/** A non-blank string, or nothing. */
+function proofText(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Resume a pending order's payment from the order page (QA U-2) — on ANY device,
+ * but NOT on the order id alone: the caller also holds the order's cart, a
+ * session owning it, or its email (`commerce/resume-proof.ts`). No key or buyer
+ * can be smuggled in to steer the replay; the client replays the order's OWN
+ * checkout.
+ *
+ * What this grants beyond the order read is the client secret of the order's
+ * existing PaymentIntent — i.e. the means to PAY that order, for as long as it is
+ * payable (pending, before its hold deadline). The reply is projected like the
+ * place route's: the order id, the client action, the total and a masked email —
+ * never the buyer reference, the ship-to or the intent id.
+ */
+export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteInput> {
+	return (routeCtx, ctx): Promise<OrderResumeRouteResult> =>
+		renderGuard(STOREFRONT_ORDER_RESUME_ROUTE, async () => {
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			const input = parseOrderRouteInput(routeCtx.input);
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
+
+			// The second factor: only non-blank strings, bounded. An email longer
+			// than any buyer reference can be cannot match, and is refused without
+			// spending a throttle slot or a store read.
+			const proof: ResumeProof = {};
+			const cartId = proofText(routeCtx.input.cartId);
+			const sessionToken = proofText(routeCtx.input.sessionToken);
+			const email = proofText(routeCtx.input.email);
+			if (cartId !== undefined && isIdToken(cartId)) proof.cartId = cartId;
+			if (sessionToken !== undefined && sessionToken.length <= 400) {
+				proof.sessionToken = sessionToken;
+			}
+			if (email !== undefined) {
+				if (email.length > BUYER_REF_MAX) {
+					return { ok: false as const, reason: "EMAIL_MISMATCH" as const };
+				}
+				proof.email = email;
+			}
+
+			const client = await makeCommerceClient(ctx);
+			const result = await client.resumeOrderPayment(input.orderId, proof);
+			if (!result.ok) {
+				// A same-key intent still in flight (a double click on "Complete
+				// payment") is BUSY and retryable, as on the place route.
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
+			if (result.intent.clientAction.kind !== "stripe_client_secret") {
+				return { ok: false as const, reason: "ORDER_NOT_PAYABLE" as const };
+			}
+
+			let total: CartMoneyWire | undefined;
+			try {
+				total = buildOrderTotal(result.order, input.locale);
+			} catch (err) {
+				console.error(`[otta] ${STOREFRONT_ORDER_RESUME_ROUTE} total format failed:`, err);
+			}
+			return {
+				ok: true as const,
+				orderId: result.order.id,
+				clientAction: result.intent.clientAction,
+				...(total !== undefined ? { total } : {}),
+				buyerRefHint: result.buyerRefHint,
+			};
 		});
 }

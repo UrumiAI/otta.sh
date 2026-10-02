@@ -19,6 +19,7 @@ import {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_LIST_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type RenderBusy,
 } from "@otta-sh/plugin";
@@ -157,6 +158,15 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Routes that replay a key of their OWN, so a repeat converges whatever the
+ * caller sent. `storefront/order/resume` (QA U-2) replays the order's original
+ * checkout on the order's own idempotency key: the same order, and at Stripe the
+ * same PaymentIntent. One cost, stated: a retried EMAIL attempt may take a second
+ * slot of that order's guess window — over-refusal, bounded by the window.
+ */
+const REPLAYING_ROUTES: ReadonlySet<string> = new Set([STOREFRONT_ORDER_RESUME_ROUTE]);
+
+/**
  * May a BUSY answer to this call be retried automatically? An ALLOWLIST: a
  * route is retried only when it is named here, and every other route —
  * including any added later — defaults to NO retry.
@@ -165,6 +175,7 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
  * route may have committed earlier steps. So a blind replay is safe only when
  * repeating the whole call provably cannot double anything:
  *  - a read route ({@link READ_ROUTES}); or
+ *  - a route that replays its own key ({@link REPLAYING_ROUTES}); or
  *  - a keyed cart-line mutation ({@link KEYED_REPLAY_ROUTES}) that actually
  *    carries its key — without one there is nothing to converge on.
  *
@@ -180,7 +191,7 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
  * The caller of an unlisted route sees BUSY and answers 503.
  */
 function isRetrySafe(route: string, input: unknown): boolean {
-	if (READ_ROUTES.has(route)) return true;
+	if (READ_ROUTES.has(route) || REPLAYING_ROUTES.has(route)) return true;
 	if (!KEYED_REPLAY_ROUTES.has(route)) return false;
 	if (typeof input !== "object" || input === null) return false;
 	const key = (input as { idempotencyKey?: unknown }).idempotencyKey;

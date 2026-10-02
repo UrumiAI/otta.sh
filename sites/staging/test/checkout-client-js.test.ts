@@ -305,7 +305,10 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		// (the card number never touches this site), that the order is held,
 		// and give a way onward.
 		expect(block).toMatch(/JavaScript/i);
-		expect(block).toMatch(/15 minutes/);
+		// The hold is the ORDER's own deadline (QA U-14), not a fixed "15 minutes":
+		// a resumed payment has less left than that.
+		expect(block).toMatch(/model\.holdNote\.lead/);
+		expect(block).toMatch(/reserved for a limited time/);
 		expect(block).toContain("href={orderPath}");
 	});
 

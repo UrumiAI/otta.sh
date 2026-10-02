@@ -66,7 +66,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	});
 
 	test("the email is required, typed, and the buyerRef the service stores", () => {
-		const field = /<input[\s\S]{0,220}?name="email"[\s\S]{0,220}?\/>/.exec(VIEW)?.[0] ?? "";
+		const field = /<input[\s\S]{0,400}?name="email"[\s\S]{0,400}?\/>/.exec(VIEW)?.[0] ?? "";
 		expect(field).toContain('type="email"');
 		expect(field).toContain("required");
 		expect(field).toContain('autocomplete="email"');
@@ -75,7 +75,10 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	test("the email's hint is DESCRIBED, not part of the field's name", () => {
 		// Nested inside the <label> its ~25 words join the accessible name and
 		// are read out on every focus.
-		expect(VIEW).toMatch(/aria-describedby="email-note"/);
+		// With a refused email (QA U-1) its error is described first, then the note.
+		expect(VIEW).toMatch(
+			/aria-describedby=\{fieldErrors\.email !== undefined \? "email-error email-note" : "email-note"\}/,
+		);
 		expect(VIEW).toMatch(/id="email-note"/);
 	});
 
@@ -121,7 +124,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	);
 
 	test("the email is bounded by the place route's own buyerRef limit (BUYER_REF_MAX)", () => {
-		const field = /<input[\s\S]{0,260}?name="email"[\s\S]{0,260}?\/>/.exec(VIEW)?.[0] ?? "";
+		const field = /<input[\s\S]{0,400}?name="email"[\s\S]{0,400}?\/>/.exec(VIEW)?.[0] ?? "";
 		expect(field).toContain("maxlength={BUYER_REF_MAX}");
 	});
 
@@ -188,23 +191,28 @@ describe.each(ORDER_VIEWS)("the confirmation's panels — %s", (_label, { source
  */
 describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source: VIEW }) => {
 	const TEMPLATE = templateOf(VIEW);
-	const COUPON_FORM =
-		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ??
-		"";
+	/* QA U-1: the coupon is no longer its own GET form — applying it that way
+	   dropped everything typed below. Its field and buttons belong to the place
+	   form (`form="checkout-place"`), which posts the typed details with them. */
+	const COUPON =
+		/<div class="checkout-coupon">[\s\S]*?<span class="checkout-note" id="coupon-note">/.exec(
+			TEMPLATE,
+		)?.[0] ?? "";
 
-	test("the coupon form is GET /checkout with name=coupon maxlength=200", () => {
-		expect(COUPON_FORM, "no GET /checkout form").not.toBe("");
-		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON_FORM)?.[0] ?? "";
+	test("the coupon field is name=coupon maxlength=200, owned by the place form", () => {
+		expect(COUPON, "no coupon block").not.toBe("");
+		const field = /<input[^>]*name="coupon"[^>]*>/.exec(COUPON)?.[0] ?? "";
 		expect(field).toContain('maxlength="200"');
 		expect(field).toContain('autocomplete="off"');
+		expect(field).toContain('form="checkout-place"');
 	});
 
-	test("the coupon form is NOT nested in the place form", () => {
+	test("the coupon block sits before the place form and is not nested in it", () => {
 		const place =
 			/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
 		expect(place).not.toBe("");
 		expect(place).not.toContain('name="coupon"');
-		expect(TEMPLATE.indexOf(COUPON_FORM)).toBeLessThan(TEMPLATE.indexOf(place));
+		expect(TEMPLATE.indexOf(COUPON)).toBeLessThan(TEMPLATE.indexOf(place));
 	});
 
 	test("the place form carries a hidden couponCode bound to summary.selection.couponCode", () => {
@@ -213,8 +221,8 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		);
 	});
 
-	test("the coupon form is hidden once the cart has become an order", () => {
-		expect(VIEW).toMatch(/!summary\.orderCreated && \(\s*<form[^>]*method="GET"/);
+	test("the coupon block is hidden once the cart has become an order", () => {
+		expect(VIEW).toMatch(/!summary\.orderCreated && \(\s*<div class="checkout-coupon">/);
 	});
 
 	test("an ENDED checkout offers no pay button — only the way to a new cart", () => {
@@ -231,9 +239,10 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 		);
 	});
 
-	test("the lock notice says the coupon AND the delivery address can no longer be changed", () => {
-		expect(VIEW).toContain(
-			"Its coupon and delivery address can no longer be changed. To change them, start a new cart.",
+	test("the lock notice says the email, the coupon AND the delivery address can no longer be changed", () => {
+		// QA U-2 added the email: the locked review no longer offers an email field.
+		expect(VIEW).toMatch(
+			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart\./,
 		);
 	});
 
@@ -242,8 +251,11 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	// one — and the notice lives IN that form, beside the choice it explains.
 	test("the shipping-method notice is live, inside the delivery form", () => {
 		expect(VIEW).not.toMatch(/unreachable until #305 part 2/);
-		const delivery = /<form[^>]*id="delivery"[\s\S]*?<\/form>/.exec(templateOf(VIEW))?.[0] ?? "";
-		expect(delivery, "no delivery form").not.toBe("");
+		const delivery =
+			/<div class="checkout-delivery" id="delivery">[\s\S]*?<\/fieldset>/.exec(
+				templateOf(VIEW),
+			)?.[0] ?? "";
+		expect(delivery, "no delivery block").not.toBe("");
 		expect(delivery).toContain("shippingError !== null");
 	});
 
@@ -281,20 +293,23 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	 * unchanged") would be wrong on both counts there.
 	 */
 	test("locked + payment not configured renders the LOCKED variant, with no money or cart claim", () => {
+		// QA U-2: the locked review is its own block (no place form, no email
+		// field); its not-configured notice lives there, and the place form's
+		// unlocked notice is unchanged.
 		const template = templateOf(VIEW);
-		const payment = template.indexOf("paymentConfigured ?");
-		const fork = template.indexOf(") : locked !== null ? (", payment);
-		expect(payment, "no paymentConfigured branch").toBeGreaterThan(-1);
-		expect(fork, "no locked branch under paymentConfigured").toBeGreaterThan(payment);
-		const lockedEnd = template.indexOf("</Notice>", fork) + "</Notice>".length;
-		const unlockedEnd = template.indexOf("</Notice>", lockedEnd) + "</Notice>".length;
-		const lockedVariant = shown(template.slice(fork, lockedEnd));
-		const unlockedVariant = shown(template.slice(lockedEnd, unlockedEnd));
+		const lockedStart = template.indexOf("locked !== null && !ended && (");
+		const placeStart = template.search(
+			/locked === null && !ended && \(\s*<form method="POST" action="\/checkout\/place"/,
+		);
+		expect(lockedStart, "no locked block").toBeGreaterThan(-1);
+		expect(placeStart, "no unlocked place form").toBeGreaterThan(lockedStart);
+		const lockedVariant = shown(template.slice(lockedStart, placeStart));
 		expect(lockedVariant).toContain(
 			"Card payment isn't set up on this store, so this order can't be paid right now.",
 		);
 		expect(lockedVariant).not.toMatch(/charged|cart is unchanged/i);
-		// The unlocked variant is unchanged.
+		expect(lockedVariant).not.toMatch(/name="email"/);
+		const unlockedVariant = shown(template.slice(placeStart));
 		expect(unlockedVariant).toContain(
 			"This order can't be placed. Nothing has been charged and your cart is unchanged.",
 		);
@@ -346,45 +361,58 @@ describe("/checkout — the coupon: the page's half", () => {
  */
 describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label, { source: VIEW }) => {
 	const TEMPLATE = templateOf(VIEW);
+	/* QA U-1: the delivery choice is no longer its own GET form — choosing it
+	   that way dropped everything typed. Its fields and its Update button belong
+	   to the place form (`form="checkout-place"`), under names of their own so
+	   they never collide with the place form's priced echo. */
 	const DELIVERY =
-		/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*id="delivery"[^>]*>[\s\S]*?<\/form>/.exec(
+		/<div class="checkout-delivery" id="delivery">[\s\S]*?<\/fieldset>\s*<\/div>/.exec(
 			TEMPLATE,
 		)?.[0] ?? "";
 	const PLACE =
 		/<form[^>]*action="\/checkout\/place"[^>]*>[\s\S]*?<\/form>/.exec(TEMPLATE)?.[0] ?? "";
 
-	test("the delivery form is its own GET /checkout form, after the coupon and before the place form — never nested", () => {
-		expect(DELIVERY, "no delivery form").not.toBe("");
+	test("the delivery block comes after the coupon and before the place form — never nested, never a GET form", () => {
+		expect(DELIVERY, "no delivery block").not.toBe("");
 		const coupon = TEMPLATE.indexOf('name="coupon"');
 		expect(coupon).toBeLessThan(TEMPLATE.indexOf(DELIVERY));
 		expect(TEMPLATE.indexOf(DELIVERY)).toBeLessThan(TEMPLATE.indexOf(PLACE));
 		expect(PLACE).not.toContain('id="delivery"');
+		expect(TEMPLATE).not.toMatch(/<form[^>]*method="GET"[^>]*id="delivery"/);
 	});
 
 	test("it is shown only for an unlocked cart that ships, in a store with zones", () => {
-		expect(VIEW).toMatch(/showDelivery && \(\s*<form[^>]*id="delivery"/);
+		expect(VIEW).toMatch(/showDelivery && \(\s*<div class="checkout-delivery" id="delivery">/);
 	});
 
-	test("it asks for a country (select) and a region CODE, and echoes the priced destination as fromCountry/fromRegion", () => {
-		expect(DELIVERY).toMatch(/<select[^>]*name="country"/);
-		const region = /<input[^>]*name="region"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+	test("it asks for a country (select) and a region CODE, echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
+		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+		expect(select).toContain('form="checkout-place"');
+		const region = /<input[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(region).toContain('maxlength="6"');
 		expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
+		expect(region).toContain('form="checkout-place"');
 		expect(DELIVERY).toMatch(/State\/province code/);
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="fromCountry"/);
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="fromRegion"/);
-		// Applying a delivery keeps the coupon, the same way the coupon form keeps
-		// the delivery.
-		expect(DELIVERY).toMatch(/<input[^>]*type="hidden"[^>]*name="coupon"/);
+		expect(DELIVERY).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="fromCountry"[^>]*form="checkout-place"/,
+		);
+		expect(DELIVERY).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="fromRegion"[^>]*form="checkout-place"/,
+		);
+		expect(DELIVERY).toMatch(
+			/<button[^>]*form="checkout-place"[^>]*name="intent"[^>]*value="update-delivery"[^>]*formnovalidate/,
+		);
 		expect(DELIVERY).toContain("Update delivery");
 	});
 
 	test("the matched zone's options are method radios — unpriced ones disabled, the selected one checked", () => {
-		const radio = /<input[^>]*type="radio"[^>]*name="method"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+		const radio =
+			/<input[^>]*type="radio"[^>]*name="deliveryMethod"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(radio, "no method radio").not.toBe("");
 		expect(radio).toContain("value={option.id}");
 		expect(radio).toContain("disabled={option.disabled}");
 		expect(radio).toContain("checked={option.selected}");
+		expect(radio).toContain('form="checkout-place"');
 	});
 
 	test("its notices come from the destination and method refusals and from noOptions", () => {
@@ -393,25 +421,21 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(DELIVERY).toContain("summary.shipping.noOptions");
 	});
 
-	test("the coupon form carries the delivery selection, so applying a coupon keeps it", () => {
-		const coupon =
-			[
-				...TEMPLATE.matchAll(
-					/<form[^>]*method="GET"[^>]*action="\/checkout"[^>]*>[\s\S]*?<\/form>/g,
-				),
-			]
-				.map((m) => m[0])
-				.find(
-					(form) => /<input[^>]*name="coupon"[^>]*>/.test(form) && !form.includes('id="delivery"'),
-				) ?? "";
-		expect(coupon, "no coupon form").not.toBe("");
-		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="country"/);
-		expect(coupon).toMatch(/<input[^>]*type="hidden"[^>]*name="method"/);
+	test("applying a coupon keeps the delivery selection: Apply posts the place form, which carries it", () => {
+		// QA U-1: Apply is a submit of the place form, whose hidden fields carry the
+		// priced destination and method; place.ts puts them back on the URL.
+		expect(TEMPLATE).toMatch(/<button[^>]*form="checkout-place"[^>]*value="apply-coupon"/);
+		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="country"/);
+		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="shippingMethodId"/);
 	});
 
 	test("the place form echoes the priced METHOD and DESTINATION as hidden fields — never on the locked page", () => {
+		// The place form itself is unlocked-only (QA U-2), so the echo inside it is too.
+		expect(VIEW).toMatch(
+			/locked === null && !ended && \(\s*<form method="POST" action="\/checkout\/place"/,
+		);
 		expect(PLACE).toMatch(
-			/locked === null && summary\.selection\.shippingMethodId !== null && \(\s*<input[^>]*type="hidden"[^>]*name="shippingMethodId"[^>]*value=\{summary\.selection\.shippingMethodId\}/,
+			/summary\.selection\.shippingMethodId !== null && \(\s*<input[^>]*type="hidden"[^>]*name="shippingMethodId"[^>]*value=\{summary\.selection\.shippingMethodId\}/,
 		);
 		expect(PLACE).toMatch(/<input[^>]*type="hidden"[^>]*name="addressMode"[^>]*value="zoned"/);
 		expect(PLACE).toMatch(
@@ -436,7 +460,11 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		// showDelivery / showAddress both require `locked === null` (above); the
 		// submit's gate is readyToPlace, which the plugin sets from phase === payable.
 		expect(VIEW).not.toMatch(/locked !== null && \(\s*<form[^>]*id="delivery"/);
-		expect(VIEW).toContain("start a new cart");
+		expect(VIEW).toMatch(/start a\s+new cart/);
+		// QA U-2: the locked review's pay button is the resume LINK.
+		expect(VIEW).toMatch(
+			/summary\.readyToPlace && \(\s*<div>\s*<a class="u-btn" href=\{locked\.resumeHref\}>/,
+		);
 	});
 });
 describe("/checkout — delivery (ADR-0021): the page's half", () => {
@@ -607,7 +635,14 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 		expect(frontmatter).toMatch(
 			/if \(refuseTo !== null\) return Astro\.redirect\(refuseTo, 303\);/,
 		);
-		expect(frontmatter.match(/orderRead/g) ?? []).toHaveLength(2);
+		// QA U-14: the same read also states the hold deadline — its
+		// `holdExpiresAt` and nothing else, and never on the button.
+		const holdNote =
+			/holdNote:\s*orderRead !== null && !isBusyResult\(orderRead\) && orderRead\.ok\s*\?\s*payHoldCopy\(orderRead\.order\.holdExpiresAt, new Date\(\)\)\s*:\s*null/.exec(
+				frontmatter,
+			)?.[0] ?? "";
+		expect(holdNote, "the hold note reads the order's deadline only").not.toBe("");
+		expect(frontmatter.replace(holdNote, "").match(/orderRead/g) ?? []).toHaveLength(2);
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {

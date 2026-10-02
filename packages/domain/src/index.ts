@@ -565,3 +565,4 @@ export {
 	MAX_HOLD_TTL_MINUTES,
 	updateSettings,
 } from "./settings/use-cases.js";
+export type { AttemptThrottle } from "./ports/attempt-throttle.js";

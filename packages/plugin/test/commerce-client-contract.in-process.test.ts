@@ -155,6 +155,17 @@ function inProcessTier(): CommerceClientTier {
 		payments: {
 			method: "stripe",
 			manualRefundMethod: "x402",
+			providerIntentCalls() {
+				return [stripeGateway, x402Gateway].flatMap((gateway) =>
+					gateway.intentCalls.map((call) => ({
+						gateway: gateway.id,
+						orderId: call.orderId,
+						amountCents: call.amount,
+						currency: call.currency,
+						idempotencyKey: call.idempotencyKey,
+					})),
+				);
+			},
 			providerRefundCalls() {
 				return [stripeGateway, x402Gateway].flatMap((gateway) =>
 					gateway.refundCalls.map((call) => ({

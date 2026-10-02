@@ -454,6 +454,17 @@
 [data-theme-id] .checkout-coupon .checkout-note a {
 	color: var(--u-mute);
 }
+/* "Remove coupon" is a submit button of the details form (it carries what was
+   typed with it — QA U-1), drawn as the quiet link it used to be. */
+[data-theme-id] .checkout-link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--u-mute);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
 
 [data-theme-id] .checkout-details {
 	display: flex;
@@ -486,6 +497,18 @@
 	font-size: 0.75rem;
 	line-height: 1.5;
 	color: var(--u-mute);
+}
+
+/* A refused field says why, beside the field (QA U-1). Bronze, the tempering
+   scale's warning — the same colour Stripe's own field errors take (§9). */
+[data-theme-id] .checkout-field-error {
+	margin: 0;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--u-bronze);
+}
+[data-theme-id] .checkout-field [aria-invalid="true"] {
+	border-color: var(--u-bronze);
 }
 
 /* "required" must not fuse into the uppercase mono label beside it, so it
@@ -632,6 +655,16 @@
 	display: flex;
 	gap: 0.625rem;
 	align-items: flex-start;
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	max-width: 46ch;
+}
+
+/* The order's email (a hint) and its hold deadline, read-only lines above the
+   card fields (QA U-2, U-14). */
+[data-theme-id] .pay-email,
+[data-theme-id] .pay-hold {
 	margin: 0;
 	font-size: 0.8125rem;
 	color: var(--u-mute);

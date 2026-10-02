@@ -129,6 +129,8 @@ import type {
 	QuoteRequestWire,
 	ReplaceCartResult,
 	QuoteResult,
+	ResumeOrderPaymentResult,
+	ResumeProof,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
@@ -137,6 +139,8 @@ import type {
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
 import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
+import { buyerRefHint } from "./buyer-ref-hint.js";
+import { emailMatchesBuyer, resumeThrottleKey } from "./resume-proof.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
@@ -1057,6 +1061,77 @@ export class InProcessCommerceClient implements CommerceClient {
 		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
 		if (read === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 		return { ok: true, order: serializePublicOrder(read.order, read.latePayment) };
+	}
+
+	/**
+	 * Resume a pending order's payment from its id plus a second factor (cart,
+	 * owning session or email; the id alone is PROOF_REQUIRED) — see the port. The
+	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
+	 * short-circuit: its cart, its key, its buyer, its method. That path returns
+	 * the original order, re-snapshots nothing, and asks the gateway for the
+	 * intent under the SAME key with the SAME body (`intentInputFor`), which is
+	 * what makes Stripe hand back the same PaymentIntent rather than a second one.
+	 *
+	 * The caller must hold a second factor beside the id (`proof`): the order's
+	 * cart, a session owning it, or its email — see the port.
+	 *
+	 * Payability is decided BEFORE the replay, on the order as stored, by the pay
+	 * page's own rule (`pending`, strictly before `holdExpiresAt`), so a lapsed or
+	 * settled order never reaches the provider. The replay's own answer is checked
+	 * again: an order that left pending in between comes back with no client
+	 * action, and that is not payable either.
+	 */
+	async resumeOrderPayment(
+		orderId: string,
+		proof: ResumeProof = {},
+	): Promise<ResumeOrderPaymentResult> {
+		requireIdToken("orderId", orderId);
+		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
+		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		const deadline = Date.parse(order.holdExpiresAt);
+		if (
+			order.state !== "pending" ||
+			!Number.isFinite(deadline) ||
+			deadline <= this.#stores.clock.now().getTime() ||
+			order.cartId === null ||
+			order.paymentMethod === null
+		) {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
+		// possession proofs and cost no throttle slot; an email is a guess, so
+		// every one takes a slot of this order's window BEFORE it is compared.
+		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
+		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
+			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
+			proven = customerId !== null && customerId === order.customerId;
+		}
+		if (!proven && proof.email !== undefined) {
+			if (!(await this.#stores.resumeThrottle.admit(resumeThrottleKey(order.id)))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {
+				return { ok: false, reason: "EMAIL_MISMATCH" };
+			}
+			proven = true;
+		}
+		if (!proven) return { ok: false, reason: "PROOF_REQUIRED" };
+		const result = await createOrderFromCart(this.#createOrderDeps, {
+			cartId: order.cartId,
+			idempotencyKey: order.idempotencyKey,
+			buyerRef: order.buyerRef,
+			paymentMethod: order.paymentMethod,
+		});
+		if (!result.ok) return { ok: false, reason: result.reason };
+		if (result.order.state !== "pending" || result.intent.clientAction.kind === "none") {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		return {
+			ok: true,
+			order: serializePublicOrder(result.order, "none"),
+			intent: serializeIntent(result.intent),
+			buyerRefHint: buyerRefHint(order.buyerRef),
+		};
 	}
 
 	/**

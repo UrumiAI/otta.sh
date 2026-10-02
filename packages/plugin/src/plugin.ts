@@ -18,9 +18,11 @@ import {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 } from "./storefront/checkout-routes.js";
 // ── end Phase 4 checkout routes ────────────────────────────────────────────
 import {
@@ -169,6 +171,13 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
+		// QA U-2: the order page's "Complete payment" — the order id PLUS a second
+		// factor (cart, owning session or email), answering the pending order's
+		// OWN intent. The id alone is PROOF_REQUIRED.
+		[STOREFRONT_ORDER_RESUME_ROUTE]: {
+			handler: createOrderResumeRouteHandler() as never,
+			public: true,
+		},
 		// ── end Phase 4 checkout ────────────────────────────────────────────
 		// Work order 02 INC-C1b: the PUBLIC Stripe webhook SETTLE route. It
 		// supersedes the note that used to stand here, which said a webhook route

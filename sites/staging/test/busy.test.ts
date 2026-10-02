@@ -26,6 +26,7 @@ vi.mock("../src/lib/stripe-config.js", () => ({
 }));
 
 import {
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
@@ -142,6 +143,26 @@ describe("dispatchOttaRoute — one automatic retry, only when replay is safe", 
 
 		expect(result).toEqual(ok);
 		expect(calls).toHaveLength(2);
+	});
+
+	test("storefront/order/resume is retried once with the SAME input — it replays the order's own key", async () => {
+		// QA U-2: the resume replays the order's original checkout on its own
+		// idempotency key, so a second call converges on the same order and intent.
+		const ok = { ok: true, orderId: "o", clientAction: { kind: "none" }, buyerRefHint: "x" };
+		const { handler, calls } = scripted({
+			[STOREFRONT_ORDER_RESUME_ROUTE]: [BUSY_RESULT, ok],
+		});
+		const input = { orderId: "o", cartId: "c" };
+
+		const result = await dispatchOttaRoute(
+			handler,
+			STOREFRONT_ORDER_RESUME_ROUTE,
+			input,
+			new URL(SITE),
+		);
+
+		expect(result).toEqual(ok);
+		expect(calls.map((c) => c.body)).toEqual([input, input]);
 	});
 
 	test("a mutation carrying an idempotencyKey is retried with the SAME key", async () => {

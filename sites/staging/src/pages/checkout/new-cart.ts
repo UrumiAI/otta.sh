@@ -23,6 +23,7 @@
 import type { APIRoute } from "astro";
 import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { clearCheckoutDraft } from "../../lib/checkout-draft.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 
 export const POST: APIRoute = (context) => {
@@ -33,6 +34,7 @@ export const POST: APIRoute = (context) => {
 
 	clearCartCookie(context);
 	clearCheckoutCookie(context.cookies);
+	clearCheckoutDraft(context.cookies);
 
 	// Posted from /checkout, whose URL may hold a coupon: the GET this 303
 	// starts must not carry it as its Referer (see `withoutReferrer`).

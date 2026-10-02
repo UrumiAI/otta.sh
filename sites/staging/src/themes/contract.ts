@@ -353,6 +353,9 @@ export interface CartModel {
 /** The order a review is locked to (it has already been created). */
 export interface CheckoutLockedModel {
 	id: string;
+	/** The way on for a locked, payable order: the page-owned resume path
+	 *  (QA U-2) — a link, never a form re-asking for the email the order keeps. */
+	resumeHref: string;
 }
 
 export interface CheckoutModel {
@@ -367,6 +370,9 @@ export interface CheckoutModel {
 	ended: boolean;
 	/** The coupon field's value (a refused code comes back to be fixed). */
 	couponValue: string;
+	/** That refused code, when the field holds one — echoed so Enter with it
+	 *  unchanged does not apply it again. `null` otherwise. */
+	refusedCouponCode: string | null;
 	/** Refusal copy, already mapped: coupon, destination, delivery method. */
 	couponError: string | null;
 	destinationError: string | null;
@@ -390,8 +396,23 @@ export interface CheckoutModel {
 	paymentConfigured: boolean;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
-	/** The email field's initial value: the signed-in account's address, else "". */
+	/** The email field's initial value: what the buyer typed before a refused
+	 *  place (QA U-1), else the signed-in account's address, else "". */
 	emailValue: string;
+	/** The address fields' initial values — what the buyer typed before a
+	 *  refused place, else "" (QA U-1). */
+	addressValues: Record<
+		"name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+		string
+	>;
+	/** Copy for the fields a refused place identified, keyed by field name — a
+	 *  view prints each beside its field (QA U-1). */
+	fieldErrors: Partial<
+		Record<
+			"email" | "name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+			string
+		>
+	>;
 	/** The hint under the email field — the page's copy (`checkoutEmailNote`). */
 	emailNote: string;
 	ledgerRows: LedgerLine[];
@@ -410,6 +431,19 @@ export interface PayModel {
 	notConfiguredLead: string;
 	/** Where "View your order" goes. */
 	orderPath: string;
+	/**
+	 * The email the order was placed with, as a hint (`j•••@g•••.com`) — shown
+	 * READ-ONLY on a resumed payment (QA U-2), where the order keeps its email
+	 * and nothing on this step can change it. `null` when the stash carries none.
+	 */
+	emailHint: string | null;
+	/**
+	 * How long the order is still reserved (QA U-14): `lead` ("Your order is
+	 * reserved for 12 more minutes") and `until` ("2:32 pm UTC", with its zone)
+	 * for a `<time datetime={iso}>`. `null` when the page could not read the
+	 * order (it renders the form anyway — pay-guard.ts's fail-open).
+	 */
+	holdNote: { lead: string; until: string; iso: string } | null;
 }
 
 export interface OrderStampCopy {
@@ -440,7 +474,16 @@ export interface OrderModel {
 	nextPollUrl: string;
 	hasActions: boolean;
 	canCheckAgain: boolean;
-	canResume: boolean;
+	/**
+	 * "Complete payment"'s target — the page-owned resume path
+	 * (`/checkout/resume?order=…`, QA U-2), which works on any device. `null` ⇔
+	 * the order cannot be resumed (not pending, past its hold, or just back from
+	 * Stripe). A view links to this and never invents a path of its own.
+	 */
+	resumeHref: string | null;
+	/** Why the last "Complete payment" did not reach the pay page, when the page
+	 *  knows (a payment that could not be started) — copy, already mapped. */
+	resumeError: string | null;
 	deadEnd: boolean;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];

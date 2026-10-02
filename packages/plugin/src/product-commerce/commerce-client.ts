@@ -430,6 +430,29 @@ export interface CommerceClient {
 	 *  (`serializeOrder`, incl. `buyerRef`/`shippingAddress`) on a page a guest
 	 *  reads. The guest gets `serializePublicOrder`'s whitelist. */
 	getPublicOrder(orderId: string): Promise<PublicOrderResult>;
+	/**
+	 * Resume a PENDING order's payment (QA U-2) — the order page's "Complete
+	 * payment" on any device — from the order id PLUS a second factor (the
+	 * order's cart, a session owning it, or its email). The id alone, the
+	 * capability {@link getPublicOrder} reads with, is `PROOF_REQUIRED`.
+	 *
+	 * It replays the order's OWN checkout — its cart, its idempotency key, its
+	 * buyer — so the reply is the same order and the provider is asked for the
+	 * same intent under the same key: never a second order, never a second
+	 * intent. Refused `ORDER_NOT_PAYABLE` unless the order is `pending` and
+	 * strictly before its hold deadline (the pay page's own rule), and then
+	 * nothing is asked of the provider at all.
+	 *
+	 * SECOND FACTOR (`proof`, see `commerce/resume-proof.ts`): the id alone is
+	 * `PROOF_REQUIRED`. The cart the order was made from, a session whose customer
+	 * owns it, or the order's email (trimmed, case-folded; a wrong one is
+	 * `EMAIL_MISMATCH`, and guesses are `THROTTLED` per order) unlocks it.
+	 *
+	 * The reply carries `buyerRefHint` (`j•••@g•••.com`), never the buyer
+	 * reference: the order's email shown read-only, without handing the address
+	 * to whoever holds the link.
+	 */
+	resumeOrderPayment(orderId: string, proof?: ResumeProof): Promise<ResumeOrderPaymentResult>;
 	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
 
@@ -648,6 +671,31 @@ export type CheckoutResult =
 export type PublicOrderResult =
 	| { ok: true; order: PublicOrderWire }
 	| { ok: false; reason: "ORDER_NOT_FOUND" };
+
+/** The second factor beside an order id for {@link CommerceClient.resumeOrderPayment}
+ *  (`commerce/resume-proof.ts`). Any one that holds is enough. */
+export interface ResumeProof {
+	/** The cart cookie's id — proof when it is the cart the order was made from. */
+	cartId?: string;
+	/** A session — proof when its customer owns the order. */
+	sessionToken?: string;
+	/** The order's email, typed again. */
+	email?: string;
+}
+
+/** {@link CommerceClient.resumeOrderPayment}'s reply. */
+export type ResumeOrderPaymentResult =
+	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire; buyerRefHint: string }
+	| {
+			ok: false;
+			reason:
+				| "ORDER_NOT_FOUND"
+				| "ORDER_NOT_PAYABLE"
+				| "PROOF_REQUIRED"
+				| "EMAIL_MISMATCH"
+				| "THROTTLED"
+				| CheckoutFailureReason;
+	  };
 // ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────

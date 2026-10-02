@@ -184,3 +184,9 @@ export {
 	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";
+export { InMemoryAttemptThrottle } from "./in-memory-attempt-throttle.js";
+export {
+	attemptThrottleContract,
+	type AttemptThrottleContractOptions,
+	type AttemptThrottleHarness,
+} from "./attempt-throttle-contract.js";
