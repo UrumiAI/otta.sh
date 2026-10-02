@@ -83,6 +83,8 @@ import {
 	upsertProductCommerce,
 	upsertProductVariant,
 	readOrderWithLatePayment,
+	recordedRefundTotal,
+	classifyLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
@@ -107,6 +109,7 @@ import {
 } from "@otta-sh/domain";
 import type {
 	AddressWire,
+	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
 	CartResult,
@@ -128,6 +131,7 @@ import type {
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
+	ShopperStateWire,
 	QuoteResult,
 	ResumeOrderPaymentResult,
 	ResumeProof,
@@ -145,6 +149,7 @@ import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
 	COUPON_CODE_MAX,
+	isIdToken,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
@@ -546,6 +551,33 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
+	 * The header's facts in at most two document reads (see the port). Deliberately
+	 * NOT `getCart`: that expires lapsed holds (writes) and the route around it
+	 * joins live prices, and its store read looks up every line's reservation — the
+	 * header needs none of it, and pays for this on every uncached page. Lines whose
+	 * hold lapsed are still lines of the cart until something touches it, so the
+	 * count is the cart as stored (`CartStore.units`).
+	 */
+	async getShopperState(input: {
+		cartId?: string;
+		sessionToken?: string;
+	}): Promise<ShopperStateWire> {
+		const { cartId, sessionToken } = input;
+		const [cart, customerId] = await Promise.all([
+			cartId !== undefined && cartId.length > 0 && isIdToken(cartId)
+				? this.#stores.cartStore.units(cartId)
+				: Promise.resolve(null),
+			sessionToken !== undefined && sessionToken.length > 0
+				? this.#stores.sessionStore.validate(sessionToken)
+				: Promise.resolve(null),
+		]);
+		return {
+			cart: cart === null ? null : { state: cart.state, count: cart.units },
+			signedIn: customerId !== null,
+		};
+	}
+
+	/**
 	 * The add, with the SKU GUARD in front of it — the one piece of this surface
 	 * that is not a bare use-case call, and a security check rather than framing,
 	 * so it lives wherever the add lives.
@@ -800,16 +832,32 @@ export class InProcessCommerceClient implements CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null || order.customerId !== customerId) {
+		// ONE ledger read, as the public order read makes: the late-payment status
+		// (so the account's order page says what the public page says about money on
+		// a dead order) and the recorded refunds (its refunded figure) both come
+		// off it.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null || ledger.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
-		return { ok: true, order: serializeOrderSummary(order) };
+		return {
+			ok: true,
+			order: {
+				...serializeOrderSummary(ledger.order),
+				latePayment: classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				refundedCents: recordedRefundTotal(ledger.refunds),
+			},
+		};
 	}
 
 	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
@@ -1312,6 +1360,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -1319,6 +1368,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			// The same evidence the public wire carries (`serializePublicOrder`), so
+			// the account pages apply the order page's "Not calculated" rule.
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 	};

@@ -64,6 +64,10 @@ import {
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+} from "./storefront/shopper-state-route.js";
+import {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
 	createAfterSaveHandler,
@@ -234,6 +238,10 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
 		[ACCOUNT_LOGOUT_ROUTE]: { handler: createAccountLogoutHandler() as never, public: true },
 		[ACCOUNT_ME_ROUTE]: { handler: createAccountMeHandler() as never, public: true },
+		[STOREFRONT_SHOPPER_STATE_ROUTE]: {
+			handler: createShopperStateHandler() as never,
+			public: true,
+		},
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
 		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
 		// fans out on `type` + `page`/`action_id` to the Reports page and the

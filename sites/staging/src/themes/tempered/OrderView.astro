@@ -34,6 +34,7 @@ const {
 	stamp,
 	orderLabel,
 	failureMessage,
+	progress,
 	shouldPoll,
 	pollHop,
 	pollMax,
@@ -73,7 +74,14 @@ const {
 			{/* Wrapped rather than given a class: a page's scoped selector
 			    cannot reach a component's root (src/lib/rest-props.ts), so the
 			    spacing around one lives on an element the page owns. */}
-			<div class="order-steps"><StepTrack current="order" /></div>
+			{/* Where the order really is (`progress`, the page's call): Payment is
+			    "completed" only for a paid order; an expired or failed one stopped
+			    there; a cancelled one gets no tracker. */}
+			{progress !== null && (
+				<div class="order-steps">
+					<StepTrack current={progress.current} halted={progress.halted} />
+				</div>
+			)}
 
 			<StateStamp
 				state={order.state}

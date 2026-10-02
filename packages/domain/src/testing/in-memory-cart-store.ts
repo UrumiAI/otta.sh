@@ -130,6 +130,14 @@ export class InMemoryCartStore implements CartStore {
 		};
 	}
 
+	async units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null> {
+		const cart = this.#carts.get(cartId);
+		if (cart === undefined) return null;
+		let units = 0;
+		for (const row of this.#lines.values()) if (row.cartId === cartId) units += row.qty;
+		return { state: cart.state, units };
+	}
+
 	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
 		const row = this.#ledger.get(key);
 		return row === undefined ? null : this.#toRecorded(row);

@@ -423,6 +423,7 @@ export {
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	orderTotalsFlags,
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
@@ -447,6 +448,16 @@ export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
 export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
+// order emails.
+export { orderTotalLabel } from "@otta-sh/domain";
+// The sign-in link's per-address cap and lifetime, as the in-process verifier
+// enforces them (its defaults — `createInProcessCommerceStores` passes no
+// override), so a storefront's copy about them cannot drift from the truth.
+export {
+	DEFAULT_CHALLENGE_TTL_MS as LOGIN_LINK_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES as LOGIN_LINK_MAX_ACTIVE,
+} from "@otta-sh/store-emdash";
 // The ship-to's per-field length bounds the domain enforces, for a site that
 // bounds its address inputs and refuses an over-long field as the address
 // error it is rather than a generic one.
@@ -458,6 +469,13 @@ export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 // site's email field.
 export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+	type ShopperStateInput,
+	type ShopperStateResult,
+} from "./storefront/shopper-state-route.js";
+export {
+	type AccountOrderWire,
 	type CheckoutFailureReason,
 	type CheckoutResult,
 	type ClientActionWire,

@@ -24,7 +24,11 @@
  */
 import { isIdToken, LOGIN_TOKEN_MAX } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
-import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
+import type {
+	AccountOrderWire,
+	AddressWire,
+	OrderSummaryWire,
+} from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
@@ -114,7 +118,7 @@ export interface AccountOrderInput {
 	orderId?: unknown;
 }
 export type AccountOrderResult =
-	| { ok: true; order: OrderSummaryWire }
+	| { ok: true; order: AccountOrderWire }
 	| { ok: false; error: "NOT_FOUND" }
 	| { ok: false; redirectTo: string }
 	| RenderGuardFailure;

@@ -324,7 +324,10 @@ describe("the middleware: a page that drew a bag is never shared-cached", () => 
 	test.each(STORE_THEMES.map((theme) => theme.id))("%s, with a cart cookie", async (id) => {
 		const ctx = middlewareContext(`/products?theme=${id}`, "cart-1");
 		const response = await runMiddleware(ctx, htmlPage);
-		const drawsBag = themeFor(id).chrome?.cartLines === true;
+		// The bag's lines, or the header's count (`chrome.shopperState`, QA U-14 —
+		// chrome-shopper-state.test.ts): either way the page drew this cart.
+		const drawsBag =
+			themeFor(id).chrome?.cartLines === true || themeFor(id).chrome?.shopperState === true;
 		expect(response.headers.get("Cache-Control")).toBe(
 			drawsBag ? PER_SHOPPER_NO_STORE : "public, max-age=60",
 		);

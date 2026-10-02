@@ -48,12 +48,20 @@ export interface ChromeModel {
 	description: string | null;
 	/** The primary menu, Account link already appended. */
 	navItems: readonly ChromeNavItem[];
-	/** Units in the cart, or `null` for "this page read no cart" (never `0`). */
+	/** Units in the cart, or `null` for "no count to draw" — no cart read on this
+	 *  page, no cart cookie, or an empty or unreadable cart. */
 	cartCount: number | null;
 	/** The spoken form of `cartCount` ("3 items"), `null` exactly when it is. */
 	cartCountLabel: string | null;
 	/** The currency CODE the page quoted, or `null` when it quoted none (§7). */
 	currency: string | null;
+	/**
+	 * `true` only when this request carried a session the plugin still honours
+	 * (asked for a theme that opts into `shopperState`); `false` for signed out or
+	 * not known. The nav's own Account entry is already relabelled for it ("Your
+	 * account"); a theme may also style on it. Never the email.
+	 */
+	signedIn: boolean;
 	themeId: ThemeId;
 	/**
 	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer,
@@ -466,11 +474,21 @@ export interface OrderModel {
 	orderLabel: string | null;
 	/** The failure copy for the no-order arm (BUSY / not found / unavailable). */
 	failureMessage: string;
-	/** The bounded meta-refresh poll is running (the page emits the refresh). */
+	/**
+	 * Where the checkout tracker stands (`orderProgress`): Payment is completed
+	 * only for an order that was paid; an expired or failed order is `halted` at
+	 * Payment; `null` ⇒ draw no tracker (a cancelled order may or may not have
+	 * been paid first).
+	 */
+	progress: { current: "payment" | "order"; halted: boolean } | null;
+	/** The bounded poll is running (the page emits the same-URL refresh) — only
+	 *  while a change is expected: the buyer just came back from Stripe. */
 	shouldPoll: boolean;
 	/** Which hop of the poll this render is (1-based), and of how many. */
 	pollHop: number;
 	pollMax: number;
+	/** "Check again"'s href: `""`, this very URL, so a check REPLACES the history
+	 *  entry instead of adding one (and the redirect parameters are never echoed). */
 	nextPollUrl: string;
 	hasActions: boolean;
 	canCheckAgain: boolean;
@@ -487,7 +505,7 @@ export interface OrderModel {
 	deadEnd: boolean;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];
-	/** "Total", or "Paid" once settled. */
+	/** "Paid" once the money was captured (refunded included), else "Total". */
 	totalLabel: string;
 	/** The sign-in page. The page owns the path; a theme only links to it. For a
 	 *  shopper who is not signed in as this order's owner: the sign-in link joins
@@ -503,8 +521,12 @@ export interface AccountLoginModel {
 	/** Signed in already: who, and where their orders are — shown above the form
 	 *  (which still works, to switch address). `null` ⇔ signed out. */
 	signedIn: { email: string; ordersHref: string } | null;
-	/** `?sent=1`: the generic notice — the same for every address. */
+	/** `?sent=1` or `?sent=many`: a link was asked for. */
 	sent: boolean;
+	/** The notice's copy, the page's call: the generic sentence, the same for
+	 *  every address — or, once THIS BROWSER has asked more often than the
+	 *  per-address cap allows, the sentence saying a new link may not have been
+	 *  sent. Never decided by the address, so never an account oracle. */
 	sentCopy: string;
 	errorMessage: string | null;
 }
@@ -527,7 +549,13 @@ export interface AccountOrderRow {
 	/** The order's products (`orderLabel`), the link text. */
 	label: string;
 	href: string;
+	/** The order's status in words (`accountOrderStatus`) — what the order page
+	 *  says about it, list-sized: never "Awaiting payment" for an order that can
+	 *  no longer be paid. */
 	state: string;
+	/** When it was placed ("Oct 2, 2026", UTC) and the instant for `<time>`;
+	 *  `null` when the date is unreadable. Rows arrive newest first. */
+	placed: { text: string; iso: string } | null;
 	/** "1 item" / "3 items". */
 	items: string;
 	total: string;
@@ -544,10 +572,24 @@ export interface AccountOrderModel {
 	order: {
 		/** The order's products (`orderLabel`) — the heading. No id: see `AccountOrderRow`. */
 		label: string;
+		/** Status in words, as in the list (`accountOrderStatus`). */
 		state: string;
+		/** What the order page says about this state (`orderStamp`'s body — e.g.
+		 *  whether anything was charged on an expired order), or `null`. */
+		stateNote: string | null;
+		placed: { text: string; iso: string } | null;
 		ledgerRows: LedgerLine[];
-		totals: readonly { label: string; value: string }[];
-		total: string;
+		/** The order page's own rows (`orderSumRows`): "Not calculated" where the
+		 *  order was never priced for shipping or tax, never $0.00. */
+		sumRows: SumRow[];
+		total: CheckoutAmountView;
+		/** "Paid" / "Total" (the domain's `orderTotalLabel`), as on the order page. */
+		totalLabel: string;
+		/** "Refunded $5.00" — what the order's ledger shows refunded, as its own line
+		 *  under the total; `null` when the ledger shows none. */
+		refundedNote: string | null;
+		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
+		excludesUncalculated: boolean;
 	} | null;
 	errorMessage: string;
 }
@@ -591,6 +633,19 @@ export interface ThemeViews {
  */
 export interface ThemeChromeNeeds {
 	cartLines?: boolean;
+	/**
+	 * This theme's chrome shows the SHOPPER'S STATE on every storefront page: the
+	 * cart's count beside the cart link, and whether they are signed in (QA U-12,
+	 * U-14). The shell then makes ONE dispatch of the lean `storefront/shopper-state`
+	 * route (`lib/chrome-state.ts`: at most a cart-document and a session-document
+	 * read) for whichever of the cart and session cookies the request carries —
+	 * none without either — and hands over `ChromeModel.cartCount` (no badge for an
+	 * empty cart, on every page) and `ChromeModel.signedIn`. The middleware keeps every such page private,
+	 * no-store and out of the route cache. Both reads fail soft and skip the
+	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
+	 * its own count.
+	 */
+	shopperState?: boolean;
 }
 
 export interface ThemeModule {

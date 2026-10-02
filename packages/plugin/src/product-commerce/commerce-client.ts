@@ -324,6 +324,14 @@ export interface CommerceClient {
 	 *  read measures against (issue #127). For shopper-facing copy. */
 	getCartHoldTtlMinutes(): Promise<number>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	/**
+	 * The storefront header's two facts, as cheaply as they can be known: the
+	 * cart's state and unit count (ONE cart-document read — no hold expiry, no
+	 * price join) and whether the session is live (ONE session-document read — no
+	 * customer read, and never who). Either input absent or unusable ⇒ `null` /
+	 * `false` without a read. Read-only.
+	 */
+	getShopperState(input: { cartId?: string; sessionToken?: string }): Promise<ShopperStateWire>;
 	addCartLine(
 		cartId: string,
 		sku: string,
@@ -365,7 +373,7 @@ export interface CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	>;
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
 	/**
@@ -725,8 +733,36 @@ export interface OrderSummaryWire {
 	currency: string;
 	paymentMethod: string | null;
 	holdExpiresAt: string;
-	totals: OrderTotalsWire;
+	/** When the order was placed (ISO-8601) — the account list dates its rows by it. */
+	createdAt: string;
+	/**
+	 * The figures, plus the same evidence the public order wire carries of WHAT
+	 * they were priced with: the coupon, and the shipping snapshot's zone and
+	 * method ids (`orderTotalsFlags` reads these — a method means shipping was
+	 * calculated, a zone means tax was). Without them an account page can only
+	 * print `$0.00` where the order page honestly says "Not calculated".
+	 */
+	totals: OrderTotalsWire & {
+		appliedCouponCode: string | null;
+		shippingZoneId: string | null;
+		shippingMethodId: string | null;
+	};
 	lines: OrderLineWire[];
+}
+
+/**
+ * One of the customer's orders, read on its own: the summary plus the late-payment
+ * status the public order wire carries ({@link PublicOrderWire.latePayment}), so
+ * the account's order page says what the public order page says about money on a
+ * dead order. Only the single read carries it — deriving it needs the order's
+ * ledgers, which the list does not read.
+ */
+export interface AccountOrderWire extends OrderSummaryWire {
+	latePayment: PublicOrderWire["latePayment"];
+	/** Money the order's ledger shows refunded (RECORDED refunds only), in the
+	 *  order's minor units — `0` when none. A refund made outside Otta ("Mark
+	 *  refunded", ADR-0026) is not on the ledger and is not counted. */
+	refundedCents: number;
 }
 
 export interface AddressWire {
@@ -763,6 +799,14 @@ export interface CartLineWire {
 	qty: number;
 	reservationId: string | null;
 	expiresAt: string | null;
+}
+
+/** {@link CommerceClient.getShopperState}'s answer. `cart.count` is the sum of
+ *  line quantities as stored (`0` for an empty cart); `cart` is `null` for no
+ *  cart id, an unusable one, or a cart that does not exist. */
+export interface ShopperStateWire {
+	cart: { state: string; count: number } | null;
+	signedIn: boolean;
 }
 
 /** `replaceCart`'s answer: the new cart, or why the named cart cannot be replaced. */

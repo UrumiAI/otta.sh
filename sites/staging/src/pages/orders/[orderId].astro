@@ -30,7 +30,10 @@
  *
  * ── Zero client JavaScript, and that is a rule (ADR-0012 decision 2) ─────
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
- * manual link: no JS, no busy loop. The sweeping ribbon beside the count is a
+ * manual link: no JS, no busy loop. It runs only while a change is expected
+ * (the buyer just came back from Stripe), and each hop reloads the SAME URL, so
+ * it replaces the history entry instead of adding one; the hop count lives in a
+ * short-lived cookie (`lib/order-poll.ts`, QA U-13). The sweeping ribbon beside the count is a
  * CSS animation on a page that reloads itself, which is why it comes from
  * `PollRibbon` and NOT from the cart's countdown — whose script
  * (`HoldClock.astro`) Astro emits wherever it renders, so it would have put
@@ -38,7 +41,12 @@
  * theme's `OrderView` since Phase 3, and `checkout-client-js.test.ts` walks
  * page → shell → registry → every view for exactly that.
  */
-import { orderLabel, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import {
+	orderLabel,
+	orderTotalLabel,
+	STOREFRONT_ORDER_ROUTE,
+	type OrderRouteResult,
+} from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
 import {
@@ -52,7 +60,16 @@ import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { keepPrivate } from "../../lib/no-store.js";
+import {
+	MAX_ORDER_POLLS,
+	ORDER_POLL_SECONDS,
+	orderPollHop,
+	orderPollKey,
+	recordOrderPollHop,
+	shouldPollOrder,
+} from "../../lib/order-poll.js";
 import { orderStamp } from "../../lib/order-stamp.js";
+import { orderProgress, orderSumRows } from "../../lib/order-view.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import { isOrderPayable } from "../../lib/pay-guard.js";
 import type { OrderModel } from "../../themes/contract.js";
@@ -118,12 +135,28 @@ const isPending = state === "pending";
 const holdLapsed =
 	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
 
-/** Bounded meta-refresh poll: at most 8 hops (~30 s), then a manual link. */
-const MAX_POLLS = 8;
-const poll = Number.parseInt(Astro.url.searchParams.get("p") ?? "0", 10);
-const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
-const shouldPoll = isPending && pollAttempt < MAX_POLLS;
-const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
+/**
+ * The bounded poll (`lib/order-poll.ts`): only for a pending order the buyer has
+ * just paid for — nothing else is about to change on its own — at most
+ * `MAX_ORDER_POLLS` hops, counted in a cookie because every hop reloads this
+ * same URL (so it replaces the history entry rather than adding one). The
+ * response is already private (keepPrivate, above).
+ */
+/* Keyed on the order AND the payment it came back from, so a second return
+   within the cookie's lifetime gets its full run (the intent id, never the
+   client secret, and only into an HttpOnly cookie — never the markup). */
+const pollKey =
+	order === null
+		? null
+		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
+const pollHop =
+	pollKey !== null && isPending && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
+const shouldPoll = shouldPollOrder({ state, returnedFromStripe, hop: pollHop });
+if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
+/* "Check again" reloads this same URL too: `""` is the document's own address,
+   which keeps the confirming copy for a buyer back from Stripe, adds no history
+   entry, and echoes none of the redirect parameters into the markup. */
+const nextPollUrl = "";
 
 /**
  * The order's own state → what we are willing to say: `lib/order-stamp.ts`, where
@@ -138,11 +171,8 @@ const stamp = orderStamp({
 	latePayment: order?.latePayment ?? "none",
 	returnedFromStripe,
 	holdLapsed,
+	polling: shouldPoll,
 });
-
-/** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
- *  rather than a comparison so no other state can ever pick up the word. */
-const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
 
 /**
  * The states with nowhere left to go, and therefore the states that get the
@@ -220,22 +250,9 @@ const ledgerRows =
 		money: line.lineTotal.formatted,
 	})) ?? [];
 
-const sumRows =
-	order === null
-		? []
-		: [
-				{ label: "Subtotal", amount: order.totals.subtotal },
-				{
-					label:
-						order.totals.appliedCouponCode !== null
-							? `Discount · ${order.totals.appliedCouponCode}`
-							: "Discount",
-					amount: order.totals.discount,
-					fallback: "No coupon applied",
-				},
-				{ label: "Shipping", amount: order.totals.shipping },
-				{ label: "Tax", amount: order.totals.tax },
-			];
+/* The order page's rows (`lib/order-view.ts`), shared with the account's order
+   page so the two cannot disagree: "Not calculated" stays prose (§7). */
+const sumRows = order === null ? [] : orderSumRows(order.totals);
 /** The order's name for the shopper: what was bought, never the order id (a
  *  UUID that names nothing to them). The SAME function names the order in its
  *  emails, so the page and the inbox agree. `PublicOrderView` lines say `qty`;
@@ -260,9 +277,11 @@ const model: OrderModel = {
 		: result !== null && !result.ok && "reason" in result
 			? cartErrorMessage(result.reason)
 			: cartErrorMessage("SERVICE_UNAVAILABLE"),
+	/* The tracker never says Payment is completed on an order nobody paid. */
+	progress: state === null ? null : orderProgress(state),
 	shouldPoll,
-	pollHop: pollAttempt + 1,
-	pollMax: MAX_POLLS,
+	pollHop,
+	pollMax: MAX_ORDER_POLLS,
 	nextPollUrl,
 	hasActions,
 	canCheckAgain,
@@ -271,7 +290,10 @@ const model: OrderModel = {
 	deadEnd,
 	ledgerRows,
 	sumRows,
-	totalLabel: order === null ? "Total" : (TOTAL_LABEL[order.state] ?? "Total"),
+	/* The domain's one rule (shared with the account page and the emails): "Paid"
+	   for every state the money was captured in, refunded included — a refund is
+	   the stamp's to say — else "Total" (§7). */
+	totalLabel: order === null ? "Total" : orderTotalLabel(order.state),
 	accountSignInHref: ACCOUNT_LOGIN_PATH,
 	accountOrdersHref: ownsOrder ? ACCOUNT_HOME_PATH : null,
 };
@@ -285,5 +307,6 @@ const model: OrderModel = {
 	currency={order?.currency ?? null}
 >
 	<meta name="referrer" content="no-referrer" slot="head" />
-	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
+	{/* No `url=`: the same URL reloads, replacing the history entry (QA U-13). */}
+	{shouldPoll && <meta http-equiv="refresh" content={String(ORDER_POLL_SECONDS)} slot="head" />}
 </Storefront>

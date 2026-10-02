@@ -272,7 +272,10 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		// Opted in, not a checkout-flow view, and a cart link in the chrome to
 		// hang the bag on — all three, or no read.
 		expect(shell).toMatch(
-			/const drawsBag =\s*theme\.chrome\?\.cartLines === true &&\s*!BAGLESS_VIEWS\.has\(props\.view \?\? ""\) &&\s*chromeNav\.some\(\(item\) => item\.isCart\);/,
+			/const drawsBag =\s*theme\.chrome\?\.cartLines === true && !BAGLESS_VIEWS\.has\(props\.view \?\? ""\) && hasCartLink;/,
+		);
+		expect(shell).toMatch(
+			/const hasCartLink = withAccountLink\(navItems\)\.some\(\(item\) => isCartLink\(item\.url\)\);/,
 		);
 		expect(shell).toMatch(/const bagPending = drawsBag\s*\?\s*readBag\(/);
 		expect(shell).toContain('new Set(["cart", "checkout", "pay", "order"])');

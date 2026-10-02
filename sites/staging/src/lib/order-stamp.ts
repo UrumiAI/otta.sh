@@ -28,6 +28,9 @@ export interface OrderStampInput {
 	/** A `pending` order whose hold deadline has passed (`isOrderPayable` false) —
 	 *  the sweep will expire it on its next tick; the pay page already refuses it. */
 	holdLapsed: boolean;
+	/** Is the page's bounded poll still running? Only then may it say it
+	 *  refreshes itself (QA U-13). */
+	polling: boolean;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -78,7 +81,9 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 			// settles. The page polls; the state decides.
 			return {
 				headline: "Payment submitted.",
-				body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
+				body: input.polling
+					? "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically."
+					: "We're confirming it with our payment provider — this is taking longer than usual. Check again in a minute.",
 			};
 		}
 		if (input.holdLapsed) {
@@ -87,10 +92,12 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 			// stock has not gone back on sale yet, and a payment made a moment ago may
 			// still settle it — so this says only what is certain, and what happens if
 			// money does arrive: that it is refunded, never "automatically" (on some
-			// paths a person does it). The page keeps its bounded poll in this state.
+			// paths a person does it). No poll runs in this state (a buyer who just
+			// paid arrives from Stripe, and gets the copy above), so the page offers
+			// "Check again" rather than promising to update itself.
 			return {
 				headline: "The time to pay has run out.",
-				body: "If you already paid, this page will update — if the order has already expired by then, it will be refunded.",
+				body: "If you already paid, check again in a minute — if the order has expired by then, your payment will be refunded.",
 			};
 		}
 		return { headline: "This order is awaiting payment.", body: null };

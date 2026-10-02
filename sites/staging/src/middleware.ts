@@ -2,12 +2,21 @@
  * The site's own middleware. It decides one thing: who may be served a stored
  * copy of a storefront page (ADR-0024).
  *
- * A page that draws the shopper's own bag is PER-SHOPPER. For a theme that opts
- * into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`), a request
- * carrying a cart cookie can render that shopper's lines into the header of any
- * page, so its HTML is sent `private, no-store` and kept out of Astro's route
- * cache — it must never be stored and replayed to anyone else. Any other theme
- * renders the same page for every shopper, and its caching is left alone.
+ * A page whose chrome draws the shopper's own state is PER-SHOPPER. For a theme
+ * that opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`)
+ * or into the shopper's state (`chrome.shopperState`: the cart count and the
+ * signed-in label on every page — QA U-12, U-14), a request carrying a cart
+ * cookie can render that shopper's cart into the header of any page, and (for
+ * `shopperState`) one carrying a session cookie their signed-in state. Its HTML
+ * is sent `private, no-store` and kept out of Astro's route cache — it must
+ * never be stored and replayed to anyone else.
+ *
+ * A request with NEITHER cookie gets the neutral header (no count, "Account"),
+ * the same for every such visitor, and its caching is left alone: that is the
+ * copy a shared cache may hold. A shopper WITH a cookie can at worst be handed
+ * that neutral copy by a cache that ignores cookies — a header missing their
+ * state, never someone else's. (A CDN rule that bypasses the cache when
+ * `otta_cart` or `otta_session` is present gives them their own.)
  *
  * (The admin-only live theme preview this file used to handle is gone with the
  * admin's theme picker: the store ships one theme, Tempered.)
@@ -34,13 +43,13 @@
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
  * write.
  */
-import { CART_COOKIE_NAME } from "@otta-sh/plugin";
+import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
 import { defineMiddleware } from "astro:middleware";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
 
-/** `Cache-Control` for a page that drew one shopper's bag — the site's ONE
+/** `Cache-Control` for a page that drew one shopper's state — the site's ONE
  *  private, no-store constant, under the name its callers already use. */
 export { PRIVATE_NO_STORE as PER_SHOPPER_NO_STORE } from "./lib/no-store.js";
 
@@ -68,15 +77,20 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
 	if (url.pathname.startsWith("/_")) return next();
 
-	// A shopper with a cart, on a theme whose chrome draws the cart's lines.
-	// The theme is asked only when there IS a cart cookie, and `activeTheme` is
+	// A shopper with a cart or a session, on a theme whose chrome draws it. The
+	// theme is asked only when there IS such a cookie, and `activeTheme` is
 	// memoized per request, so the shell's own call reuses this answer. It is
 	// asked on every such GET, not only pages (an endpoint or a redirect too):
 	// deliberate, since it is one memoized read and the HTML check below is what
 	// decides the header.
-	const cartId = cookies.get(CART_COOKIE_NAME)?.value;
-	if (cartId === undefined || cartId.length === 0) return next();
-	if (themeFor(await activeTheme(context)).chrome?.cartLines !== true) return next();
+	const hasCart = (cookies.get(CART_COOKIE_NAME)?.value ?? "").length > 0;
+	const hasSession = (cookies.get(SESSION_COOKIE_NAME)?.value ?? "").length > 0;
+	if (!hasCart && !hasSession) return next();
+	const chrome = themeFor(await activeTheme(context)).chrome;
+	const drawsShopper = chrome?.shopperState === true;
+	const perShopper =
+		(hasCart && (drawsShopper || chrome?.cartLines === true)) || (hasSession && drawsShopper);
+	if (!perShopper) return next();
 	skipRouteCache(context);
 	const response = await next();
 	// Again after the page (TWO CACHES above).
