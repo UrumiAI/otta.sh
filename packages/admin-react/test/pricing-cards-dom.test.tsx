@@ -495,7 +495,14 @@ test("Add stock is one click; it sends the count the merchant saw and reports th
 		{
 			type: "otta_console_act",
 			action_id: "products:restock",
-			value: { productId: "p_tee", onHand: "24", qty: "5" },
+			// The nonce is the move's idempotency key, minted for this click
+			// (`mintMovementNonce`: 128 random bits as hex).
+			value: {
+				productId: "p_tee",
+				onHand: "24",
+				qty: "5",
+				nonce: expect.stringMatching(HEX_NONCE),
+			},
 		},
 	]);
 	expect(c.textContent).toContain("Added 5 — now 29 in stock");
@@ -555,4 +562,236 @@ test("a read that fails says why and offers to try again", async () => {
 	await fire(button(c, "Try again"), "click");
 	await flush();
 	expect(input(c, "Price").value).toBe("32.00");
+});
+
+// -- stock moves: one click, one nonce; Retry is the only re-send -------------
+//
+// QA T1-2: Add 2, Remove 2, Add 2 had its third move refused, because a move was
+// keyed on what it looked like (`productId:direction:onHand:qty`). The cards now
+// send a nonce minted per click, and re-send one only through an explicit
+// "Retry this change" after an answer was lost (ADR-0015, amended 2026-10-02).
+
+const HEX_NONCE = /^[0-9a-f]{32}$/;
+
+type Step = "ok" | "lose-after" | "lose-before" | "refuse";
+
+/**
+ * A store behind the cards that behaves like the plugin's ledger: a move applies
+ * once per nonce, and a nonce it has seen is answered as a replay. Each write
+ * takes the next scripted step: `lose-after` applies the move and then loses the
+ * answer, `lose-before` loses the request before anything ran, `refuse` is the
+ * plugin's own definitive `{ok:false}`.
+ */
+function stockServer(start: number, steps: Step[] = []): { onHand: () => number } {
+	let onHand = start;
+	const seen = new Set<string>();
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") return Promise.resolve(detail({ onHand }));
+		const step = steps.shift() ?? "ok";
+		if (step === "lose-before") return Promise.reject(new TypeError("Failed to fetch"));
+		if (step === "refuse") {
+			return Promise.resolve(
+				json({ ok: false, title: "Nothing was changed", description: "Refused." }),
+			);
+		}
+		const value = body["value"] as Record<string, string>;
+		const nonce = value["nonce"] ?? "";
+		const replayed = seen.has(nonce);
+		if (!replayed) {
+			seen.add(nonce);
+			const qty = Number(value["qty"]);
+			onHand += body["action_id"] === "products:restock" ? qty : -qty;
+		}
+		if (step === "lose-after") return Promise.reject(new TypeError("Failed to fetch"));
+		return Promise.resolve(
+			json(
+				replayed
+					? {
+							ok: true,
+							notice: {
+								variant: "default",
+								title: "Already applied",
+								description: `This change was already applied — stock is now ${String(onHand)}.`,
+							},
+							replayed: true,
+						}
+					: { ok: true, notice: { variant: "default", title: "Stock added", description: "" } },
+			),
+		);
+	});
+	return { onHand: () => onHand };
+}
+
+function nonces(): unknown[] {
+	return writes().map((w) => (w["value"] as Record<string, unknown>)["nonce"]);
+}
+
+async function add(c: HTMLElement, qty: string): Promise<void> {
+	await type(input(c, "Add or remove stock"), qty);
+	await fire(button(c, "Add"), "click");
+	await flush();
+}
+
+async function remove(c: HTMLElement, qty: string): Promise<void> {
+	await type(input(c, "Add or remove stock"), qty);
+	await fire(button(c, "Remove"), "click");
+	const yes = c.querySelector('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	await fire(yes, "click");
+	await flush();
+}
+
+const retryButton = (c: HTMLElement): HTMLButtonElement | null =>
+	c.querySelector('[data-testid="otta-stock-retry"]');
+
+async function retry(c: HTMLElement): Promise<void> {
+	const b = retryButton(c);
+	if (b === null) throw new Error("no Retry offered");
+	await fire(b, "click");
+	await flush();
+}
+
+const onHandShown = (c: HTMLElement): string | null | undefined =>
+	c.querySelector('[data-testid="otta-on-hand"]')?.textContent;
+
+test("Add 2, Remove 2, Add 2: every click is its own move with its own nonce, and all three land", async () => {
+	const server = stockServer(7);
+	const c = await mountPanel();
+	await add(c, "2");
+	expect(c.textContent).toContain("Added 2 — now 9 in stock");
+	await remove(c, "2");
+	expect(c.textContent).toContain("Removed 2 — now 7 in stock");
+	await add(c, "2");
+	expect(c.textContent).toContain("Added 2 — now 9 in stock");
+	expect(onHandShown(c)).toBe("9");
+	expect(server.onHand()).toBe(9);
+	const sentNonces = nonces();
+	expect(sentNonces).toHaveLength(3);
+	for (const n of sentNonces) expect(n).toMatch(HEX_NONCE);
+	expect(new Set(sentNonces).size).toBe(3);
+});
+
+test("the same Add twice in a row is two moves: a nonce is never reused after a success", async () => {
+	const server = stockServer(24);
+	const c = await mountPanel();
+	await add(c, "5");
+	await add(c, "5");
+	expect(server.onHand()).toBe(34);
+	expect(c.textContent).toContain("Added 5 — now 34 in stock");
+	expect(new Set(nonces()).size).toBe(2);
+});
+
+test("a re-render does not mint a nonce: only a click does", async () => {
+	stockServer(24);
+	const c = await mountPanel();
+	await flush();
+	expect(writes()).toEqual([]);
+	await add(c, "1");
+	expect(writes()).toHaveLength(1);
+});
+
+test("a double click on Add sends ONE move", async () => {
+	const server = stockServer(24);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "5");
+	const addButton = button(c, "Add");
+	// Two clicks inside one task, before React can re-render the button disabled.
+	await React.act(async () => {
+		addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+	});
+	await flush();
+	expect(writes()).toHaveLength(1);
+	expect(server.onHand()).toBe(29);
+});
+
+test("a LOST answer says the change may have landed and offers Retry, which re-sends the SAME nonce once", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(c.textContent).toContain(
+		"The change may have been applied — check the count before trying again.",
+	);
+	expect(c.textContent).not.toContain("Added 5");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry this change");
+
+	await retry(c);
+	const moves = writes();
+	expect(moves).toHaveLength(2);
+	expect(moves[1]).toEqual(moves[0]); // the same move, the same nonce
+	expect(server.onHand()).toBe(29); // applied once
+	// The ledger answered: it is reported as already applied, never a fresh add.
+	expect(c.textContent).toContain("Already applied — now 29 in stock");
+	expect(c.textContent).not.toContain("Added 5");
+	expect(retryButton(c)).toBeNull(); // spent
+});
+
+test("a Retry of a move that never ran applies it, once", async () => {
+	const server = stockServer(24, ["lose-before"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	await retry(c);
+	expect(server.onHand()).toBe(29);
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(nonces()[1]).toBe(nonces()[0]);
+});
+
+test("a NEW click after a lost answer is a new move with a fresh nonce, and the Retry goes", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(retryButton(c)).not.toBeNull();
+	await add(c, "5");
+	const keys = nonces();
+	expect(keys).toHaveLength(2);
+	expect(keys[1]).not.toBe(keys[0]);
+	expect(server.onHand()).toBe(34);
+	expect(retryButton(c)).toBeNull();
+});
+
+test("Cancel on the remove confirm keeps the Retry; confirming a removal replaces it", async () => {
+	stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	const deny = c.querySelector('[data-testid="otta-confirm-deny"]');
+	if (deny === null) throw new Error("no remove confirm");
+	await fire(deny, "click");
+	expect(retryButton(c)).not.toBeNull(); // looking is not deciding
+	await remove(c, "2");
+	expect(retryButton(c)).toBeNull();
+	expect(new Set(nonces()).size).toBe(2);
+});
+
+test("a definitive refusal offers no Retry — nothing ran", async () => {
+	stockServer(24, ["refuse"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(c.textContent).toContain("Nothing was changed");
+	expect(retryButton(c)).toBeNull();
+});
+
+test("a held Retry expires ten minutes after the ORIGINAL loss, even when a Retry is lost again", async () => {
+	stockServer(24, ["lose-after", "lose-after"]);
+	const base = Date.now();
+	let offset = 0;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => base + offset);
+	try {
+		const c = await mountPanel();
+		await add(c, "5"); // lost at +0
+		offset = 6 * 60_000;
+		await retry(c); // lost again at +6 min: still held, from +0
+		expect(retryButton(c)).not.toBeNull();
+		offset = 11 * 60_000;
+		await retry(c); // +11 min since the original loss: too old
+		expect(writes()).toHaveLength(2);
+		expect(c.textContent).toContain(
+			"This change is too old to retry safely — check the count before trying again.",
+		);
+		expect(retryButton(c)).toBeNull();
+	} finally {
+		clock.mockRestore();
+	}
 });
