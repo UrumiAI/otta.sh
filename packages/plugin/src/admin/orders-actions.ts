@@ -229,6 +229,30 @@ const applied = (notice: Notice | null): OrdersActionResult => ({ ok: true, noti
 // -- transitions --------------------------------------------------------------
 
 /**
+ * A manual mark-paid (QA T1-3). An order becomes paid when Stripe (or the x402
+ * facilitator) confirms the charge, and on its own; a person marking it paid would
+ * tell the buyer their payment arrived and count revenue nobody captured. No
+ * payment method is declared offline today, so this is every manual mark-paid.
+ */
+const PAID_BY_PROVIDER_ONLY: Notice = {
+	variant: "error",
+	title: "Only the payment provider can mark this order paid",
+	description:
+		"Nothing was changed. This order becomes paid by itself when its payment provider confirms the charge. If the buyer paid you some other way, cancel this order instead.",
+};
+
+/**
+ * A bare `cancelled` move on a paid order (QA T1-4) — it would close the order with
+ * the buyer's money kept and no reason on file. Cancel order is the path.
+ */
+const USE_CANCEL_ORDER: Notice = {
+	variant: "error",
+	title: "Use Cancel order to cancel a paid order",
+	description:
+		"Nothing was changed. A paid order is cancelled with Cancel order below, which records why — a bare status change would leave the buyer’s money and the stock untouched.",
+};
+
+/**
  * One handler per state, closed over the target from {@link ORDER_STATES} — so
  * the state a transition writes comes from the ACTION ID (which only exists
  * because it was derived from that list) and never from the operator-alterable
@@ -269,6 +293,12 @@ function transitionAction(toState: string): OrdersAction {
 		}
 		const key = `admin-transition:${orderId}:${toState}`;
 		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
+		// Neither button is offered for such an order, so these are hand-made or stale
+		// payloads. Say WHY, because the operator's next step is not "retry".
+		if (!result.ok && result.reason === "MANUAL_PAYMENT_NOT_ALLOWED") {
+			return applied(PAID_BY_PROVIDER_ONLY); // T1-3
+		}
+		if (!result.ok && result.reason === "USE_CANCEL") return applied(USE_CANCEL_ORDER); // T1-4
 		if (!result.ok) {
 			return applied({
 				variant: "error",

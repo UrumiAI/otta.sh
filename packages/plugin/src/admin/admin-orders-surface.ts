@@ -327,10 +327,14 @@ export type AddNoteResult =
 	| { ok: false; status: number };
 
 /** POST transition returns a discriminated result (like `updateSettings`) so a
- *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
+ *  failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  On a failure, `reason` carries the domain's typed reason when one applies —
+ *  `MANUAL_PAYMENT_NOT_ALLOWED` (a manual mark-paid — only the payment provider
+ *  settles an order today) and `USE_CANCEL` (a bare cancel of a paid order) get
+ *  their own copy. */
 export type TransitionOrderResult =
 	| { ok: true; transitioned: boolean }
-	| { ok: false; status: number };
+	| { ok: false; status: number; reason?: string };
 
 /** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
  *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.

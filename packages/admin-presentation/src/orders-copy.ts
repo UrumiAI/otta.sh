@@ -208,11 +208,12 @@ export function cancelConfirmText(reasonLabel: string): string {
 
 /** The one bookkeeping transition dangerous enough to confirm. The sentence's
  *  whole job is to separate the LEDGER from the MONEY: marking an order
- *  refunded moves nothing, and an operator who believes otherwise has just
- *  told a buyer they were paid. */
+ *  refunded moves nothing, so it is for a refund made OUTSIDE Otta (the Stripe
+ *  dashboard, a bank transfer), and it emails the buyer nothing — Otta does not
+ *  tell a buyer about money it did not move (QA T1-6). */
 export const MARK_REFUNDED_CONFIRM = {
 	title: "Mark this order refunded?",
-	text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
+	text: "Marks the order refunded for bookkeeping, for a refund you made outside Otta. It does not move money and does not email the buyer — to refund through Otta, use Money → Refunds.",
 	confirm: "Yes, mark refunded",
 	deny: "Keep as is",
 } as const;

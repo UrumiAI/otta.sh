@@ -885,3 +885,24 @@ test("the refund confirm sends the FINALIZED total as its watermark", async () =
 		String(FINALIZED_CENTS),
 	);
 });
+
+// ── T1-3 / T1-6: the status buttons are the server's, and Mark refunded is bookkeeping ──
+
+test("the status buttons are exactly the transitions the server offers — no Mark paid it withheld", async () => {
+	// The plugin withholds `paid` for an order its payment provider settles
+	// (`adminNextStates`), so a pending card order arrives with `expired` alone and the
+	// screen must not invent the rest.
+	const view = await show({ ...detailFor("pending", NEVER_CAPTURED), transitions: ["expired"] });
+	await fire(tab(view, "fulfilment"), "click");
+	expect(view.container.querySelector('[data-testid="transition-paid"]')).toBeNull();
+	expect(one(view, '[data-testid="transition-expired"]').textContent).toContain("Mark expired");
+});
+
+test("Mark refunded asks first, and its confirm says no money moves and the buyer is not emailed", async () => {
+	const view = await show({ ...detailFor("paid"), transitions: ["processing", "refunded"] });
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="transition-refunded"]'), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(text).toContain("does not move money");
+	expect(text).toContain("does not email the buyer");
+});

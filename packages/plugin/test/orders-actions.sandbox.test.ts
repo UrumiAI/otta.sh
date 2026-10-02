@@ -134,6 +134,15 @@ let seq = 0;
  *  every case mints its own — no case can observe another's order. */
 const NS = "oa";
 
+/** The states the order's email outbox holds an entry for — what the buyer has
+ *  been, or will be, emailed about. Read off the order document itself. */
+async function outboxStates(id: string): Promise<string[]> {
+	const doc = (await storage["orders"]?.get(id)) as {
+		emailOutbox?: { toState: string }[];
+	} | null;
+	return (doc?.emailOutbox ?? []).map((entry) => entry.toState);
+}
+
 beforeAll(async () => {
 	({ storage } = await storageBridge());
 	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
@@ -340,6 +349,46 @@ describe("the Orders write path (workerd sandbox)", () => {
 			expect(result.notice?.title, JSON.stringify(state)).toBe("That action could not be read");
 			expect((await readOrder(id)).state, JSON.stringify(state)).toBe("paid");
 		}
+	});
+
+	test("an unpaid CARD order cannot be marked paid by hand — refused in the domain, nothing moves (T1-3)", async () => {
+		// The console no longer offers the button (orders-console-route.sandbox), but
+		// the payload is operator-alterable, so the WRITE must refuse it too: a click
+		// here used to email "we've received your payment" and count the revenue with
+		// nothing captured.
+		const id = await seedOrder({ paid: false });
+		const result = await act("orders:transition-paid", {
+			orderId: id,
+			toState: "paid",
+			state: "pending",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		const order = await readOrder(id);
+		expect(order.state).toBe("pending");
+		// Nothing was enqueued for the buyer either.
+		expect(await outboxStates(id)).toEqual([]);
+	});
+
+	test("a hand-made bare `cancelled` on a PAID order is refused — nothing cancelled, nothing emailed (T1-4)", async () => {
+		// The console offers no bare cancel, but the payload is operator-alterable: a
+		// raw `orders:transition-cancelled` would close a paid order with the money kept,
+		// no restock and a "cancelled" email. The domain refuses it.
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await act("orders:transition-cancelled", {
+			orderId: id,
+			toState: "cancelled",
+			state: "paid",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Use Cancel order to cancel a paid order");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		const order = await readOrder(id);
+		expect(order.state).toBe("paid");
+		expect(order.cancellation).toBeNull();
+		// The settlement's confirmation is the only email on the order.
+		expect(await outboxStates(id)).toEqual(["paid"]);
 	});
 
 	test("a no-op transition (ok but transitioned:false) reports a NON-error notice", async () => {

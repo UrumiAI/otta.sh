@@ -90,13 +90,13 @@
  */
 
 import {
+	adminNextStates,
 	appendOrderNote,
 	cancelOrder as cancelOrderUseCase,
 	computeRefundCeiling,
 	getOrderCustomerContext,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
-	legalNextStates,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
 	orderId as toOrderId,
@@ -106,7 +106,7 @@ import {
 	sumCapturedPayments,
 	sumFinalizedRefunds,
 	sumRefunds,
-	transitionOrder as transitionOrderUseCase,
+	transitionOrderAsAdmin,
 	cents as toCents,
 	currency as toCurrency,
 	type CancellationReason,
@@ -229,22 +229,26 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		return { ...retried, cursorRejected: true };
 	}
 
-	/** GET one order plus the legal outbound transitions from its current state.
-	 *  An id that never existed resolves to `null` — the console renders a "not
-	 *  found" state, not an error banner. The transitions come STRAIGHT from the
-	 *  domain state machine, never re-derived console-side. */
+	/** GET one order plus the outbound transitions an admin may make from its
+	 *  current state. An id that never existed resolves to `null` — the console
+	 *  renders a "not found" state, not an error banner. The transitions come
+	 *  STRAIGHT from the domain (`adminNextStates`: the state machine minus a manual
+	 *  `paid` for an order its gateway settles), never re-derived console-side. */
 	async getOrder(orderId: string): Promise<OrderDetailResult | null> {
 		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
 		if (order === null) return null;
 		return {
 			order: toOrderDetailWire(order),
-			allowedTransitions: [...legalNextStates(order.state)],
+			allowedTransitions: adminNextStates(order),
 		};
 	}
 
-	/** POST an order-status transition. Legality lives in the domain; an unknown
-	 *  order is the route's 404 and an illegal move its 409. */
+	/** POST an order-status transition, as the admin makes it
+	 *  (`transitionOrderAsAdmin`). Legality lives in the domain; an unknown order is
+	 *  the route's 404, and an illegal move or a manual mark-paid of a
+	 *  gateway-settled order its 409 — the latter with its reason, so the console can
+	 *  say why. */
 	async transitionOrder(
 		orderId: string,
 		toState: string,
@@ -259,14 +263,13 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
-		const res = await transitionOrderUseCase(
+		const res = await transitionOrderAsAdmin(
 			{ orderStore: this.#stores.orderStore },
 			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
 		);
 		if (res.ok) return { ok: true, transitioned: res.transitioned };
-		// `TransitionOrderResult` carries no `reason` on its failure arm — only the
-		// status, which is the shape `AdminOrdersSurface.transitionOrder` declares.
-		return { ok: false, status: res.reason === "ORDER_NOT_FOUND" ? 404 : 409 };
+		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404 };
+		return { ok: false, status: 409, reason: res.reason };
 	}
 
 	/** POST resolve an order's reconciliation flag. `expectedFlag` is the detail AS
