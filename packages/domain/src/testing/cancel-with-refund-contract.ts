@@ -247,6 +247,11 @@ export function cancelWithRefundContract(
 			const sent = await drainEmails(h);
 			expect(sent.countByTemplate("order-cancelled", id)).toBe(1);
 			expect(sent.countByTemplate("order-refunded", id)).toBe(0);
+			// ...and that email's data carries the refund, so it can say one is coming.
+			const cancelled = sent.sends.find((s) => s.template === "order-cancelled");
+			expect(cancelled?.data["cancellation"]).toMatchObject({
+				refund: { amountCents: TOTAL_CENTS, currency: "USD" },
+			});
 			expect(
 				(await h.orderStore.listEventsForOrder(id)).some((e) => e.toState === "refunded"),
 			).toBe(false);

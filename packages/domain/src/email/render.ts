@@ -56,7 +56,12 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	// this channel; those render the plain generic body, exactly like a
 	// bare-transition cancellation that carries no reason at all.
 	const cancellation =
-		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
+		template === "order-cancelled"
+			? joinLines([
+					cancellationRefundLine(data["cancellation"]),
+					cancellationLines(data["cancellation"]),
+				])
+			: null;
 	const extra = tracking ?? cancellation;
 	const text =
 		`${copy.body}\n\nOrder: ${orderId}\n${totalLabel}: ${total}` +
@@ -107,6 +112,33 @@ function cancellationLines(cancellation: unknown): { text: string; html: string 
 	const safeCopy = customerSafeCancellationCopy(reason);
 	if (safeCopy === undefined) return null; // not customer-safe ⇒ no reason line
 	return { text: `Reason: ${safeCopy}`, html: `Reason: ${escapeHtml(safeCopy)}` };
+}
+
+/** The refund a cancellation made (QA T1-4): "A refund of X is on its way …", or
+ *  null when the cancellation refunded nothing. Unlike the reason line it is
+ *  rendered whatever the reason was — the money is the buyer's, and saying it is
+ *  coming reveals nothing about why the order was cancelled. */
+function cancellationRefundLine(cancellation: unknown): { text: string; html: string } | null {
+	if (cancellation === null || typeof cancellation !== "object") return null;
+	const refund = (cancellation as { refund?: unknown }).refund;
+	if (refund === null || typeof refund !== "object") return null;
+	const r = refund as { amountCents?: unknown; currency?: unknown };
+	const amount = formatMoney(r.amountCents, str(r.currency));
+	if (amount === "") return null;
+	const line = `A refund of ${amount} is on its way to your original payment method.`;
+	return { text: line, html: escapeHtml(line) };
+}
+
+/** Join optional blocks into one, or null when there are none. */
+function joinLines(
+	blocks: ReadonlyArray<{ text: string; html: string } | null>,
+): { text: string; html: string } | null {
+	const present = blocks.filter((b): b is { text: string; html: string } => b !== null);
+	if (present.length === 0) return null;
+	return {
+		text: present.map((b) => b.text).join("\n"),
+		html: present.map((b) => b.html).join("<br>"),
+	};
 }
 
 /** Render the tracking block for a shipped email from the fulfillment data the

@@ -501,6 +501,15 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 					cancellation: {
 						reason: order.cancellation.reason,
 						detail: order.cancellation.detail,
+						// The money the cancellation returned (QA T1-4), so the email can say a
+						// refund is on its way and for how much. Null when nothing was refunded.
+						refund:
+							order.cancellation.refund == null
+								? null
+								: {
+										amountCents: order.cancellation.refund.amount,
+										currency: order.cancellation.refund.currency,
+									},
 					},
 				}
 			: {}),
