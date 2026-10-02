@@ -1191,6 +1191,27 @@ response, or a handler that throws, replaces the entire block tree with
 - B-5's "an open group stays open across a round trip" holds **only for a failed submit that still
   returns 200**.
 
+**E-6a — a failed custom action is a REFUSAL or an UNKNOWN OUTCOME, and the scaffold decides
+which structurally.** *(Added 2026-10-02, after QA met "Action outcome unknown — the action may
+already have been applied" on a zone id with a space in it.)* Three tiers, in this order:
+
+1. **The screen refuses first.** A create/save action validates what it can (blank fields, the
+   boundary's own `isIdToken`, money/percent parses, ISO codes) and re-renders its own level with
+   the draft put back (DA-3a-i). This is the normal path and the only one that keeps typing.
+2. **A known refusal from the client is answered, not thrown.** The rules client returns a store
+   collision as the create's `{ok:false, status: 409}` (a missing parent as `404`) — both raised
+   before anything is written — and the screen's own copy names the conflict.
+3. **The scaffold's net.** A custom action that throws is caught in `list-detail.ts`. It renders
+   **"Not saved — check what you entered … Nothing was changed."** only when BOTH hold: the error
+   is a `CommerceInputError` (matched by `code === "INVALID_INPUT"`, whose contract is "refused
+   before any write"), AND no write is counted — the scaffold hands the action a watching proxy
+   of its client, and every non-read call (a read is `get|list|count|find|read|load|search|has|is`
+   followed by a capital or nothing) counts as a write from the moment it is CALLED, cleared only
+   if that same call is refused with `CommerceInputError`. A write still in flight therefore
+   counts too. "Nothing was changed" is a fact the engine checked, not a convention each action
+   must keep. Every other failure — a transport error, contention, any throw after or beside a
+   write — keeps **"Action outcome unknown"**.
+
 **E-7 — a fail-closed banner must not assert a cause it does not know.** E-6 makes the fail-closed
 path swallow *everything* — an unreachable service, a 401, a malformed response, and **a bug in the
 console's own code**. A banner reading *"Could not reach the commerce service"* is therefore false

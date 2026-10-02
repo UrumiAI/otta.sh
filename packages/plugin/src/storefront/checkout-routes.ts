@@ -95,7 +95,8 @@ const PAYMENT_METHOD = "stripe" as const;
 export interface CheckoutSummaryRouteInput {
 	cartId?: unknown;
 	locale?: unknown;
-	/** Trimmed, case kept (lookup is case-sensitive); blank ⇒ no coupon. */
+	/** Trimmed, case kept as typed (the lookup folds case — ADR-0025); blank ⇒ no
+	 *  coupon. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
 	/** `{ country, region? }` — ISO codes (ADR-0021). The coarse ship-to the

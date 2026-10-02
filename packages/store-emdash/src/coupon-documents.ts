@@ -154,7 +154,8 @@ export interface CouponDoc {
 /** The code claim: which coupon owns a folded code. Reached by id alone. */
 export interface CouponCodeDoc {
 	readonly codeKey: string;
-	/** The code as the merchant typed it — the exact form `findByCode` matches. */
+	/** The code as the merchant typed it — the spelling `findByCode` RETURNS (and an
+	 *  order snapshots); the match itself is on the folded `codeKey` (ADR-0025). */
 	readonly code: string;
 	readonly couponId: string;
 	readonly claimedAt: string;
@@ -262,15 +263,15 @@ export function isTerminalRedemption(state: RedemptionState): boolean {
 }
 
 /**
- * The folded form of a code: the `coupon_codes` document id.
+ * The folded form of a code: the `coupon_codes` document id. The DOMAIN's fold
+ * (`@otta-sh/domain`), re-exported so every adapter folds identically.
  *
- * Folding is what makes the admin list's case-insensitive EXACT search a document
- * read rather than a scan. `findByCode` stays case-SENSITIVE by comparing the
- * claim's stored `code`, so the SQL adapter's `WHERE code = ?` semantics survive.
+ * Folding is what makes both `findByCode` and the admin list's case-insensitive
+ * EXACT search a document read rather than a scan — the lookup is
+ * case-INSENSITIVE end to end (ADR-0025; it used to compare the claim's stored
+ * spelling to keep the SQL adapter's `WHERE code = ?`).
  */
-export function foldCouponCode(code: string): string {
-	return code.toLowerCase();
-}
+export { foldCouponCode } from "@otta-sh/domain";
 
 /** The redemption document id: the once-only guard for `(couponId, key)`. */
 export function couponRedemptionDocId(couponId: string, idempotencyKey: string): string {

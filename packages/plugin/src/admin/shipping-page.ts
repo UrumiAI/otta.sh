@@ -25,6 +25,7 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
+import { idInputProblem } from "./id-input.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
@@ -1295,6 +1296,11 @@ function ratesFailClosed() {
 
 // -- custom action: create a zone ------------------------------------------------
 
+/** The status a create answers when the id (or rate currency) is already taken
+ *  — the store's collision, refused before anything was written. A code the
+ *  notices key their copy off, never rendered. */
+const CREATE_CONFLICT = 409;
+
 function createZoneAction() {
 	return customAction<AdminRulesSurface, ShippingRenderState>(
 		async ({ input, client, showList }) => {
@@ -1316,6 +1322,14 @@ function createZoneAction() {
 						title: "Zone not created",
 						description: "Enter both a zone ID and a name.",
 					},
+					{ kind: "new-zone", draft },
+				);
+			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					undefined,
+					{ variant: "error", title: "Zone not created", description: idProblem },
 					{ kind: "new-zone", draft },
 				);
 			}
@@ -1350,7 +1364,10 @@ function createZoneNotice(
 	return {
 		variant: "error",
 		title: "Zone not created",
-		description: `Could not create "${id}" — check the zone ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A zone with the ID "${id}" already exists — choose another ID.`
+				: `Could not create "${id}" — check the zone ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1483,6 +1500,14 @@ function createMethodAction() {
 					{ kind: "new-method", draft },
 				);
 			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					[zoneId],
+					{ variant: "error", title: "Method not created", description: idProblem },
+					{ kind: "new-method", draft },
+				);
+			}
 			const result = await client.createMethod(zoneId, { id, name, type });
 			const notice = createMethodNotice(result, id, name);
 			return result.ok
@@ -1507,7 +1532,10 @@ function createMethodNotice(
 	return {
 		variant: "error",
 		title: "Method not created",
-		description: `Could not create "${id}" — check the method ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A shipping method with the ID "${id}" already exists — method IDs are unique across every zone, so choose another.`
+				: `Could not create "${id}" — check the method ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1653,7 +1681,10 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 	return {
 		variant: "error",
 		title: "Rate not created",
-		description: `Could not create a ${currency} rate — check a rate for this currency doesn't already exist, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `This method already has a ${currency} rate — edit that rate instead.`
+				: `Could not create a ${currency} rate — check a rate for this currency doesn't already exist, then try again.`,
 	};
 }
 

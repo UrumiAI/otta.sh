@@ -25,6 +25,8 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { isIdToken } from "../commerce/commerce-input.js";
+import { idInputProblem } from "./id-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -1715,6 +1717,21 @@ function createCouponAction() {
 			if (id.length === 0 || code.length === 0) {
 				return err("Enter both a coupon ID and a code.");
 			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) return err(idProblem);
+			// The client refuses this too; answering here keeps the draft (DA-3a-i).
+			if (/\s/.test(code)) {
+				return err(
+					`A coupon code can't contain spaces — shoppers type it at checkout. Try "${code.replace(/\s+/g, "-")}".`,
+				);
+			}
+			// Printable ASCII, as the client requires (ADR-0025: case folding is exact
+			// only there).
+			if (!isIdToken(code)) {
+				return err(
+					"A coupon code can only use plain letters, digits and punctuation — no accented letters or symbols.",
+				);
+			}
 			if (type !== "fixed_amount" && type !== "percentage") {
 				return err("Choose a valid coupon type.");
 			}
@@ -1771,7 +1788,12 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 	return {
 		variant: "error",
 		title: "Coupon not created",
-		description: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
+		description:
+			// 409 is the store's collision, refused before anything was written. It
+			// cannot say WHICH of the two was taken, so the copy names both.
+			result.status === 409
+				? `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`
+				: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
 	};
 }
 

@@ -72,7 +72,8 @@ export function exceedsAddressBounds(value: unknown): boolean {
  * Neither parser reads it; PR 2 derives it from the ship-to address.
  */
 export interface CheckoutSelection {
-	/** Trimmed, case KEPT — coupon lookup is case-sensitive. */
+	/** Trimmed, case kept as typed — the lookup folds case (ADR-0025), and the
+	 *  applied code comes back in the merchant's own spelling. */
 	couponCode?: string;
 	shippingMethodId?: string;
 	/**

@@ -9,6 +9,13 @@ export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	foldCouponCode,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+} from "./pricing/coupon-code.js";
+export {
 	validateCoupon,
 	type CouponValidationContext,
 	type CouponValidationFailure,

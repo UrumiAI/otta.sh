@@ -22,6 +22,7 @@ import {
 	type TaxClassWire,
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
+import { idInputProblem } from "./id-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -1020,6 +1021,11 @@ function rateDetailFailClosed() {
 
 // -- custom action: create a tax class ----------------------------------------
 
+/** The status a create answers when the id is already taken — the store's
+ *  collision, refused before anything was written. A code the notices key
+ *  their copy off, never rendered. */
+const CREATE_CONFLICT = 409;
+
 function createClassAction() {
 	return customAction<AdminRulesSurface, TaxRenderState>(async ({ input, client, showList }) => {
 		const values = input.values ?? {};
@@ -1041,6 +1047,14 @@ function createClassAction() {
 					title: "Tax class not created",
 					description: "Enter both a class ID and a name.",
 				},
+				{ kind: "new-class", draft },
+			);
+		}
+		const idProblem = idInputProblem(id);
+		if (idProblem !== undefined) {
+			return showList(
+				undefined,
+				{ variant: "error", title: "Tax class not created", description: idProblem },
 				{ kind: "new-class", draft },
 			);
 		}
@@ -1069,7 +1083,10 @@ function createClassNotice(
 	return {
 		variant: "error",
 		title: "Tax class not created",
-		description: `Could not create "${id}" — check the class ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A tax class with the ID "${id}" already exists — choose another ID.`
+				: `Could not create "${id}" — check the class ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1207,6 +1224,8 @@ function createRateAction() {
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
+		const idProblem = idInputProblem(id);
+		if (idProblem !== undefined) return err(idProblem);
 		const bps = parsePercentToBps(readString(values.ratePercent) ?? "");
 		if (bps === null) {
 			return err("Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).");
@@ -1236,7 +1255,10 @@ function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): N
 	return {
 		variant: "error",
 		title: "Tax rate not created",
-		description: `Could not create "${id}" — check the rate ID isn't already in use and the zone id is correct, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A tax rate with the ID "${id}" already exists — rate IDs are unique across every class, so choose another.`
+				: `Could not create "${id}" — check the rate ID isn't already in use and the zone id is correct, then try again.`,
 	};
 }
 

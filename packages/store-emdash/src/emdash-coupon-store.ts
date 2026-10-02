@@ -336,14 +336,15 @@ export class EmdashCouponStore implements CouponStore {
 	/**
 	 * Reach a coupon by its code, through the claim document.
 	 *
-	 * The match stays case-SENSITIVE — the claim is keyed by the folded code, but
-	 * the code it stores is the one the merchant typed, and that is what is
-	 * compared. The SQL's `WHERE code = ?` therefore keeps its exact semantics,
-	 * while the admin list's deliberately case-INSENSITIVE search uses the same
-	 * document with the comparison dropped.
+	 * CASE-INSENSITIVE, per the port. The claim is keyed by the folded code and
+	 * codes are unique after folding (`create` refuses a case-only variant with
+	 * `CouponCodeConflictError`), so the folded claim names at most one coupon. The
+	 * match used to compare the stored spelling exactly — the SQL's `WHERE code = ?`
+	 * — which left checkout refusing `save5` for `SAVE5` while the admin search,
+	 * reading the same claim with the comparison dropped, found it.
 	 */
 	async findByCode(code: string): Promise<CouponRecord | null> {
-		const doc = await this.#couponByCode(code, { fold: false });
+		const doc = await this.#couponByCode(code);
 		return doc === null ? null : toCouponRecord(doc);
 	}
 
@@ -511,7 +512,7 @@ export class EmdashCouponStore implements CouponStore {
 	async listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult> {
 		const cursor = page.cursor ?? null;
 		if (filter.search !== undefined) {
-			const doc = await this.#couponByCode(filter.search, { fold: true });
+			const doc = await this.#couponByCode(filter.search);
 			const rows = doc !== null && isAfterCursor(doc, cursor) ? [toCouponSummary(doc)] : [];
 			return { coupons: rows.slice(0, page.limit), nextCursor: null };
 		}
@@ -538,7 +539,7 @@ export class EmdashCouponStore implements CouponStore {
 	 */
 	async countCoupons(filter: CouponListFilter): Promise<number> {
 		if (filter.search !== undefined) {
-			return (await this.#couponByCode(filter.search, { fold: true })) === null ? 0 : 1;
+			return (await this.#couponByCode(filter.search)) === null ? 0 : 1;
 		}
 		return this.#coupons.count();
 	}
@@ -587,11 +588,10 @@ export class EmdashCouponStore implements CouponStore {
 		await this.#codes.compareAndDelete(doc.codeKey, current.revision);
 	}
 
-	/** The coupon a code names, folded or exact — the claim document, then a read. */
-	async #couponByCode(code: string, options: { fold: boolean }): Promise<CouponDoc | null> {
+	/** The coupon a code names, case-folded — the claim document, then a read. */
+	async #couponByCode(code: string): Promise<CouponDoc | null> {
 		const claim = await this.#codes.get(foldCouponCode(code));
 		if (claim === null) return null;
-		if (!options.fold && claim.code !== code) return null;
 		const doc = await this.#coupons.get(claim.couponId);
 		return doc === null ? null : normalizeCouponDoc(doc);
 	}

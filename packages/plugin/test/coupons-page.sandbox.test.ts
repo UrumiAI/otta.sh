@@ -833,25 +833,101 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(bannerOf(blocksOf(pctWithAmount))?.variant).toBe("error");
 	});
 
-	test("creating a coupon with a duplicate id/code fails with a GENERIC error notice (no raw status)", async () => {
+	test("creating a coupon with a duplicate id/code says it is taken, keeps the typing, and writes nothing", async () => {
 		const state = makeCouponsState();
 		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "coupons:create",
-			values: {
-				id: "c-five",
-				code: "FIVEOFF",
-				type: "fixed_amount",
-				amount: "5.00",
-				currency: "USD",
-			},
-		});
-		const banner = bannerOf(blocksOf(outcome));
+		const values = {
+			id: "c-five",
+			code: "FIVEOFF",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		};
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values,
+			}),
+		);
+		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Coupon not created");
+		expect(String(banner?.description)).toMatch(/already used by another coupon/i);
+		// A double-submitted create collides with ITSELF: the first one landed. The
+		// copy says so rather than sending the operator to invent a new code.
+		expect(String(banner?.description)).toMatch(/if you just retried.*check the list/i);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
+		// The create screen comes back with what was typed (DA-3a-i) — a duplicate
+		// is one field away from a success.
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({
+			id: "c-five",
+			code: "FIVEOFF",
+		});
 		expect((await stored("c-five"))?.code, "the original survives").toBe("FIVEOFF");
 		expect(await couponCount(), "and nothing was added").toBe(2);
+	});
+
+	test("a coupon ID with a space is refused ON the create screen, in words, with the typing kept", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa c1",
+					code: "QAC1",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.title)).toBe("Coupon not created");
+		expect(String(bannerOf(outcome)?.description)).toMatch(/ID can't contain spaces/i);
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(await stored("qa c1")).toBeNull();
+	});
+
+	test("a coupon CODE with a space is refused on the create screen — a shopper could never type it back reliably", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-c2",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.title)).toBe("Coupon not created");
+		expect(String(bannerOf(outcome)?.description)).toMatch(/code can't contain spaces.*QA-ADMIN/i);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({ code: "QA ADMIN" });
+		expect(await stored("qa-c2")).toBeNull();
+	});
+
+	test("a coupon CODE with an accented letter is refused on the create screen", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-ete",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/plain letters, digits and punctuation/);
+		expect(await stored("qa-ete")).toBeNull();
 	});
 
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
@@ -966,18 +1042,6 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(headerTexts(created)).toEqual(["Coupons"]);
 		expect(formFor(created, "coupons:create")).toBeUndefined();
 	});
-
-	// DELETED (INC-D3a): "a SERVICE refusal (duplicate id/code) keeps the typed
-	// values too". There is no service to refuse anything any more, and the
-	// in-process store does not answer a collision with a typed refusal — it
-	// THROWS (`CouponIdCollisionError`). A throw inside a custom action is caught
-	// by the engine and rendered as the generic ACTION_OUTCOME_UNKNOWN banner on
-	// the ROOT LIST, which by construction carries no draft, so there is no
-	// create screen left to put the typed values back into. The DA-3a-i
-	// guarantee itself is untouched and still pinned by the test above: a refusal
-	// the PLUGIN raises (the unparseable rate) re-renders the create screen with
-	// every typed value verbatim. What the duplicate case still guarantees — a
-	// generic notice and an unchanged registry — is asserted at line ~815.
 });
 
 // ---------------------------------------------------------------------------
