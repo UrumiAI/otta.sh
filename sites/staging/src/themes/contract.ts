@@ -420,6 +420,11 @@ export interface OrderModel {
 	sumRows: SumRow[];
 	/** "Total", or "Paid" once settled. */
 	totalLabel: string;
+	/** The sign-in page. The page owns the path; a theme only links to it. An
+	 *  order is placed as a guest and joins the shopper's order list on their
+	 *  next sign-in with the email they ordered with — even when a session is
+	 *  already open — so the order view points here, not at the list. */
+	accountSignInHref: string;
 }
 
 export interface AccountLoginModel {

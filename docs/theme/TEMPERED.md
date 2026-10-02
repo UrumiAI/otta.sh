@@ -267,7 +267,7 @@ Compare each against the matching frame in the mockup.
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
 | `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
 | `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals. The "keep this link" line also links to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
 | `404.astro` | Same empty-state language as the others |
 
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page

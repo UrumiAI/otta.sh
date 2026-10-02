@@ -34,6 +34,11 @@ export const ACCOUNT_NO_STORE = "private, no-store";
 /** Where a signed-in customer lands, and where the header's "Account" points. */
 export const ACCOUNT_HOME_PATH = "/account/orders";
 
+/** The sign-in page. It renders with a session open too, and its link's verify
+ *  step is what joins a guest order to the account (verifyLogin's
+ *  linkGuestOrders) — so it is where "sign in to see this order" must point. */
+export const ACCOUNT_LOGIN_PATH = "/account/login";
+
 export interface SessionCookieOptions {
 	httpOnly: boolean;
 	secure: boolean;

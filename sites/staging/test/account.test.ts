@@ -473,3 +473,21 @@ describe.each(viewCases("accountLogin"))("the sign-in view %s", (_label, { sourc
 		expect(templateOf(source)).toMatch(/<h1[^>]*>\s*Sign in or create an account\s*<\/h1>/);
 	});
 });
+
+describe.each(viewCases("order"))("the order view %s", (_label, { source }) => {
+	// The confirmation is where a shopper next looks for their order; sign-in is
+	// where it joins their order list, findable after this tab closes.
+	test("the keep-this-link line links to sign-in, from the model", () => {
+		expect(templateOf(source)).toMatch(
+			/<p class="order-keep">[\s\S]*?<a href=\{accountSignInHref\}>[^<]+<\/a>[\s\S]*?<\/p>/,
+		);
+	});
+});
+
+describe("the order page", () => {
+	test("hands the view the sign-in page, not a path of the theme's own", () => {
+		expect(splitAstro(page("orders/[orderId].astro")).frontmatter).toMatch(
+			/accountSignInHref: ACCOUNT_LOGIN_PATH\b/,
+		);
+	});
+});

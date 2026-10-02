@@ -699,6 +699,15 @@
 	font-size: 0.75rem;
 	color: var(--u-mute);
 }
+[data-theme-id] .order-keep a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .order-keep a:hover {
+	text-decoration-color: var(--u-straw);
+}
 
 [data-theme-id] .order-actions {
 	display: flex;
