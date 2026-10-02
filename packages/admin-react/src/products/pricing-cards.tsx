@@ -495,8 +495,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setReload((n) => n + 1);
 			})
 			.catch((error: unknown) => {
-				// Never leave the button stuck on "Saving…".
+				// Never leave the button stuck on "Saving…", nor keyboard focus on the page.
 				setSaving(false);
+				requestAnimationFrame(() => {
+					if (document.activeElement === null || document.activeElement === document.body) {
+						saveButton.current?.focus();
+					}
+				});
 				setSaveStatus({
 					tone: "fail",
 					text: `The save did not finish${error instanceof Error ? ` — ${error.message}` : ""}. Try again.`,

@@ -335,32 +335,35 @@ test("an in-app link asks before leaving unsaved price changes, and stays put wh
 	const confirm = vi.fn<(message?: string) => boolean>();
 	const original = window.confirm;
 	window.confirm = confirm;
-	const node = (
-		<>
-			<a href="/_emdash/admin/content/products" data-testid="back">
-				Back to Products
-			</a>
-			<PricingStockEditor productId="p_tee" />
-		</>
-	);
-	mounted = await mount(node);
-	for (let i = 0; i < 3; i++) await mounted.rerender(node);
-	const link = mounted.container.querySelector('[data-testid="back"]') as HTMLAnchorElement;
-	const click = (): MouseEvent => {
-		const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
-		link.dispatchEvent(event);
-		return event;
-	};
-	// Nothing typed: no question.
-	expect(click().defaultPrevented).toBe(false);
-	expect(confirm).not.toHaveBeenCalled();
+	try {
+		const node = (
+			<>
+				<a href="/_emdash/admin/content/products" data-testid="back">
+					Back to Products
+				</a>
+				<PricingStockEditor productId="p_tee" />
+			</>
+		);
+		mounted = await mount(node);
+		for (let i = 0; i < 3; i++) await mounted.rerender(node);
+		const link = mounted.container.querySelector('[data-testid="back"]') as HTMLAnchorElement;
+		const click = (): MouseEvent => {
+			const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+			link.dispatchEvent(event);
+			return event;
+		};
+		// Nothing typed: no question.
+		expect(click().defaultPrevented).toBe(false);
+		expect(confirm).not.toHaveBeenCalled();
 
-	await type(input(mounted.container, "Price"), "29");
-	confirm.mockReturnValueOnce(false);
-	expect(click().defaultPrevented).toBe(true);
-	confirm.mockReturnValueOnce(true);
-	expect(click().defaultPrevented).toBe(false);
-	window.confirm = original;
+		await type(input(mounted.container, "Price"), "29");
+		confirm.mockReturnValueOnce(false);
+		expect(click().defaultPrevented).toBe(true);
+		confirm.mockReturnValueOnce(true);
+		expect(click().defaultPrevented).toBe(false);
+	} finally {
+		window.confirm = original;
+	}
 });
 
 test("a wrong amount is said in plain words and nothing is sent", async () => {
