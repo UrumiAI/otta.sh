@@ -318,7 +318,10 @@ cart link carries the unit count on every storefront page off the checkout flow 
 page for an empty cart, `/cart` included — and the
 theme's Account link reads "Your account" when the request carries a live session. The page
 owns both facts (the shell reads them only for a request carrying the matching cookie, and the
-middleware keeps such pages private); the header never prints the email. A visitor with no
+middleware keeps such pages private); the header never prints the email. The badge counts the
+cart AS STORED (`CartStore.units`, one read, no hold expiry), so a line whose hold has lapsed
+still counts until something touches the cart — `/cart`, which expires lapsed holds as it reads,
+may then show fewer. A visitor with no
 cart and no session sees the neutral "Cart" and "Account".
 
 **The PDP's hold note departs from the mockup on purpose.** The mockup reads "Adding this holds

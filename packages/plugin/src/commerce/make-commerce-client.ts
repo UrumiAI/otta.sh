@@ -14,6 +14,14 @@
  * `reporting-settings-surface`). They are their own ports rather than
  * implementations of this one, and `makeAdminClients` constructs them; INC-D3b
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
+ *
+ * THE ONE STOREFRONT EXCEPTION: `storefront/shopper-state`
+ * (`storefront/shopper-state-route.ts`) constructs `InProcessCommerceClient`
+ * directly. It runs on every uncached page a shopper with a cart or session
+ * loads and only reads (`getShopperState`: a cart document and a session
+ * document), so it needs no payment gateways and no login email sender — and
+ * building them here would cost the kv reads `resolvePaymentGateways` makes on
+ * every call. Any route that can take a payment or send mail comes through here.
  */
 
 import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
