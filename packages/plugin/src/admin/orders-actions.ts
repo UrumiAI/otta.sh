@@ -242,7 +242,8 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
 		case "sent":
 			return " The buyer has been emailed.";
 		case "queued":
-			return " The buyer’s email is queued — it will go out within a few minutes.";
+			// No time promise: the cron's retry can be backed off after a failure.
+			return " The buyer’s email is queued and will be retried automatically.";
 		case "unconfigured":
 			return " No email was sent — this store has no email provider set up.";
 		default:
@@ -631,7 +632,12 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 	// means the order cannot be cancelled at all now.
 	if (!result.ok && result.reason === "CANCEL_LOST_AFTER_REFUND") {
 		return applied(
-			cancelLostNotice(result.refund ?? null, result.restockedUnits ?? 0, result.movedTo ?? null),
+			cancelLostNotice(
+				result.refund ?? null,
+				result.restockedUnits ?? 0,
+				result.movedTo ?? null,
+				result.email,
+			),
 		);
 	}
 	if (!result.ok && result.reason === "CANCEL_INCOMPLETE_AFTER_REFUND" && result.refund) {
@@ -646,23 +652,20 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 		});
 	}
 	const refund = result.refund ?? null;
-	const stock =
+	// The email sentence comes BEFORE the not-restocked list, and the list is capped,
+	// so fitting the banner can only ever trim SKUs — never what became of the email.
+	const head =
+		(refund !== null
+			? `Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.`
+			: "The cancellation was recorded.") +
 		restockSentence(restock, result.restockedUnits ?? 0) +
-		skippedSentence(result.restockSkipped ?? []);
-	if (refund !== null) {
-		return applied({
-			variant: "default",
-			title: "Order cancelled and refunded",
-			description: fit(
-				`Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.${stock}${emailSentence(result.email)}`,
-				BANNER_BUDGET,
-			),
-		});
-	}
+		emailSentence(result.email);
+	const description =
+		head + skippedSentence(result.restockSkipped ?? [], BANNER_BUDGET - head.length);
 	return applied({
 		variant: "default",
-		title: "Order cancelled",
-		description: `The cancellation was recorded.${stock}${emailSentence(result.email)}`,
+		title: refund !== null ? "Order cancelled and refunded" : "Order cancelled",
+		description: fit(description, BANNER_BUDGET),
 	});
 };
 
@@ -682,10 +685,40 @@ function restockSentence(restock: boolean, units: number): string {
 
 /** Lines the restock could not return, as a sentence led by a space — so the
  *  operator knows which stock to check by hand. Empty when every line went back. */
-function skippedSentence(skipped: ReadonlyArray<{ sku: string; quantity: number }>): string {
+function skippedSentence(
+	skipped: ReadonlyArray<{ sku: string; quantity: number }>,
+	room: number,
+): string {
 	if (skipped.length === 0) return "";
-	const lines = skipped.map((s) => `${s.sku} ×${String(s.quantity)}`).join(", ");
-	return ` Not returned to stock (check by hand): ${lines}.`;
+	// As many lines as fit in `room`, then "and N more" — capped so the notice's
+	// earlier sentences (the email status above all) are never what gets cut.
+	const sentence = (shown: number): string => {
+		const more = skipped.length - shown;
+		const lines = skipped
+			.slice(0, shown)
+			.map((s) => `${s.sku} ×${String(s.quantity)}`)
+			.join(", ");
+		const tail = more > 0 ? `${shown > 0 ? " and " : ""}${String(more)} more` : "";
+		return ` Not returned to stock (check by hand): ${lines}${tail}.`;
+	};
+	let shown = skipped.length;
+	while (shown > 0 && sentence(shown).length > room) shown--;
+	return sentence(shown);
+}
+
+/** The lost race's own refund email (a `refund-issued` notice, sent inline): whether
+ *  the buyer heard about their money. Nothing when no refund was made. */
+function lostEmailSentence(email: InlineEmailStatus | undefined): string {
+	switch (email) {
+		case "sent":
+			return " The buyer has been emailed about the refund.";
+		case "queued":
+			return " The buyer’s refund email is queued and will be retried automatically.";
+		case "unconfigured":
+			return " No email was sent — this store has no email provider set up.";
+		default:
+			return "";
+	}
 }
 
 /**
@@ -716,6 +749,7 @@ function cancelLostNotice(
 	refund: { amountCents: number; currency: string } | null,
 	restockedUnits: number,
 	movedTo: string | null,
+	email: InlineEmailStatus | undefined,
 ): Notice {
 	const money =
 		refund === null
@@ -729,7 +763,7 @@ function cancelLostNotice(
 		variant: "error",
 		title: "Refunded, but the order was not cancelled",
 		description: fit(
-			`${money} — it moved to ${movedTo ?? "another state"} first, and ${stock}. It is flagged: contact the buyer and check the order; don’t ship or refund it again unchecked.`,
+			`${money} — it moved to ${movedTo ?? "another state"} first, and ${stock}.${lostEmailSentence(email)} It is flagged: contact the buyer and check the order; don’t ship or refund it again unchecked.`,
 			BANNER_BUDGET,
 		),
 	};

@@ -272,7 +272,7 @@ export interface RefundsSummaryWire {
  * sends it inline (`sendOrderEmailsNow`), so the console can say what is TRUE:
  *  - `sent`         — it went out;
  *  - `queued`       — it did not go yet (the provider failed or was slow); the
- *                     cron sends it within a few minutes;
+ *                     cron retries it automatically;
  *  - `unconfigured` — the store has no email provider, so it will not be sent.
  */
 export type InlineEmailStatus = "sent" | "queued" | "unconfigured";
@@ -439,6 +439,9 @@ export type CancelOrderResult =
 			retryable?: boolean;
 			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: the state the order moved to. */
 			movedTo?: string | null;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: what became of the refund's own
+			 *  email (its `refund-issued` notice, sent inline). Absent when no refund. */
+			email?: InlineEmailStatus;
 	  };
 
 /**

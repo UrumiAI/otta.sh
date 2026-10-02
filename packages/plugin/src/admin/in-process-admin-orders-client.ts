@@ -521,8 +521,19 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			};
 		}
 		switch (res.reason) {
-			case "CANCEL_LOST_AFTER_REFUND":
-				// The refund (and restock) happened, so the console must say what moved.
+			case "CANCEL_LOST_AFTER_REFUND": {
+				// The refund (and restock) happened, so the console must say what moved —
+				// and the refund's own notice goes out NOW, like any other write's email.
+				const lostRefundId = res.refundId;
+				const email =
+					lostRefundId === null
+						? undefined
+						: await this.#sendEmailsNow(
+								oid,
+								deadline,
+								(row) =>
+									row.notice?.kind === "refund-issued" && row.notice.refundId === lostRefundId,
+							);
 				return {
 					ok: false,
 					status: 409,
@@ -533,7 +544,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 							: { amountCents: res.refund.amount, currency: res.refund.currency },
 					restockedUnits: res.restockedUnits,
 					movedTo: res.movedTo,
+					...(email !== undefined ? { email } : {}),
 				};
+			}
 			case "CANCEL_INCOMPLETE_AFTER_REFUND":
 				// The refund happened; the restock or the flip then failed. A retry finishes
 				// it — the console says so, with the money that moved.

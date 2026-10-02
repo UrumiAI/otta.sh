@@ -116,4 +116,23 @@ describe("the cancel notices when the money and the order part ways", () => {
 			"Refunded $24.00; the store was busy — click Cancel order again (it will not refund twice).",
 		);
 	});
+
+	test("the lost race's refund email is sent inline, and the notice says whether it went", async () => {
+		const outcome = {
+			ok: false as const,
+			status: 409,
+			reason: "CANCEL_LOST_AFTER_REFUND",
+			refund: { amountCents: 2400, currency: "USD" },
+			restockedUnits: 0,
+			movedTo: "shipped",
+		};
+		const sent = await cancel({ ...outcome, email: "sent" });
+		expect(String(sent.notice?.description)).toContain(
+			"The buyer has been emailed about the refund.",
+		);
+		const queued = await cancel({ ...outcome, email: "queued" });
+		expect(String(queued.notice?.description)).toContain(
+			"The buyer’s refund email is queued and will be retried automatically.",
+		);
+	});
 });

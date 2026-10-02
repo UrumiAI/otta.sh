@@ -10,7 +10,7 @@
  *
  *  - `sent`         — the email this write enqueued went out;
  *  - `queued`       — it did not (the provider failed, or the wait ran out); the
- *                     cron sends it within a few minutes;
+ *                     cron retries it automatically;
  *  - `unconfigured` — this bundle has no email provider, so nothing will be sent;
  *  - absent         — the write enqueued no email (a replay, or Mark refunded).
  *

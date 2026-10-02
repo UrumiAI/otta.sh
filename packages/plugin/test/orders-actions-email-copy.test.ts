@@ -5,7 +5,8 @@
  * outbox for up to 15 minutes. Each admin write now sends it inline and reports
  * `email: "sent" | "queued" | "unconfigured"` (absent when it enqueued none), and
  * these cases pin that the copy follows that value and nothing else: "emailed" only
- * when it was sent, "queued — within a few minutes" when it was not yet, and "no
+ * when it was sent, "queued and will be retried automatically" when it was not yet (no
+ * time promise: the cron's retry can be backed off), and "no
  * email" when the store has no provider. The inline send itself is pinned over a
  * real store in `admin-order-emails-inline.test.ts`.
  */
@@ -20,7 +21,7 @@ import { dispatchOrdersAction, type OrdersActionResult } from "../src/admin/orde
 const ORDER_ID = "order-email-copy";
 
 const SENT = "The buyer has been emailed.";
-const QUEUED = "The buyer’s email is queued — it will go out within a few minutes.";
+const QUEUED = "The buyer’s email is queued and will be retried automatically.";
 const UNCONFIGURED = "No email was sent — this store has no email provider set up.";
 
 function refuse(method: string) {
@@ -167,5 +168,36 @@ describe("each admin write's notice states what became of the buyer's email", ()
 			title: "Order marked processing",
 			description: SENT,
 		});
+	});
+
+	test("a cancel's notice keeps its email status even with a long not-restocked list", async () => {
+		// The email sentence comes BEFORE the skipped-SKU list, and the list is capped,
+		// so fitting the banner can never cut off what became of the buyer's email.
+		const skipped = Array.from({ length: 30 }, (_, i) => ({
+			sku: `VERY-LONG-SKU-NUMBER-${String(i).padStart(3, "0")}`,
+			quantity: 1,
+			reason: "UNKNOWN_SKU",
+		}));
+		const client = {
+			...surface("paid", "queued"),
+			cancelOrder: () =>
+				Promise.resolve({
+					ok: true as const,
+					cancelled: true,
+					refund: { amountCents: 2400, currency: "USD" },
+					restockedUnits: 0,
+					restockSkipped: skipped,
+					email: "queued" as const,
+				}),
+		};
+		const result = await act(client, "orders:cancel-customer_request", {
+			orderId: ORDER_ID,
+			reason: "customer_request",
+			state: "paid",
+		});
+		const description = String(result.notice?.description);
+		expect(description).toContain(QUEUED);
+		expect(description.indexOf(QUEUED)).toBeLessThan(description.indexOf("VERY-LONG-SKU"));
+		expect(description).toMatch(/and \d+ more/);
 	});
 });
