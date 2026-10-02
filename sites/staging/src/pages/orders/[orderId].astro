@@ -189,8 +189,10 @@ const ownsOrder =
 /* Resuming a PENDING order goes through the page-owned resume path
    (`/checkout/resume?order=…`, QA U-2), not through /checkout: the review
    rebuilds from the CART cookie, which another device — or this one after the
-   cart rotated — does not have. The resume needs only this order's id, the
-   same capability this page reads with; the plugin replays the order's own
+   cart rotated — does not have. The resume needs this order's id PLUS a second
+   factor: this browser's cart or owning session, else the order's email asked
+   for on /checkout/resume/email (the id alone, the capability this page reads
+   with, is not enough). The plugin replays the order's own
    checkout on its own key, so the pay page gets the same PaymentIntent and the
    same client secret, re-stashed. The stash was just deleted above; the resume
    writes it again. */
