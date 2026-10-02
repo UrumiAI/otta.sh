@@ -379,6 +379,44 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(await findRate("eu", "std-us")).toBeUndefined();
 	});
 
+	test("a tax rate above 100% is refused on create and on save — nothing is written", async () => {
+		// QA saved 150%. The port documents rateBps as 0–10000 (0%–100%), and no
+		// sales tax, VAT or GST charges more than the price it is levied on.
+		await seedRules();
+		const screen = await openNewRateScreen("standard");
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-hi",
+			zoneId: "eu",
+			ratePercent: "150",
+			appliesToShipping: false,
+		});
+		expect(String(bannerOf(refused)?.description)).toMatch(/0 to 100/);
+		expect(await findRate("eu", "std-eu-hi")).toBeUndefined();
+
+		const rates = await openClass("standard");
+		const saveForm = formFor(groupBlocks(rates, "tax:rate:std-us"), "tax:save-rate");
+		expect(saveForm).toBeDefined();
+		await blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "tax:save-rate",
+				values: { ratePercent: "100.01", appliesToShipping: false },
+				block_id: saveForm!.block_id,
+			}),
+		);
+		expect((await findRate("us", "std-us"))?.rateBps).toBe(725);
+
+		// Exactly 100% is still a rate.
+		const atCap = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-100",
+			zoneId: "eu",
+			ratePercent: "100",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(atCap)?.variant).toBe("default");
+		expect((await findRate("eu", "std-eu-100"))?.rateBps).toBe(10_000);
+	});
+
 	// -- INC-14: the create action is a button above the data ------------------
 
 	test("INC-14: `New tax class` is a primary BUTTON directly under the intro line, above the rows — and no create accordion survives below them", async () => {

@@ -89,6 +89,7 @@ import {
 	deleteTaxClass as deleteTaxClassUseCase,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
+	isIsoCurrencyCode,
 	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
@@ -164,6 +165,17 @@ const DEFAULT_LIMIT = 25;
  *  .max(100_000)`). Deliberately the WIRE bound, not the port's 0–10000 doc
  *  comment: refusing more than the other transport refuses is still a divergence. */
 const MAX_BPS = 100_000;
+
+/**
+ * A TAX rate's ceiling: 100%, the port's own documented range (`TaxRate.rateBps`,
+ * "0–10000 (0%–100%)"). The wire-parity argument for `MAX_BPS` above was about a
+ * second transport refusing the same inputs, and that transport is gone; what
+ * remained was a console that saved a 150% sales tax when QA typed one. No sales
+ * tax, VAT or GST is levied above the price it is levied on, so the domain's
+ * range is enforced here for tax rates. Coupons keep `MAX_BPS`: a percentage
+ * discount is already clamped to the subtotal by the pricing math.
+ */
+const MAX_TAX_RATE_BPS = 10_000;
 
 /** `z.string().min(1).max(200)` — the name/label bound every rules body shares. */
 const NAME_MAX = 200;
@@ -302,10 +314,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		input: ShippingRateInput,
 	): Promise<RulesCreateResult<ShippingRateWire>> {
 		requireIdToken("methodId", methodId);
-		requireCurrencyCode("currency", input.currency);
+		requireAuthoredCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
-		if (min !== undefined && min !== null) requireNonNegativeInteger("minSubtotalCents", min);
+		if (min !== undefined && min !== null) {
+			requireNonNegativeInteger("minSubtotalCents", min);
+			await this.#refuseFlatRateThreshold(methodId);
+		}
 		return createOrRefuse(async () =>
 			toRateWire(
 				await this.#stores.shippingRules.createRate({
@@ -337,6 +352,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireFullReplaceKey("minSubtotalCents", edit);
 		if (edit.minSubtotalCents !== null) {
 			requireNonNegativeInteger("minSubtotalCents", edit.minSubtotalCents);
+			await this.#refuseFlatRateThreshold(methodId);
 		}
 		const res = await this.#stores.shippingRules.updateRate(
 			methodId,
@@ -350,6 +366,24 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (res.ok) return { ok: true, value: toRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
 		return { ok: false, reason: "stale", current: toRateWire(res.current) };
+	}
+
+	/**
+	 * A free-shipping threshold only means something on a `free_shipping` method:
+	 * the domain's `shippingCost` charges a flat rate's amount whatever the
+	 * subtotal. Storing one on a flat-rate method's rate is a promise of free
+	 * shipping checkout never keeps, so it is refused — the console says why
+	 * first. One method read, and only when a threshold was actually sent; a
+	 * missing method is left to the store's own `not_found`/404 answer.
+	 */
+	async #refuseFlatRateThreshold(methodId: string): Promise<void> {
+		const method = await this.#stores.shippingRules.getMethod(methodId);
+		if (method?.type === "flat_rate") {
+			throw new CommerceInputError(
+				"minSubtotalCents",
+				"only applies to a free_shipping method (a flat rate always charges its amount)",
+			);
+		}
 	}
 
 	/** A LEAF delete: idempotent, and it NEVER answers `in_use` — nothing
@@ -431,7 +465,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
-		requireBps("rateBps", input.rateBps);
+		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
 		return createOrRefuse(async () =>
 			toTaxRateWire(
 				await this.#stores.taxRules.createRate({
@@ -454,7 +488,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		edit: TaxRateEdit,
 	): Promise<RulesCasUpdateResult<TaxRateWire>> {
 		requireIdToken("rateId", rateId);
-		requireBps("rateBps", edit.rateBps);
+		requireBps("rateBps", edit.rateBps, MAX_TAX_RATE_BPS);
 		requireBps("expectedRateBps", edit.expectedRateBps);
 		requireFullReplaceKey("appliesToShipping", edit);
 		if (typeof edit.appliesToShipping !== "boolean") {
@@ -571,7 +605,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const startsAt = optionalInstantText("startsAt", input.startsAt);
 		const expiresAt = optionalInstantText("expiresAt", input.expiresAt);
 		if (input.currency !== undefined && input.currency !== null) {
-			requireCurrencyCode("currency", input.currency);
+			requireAuthoredCurrency("currency", input.currency);
 		}
 		return createOrRefuse(async () => {
 			const coupon = await this.#stores.couponStore.create({
@@ -797,6 +831,19 @@ function requireFullReplaceKey(field: string, edit: object): void {
 	}
 }
 
+/**
+ * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
+ * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
+ * only — reads and edits name a currency that already exists, and refusing a
+ * stored code on read would strand a row written before this rule.
+ */
+function requireAuthoredCurrency(field: string, value: string): void {
+	requireCurrencyCode(field, value);
+	if (!isIsoCurrencyCode(value)) {
+		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
+	}
+}
+
 function requireShippingMethodType(value: string): ShippingMethodType {
 	if (!SHIPPING_METHOD_TYPES.includes(value as ShippingMethodType)) {
 		throw new CommerceInputError("type", "must be flat_rate or free_shipping");
@@ -811,10 +858,10 @@ function requireCouponType(value: string): CouponType {
 	return value as CouponType;
 }
 
-/** Integer basis points within the WIRE bound. */
-function requireBps(field: string, value: number): number {
-	if (!Number.isSafeInteger(value) || value < 0 || value > MAX_BPS) {
-		throw new CommerceInputError(field, `must be an integer between 0 and ${String(MAX_BPS)}`);
+/** Integer basis points within `max` (the WIRE bound unless a caller narrows it). */
+function requireBps(field: string, value: number, max: number = MAX_BPS): number {
+	if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+		throw new CommerceInputError(field, `must be an integer between 0 and ${String(max)}`);
 	}
 	return value;
 }

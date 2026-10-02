@@ -27,6 +27,7 @@ import {
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import { isIdToken } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -734,14 +735,41 @@ function openCouponForm(
  * (X-23), which also decides which economics branch `condition` reveals, so a
  * refused percentage coupon comes back as a percentage coupon.
  */
+/**
+ * THE TYPE SELECT'S VALUES ARE WORDS. A `select` trigger renders the option
+ * VALUE, never its label (R-17a), so the create form's trigger read
+ * `fixed_amount` — the spec's own "worst live instance" of F-6c, which QA flagged.
+ * The value is now the word the label always said; the action maps it back to the
+ * enum ({@link couponTypeFromInput}) before anything reaches the client, and the
+ * `condition`s compare against the same words. A legacy enum value is still
+ * accepted on input.
+ */
+type CouponType = "fixed_amount" | "percentage";
+const FIXED_AMOUNT_VALUE = "Fixed amount off";
+const PERCENTAGE_VALUE = "Percentage off";
+const COUPON_TYPE_CHOICES: ReadonlyArray<{ type: CouponType; value: string }> = [
+	{ type: "fixed_amount", value: FIXED_AMOUNT_VALUE },
+	{ type: "percentage", value: PERCENTAGE_VALUE },
+];
+
+/** A submitted type (the word, or the legacy enum) → the enum, or `undefined`. */
+function couponTypeFromInput(raw: string): CouponType | undefined {
+	return COUPON_TYPE_CHOICES.find((c) => c.value === raw || c.type === raw)?.type;
+}
+
+/** The enum → its word (the select value, and the detail's `Type` reading). */
+function couponTypeInputValue(type: string): string {
+	return COUPON_TYPE_CHOICES.find((c) => c.type === type)?.value ?? type;
+}
+
 function createCouponForm(draft?: CouponDraft): FormBlock {
-	const typeOptions: SelectOption[] = [
-		{ value: "fixed_amount", label: "Fixed amount off" },
-		{ value: "percentage", label: "Percentage off" },
-	];
-	const type = typeOptions.some((o) => o.value === draft?.type)
-		? (draft?.type ?? "fixed_amount")
-		: "fixed_amount";
+	const typeOptions: SelectOption[] = COUPON_TYPE_CHOICES.map(({ value }) => ({
+		value,
+		label: value,
+	}));
+	// Resolved against the options (X-23): the draft holds what was SUBMITTED,
+	// the word or a legacy enum, and either renders as its word.
+	const type = couponTypeInputValue(couponTypeFromInput(draft?.type ?? "") ?? "fixed_amount");
 	return carriedForm({
 		namespace: "coupons:create",
 		// No hidden context to carry — `id`/`code` are this form's own VISIBLE
@@ -780,7 +808,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "amount",
 					label: "Amount off",
 					placeholder: "5.00",
-					condition: { field: "type", eq: "fixed_amount" },
+					condition: { field: "type", eq: FIXED_AMOUNT_VALUE },
 					...prefill(draft?.amount),
 				},
 				{
@@ -788,7 +816,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "currency",
 					label: "Currency (ISO-4217)",
 					placeholder: "USD",
-					condition: { field: "type", eq: "fixed_amount" },
+					condition: { field: "type", eq: FIXED_AMOUNT_VALUE },
 					...prefill(draft?.currency),
 				},
 				{
@@ -796,7 +824,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "ratePercent",
 					label: "Rate (%)",
 					placeholder: "7.25",
-					condition: { field: "type", eq: "percentage" },
+					condition: { field: "type", eq: PERCENTAGE_VALUE },
 					...prefill(draft?.ratePercent),
 				},
 				{
@@ -804,7 +832,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "cap",
 					label: "Discount cap (optional)",
 					placeholder: "20.00",
-					condition: { field: "type", eq: "percentage" },
+					condition: { field: "type", eq: PERCENTAGE_VALUE },
 					...prefill(draft?.cap),
 				},
 			],
@@ -926,7 +954,7 @@ function detailBlocks(
 			// one, and stays even in `fields`' row-major 2-column grid.
 			["Status", status],
 			["Discount", couponDiscountSummary(detail)],
-			["Type", detail.type],
+			["Type", couponTypeInputValue(detail.type)],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
 			["Currency", detail.currency ?? "— (currency-agnostic)"],
 			// THE LAST RAW WIRE TIMESTAMP IN THE CONSOLE, and the reason INC-13's
@@ -1489,7 +1517,7 @@ function parseEconomics(
 		if (rateRaw.length > 0 || capRaw.length > 0) {
 			return {
 				ok: false,
-				message: "Leave the percentage-only fields (rate, cap) blank for a fixed_amount coupon.",
+				message: "Leave the percentage-only fields (rate, cap) blank for a fixed-amount coupon.",
 			};
 		}
 		const amountCents = parseMinorUnitsInput(amountRaw, { allowZero: false });
@@ -1497,13 +1525,19 @@ function parseEconomics(
 			return {
 				ok: false,
 				message:
-					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed_amount coupon cannot leave it unset.",
+					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed-amount coupon cannot leave it unset.",
 			};
 		}
 		let currency: string | null = null;
 		if (mode === "create") {
 			if (!/^[A-Z]{3}$/.test(currencyRaw)) {
 				return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
+			}
+			if (!isIsoCurrencyCode(currencyRaw)) {
+				return {
+					ok: false,
+					message: `${currencyRaw} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+				};
 			}
 			currency = currencyRaw;
 		}
@@ -1713,7 +1747,7 @@ function createCouponAction() {
 				);
 			const id = (readString(values.id) ?? "").trim();
 			const code = (readString(values.code) ?? "").trim();
-			const type = readString(values.type) ?? "";
+			const type = couponTypeFromInput(readString(values.type) ?? "");
 			if (id.length === 0 || code.length === 0) {
 				return err("Enter both a coupon ID and a code.");
 			}
@@ -1732,7 +1766,7 @@ function createCouponAction() {
 					"A coupon code can only use plain letters, digits and punctuation — no accented letters or symbols.",
 				);
 			}
-			if (type !== "fixed_amount" && type !== "percentage") {
+			if (type === undefined) {
 				return err("Choose a valid coupon type.");
 			}
 			const econ = parseEconomics(type, values, "create", NO_CURRENT);

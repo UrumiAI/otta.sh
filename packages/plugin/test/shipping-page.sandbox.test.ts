@@ -833,15 +833,25 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(copy).toContain('"Flat rate" always charges its rate');
 		expect(copy).toContain('"Free shipping" charges nothing above its threshold');
 
-		// The SELECT still submits the enum the domain expects — humanizing the
-		// copy must not touch the protocol, and the stored row still spells it.
+		// A `select` trigger renders the option VALUE, not its label (R-17a), so
+		// the values themselves are words — QA saw `flat_rate` in the trigger. The
+		// action maps the word back to the enum, so the domain and the stored row
+		// still spell `flat_rate`.
 		const createForm = formFor(await openNewMethodScreen(blocks), "shipping:create-method");
-		const typeOptions = field(createForm, "type")?.options as Array<{
-			value: string;
-			label: string;
-		}>;
-		expect(typeOptions.map((o) => o.value)).toEqual(["flat_rate", "free_shipping"]);
+		const typeField = field(createForm, "type");
+		const typeOptions = typeField?.options as Array<{ value: string; label: string }>;
+		expect(typeOptions.map((o) => o.value)).toEqual(["Flat rate", "Free shipping"]);
+		expect(typeField?.initial_value).toBe("Flat rate");
 		expect((await shippingRules.getMethod("standard"))?.type).toBe("flat_rate");
+		const edit = field(formFor(blocks, "shipping:save-method"), "type");
+		expect(edit?.initial_value).toBe("Flat rate");
+
+		await submitForm(
+			"shipping:create-method",
+			{ id: "free", name: "Free over $50", type: "Free shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("free_shipping");
 	});
 
 	test("a zone with no methods yet shows the `empty` block, never a fail-closed banner", async () => {
@@ -899,6 +909,40 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		});
 	});
 
+	test("switching a free-shipping method to FLAT RATE says its thresholds stop applying", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [{ methodId: "free", currency: "USD", amountCents: 499, minSubtotalCents: 5000 }],
+		});
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:free"),
+			"shipping:save-method",
+		);
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Free over $50", type: "Flat rate" },
+			editForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("flat_rate");
+		expect(String(bannerOf(blocks)?.title)).toBe("Saved as flat rate");
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/if any of this method's rates had a free-shipping threshold/i,
+		);
+		expect(String(bannerOf(blocks)?.description)).toMatch(/threshold/i);
+	});
+
+	test("the bare enum values a form rendered before the word values still submit", async () => {
+		await seedShipping();
+		const methods = await openPath(["us"]);
+		const createForm = formFor(await openNewMethodScreen(methods), "shipping:create-method");
+		await submitForm(
+			"shipping:create-method",
+			{ id: "legacy-free", name: "Legacy", type: "free_shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("legacy-free"))?.type).toBe("free_shipping");
+	});
+
 	test("create-method carries the zoneId invisibly (no visible field) and writes the method UNDER that zone, then reloads the methods level", async () => {
 		await seedShipping();
 		const createForm = formFor(
@@ -947,7 +991,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(formInitialValues(refused, "shipping:create-method")).toEqual({
 			id: "bogus",
 			name: "Bogus",
-			type: "flat_rate",
+			type: "Flat rate",
 		});
 	});
 
@@ -1199,6 +1243,51 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
+	test("a currency-SHAPED code that is not an ISO-4217 currency (XYZ) is refused — nothing is written", async () => {
+		// QA saved an "XYZ" rate: three letters passes the shape check, and a rate
+		// in a currency no cart is ever in is a price nobody is quoted.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "xyz", amount: "4.99", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("XYZ"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+	});
+
+	test("a free-shipping threshold on a FLAT-RATE method is refused with the reason — the domain would never apply it", async () => {
+		// `shippingCost` charges a flat rate's amount whatever the subtotal; only a
+		// free_shipping method reads `minSubtotalCents`. QA saved one anyway and the
+		// console said "Rate created", promising free shipping that never happens.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "35.00" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+	});
+
+	test("a free-shipping method still takes its threshold", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [],
+		});
+		const createForm = formFor(await openPath(["us", "free"]), "shipping:create-rate");
+		await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "50.00" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getRate("free", toCurrency("USD")))?.minSubtotalCents).toBe(5000);
+	});
+
 	test("an invalid currency code is caught at the plugin boundary — nothing is written", async () => {
 		await seedShipping();
 		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
@@ -1245,6 +1334,35 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 			amountCents: 599,
 			minSubtotalCents: null,
 		});
+	});
+
+	test("saving an existing flat-rate rate that carries a LEGACY threshold asks for it to be blanked; blanking it saves", async () => {
+		// The fixture's `standard` is a flat-rate method whose USD rate was stored
+		// with a $35 threshold before the rule — the edit form prefills it.
+		await seedShipping();
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		expect(field(editForm, "minSubtotal")?.initial_value).toBe("35.00");
+		const untouched = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "35.00" },
+			editForm?.block_id,
+		);
+		expect(String(bannerOf(untouched)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents).toBe(
+			3500,
+		);
+
+		const blanked = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "" },
+			formFor(untouched, "shipping:save-rate")?.block_id ?? editForm?.block_id,
+		);
+		expect(bannerOf(blanked)?.variant).toBe("default");
+		expect(
+			(await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents,
+		).toBeNull();
 	});
 
 	test("a concurrent-edit conflict loses the CAS: the fresh rate is reloaded with a re-apply warning, never a clobber", async () => {

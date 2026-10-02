@@ -4806,6 +4806,76 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
 		});
 
+		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
+			await client.createZone({ id: "cap-z", name: "Cap" });
+			await client.createTaxClass({ id: "cap-c", name: "Cap" });
+			const rate = { id: "cap-t", taxClassId: "cap-c", zoneId: "cap-z", rateBps: 10_001 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "rateBps",
+			});
+			expect((await client.createTaxRate({ ...rate, rateBps: 10_000 })).ok).toBe(true);
+			await expect(
+				client.updateTaxRate("cap-t", {
+					rateBps: 15_000,
+					appliesToShipping: false,
+					expectedRateBps: 10_000,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
+		});
+
+		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
+			// The console checks this first; the client is the second line, so no
+			// caller of the surface can store a price nobody is quoted in.
+			await client.createZone({ id: "cur-z", name: "Cur" });
+			await client.createMethod("cur-z", { id: "cur-m", name: "M", type: "flat_rate" });
+			await expect(
+				client.createRate("cur-m", { currency: "XYZ", amountCents: 500 }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			await expect(
+				client.createCoupon({
+					id: "cur-c",
+					code: "CURXYZ",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "XYZ",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			expect(await client.getCoupon("CURXYZ")).toBeNull();
+		});
+
+		test("a free-shipping threshold on a FLAT-RATE method's rate is refused on create and edit; a blank one is fine", async () => {
+			await client.createZone({ id: "thr-z", name: "Thr" });
+			await client.createMethod("thr-z", { id: "thr-flat", name: "Flat", type: "flat_rate" });
+			await expect(
+				client.createRate("thr-flat", {
+					currency: "USD",
+					amountCents: 500,
+					minSubtotalCents: 3500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			expect((await client.createRate("thr-flat", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			await expect(
+				client.updateRate("thr-flat", "USD", {
+					amountCents: 500,
+					minSubtotalCents: 3500,
+					expectedAmountCents: 500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			await client.createMethod("thr-z", { id: "thr-free", name: "Free", type: "free_shipping" });
+			expect(
+				(
+					await client.createRate("thr-free", {
+						currency: "USD",
+						amountCents: 500,
+						minSubtotalCents: 3500,
+					})
+				).ok,
+			).toBe(true);
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
@@ -4984,7 +5054,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 		test("shipping: getRate reads one method's rate in one currency, and absence is null rather than an error", async () => {
 			await client.createZone({ id: "gr-zone", name: "Get Rate" });
-			await client.createMethod("gr-zone", { id: "gr-method", name: "Flat", type: "flat_rate" });
+			// FREE SHIPPING, because the row below carries a threshold — and a
+			// threshold is refused on a flat-rate method's rate.
+			await client.createMethod("gr-zone", {
+				id: "gr-method",
+				name: "Free",
+				type: "free_shipping",
+			});
 
 			// A method with no rate yet: the read is an ABSENCE, not a failure.
 			expect(await client.getRate("gr-method", "USD")).toBeNull();

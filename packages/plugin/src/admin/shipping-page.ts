@@ -1,4 +1,9 @@
-import { COUNTRY_CODES, parseZoneRegions, validateZoneRegionsInput } from "@otta-sh/domain";
+import {
+	COUNTRY_CODES,
+	parseZoneRegions,
+	validateZoneRegionsInput,
+	type ShippingMethodType,
+} from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -26,6 +31,7 @@ import {
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
@@ -939,12 +945,44 @@ function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	};
 }
 
-function methodTypeField(actionId: string, initial: string): FormBlock["fields"][number] {
-	const options: SelectOption[] = [
-		{ value: "flat_rate", label: "Flat rate" },
-		{ value: "free_shipping", label: "Free shipping (threshold-based)" },
-	];
-	return { type: "select", action_id: actionId, label: "Type", options, initial_value: initial };
+/**
+ * THE SELECT'S VALUES ARE WORDS, because a `select` trigger renders the option
+ * VALUE and never its label (R-17a) — QA saw `flat_rate` sitting in the trigger.
+ * F-6c tolerated that as "a word, readable"; it is a wire enum all the same, and
+ * the copy everywhere else on this screen already says "Flat rate". So the value
+ * an operator sees IS the label's word, and {@link methodTypeFromInput} maps it
+ * back to the enum before anything reaches the client: the domain, the store and
+ * the carrier still spell `flat_rate`. The raw enum is still ACCEPTED on input, so
+ * a form rendered before this change submits fine.
+ */
+const METHOD_TYPE_CHOICES: ReadonlyArray<{
+	type: ShippingMethodType;
+	value: string;
+	label: string;
+}> = [
+	{ type: "flat_rate", value: "Flat rate", label: "Flat rate" },
+	{ type: "free_shipping", value: "Free shipping", label: "Free shipping (threshold-based)" },
+];
+
+/** A submitted type (the word, or the legacy enum) → the enum, or `undefined`. */
+function methodTypeFromInput(raw: string): ShippingMethodType | undefined {
+	return METHOD_TYPE_CHOICES.find((c) => c.value === raw || c.type === raw)?.type;
+}
+
+/** The enum → the select value that renders it. */
+function methodTypeInputValue(type: string): string {
+	return (METHOD_TYPE_CHOICES.find((c) => c.type === type) ?? METHOD_TYPE_CHOICES[0]!).value;
+}
+
+function methodTypeField(actionId: string, type: string): FormBlock["fields"][number] {
+	const options: SelectOption[] = METHOD_TYPE_CHOICES.map(({ value, label }) => ({ value, label }));
+	return {
+		type: "select",
+		action_id: actionId,
+		label: "Type",
+		options,
+		initial_value: methodTypeInputValue(type),
+	};
 }
 
 function editMethodForm(zoneId: string, method: ShippingMethodWire): FormBlock {
@@ -1000,8 +1038,7 @@ function newMethodScreen(
  *  select's own options first (X-23), so an unknown value falls back to the
  *  default rather than rendering a blank trigger. */
 function createMethodForm(zoneId: string, draft?: MethodDraft): FormBlock {
-	const type =
-		draft?.type === "free_shipping" || draft?.type === "flat_rate" ? draft.type : "flat_rate";
+	const type = methodTypeFromInput(draft?.type ?? "") ?? "flat_rate";
 	return carriedForm({
 		namespace: "ship:method-create",
 		context: { zoneId },
@@ -1477,19 +1514,16 @@ function createMethodAction() {
 			const values = input.values ?? {};
 			const id = (readString(values.id) ?? "").trim();
 			const name = (readString(values.name) ?? "").trim();
-			const type = readString(values.type) ?? "";
+			const typed = readString(values.type) ?? "";
+			const type = methodTypeFromInput(typed);
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
 			const draft: MethodDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
-				type,
+				type: typed,
 			};
-			if (
-				id.length === 0 ||
-				name.length === 0 ||
-				(type !== "flat_rate" && type !== "free_shipping")
-			) {
+			if (id.length === 0 || name.length === 0 || type === undefined) {
 				return showList(
 					[zoneId],
 					{
@@ -1548,15 +1582,31 @@ function saveMethodAction() {
 		if (zoneId === undefined || methodId === undefined) return showList();
 		const values = input.values ?? {};
 		const name = (readString(values.name) ?? "").trim();
-		const type = readString(values.type) ?? "";
-		if (name.length === 0 || (type !== "flat_rate" && type !== "free_shipping")) {
+		const type = methodTypeFromInput(readString(values.type) ?? "");
+		if (name.length === 0 || type === undefined) {
 			return showList([zoneId], {
 				variant: "error",
 				title: "Method not saved",
 				description: "Enter a name and a valid type.",
 			});
 		}
+		// A free_shipping → flat_rate switch strands any threshold its rates carry:
+		// the domain stops reading it, and listing every currency's rate to clear
+		// them is not a read this surface offers. So the switch is allowed and SAID.
+		const before =
+			type === "flat_rate"
+				? (await client.listMethods(zoneId)).find((m) => m.id === methodId)?.type
+				: undefined;
 		const result = await client.updateMethod(methodId, { name, type });
+		if (result.ok && before === "free_shipping") {
+			return showList([zoneId], {
+				// A `Notice` is default|error only; the TITLE carries the consequence.
+				variant: "default",
+				title: "Saved as flat rate",
+				description:
+					"If any of this method's rates had a free-shipping threshold, it no longer applies — a flat rate always charges its rate. Blank it on those rates to keep the screens honest.",
+			});
+		}
 		return showList([zoneId], saveMethodNotice(result));
 	});
 }
@@ -1630,6 +1680,30 @@ function openCreateMethodAction() {
 
 // -- custom action: create a rate ---------------------------------------------------
 
+/**
+ * A FREE-SHIPPING THRESHOLD ONLY MEANS SOMETHING ON A `free_shipping` METHOD.
+ * The domain's `shippingCost` charges a flat rate's amount whatever the
+ * subtotal and reads `minSubtotalCents` only for `free_shipping`, so a threshold
+ * typed on a flat-rate method's rate is stored and never applied — QA saved one
+ * and the console said "Rate created", which reads as a promise of free shipping
+ * over $35 that checkout never keeps. Refused with the reason instead.
+ *
+ * Only checked when a threshold was actually entered, so the common blank case
+ * costs no read. A stored threshold on an existing flat-rate rate (written
+ * before this rule) is left alone until the operator saves that rate.
+ */
+const FLAT_RATE_THRESHOLD_REFUSAL =
+	"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.";
+
+async function isFlatRateMethod(
+	client: AdminRulesSurface,
+	zoneId: string,
+	methodId: string,
+): Promise<boolean> {
+	const methods = await client.listMethods(zoneId);
+	return methods.find((m) => m.id === methodId)?.type === "flat_rate";
+}
+
 function createRateAction() {
 	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
@@ -1642,6 +1716,13 @@ function createRateAction() {
 				variant: "error",
 				title: "Rate not created",
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
+			});
+		}
+		if (!isIsoCurrencyCode(currency)) {
+			return showList([zoneId, methodId], {
+				variant: "error",
+				title: "Rate not created",
+				description: `${currency} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
 			});
 		}
 		const amountCents = parseAmountInput(readString(values.amount) ?? "");
@@ -1662,6 +1743,13 @@ function createRateAction() {
 					title: "Rate not created",
 					description:
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+				});
+			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not created",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
 				});
 			}
 		}
@@ -1724,6 +1812,13 @@ function saveRateAction() {
 					title: "Rate not saved",
 					description:
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+				});
+			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not saved",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
 				});
 			}
 		}
