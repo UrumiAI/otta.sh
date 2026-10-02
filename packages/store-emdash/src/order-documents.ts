@@ -88,6 +88,7 @@ import type {
 	ProductId,
 	ReconciliationResolution,
 	RefundKind,
+	RefundPurpose,
 	RefundStatus,
 	ReservationId,
 	Sku,
@@ -369,6 +370,13 @@ export interface RefundEntryDoc {
 	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
+	/**
+	 * `cancellation` for the money a cancellation returned — such a row consumes
+	 * capacity like any other but never drives `→ refunded`, on the one-shot record
+	 * or on a later finalize (the row is what a finalize reads, so it must carry it).
+	 * ABSENT on a row written before the field existed, which reads as `refund`.
+	 */
+	purpose?: RefundPurpose;
 }
 
 /**

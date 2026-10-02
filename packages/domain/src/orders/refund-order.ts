@@ -6,6 +6,7 @@ import type {
 	CapturedPayment,
 	OrderLedger,
 	OrderStore,
+	RefundPurpose,
 	RefundRecord,
 } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
@@ -50,6 +51,10 @@ export interface RefundOrderCommand {
 	 * succeeded payment on this gateway is `NO_CAPTURED_PAYMENT`.
 	 */
 	providerRef?: string;
+	/** `cancellation` when the refund is the money a cancellation returns
+	 *  (`cancelOrderWithRefund`): stored on the row, and such a row never drives
+	 *  `→ refunded` — the cancellation closes the order instead. Default `refund`. */
+	purpose?: RefundPurpose;
 }
 
 export type RefundOrderFailure =
@@ -296,6 +301,7 @@ export async function refundOrder(
 			reason,
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
+			purpose: cmd.purpose ?? "refund",
 		});
 		return settleRecordOutcome(res, cmd);
 	}
@@ -328,6 +334,7 @@ export async function refundOrder(
 			reason,
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
+			purpose: cmd.purpose ?? "refund",
 		});
 		if (reserved.outcome === "order_not_found") return { ok: false, reason: "ORDER_NOT_FOUND" };
 		if (reserved.outcome === "exceeds_ceiling") {

@@ -669,6 +669,86 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(0);
 		});
 
+		// -- a refund made AS PART OF a cancellation (QA T1-4) ---------------------
+
+		test("a cancellation's gateway refund of the whole ceiling is recorded but does NOT flip the order to refunded", async () => {
+			// The cancellation closes the order (→ cancelled), so the refund that rides it
+			// must not drive → refunded first — that would make the cancel illegal and send
+			// a second, refunded email.
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-cxl-gw", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw"),
+				purpose: "cancellation",
+			});
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.recorded).toBe(true);
+			expect(res.fullyRefunded).toBe(false);
+			expect(res.order.state).toBe("paid");
+			expect(res.refund).toMatchObject({ status: "recorded", purpose: "cancellation" });
+			expect(gw.refundCalls).toHaveLength(1);
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger).toHaveLength(1);
+			expect(ledger[0]).toMatchObject({ amount: 1000, purpose: "cancellation" });
+			// Its replay is the ordinary benign duplicate: no second provider call.
+			const replay = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw"),
+				purpose: "cancellation",
+			});
+			expect(replay).toMatchObject({ ok: true, duplicate: true });
+			expect(gw.refundCalls).toHaveLength(1);
+			// The ceiling still binds: the cancellation's refund consumed it.
+			const more = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw-more"),
+			});
+			expect(more).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
+		});
+
+		test("a cancellation's MANUAL refund of the whole ceiling does not flip the order either", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-cxl-man", totalCents: 800, gateway: "x402" });
+			const gw = new FakePaymentGateway({ id: "x402", refundable: false });
+			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(800),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-man"),
+				purpose: "cancellation",
+			});
+			expect(res).toMatchObject({ ok: true, recorded: true, fullyRefunded: false });
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			expect((await h.orderStore.listRefunds(id))[0]?.purpose).toBe("cancellation");
+		});
+
+		test("an ordinary refund is recorded with purpose refund", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-purpose", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(100),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-purpose"),
+			});
+			expect((await h.orderStore.listRefunds(id))[0]?.purpose).toBe("refund");
+		});
+
 		test("a currency mismatch and an empty refundedBy are rejected", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-guard", totalCents: 1000 });

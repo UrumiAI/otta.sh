@@ -93,6 +93,13 @@ export interface OrderCancellationWire {
 	detail: string | null;
 	cancelledBy: string;
 	cancelledAt: string;
+	/** The refund the cancellation issued (integer minor units), or null when it
+	 *  refunded nothing. ABSENT on a cancellation recorded before the field
+	 *  existed — read it as null. */
+	refund?: { amount: number; currency: string } | null;
+	/** Whether the cancellation returned the order's units to stock. ABSENT on an
+	 *  older cancellation — read it as false. */
+	restocked?: boolean;
 }
 
 export interface OrderDetailWire {

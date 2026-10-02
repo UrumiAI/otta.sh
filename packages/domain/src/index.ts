@@ -182,6 +182,7 @@ export type {
 	FinalizeRefundInput,
 	FinalizeRefundStoreResult,
 	RefundKind,
+	RefundPurpose,
 	RefundRecord,
 	RefundStatus,
 	ResolveReconciliationInput,
@@ -294,6 +295,7 @@ export {
 } from "./ports/payment-gateway.js";
 export type {
 	CancellationReason,
+	CancellationRefund,
 	FulfillmentKind,
 	Order,
 	OrderAddress,

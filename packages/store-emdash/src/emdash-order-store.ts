@@ -1017,6 +1017,7 @@ export class EmdashOrderStore implements OrderStore {
 				);
 				let fullyRefunded = false;
 				if (
+					entry.purpose !== "cancellation" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
@@ -1152,6 +1153,8 @@ export class EmdashOrderStore implements OrderStore {
 					detail: input.detail,
 					cancelledBy: input.cancelledBy,
 					cancelledAt: now,
+					refund: input.refund ?? null,
+					restocked: input.restocked ?? false,
 				},
 			}),
 		});
@@ -1676,6 +1679,7 @@ export class EmdashOrderStore implements OrderStore {
 			status: opts.status,
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
+			purpose: input.purpose ?? "refund",
 		};
 		let orderId: string = input.orderId;
 		let intent = prepared;
@@ -1751,8 +1755,10 @@ export class EmdashOrderStore implements OrderStore {
 				// transform every other state change uses — so the state, the audit event,
 				// the outbox entry and the ledger row commit together. Only the FINALIZED
 				// sum counts: a held reservation never flips an order.
+				// A cancellation's refund never flips: the cancellation closes the order.
 				if (
 					driveFlip &&
+					intent.purpose !== "cancellation" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
@@ -2524,6 +2530,7 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		status: refund.status,
 		idempotencyKey: refund.idempotencyKey,
 		createdAt: refund.createdAt,
+		purpose: refund.purpose ?? "refund",
 	};
 }
 

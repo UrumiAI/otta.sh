@@ -113,6 +113,24 @@ export interface OrderCancellation {
 	/** Server-assigned ISO-8601 UTC timestamp the cancellation was recorded (from
 	 *  the store's clock) — the presence witness that a reason is on file. */
 	cancelledAt: string;
+	/**
+	 * The money the cancellation returned to the buyer (QA T1-4): the refund
+	 * `cancelOrderWithRefund` issued BEFORE the flip, so the cancelled email can say
+	 * a refund is on its way and for how much. `null` when nothing was refunded — an
+	 * unpaid order, or a paid one with nothing captured. ABSENT on a cancellation
+	 * recorded before the field existed, which reads the same as `null`.
+	 */
+	refund?: CancellationRefund | null;
+	/** Whether the cancellation returned the order's physical units to stock. ABSENT
+	 *  (an older cancellation) reads as `false`. A pending order's held stock is
+	 *  released by the cancel itself either way; this is about SOLD units. */
+	restocked?: boolean;
+}
+
+/** The refund a cancellation issued — integer minor units in the order's currency. */
+export interface CancellationRefund {
+	amount: Cents;
+	currency: Currency;
 }
 
 /**

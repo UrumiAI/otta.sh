@@ -2794,6 +2794,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				detail: "changed their mind",
 				cancelledBy: "ops@example.test",
 				cancelledAt: expect.any(String) as unknown as string,
+				// A PENDING order: nothing captured, so nothing refunded, and its held
+				// stock is released by the cancel itself rather than restocked.
+				refund: null,
+				restocked: false,
 			});
 			// `cancelled` is terminal: the console renders no transition buttons.
 			expect(read?.allowedTransitions).toEqual([]);

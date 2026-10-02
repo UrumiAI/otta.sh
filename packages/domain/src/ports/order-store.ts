@@ -10,6 +10,7 @@ import type {
 } from "../money/ids.js";
 import type {
 	CancellationReason,
+	CancellationRefund,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
@@ -591,6 +592,12 @@ export interface CancelOrderInput {
 	 *  `OrderTransitionInput`/`RecordFulfillmentInput` — `cancelled` always has a
 	 *  template. */
 	enqueueEmail: boolean;
+	/** The refund the cancellation already issued, recorded on the envelope
+	 *  verbatim (`OrderCancellation.refund`). Absent ⇒ `null`. */
+	refund?: CancellationRefund | null;
+	/** Whether the cancellation restocked the order's units, recorded verbatim
+	 *  (`OrderCancellation.restocked`). Absent ⇒ `false`. */
+	restocked?: boolean;
 }
 
 /** `cancelled:false` ⇒ the guarded `fromState → cancelled` flip matched 0 rows
@@ -1106,6 +1113,9 @@ export interface CapturedPayment {
  *  return the admin recorded — x402's honest degraded path). `status` is the
  *  row's reserve-before-issue lifecycle — see {@link RefundStatus}. */
 export interface RefundRecord {
+	/** Why the money went back — see {@link RefundPurpose}. ABSENT on a row written
+	 *  before the field existed, which reads as `"refund"`. */
+	purpose?: RefundPurpose;
 	id: string;
 	orderId: OrderId;
 	amount: Cents;
@@ -1121,6 +1131,18 @@ export interface RefundRecord {
 }
 
 export type RefundKind = "gateway" | "manual";
+
+/**
+ * Why a refund was made (QA T1-4):
+ *  - `refund`       — an admin refund in its own right. When the FINALIZED `Σ`
+ *    reaches the ceiling it drives `→ refunded`, as ADR-0008 decided.
+ *  - `cancellation` — the money a cancellation returns BEFORE it flips the order
+ *    `→ cancelled` (`cancelOrderWithRefund`). It consumes ceiling capacity like any
+ *    other row but NEVER drives `→ refunded`: the cancellation is what closes the
+ *    order, and `refunded` is terminal, so flipping first would make the cancel
+ *    illegal and send the buyer a second email.
+ */
+export type RefundPurpose = "refund" | "cancellation";
 
 /**
  * A refund row's lifecycle (ADR-0008, reserve-before-issue):
@@ -1183,6 +1205,9 @@ export interface RecordRefundInput {
 	/** Every command carries one (CLAUDE.md); `UNIQUE(idempotency_key)` enforces
 	 *  once-only — the ledger dedupe AND (for gateway) Stripe's native key. */
 	idempotencyKey: IdempotencyKey;
+	/** Stored on the row; a `cancellation` row never drives `→ refunded`, on the
+	 *  one-shot record OR on a later finalize. Absent ⇒ `"refund"`. */
+	purpose?: RefundPurpose;
 }
 
 /** The atomic outcome of {@link OrderStore.recordRefund} (ADR-0008).

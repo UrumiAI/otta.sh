@@ -469,13 +469,15 @@ export class InMemoryOrderStore implements OrderStore {
 			status: opts.status,
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
+			purpose: input.purpose ?? "refund",
 		};
 		this.#refunds.push(refund);
 		let fullyRefunded = false;
 		// FULL refund (finalized Σ reached the ceiling) → drive → refunded atomically
 		// with the ledger row (actor = the refunder). Finalized path only — a held
 		// reservation never flips; the finalized prior counts 'recorded' rows.
-		if (opts.driveFlip) {
+		// A cancellation's refund never flips: the cancellation closes the order.
+		if (opts.driveFlip && refund.purpose !== "cancellation") {
 			const finalizedTotal = this.#refunds
 				.filter((r) => r.orderId === input.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
@@ -552,7 +554,11 @@ export class InMemoryOrderStore implements OrderStore {
 			const finalizedTotal = this.#refunds
 				.filter((r) => r.orderId === row.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
-			if (finalizedTotal === ceiling && isLegalOrderTransition(stored.order.state, "refunded")) {
+			if (
+				row.purpose !== "cancellation" &&
+				finalizedTotal === ceiling &&
+				isLegalOrderTransition(stored.order.state, "refunded")
+			) {
 				const fromState = stored.order.state;
 				stored.order.state = "refunded";
 				this.#appendEvent(row.orderId, fromState, "refunded", row.refundedBy);
@@ -677,6 +683,8 @@ export class InMemoryOrderStore implements OrderStore {
 			detail: input.detail,
 			cancelledBy: input.cancelledBy,
 			cancelledAt: now,
+			refund: input.refund ?? null,
+			restocked: input.restocked ?? false,
 		};
 		stored.order.updatedAt = now;
 		// Same-"transaction" state-change audit as the real adapter — the actor is
