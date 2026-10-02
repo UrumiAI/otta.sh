@@ -1411,6 +1411,40 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(replay["clientAction"]).toEqual(first["clientAction"]);
 	});
 
+	test("storefront/order/resume (QA U-2): the order id alone gets the SAME PaymentIntent — the same key and body at Stripe, no second order, only a hint of the email", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+		const orderId = first["orderId"] as string;
+
+		const resumed = resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId }));
+
+		expect(resumed, JSON.stringify(resumed)).toMatchObject({
+			ok: true,
+			orderId,
+			clientAction: first["clientAction"],
+			total: { currency: "USD" },
+		});
+		expect(typeof resumed["buyerRefHint"]).toBe("string");
+		expect(JSON.stringify(resumed)).not.toContain(BUYER_REF);
+		expect(resumed).not.toHaveProperty("intentId");
+		expect(stripe.requests).toHaveLength(2);
+		expect(stripe.requests[1]!.path).toBe("/v1/payment_intents");
+		expect(stripe.requests[1]!.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+		expect(stripe.requests[1]!.form.toString()).toBe(stripe.requests[0]!.form.toString());
+		// Still the one order under the cart's key.
+		expect((await storedOrder(orderId)).idempotencyKey).toBe(`checkout:${cartId}`);
+	});
+
+	test("storefront/order/resume refuses an unknown order without asking Stripe", async () => {
+		expect(
+			resultOf(
+				await stripeBoot.invokeRoute("storefront/order/resume", { orderId: `no-such-order-${NS}` }),
+			),
+		).toEqual({ ok: false, reason: "ORDER_NOT_FOUND" });
+		expect(stripe.requests).toHaveLength(0);
+	});
+
 	test("passes clientAction through UNMODIFIED — the client secret is data in transit", async () => {
 		const cartId = await seedThreeLineCart();
 		stripe.respondWith(() => ({

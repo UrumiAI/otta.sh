@@ -76,7 +76,7 @@ function harness(
 	};
 	const url = new URL(opts.url ?? "/checkout/place", SITE);
 	const jar = new Map<string, string>(
-		Object.entries({ otta_cart: "cart-existing", ...(opts.cookies ?? {}) }),
+		Object.entries({ otta_cart: "cart-existing", ...opts.cookies }),
 	);
 	const sets: CookieSet[] = [];
 	const deletes: string[] = [];
