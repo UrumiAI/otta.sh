@@ -34,7 +34,10 @@ import { describe, expect, test } from "vitest";
 import {
 	ACCOUNT_HOME_PATH,
 	checkoutEmailNote,
+	LOGIN_LINK_CAP,
+	LOGIN_LINK_MANY_COPY,
 	LOGIN_LINK_SENT_COPY,
+	LOGIN_REQUESTS_COOKIE_NAME,
 	accountOrderStatus,
 	orderMoney,
 	orderPlacedOn,
@@ -82,7 +85,7 @@ function makeContext(
 	urlPath: string,
 	form: Record<string, string>,
 	handler: unknown,
-	opts: { origin?: string | null; session?: string } = {},
+	opts: { origin?: string | null; session?: string; cookies?: Map<string, string> } = {},
 ): { context: APIContext; cookieOps: CookieOp[] } {
 	const url = new URL(urlPath, SITE);
 	const headers: Record<string, string> = {
@@ -95,7 +98,8 @@ function makeContext(
 		headers,
 		body: new URLSearchParams(form).toString(),
 	});
-	const jar = new Map<string, string>();
+	// A caller-supplied jar persists across requests — one browser, several POSTs.
+	const jar = opts.cookies ?? new Map<string, string>();
 	if (opts.session !== undefined) jar.set(SESSION_COOKIE_NAME, opts.session);
 	const cookieOps: CookieOp[] = [];
 	const context = {
@@ -155,6 +159,80 @@ describe("POST /account/login/request", () => {
 		const response = await LOGIN_REQUEST_POST(context);
 		expect(location(response)).toBe("/account/login?error=INVALID_EMAIL");
 		expect(calls).toHaveLength(0);
+	});
+
+	/* QA U-12: past the per-address cap the plugin sends nothing and answers exactly
+	   as it does for a sent link (ADR-0004 — the throttle must not be an oracle), so
+	   the page said "on its way" for a link that never left. The page cannot ask the
+	   plugin, and must not: it counts THIS BROWSER's own requests instead, which says
+	   nothing about any address or account. */
+	test("past the cap, this browser's request lands on the honest 'many' notice — whatever the address", async () => {
+		const { handler, calls } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const browser = new Map<string, string>();
+		const ask = async (email: string): Promise<string | null> => {
+			const { context } = makeContext("/account/login/request", { email }, handler, {
+				cookies: browser,
+			});
+			return location(await LOGIN_REQUEST_POST(context));
+		};
+		for (let n = 0; n < LOGIN_LINK_CAP; n++) {
+			expect(await ask("a@example.com")).toBe("/account/login?sent=1");
+		}
+		// A different address changes nothing: the count is the browser's, not the
+		// address's, so the notice cannot tell anyone which addresses are throttled.
+		expect(await ask("b@example.com")).toBe("/account/login?sent=many");
+		expect(await ask("a@example.com")).toBe("/account/login?sent=many");
+		// Every request still reaches the plugin, which alone decides what is sent.
+		expect(calls).toHaveLength(LOGIN_LINK_CAP + 2);
+	});
+
+	test("the count is a short-lived, HttpOnly cookie on the sign-in path, holding only timestamps", async () => {
+		const { handler } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const { context, cookieOps } = makeContext(
+			"/account/login/request",
+			{ email: "a@example.com" },
+			handler,
+		);
+		await LOGIN_REQUEST_POST(context);
+		expect(cookieOps).toHaveLength(1);
+		expect(cookieOps[0]).toMatchObject({
+			op: "set",
+			name: LOGIN_REQUESTS_COOKIE_NAME,
+			options: {
+				httpOnly: true,
+				secure: true,
+				sameSite: "lax",
+				path: "/account/login",
+				maxAge: 15 * 60,
+			},
+		});
+		expect(cookieOps[0]?.value).toMatch(/^\d+$/);
+		expect(cookieOps[0]?.value).not.toContain("example.com");
+	});
+
+	test("requests older than the window no longer count", async () => {
+		const { handler } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const stale = String(Date.now() - 16 * 60 * 1000);
+		const browser = new Map([[LOGIN_REQUESTS_COOKIE_NAME, [stale, stale, stale].join(".")]]);
+		const { context } = makeContext("/account/login/request", { email: "a@example.com" }, handler, {
+			cookies: browser,
+		});
+		expect(location(await LOGIN_REQUEST_POST(context))).toBe("/account/login?sent=1");
+	});
+
+	test("an outage or a refused form is not counted", async () => {
+		const browser = new Map<string, string>();
+		const { handler } = makeHandler({});
+		for (let n = 0; n < LOGIN_LINK_CAP + 1; n++) {
+			const { context } = makeContext(
+				"/account/login/request",
+				{ email: n % 2 === 0 ? "a@example.com" : "nope" },
+				handler,
+				{ cookies: browser },
+			);
+			await LOGIN_REQUEST_POST(context);
+		}
+		expect(browser.has(LOGIN_REQUESTS_COOKIE_NAME)).toBe(false);
 	});
 
 	test("an unreachable plugin is an honest outage, not a fake 'sent'", async () => {
@@ -373,6 +451,16 @@ describe("account copy and formatting", () => {
 			expect(cartErrorMessage(token)).not.toBe(generic);
 			expect(cartErrorMessage(token)).toMatch(/sign-in link/);
 		}
+	});
+
+	test("the 'many' notice is honest about the cap and, like the sent notice, about nothing else", () => {
+		expect(LOGIN_LINK_MANY_COPY).toMatch(/at most 3 links/);
+		expect(LOGIN_LINK_MANY_COPY).toMatch(/may not have sent a new one/);
+		expect(LOGIN_LINK_MANY_COPY).not.toMatch(/^check your inbox/i);
+		expect(LOGIN_LINK_MANY_COPY).not.toMatch(/account exists|if an account|no account/i);
+		// The ordinary notice states the cap too: it is true for every address, and
+		// it is the only honest thing to say to a shopper whose link never arrives.
+		expect(LOGIN_LINK_SENT_COPY).toMatch(/at most 3 links/);
 	});
 
 	test("the sent notice never says whether the account exists", () => {

@@ -29,9 +29,85 @@ import { isOrderPayable } from "./pay-guard.js";
  *  it creates the account), so an "if an account exists" hedge would tell a
  *  first-time shopper they get nothing, while the sign-in page tells them the
  *  same link signs them up. The view leads it with "Check your inbox.", so it
- *  must not open with those words again. */
+ *  must not open with those words again. It states the per-address cap, which is
+ *  true of every address and the one honest explanation for a link that never
+ *  comes (QA U-12). */
 export const LOGIN_LINK_SENT_COPY =
-	"A sign-in link is on its way. It works once and expires in 15 minutes. If it doesn't arrive, check the address and request another.";
+	"A sign-in link is on its way. It works once and expires in 15 minutes. If it doesn't arrive, check the address — we send at most 3 links to an address every 15 minutes.";
+
+/**
+ * The plugin's per-address cap (ADR-0004: at most 3 unconsumed links per address,
+ * each live for 15 minutes; past it a request sends nothing and answers exactly as
+ * a sent one does). Mirrored here only to word the notices and to bound this
+ * browser's own count below — the plugin enforces it, never the site.
+ */
+export const LOGIN_LINK_CAP = 3;
+export const LOGIN_LINK_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * The notice for a browser that has itself asked for more than
+ * {@link LOGIN_LINK_CAP} links inside the window (QA U-12: the fourth request was
+ * silently dropped while the page said the link was on its way).
+ *
+ * NOT AN ORACLE. It is decided by THIS BROWSER's own request count (a cookie
+ * holding nothing but timestamps), never by the plugin's answer, which stays
+ * identical for every address (ADR-0004). So it reads the same whatever address
+ * was typed — a new one, a known one, four different ones — and says only what is
+ * true of any of them: past the cap, a request may not send.
+ */
+export const LOGIN_LINK_MANY_COPY =
+	"You've asked for several links in the last 15 minutes. We send at most 3 links to an address in that time, so this request may not have sent a new one. Use the newest link you received, or try again in 15 minutes.";
+
+/** This browser's recent link requests: timestamps only, never an address. */
+export const LOGIN_REQUESTS_COOKIE_NAME = "otta_login_requests";
+
+/** The requests a cookie value records inside the window, oldest first. Anything
+ *  unreadable is dropped — the count can only err towards the ordinary notice. */
+export function recentLoginRequests(raw: string | undefined, now: number): number[] {
+	if (raw === undefined || raw.length === 0) return [];
+	return raw
+		.split(".")
+		.filter((part) => /^\d{1,15}$/.test(part))
+		.map(Number)
+		.filter((at) => at <= now && now - at < LOGIN_LINK_WINDOW_MS)
+		.toSorted((a, b) => a - b);
+}
+
+/**
+ * Record one more request from this browser and say which notice it gets:
+ * `"many"` once this browser has asked more than {@link LOGIN_LINK_CAP} times in
+ * the window, else `"1"` (the ordinary notice). Keeps at most CAP + 1 entries, so
+ * the cookie stays a few dozen bytes however often the button is pressed.
+ */
+export function recordLoginRequest(
+	cookies: Pick<SessionCookieJar, "get"> & {
+		set(
+			name: string,
+			value: string,
+			options: {
+				httpOnly: boolean;
+				secure: boolean;
+				sameSite: "lax";
+				path: string;
+				maxAge: number;
+			},
+		): void;
+	},
+	now: number,
+): "1" | "many" {
+	const recent = [
+		...recentLoginRequests(cookies.get(LOGIN_REQUESTS_COOKIE_NAME)?.value, now),
+		now,
+	].slice(-(LOGIN_LINK_CAP + 1));
+	cookies.set(LOGIN_REQUESTS_COOKIE_NAME, recent.map(String).join("."), {
+		httpOnly: true,
+		secure: true,
+		sameSite: "lax",
+		path: ACCOUNT_LOGIN_PATH,
+		maxAge: LOGIN_LINK_WINDOW_MS / 1000,
+	});
+	return recent.length > LOGIN_LINK_CAP ? "many" : "1";
+}
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
  *  never be stored by a shared cache, nor replayed from the back/forward cache

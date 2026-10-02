@@ -470,8 +470,12 @@ export interface AccountLoginModel {
 	/** Signed in already: who, and where their orders are — shown above the form
 	 *  (which still works, to switch address). `null` ⇔ signed out. */
 	signedIn: { email: string; ordersHref: string } | null;
-	/** `?sent=1`: the generic notice — the same for every address. */
+	/** `?sent=1` or `?sent=many`: a link was asked for. */
 	sent: boolean;
+	/** The notice's copy, the page's call: the generic sentence, the same for
+	 *  every address — or, once THIS BROWSER has asked more often than the
+	 *  per-address cap allows, the sentence saying a new link may not have been
+	 *  sent. Never decided by the address, so never an account oracle. */
 	sentCopy: string;
 	errorMessage: string | null;
 }

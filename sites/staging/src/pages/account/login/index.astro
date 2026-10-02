@@ -12,6 +12,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
 	ACCOUNT_HOME_PATH,
+	LOGIN_LINK_MANY_COPY,
 	LOGIN_LINK_SENT_COPY,
 	signedInEmail,
 } from "../../../lib/account.js";
@@ -23,7 +24,11 @@ import type { AccountLoginModel } from "../../../themes/contract.js";
    signed-in shopper by email. One call sets both (lib/no-store.ts). */
 keepPrivate(Astro);
 
-const sent = Astro.url.searchParams.get("sent") === "1";
+/* `many`: THIS BROWSER has asked for more links than the per-address cap inside
+   the window, so a new one may not have been sent (QA U-12). Decided by the
+   browser's own count (request.ts), never by the address — not an oracle. */
+const sentParam = Astro.url.searchParams.get("sent");
+const sent = sentParam === "1" || sentParam === "many";
 const error = Astro.url.searchParams.get("error");
 
 /* Already signed in? Say so, with the way to their orders and out — the page
@@ -37,11 +42,12 @@ const email = await signedInEmail(
 	Astro.url,
 );
 
-/** The notice is the SAME sentence for every address (not an account oracle). */
+/** The notice is the SAME sentence for every address (not an account oracle);
+ *  only this browser's own request count can change it. */
 const model: AccountLoginModel = {
 	signedIn: email !== null ? { email, ordersHref: ACCOUNT_HOME_PATH } : null,
 	sent,
-	sentCopy: LOGIN_LINK_SENT_COPY,
+	sentCopy: sentParam === "many" ? LOGIN_LINK_MANY_COPY : LOGIN_LINK_SENT_COPY,
 	errorMessage: error !== null ? cartErrorMessage(error) : null,
 };
 ---
