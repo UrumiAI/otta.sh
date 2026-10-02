@@ -58,7 +58,6 @@ import { checkoutFootnote } from "../../lib/totals.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
-import { keepPrivate } from "../../lib/no-store.js";
 
 /* This page renders one shopper's cart, email and delivery choice: never stored by a shared cache, and kept out of
    Astro's route cache, which ignores Cache-Control (middleware.ts, "TWO
