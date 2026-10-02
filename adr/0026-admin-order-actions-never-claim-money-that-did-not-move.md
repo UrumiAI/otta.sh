@@ -165,7 +165,10 @@ next step (contact the buyer, then stop the shipment or Mark refunded). The outc
 - **A failure after the refund is an outcome, not a throw.** If the restock or the flip fails once
   the refund has gone through, the order is flagged ("did not finish") and the console says
   "Refunded X, but the cancel didn't finish — click Cancel order again (it will not refund
-  twice)" (`CANCEL_INCOMPLETE_AFTER_REFUND`).
+  twice)" (`CANCEL_INCOMPLETE_AFTER_REFUND`). A busy store reads "the store was busy" instead.
+  The retry that finishes clears that flag (compare-and-clear on the exact flag), so a cancelled
+  order never keeps an alert pointing at a control it no longer has. The lost-race flag is
+  best-effort the same way: nothing after a refund surfaces as a bare throw.
 - A late payment's automatic refund (ADR-0022/0008, `settleOrder`) is recorded with its own
   purpose, `late-payment`. Only a `refund`-purpose row can drive `→ refunded`, so neither a
   cancellation's refund nor a late payment's can flip an order.
