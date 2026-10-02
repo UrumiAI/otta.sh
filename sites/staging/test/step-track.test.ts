@@ -6,6 +6,9 @@
  * spans: the sequence IS the meaning, and `aria-current="step"` is the only way
  * a screen reader gets the same thing the straw dot gives everyone else.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import StepTrack, { CHECKOUT_STEPS } from "../src/components/StepTrack.astro";
@@ -105,5 +108,20 @@ describe("StepTrack — a journey that stopped (QA U-13)", () => {
 
 	test("without `halted`, nothing changes", async () => {
 		expect(await track("payment")).not.toContain("not completed");
+	});
+});
+
+describe("StepTrack — a halted step is quiet, not crossed out", () => {
+	test("its label is muted; no line-through (the open ring and the words carry it)", () => {
+		const source = readFileSync(
+			path.resolve(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"../src/components/StepTrack.astro",
+			),
+			"utf8",
+		);
+		const halted = /li\[data-state="halted"\] \.label \{[^}]*\}/.exec(source)?.[0] ?? "";
+		expect(halted).toContain("var(--u-mute)");
+		expect(source).not.toMatch(/line-through/);
 	});
 });

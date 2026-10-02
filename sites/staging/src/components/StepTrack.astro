@@ -120,16 +120,15 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 		color: var(--u-ink);
 	}
 
-	/* Stopped here: an open ring, not the straw fill of a step in progress —
-	   nothing is happening at this step any more. The words say so too. */
+	/* Stopped here: an open ring and a muted label, not the straw fill of a step
+	   in progress — nothing is happening at this step any more. The words
+	   (", not completed") say so too. */
 	.steps li[data-state="halted"] .dot {
 		background: transparent;
 		box-shadow: inset 0 0 0 1.5px var(--u-mute);
 	}
 	.steps li[data-state="halted"] .label {
-		color: var(--u-ink);
-		text-decoration: line-through;
-		text-decoration-color: var(--u-mute);
+		color: var(--u-mute);
 	}
 
 	/* At 390px the four labels plus their connectors stop fitting. The labels
