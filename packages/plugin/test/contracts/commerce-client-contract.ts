@@ -4372,6 +4372,19 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).toBe(true);
 		});
 
+		test("a coupon code with whitespace inside it is refused before anything is written", async () => {
+			await expect(
+				client.createCoupon({
+					id: "ws-cpn",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+			expect(await client.getCoupon("QA ADMIN")).toBeNull();
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so

@@ -1718,6 +1718,12 @@ function createCouponAction() {
 			}
 			const idProblem = idInputProblem(id);
 			if (idProblem !== undefined) return err(idProblem);
+			// The client refuses this too; answering here keeps the draft (DA-3a-i).
+			if (/\s/.test(code)) {
+				return err(
+					`A coupon code can't contain spaces — shoppers type it at checkout. Try "${code.replace(/\s+/g, "-")}".`,
+				);
+			}
 			if (type !== "fixed_amount" && type !== "percentage") {
 				return err("Choose a valid coupon type.");
 			}

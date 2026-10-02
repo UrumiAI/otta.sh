@@ -890,6 +890,27 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await stored("qa c1")).toBeNull();
 	});
 
+	test("a coupon CODE with a space is refused on the create screen — a shopper could never type it back reliably", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-c2",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.title)).toBe("Coupon not created");
+		expect(String(bannerOf(outcome)?.description)).toMatch(/code can't contain spaces.*QA-ADMIN/i);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({ code: "QA ADMIN" });
+		expect(await stored("qa-c2")).toBeNull();
+	});
+
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { coupons: [] as CouponRow[] };
 		await boot(state);

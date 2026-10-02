@@ -544,6 +544,14 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createCoupon(input: CouponInput): Promise<RulesCreateResult<CouponWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("code", input.code, 1, NAME_MAX);
+		// A CODE IS SOMETHING A SHOPPER TYPES. Whitespace inside one is invisible on
+		// a receipt or a poster, the storefront trims only its ends, and nothing
+		// downstream could tell `QA ADMIN` from `QA  ADMIN`. Refused at CREATE only:
+		// a code is immutable, so an existing coupon minted before this rule keeps
+		// being readable and redeemable exactly as it was issued.
+		if (/\s/.test(input.code)) {
+			throw new CommerceInputError("code", "must not contain spaces");
+		}
 		const type = requireCouponType(input.type);
 		const amountCents = optionalNonNegative("amountCents", input.amountCents);
 		const rateBps = optionalBps("rateBps", input.rateBps);
