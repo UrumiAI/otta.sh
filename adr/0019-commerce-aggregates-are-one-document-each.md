@@ -1256,8 +1256,9 @@ descriptor still declares no storage, so §4's lists become a **pinned** read co
 
 ## Amendment 2026-10-02 — a cart add decided out of stock retires its claim
 
-**What changed.** `CartStore` gains `abandonClaim(cartId, key)`, and `addLine` calls it the moment
-`reserve` answers `OUT_OF_STOCK`. The add's ledger record is retired — on the document store, marked
+**What changed.** `CartStore` gains `abandonClaim(cartId, key)`, and `addLine` calls it — best-effort:
+a failed retirement is logged and the add still answers `OUT_OF_STOCK` — the moment `reserve` answers
+`OUT_OF_STOCK`. `recordedMutation` reads the retirement back as `abandoned: true`. The add's ledger record is retired — on the document store, marked
 `abandoned`, the flag the sweep already skips — in the same compare-and-set that recomputes the cart's
 `holdExpiresAt`.
 
@@ -1274,5 +1275,20 @@ was never a correctness fault, only unbounded sweep work; but it grew with every
 `OUT_OF_STOCK` again — the replay contract is untouched, and `cart-store-contract` pins it. Retiring is
 safe only because the reserve was DECIDED: the key is once-only, so no hold can ever exist under it.
 The §7.7 re-check of an un-retired decided claim stays, for records written before this change and for
-a retirement that did not land. The abandoned bound (16 per cart) now also carries these records;
-evicting one is equally safe, since a late replay re-claims and reads back the same refusal.
+a retirement that did not land.
+
+**The residual this accepts.** The abandoned bound (16 per cart) now also carries these records, so
+one can be evicted — which an incomplete claim never could be. Eviction moves no stock it should not,
+but it is not answer-free: a very late replay of the evicted key finds no record and runs as a fresh
+add, and if the cart has since gained a line for that sku the replay becomes an increment of that line,
+answered with current truth. That is the residual an evicted completed record already carries (the
+ledger bound above), and reaching it takes sixteen later refused or reaped adds on one cart between a
+request and its retry.
+
+**Follow-up, not done here.** The retirement happens only on the add path, so a claim whose retirement
+failed (`abandonClaim` is best-effort) or that was written before this change stays unretired, and its
+cart stays a candidate on every tick. `#collectExpired` already reads the reserve key of such a claim
+and finds it decided with no reservation; it could retire the claim there on an active cart (on a
+checked-out one `#narrowCheckedOut` already leaves it out of the deadline), making the sweep
+self-healing. It is deferred because the
+sweep's expiry pass is being reworked separately (`fix/sweep-cadence`).
