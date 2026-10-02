@@ -48,6 +48,21 @@ export const NOT_APPLICABLE_LABEL = "—";
 export interface CheckoutLineView {
 	lineId: string;
 	sku: string;
+	/**
+	 * The product's name as the ORDER records it: on a live review, the
+	 * commerce row's title cache — the very string `createOrderFromCart` will
+	 * snapshot; on a locked review, the order's own snapshot. So the last
+	 * summary before paying names each line with what the receipt will say.
+	 * `null` when the store cannot name the line (no productId, no title cached
+	 * yet, or a degraded lookup) — the theme then lets the sku stand alone
+	 * rather than inventing a name.
+	 *
+	 * NOT the cart page's name. `/cart` names a line from its own CMS read; this
+	 * is the commerce row's copy of that title, which the CMS sync refreshes on
+	 * save/publish. Right after a rename the two can differ briefly — the
+	 * checkout then shows what the order will actually record.
+	 */
+	title: string | null;
 	qty: number;
 	/** null when the line is not priceable (no productId, unsynced commerce,
 	 *  inactive, currency mismatch, or a degraded lookup) — never a fabricated
@@ -134,12 +149,18 @@ export function buildCheckoutTotals(
 export function buildCheckoutLines(
 	lines: CartLineWire[],
 	pricing: CartPricingWire,
+	/** productId → the commerce row's title cache, off the same batch read the
+	 *  pricing join made. REQUIRED, so a caller cannot forget the names and ship
+	 *  a SKU-only review again; a degraded lookup passes an empty map, and then
+	 *  every title is null. */
+	titles: ReadonlyMap<string, string | null>,
 ): CheckoutLineView[] {
 	return lines.map((line) => {
 		const priced = pricing.lines.find((p) => p.lineId === line.lineId) ?? null;
 		return {
 			lineId: line.lineId,
 			sku: line.sku,
+			title: line.productId === null ? null : (titles.get(line.productId) ?? null),
 			qty: line.qty,
 			unitPrice: priced?.unitPrice ?? null,
 			lineTotal: priced?.lineTotal ?? null,
@@ -160,6 +181,7 @@ export function buildOrderLines(order: PublicOrderWire, locale: string): Checkou
 		return {
 			lineId: `${order.id}:${String(index)}`,
 			sku: line.sku,
+			title: line.title,
 			qty: line.quantity,
 			unitPrice: money(line.unitPriceCents, code, locale),
 			lineTotal: money(line.unitPriceCents * line.quantity, code, locale),

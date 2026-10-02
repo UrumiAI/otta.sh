@@ -547,6 +547,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-cb1",
 				sku: "SKU-CB1",
 				price: { amount: 1999, currency: "USD" },
+				title: null,
 				inStock: true,
 				active: false, // unpublished until the deferred afterPublish wiring lands
 			});
@@ -554,6 +555,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-cb2",
 				sku: "SKU-CB2",
 				price: { amount: 500, currency: "EUR" },
+				title: null,
 				inStock: false, // never seeded — coarse out-of-stock, still listed
 				active: false,
 			});

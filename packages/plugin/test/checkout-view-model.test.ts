@@ -21,6 +21,7 @@ import type { CartPricingWire } from "../src/storefront/cart-pricing.js";
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
 	buildShippingOptionsView,
@@ -189,35 +190,85 @@ describe("buildCheckoutLines", () => {
 		allLinesPriced: false,
 	};
 
+	/** The degraded lookup's shape: the batch read failed, so nothing is named. */
+	const NO_TITLES: ReadonlyMap<string, string | null> = new Map();
+
 	test("joins each cart line to its pricing row by lineId", () => {
-		const view = buildCheckoutLines(lines, pricing);
+		const view = buildCheckoutLines(lines, pricing, NO_TITLES);
 		expect(view).toEqual([
 			{
 				lineId: "line-1",
 				sku: "SKU-1",
+				title: null,
 				qty: 2,
 				unitPrice: { amount: 1999, currency: "USD", formatted: "$19.99" },
 				lineTotal: { amount: 3998, currency: "USD", formatted: "$39.98" },
 			},
-			{ lineId: "line-2", sku: "SKU-2", qty: 1, unitPrice: null, lineTotal: null },
+			{ lineId: "line-2", sku: "SKU-2", title: null, qty: 1, unitPrice: null, lineTotal: null },
 		]);
 	});
 
+	test("names each line by its product's title — the name the order will snapshot", () => {
+		const view = buildCheckoutLines(lines, pricing, new Map([["prod-1", "Otta Mug"]]));
+		expect(view[0]!.title).toBe("Otta Mug");
+	});
+
+	test("a line the store cannot name (no productId, no title cached) is null — never the sku dressed as a name", () => {
+		const view = buildCheckoutLines(
+			lines,
+			pricing,
+			new Map<string, string | null>([["prod-1", null]]),
+		);
+		expect(view.map((line) => line.title)).toEqual([null, null]);
+	});
+
 	test("an unpriced line carries nulls — never a fabricated zero", () => {
-		const view = buildCheckoutLines(lines, pricing);
+		const view = buildCheckoutLines(lines, pricing, NO_TITLES);
 		expect(view[1]!.unitPrice).toBeNull();
 		expect(view[1]!.lineTotal).toBeNull();
 	});
 
 	test("a degraded pricing join (no rows at all) leaves every line unpriced rather than throwing", () => {
-		const view = buildCheckoutLines(lines, {
-			degraded: true,
-			lines: [],
-			total: null,
-			allLinesPriced: false,
-		});
+		const view = buildCheckoutLines(
+			lines,
+			{
+				degraded: true,
+				lines: [],
+				total: null,
+				allLinesPriced: false,
+			},
+			NO_TITLES,
+		);
 		expect(view).toHaveLength(2);
 		expect(view.every((l) => l.unitPrice === null && l.lineTotal === null)).toBe(true);
+	});
+});
+
+describe("buildOrderLines — the locked review states the ORDER's snapshot", () => {
+	test("each row carries the title the order froze at purchase time", () => {
+		const order = {
+			id: "order-1",
+			lines: [
+				{
+					sku: "OTTA-MUG",
+					title: "Otta Mug",
+					unitPriceCents: 1800,
+					currency: "USD",
+					quantity: 2,
+					fulfillmentKind: "physical",
+				},
+			],
+		} as unknown as PublicOrderWire;
+		expect(buildOrderLines(order, LOCALE)).toEqual([
+			{
+				lineId: "order-1:0",
+				sku: "OTTA-MUG",
+				title: "Otta Mug",
+				qty: 2,
+				unitPrice: { amount: 1800, currency: "USD", formatted: "$18.00" },
+				lineTotal: { amount: 3600, currency: "USD", formatted: "$36.00" },
+			},
+		]);
 	});
 });
 

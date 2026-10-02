@@ -101,6 +101,9 @@ export interface ProductCommerceBatchItem {
 	productId: string;
 	sku: string;
 	price: CommerceMoney;
+	/** The row's title cache — what an order line will snapshot. Null until a
+	 *  sync has carried one. */
+	title: string | null;
 	inStock: boolean;
 	/** The publish gate: the join derives purchasability from it
 	 *  (`purchasable ⟺ present && active`). */

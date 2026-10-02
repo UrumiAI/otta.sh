@@ -1066,6 +1066,7 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 		productId: view.productId,
 		sku: view.sku,
 		price: { amount: view.price.amount, currency: view.price.currency },
+		title: view.title,
 		inStock: view.inStock,
 		active: view.active,
 	};

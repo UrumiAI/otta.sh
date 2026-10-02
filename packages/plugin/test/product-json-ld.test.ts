@@ -17,6 +17,7 @@ function commerce(overrides: Partial<CatalogProductCommerce> = {}): CatalogProdu
 		productId: "p1",
 		sku: "SKU-1",
 		price: { amount: cents(1999), currency: currency("USD") },
+		title: "Widget",
 		inStock: true,
 		active: true,
 		...overrides,

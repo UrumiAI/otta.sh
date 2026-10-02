@@ -582,12 +582,15 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 
 		const lines = result["lines"] as {
 			sku: string;
+			title: string | null;
 			qty: number;
 			lineTotal: { formatted: string };
 		}[];
 		expect(lines).toHaveLength(3);
 		const first = lines.find((l) => l.sku === LINE_SKUS[0]);
-		expect(first).toMatchObject({ qty: 1 });
+		// Named off the same batch read the pricing join made — the title the
+		// order will snapshot — so the review never shows a bare SKU as a name.
+		expect(first).toMatchObject({ qty: 1, title: "Bamboo Water Bottle" });
 		expect(first!.lineTotal.formatted).toBe("$19.99");
 		expect(result["hasUnpricedLines"]).toBe(false);
 	});
@@ -1841,9 +1844,12 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			// The lines are the ORDER's snapshot, not a live re-join.
 			const lines = locked["lines"] as {
 				sku: string;
+				title: string | null;
 				qty: number;
 				lineTotal: { formatted: string };
 			}[];
+			// The order's own snapshot title rides each locked row.
+			expect(lines.every((l) => l.title === "Bamboo Water Bottle")).toBe(true);
 			// (The store's line order, not the cart's — so compared as a set.)
 			expect(lines.map((l) => `${l.sku}×${String(l.qty)}`).toSorted()).toEqual([
 				`${LINE_SKUS[0]!}×1`,
