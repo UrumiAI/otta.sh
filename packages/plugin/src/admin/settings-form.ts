@@ -179,7 +179,8 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		hint: "whsec_…",
 		check: checkStripeWebhookSecret,
 		shapeHelp: "Starts with whsec_ — the signing secret of your webhook endpoint.",
-		whereToFind: "Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret",
+		whereToFind:
+			"your webhook endpoint in the Stripe Dashboard (Developers or Workbench → Webhooks) → Signing secret",
 		removeEffect:
 			"Card orders stop being marked paid when Stripe reports a payment, until a new secret is saved.",
 	},
@@ -456,6 +457,11 @@ function secretNotice(spec: SecretFieldSpec, entered: boolean): Notice {
 			};
 }
 
+/** `https://user:pw@host/…` → `https://host/…`, leaving the rest as typed. */
+function withoutUserInfo(url: string): string {
+	return url.replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, "$1");
+}
+
 /** "a, b and c". */
 function joinNames(names: readonly string[]): string {
 	if (names.length <= 1) return names.join("");
@@ -720,7 +726,6 @@ export function createSettingsFormHandler(
 				const page = await renderPage(ctx, client, {
 					variant: "default",
 					title: `No ${lowerFirst(spec.noun)} was stored — nothing was removed.`,
-					description: "There was no saved key to remove, so nothing changed.",
 				});
 				return { ...page, toast: { message: "Nothing removed", type: "info" } };
 			}
@@ -728,7 +733,7 @@ export function createSettingsFormHandler(
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: `${spec.noun} removed`,
-				description: `${spec.removeEffect} To set it again, copy it from ${spec.whereToFind} and enter it above.`,
+				description: `${spec.removeEffect} Copy it again from ${spec.whereToFind}, then enter it above.`,
 			});
 			return {
 				...page,
@@ -806,7 +811,11 @@ export function createSettingsFormHandler(
 				const typed = new Map(
 					PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
 						const raw = input.values?.[spec.fieldId];
-						return typeof raw === "string" ? [[spec.kvKey, raw] as const] : [];
+						if (typeof raw !== "string") return [];
+						// A sign-in URL with user:pw@ in it is put back WITHOUT them: the
+						// credentials are refused anyway, and are not echoed into the page.
+						const shown = spec.kvKey === LOGIN_LINK_URL_KEY ? withoutUserInfo(raw) : raw;
+						return [[spec.kvKey, shown] as const];
 					}),
 				);
 				return renderPage(
@@ -1365,7 +1374,7 @@ function legacySignInWarning(stored: string): Block[] {
 			variant: "alert",
 			title: "Sign-in page address needs https",
 			description:
-				"This address was saved before https was required — update it; sign-in links currently go out over http.",
+				"The links in sign-in emails point to an http page, so their tokens travel unencrypted when clicked — change this address to https. You'll need to change it before saving other payment settings.",
 		},
 	];
 }

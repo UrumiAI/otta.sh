@@ -3097,9 +3097,11 @@ accordion   block_id settings:payments
                context "The settings below are shown as saved. Crypto (x402) checkout
                         stays off until a destination wallet is set."
                banner alert (cond) a stored http sign-in page saved before the https
-                     rule: "This address was saved before https was required — …"
+                     rule: "The links in sign-in emails point to an http page, so their
+                     tokens travel unencrypted when clicked — change this address to https. …"
                context × n (cond, on a refused save) each broken rule in full; the banner
-                     names every field, and the form keeps what was typed (J6)
+                     names every field, and the form keeps what was typed (J6) — a
+                     sign-in URL without any user:pw@ part
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
                      text_input "Order email from-address"
                                         placeholder "Your Shop <orders@yourdomain.com>"

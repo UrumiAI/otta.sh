@@ -455,6 +455,8 @@ describe("Settings: review nits", () => {
 		const banner = findBlocks(outcome.blocks, "banner")[0];
 		expect(String(banner?.title)).toBe("No Stripe secret key was stored — nothing was removed.");
 		expect(banner?.variant).toBe("default");
+		// One statement of it, not three: no description repeating the title.
+		expect(banner?.description).toBeUndefined();
 		expect(outcome.toast).toEqual({ message: "Nothing removed", type: "info" });
 	});
 
@@ -473,7 +475,7 @@ describe("Settings: review nits", () => {
 			value: { secret: "stripeWebhookSecret" },
 		});
 		expect(String(findBlocks(webhook.blocks, "banner")[0]?.description)).toContain(
-			"Stripe Dashboard → Developers → Webhooks",
+			"your webhook endpoint in the Stripe Dashboard (Developers or Workbench → Webhooks) → Signing secret",
 		);
 		assertBlockContract(webhook.blocks, { screen: "settings", level: "list" });
 	});
@@ -486,7 +488,7 @@ describe("Settings: review nits", () => {
 		assertBlockContract(flagged.blocks, { screen: "settings", level: "list" });
 		const warning = findBlocks(flagged.blocks, "banner").find((b) => b.variant === "alert");
 		expect(String(warning?.description)).toContain(
-			"This address was saved before https was required — update it; sign-in links currently go out over http.",
+			"The links in sign-in emails point to an http page, so their tokens travel unencrypted when clicked — change this address to https. You'll need to change it before saving other payment settings.",
 		);
 
 		for (const fine of [
@@ -498,7 +500,7 @@ describe("Settings: review nits", () => {
 				type: "page_load",
 				page: "/settings",
 			});
-			expect(JSON.stringify(page), fine).not.toContain("saved before https was required");
+			expect(JSON.stringify(page), fine).not.toContain("travel unencrypted");
 		}
 	});
 
@@ -535,5 +537,19 @@ describe("Settings: review nits", () => {
 		for (const key of [EMAIL_FROM_KEY, LOGIN_LINK_URL_KEY, X402_PAYTO_KEY]) {
 			expect(kv.has(key), key).toBe(false);
 		}
+	});
+
+	test("a refused sign-in address is put back WITHOUT any user:pw@ credentials", async () => {
+		const { ctx } = makeCtx();
+		const outcome = await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "https://user:pw@shop.otta.sh/account/verify?x=1" },
+		});
+		const form = formFor(outcome.blocks, "save-payment-settings");
+		expect(field(form, "loginLinkUrl")?.initial_value).toBe(
+			"https://shop.otta.sh/account/verify?x=1",
+		);
+		expect(JSON.stringify(outcome)).not.toContain("user:pw");
 	});
 });
