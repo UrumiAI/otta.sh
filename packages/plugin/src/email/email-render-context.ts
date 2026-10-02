@@ -7,7 +7,7 @@
  */
 import { cents, currency, formatMoney } from "@otta-sh/admin-presentation";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
-import { isValidLoginLinkUrl } from "../storefront/login-link.js";
+import { isSavableLoginLinkUrl } from "../storefront/login-link.js";
 
 /**
  * Money in an email, formatted by the storefront's own formatter at the
@@ -30,7 +30,7 @@ export function storefrontEmailMoney(minorUnits: number, currencyCode: string): 
  *
  * WHY THAT SETTING. It is the one place the operator already states the
  * storefront's public address, it is validated on save and on use
- * (`isValidLoginLinkUrl`: absolute http(s), no credentials), and the storefront
+ * (`isSavableLoginLinkUrl`: absolute http(s), no credentials), and the storefront
  * serves every page from its origin's root (`/account/verify`, `/orders/<id>`).
  * ASSUMPTIONS, documented in DEPLOYMENT.md: the storefront is served from the
  * ROOT of that origin (any path on the sign-in page URL is dropped — the site's
@@ -43,14 +43,12 @@ export function storefrontEmailMoney(minorUnits: number, currencyCode: string): 
  * `undefined` (no link in the email) when the setting is unset or invalid.
  */
 export function storefrontOriginOf(signInPageUrl: string | undefined): string | undefined {
-	if (signInPageUrl === undefined || !isValidLoginLinkUrl(signInPageUrl)) return undefined;
-	const url = new URL(signInPageUrl);
-	if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) return undefined;
-	return url.origin;
+	// The Settings save rule (`isSavableLoginLinkUrl`: a valid http(s) URL with no
+	// credentials that is https, or http on this machine) — ONE https-or-loopback
+	// rule for the sign-in link and the order link, so they cannot drift.
+	if (signInPageUrl === undefined || !isSavableLoginLinkUrl(signInPageUrl)) return undefined;
+	return new URL(signInPageUrl).origin;
 }
-
-/** The hosts an `http:` storefront origin may name: this machine only. */
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
  * The order's page on the storefront: `<origin>/orders/<id>` — the SAME URL the
