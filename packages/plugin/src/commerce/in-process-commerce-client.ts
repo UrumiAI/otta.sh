@@ -1067,6 +1067,10 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 		sku: view.sku,
 		price: { amount: view.price.amount, currency: view.price.currency },
 		title: view.title,
+		compareAtPrice:
+			view.compareAtPrice === null
+				? null
+				: { amount: view.compareAtPrice.amount, currency: view.compareAtPrice.currency },
 		inStock: view.inStock,
 		active: view.active,
 	};

@@ -16,6 +16,7 @@ const COMMERCE: CatalogProductCommerce = {
 	sku: "SKU-1",
 	price: { amount: cents(1999), currency: currency("USD") },
 	title: "Widget",
+	compareAtPrice: null,
 	inStock: true,
 	active: true,
 };

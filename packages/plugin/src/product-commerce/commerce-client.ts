@@ -104,6 +104,9 @@ export interface ProductCommerceBatchItem {
 	/** The row's title cache — what an order line will snapshot. Null until a
 	 *  sync has carried one. */
 	title: string | null;
+	/** The compare-at / was-price as stored, or null. Display-only; whether it
+	 *  reads as a sale is the product view model's call. */
+	compareAtPrice: CommerceMoney | null;
 	inStock: boolean;
 	/** The publish gate: the join derives purchasability from it
 	 *  (`purchasable ⟺ present && active`). */

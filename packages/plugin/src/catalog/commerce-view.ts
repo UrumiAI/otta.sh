@@ -18,6 +18,9 @@ export interface CatalogProductCommerce {
 	 *  Null until a sync carries one. The catalog's own headings come from the
 	 *  CMS content, not from here; the checkout review reads it. */
 	title: string | null;
+	/** The was-price as stored, branded at the same boundary as `price`. Null
+	 *  when unset. NOT a sale by itself — `buildProductViewModel` decides that. */
+	compareAtPrice: { amount: Cents; currency: Currency } | null;
 	/** Coarse display-only signal (`on_hand > 0` at the service's read time,
 	 *  plan §8 risk 5) — NOT reservation-aware; Phase 3's `reserve` is the
 	 *  authority on whether a purchase actually succeeds. */
@@ -36,6 +39,13 @@ export function parseCommerceBatchItem(item: ProductCommerceBatchItem): CatalogP
 		price: { amount: cents(item.price.amount), currency: currency(item.price.currency) },
 		// Absent on the wire reads as "cannot name it", never as "".
 		title: typeof item.title === "string" && item.title !== "" ? item.title : null,
+		compareAtPrice:
+			item.compareAtPrice === null || item.compareAtPrice === undefined
+				? null
+				: {
+						amount: cents(item.compareAtPrice.amount),
+						currency: currency(item.compareAtPrice.currency),
+					},
 		inStock: item.inStock === true,
 		active: item.active === true,
 	};
