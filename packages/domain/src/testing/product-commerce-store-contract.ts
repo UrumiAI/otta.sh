@@ -1761,9 +1761,29 @@ export function productCommerceStoreContract(
 				productId: p1,
 				sku: "SKU-B1",
 				price: { amount: 1999, currency: "USD" },
+				// No sync has carried a title yet — null, never "" or the sku.
+				title: null,
 				inStock: true,
 				active: false, // afterPublish deferred — unpublished until it lands
 			});
+		});
+
+		test("listCommerceByIds carries the title cache — the name an order line will snapshot", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bt1");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-BT1"),
+					price: money(cents(600), currency("USD")),
+					title: "Otta Stickers",
+				},
+				idempotencyKey("k1"),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.title).toBe("Otta Stickers");
 		});
 
 		test("listCommerceByIds computes inStock via the store's own inventory join: on_hand > 0 ⇒ true; 0 or no inventory row ⇒ false", async () => {

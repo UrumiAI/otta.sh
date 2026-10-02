@@ -447,6 +447,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				productId: row.productId,
 				sku: row.sku,
 				price: row.price,
+				title: row.title,
 				// A join miss (`null`) is coarsely "not in stock", exactly like 0.
 				inStock: (this.#readOnHand(row.sku) ?? 0) > 0,
 				active: row.active,

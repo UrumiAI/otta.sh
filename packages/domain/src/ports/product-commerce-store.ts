@@ -455,6 +455,15 @@ export interface ProductCommerceView {
 	sku: Sku;
 	price: Money;
 	/**
+	 * The row's TITLE CACHE (`ProductCommerce.title`) — the name an order line
+	 * snapshots at purchase time. On this view so the checkout review can name
+	 * each line with exactly what the order will freeze, from the read it
+	 * already makes, rather than a second lookup elsewhere. Null until a sync
+	 * has carried one (such a row cannot be ordered: `PRODUCT_NOT_PRICED`).
+	 * Public by nature — it is the storefront heading's own text.
+	 */
+	title: string | null;
+	/**
 	 * Coarse display-only stock signal: `inventory.on_hand > 0` at read time
 	 * (Phase 2 §8 risk 5, pre-approved). NOT reservation-aware — it can say
 	 * "in stock" moments before a concurrent buyer takes the last unit.
@@ -604,10 +613,10 @@ export interface ProductCommerceStore {
 	 * store round trip instead of one per line (the per-cart-line N+1 this
 	 * method exists to kill).
 	 *
-	 * Returns the FULL `ProductCommerce` per id — title / taxClass / productKind
+	 * Returns the FULL `ProductCommerce` per id — taxClass / productKind
 	 * included (UNLIKE `listCommerceByIds`, whose narrower `ProductCommerceView`
-	 * drops them) — because each caller snapshots price + title and branches on
-	 * `productKind` per line.
+	 * carries the title but drops those) — because each caller snapshots price +
+	 * title and branches on `productKind` per line.
 	 *
 	 * Identical row semantics to `getByProductId`, NOT `listCommerceByIds`: this
 	 * is the RAW row read. It does NOT filter on `deleted_at`, `sku`, or `price`
