@@ -25,9 +25,16 @@ import { STOREFRONT_ORDER_RESUME_ROUTE } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
 import { CHECKOUT_COOKIE_NAME, readCheckoutStash } from "../src/lib/checkout-cookie.js";
-import { RESUME_PATH, resumeHref, resumeOutcome } from "../src/lib/checkout-resume.js";
+import {
+	RESUME_EMAIL_PATH,
+	RESUME_PATH,
+	resumeEmailPath,
+	resumeHref,
+	resumeOutcome,
+} from "../src/lib/checkout-resume.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 import { reviewErrorToken } from "../src/lib/checkout-review.js";
-import { GET as RESUME_GET } from "../src/pages/checkout/resume.js";
+import { GET as RESUME_GET, POST as RESUME_POST } from "../src/pages/checkout/resume.js";
 import { viewSources } from "./theme-views.js";
 
 const SITE = "http://localhost:4321";
@@ -53,7 +60,11 @@ interface Call {
 function makeContext(
 	url: string,
 	reply: unknown,
-	opts: { cookies?: Record<string, string>; headers?: Record<string, string> } = {},
+	opts: {
+		cookies?: Record<string, string>;
+		headers?: Record<string, string>;
+		form?: Record<string, string>;
+	} = {},
 ): {
 	context: APIContext;
 	calls: Call[];
@@ -70,7 +81,18 @@ function makeContext(
 	const full = new URL(url, SITE);
 	const jar = new Map<string, string>(Object.entries(opts.cookies ?? {}));
 	const context = {
-		request: new Request(full, { method: "GET", headers: opts.headers ?? {} }),
+		request:
+			opts.form === undefined
+				? new Request(full, { method: "GET", headers: opts.headers ?? {} })
+				: new Request(full, {
+						method: "POST",
+						headers: {
+							"content-type": "application/x-www-form-urlencoded",
+							origin: SITE,
+							...opts.headers,
+						},
+						body: new URLSearchParams(opts.form).toString(),
+					}),
 		url: full,
 		cookies: {
 			get: (name: string) => {
@@ -112,6 +134,19 @@ describe("resumeOutcome", () => {
 		});
 	});
 
+	test("PROOF_REQUIRED asks for the email; EMAIL_MISMATCH and THROTTLED say why", () => {
+		expect(resumeOutcome(ORDER_ID, { ok: false, reason: "PROOF_REQUIRED" } as never)).toEqual({
+			kind: "order",
+			path: `/checkout/resume/email?order=${ORDER_ID}`,
+		});
+		for (const reason of ["EMAIL_MISMATCH", "THROTTLED"]) {
+			expect(resumeOutcome(ORDER_ID, { ok: false, reason } as never)).toEqual({
+				kind: "order",
+				path: `/checkout/resume/email?order=${ORDER_ID}&error=${reason}`,
+			});
+		}
+	});
+
 	test.each([["ORDER_NOT_PAYABLE"], ["ORDER_NOT_FOUND"], ["RESERVATION_LOST"]])(
 		"%s goes to the order page, which states the order's truth",
 		(reason) => {
@@ -146,8 +181,10 @@ describe("resumeOutcome", () => {
 });
 
 describe("GET /checkout/resume — any device", () => {
-	test("with NO cookies at all it dispatches the order id alone, stashes the order's own intent and 303s to the pay page", async () => {
-		const { context, calls, jar } = makeContext(`/checkout/resume?order=${ORDER_ID}`, RESUMED);
+	test("the cart and session cookies ride along as the proof; a resumed intent is stashed and the pay page follows", async () => {
+		const { context, calls, jar } = makeContext(`/checkout/resume?order=${ORDER_ID}`, RESUMED, {
+			cookies: { otta_cart: "cart-1", otta_session: "sess-1" },
+		});
 
 		const response = await RESUME_GET(context);
 
@@ -156,7 +193,12 @@ describe("GET /checkout/resume — any device", () => {
 		expect(calls).toEqual([
 			{
 				route: STOREFRONT_ORDER_RESUME_ROUTE,
-				body: { orderId: ORDER_ID, locale: expect.any(String) },
+				body: {
+					orderId: ORDER_ID,
+					cartId: "cart-1",
+					sessionToken: "sess-1",
+					locale: expect.any(String),
+				},
 			},
 		]);
 		const stash = readCheckoutStash({
@@ -199,6 +241,18 @@ describe("GET /checkout/resume — any device", () => {
 		expect(jar.has(CHECKOUT_COOKIE_NAME)).toBe(false);
 	});
 
+	test("ANY device — no cookies — is asked for the order's email on our own page, and stashes nothing", async () => {
+		const { context, calls, jar } = makeContext(`/checkout/resume?order=${ORDER_ID}`, {
+			ok: false,
+			reason: "PROOF_REQUIRED",
+		});
+		const response = await RESUME_GET(context);
+		expect(calls[0]!.body).toEqual({ orderId: ORDER_ID, locale: expect.any(String) });
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toBe(resumeEmailPath(ORDER_ID));
+		expect(jar.has(CHECKOUT_COOKIE_NAME)).toBe(false);
+	});
+
 	test("a same-origin click and a typed URL both resume", async () => {
 		for (const site of ["same-origin", "none"]) {
 			const { context, calls } = makeContext(`/checkout/resume?order=${ORDER_ID}`, RESUMED, {
@@ -225,6 +279,95 @@ describe("GET /checkout/resume — any device", () => {
 		expect(response.status).toBe(303);
 		expect(response.headers.get("location")).toBe("/cart");
 		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("POST /checkout/resume — the order's email as the proof", () => {
+	const RESUME_POST_URL = "/checkout/resume";
+
+	test("the email (and the order) go to the plugin; a match stashes and goes to pay", async () => {
+		const { context, calls, jar } = makeContext(RESUME_POST_URL, RESUMED, {
+			form: { order: ORDER_ID, email: " Buyer@Example.com " },
+		});
+		const response = await RESUME_POST(context);
+		expect(calls[0]!.body).toEqual({
+			orderId: ORDER_ID,
+			email: " Buyer@Example.com ",
+			locale: expect.any(String),
+		});
+		expect(response.headers.get("location")).toBe("/checkout/pay");
+		expect(response.headers.get("cache-control")).toBe("private, no-store");
+		expect(jar.has(CHECKOUT_COOKIE_NAME)).toBe(true);
+	});
+
+	test.each([["EMAIL_MISMATCH"], ["THROTTLED"]])(
+		"%s goes back to the email page with ONE generic token — the email is never in the URL",
+		async (reason) => {
+			const { context, jar } = makeContext(
+				RESUME_POST_URL,
+				{ ok: false, reason },
+				{
+					form: { order: ORDER_ID, email: "guess@example.com" },
+				},
+			);
+			const response = await RESUME_POST(context);
+			expect(response.status).toBe(303);
+			const location = response.headers.get("location")!;
+			expect(location).toBe(resumeEmailPath(ORDER_ID, reason));
+			expect(location).not.toContain("guess");
+			expect(jar.has(CHECKOUT_COOKIE_NAME)).toBe(false);
+		},
+	);
+
+	test("a blank email is the same generic mismatch, without a dispatch", async () => {
+		const { context, calls } = makeContext(RESUME_POST_URL, RESUMED, {
+			form: { order: ORDER_ID, email: "  " },
+		});
+		const response = await RESUME_POST(context);
+		expect(calls).toHaveLength(0);
+		expect(response.headers.get("location")).toBe(resumeEmailPath(ORDER_ID, "EMAIL_MISMATCH"));
+	});
+
+	test("a cross-site POST is refused before anything is read or dispatched", async () => {
+		const { context, calls } = makeContext(RESUME_POST_URL, RESUMED, {
+			form: { order: ORDER_ID, email: "buyer@example.com" },
+			headers: { origin: "https://evil.example" },
+		});
+		const response = await RESUME_POST(context);
+		expect(response.status).toBe(403);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("the copy: one sentence for a wrong email, one for too many tries", () => {
+		expect(cartErrorMessage("EMAIL_MISMATCH")).toBe("That email doesn't match this order.");
+		expect(cartErrorMessage("THROTTLED")).toBe(
+			"Too many tries for this order. Wait a few minutes, then try again.",
+		);
+	});
+});
+
+describe("the email page (/checkout/resume/email)", () => {
+	const source = read("pages/checkout/resume/email.astro");
+	const front = splitAstro(source).frontmatter;
+	const body = templateOf(source);
+
+	test("is private and no-store, and its path is the lib's", () => {
+		expect(RESUME_EMAIL_PATH).toBe("/checkout/resume/email");
+		expect(front).toMatch(/keepPrivate\(Astro\);/);
+	});
+
+	test("posts the order and the email to the resume endpoint — from our own page", () => {
+		expect(body).toMatch(/<form method="POST" action="\/checkout\/resume"/);
+		expect(body).toMatch(/<input type="hidden" name="order" value=\{orderId\}/);
+		const email = /<input[^>]*name="email"[^>]*>/.exec(body)?.[0] ?? "";
+		expect(email).toContain('type="email"');
+		expect(email).toContain("required");
+		expect(email).toContain("maxlength={BUYER_REF_MAX}");
+	});
+
+	test("shows only the resume page's own errors, as copy, and never echoes an email", () => {
+		expect(front).toMatch(/RESUME_EMAIL_ERRORS\.has\(error\)/);
+		expect(body).not.toMatch(/value=\{email/);
 	});
 });
 

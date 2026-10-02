@@ -8,14 +8,17 @@
  * cookie had rotated, it was a dead end; and where it worked, the locked review
  * showed an empty, editable email the replayed order silently ignored.
  *
- * WHAT AUTHORISES A RESUME: the order id, and nothing else — the same bearer
- * capability `/orders/<id>` reads with. The plugin's `storefront/order/resume`
- * answers only for a `pending` order before its hold deadline, and answers with
- * that order's OWN PaymentIntent (the original checkout replayed on its own key):
- * no second order, no second intent. What it grants beyond the order page is the
- * means to pay that order while it is payable. The email is shown only as a
- * hint (`j•••@g•••.com`), so the resumed page names no more of the buyer than
- * the order page does.
+ * WHAT AUTHORISES A RESUME: the order id PLUS a second factor. The id is a
+ * bearer link that sits in mailboxes and histories, and the client secret a
+ * resume hands out can read the order's ship-to back from Stripe, so the plugin
+ * also wants one of: the cart the order was made from (this browser's cart
+ * cookie), a session whose customer owns the order (the session cookie), or the
+ * order's email, typed again on `/checkout/resume/email` (compared server-side,
+ * guesses throttled per order). The plugin's `storefront/order/resume` answers
+ * only for a `pending` order before its hold deadline, with that order's OWN
+ * PaymentIntent (the original checkout replayed on its own key): no second
+ * order, no second intent. The email is shown on the pay page only as a hint
+ * (`j•••@g•••.com`).
  *
  * Like `pay-guard.ts`, the logic lives here because `.astro` and endpoint files
  * have no render harness in this package.
@@ -28,6 +31,19 @@ export const RESUME_PATH = "/checkout/resume";
 /** The order page's "Complete payment" target. */
 export function resumeHref(orderId: string): string {
 	return `${RESUME_PATH}?order=${encodeURIComponent(orderId)}`;
+}
+
+/** The small private page that asks for the order's email (the second factor
+ *  on a device with neither the order's cart nor its owner's session). */
+export const RESUME_EMAIL_PATH = "/checkout/resume/email";
+
+/** The tokens that page explains — one generic sentence each, no more. */
+export const RESUME_EMAIL_ERRORS: ReadonlySet<string> = new Set(["EMAIL_MISMATCH", "THROTTLED"]);
+
+export function resumeEmailPath(orderId: string, error?: string): string {
+	const query = new URLSearchParams({ order: orderId });
+	if (error !== undefined && RESUME_EMAIL_ERRORS.has(error)) query.set("error", error);
+	return `${RESUME_EMAIL_PATH}?${query.toString()}`;
 }
 
 export function orderPathFor(orderId: string): string {
@@ -44,7 +60,8 @@ export const ORDER_PAGE_RESUME_ERRORS: ReadonlySet<string> = new Set([
 export type ResumeOutcome =
 	/** Stash this and go to the pay page. */
 	| { kind: "pay"; stash: CheckoutStash }
-	/** Go to the order page, which says why there is nothing to pay here. */
+	/** Go to the order page (which says why there is nothing to pay here), or to
+	 *  the email page when the plugin wants the second factor. */
 	| { kind: "order"; path: string };
 
 /**
@@ -59,6 +76,10 @@ export function resumeOutcome(
 	if (result === null) return { kind: "order", path: `${orderPath}?error=SERVICE_UNAVAILABLE` };
 	if (!result.ok) {
 		const reason = "reason" in result ? result.reason : undefined;
+		if (reason === "PROOF_REQUIRED") return { kind: "order", path: resumeEmailPath(orderId) };
+		if (reason !== undefined && RESUME_EMAIL_ERRORS.has(reason)) {
+			return { kind: "order", path: resumeEmailPath(orderId, reason) };
+		}
 		return reason !== undefined && ORDER_PAGE_RESUME_ERRORS.has(reason)
 			? { kind: "order", path: `${orderPath}?error=${reason}` }
 			: { kind: "order", path: orderPath };

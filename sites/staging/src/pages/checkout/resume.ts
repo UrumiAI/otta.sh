@@ -1,7 +1,9 @@
 /**
  * GET /checkout/resume?order=<id> — "Complete payment" from the order page, on
- * any device (QA U-2). See `lib/checkout-resume.ts` for what authorises it (the
- * order id alone — the order page's own capability) and what it grants.
+ * any device (QA U-2) — and POST /checkout/resume, the email page's form. See
+ * `lib/checkout-resume.ts` for what authorises it: the order id plus a second
+ * factor (this browser's cart or owning session, sent from its cookies; else the
+ * order's email, asked for on `/checkout/resume/email`).
  *
  * A GET, and it has to be: the order page is `no-referrer`, so a form POST from
  * it sends `Origin: null` and the origin guard refuses it. The GET is safe to
@@ -15,19 +17,40 @@
  */
 import { STOREFRONT_ORDER_RESUME_ROUTE, type OrderResumeRouteResult } from "@otta-sh/plugin";
 import type { APIContext, APIRoute } from "astro";
-import { routeDispatcher, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
+import { currentSessionToken } from "../../lib/account.js";
+import {
+	currentCartId,
+	routeDispatcher,
+	seeOther,
+	withoutReferrer,
+} from "../../lib/cart-actions.js";
 import { setCheckoutCookie } from "../../lib/checkout-cookie.js";
-import { isCrossSiteNavigation, orderPathFor, resumeOutcome } from "../../lib/checkout-resume.js";
+import {
+	isCrossSiteNavigation,
+	orderPathFor,
+	resumeEmailPath,
+	resumeOutcome,
+} from "../../lib/checkout-resume.js";
+import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { PRIVATE_NO_STORE } from "../../lib/no-store.js";
-import { busyResponse, dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formString,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../lib/otta-api.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 
 /** Every answer is private (it may set the stash, which holds a client secret)
  *  and sends no Referer: the next page must not learn this URL. */
-export const GET: APIRoute = async (context) => {
-	const response = await resume(context);
-	return withoutReferrer(privateResponse(response));
-};
+export const GET: APIRoute = async (context) =>
+	withoutReferrer(privateResponse(await resumeFromLink(context)));
+
+/** The email page's form: the order's email as the second factor. */
+export const POST: APIRoute = async (context) =>
+	withoutReferrer(privateResponse(await resumeWithEmail(context)));
 
 function privateResponse(response: Response): Response {
 	try {
@@ -40,21 +63,58 @@ function privateResponse(response: Response): Response {
 	}
 }
 
-async function resume(context: APIContext): Promise<Response> {
+/** The proof this browser already holds: its cart cookie and its session. The
+ *  PLUGIN decides whether either is this order's. */
+function cookieProof(context: APIContext): { cartId?: string; sessionToken?: string } {
+	const cartId = currentCartId(context);
+	const sessionToken = currentSessionToken(context.cookies);
+	return {
+		...(cartId !== undefined ? { cartId } : {}),
+		...(sessionToken !== undefined ? { sessionToken } : {}),
+	};
+}
+
+async function resumeFromLink(context: APIContext): Promise<Response> {
 	const orderId = context.url.searchParams.get("order")?.trim() ?? "";
 	if (orderId.length === 0) return seeOther(context, "/cart");
-	const orderPath = orderPathFor(orderId);
 
 	// Another site's link: the order page, where the buyer can press the button.
-	if (isCrossSiteNavigation(context.request)) return context.redirect(orderPath, 303);
+	if (isCrossSiteNavigation(context.request)) return context.redirect(orderPathFor(orderId), 303);
 
+	return dispatchResume(context, orderId, cookieProof(context));
+}
+
+async function resumeWithEmail(context: APIContext): Promise<Response> {
+	// CSRF FIRST: a cross-site form must not spend this order's guesses.
+	const forbidden = rejectCrossOrigin(context);
+	if (forbidden !== null) return forbidden;
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
+	const orderId = formString(form.get("order")) ?? "";
+	if (orderId.length === 0) return seeOther(context, "/cart");
+	const email = formString(form.get("email"));
+	if (email === undefined) {
+		return context.redirect(resumeEmailPath(orderId, "EMAIL_MISMATCH"), 303);
+	}
+	const raw = form.get("email");
+	return dispatchResume(context, orderId, {
+		...cookieProof(context),
+		email: typeof raw === "string" ? raw : email,
+	});
+}
+
+async function dispatchResume(
+	context: APIContext,
+	orderId: string,
+	proof: { cartId?: string; sessionToken?: string; email?: string },
+): Promise<Response> {
 	const result = await dispatchOttaRoute<OrderResumeRouteResult>(
 		routeDispatcher(context),
 		STOREFRONT_ORDER_RESUME_ROUTE,
-		{ orderId, locale: SITE_LOCALE },
+		{ orderId, ...proof, locale: SITE_LOCALE },
 		context.url,
 	);
-	if (isBusyResult(result)) return busyResponse(orderPath);
+	if (isBusyResult(result)) return busyResponse(orderPathFor(orderId));
 
 	const outcome = resumeOutcome(orderId, result);
 	if (outcome.kind === "order") return context.redirect(outcome.path, 303);
