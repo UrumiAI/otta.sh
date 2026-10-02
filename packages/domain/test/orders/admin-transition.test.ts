@@ -6,16 +6,13 @@ import { describe, expect, test } from "vitest";
 // contract (both stores); this pins the pure offer the console renders buttons from.
 
 describe("adminNextStates", () => {
-	test("a pending order is never offered paid — no payment method may be settled by hand today", () => {
+	test("a pending order is offered neither paid nor a bare cancelled", () => {
 		for (const paymentMethod of ["stripe", "x402", null] as const) {
-			expect(adminNextStates({ state: "pending", paymentMethod })).toEqual([
-				"expired",
-				"cancelled",
-			]);
+			expect(adminNextStates({ state: "pending", paymentMethod })).toEqual(["expired"]);
 		}
 	});
 
-	test("a paid or processing order is not offered a bare cancelled — Cancel order settles the money", () => {
+	test("no order is offered a bare cancelled — Cancel order records why", () => {
 		expect(adminNextStates({ state: "paid", paymentMethod: "stripe" })).toEqual([
 			"processing",
 			"completed",

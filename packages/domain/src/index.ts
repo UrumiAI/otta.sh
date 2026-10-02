@@ -217,6 +217,7 @@ export {
 	manualPaymentAllowed,
 	transitionOrder,
 	transitionOrderAsAdmin,
+	type TransitionOrderAsAdminFailure,
 	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
 	type DispatchOrderEmailsOptions,

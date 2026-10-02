@@ -246,14 +246,15 @@ export function orderTransitionContract(
 			});
 		}
 
-		for (const from of ["paid", "processing"] as const) {
-			test(`a bare admin → cancelled on a ${from} order is refused — Cancel order settles the money`, async () => {
-				// A bare transition would cancel a paid order with no refund, no restock and
-				// a "cancelled" email (QA T1-4) — so it is refused in the domain, whatever a
-				// hand-made request sends.
+		for (const from of ["pending", "paid", "processing"] as const) {
+			test(`a bare admin → cancelled on a ${from} order is refused — Cancel order records why`, async () => {
+				// A bare transition records no reason, releases no adopted hold (only expiry
+				// records a release intent) and, on a paid order, keeps the money with a
+				// "cancelled" email (QA T1-4). Cancel order is the one path; refused in the
+				// domain, whatever a hand-made request sends.
 				const h = await makeHarness();
 				const id = await seed(h);
-				await drive(h, id, "paid");
+				if (from !== "pending") await drive(h, id, "paid");
 				if (from === "processing") await drive(h, id, "processing");
 				await dispatch(h);
 				h.emailSender.reset();
@@ -262,12 +263,6 @@ export function orderTransitionContract(
 				expect(await dispatch(h)).toBe(0);
 			});
 		}
-
-		test("a bare admin → cancelled on an UNPAID order still applies (nothing to refund)", async () => {
-			const h = await makeHarness();
-			const id = await seed(h);
-			expect(await adminDrive(h, id, "cancelled")).toMatchObject({ ok: true, transitioned: true });
-		});
 
 		test("an admin Mark refunded moves the state but emails the buyer nothing", async () => {
 			const h = await makeHarness();

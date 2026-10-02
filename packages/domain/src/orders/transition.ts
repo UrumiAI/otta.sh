@@ -48,14 +48,29 @@ export async function transitionOrder(
 	deps: TransitionOrderDeps,
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderResult> {
+	const pre = await precheckTransition(deps, cmd);
+	if (pre.done !== undefined) return pre.done;
+	return applyTransition(deps, pre.order, cmd, emailTemplateForState(cmd.toState) !== null);
+}
+
+/**
+ * The checks every transition use-case makes before its own rules, in ONE place so
+ * `transitionOrder` and `transitionOrderAsAdmin` cannot drift: the order exists;
+ * already being at the target is an idempotent no-op (a redelivery / double admin
+ * call); and the move is in the state machine. `done` is the answer when one of
+ * them decided it; otherwise `order` is the order to move.
+ */
+async function precheckTransition(
+	deps: TransitionOrderDeps,
+	cmd: TransitionOrderCommand,
+): Promise<{ done: TransitionOrderResult; order?: never } | { done?: never; order: Order }> {
 	const order = await deps.orderStore.getById(cmd.orderId);
-	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-	// Idempotent no-op: already at the target (a redelivery / double admin call).
-	if (order.state === cmd.toState) return { ok: true, transitioned: false, order };
+	if (order === null) return { done: { ok: false, reason: "ORDER_NOT_FOUND" } };
+	if (order.state === cmd.toState) return { done: { ok: true, transitioned: false, order } };
 	if (!isLegalOrderTransition(order.state, cmd.toState)) {
-		return { ok: false, reason: "INVALID_TRANSITION" };
+		return { done: { ok: false, reason: "INVALID_TRANSITION" } };
 	}
-	return applyTransition(deps, order, cmd, emailTemplateForState(cmd.toState) !== null);
+	return { order };
 }
 
 /** The guarded flip both transition use-cases end in, once legality is settled. */
@@ -104,28 +119,15 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 }
 
 /**
- * A bare `→ cancelled` from `state` would close an order whose money may be
- * captured with no refund, no restock and a "cancelled" email (QA T1-4). Only an
- * order that was never paid (`pending`) may be cancelled by the bare move; every
- * other cancellable state goes through Cancel order, which records a reason and
- * settles the money.
- */
-function bareCancelAllowed(state: OrderState): boolean {
-	return state === "pending";
-}
-
-/**
  * The status moves the admin console may OFFER for an order: the state machine's
  * legal moves, minus a manual `paid` that {@link manualPaymentAllowed} refuses and
- * a bare `cancelled` on a paid order. Read by the console instead of
- * `legalNextStates`, so it never renders a button {@link transitionOrderAsAdmin}
- * would refuse.
+ * minus `cancelled`, which an admin reaches only through Cancel order. Read by the
+ * console instead of `legalNextStates`, so it never renders a button
+ * {@link transitionOrderAsAdmin} would refuse.
  */
 export function adminNextStates(order: Pick<Order, "state" | "paymentMethod">): OrderState[] {
 	return legalNextStates(order.state).filter(
-		(to) =>
-			!(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) &&
-			!(to === "cancelled" && !bareCancelAllowed(order.state)),
+		(to) => !(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) && to !== "cancelled",
 	);
 }
 
@@ -134,9 +136,15 @@ export type TransitionOrderAsAdminResult =
 	/** `pending → paid` asked for an order whose payment method is not declared
 	 *  offline — its gateway settles it, or there is no method to settle at all. */
 	| { ok: false; reason: "MANUAL_PAYMENT_NOT_ALLOWED" }
-	/** A bare `→ cancelled` asked for an order that may hold the buyer's money:
-	 *  Cancel order (a reason on file, the money settled) is the way. */
+	/** A bare `→ cancelled` — Cancel order is the admin's only way to cancel. */
 	| { ok: false; reason: "USE_CANCEL" };
+
+/** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
+ *  maps to copy. */
+export type TransitionOrderAsAdminFailure = Extract<
+	TransitionOrderAsAdminResult,
+	{ ok: false }
+>["reason"];
 
 /**
  * A status move made BY HAND in the admin console. It is {@link transitionOrder} —
@@ -149,8 +157,12 @@ export type TransitionOrderAsAdminResult =
  *    path's `markPaid`. A click here could otherwise tell the buyer "we've received
  *    your payment", count revenue in the reports and release the order for
  *    fulfilment with nothing captured.
- *  - **No bare `→ cancelled` on a paid order.** It would cancel with the money kept,
- *    no restock and a "cancelled" email; Cancel order is the path.
+ *  - **No bare `→ cancelled`, from any state.** It records no reason, releases no
+ *    adopted stock hold (only the expiry flip records a release intent), sends a
+ *    reasonless "cancelled" email, and on a paid order keeps the money silently
+ *    (QA T1-4). Cancel order — the store's `cancelOrder`, which records the reason
+ *    and the release intent — is the admin's one way to cancel. (It does not refund
+ *    a paid order: that is Money → Refunds.)
  *  - **`→ refunded` emails nobody.** A manual Mark refunded moves no money — it
  *    records a refund made OUTSIDE Otta (the Stripe dashboard, a bank transfer) —
  *    so it must not send the buyer "your order has been refunded" on Otta's word.
@@ -168,18 +180,13 @@ export async function transitionOrderAsAdmin(
 	deps: TransitionOrderDeps,
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderAsAdminResult> {
-	const order = await deps.orderStore.getById(cmd.orderId);
-	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-	if (order.state === cmd.toState) return { ok: true, transitioned: false, order };
-	if (!isLegalOrderTransition(order.state, cmd.toState)) {
-		return { ok: false, reason: "INVALID_TRANSITION" };
-	}
+	const pre = await precheckTransition(deps, cmd);
+	if (pre.done !== undefined) return pre.done;
+	const order = pre.order;
 	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	}
-	if (cmd.toState === "cancelled" && !bareCancelAllowed(order.state)) {
-		return { ok: false, reason: "USE_CANCEL" };
-	}
+	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
 	const enqueueEmail = cmd.toState !== "refunded" && emailTemplateForState(cmd.toState) !== null;
 	return applyTransition(deps, order, cmd, enqueueEmail);
 }
