@@ -286,8 +286,9 @@ every `pending` order, including one simply awaiting payment, where nothing is a
   hops). Reloading the same URL also keeps the redirect parameters across hops, so every hop
   shows the "confirming" copy; the page still never renders, forwards or trusts them.
 - With the URL fixed, the hop count lives in a short-lived cookie (`otta_order_poll`:
-  `<orderId>:<hop>`, HttpOnly, `SameSite=Lax`, `path=/orders/`, 2 minutes), still bounded to 8
-  hops. "Check again" links to `""` — the same URL — for the same reasons.
+  `<orderId>/<payment_intent id>:<hop>`, HttpOnly, `SameSite=Lax`, `path=/orders/`, 2 minutes),
+  still bounded to 8 hops. Keyed on the intent id (never the client secret) so a second return
+  from Stripe within those two minutes gets its full run. "Check again" links to `""` — the same URL — for the same reasons.
 - Superseded wording: the 2026-10-02 amendment above says a lapsed pending order "keeps the
   bounded poll" and "this page will update". It no longer polls; its copy now reads "If you
   already paid, check again in a minute — if the order has expired by then, your payment will be

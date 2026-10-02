@@ -267,11 +267,14 @@ cart. QA U-12: the header looked the same signed in and signed out.
 
 - **A second opt-in chrome capability, `chrome.shopperState`** (Tempered sets it): the cart's
   unit count beside the cart link, and whether the shopper is signed in, on every storefront
-  page off the checkout flow. The shell reads the count (`lib/chrome-state.ts`: one cart read,
-  no retry, fail soft to "no badge") only for a request carrying a cart cookie, and asks whether
-  the session is live (`storefront/account/me`) only for a request carrying a session cookie. The
-  chrome receives a boolean; the email never leaves the shell, and the theme's own Account entry
-  reads "Your account". `/checkout`, `/checkout/pay` and `/orders/<id>` make neither read;
+  page off the checkout flow. The shell makes ONE dispatch (no BUSY retry) of the lean public
+  route `storefront/shopper-state` (`lib/chrome-state.ts`), carrying only the cart and session
+  cookies the request has — none ⇒ no dispatch. Plugin side that is at most one cart-document
+  read (`CartStore.units`: no reservation lookups, no hold expiry, no price join) and one
+  session-document read (validity only, no customer read), with no kv; the route answers
+  signed-in as yes/no, never who, and the theme's own Account entry reads "Your account". The
+  badge follows one rule on every page, `/cart` included: a count only when the cart has
+  something in it. `/checkout`, `/checkout/pay` and `/orders/<id>` make neither read;
   `/cart` and the account pages pass what they already know.
 - **Caching.** Both facts are one visitor's. The middleware now treats a request carrying a cart
   OR a session cookie, under a theme that draws shopper state, exactly as it treated a cart
@@ -281,7 +284,15 @@ cart. QA U-12: the header looked the same signed in and signed out.
   cookie-blind cache can do is hand a shopper a header missing their state, never someone
   else's. A CDN that caches HTML should bypass its cache when `otta_cart` or `otta_session` is
   present.
-- **Cost.** A shopper with a cart pays one cart read per page view, and a signed-in one an
-  account read; a visitor with neither pays nothing. Client-side fetching from a private
+- **Cost.** A shopper with a cart or a session pays one dispatch and at most two document reads
+  per uncached page view (pinned in the plugin's `shopper-state-route.test.ts` and the site's
+  `chrome-shopper-state.test.ts`); a visitor with neither pays nothing. (A first cut used the
+  full priced cart read plus `account/me`; review measured it against Workers Free's 50 D1
+  queries per invocation.)
+- **Follow-up, not done:** a cart cookie whose cart is gone, empty or checked out keeps the
+  visitor's pages private. Clearing it is not safe from the chrome (the layout cannot set a
+  cookie once the body may be streaming, and a checked-out cart's cookie is what
+  fix/new-cart-after-order's rotation and `/cart`'s way back to a pending checkout use); a
+  page-level rule for a cart that no longer exists could do it later. Client-side fetching from a private
   endpoint was considered and not chosen: it would keep those pages cacheable for shoppers too,
   but it puts client JavaScript on every page, which ADR-0012 decision 2 fences to two pages.
