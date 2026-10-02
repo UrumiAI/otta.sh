@@ -19,6 +19,7 @@
  */
 import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
 import type { APIContext, APIRoute } from "astro";
+import { currentSessionToken } from "../../lib/account.js";
 import {
 	currentCartId,
 	failureToken,
@@ -203,6 +204,14 @@ async function place(context: APIContext): Promise<Response> {
 		);
 	}
 
+	// The signed-in shopper's session, if any. The plugin route is cookie-blind
+	// (ADR-0003), so the page reads its own cookie and passes the bearer on; the
+	// PLUGIN decides what it means — the order is theirs from birth only when this
+	// email is their account's own, else it is a guest order like any other.
+	// Without it, an order placed signed in was missing from "Your orders" until
+	// the shopper signed in again.
+	const sessionToken = currentSessionToken(context.cookies);
+
 	const result = await dispatchOttaRoute<CheckoutPlaceRouteResult>(
 		routeDispatcher(context),
 		STOREFRONT_CHECKOUT_PLACE_ROUTE,
@@ -210,6 +219,7 @@ async function place(context: APIContext): Promise<Response> {
 			cartId,
 			buyerRef: email,
 			idempotencyKey,
+			...(sessionToken !== undefined ? { sessionToken } : {}),
 			...(couponCode !== undefined ? { couponCode } : {}),
 			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
 			...(shipping.address !== undefined ? { shippingAddress: shipping.address } : {}),
