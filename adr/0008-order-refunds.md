@@ -253,3 +253,21 @@ charged. `settleOrder` now refunds it through this ADR's own machinery, unchange
 
 A gateway that cannot refund (`refundable: false`) still gets the manual flag — the capability
 flag is honoured exactly as before.
+
+## Amended 2026-10-02 — a cancellation refunds through this ledger, and restocks
+
+Recorded in full in [ADR-0026](./0026-admin-order-actions-never-claim-money-that-did-not-move.md)'s
+cancel-with-refund amendment (QA T1-4).
+
+- **"No inventory restock" no longer holds for a cancellation.** A refund on its own still
+  restocks nothing. Cancelling a paid order (`cancelOrderWithRefund`), however, refunds the
+  remainder through THIS ledger with `purpose: "cancellation"`, then restocks each physical line
+  exactly once unless the operator unticks it. It closes an open commit bracket before restocking,
+  so the units cannot also be released. The oversell concern above is met in two ways: the units
+  return through the same exactly-once stock-movement ledger a manual restock uses, and a hold
+  that was released, or whose record is gone, is never restocked.
+- **A `cancellation` row never drives `→ refunded`.** It consumes ceiling capacity like any other
+  row, but the cancellation closes the order. A refund that fails refuses the cancel.
+- **Refund purposes.** A ledger row records why the money went back: `refund` (an admin refund in
+  its own right — the only purpose that can drive `→ refunded`), `cancellation` (above), or
+  `late-payment` (the automatic refund of the amendment before this one).

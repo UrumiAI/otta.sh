@@ -852,8 +852,10 @@ names only the verb makes the most dangerous control on the panel the quietest t
 
 | Group | Label |
 |---|---|
-| Cancel (unpaid order) | `Cancel order — permanent, releases held stock` |
-| Cancel (paid or processing order) | `Cancel order — permanent, does not refund` — on this build Cancel order neither refunds nor restocks a paid order, and its copy says so (`cancelGroupLabel` / `cancelBannerDescription` / `cancelConfirmText(label, state)`) |
+| *(no Cancel group)* | shipped, delivered, completed, refunded or cancelled — nothing in the group could succeed, so it is not rendered |
+| Cancel (pending order) | `Cancel order — permanent, releases held stock` |
+| Cancel (paid order, money to refund) | `Cancel order — permanent, refunds the buyer` |
+| Cancel (paid order, nothing captured) | `Cancel order — permanent` |
 | Refund a partial amount | `Refund a different amount — cannot be reversed` |
 | Any delete (§12) | `Delete <thing> — permanent` |
 
@@ -1254,7 +1256,7 @@ watermark as a key component**. No `crypto.randomUUID()` is minted at render tim
 | Refund | `admin-refund:${orderId}:${amountCents}:${refundedSoFarCents}` — the third component is the watermark the operator *saw* |
 | Stock movement | `${productId}:${direction}:${onHandAtRender}:${qty}` |
 | Transition | `admin-transition:${orderId}:${toState}` |
-| Cancel | `admin-cancel:${orderId}` |
+| Cancel | `admin-cancel:${orderId}` — a paid order's refund and restock legs derive theirs from it in the domain: `…:refund` (then `…:refund:<n>` after a rejected attempt) and `…:restock:<lineId>` (ADR-0026) |
 | Note | `admin-note:${orderId}:${author}:${body}` |
 | Edit / save (sparse PATCH) | content hash of the submitted wire + `expectedUpdatedAt` (`deriveEditIdempotencyKey`, `products-actions.ts:307-324`) |
 
@@ -1586,8 +1588,22 @@ trip, no staleness window, no staged payload to decode.
 > because a listing somewhere still draws it.
 
 - **Cancel order** (the worked instance, now React). The reason is a closed set. One danger button per
-  reason, the reason **named in the confirm text**:
-  *"Cancel this order as 'out of stock'? This is permanent and releases the held stock."*
+  reason, the reason **named in the confirm text**, and the text states what the cancel does with the
+  MONEY and the STOCK — composed from one `CancelEffects` value (`cancelConfirmText` /
+  `cancelBannerText` / `cancelGroupLabel`) so the label, the banner and the confirm cannot describe
+  three different cancellations (QA T1-4, ADR-0026's cancel-with-refund amendment):
+  - pending: *"Cancel this order as 'out of stock'? This is permanent — the order cannot be
+    un-cancelled, and the held stock is released."*
+  - paid: *"Cancel this order as 'customer requested it'? This is permanent — $24.00 is refunded to
+    the buyer, and the items go back to stock."* A **Return the items to stock** checkbox (ticked;
+    its hint says to untick for damaged, lost, already-packed or hand-restocked goods) sits above the
+    reason buttons on a paid order with physical lines, and rides every cancel's payload as
+    `restock`. **No cancel control is offered** when Otta cannot issue the refund (the banner says to
+    send it and record a manual refund in Money → Refunds) or when the refund ledger could not be
+    loaded (the amount is unknown, never "nothing is refunded").
+  - The outcome notice names the refund, the units returned, and any line NOT returned to stock
+    (`restockSkipped`); a refused refund says nothing was changed; the shipped-first race says what
+    moved and the next step.
   **Four buttons, not five:** `other` gets no button, because a bare `Other` button records no detail
   and a label promising detail (`Other (add detail below)`) promises a field the button does not have
   and points at a group that may be collapsed. Button labels are the **bare reason** — `Out of stock`,
@@ -2151,9 +2167,9 @@ paid is never offered**: Otta marks an order paid only when its provider confirm
 minus a bare `cancelled`, from any state. Both are also refused by `transitionOrderAsAdmin` when a
 hand-made payload asks for them, each with its own notice ("Only the payment provider can mark this
 order paid"; "Use Cancel order to cancel an order", keyed on the observed state: an unpaid
-order's says Cancel order returns its held stock; a paid order's says cancelling does not refund
-the buyer and points to Money → Refunds — never "refund first", because a full refund closes the
-order as `refunded`, after which it cannot be cancelled). **Mark refunded** stays offered, as bookkeeping for
+order's says Cancel order returns its held stock; a paid order's says Cancel order records why,
+refunds what the buyer paid and returns the items to stock unless the box is unticked — ADR-0026's
+cancel-with-refund amendment). **Mark refunded** stays offered, as bookkeeping for
 a refund made outside Otta: it moves no money, **emails nobody**, and both its confirm and its
 success notice ("Marked refunded") say so.
 

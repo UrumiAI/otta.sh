@@ -70,3 +70,88 @@ caller of either.
   ledger shows which.
 - This record leaves Cancel order's handling of a paid order's money unchanged: it neither refunds
   nor restocks. Until that changes, no copy may say that it does.
+
+## Amended 2026-10-02 — cancelling a paid order refunds it and restocks it
+
+This amendment replaces the last Consequence above: Cancel order now refunds and restocks a paid
+order, so the copy that said it does not is replaced too. The bare-cancel refusal still stands —
+every bare `→ cancelled` is refused — but its paid-order text now says Cancel order "refunds what
+the buyer paid and returns the items to stock unless you untick it". The Cancel group's label,
+banner and confirm are composed from one `CancelEffects` value (`cancelConfirmText` requires it —
+no default, so a paid order can never fall into the pending wording), and the group is rendered
+only for an order that can still be cancelled (`pending`, `paid`, `processing`).
+
+QA T1-4: cancelling paid order `bf3b` kept $24 captured, refunded $0 and left the stock
+unchanged. Its dialog said the cancel "releases the held stock", and the cancelled email said
+nothing about money. Cancel order now settles the money.
+
+**The three legs.** `cancelOrderWithRefund` cancels a `paid` or `processing` order in three legs,
+each idempotent on a key derived from the cancellation's:
+
+1. **Refund.** It refunds whatever is still refundable — the ADR-0008 ceiling less earlier
+   refunds — through `refundOrder` with `purpose: "cancellation"` and key `<key>:refund`. This is
+   the same reserve → issue → finalize ledger every refund uses, not a second money path. A
+   `cancellation` row consumes ceiling capacity but never drives `→ refunded`: the cancellation
+   closes the order, and `refunded` is terminal.
+2. **Restock each physical line exactly once.** The operator can untick **Return the items to
+   stock**. A line that still carries its checkout hold needs care. If settle's commit bracket is
+   still open, the hold is `adopted`, and the cancel's release intent would return its units
+   while the restock returned them again — phantom stock, then oversell. So the bracket is closed
+   first with `commit`, which is idempotent and a no-op on a committed hold. That leaves the
+   release as a no-op, and the restock (`<key>:restock:<lineId>`) returns the units once. Some
+   lines are skipped and reported (`restockSkipped`) instead of restocked:
+   - a hold that was already `released` (lost before settlement), whose units went back then;
+   - a reservation record that no longer exists, where it cannot be told whether the units were
+     taken;
+   - a sku with no inventory row.
+3. **Cancel through the guarded flip**, recording the refund and the restock on the envelope. The
+   cancelled email says "A refund of X is on its way to your original payment method." If the
+   order moved but is still cancellable (paid → processing), the flip is retried once from where
+   the order now is.
+
+A pending order is cancelled exactly as before: no money moves, and the held stock is released by
+the cancel.
+
+**The flip is the commit point.** It comes last. A crash anywhere before it leaves the order
+`paid`, where the console still offers Cancel. The retry then replays the refund (recorded ⇒
+duplicate; reserved ⇒ resumed under Stripe's native idempotency key) and the restock (spent keys
+move nothing), and lands the flip.
+
+**A refund that fails refuses the cancel.** We chose this over cancelling and flagging the order
+for a manual refund. It leaves no state where the buyer has been told "cancelled" while the shop
+keeps the money; the order stays as the operator found it, with nothing restocked and nobody
+emailed.
+- A retryable failure is retried by clicking again; the retry continues the same refund.
+- A rejected attempt spends its key, so the next attempt uses `<key>:refund:<n>`.
+- An unknown outcome is never retried blind.
+
+**Refused up front, with nothing changed:**
+- `REFUND_NOT_AUTOMATIC`: money the gateway cannot return automatically (x402, or no gateway
+  wired). Recording a manual refund here would claim the operator had already sent it. The
+  console points the operator to send the money and record a manual refund in Money → Refunds. A
+  later "cancel — refunded outside Otta" option would let such an order be cancelled with its
+  units restocked; it is not built yet.
+- `REFUND_IN_FLIGHT`: another refund on the order is still reserved or unverified.
+- `MULTIPLE_CAPTURES`: the order was paid in more than one capture. One gateway refund targets one
+  capture, so the provider would reject the remainder on every attempt. Refunding per capture is a
+  follow-up.
+
+**The one state left for a person** is an order that ships between the refund and the flip. The
+money is back. The order is flagged with what was refunded, whether units were restocked, and the
+next step (contact the buyer, then stop the shipment or Mark refunded). The outcome,
+`CANCEL_LOST_AFTER_REFUND`, carries what moved.
+
+**Consequences, accepted:**
+- Restocking is the default. A `processing` order may already be picked or packed, so its units
+  are not really back on the shelf; the checkbox hint says to untick then.
+- Units the merchant already restocked by hand are restocked again unless the box is unticked.
+  The hint says this too.
+- The manual paths never restock. A refund recorded in Money → Refunds and a Mark refunded both
+  leave stock untouched.
+- `restocked` on the envelope reflects the restock records this cancellation replayed. If an
+  operator retries a crashed cancellation with the box flipped from ticked to unticked, the units
+  are already back but the envelope says `false`.
+- A cancellation refunds the whole remainder. Partial or line-level cancellation is out of scope.
+- A late payment's automatic refund (ADR-0022/0008, `settleOrder`) is recorded with its own
+  purpose, `late-payment`. Only a `refund`-purpose row can drive `→ refunded`, so neither a
+  cancellation's refund nor a late payment's can flip an order.
