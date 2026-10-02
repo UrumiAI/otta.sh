@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { ACCOUNT_NO_STORE } from "../src/lib/account.js";
 import { keepPrivate, PRIVATE_NO_STORE } from "../src/lib/no-store.js";
-import { THEME_PREVIEW_NO_STORE } from "../src/lib/theme-preview.js";
 import { splitAstro } from "./astro-source.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -93,15 +92,14 @@ describe("keepPrivate is what those pages get", () => {
 });
 
 describe("ONE private, no-store constant", () => {
-	// Four modules each declared their own "private, no-store". They are now the
+	// Four modules each declared their own "private, no-store" (theme-preview.ts
+	// has since been removed with the theme previews). They are now the
 	// same binding, re-exported under the names their callers already use, so a
 	// change to the policy is one edit.
-	test("the account, theme-preview and middleware names are the no-store module's constant", () => {
+	test("the account and middleware names are the no-store module's constant", () => {
 		expect(ACCOUNT_NO_STORE).toBe(PRIVATE_NO_STORE);
-		expect(THEME_PREVIEW_NO_STORE).toBe(PRIVATE_NO_STORE);
 		for (const [file, name] of [
 			["lib/account.ts", "ACCOUNT_NO_STORE"],
-			["lib/theme-preview.ts", "THEME_PREVIEW_NO_STORE"],
 			["middleware.ts", "PER_SHOPPER_NO_STORE"],
 		] as const) {
 			const source = read(file);
