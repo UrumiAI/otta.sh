@@ -15,6 +15,8 @@ import {
 } from "../src/identity-documents.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";
+import { MAX_ACTIVE_CHALLENGES, makeIdentityHarness } from "./identity-harness.js";
+import { email } from "@otta-sh/domain";
 
 describeEachDialect("EmdashAttemptThrottle", (ctx) => {
 	const bound = ctx.useStorage(IDENTITY_LAYOUT);
@@ -58,5 +60,35 @@ describeEachDialect("EmdashAttemptThrottle", (ctx) => {
 		);
 		expect(await docs.get("attempt:resume:order-1")).not.toBeNull();
 		expect(await docs.get("resume:order-1")).toBeNull();
+	});
+
+	test("spending an attempt window never touches a sign-in window — and the reverse", async () => {
+		const identity = makeIdentityHarness(bound.storage, { idPrefix: "iso-" });
+		const throttle = new EmdashAttemptThrottle({
+			storage: bound.storage,
+			clock: identity.clock,
+			idGen: new CountingIdGen("iso-att-"),
+			windowMs: 60_000,
+			maxAttempts: 5,
+		});
+		// Five resume guesses on an order, AND five on a key spelled exactly like
+		// an address: the address's sign-in window is untouched.
+		for (let i = 0; i < 5; i++) {
+			expect(await throttle.admit("resume:order-iso")).toBe(true);
+			expect(await throttle.admit("signin@example.test")).toBe(true);
+		}
+		expect(await throttle.admit("resume:order-iso")).toBe(false);
+		expect((await identity.verifier.issueChallenge(email("signin@example.test"))).ok).toBe(true);
+
+		// The reverse: an address at its sign-in cap leaves an attempt key of the
+		// same spelling free.
+		for (let i = 0; i < MAX_ACTIVE_CHALLENGES; i++) {
+			expect((await identity.verifier.issueChallenge(email("capped@example.test"))).ok).toBe(true);
+		}
+		expect(await identity.verifier.issueChallenge(email("capped@example.test"))).toEqual({
+			ok: false,
+			reason: "THROTTLED",
+		});
+		expect(await throttle.admit("capped@example.test")).toBe(true);
 	});
 });
