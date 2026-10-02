@@ -1420,6 +1420,59 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// QA U-5: the account pages showed every unpaid order the same, with no date,
+		// and "Shipping $0.00 / Tax $0.00" where the public order page says "Not
+		// calculated". They can only say what the public page says if the account
+		// wire carries the same evidence: when the order was placed, what its totals
+		// were priced WITH (the snapshot ids `orderTotalsFlags` reads), the coupon,
+		// and — on the single-order read, which is what the order page also is — the
+		// late-payment status its "was anything charged?" sentence follows.
+		test("the account reads carry the order page's evidence: placed-at, the totals' snapshot ids and coupon, and (one order) the late-payment status", async () => {
+			const priced = await tier.arrange.order({
+				orderId: "id-acct-evidence-priced",
+				buyerRef: "id-acct-evidence@example.test",
+				shippingMethod: { zoneId: "zone-acct-1", methodId: "method-acct-1" },
+			});
+			const unpriced = await tier.arrange.order({
+				orderId: "id-acct-evidence-unpriced",
+				buyerRef: "id-acct-evidence@example.test",
+			});
+			const mine = await tier.arrange.session("id-acct-evidence@example.test");
+
+			const listed = await client.listMyOrders(mine.bearer);
+			if (!listed.ok) throw new Error("unreachable: the session is live");
+			const byId = new Map(listed.orders.map((order) => [order.id, order]));
+			for (const id of [priced, unpriced]) {
+				const createdAt = byId.get(id)?.createdAt;
+				expect(typeof createdAt, `${id} carries when it was placed`).toBe("string");
+				expect(Number.isNaN(Date.parse(createdAt ?? ""))).toBe(false);
+			}
+			expect(byId.get(priced)?.totals).toMatchObject({
+				appliedCouponCode: null,
+				shippingZoneId: "zone-acct-1",
+				shippingMethodId: "method-acct-1",
+			});
+			expect(byId.get(unpriced)?.totals).toMatchObject({
+				appliedCouponCode: null,
+				shippingZoneId: null,
+				shippingMethodId: null,
+			});
+
+			const read = await client.getMyOrder(mine.bearer, unpriced);
+			if (!read.ok) throw new Error(`unreachable: ${read.reason}`);
+			expect(read.order).toMatchObject({
+				id: unpriced,
+				createdAt: byId.get(unpriced)?.createdAt,
+				// A live order: nothing late, exactly what the public read says of it.
+				latePayment: "none",
+				totals: { shippingZoneId: null, shippingMethodId: null },
+			});
+			const publicRead = await client.getPublicOrder(unpriced);
+			if (!publicRead.ok) throw new Error("unreachable: the order exists");
+			expect(read.order.latePayment).toBe(publicRead.order.latePayment);
+			expect(read.order.createdAt).toBe(publicRead.order.createdAt);
+		});
+
 		test("getMyAccount names the session's own email, and nothing for an unusable bearer", async () => {
 			const { bearer } = await tier.arrange.session("id-whoami@example.test");
 			expect(await client.getMyAccount(bearer)).toEqual({

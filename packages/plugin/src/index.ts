@@ -419,6 +419,7 @@ export {
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	orderTotalsFlags,
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
@@ -452,6 +453,7 @@ export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 // site's email field.
 export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
+	type AccountOrderWire,
 	type CheckoutFailureReason,
 	type CheckoutResult,
 	type ClientActionWire,

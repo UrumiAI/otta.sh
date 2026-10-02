@@ -107,6 +107,7 @@ import {
 } from "@otta-sh/domain";
 import type {
 	AddressWire,
+	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
 	CartResult,
@@ -792,16 +793,22 @@ export class InProcessCommerceClient implements CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null || order.customerId !== customerId) {
+		// The public order read's ONE ledger read (`readOrderWithLatePayment`), so the
+		// account's order page can say what the public page says about money on a
+		// dead order; on a live order the derivation short-circuits.
+		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
+		if (read === null || read.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
-		return { ok: true, order: serializeOrderSummary(order) };
+		return {
+			ok: true,
+			order: { ...serializeOrderSummary(read.order), latePayment: read.latePayment },
+		};
 	}
 
 	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
@@ -1233,6 +1240,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -1240,6 +1248,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			// The same evidence the public wire carries (`serializePublicOrder`), so
+			// the account pages apply the order page's "Not calculated" rule.
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 	};
