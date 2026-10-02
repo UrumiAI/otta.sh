@@ -198,9 +198,9 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		// field outright (ADR-0014 D3) — there is no second deployable left to
 		// authenticate to, so no form on this page submits that id any more.
 		expect(formFor(blocks, "save-token")).toBeUndefined();
-		// INC-09: every payment/email secret still renders write-only — a plain
-		// `text_input`, never a masked `secret_input`, and carrying no
-		// `initial_value` (the stored secret is never echoed back).
+		// INC-09 / U-8: every payment/email secret renders write-only — a
+		// password input (`secret_input`) carrying no `initial_value` and no
+		// `has_value` (the stored secret is never echoed back).
 		for (const actionId of [
 			"save-stripe-secret-key",
 			"save-stripe-webhook-secret",
@@ -212,8 +212,9 @@ describe("admin route dispatch (workerd sandbox)", () => {
 			expect(form, `no form submitting ${actionId}`).toBeDefined();
 		}
 		const stripeKeyField = field(formFor(blocks, "save-stripe-secret-key"), "stripeSecretKey");
-		expect(stripeKeyField?.type).toBe("text_input");
+		expect(stripeKeyField?.type).toBe("secret_input");
 		expect(stripeKeyField).not.toHaveProperty("initial_value");
+		expect(stripeKeyField).not.toHaveProperty("has_value");
 	});
 
 	test("NO-STORAGE page_load /reports (ctx.storage undeclared) fails closed with a GENERIC banner (no raw HTTP status/URL)", async () => {
