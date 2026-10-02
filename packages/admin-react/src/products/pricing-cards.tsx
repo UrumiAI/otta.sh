@@ -221,6 +221,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	/** Whether the cards hold edits their own Save has not written — read by the
 	 *  leave-page guard below, which is registered once. */
 	const unsaved = React.useRef(false);
+	const saveButton = React.useRef<HTMLButtonElement | null>(null);
 	React.useEffect(() => {
 		// The CMS's own Save and Publish do not save these cards, and the editor's
 		// unsaved-changes guard cannot see them, so leaving the page with a typed
@@ -230,9 +231,27 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			event.preventDefault();
 			event.returnValue = "";
 		};
+		// The admin is a single-page app: its sidebar and links change the page
+		// without unloading it, so `beforeunload` never fires for them. A click on
+		// an in-app link outside the cards asks first. (The browser's own Back
+		// button is not covered; nothing a page can do intercepts it reliably.)
+		const leave = (event: MouseEvent): void => {
+			if (!unsaved.current || event.defaultPrevented || event.button !== 0) return;
+			if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+			const link = (event.target as Element | null)?.closest?.("a[href]");
+			if (!(link instanceof HTMLAnchorElement) || link.target === "_blank") return;
+			if (panelRef.current?.contains(link) === true) return;
+			if (new URL(link.href, window.location.href).origin !== window.location.origin) return;
+			if (window.confirm("You have unsaved price or stock changes. Leave without saving them?"))
+				return;
+			event.preventDefault();
+			event.stopPropagation();
+		};
 		window.addEventListener("beforeunload", warn);
+		document.addEventListener("click", leave, true);
 		return () => {
 			window.removeEventListener("beforeunload", warn);
+			document.removeEventListener("click", leave, true);
 		};
 	}, []);
 
@@ -396,10 +415,12 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		// watermark), so the save fetches the latest record first, keeps only the
 		// merchant's own edits on top of it (`mergeDraft`), and writes against that
 		// fresh watermark. A field changed on both sides stops the save and says so.
+		let latestRecord: ProductRecord = p;
 		void fetchProductDetail(productId)
 			.then((fresh): Result<ActPayload> | "conflict" | "invalid" | Promise<Result<ActPayload>> => {
 				if (isFailure(fresh)) return fresh;
 				const latest = fresh.product;
+				latestRecord = latest;
 				const merged = mergeDraft(p, latest, draftRef.current ?? d);
 				setLoad({
 					status: "ready",
@@ -420,8 +441,19 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			})
 			.then((result) => {
 				setSaving(false);
+				// The cards were locked while saving, which drops keyboard focus to the
+				// page; hand it back to the Save button so a keyboard user is not lost.
+				requestAnimationFrame(() => {
+					if (document.activeElement === null || document.activeElement === document.body) {
+						saveButton.current?.focus();
+					}
+				});
 				if (result === "invalid") {
-					setTouched(new Set(Object.keys(validateDraft(draftRef.current ?? d, p)) as DraftField[]));
+					setTouched(
+						new Set(
+							Object.keys(validateDraft(draftRef.current ?? d, latestRecord)) as DraftField[],
+						),
+					);
 					setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
 					return;
 				}
@@ -918,6 +950,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 			<div className="otta-pricing-footer">
 				<button
+					ref={saveButton}
 					type="button"
 					className="otta-pricing-btn"
 					data-primary="true"

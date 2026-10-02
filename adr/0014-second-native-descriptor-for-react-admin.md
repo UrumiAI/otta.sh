@@ -390,7 +390,9 @@ are edited moves.
 - **No component library**, as before: inline styles over the admin's Kumo custom properties
   with theme-neutral fallbacks.
 
-**What gets harder.** A new product has no id yet, so it is saved once before it can be priced; the
+**What gets harder.** The cards save separately from the CMS's own Save and Publish, and the
+editor's unsaved-changes guard cannot see them. They warn on unload and ask before an in-app link
+leaves them with unsaved edits; the browser's Back button is not covered. A new product has no id yet, so it is saved once before it can be priced; the
 cards say so. The cards depend on the editor's address shape and on the `pricing` field existing on
 the collection; without the field there is nowhere to draw them. The columns are read-only, so stock and price are
 changed from the product, not from the list. A merchant who wants a dedicated stock-taking table

@@ -200,6 +200,7 @@ details.otta-pricing-card > summary .otta-pricing-card-title { font-size: 15px; 
 .otta-pricing details[open] > summary svg { transform: rotate(180deg); }
 .otta-pricing-summary { display: flex; flex-direction: column; gap: 2px; }
 .otta-pricing-summary span { font-size: 13px; color: var(--op-subtle); }
+.otta-pricing-summary .otta-pricing-card-title { font-size: 15px; color: var(--op-fg); }
 .otta-pricing-details { display: flex; flex-direction: column; gap: 14px; padding-block-start: 4px; }
 .otta-pricing-segment {
 	display: grid;

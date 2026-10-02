@@ -93,10 +93,15 @@ async function call(
 async function main(): Promise<void> {
 	const siteUrl = (process.env["SITE_URL"] ?? "http://localhost:4321").replace(/\/+$/, "");
 	const headers = await cmsAuthHeaders(siteUrl);
-	const listed = (await call(siteUrl, headers, "GET", FIELDS_PATH)) as {
-		items?: FieldInfo[];
-	} | null;
-	const plan = planPricingField(listed?.items ?? []);
+	const listed = (await call(siteUrl, headers, "GET", FIELDS_PATH)) as { items?: unknown } | null;
+	// An answer without a field list is not "no fields": planning a create and a
+	// reorder from it would rewrite the collection's field order.
+	if (!Array.isArray(listed?.items)) {
+		throw new Error(
+			`the field list at ${FIELDS_PATH} came back without an items array; nothing was changed.`,
+		);
+	}
+	const plan = planPricingField(listed.items as FieldInfo[]);
 	switch (plan.kind) {
 		case "ok":
 			console.info(
@@ -111,6 +116,9 @@ async function main(): Promise<void> {
 				label: PRICING_FIELD.label,
 			});
 			console.info("[otta] bound the existing `pricing` field to the Pricing & stock cards.");
+			console.warn(
+				"[otta] if anything was typed into that field's raw JSON box before, it is still stored in the CMS. The cards never read it and the storefront ignores it, but clear it if it holds anything you would not publish.",
+			);
 			return;
 		case "create":
 			await call(siteUrl, headers, "POST", FIELDS_PATH, { ...PRICING_FIELD, validation: null });

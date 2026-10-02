@@ -2,7 +2,7 @@
  * Pricing & stock inside the products collection's own screens, in a real
  * browser (ADR-0014, amendment 2026-10-01).
  *
- * The unit tiers prove the panel's decisions and wiring against a mocked route
+ * The unit tiers prove the cards' decisions and wiring against a mocked route
  * (`packages/admin-react/test/pricing-*.test.tsx`) and the route itself in the
  * workerd sandbox (`products-console-route.sandbox.test.ts`). What only a
  * browser can prove is that EMDASH DISCOVERS THEM: that the admin module's
@@ -69,13 +69,13 @@ test.describe("pricing and stock live in the products collection", () => {
 		await skipWithoutProducts(info, await rows.count());
 		await rows.first().getByRole("link").first().click();
 
-		const panel = adminPage.getByTestId("otta-pricing-cards");
-		await expect(panel).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
-		await expect(panel.getByRole("heading", { name: "Pricing", exact: true })).toBeVisible();
-		await expect(panel.getByRole("heading", { name: "Inventory" })).toBeVisible();
+		const cardsGroup = adminPage.getByTestId("otta-pricing-cards");
+		await expect(cardsGroup).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
+		await expect(cardsGroup.getByRole("heading", { name: "Pricing", exact: true })).toBeVisible();
+		await expect(cardsGroup.getByRole("heading", { name: "Inventory" })).toBeVisible();
 		// In the MAIN column, under Images — not in the settings sidebar. Measured
 		// by position, so a renamed test id cannot make this pass vacuously.
-		const cards = await panel.boundingBox();
+		const cards = await cardsGroup.boundingBox();
 		const images = await adminPage.getByText("Images", { exact: true }).first().boundingBox();
 		const settings = await adminPage.getByRole("complementary", { name: "Settings" }).boundingBox();
 		expect(cards).not.toBeNull();
@@ -84,23 +84,23 @@ test.describe("pricing and stock live in the products collection", () => {
 		if (settings !== null) expect((cards?.x ?? 0) + (cards?.width ?? 0) <= settings.x).toBe(true);
 
 		// One Save: a new price, then the cards re-read and settle.
-		const price = panel.getByLabel("Price", { exact: true });
+		const price = cardsGroup.getByLabel("Price", { exact: true });
 		const next = (await price.inputValue()) === "27.00" ? "28.00" : "27.00";
 		await price.fill(next);
-		await expect(panel.getByText(/saved separately/)).toBeVisible();
-		await panel.getByRole("button", { name: "Save pricing & stock" }).click();
-		await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
+		await expect(cardsGroup.getByText(/saved separately/)).toBeVisible();
+		await cardsGroup.getByRole("button", { name: "Save pricing & stock" }).click();
+		await expect(cardsGroup.getByText("Saved", { exact: true })).toBeVisible();
 		await expect(price).toHaveValue(next);
 
 		// Stock is its own button, one click to add.
-		const count = panel.getByTestId("otta-on-hand");
+		const count = cardsGroup.getByTestId("otta-on-hand");
 		if ((await count.count()) > 0) {
 			const before = Number(await count.textContent());
-			await panel.getByLabel("Add or remove stock").fill("2");
-			await panel.getByRole("button", { name: "+ Add" }).click();
+			await cardsGroup.getByLabel("Add or remove stock").fill("2");
+			await cardsGroup.getByRole("button", { name: "+ Add" }).click();
 			await expect(count).toHaveText(String(before + 2));
 		}
-		await info.attach("pricing-panel", {
+		await info.attach("pricing-cards", {
 			body: await adminPage.screenshot({ fullPage: true }),
 			contentType: "image/png",
 		});
