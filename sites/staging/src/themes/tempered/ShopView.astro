@@ -3,9 +3,9 @@
  * Tempered's shop — a mono count, the title in the display face, then a 3-up
  * grid of borderless cards (docs/theme/TEMPERED.md §8). `ProductCard` owns
  * everything inside a cell — the coil, the price, the stock rule and the
- * sold-out treatment — so this view is a grid and nothing else. Card position
- * is passed as `index` so the coil tints cycle and every three cards show all
- * three (§5).
+ * sold-out treatment — so this view is a grid and nothing else. No grid
+ * position is passed: the coil (tint included) is the product's own, so a
+ * card matches the product page it links to (§5).
  *
  * Presentation only: `src/pages/products/index.astro` reads the catalog,
  * decides which of the three states this is, chooses the degraded notice's
@@ -72,9 +72,8 @@ const { model } = Astro.props;
 				<h1 class="shop-title">Shop</h1>
 			</div>
 			<div class="shop-grid">
-				{model.cards.map((card, index) => (
+				{model.cards.map((card) => (
 					<ProductCard
-						index={index}
 						href={card.href}
 						slug={card.slug}
 						title={card.title}

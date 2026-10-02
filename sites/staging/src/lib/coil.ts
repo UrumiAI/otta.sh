@@ -132,37 +132,24 @@ export function coilPath(geometry: CoilGeometry): string {
 }
 
 /**
- * Tint by POSITION rather than by hash.
- *
- * The hash gives an even spread over many products and a lumpy one over few,
- * and few is the case that actually ships: the three-product seed draws no
- * straw at all, and a nine-slug strip drew no violet. On a page that shows the
- * whole catalog at once that reads as a bug rather than as variety, because
- * the eye compares the coils to each other rather than to a distribution. So
- * where a caller knows a product's position in the rendered list it passes it,
- * and the tints cycle: every three products show all three.
- *
- * GEOMETRY still keys off the slug, deliberately — position is a property of
- * one page's ordering, and a product must not change shape because something
- * above it sold out.
- */
-export function coilTint(index: number): CoilTint {
-	// `%` alone would fall off the front of the array for a negative index.
-	const wrapped = ((index % COIL_TINTS.length) + COIL_TINTS.length) % COIL_TINTS.length;
-	return COIL_TINTS[wrapped] ?? COIL_TINTS[0];
-}
-
-/**
  * The one call a component makes: slug → the drawing and its tint.
  *
- * `index` is the product's position in the list being rendered. Omit it — on a
- * PDP, on a cart line, anywhere there is no list — and the tint falls back to
- * the slug's own hash, which is at least stable per product.
+ * BOTH key off the slug, so a product wears one coil on every page. The tint
+ * used to cycle by the product's position in the list being rendered (every
+ * three cards showed all three tints), with a page that has no list — the
+ * product page, a cart line — falling back to the slug's hash. That put two
+ * colours on one product a click apart: QA found the Tee blue-grey in the shop
+ * grid and tan on its own page. The art is the product's picture, and a
+ * picture that changes between the grid and the page reads as a different
+ * product.
+ *
+ * The cost is the one the position rule was added to avoid: a hash is lumpy
+ * over a handful of products, so a small catalog can repeat a tint (the
+ * three-product seed draws two straw coils and no blue). That is a weaker
+ * failure than one product in two colours, and the GEOMETRY still differs per
+ * slug, so two products sharing a tint never share a drawing.
  */
-export function buildCoil(slug: string, index?: number): Coil {
+export function buildCoil(slug: string): Coil {
 	const geometry = coilGeometry(slug);
-	return {
-		path: coilPath(geometry),
-		tint: index === undefined ? geometry.tint : coilTint(index),
-	};
+	return { path: coilPath(geometry), tint: geometry.tint };
 }

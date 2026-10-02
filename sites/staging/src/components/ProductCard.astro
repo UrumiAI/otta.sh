@@ -23,11 +23,8 @@ import { restProps } from "../lib/rest-props.js";
 interface Props extends HTMLAttributes<"a"> {
 	href: string;
 	title: string;
-	/** Keys the coil's geometry (§5) — the slug, or the id when there is none. */
+	/** Keys the coil (§5) — the slug, or the id when there is none. */
 	slug: string;
-	/** Position in the grid, which cycles the coil's tint so every three cards
-	 *  show all three. Omit off a list. */
-	index?: number;
 	description?: string | null;
 	image?: string | null;
 	/** Pre-formatted, off the view model's `price.formatted`. `null` when the
@@ -54,7 +51,6 @@ const {
 	href,
 	title,
 	slug,
-	index,
 	description = null,
 	image = null,
 	price = null,
@@ -73,7 +69,7 @@ const Heading = level;
 	{/* `dimmed` is a PROP, not a parent CSS rule: Astro scopes each
 	    component's styles to its own hash, so a descendant selector written
 	    here could never reach MediaPanel's root element. */}
-	<MediaPanel slug={slug} index={index} image={image} dimmed={soldOut} />
+	<MediaPanel slug={slug} image={image} dimmed={soldOut} />
 	<Heading class="card-title">{title}</Heading>
 	{description !== null && description !== "" && <p class="card-desc">{description}</p>}
 	<span class="card-foot">

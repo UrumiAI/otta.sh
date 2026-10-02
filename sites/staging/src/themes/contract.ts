@@ -286,8 +286,6 @@ export interface LedgerLine {
 export interface CartLineModel {
 	/** The wire line's own fields a view may print or post. */
 	line: { lineId: string; sku: string; qty: number; expiresAt: string | null };
-	/** Grid position — the coil's tint cycles on it. */
-	index: number;
 	/** The display name, or `null` when this store cannot name the line. */
 	title: string | null;
 	/** What a screen reader calls the line — the title, else the SKU. Never null. */
