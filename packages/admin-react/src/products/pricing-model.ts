@@ -2,7 +2,7 @@
  * What the Pricing & stock cards decide, as pure functions (ADR-0014, amendment
  * 2026-10-01).
  *
- * The panel sits in the product editor's settings column and edits the
+ * The cards sit in the product editor's main column and edit the
  * commerce fields the retired Pricing & inventory page used to: price,
  * compare-at, cost, SKU, product type, tax class, weight and size. Everything it
  * DECIDES about them — what the inputs show, when the form is dirty, what is

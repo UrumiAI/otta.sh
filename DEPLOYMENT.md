@@ -157,9 +157,20 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
    has a SKU, so it never overwrites a price set in the Pricing & stock cards.
 
    **A store created before 2026-10-01** has no `pricing` field on its products collection, and
-   the Pricing & stock cards draw on that field. Add it once in **Admin › Content Types ›
-   Products**: a JSON field with slug `pricing`, label "Pricing & stock", widget "Pricing &
-   stock", placed after Images. It holds no data; new stores get it from the seed.
+   the Pricing & stock cards draw on that field. Add it once with the script below — **not** in
+   Admin › Content Types, which in EmDash 0.38 cannot attach the cards to a field: a JSON field
+   added there shows EmDash's raw JSON box instead, where commerce data must never be typed.
+   The script places the field after Images, re-binds a hand-made one, and is safe to re-run:
+
+   ```bash
+   SITE_URL=https://<your-site-worker>.workers.dev \
+   EMDASH_TOKEN=<an admin API token> \
+     pnpm dlx tsx@4 sites/staging/scripts/add-pricing-field.ts
+   ```
+
+   The field holds no data; new stores get it from the seed. If a product editor ever shows a
+   raw JSON box labelled "Pricing & stock" instead of the cards, the console's admin module did
+   not load (or the field lost its widget): leave the box empty and re-run the script.
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 

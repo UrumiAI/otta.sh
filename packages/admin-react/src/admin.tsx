@@ -38,7 +38,7 @@
 import type { PluginAdminExports } from "emdash";
 import { OrdersScreen } from "./orders/orders-screen.js";
 import { PRICING_COLUMNS } from "./products/pricing-columns.js";
-import { PRICING_FIELD_WIDGET, PricingStockField } from "./products/pricing-panel.js";
+import { PRICING_FIELD_WIDGET, PricingStockField } from "./products/pricing-cards.js";
 import { ThemesScreen } from "./themes/themes-screen.js";
 
 /**

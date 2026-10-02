@@ -46,7 +46,7 @@
  * unreachable half is deleted with its reason.
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
- * Playwright (`sites/staging/e2e/products-pricing-panel.spec.ts`, which replaced the retired page's spec), which is additive
+ * Playwright (`sites/staging/e2e/products-pricing.spec.ts`, which replaced the retired page's spec), which is additive
  * to this tier and replaces none of it.
  *
  * ONE STORE PER PROCESS (`storageBridge`), so every case addresses disjoint ids
@@ -820,8 +820,8 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("the product editor's ONE save writes price, sku, cost and shipping in a single write", async () => {
-		// The Pricing & stock panel has one Save button, so `products:save` takes
-		// every field the panel owns at once, through the same sparse save the
+		// The Pricing & stock cards have one Save button, so `products:save` takes
+		// every field the cards own at once, through the same sparse save the
 		// split actions use. A cleared compare-at is sent blank and cleared.
 		const seeded = await seedProduct({ term: "panelsave", priceCents: 3200 });
 		const result = await invoke({

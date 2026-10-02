@@ -357,9 +357,13 @@ merchant had to scroll the side column to find the price.
 **The `pricing` field holds no data.** It only marks where the cards go: the editor never calls the
 field's `onChange`, no seeded entry carries a value, and every value the cards show or change lives
 in the commerce store, as before (PR 1b's rule, kept). `seed.test.ts` pins the field's role, and
-the binding is the only plugin widget bound on the collection. A store created before this change
-adds the field once in **Admin › Content Types › Products** (a JSON field, slug `pricing`, widget
-"Pricing & stock"); new stores get it from the seed. Decision 6's
+the binding is the only plugin widget bound on the collection. New stores get the field from the
+seed. EmDash 0.38's Content Types screen cannot bind a widget, so a store created before this change
+adds it with `sites/staging/scripts/add-pricing-field.ts`, through the schema API (which accepts
+`widget`; a later edit of the field in that screen keeps it). **The fallback is a hazard to name:**
+when the widget is missing or `otta-console`'s admin module fails to load, EmDash draws its raw JSON
+editor for the field, which would store whatever is typed into the CMS. DEPLOYMENT.md says to leave
+it empty and re-run the script. Decision 6's
 scope is unchanged in kind — the same fields, edited by the same writes — and only the place they
 are edited moves.
 

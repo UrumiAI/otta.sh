@@ -3,7 +3,7 @@
  * them (INC-21).
  *
  * NO LONGER REGISTERED. ADR-0014's amendment of 2026-10-01 moved pricing and
- * stock into the products collection's own editor (`./pricing-panel.tsx`) and
+ * stock into the products collection's own editor (`./pricing-cards.tsx`) and
  * list (`./pricing-columns.tsx`), and `/products` left `admin.pages`. This
  * module, `./products-list.tsx` and `./product-detail.tsx` stay only because
  * the shared console tests (pager, cursor URL, load-more, chrome) still use

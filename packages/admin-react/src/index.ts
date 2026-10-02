@@ -103,6 +103,12 @@ export const THEMES_PAGE = {
 	icon: "palette",
 } as const satisfies PluginAdminPage;
 
+/** The field editors this plugin contributes. A products field declared with
+ *  `widget: "otta-console:pricing"` renders the Pricing & stock cards. */
+export const OTTA_CONSOLE_FIELD_WIDGETS = [
+	{ name: "pricing", label: "Pricing & stock", fieldTypes: ["json"] },
+] as const;
+
 /**
  * Every page the console declares.
  *
@@ -112,12 +118,6 @@ export const THEMES_PAGE = {
  * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
  * gate.
  */
-/** The field editors this plugin contributes. A products field declared with
- *  `widget: "otta-console:pricing"` renders the Pricing & stock cards. */
-export const OTTA_CONSOLE_FIELD_WIDGETS = [
-	{ name: "pricing", label: "Pricing & stock", fieldTypes: ["json"] },
-] as const;
-
 export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE, THEMES_PAGE];
 
 /**
@@ -143,8 +143,10 @@ export function createPlugin(_options: Record<string, unknown> = {}): ResolvedPl
 			entry: OTTA_CONSOLE_ADMIN_ENTRY,
 			pages: [...OTTA_CONSOLE_ADMIN_PAGES],
 			// The products editor's Pricing & stock cards: a React field editor
-			// (`./admin.tsx`'s `fields.pricing`), declared so EmDash's Content Types
-			// screen can offer it for a field (ADR-0014, amendment 2026-10-01).
+			// (`./admin.tsx`'s `fields.pricing`), declared in the manifest for
+			// completeness (ADR-0014, amendment 2026-10-01). EmDash 0.38's Content
+			// Types screen cannot bind a widget; the seed and
+			// `sites/staging/scripts/add-pricing-field.ts` do.
 			fieldWidgets: OTTA_CONSOLE_FIELD_WIDGETS.map((widget) => ({
 				...widget,
 				fieldTypes: [...widget.fieldTypes],

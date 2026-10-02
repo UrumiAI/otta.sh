@@ -350,7 +350,7 @@ function trimUrl(value: string): string {
 }
 
 /** Authenticate against the site and return the headers to read content with. */
-async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
+export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
 		console.info("[otta] using EMDASH_TOKEN");

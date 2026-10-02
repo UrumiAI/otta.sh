@@ -430,6 +430,9 @@ export interface Failure {
 	readonly ok: false;
 	readonly title: string;
 	readonly description: string;
+	/** The HTTP status, when the refusal came from one — so a surface can tell
+	 *  "you may not" (403) from "it is broken" without reading the sentence. */
+	readonly status?: number;
 }
 
 export type Result<T> = T | Failure;
@@ -472,6 +475,7 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 		// the Pricing & inventory screen sends an operator to look at the wrong
 		// thing. It names the SCREEN rather than the request, because the screen
 		// is what the operator is looking at.
+		status: response.status,
 		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
 	};

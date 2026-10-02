@@ -1,6 +1,6 @@
 /**
- * The Pricing & stock panel's decisions, as pure functions (ADR-0014, amendment
- * 2026-10-01). Everything the panel decides about money and stock lives in
+ * The Pricing & stock cards' decisions, as pure functions (ADR-0014, amendment
+ * 2026-10-01). Everything the cards decide about money and stock lives in
  * `pricing-model.ts` so it is proven here without a document; the DOM suite
  * only proves the wiring.
  */

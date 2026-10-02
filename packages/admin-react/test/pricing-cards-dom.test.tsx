@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * The product editor's Pricing & stock panel, mounted (ADR-0014, amendment
+ * The product editor's Pricing & stock cards, mounted (ADR-0014, amendment
  * 2026-10-01). The decisions are proven in `pricing-model.test.ts`; this proves
  * the wiring: what is read, what is sent, and what the merchant sees after.
  */
@@ -17,7 +17,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { PricingStockEditor, PricingStockField, productIdFromPath } =
-	await import("../src/products/pricing-panel.js");
+	await import("../src/products/pricing-cards.js");
 const admin = await import("../src/admin.js");
 type ProductRecord = import("../src/console-api.js").ProductRecord;
 
@@ -126,6 +126,7 @@ beforeEach(() => {
 afterEach(async () => {
 	await mounted?.unmount();
 	mounted = null;
+	window.history.replaceState(null, "", "/");
 });
 
 test("is the products collection's `pricing` field editor, found by its widget name", () => {
@@ -146,28 +147,80 @@ test("finds the product from the editor's own address, and knows a new one has n
 	expect(productIdFromPath("/_emdash/admin/content/products")).toBeNull();
 });
 
-test("on a new product it asks for a save first, reads nothing, and never writes the field", async () => {
+test("on a new product it asks for a save first and reads nothing", async () => {
 	window.history.replaceState(null, "", "/_emdash/admin/content/products/new");
-	const onChange = vi.fn();
-	mounted = await mount(<PricingStockField value={null} onChange={onChange} />);
+	mounted = await mount(<PricingStockField value={null} />);
 	expect(mounted.container.textContent).toContain(
 		"Save this product first, then set its price and stock here.",
 	);
 	expect(apiFetch).not.toHaveBeenCalled();
-	expect(onChange).not.toHaveBeenCalled();
 });
 
 test("on a saved product it mounts the editor for that product", async () => {
 	window.history.replaceState(null, "", "/_emdash/admin/content/products/p_tee");
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
-	const onChange = vi.fn();
-	const node = <PricingStockField value={null} onChange={onChange} />;
+	const node = <PricingStockField value={null} />;
 	mounted = await mount(node);
 	for (let i = 0; i < 3; i++) await mounted.rerender(node);
 	expect(sent()[0]).toMatchObject({ resource: "products.detail", productId: "p_tee" });
 	expect(input(mounted.container, "Price").value).toBe("32.00");
-	// The field is a placeholder: the section never writes a value into the CMS.
-	expect(onChange).not.toHaveBeenCalled();
+});
+
+test("a store admin's 403 is not an alarm: a non-admin sees a quiet note, once", async () => {
+	apiFetch.mockImplementation(() =>
+		Promise.resolve(
+			new Response(
+				JSON.stringify({ success: false, error: { code: "FORBIDDEN", message: "Forbidden" } }),
+				{
+					status: 403,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		),
+	);
+	const c = await mountPanel();
+	expect(c.textContent).toContain("Only store admins can change price and stock.");
+	expect(c.querySelector('[role="alert"]')).toBeNull();
+	expect(c.textContent).not.toContain("Try again");
+});
+
+test("Enter in a card saves the cards, never the CMS form around them; in the stock quantity it adds", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return Promise.resolve(
+			body["type"] === "otta_console_act"
+				? json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } })
+				: detail(),
+		);
+	});
+	const submitted = vi.fn((event: React.FormEvent) => {
+		event.preventDefault();
+	});
+	const node = (
+		<form onSubmit={submitted}>
+			<PricingStockEditor productId="p_tee" />
+		</form>
+	);
+	mounted = await mount(node);
+	for (let i = 0; i < 3; i++) await mounted.rerender(node);
+	const c = mounted.container;
+	const press = async (field: HTMLInputElement): Promise<void> => {
+		await React.act(async () => {
+			field.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+			);
+		});
+		for (let i = 0; i < 4; i++) await mounted?.rerender(node);
+	};
+	await type(input(c, "Price"), "29");
+	await press(input(c, "Price"));
+	expect(submitted).not.toHaveBeenCalled();
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:save"]);
+
+	await type(input(c, "Add or remove stock"), "2");
+	await press(input(c, "Add or remove stock"));
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:save", "products:restock"]);
+	expect(submitted).not.toHaveBeenCalled();
 });
 
 test("reads the product by its CMS entry id and shows price, sale, margin and stock", async () => {
@@ -195,7 +248,7 @@ test("one Save sends every field with the loaded watermark, then re-reads", asyn
 	});
 	const c = await mountPanel();
 	await type(input(c, "Price"), "29");
-	expect(c.textContent).toContain("Not saved yet");
+	expect(c.textContent).toContain("Price and stock changes are saved separately");
 	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 

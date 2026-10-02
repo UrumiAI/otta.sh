@@ -46,6 +46,16 @@ export const PRICING_STYLES = `
 .otta-pricing p { margin: 0; }
 /* ── cards: the main-column layout ─────────────────────────────────────── */
 .otta-pricing { container-type: inline-size; }
+.otta-pricing-cardset {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	border: 0;
+	margin: 0;
+	padding: 0;
+	min-inline-size: 0;
+}
+.otta-pricing-cardset:disabled { opacity: 0.7; }
 .otta-pricing-card {
 	display: flex;
 	flex-direction: column;

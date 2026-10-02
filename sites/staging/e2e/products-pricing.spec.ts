@@ -69,20 +69,25 @@ test.describe("pricing and stock live in the products collection", () => {
 		await skipWithoutProducts(info, await rows.count());
 		await rows.first().getByRole("link").first().click();
 
-		const panel = adminPage.getByTestId("otta-pricing-panel");
+		const panel = adminPage.getByTestId("otta-pricing-cards");
 		await expect(panel).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
 		await expect(panel.getByRole("heading", { name: "Pricing", exact: true })).toBeVisible();
 		await expect(panel.getByRole("heading", { name: "Inventory" })).toBeVisible();
-		// In the MAIN column, not the settings sidebar.
-		await expect(
-			adminPage.getByRole("complementary").getByTestId("otta-pricing-panel"),
-		).toHaveCount(0);
+		// In the MAIN column, under Images — not in the settings sidebar. Measured
+		// by position, so a renamed test id cannot make this pass vacuously.
+		const cards = await panel.boundingBox();
+		const images = await adminPage.getByText("Images", { exact: true }).first().boundingBox();
+		const settings = await adminPage.getByRole("complementary", { name: "Settings" }).boundingBox();
+		expect(cards).not.toBeNull();
+		expect(images).not.toBeNull();
+		expect((cards?.y ?? 0) > (images?.y ?? 0)).toBe(true);
+		if (settings !== null) expect((cards?.x ?? 0) + (cards?.width ?? 0) <= settings.x).toBe(true);
 
-		// One Save: a new price, then the panel re-reads and settles.
+		// One Save: a new price, then the cards re-read and settle.
 		const price = panel.getByLabel("Price", { exact: true });
 		const next = (await price.inputValue()) === "27.00" ? "28.00" : "27.00";
 		await price.fill(next);
-		await expect(panel.getByText(/Not saved yet/)).toBeVisible();
+		await expect(panel.getByText(/saved separately/)).toBeVisible();
 		await panel.getByRole("button", { name: "Save pricing & stock" }).click();
 		await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 		await expect(price).toHaveValue(next);

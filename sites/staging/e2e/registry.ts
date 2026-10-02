@@ -84,7 +84,7 @@ export interface ConsoleScreen {
  * PRICING & INVENTORY HAS LEFT THE LIST: ADR-0014's amendment of 2026-10-01 moved
  * it into the products collection's own editor (a panel) and list (two
  * columns), which are not pages and have no sidebar entry. Its Playwright gate
- * is `products-pricing-panel.spec.ts`.
+ * is `products-pricing.spec.ts`.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
