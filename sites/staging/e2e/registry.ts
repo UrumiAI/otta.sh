@@ -78,8 +78,9 @@ export interface ConsoleScreen {
  * Coupons are a ruling the user has not made (D3), so adding either is out of
  * scope until they do.
  *
- * INC-26 ADDS THEMES, the first entry with no Block Kit original (ADR-0014's
- * amendment of 2026-09-30), so it moves the Block Kit inventory not at all.
+ * INC-26 ADDED THEMES, the first entry with no Block Kit original (ADR-0014's
+ * amendment of 2026-09-30), and it has since been REMOVED: the store ships one
+ * theme, so the admin offers no theme choice (ADR-0024's note of 2026-10-02).
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -114,19 +115,6 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// ROLE, which is unique; reviving a suffix to disambiguate a TEXT match
 		// would be fixing the wrong file.
 		heading: /^Pricing & inventory$/,
-	},
-	{
-		// Not a migration — the first console screen with no Block Kit original
-		// (its fallback, the Settings "Store theme" radio, stays). It is gated here
-		// anyway because this registry is the ONE list every console page must be
-		// on (`site-config.test.ts`); "migrated" is this list's history, not a
-		// condition of entry. Its increment is INC-26, made under ADR-0014's
-		// amendment of 2026-09-30; the harness accepts only an `INC-NN` id.
-		name: "Themes",
-		increment: "INC-26",
-		path: "/themes",
-		// The H1 alone: the theme count is a sibling badge, not part of the heading.
-		heading: /^Themes$/,
 	},
 ];
 

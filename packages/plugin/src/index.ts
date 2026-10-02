@@ -95,14 +95,6 @@ export {
 // barrel is `@otta-sh/plugin`'s public one.
 export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
 export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
-// The live theme-preview contract (ADR-0024, amended 2026-09-30): the site's
-// middleware honours this query parameter for admins, and the React Themes
-// screen receives URLs built from it. One spelling, read by both sides.
-export {
-	THEME_PREVIEW_OFF,
-	THEME_PREVIEW_PARAM,
-	THEME_PREVIEW_SILENT,
-} from "./admin/store-themes.js";
 export {
 	// The surface, and the type `dispatchProductsAction`'s third
 	// parameter now has (work order 02, INC-B10b-i). Exported from the entry point

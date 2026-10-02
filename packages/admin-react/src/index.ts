@@ -107,23 +107,6 @@ export const PRODUCTS_PAGE = {
 } as const satisfies PluginAdminPage;
 
 /**
- * The storefront Themes screen (ADR-0014, amended 2026-09-30): a screenshot
- * grid with live preview and activate — WordPress's Appearance → Themes for
- * this store. The first console screen that is NOT a migration: it has no Block
- * Kit original to retire, only a fallback (the Settings "Store theme" radio)
- * that stays. It is React because Block Kit cannot draw it (no image card, no
- * hover, no link, no frame), a ruling the amendment records.
- *
- * `palette` is a Phosphor icon name the admin sidebar resolves, like `receipt`
- * and `box` above.
- */
-export const THEMES_PAGE = {
-	path: "/themes",
-	label: "Themes",
-	icon: "palette",
-} as const satisfies PluginAdminPage;
-
-/**
  * Every page the console declares.
  *
  * A path listed here MUST have a component under the same key in `./admin`'s
@@ -132,11 +115,7 @@ export const THEMES_PAGE = {
  * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
  * gate.
  */
-export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [
-	ORDERS_PAGE,
-	PRODUCTS_PAGE,
-	THEMES_PAGE,
-];
+export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE, PRODUCTS_PAGE];
 
 /**
  * The native entrypoint. EmDash's generated plugins module does

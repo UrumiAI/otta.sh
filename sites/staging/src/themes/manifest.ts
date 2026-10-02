@@ -1,19 +1,16 @@
 /**
  * THE theme list — the single source of which storefront themes exist.
  *
- * Pure data, deliberately: no `.astro` import, no IO. Two consumers read it and
- * they must not be able to disagree:
+ * Pure data, deliberately: no `.astro` import, no IO. `registry.ts` maps each
+ * id to its components, and `themes-boundary.test.ts` holds the registry to
+ * exactly this list.
  *
- *  - `astro.config.ts` bakes it into the build as the Vite define
- *    `__OTTA_STORE_THEMES__` (JSON `[{ id, label, description, preview }]`),
- *    which is how the plugin's admin Settings radio and the React Themes screen
- *    learn the options without hard-coding a theme list of their own;
- *  - `registry.ts` maps each id to its components, and
- *    `themes-boundary.test.ts` holds the registry to exactly this list.
- *
- * A theme is added HERE when it is built, not before: listing an id the
- * registry cannot render would put an option in the admin that silently falls
- * back to Tempered. One ships in this repo: Tempered (the default). The five
+ * The admin offers NO theme choice (ADR-0024's note of 2026-10-02): the Themes
+ * screen, its live preview and the Settings "Store theme" radio were removed,
+ * so the store renders Tempered unless a theme installed from the separate
+ * themes repo is registered here and activated. A theme is added HERE when it
+ * is built, not before: an id the registry cannot render falls back to
+ * Tempered. One ships in this repo: Tempered (the default). The five
  * other themes built here (Plinth, Pressing, Batch, Jumble, Counter) moved out
  * on 2026-10-01 to their own repo, to come back as external themes once the
  * theme SDK and host integration exist.
