@@ -280,6 +280,19 @@ order of appearance in a deployment's life:
   the queue; the page copy follows the refunds ledger, and an admin "confirm refunded in the
   provider" action to finalize such a row is a planned follow-up.
 
+  The window is also narrowed at the source. Checkout records the order's PaymentIntent, and
+  from the order's hold deadline the cron's `cancel-intents` leg (right behind the outbox and
+  the expiry legs) withdraws it once the order has expired or been cancelled unpaid:
+  `POST /v1/payment_intents/{id}/cancel` over `ctx.http.fetch`, inside the tick's budget (see
+  §5), each call given a fixed 1.5 s and started only with that much left (a tick running out
+  never costs an attempt). The expiry itself never calls Stripe. A transient failure is retried
+  by that leg on later ticks with backoff (5 attempts),
+  then given up with one `[domain] gave up cancelling payment intent …` log line — harmless,
+  since a payment on it is refunded as above. `/checkout/pay` also refuses (303 to the order
+  page) an order that is no longer `pending` or whose hold has passed (the sweep expires such an
+  order within about a minute). Orders placed before this change have no recorded intent and
+  are not cancelled.
+
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
 > smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
@@ -345,8 +358,8 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all ten sweep legs: they share a store composition and
-a clock, and splitting them would only put ten rows in contention on the same documents. The
+hook when it comes due. One task drives all eleven sweep legs: they share a store composition
+and a clock, and splitting them would only put eleven rows in contention on the same documents. The
 four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) run at
 most every fifteen minutes inside that task, because each reads a page budget of a collection
 per run; the outbox, the two expiry legs, the challenge prune and the hold-intent completer run
@@ -402,7 +415,13 @@ one unit of whichever customer-facing leg leads it — roughly one email, one ho
 minute, each leg leading one minute in three** — enough for a small store. The four scans, and
 `coupon-orphans` especially (it runs last, and only in a tick whose order expiry finished), may
 run much less often than every fifteen minutes while Free is working through a backlog. A store
-that abandons more checkouts than that per minute has outgrown Workers Free. The tenth leg,
+that abandons more checkouts than that per minute has outgrown Workers Free. Right behind the
+three critical legs runs `cancel-intents` (withdrawing an expired or unpaid-cancelled order's
+Stripe PaymentIntent): best-effort, about 5 calls per order (one of them the Stripe cancel)
+plus up to 5 secret reads to build the gateway, at most 20% of the time and 30% of the queries,
+1–10 orders a tick scaled from the budget, each cancel given a fixed 1.5 s and started only with
+that much left. On Workers Free it runs when the critical legs leave room and is deferred
+otherwise — a cancel it does not reach is covered by the late-payment refund. The last leg,
 `late-refunds` (resuming a late payment's automatic refund after a transient Stripe failure),
 is **best-effort**: a tick with nothing due pays one query for it and logs nothing. One resume
 is about 20 calls (two of them Stripe subrequests, the rest mostly the refund's finalize and its

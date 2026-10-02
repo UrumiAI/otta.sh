@@ -6,8 +6,10 @@
 - Refines: the Phase-4 settlement design (`settleOrder`, §5) and the Phase-5 order state
   machine. Amends no earlier ADR.
 - Amended: 2026-10-02 — the "success after expiry" path: a payment that lands on an order
-  that provably left `pending` unpaid is refunded automatically. See "Amended 2026-10-02" at
-  the end of this record.
+  that provably left `pending` unpaid is refunded automatically; and (second block) the window
+  itself is narrowed — the order's PaymentIntent is withdrawn once it is due, and the pay page
+  refuses an order that can no longer be paid. See the two "Amended 2026-10-02" sections at the
+  end of this record.
 
 ## Context
 
@@ -217,3 +219,57 @@ per-refund `refundRetries` map and an indexed, derived `refundRetryAt`. A late-p
 counts in the reporting rollup's refunded total for its day although the order never counted
 as revenue — money really did come in and go back out. ADR-0008's "auto-refund on a settle
 anomaly" rejection is narrowed accordingly (its 2026-10-02 amendment).
+
+## Amended 2026-10-02 (second block) — the late-payment window is narrowed at the source
+
+The block above makes a late payment safe. This one makes it rare: "cancelling the
+PaymentIntent when an order expires would close that last window and is a separate change" —
+this is that change, plus the pay page refusing an order that can no longer be paid.
+
+1. **Intents are recorded, and due at the hold.** Checkout records every PaymentIntent it
+   mints on the order (`OrderStore.recordPaymentIntent`, idempotent per intent; a list, because
+   Stripe's ~24 h key expiry can mint a second). A new intent is DUE for withdrawal at the
+   order's `holdExpiresAt`. The guarded `pending → paid` flip resolves the order's intents
+   (`not_needed`) in its own write, so a paid order never reaches the sweep; an admin cancel of a
+   *pending* order makes them due at once.
+2. **Withdrawn by their own sweep leg, never by the expiry.** `expireOrders` stays a pure
+   state-and-stock transition: putting a provider call per order on the path that releases stock
+   would let a slow or down Stripe hold stock hostage. The cron's `cancel-intents` leg
+   (`cancelDueIntents`) runs inside the sweep's tick budget (ADR-0019's cadence amendment),
+   right behind the three critical legs (the outbox and the expiry pair) and ahead of the
+   completers: one due query when idle (no deferral noise); a measured ~5 calls per order (one
+   of them the Stripe cancel) plus up to ~5 secret reads to build the gateway, capped at 20% of
+   the tick's time and 30% of its queries, 1–10 orders per tick scaled from the query budget,
+   each unit admitted by the tick's gate, one ledger read per order, the gateways resolved once
+   from the COUNTED context and only when a unit needs them, and each Stripe cancel given a FIXED
+   1.5 s and started only with that much left — so its timeout is always the provider's, and a
+   tick running out never costs one of the five attempts
+   (`POST /v1/payment_intents/{id}/cancel`, `cancellation_reason=abandoned`, the
+   intent-derived key as its native `Idempotency-Key`). It cancels once per intent of an order
+   that left `pending` unpaid. An intent that already succeeded is `not_cancellable` — the buyer
+   paid at that instant, and the block above refunds it. x402 holds no standing intent and
+   answers `UNSUPPORTED`.
+3. **Retries are the leg's alone.** A RETRYABLE (or throwing) cancel is rescheduled with backoff
+   and retried by this leg on later ticks, up to a bounded number of attempts; a TERMINAL one is
+   given up at once. Nothing else re-asks the provider — not the expiry, not settle. Giving up is
+   safe: a payment on an intent this never withdrew lands on a dead order and is refunded.
+4. **The pay page refuses** an order that is not `pending` or whose hold has passed
+   (ADR-0012's 2026-10-02 amendment).
+
+**Cadence on Workers Free.** The cancel leg is best-effort and runs after the three critical
+legs; on the Free preset, under an expiry backlog, those can use the whole minute, so a cancel
+may wait behind them for a while. That is acceptable precisely because prevention is backed by
+the refund: a payment on an intent not yet withdrawn lands on a dead order and is refunded.
+
+**The gap that remains, recorded.** The sweep runs every minute, but within a budget — on
+Workers Free under a backlog the expiry legs advance about one order a minute — so an order can
+sit `pending` past its hold until the expiry reaches it. The pay page refuses it, and its intent is not
+withdrawn until the expiry has run (the leg never cancels an order that could still settle
+cleanly). A buyer who pays in that gap — from a page loaded before the hold lapsed — settles the
+order normally, exactly as this record's original decision intends; its adopted stock is still
+held, so the settle commits it. Only if that hold had been lost would the settle raise the
+existing loud `COMMIT_LOST` anomaly and flag the order — the same path any lost hold takes.
+
+The new `intentCancelContract` (`@otta-sh/domain/testing`, fakes and the document store over
+SQLite, Postgres and D1) pins all of the above. The order document gains `paymentIntents` and an
+indexed `intentCancelDueAt`.

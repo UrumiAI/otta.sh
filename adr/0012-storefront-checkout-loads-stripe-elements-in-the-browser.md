@@ -4,6 +4,9 @@
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
   "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).
+- Amended: 2026-10-02 — `/checkout/pay` reads the order's state before mounting the card form,
+  and decision 5's use of the redirect parameters covers a lapsed pending order; see
+  "Amended 2026-10-02" at the end of this record.
 
 ## Context
 
@@ -225,3 +228,36 @@ plugin's storefront surface (ADR-0003). Neither `@otta-sh/service` nor `@otta-sh
   new plugin dependency — worth doing only if a non-two-decimal catalog is ever planned.
 - Stripe expires idempotency keys after ~24 h, so a retry past that window mints a second
   PaymentIntent. Both carry the same `metadata[order_id]` and settlement dedupes on event id.
+
+## Amended 2026-10-02 — the pay page checks the order can still be paid
+
+**What changed and why.** `/checkout/pay` rendered the card form from the `otta_checkout` stash
+alone and made no commerce call. The stash outlives the order's hold, and a client secret stays
+payable at Stripe until something withdraws it — so a buyer who kept the tab open could pay an
+order that had already **expired**, for stock already back on sale (ADR-0022's 2026-10-02
+amendment, which also adds the server-side prevention and the automatic refund).
+
+**The amendment.**
+
+- `/checkout/pay` now makes exactly one commerce call, a READ: the same public, capability-scoped
+  `storefront/order` route the confirmation page uses. An order that is not `pending`, or whose
+  `holdExpiresAt` has passed, or that the read says does not exist, is redirected (303) to its
+  confirmation page instead of getting a form (`sites/staging/src/lib/pay-guard.ts`). An
+  UNKNOWN answer — dispatch failed, BUSY, a render-guard failure — still renders the form: the
+  server cancels an expired order's intent and refunds a payment that lands anyway, so the page
+  is defence in depth and must not turn a storage hiccup into a checkout outage. The amount on
+  the button still comes from the stash, never from this read.
+- Decision 5 is widened by one clause: the redirect parameters still only choose how a `pending`
+  order is presented, and that now includes a pending order **past its hold**. Arriving without
+  them, it says "The time to pay has run out. If you already paid, this page will update — if
+  the order has already expired by then, it will be refunded." — it claims nothing about stock
+  or charges,
+  because the order is still pending, and nothing about who refunds, because on some paths a
+  person does — keeps the bounded poll, and offers the door out
+  instead of a resume link (the pay page would refuse it, so "resume" would be a loop until the
+  sweep runs). Arriving with them, it still gets "payment submitted" and the poll, because a
+  just-paid pending order may still settle. They are still never rendered, forwarded, or
+  trusted to decide that anything is paid.
+- The guard's read costs one document read (the plugin reads the order and its ledgers
+  together). The `latePayment` derivation riding on it does no I/O and short-circuits for a
+  `pending` order — the only state the guard lets through — so the guard pays nothing for it.
