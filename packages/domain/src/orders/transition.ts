@@ -389,19 +389,29 @@ async function drainOutbox(
 			break;
 		}
 
+		// The money a refund email is about: a notice carries its own; the `refunded`
+		// STATE email states everything finalized on the ledger (QA T1-6), read here
+		// and passed as data so the template still reaches back into nothing.
+		const refunded =
+			row.notice !== null
+				? { amount: row.notice.amount, currency: row.notice.currency }
+				: row.toState === "refunded"
+					? await refundedTotal(deps.orderStore, order)
+					: null;
+
 		try {
 			await deps.emailSender.send({
 				to: await resolveRecipient(deps, order),
 				template,
 				data:
-					row.notice === null
+					refunded === null
 						? buildOrderEmailData(order, row.toState)
 						: {
 								...buildOrderEmailData(order, row.toState),
-								// The notice's OWN figure — the money it is about (the refund),
-								// never the order total it may differ from.
-								noticeAmountCents: row.notice.amount,
-								noticeCurrency: row.notice.currency,
+								// The OWN figure — the money refunded, never the order total
+								// it may differ from.
+								noticeAmountCents: refunded.amount,
+								noticeCurrency: refunded.currency,
 							},
 				idempotencyKey: row.id,
 			});
@@ -446,6 +456,17 @@ async function drainOutbox(
 		}
 	}
 	return sent;
+}
+
+/** Everything finalized on the order's refund ledger, or null when nothing is. */
+async function refundedTotal(
+	orderStore: OrderStore,
+	order: Order,
+): Promise<{ amount: number; currency: string } | null> {
+	let total = 0;
+	for (const r of await orderStore.listRefunds(order.id))
+		if (r.status === "recorded") total += r.amount;
+	return total === 0 ? null : { amount: total, currency: order.totals.currency };
 }
 
 async function resolveRecipient(deps: DispatchOrderEmailsDeps, order: Order): Promise<Email> {

@@ -308,9 +308,10 @@ export interface OutboxEntryDoc {
 	failureReason?: string;
 	/**
 	 * Set on a NOTICE entry (`enqueueNotice`): an email about the order that is not
-	 * a state transition — today only `late-payment-refunded`. ABSENT on every
+	 * a state transition — `late-payment-refunded` or `refund-issued`. ABSENT on every
 	 * state entry, which is what keeps a document written before notices existed
-	 * exactly what it was. A notice entry is first-wins per `notice.kind`, never per
+	 * exactly what it was. A notice entry is first-wins per `(notice.kind,
+	 * notice.refundId)`, never per
 	 * `toState`: its `toState` is only the state the order was in when it was
 	 * enqueued, so it must never occupy (or be found as) that state's slot — see
 	 * {@link findOutboxEntry}.
@@ -723,12 +724,17 @@ export function findOutboxEntry(doc: OrderDoc, toState: OrderState): OutboxEntry
 	return doc.emailOutbox.find((entry) => entry.notice === undefined && entry.toState === toState);
 }
 
-/** The NOTICE outbox entry of this kind, if one was ever enqueued. */
+/** The NOTICE outbox entry for this notice's dedupe key — `(kind, refundId)`, an
+ *  absent `refundId` reading as none — if one was ever enqueued. */
 export function findNoticeEntry(
 	doc: OrderDoc,
-	kind: OrderNoticeInput["kind"],
+	notice: Pick<OrderNoticeInput, "kind" | "refundId">,
 ): OutboxEntryDoc | undefined {
-	return doc.emailOutbox.find((entry) => entry.notice?.kind === kind);
+	return doc.emailOutbox.find(
+		(entry) =>
+			entry.notice?.kind === notice.kind &&
+			(entry.notice.refundId ?? null) === (notice.refundId ?? null),
+	);
 }
 
 /**

@@ -36,8 +36,10 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	}
 
 	const orderId = str(data["orderId"]) ?? "";
-	// A notice states its OWN figure (`noticeAmountCents`, the refunded money), not
-	// the order total — a late capture can differ from it. Labelled for what it is.
+	// A refund email states its OWN figure (`noticeAmountCents`, the refunded money),
+	// not the order total — a late capture or a partial refund differs from it.
+	// Labelled for what it is. The ONE "amount refunded" path: notices (late payment,
+	// partial refund) and the `refunded` state email alike (ADR-0026).
 	const isNotice = data["noticeAmountCents"] !== undefined;
 	const total = isNotice
 		? formatMoney(data["noticeAmountCents"], str(data["noticeCurrency"]))
@@ -201,6 +203,13 @@ const ORDER_COPY: Record<
 	"order-late-payment-refunded": {
 		subject: "Payment refunded",
 		body: "A payment arrived after your order expired, so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.",
+	},
+	// An admin refund that left money captured (QA T1-6). Neutral about HOW the money
+	// went back: a manual (x402) refund is sent by the merchant to a wallet, not "to
+	// your original payment method". Its figure is the notice's own (`Refunded: X`).
+	"order-partially-refunded": {
+		subject: "Refund issued",
+		body: "We've issued a partial refund for your order.",
 	},
 };
 

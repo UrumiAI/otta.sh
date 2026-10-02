@@ -492,6 +492,12 @@ export class InMemoryOrderStore implements OrderStore {
 				fullyRefunded = true;
 			}
 		}
+		// The refund email (QA T1-6), in the same step: a finalized admin refund that
+		// left money captured announces itself; a full one is announced by the
+		// refunded email; a cancellation's or a late payment's by its own.
+		if (refund.status === "recorded" && announcesItself(refund) && !fullyRefunded) {
+			this.#appendNotice(input.orderId, stored.order.state, refundNotice(refund));
+		}
 		return {
 			outcome: "recorded",
 			refund: { ...refund },
@@ -566,6 +572,9 @@ export class InMemoryOrderStore implements OrderStore {
 				this.#appendEvent(row.orderId, fromState, "refunded", row.refundedBy);
 				if (emailTemplateForState("refunded") !== null) this.#enqueue(row.orderId, "refunded");
 				fullyRefunded = true;
+			}
+			if (announcesItself(row) && !fullyRefunded) {
+				this.#appendNotice(row.orderId, stored.order.state, refundNotice(row));
 			}
 		}
 		return {
@@ -953,15 +962,26 @@ export class InMemoryOrderStore implements OrderStore {
 	async enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean> {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined) return false;
-		// First-wins per (orderId, notice) — the notice analogue of the state rows'
-		// ON CONFLICT (order_id, to_state) DO NOTHING.
-		if (this.#outbox.some((r) => r.orderId === orderId && r.notice?.kind === notice.kind)) {
+		return this.#appendNotice(orderId, stored.order.state, notice);
+	}
+
+	/** First-wins per `(orderId, kind, refundId)` — the notice analogue of the state
+	 *  rows' ON CONFLICT (order_id, to_state) DO NOTHING. `true` ⇒ appended. */
+	#appendNotice(orderId: string, state: OrderState, notice: OrderNoticeInput): boolean {
+		if (
+			this.#outbox.some(
+				(r) =>
+					r.orderId === orderId &&
+					r.notice?.kind === notice.kind &&
+					(r.notice.refundId ?? null) === (notice.refundId ?? null),
+			)
+		) {
 			return false;
 		}
 		this.#outbox.push({
 			id: this.#idGen.newId(),
 			orderId,
-			toState: stored.order.state,
+			toState: state,
 			status: "pending",
 			attempts: 0,
 			timeouts: 0,
@@ -1116,4 +1136,20 @@ export class InMemoryOrderStore implements OrderStore {
  *  mutable reference with a caller — the snapshot must read frozen. */
 function cloneAddress(address: OrderAddress | null): OrderAddress | null {
 	return address === null ? null : { ...address };
+}
+
+/** Only an admin refund in its own right (`purpose: "refund"`, the default) announces
+ *  itself with a refund email (ADR-0026). */
+function announcesItself(refund: RefundRecord): boolean {
+	return (refund.purpose ?? "refund") === "refund";
+}
+
+/** The `refund-issued` notice a refund announces itself with. */
+function refundNotice(refund: RefundRecord): OrderNoticeInput {
+	return {
+		kind: "refund-issued",
+		amount: refund.amount,
+		currency: refund.currency,
+		refundId: refund.id,
+	};
 }

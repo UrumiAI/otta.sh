@@ -1030,11 +1030,15 @@ export class EmdashOrderStore implements OrderStore {
 					});
 					fullyRefunded = true;
 				}
+				// The refund email (QA T1-6), in THIS write — see `#withRefundNotice`.
+				const notice = !fullyRefunded ? refundNoticeFor(finalized) : null;
+				if (notice !== null) next = this.#withNotice(next, notice, now) ?? next;
 				const written = await this.#orders.compareAndSet(orderId, current.revision, next);
 				if (!written.applied) return CAS_RETRY;
 				// The full-refund path composes `#flipped` rather than `#flip`, so it brackets
 				// its own locator — same ordering, same reason.
 				if (fullyRefunded) await this.#recordOutboxLocator(next, "refunded");
+				if (notice !== null) await this.#recordLocatorFor(next, findNoticeEntry(next, notice));
 				await this.#reportRefund(next, finalized.currency, finalized.id, finalized.amount);
 				if (fullyRefunded) await this.#reportTransition(next, doc.state, "refunded");
 				return casDone({
@@ -1355,44 +1359,57 @@ export class EmdashOrderStore implements OrderStore {
 		// The notice rides the SAME embedded outbox as the state emails, so it is
 		// claimed, leased, retried and located by exactly the code that already does
 		// that for them — one array, one due index, one locator collection. First-wins
-		// per `notice.kind`, inside the compare-and-set, the way a state entry is per
-		// `toState` inside the flip.
+		// per `(kind, refundId)`, inside the compare-and-set, the way a state entry is
+		// per `toState` inside the flip.
 		const enqueued = await this.#casOrder<OrderDoc | null>("enqueueNotice", async () => {
 			const current = await this.#orders.getVersioned(orderId);
 			if (current === null) return casDone<OrderDoc | null>(null);
 			const doc = normalizeOrderDoc(current.value);
-			if (findNoticeEntry(doc, notice.kind) !== undefined) return casDone<OrderDoc | null>(null);
 			const now = this.#clock.now().toISOString();
-			const emailOutbox: OutboxEntryDoc[] = [
-				...doc.emailOutbox,
-				{
-					id: this.#idGen.newId(),
-					toState: doc.state,
-					status: "pending",
-					attempts: 0,
-					leaseUntil: null,
-					sentAt: null,
-					createdAt: now,
-					notice: { kind: notice.kind, amount: notice.amount, currency: notice.currency },
-				},
-			];
-			const next: OrderDoc = {
-				...doc,
-				emailOutbox,
-				// R2's due index, derived in the SAME write — the only way the claim
-				// can find the entry.
-				emailDueAt: computeEmailDueAt({ emailOutbox }),
+			const next = this.#withNotice(doc, notice, now);
+			if (next === null) return casDone<OrderDoc | null>(null);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...next,
 				updatedAt: now,
-			};
-			const written = await this.#orders.compareAndSet(orderId, current.revision, next);
+			});
 			return written.applied ? casDone<OrderDoc | null>(next) : CAS_RETRY;
 		});
 		if (enqueued === null) return false;
 		// The locator, bracketed after the write exactly like a flip's (see
 		// `#recordOutboxLocator`): a tear leaves "entry, no locator", which the
 		// settle-time walk heals.
-		await this.#recordLocatorFor(enqueued, findNoticeEntry(enqueued, notice.kind));
+		await this.#recordLocatorFor(enqueued, findNoticeEntry(enqueued, notice));
 		return true;
+	}
+
+	/**
+	 * Append a NOTICE entry as a pure document transform — the ONE place a non-state
+	 * email enters the outbox, shared by `enqueueNotice` and the refund writes that
+	 * announce a refund in their own compare-and-set (ADR-0026). `null` when the
+	 * notice is already there: first-wins per `(kind, refundId)`. Re-derives R2's due
+	 * index in the same write — the only way the claim can find the entry.
+	 */
+	#withNotice(doc: OrderDoc, notice: OrderNoticeInput, now: string): OrderDoc | null {
+		if (findNoticeEntry(doc, notice) !== undefined) return null;
+		const emailOutbox: OutboxEntryDoc[] = [
+			...doc.emailOutbox,
+			{
+				id: this.#idGen.newId(),
+				toState: doc.state,
+				status: "pending",
+				attempts: 0,
+				leaseUntil: null,
+				sentAt: null,
+				createdAt: now,
+				notice: {
+					kind: notice.kind,
+					amount: notice.amount,
+					currency: notice.currency,
+					...(notice.refundId !== undefined ? { refundId: notice.refundId } : {}),
+				},
+			},
+		];
+		return { ...doc, emailOutbox, emailDueAt: computeEmailDueAt({ emailOutbox }) };
 	}
 
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
@@ -1773,8 +1790,16 @@ export class EmdashOrderStore implements OrderStore {
 					});
 					fullyRefunded = true;
 				}
+				// The refund email (QA T1-6): a FINALIZED admin refund that left money
+				// captured announces itself in the write that records it; a full one is
+				// announced by the refunded email the flip above enqueued; a cancellation's
+				// or a late payment's by its own email; a reservation by nothing yet.
+				const notice =
+					intent.status === "recorded" && !fullyRefunded ? refundNoticeFor(intent) : null;
+				if (notice !== null) next = this.#withNotice(next, notice, writtenAt) ?? next;
 				const applied = await this.#orders.compareAndSet(orderId, current.revision, next);
 				if (!applied.applied) return CAS_RETRY;
+				if (notice !== null) await this.#recordLocatorFor(next, findNoticeEntry(next, notice));
 				// A RESERVED refund is not money that came back, so only a finalized one is
 				// reported; the ceiling-reaching one also reports the flip it folded in.
 				if (intent.status === "recorded") {
@@ -2917,5 +2942,20 @@ function toOrder(doc: OrderDoc): Order {
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,
 		cancellation: doc.cancellation,
+	};
+}
+
+/**
+ * The `refund-issued` notice a finalized refund announces itself with, or `null`
+ * when its purpose says another email carries it: only an admin refund in its own
+ * right (`purpose: "refund"`, the default) emails "refund issued" (ADR-0026).
+ */
+function refundNoticeFor(refund: RefundEntryDoc): OrderNoticeInput | null {
+	if ((refund.purpose ?? "refund") !== "refund") return null;
+	return {
+		kind: "refund-issued",
+		amount: refund.amount,
+		currency: refund.currency,
+		refundId: refund.id,
 	};
 }

@@ -273,3 +273,33 @@ describe("renderEmail customer-login-link", () => {
 		expect(renderEmail("customer-login-link", {}).html).not.toContain("<a ");
 	});
 });
+
+// QA T1-6: a refund email states the amount REFUNDED — not the order total — and
+// every refund email states it the same way (`Refunded: X`, the notice path).
+describe("renderEmail refund emails", () => {
+	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
+
+	test("a partial refund states its own amount, neutral about how the money went back", () => {
+		const rendered = renderEmail("order-partially-refunded", {
+			...base,
+			noticeAmountCents: 600,
+			noticeCurrency: "USD",
+		});
+		expect(rendered.subject).toBe("Refund issued — order ord-1");
+		expect(rendered.text).toContain("We've issued a partial refund for your order.");
+		expect(rendered.text).toContain("Refunded: 6.00 USD");
+		expect(rendered.text).not.toContain("Total:");
+		expect(rendered.text).not.toContain("original payment method");
+	});
+
+	test("the refunded state email states the money refunded the same way", () => {
+		const rendered = renderEmail("order-refunded", {
+			...base,
+			state: "refunded",
+			noticeAmountCents: 2400,
+			noticeCurrency: "USD",
+		});
+		expect(rendered.text).toContain("Your order has been refunded.");
+		expect(rendered.text).toContain("Refunded: 24.00 USD");
+	});
+});

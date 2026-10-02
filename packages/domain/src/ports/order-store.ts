@@ -426,8 +426,12 @@ export interface OrderStore {
 	/**
 	 * Enqueue a NON-transition email about this order (see {@link OrderNotice}) on
 	 * the same outbox the state emails drain from — first-wins per
-	 * `(orderId, notice.kind)`, the notice analogue of the state rows'
-	 * `UNIQUE(order_id, to_state)`. A replay (a redelivered webhook re-driving the
+	 * `(orderId, notice.kind, notice.refundId)`, the notice analogue of the state
+	 * rows' `UNIQUE(order_id, to_state)`. The finalizing refund writes
+	 * (`finalizeRefund`, the one-shot `recordRefund`) append a `refund-issued` notice
+	 * in the SAME write for a `refund`-purpose row that leaves money captured
+	 * (ADR-0026); a row that reaches the ceiling is announced by the `refunded` state
+	 * email instead, and a `cancellation` or `late-payment` row by its own email. A replay (a redelivered webhook re-driving the
 	 * step that enqueued it) writes nothing and answers `false`; `true` ⇒ this call
 	 * enqueued the row. The row's `toState` is the order's state at enqueue time —
 	 * informational only; the dispatcher picks the template from `notice`.
@@ -640,6 +644,10 @@ export interface OrderNoticeInput {
 	kind: OrderNotice;
 	amount: Cents;
 	currency: Currency;
+	/** The refund the notice announces, when it announces one. Part of the dedupe
+	 *  key: first-wins per `(orderId, kind, refundId)`, so two refunds of the same
+	 *  kind are two emails and a replay of either is none. */
+	refundId?: string;
 }
 
 /** One refund's retry bookkeeping ({@link OrderStore.scheduleRefundRetry}). */

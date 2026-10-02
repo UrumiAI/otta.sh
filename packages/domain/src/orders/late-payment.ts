@@ -471,6 +471,7 @@ async function finish(
 		kind: "late-payment-refunded",
 		amount: refund.amount,
 		currency: refund.currency,
+		refundId: refund.id,
 	});
 	return "refunded";
 }

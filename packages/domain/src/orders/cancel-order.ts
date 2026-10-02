@@ -506,6 +506,21 @@ export async function cancelOrderWithRefund(
 		]
 			.filter((part) => part !== null)
 			.join(" and ");
+		// The cancelled email that would have told the buyer about their money will
+		// never go, so the refund announces itself instead — the same `refund-issued`
+		// notice an admin partial refund sends, first-wins per refund (QA T1-6).
+		// Best-effort like the flag: nothing after a refund surfaces as a bare throw.
+		const lostRefundId = refundLeg.refundId;
+		if (refund !== null && lostRefundId !== null) {
+			await bestEffort(() =>
+				deps.orderStore.enqueueNotice(cmd.orderId, {
+					kind: "refund-issued",
+					amount: refund.amount,
+					currency: refund.currency,
+					refundId: lostRefundId,
+				}),
+			);
+		}
 		await bestEffort(() =>
 			deps.orderStore.flagReconciliation(
 				cmd.orderId,
@@ -593,7 +608,7 @@ async function bestEffort(write: () => Promise<unknown>): Promise<void> {
 }
 
 type RefundLeg =
-	| { ok: true; refund: CancellationRefund | null; restock: boolean }
+	| { ok: true; refund: CancellationRefund | null; refundId: string | null; restock: boolean }
 	| { ok: false; failure: Extract<CancelOrderWithRefundOutcome, { ok: false }> };
 
 /**
@@ -655,7 +670,7 @@ async function refundForCancellation(
 	// The FIRST attempt's restock choice wins: a crashed attempt's row carries it, so
 	// a retry with the box flipped does not contradict units already moved.
 	const restock = mine?.restock ?? cmd.restock;
-	if (amount === 0) return { ok: true, refund: null, restock };
+	if (amount === 0) return { ok: true, refund: null, refundId: null, restock };
 	if (gateway === null || !gateway.refundable) {
 		return { ok: false, failure: { ok: false, reason: "REFUND_NOT_AUTOMATIC" } };
 	}
@@ -690,5 +705,6 @@ async function refundForCancellation(
 		ok: true,
 		refund: { amount: res.refund.amount, currency: res.refund.currency },
 		restock,
+		refundId: res.refund.id,
 	};
 }

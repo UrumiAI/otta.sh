@@ -46,8 +46,16 @@ export type PaymentMethod = "stripe" | "x402";
  *
  * - `late-payment-refunded` — a payment succeeded after the order had expired or
  *   been cancelled, and it was refunded automatically (`settleOrder`).
+ * - `refund-issued` — an admin refund that left money captured (a partial refund),
+ *   announced by the write that finalized it; or a cancellation's refund whose order
+ *   shipped before the cancel landed, so no cancelled email will carry it
+ *   (ADR-0026). One per refund.
+ *
+ * A notice is first-wins per `(orderId, kind, refundId)` — `refundId` absent
+ * reads as none — so each refund announces itself once, however often the step
+ * that enqueued it is replayed.
  */
-export type OrderNotice = "late-payment-refunded";
+export type OrderNotice = "late-payment-refunded" | "refund-issued";
 
 /**
  * The admin's disposition when clearing a reconciliation flag (admin-UX

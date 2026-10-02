@@ -136,6 +136,23 @@ async function drainNotices(
 	return found;
 }
 
+/** EVERY outbox row of `id` due by `now` — state emails and notices alike —
+ *  claimed and marked sent. Other orders' rows are drained and ignored. */
+async function drainRows(
+	store: OrderStore,
+	id: OrderId,
+	now: string,
+): Promise<{ toState: string; notice: OrderNoticeInput | null }[]> {
+	const found: { toState: string; notice: OrderNoticeInput | null }[] = [];
+	for (let i = 0; i < 50; i++) {
+		const row = await store.claimNextEmail(now, "9999-01-01T00:00:00.000Z");
+		if (row === null) break;
+		if (row.orderId === id) found.push({ toState: row.toState, notice: row.notice });
+		await store.markEmailSent(row.id, now);
+	}
+	return found;
+}
+
 function retryDeps(h: LatePaymentHarness, gateway: PaymentGateway) {
 	return {
 		orderStore: h.settleDeps.orderStore,
@@ -213,11 +230,18 @@ export function latePaymentContract(
 			expect(await latePayment(h, s.order.id)).toBe("refunded");
 			expect(await store.listRefundRetriesDue("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
 
-			expect(await drainNotices(store, s.order.id, now)).toEqual([
-				{ kind: "late-payment-refunded", amount: TOTAL_CENTS, currency: USD },
-			]);
+			// EXACTLY ONE email about the late payment: its own notice — never also the
+			// admin "refund issued" email a `refund`-purpose row would enqueue (ADR-0026).
+			const rows = await drainRows(store, s.order.id, now);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.notice).toEqual({
+				kind: "late-payment-refunded",
+				amount: TOTAL_CENTS,
+				currency: USD,
+				refundId: refunds[0]?.id,
+			});
 			await settleOrder(h.settleDeps, gateway, succeeded(gateway, s, "evt_1"));
-			expect(await drainNotices(store, s.order.id, now), "no second email").toEqual([]);
+			expect(await drainRows(store, s.order.id, now), "no second email").toEqual([]);
 		});
 
 		test("two deliveries of the same event settling CONCURRENTLY refund once and notify once", async () => {

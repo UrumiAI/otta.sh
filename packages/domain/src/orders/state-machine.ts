@@ -77,6 +77,7 @@ export function emailTemplateForState(to: OrderState): EmailTemplate | null {
  */
 export const ORDER_NOTICE_EMAIL_TEMPLATE = {
 	"late-payment-refunded": "order-late-payment-refunded",
+	"refund-issued": "order-partially-refunded",
 } as const satisfies Record<OrderNotice, EmailTemplate>;
 
 /** The template a notice outbox row renders. Total over `OrderNotice`. */
