@@ -124,6 +124,12 @@ const cards: HomeModel["cards"] =
 				image: product.images?.[0] ?? null,
 				price: product.purchasable && product.price !== null ? product.price.formatted : null,
 				priceNote: undefined,
+				/* The plugin decided it is a sale; a was-price needs a live price
+				   to sit beside. Same rule as the shop's cards. */
+				was:
+					product.purchasable && product.price !== null
+						? (product.compareAtPrice?.formatted ?? null)
+						: null,
 				availability: product.availability,
 			}));
 

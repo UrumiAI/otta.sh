@@ -216,7 +216,7 @@ describe("Ledger — the receipt names what was bought (title)", () => {
 		expect(html.indexOf("Otta Tee")).toBeLessThan(html.indexOf("OTTA-TEE-01"));
 	});
 
-	test("a row WITHOUT one is unchanged — a cart line has no title to show", async () => {
+	test("a row WITHOUT one is unchanged — a line the store cannot name shows its SKU alone", async () => {
 		const html = await ledger({ rows: [{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }] });
 		expect(html).toContain("OTTA-TEE-01");
 		expect(html).not.toContain('class="title"');

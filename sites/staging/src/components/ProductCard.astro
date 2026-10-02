@@ -37,6 +37,9 @@ interface Props extends HTMLAttributes<"a"> {
 	availability?: AvailabilityToken | null;
 	/** The prose that replaces the price when there is none. */
 	priceNote?: string;
+	/** The compare-at price, pre-formatted, when the product is on sale —
+	 *  struck beside `price`. Ignored without a `price` to sit beside. */
+	was?: string | null;
 	/**
 	 * The card title's heading level.
 	 *
@@ -60,6 +63,7 @@ const {
 	price = null,
 	availability = null,
 	priceNote = "Not currently available for purchase",
+	was = null,
 	level = "h2",
 	class: className,
 	...rest
@@ -81,7 +85,7 @@ const Heading = level;
 			price === null ? (
 				<span class="card-note">{priceNote}</span>
 			) : (
-				<PriceTag formatted={price} soldOut={soldOut} />
+				<PriceTag formatted={price} soldOut={soldOut} was={was} />
 			)
 		}
 		<StockRule availability={availability} />

@@ -71,7 +71,13 @@ if (busy) markBusy(Astro.response);
  *  commercial field explicitly absent so no card can show a figure. */
 const cards =
 	view ??
-	items.map((content) => ({ ...content, purchasable: false, price: null, availability: null }));
+	items.map((content) => ({
+		...content,
+		purchasable: false,
+		price: null,
+		compareAtPrice: null,
+		availability: null,
+	}));
 
 /**
  * What a card says where its price would be.
@@ -121,6 +127,13 @@ const model: ShopModel = {
 		/* A card with no live price gets `null` — not a figure, not a zero. */
 		price: product.purchasable && product.price !== null ? product.price.formatted : null,
 		priceNote,
+		/* The plugin decided whether this is a sale (`compareAtPrice` is null
+		   unless it is above the price); the page only refuses a was-price for
+		   a card with no live price to strike it beside. */
+		was:
+			product.purchasable && product.price !== null
+				? (product.compareAtPrice?.formatted ?? null)
+				: null,
 		availability: product.availability,
 	})),
 	adminHref: "/_emdash/admin",

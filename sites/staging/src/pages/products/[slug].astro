@@ -166,6 +166,8 @@ const purchase: ProductPurchase | null =
 	content !== null && purchasable && product?.price
 		? {
 				priceFormatted: product.price.formatted,
+				/* The sale decision is the plugin's (null unless above the price). */
+				compareAtFormatted: product.compareAtPrice?.formatted ?? null,
 				priceStruck: !inStock,
 				availability: product.availability,
 				sku: product.sku,
