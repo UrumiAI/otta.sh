@@ -1116,6 +1116,10 @@ export interface RefundRecord {
 	/** Why the money went back — see {@link RefundPurpose}. ABSENT on a row written
 	 *  before the field existed, which reads as `"refund"`. */
 	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
 	id: string;
 	orderId: OrderId;
 	amount: Cents;
@@ -1212,6 +1216,10 @@ export interface RecordRefundInput {
 	/** Stored on the row; a `cancellation` row never drives `→ refunded`, on the
 	 *  one-shot record OR on a later finalize. Absent ⇒ `"refund"`. */
 	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
 }
 
 /** The atomic outcome of {@link OrderStore.recordRefund} (ADR-0008).

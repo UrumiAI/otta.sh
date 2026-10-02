@@ -1680,6 +1680,7 @@ export class EmdashOrderStore implements OrderStore {
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
 			purpose: input.purpose ?? "refund",
+			...(input.restock !== undefined ? { restock: input.restock } : {}),
 		};
 		let orderId: string = input.orderId;
 		let intent = prepared;
@@ -2532,6 +2533,7 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		idempotencyKey: refund.idempotencyKey,
 		createdAt: refund.createdAt,
 		purpose: refund.purpose ?? "refund",
+		...(refund.restock !== undefined ? { restock: refund.restock } : {}),
 	};
 }
 

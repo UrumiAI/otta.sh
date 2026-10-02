@@ -13,7 +13,7 @@ import { cancelOrderWithRefund } from "../orders/cancel-order.js";
 import { refundOrder } from "../orders/refund-order.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import type { Clock } from "../ports/clock.js";
-import type { InventoryStore } from "../ports/inventory-store.js";
+import { ReservationCommitLostError, type InventoryStore } from "../ports/inventory-store.js";
 import type { OrderStore } from "../ports/order-store.js";
 import { FakeEmailSender } from "./fake-email-sender.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
@@ -150,10 +150,18 @@ function cancelWith(
 	h: CancelWithRefundHarness,
 	gateway: FakePaymentGateway | null,
 	id: OrderId,
-	opts: { restock?: boolean; key?: string; orderStore?: OrderStore } = {},
+	opts: {
+		restock?: boolean;
+		key?: string;
+		orderStore?: OrderStore;
+		inventoryStore?: InventoryStore;
+	} = {},
 ) {
 	return cancelOrderWithRefund(
-		{ orderStore: opts.orderStore ?? h.orderStore, inventoryStore: h.inventoryStore },
+		{
+			orderStore: opts.orderStore ?? h.orderStore,
+			inventoryStore: opts.inventoryStore ?? h.inventoryStore,
+		},
 		gateway,
 		{
 			orderId: id,
@@ -163,6 +171,28 @@ function cancelWith(
 			idempotencyKey: idempotencyKey(opts.key ?? `cxl:${id}`),
 		},
 	);
+}
+
+/** The inventory store with `method` failing ONCE, with `error` (default: a plain,
+ *  untyped Error — the "anything else" a store can throw). */
+function failingOnce(
+	store: InventoryStore,
+	method: "restock" | "commit",
+	error: Error = new Error(`simulated ${method} failure`),
+): InventoryStore {
+	let failed = false;
+	return new Proxy(store, {
+		get(target, prop, receiver) {
+			if (prop === method && !failed) {
+				return async () => {
+					failed = true;
+					throw error;
+				};
+			}
+			const value: unknown = Reflect.get(target, prop, receiver);
+			return typeof value === "function" ? (value as Function).bind(target) : value;
+		},
+	});
 }
 
 /** Every email the order's outbox holds, drained through the real dispatcher. */
@@ -298,12 +328,20 @@ export function cancelWithRefundContract(
 			const h = await makeHarness();
 			const id = await seedOrder(h, "cxl-crash");
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			await expect(
-				cancelWith(h, gw, id, { orderStore: crashingOnceOnCancel(h.orderStore) }),
-			).rejects.toThrow("simulated crash");
-			// The crash left the order PAID — still cancellable, so the operator's retry is
-			// the obvious next step — with the money already back and the units restocked.
-			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			// A failure after the refund is never a bare throw: the money already moved, so
+			// the caller is told so — and the operator's retry is the obvious next step.
+			expect(
+				await cancelWith(h, gw, id, { orderStore: crashingOnceOnCancel(h.orderStore) }),
+			).toMatchObject({
+				ok: false,
+				reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+			});
+			// The order is still PAID — still cancellable — with the money already back and
+			// the units restocked, and flagged so it is not lost if nobody retries.
+			const after = await h.orderStore.getById(id);
+			expect(after?.state).toBe("paid");
+			expect(after?.reconciliationFlag).toContain("did not finish");
 			expect(gw.refundCalls).toHaveLength(1);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 
@@ -319,6 +357,44 @@ export function cancelWithRefundContract(
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 			expect((await h.orderStore.getById(id))?.state).toBe("cancelled");
+		});
+
+		test("a retry of a crashed cancel keeps the FIRST attempt's restock choice — the envelope stays truthful", async () => {
+			// The first attempt restocked, then crashed before the flip. The operator unticks
+			// Return to stock and retries: the units are already back, so the envelope must
+			// say they were, and the retry must not claim "nothing was returned".
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-crash-flip");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { orderStore: crashingOnceOnCancel(h.orderStore) });
+			const retry = await cancelWith(h, gw, id, { restock: false });
+			expect(retry).toMatchObject({ ok: true, cancelled: true, restockedUnits: QTY });
+			expect((await h.orderStore.getById(id))?.cancellation?.restocked).toBe(true);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+		});
+
+		test("an untyped failure in the restock AFTER the refund flags the order and a retry finishes without refunding twice", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-restock-throws");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await cancelWith(h, gw, id, {
+				inventoryStore: failingOnce(h.inventoryStore, "restock"),
+			});
+			expect(res).toMatchObject({
+				ok: false,
+				reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+			});
+			const after = await h.orderStore.getById(id);
+			expect(after?.state).toBe("paid");
+			expect(after?.reconciliationFlag).toContain("did not finish");
+			expect(gw.refundCalls).toHaveLength(1);
+
+			const retry = await cancelWith(h, gw, id);
+			expect(retry).toMatchObject({ ok: true, cancelled: true, restockedUnits: QTY });
+			expect(gw.refundCalls).toHaveLength(1);
+			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 		});
 
 		test("a refund the provider REJECTS leaves the order paid, the stock untouched and nobody emailed", async () => {
@@ -506,6 +582,7 @@ export function cancelWithRefundContract(
 				reason: "CANCEL_LOST_AFTER_REFUND",
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
 				restockedUnits: QTY,
+				movedTo: "shipped",
 			});
 			const order = await h.orderStore.getById(id);
 			expect(order?.state).toBe("shipped");
@@ -532,6 +609,37 @@ export function cancelWithRefundContract(
 			// A retry moves nothing more.
 			await cancelWith(h, gw, id);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
+		});
+
+		test("an OPEN commit bracket with Return to stock unticked: the hold is still committed, so no unit comes back", async () => {
+			// Restock declined — but the cancel's release intent would otherwise return an
+			// ADOPTED hold's units anyway. Closing the bracket is unconditional.
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-adopted-keep", { hold: "adopted" });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await cancelWith(h, gw, id, { restock: false });
+			expect(res).toMatchObject({ ok: true, cancelled: true, restockedUnits: 0 });
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
+			expect((await h.orderStore.getById(id))?.cancellation?.restocked).toBe(false);
+		});
+
+		test("a hold whose state cannot be told (lost, but not RELEASED) is skipped as unknown, never as released", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-hold-pending", { hold: "adopted" });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const order = await h.orderStore.getById(id);
+			const reservation = String(order?.lines[0]?.reservationId);
+			const res = await cancelWith(h, gw, id, {
+				inventoryStore: failingOnce(
+					h.inventoryStore,
+					"commit",
+					new ReservationCommitLostError(reservation, "pending"),
+				),
+			});
+			expect(res).toMatchObject({
+				ok: true,
+				restockSkipped: [{ sku: skuOf(id), quantity: QTY, reason: "HOLD_UNKNOWN" }],
+			});
 		});
 
 		test("a hold that was LOST (released before settlement) is not restocked — its units are already back", async () => {

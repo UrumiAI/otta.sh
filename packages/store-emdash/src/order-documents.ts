@@ -377,6 +377,10 @@ export interface RefundEntryDoc {
 	 * ABSENT on a row written before the field existed, which reads as `refund`.
 	 */
 	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
 }
 
 /**

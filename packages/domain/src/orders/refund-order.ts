@@ -55,6 +55,8 @@ export interface RefundOrderCommand {
 	 *  (`cancelOrderWithRefund`): stored on the row, and such a row never drives
 	 *  `→ refunded` — the cancellation closes the order instead. Default `refund`. */
 	purpose?: RefundPurpose;
+	/** Stored on a `cancellation` row — see `RefundRecord.restock`. */
+	restock?: boolean;
 }
 
 export type RefundOrderFailure =
@@ -302,6 +304,7 @@ export async function refundOrder(
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
 			purpose: cmd.purpose ?? "refund",
+			...(cmd.restock !== undefined ? { restock: cmd.restock } : {}),
 		});
 		return settleRecordOutcome(res, cmd);
 	}
@@ -335,6 +338,7 @@ export async function refundOrder(
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
 			purpose: cmd.purpose ?? "refund",
+			...(cmd.restock !== undefined ? { restock: cmd.restock } : {}),
 		});
 		if (reserved.outcome === "order_not_found") return { ok: false, reason: "ORDER_NOT_FOUND" };
 		if (reserved.outcome === "exceeds_ceiling") {

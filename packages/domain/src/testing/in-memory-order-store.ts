@@ -470,6 +470,7 @@ export class InMemoryOrderStore implements OrderStore {
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
 			purpose: input.purpose ?? "refund",
+			...(input.restock !== undefined ? { restock: input.restock } : {}),
 		};
 		this.#refunds.push(refund);
 		let fullyRefunded = false;

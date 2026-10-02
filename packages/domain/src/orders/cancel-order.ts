@@ -214,7 +214,10 @@ export type CancelOrderWithRefundFailure =
 	 *  (shipped, say) before the cancel flip landed. The order is FLAGGED for
 	 *  reconciliation naming the refund — the money is never silently returned on
 	 *  an order that is not cancelled. */
-	| "CANCEL_LOST_AFTER_REFUND";
+	| "CANCEL_LOST_AFTER_REFUND"
+	/** The refund went through, then the restock or the flip threw. The order is
+	 *  flagged ("did not finish") and still cancellable; a retry completes it. */
+	| "CANCEL_INCOMPLETE_AFTER_REFUND";
 
 export type CancelOrderWithRefundOutcome =
 	| {
@@ -229,13 +232,25 @@ export type CancelOrderWithRefundOutcome =
 			/** Lines the restock could NOT return, and why — reported, never dropped. */
 			restockSkipped: RestockSkip[];
 	  }
-	| { ok: false; reason: Exclude<CancelOrderWithRefundFailure, "CANCEL_LOST_AFTER_REFUND"> }
+	| {
+			ok: false;
+			reason: Exclude<
+				CancelOrderWithRefundFailure,
+				"CANCEL_LOST_AFTER_REFUND" | "CANCEL_INCOMPLETE_AFTER_REFUND"
+			>;
+	  }
+	/** The refund went through but the restock or the cancel flip then FAILED (an
+	 *  error, not a refusal): the order is still `paid`/`processing`, flagged, and a
+	 *  retry finishes it without refunding twice. */
+	| { ok: false; reason: "CANCEL_INCOMPLETE_AFTER_REFUND"; refund: CancellationRefund }
 	/** The refund (and restock) happened but the order shipped first — flagged. */
 	| {
 			ok: false;
 			reason: "CANCEL_LOST_AFTER_REFUND";
 			refund: CancellationRefund | null;
 			restockedUnits: number;
+			/** The state the order moved to instead (shipped, say). */
+			movedTo: OrderState | null;
 	  }
 	/** The refund leg failed and the order was NOT cancelled; `refundFailure` says
 	 *  why, with `refundOrder`'s own taxonomy (retryable, rejected, unknown, …). */
@@ -275,6 +290,7 @@ async function restockLines(
 	inventoryStore: InventoryStore,
 	order: Order,
 	key: IdempotencyKey,
+	restock: boolean,
 ): Promise<{ restockedUnits: number; restockSkipped: RestockSkip[] }> {
 	let restockedUnits = 0;
 	const restockSkipped: RestockSkip[] = [];
@@ -285,7 +301,13 @@ async function restockLines(
 				await inventoryStore.commit(line.reservationId);
 			} catch (err) {
 				if (err instanceof ReservationCommitLostError) {
-					restockSkipped.push({ sku: line.sku, quantity: line.quantity, reason: "HOLD_RELEASED" });
+					// Only a RELEASED hold provably gave its units back; any other lost state
+					// (pending, failed, …) cannot be told apart.
+					restockSkipped.push({
+						sku: line.sku,
+						quantity: line.quantity,
+						reason: err.state === "released" ? "HOLD_RELEASED" : "HOLD_UNKNOWN",
+					});
 					continue;
 				}
 				if (err instanceof ReservationNotFoundError) {
@@ -295,6 +317,10 @@ async function restockLines(
 				throw err;
 			}
 		}
+		// The bracket is closed whatever the operator chose (an ADOPTED hold left open
+		// would be RELEASED by the flip — units back although Return to stock was
+		// unticked). Only the restock itself follows the choice.
+		if (!restock) continue;
 		const res = await inventoryStore.restock(
 			line.sku,
 			line.quantity,
@@ -391,38 +417,32 @@ export async function cancelOrderWithRefund(
 	if (!refundLeg.ok) return refundLeg.failure;
 	const refund = refundLeg.refund;
 
-	// 2. RESTOCK, each physical line exactly once — see `restockLines`.
-	const { restockedUnits, restockSkipped } = cmd.restock
-		? await restockLines(deps.inventoryStore, order, cmd.idempotencyKey)
-		: { restockedUnits: 0, restockSkipped: [] };
-
-	// 3. CANCEL — the commit point. `restocked` is what the restock records say
-	// happened (a replayed restock reports its recorded units), not the checkbox.
-	const flip = (fromState: OrderState) =>
-		deps.orderStore.cancelOrder({
-			orderId: cmd.orderId,
-			fromState,
-			reason: cmd.reason,
-			detail,
-			cancelledBy,
-			idempotencyKey: cmd.idempotencyKey,
-			enqueueEmail: emailTemplateForState("cancelled") !== null,
-			refund,
-			restocked: restockedUnits > 0,
-		});
-	let res = await flip(order.state);
-	// The order moved under us but is STILL cancellable (paid → processing, say):
-	// retry the flip once from where it now is rather than leave a refunded order
-	// uncancelled. The refund and the restock already happened and are keyed, so
-	// nothing is repeated.
-	if (
-		!res.cancelled &&
-		res.order !== null &&
-		res.order.state !== "cancelled" &&
-		isLegalOrderTransition(res.order.state, "cancelled")
-	) {
-		res = await flip(res.order.state);
+	// 2–3. RESTOCK and CANCEL. Once money has moved, nothing below may surface as a
+	// bare throw: the operator would read "a fault in the console", with the order
+	// still paid, refunded and unflagged. So a failure here is flagged (best-effort)
+	// and answered as CANCEL_INCOMPLETE_AFTER_REFUND — a retry finishes it, and its
+	// refund replays rather than repeating.
+	const restock = refundLeg.restock;
+	let legs: {
+		res: Awaited<ReturnType<OrderStore["cancelOrder"]>>;
+		restockedUnits: number;
+		restockSkipped: RestockSkip[];
+	};
+	try {
+		legs = await restockAndFlip(deps, order, cmd, { detail, cancelledBy, refund, restock });
+	} catch (err) {
+		if (refund === null) throw err;
+		try {
+			await deps.orderStore.flagReconciliation(
+				cmd.orderId,
+				`a cancellation (key ${cmd.idempotencyKey}) refunded ${String(refund.amount)} ${refund.currency} but did not finish — click Cancel order again (it will not refund twice)`,
+			);
+		} catch {
+			// Best-effort: the outcome below still tells the operator.
+		}
+		return { ok: false, reason: "CANCEL_INCOMPLETE_AFTER_REFUND", refund };
 	}
+	const { res, restockedUnits, restockSkipped } = legs;
 	if (res.cancelled) {
 		return {
 			ok: true,
@@ -459,13 +479,72 @@ export async function cancelOrderWithRefund(
 			cmd.orderId,
 			`a cancellation (key ${cmd.idempotencyKey}) ${what}, but the order moved to ${fresh?.state ?? "an unknown state"} before it could be cancelled — contact the buyer, then stop the shipment or use Mark refunded; do not ship or refund it again unchecked`,
 		);
-		return { ok: false, reason: "CANCEL_LOST_AFTER_REFUND", refund, restockedUnits };
+		return {
+			ok: false,
+			reason: "CANCEL_LOST_AFTER_REFUND",
+			refund,
+			restockedUnits,
+			movedTo: fresh?.state ?? null,
+		};
 	}
 	return { ok: false, reason: "NOT_CANCELLABLE" };
 }
 
+/**
+ * Legs 2 and 3: close every open commit bracket and restock when asked, then the
+ * guarded cancel flip — retried once from where the order now is when it moved but
+ * is still cancellable (paid → processing). The refund and restock are keyed, so the
+ * retry repeats nothing.
+ */
+async function restockAndFlip(
+	deps: CancelOrderWithRefundDeps,
+	order: Order,
+	cmd: CancelOrderWithRefundCommand,
+	opts: {
+		detail: string | null;
+		cancelledBy: string;
+		refund: CancellationRefund | null;
+		restock: boolean;
+	},
+): Promise<{
+	res: Awaited<ReturnType<OrderStore["cancelOrder"]>>;
+	restockedUnits: number;
+	restockSkipped: RestockSkip[];
+}> {
+	const { restockedUnits, restockSkipped } = await restockLines(
+		deps.inventoryStore,
+		order,
+		cmd.idempotencyKey,
+		opts.restock,
+	);
+	// `restocked` is what the restock records say happened (a replayed restock
+	// reports its recorded units), not the checkbox.
+	const flip = (fromState: OrderState) =>
+		deps.orderStore.cancelOrder({
+			orderId: cmd.orderId,
+			fromState,
+			reason: cmd.reason,
+			detail: opts.detail,
+			cancelledBy: opts.cancelledBy,
+			idempotencyKey: cmd.idempotencyKey,
+			enqueueEmail: emailTemplateForState("cancelled") !== null,
+			refund: opts.refund,
+			restocked: restockedUnits > 0,
+		});
+	let res = await flip(order.state);
+	if (
+		!res.cancelled &&
+		res.order !== null &&
+		res.order.state !== "cancelled" &&
+		isLegalOrderTransition(res.order.state, "cancelled")
+	) {
+		res = await flip(res.order.state);
+	}
+	return { res, restockedUnits, restockSkipped };
+}
+
 type RefundLeg =
-	| { ok: true; refund: CancellationRefund | null }
+	| { ok: true; refund: CancellationRefund | null; restock: boolean }
 	| { ok: false; failure: Extract<CancelOrderWithRefundOutcome, { ok: false }> };
 
 /**
@@ -524,7 +603,10 @@ async function refundForCancellation(
 			return { ok: false, failure: { ok: false, reason: "MULTIPLE_CAPTURES" } };
 		}
 	}
-	if (amount === 0) return { ok: true, refund: null };
+	// The FIRST attempt's restock choice wins: a crashed attempt's row carries it, so
+	// a retry with the box flipped does not contradict units already moved.
+	const restock = mine?.restock ?? cmd.restock;
+	if (amount === 0) return { ok: true, refund: null, restock };
 	if (gateway === null || !gateway.refundable) {
 		return { ok: false, failure: { ok: false, reason: "REFUND_NOT_AUTOMATIC" } };
 	}
@@ -546,6 +628,7 @@ async function refundForCancellation(
 			refundedBy: cancelledBy,
 			idempotencyKey: key,
 			purpose: "cancellation",
+			restock: cmd.restock,
 		},
 	);
 	if (!res.ok) {
@@ -554,5 +637,9 @@ async function refundForCancellation(
 			failure: { ok: false, reason: "REFUND_FAILED", refundFailure: res.reason },
 		};
 	}
-	return { ok: true, refund: { amount: res.refund.amount, currency: res.refund.currency } };
+	return {
+		ok: true,
+		refund: { amount: res.refund.amount, currency: res.refund.currency },
+		restock,
+	};
 }
