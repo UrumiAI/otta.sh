@@ -1732,7 +1732,100 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(String(blockedNote?.text)).toContain("redeemed 3 times");
 		// DA-7a: names the alternative, no "deliberately"/"there is no"/"we do not".
 		expect(String(blockedNote?.text)).not.toMatch(/deliberately|there is no|we do not/i);
-		expect(String(blockedNote?.text)).toMatch(/expiry to a past date/i);
+		expect(String(blockedNote?.text)).toMatch(/Retire coupon/);
+	});
+
+	test("Retire ends a LIVE coupon now — redeemed or not — keeping its economics and its uses, and the detail says checkout refuses it", async () => {
+		// QA: the copy said "retire this coupon" and there was no control that did
+		// it; a redeemed coupon could not be deleted either. Retiring is setting the
+		// expiry to NOW — the window the domain already enforces (`[startsAt,
+		// expiresAt)`), so checkout refuses the code at once, nothing about the
+		// redemptions moves, and extending the expiry later reopens it.
+		const live = {
+			coupons: [
+				{
+					id: "c-live",
+					code: "LIVE10",
+					type: "fixed_amount",
+					amountCents: 1000,
+					rateBps: null,
+					capCents: null,
+					currency: "USD",
+					minSubtotalCents: 2000,
+					startsAt: "2026-01-01T00:00:00.000Z",
+					expiresAt: null,
+					maxUses: 50,
+					maxUsesPerCustomer: 2,
+					usesCount: 2,
+					createdAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+		};
+		await boot(live);
+		const detail = await openCoupon("LIVE10");
+		const retire = actionButtons(detail).find((e) => e.action_id === "coupons:retire");
+		expect(retire, "a live coupon offers Retire").toBeDefined();
+		expect(retire!.label).toBe("Retire coupon"); // generic — M-7
+		const confirm = confirmOf(retire);
+		expect(confirm.title).toBe("Retire LIVE10?");
+		expect(String(confirm.text).length).toBeLessThanOrEqual(200);
+		// A shopper mid-checkout with the code applied is refused on their next
+		// quote; the confirm says so before the click.
+		expect(String(confirm.text)).toMatch(/mid-checkout/i);
+
+		const before = Date.now();
+		const after = await click(retire);
+		const record = await stored("c-live");
+		expect(record?.expiresAt).not.toBeNull();
+		const endedAt = Date.parse(String(record?.expiresAt));
+		expect(endedAt).toBeGreaterThanOrEqual(before - 1000);
+		expect(endedAt).toBeLessThanOrEqual(Date.now());
+		// Everything else is exactly as it was — retiring is not an edit.
+		expect(record).toMatchObject({
+			amountCents: 1000,
+			minSubtotalCents: 2000,
+			startsAt: "2026-01-01T00:00:00.000Z",
+			maxUses: 50,
+			maxUsesPerCustomer: 2,
+			usesCount: 2,
+		});
+		expect(topLevelBanners(after).map((b) => b.title)).toEqual([
+			"Coupon retired",
+			"This coupon is expired",
+		]);
+		// The window it replaced is in the notice, so reopening it is a copy job.
+		expect(String(topLevelBanners(after)[0]?.description)).toMatch(/Was valid from 1 Jan 2026/);
+		// And it is not offered again on a coupon that has already ended.
+		expect(actionButtons(after).some((e) => e.action_id === "coupons:retire")).toBe(false);
+	});
+
+	test("a SCHEDULED coupon retired before it starts ends now too — its future start is dropped so the window is not left inverted", async () => {
+		const scheduled = {
+			coupons: [
+				{
+					id: "c-later",
+					code: "LATER5",
+					type: "fixed_amount",
+					amountCents: 500,
+					rateBps: null,
+					capCents: null,
+					currency: "USD",
+					minSubtotalCents: null,
+					startsAt: "2099-01-01T00:00:00.000Z",
+					expiresAt: null,
+					maxUses: null,
+					maxUsesPerCustomer: null,
+					usesCount: 0,
+					createdAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+		};
+		await boot(scheduled);
+		const detail = await openCoupon("LATER5");
+		await click(actionButtons(detail).find((e) => e.action_id === "coupons:retire"));
+		const record = await stored("c-later");
+		expect(record?.startsAt).toBeNull();
+		expect(Date.parse(String(record?.expiresAt))).toBeLessThanOrEqual(Date.now());
 	});
 
 	test("deleting an unredeemed coupon removes it, returns to the list with a 'deleted' notice; a repeat delete is an idempotent no-op", async () => {

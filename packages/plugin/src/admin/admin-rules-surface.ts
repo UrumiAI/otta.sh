@@ -345,4 +345,24 @@ export interface AdminRulesSurface {
 	createCoupon(input: CouponInput): Promise<RulesCreateResult<CouponWire>>;
 	updateCoupon(couponId: string, edit: CouponEdit): Promise<RulesUpdateResult<CouponWire>>;
 	deleteCoupon(couponId: string): Promise<RulesDeleteResult>;
+	/** End a coupon NOW on the surface's own clock — see {@link CouponRetireResult}. */
+	retireCoupon(couponId: string): Promise<CouponRetireResult>;
 }
+
+/**
+ * RETIRE = `expiresAt := now`, the domain's own `[startsAt, expiresAt)` window,
+ * so no `retired` state exists on the port and checkout refuses the code with the
+ * ordinary `COUPON_NOT_ACTIVE`. `previous` is the window that was replaced, so the
+ * console can tell the operator what to put back to reopen it. `already_ended`:
+ * the coupon's expiry had already passed — nothing was written.
+ */
+export type CouponRetireResult =
+	| {
+			ok: true;
+			value: {
+				coupon: CouponWire;
+				retiredAt: string;
+				previous: { startsAt: string | null; expiresAt: string | null };
+			};
+	  }
+	| { ok: false; reason: "not_found" | "already_ended" };

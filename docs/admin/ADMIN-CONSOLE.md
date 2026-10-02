@@ -2228,11 +2228,15 @@ item 2 in the same function. Each withheld move gets a DA-7 line, written per DA
 an action, render **no control** plus one `context` line stating the reason and the alternative.
 Never a "disabled" button (R-11 — and after the foundation, a compile error).
 
-The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it.**
-The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
+The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it**
+(`withheldDeleteContext` in `coupons-page.ts`, which pluralises the count — `1 time` / `3 times`):
 
 > `This coupon has been redeemed 3 times — deletion is blocked to keep the redemption audit
-> trail. To retire it, set its expiry to a past date.`
+> trail. To stop it at checkout, use Retire coupon.`
+
+*(Amended 2026-10-02: the alternative used to read "set its expiry to a past date", an
+instruction with no control of its own; the coupon detail now has a `Retire coupon` action that
+does exactly that — see §12.2.)*
 
 Applies to: coupon delete when redeemed; tax class / zone / method delete when referenced; edit and
 stock forms on a soft-deleted product; refund action when nothing remains refundable; cancel when the
@@ -2761,6 +2765,25 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                  ── every editable field on `coupons-page.ts:1096-1175` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
+│  actions    (cond status ≠ expired) block_id coupons:retire-action
+│             [ "Retire coupon" style danger  value {couponId, code}
+│                 confirm{ title "Retire SUMMER25?", text "Checkout stops accepting this
+│                   code now, even for a shopper mid-checkout. Placed orders keep their
+│                   discount; a later expiry in Edit reopens it.",
+│                   confirm "Yes, retire", deny "Keep it" } ]
+│             ← RETIRE = expiresAt := now on the STORES' clock (`retireCoupon` on the rules
+│               surface; a future startsAt is dropped; instants compared parsed, never as
+│               strings). The domain's own window, so no `retired` state exists on the
+│               port; works on a REDEEMED coupon, which delete cannot touch. A shopper who
+│               already applied the code is refused on the next quote with the ordinary
+│               COUPON_NOT_ACTIVE ("isn't active right now — it may have expired").
+│               The success notice names the replaced window, so reopening is a copy job.
+│               Re-reads before its LWW full-replace write; an edit landing in the
+│               read-to-write gap is lost (documented on `CouponStore.update`, pinned by
+│               `coupon-retire.test.ts`).
+│             ← FOLLOW-UP: reporting cannot tell a RETIRED coupon from one that expired on
+│               schedule — both are just a past `expiresAt`. A `retiredAt` stamp would be
+│               the port change that buys it.                    ← ADDED (QA 2026-10-02)
 │
 └─ panel "Redemptions"
      fields     block_id coupons:uses     Redemptions | Max uses ·
@@ -2902,6 +2925,14 @@ header      "Shipping zones"
 context     "A zone groups the shipping methods you offer for a set of destinations." (≤140)
 actions     [ button "New shipping zone" style primary → the create SCREEN ]       (L-8)
 banner      (cond) notice        ── no filter (0 fields) ──
+banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only ships to addresses
+            your zones list" + the covered codes (ADR-0021 §4). Steps down to a `context`
+            line when the notice and the region warnings already fill X-31's two banners.
+            The FIRST zone's create screen adds banner ship:first-zone and a required
+            toggle `ackFirstZone` (a form submit has no `confirm`). Deleting the LAST zone
+            says, in its confirm, that checkout ships anywhere again. Both are CONSOLE
+            guards: the rules client and stores accept the write unprompted.
+                                                                   ← ADDED (QA 2026-10-02)
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to

@@ -114,6 +114,7 @@ export type RulesClientSurface = Pick<
 	| "createCoupon"
 	| "updateCoupon"
 	| "deleteCoupon"
+	| "retireCoupon"
 >;
 /**
  * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
@@ -4925,6 +4926,73 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: true });
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		/** A live coupon for the retire cases, with a window chosen by the case. */
+		async function retirable(id: string, window: { startsAt?: string; expiresAt?: string } = {}) {
+			const created = await client.createCoupon({
+				id,
+				code: id.toUpperCase(),
+				type: "fixed_amount",
+				amountCents: 1000,
+				currency: "USD",
+				minSubtotalCents: 2000,
+				maxUses: 50,
+				maxUsesPerCustomer: 2,
+				...window,
+			});
+			expect(created.ok).toBe(true);
+		}
+		async function windowOf(code: string) {
+			const page = await client.listCoupons({ search: code });
+			return page.coupons[0];
+		}
+
+		test.skipIf(tier.clock === undefined)(
+			"retireCoupon stamps the expiry from the tier's OWN clock, keeps every other field, and returns the window it replaced (SKIPPED where the tier cannot move its clock)",
+			async () => {
+				const clock = tier.clock;
+				if (clock === undefined) throw new Error("unreachable");
+				await retirable("ret-a", { startsAt: "2000-01-01T00:00:00.000Z" });
+				await retirable("ret-b");
+				const first = await client.retireCoupon("ret-a");
+				// Moving the TIER's clock moves the stamp — wall time would not jump an hour.
+				await clock.advance(60 * 60 * 1000);
+				const second = await client.retireCoupon("ret-b");
+				if (!first.ok || !second.ok) throw new Error("expected both retires to succeed");
+				const gap = Date.parse(second.value.retiredAt) - Date.parse(first.value.retiredAt);
+				expect(gap).toBeGreaterThanOrEqual(60 * 60 * 1000);
+				expect(gap).toBeLessThan(60 * 60 * 1000 + 60_000);
+				expect(first.value.previous).toEqual({
+					startsAt: "2000-01-01T00:00:00.000Z",
+					expiresAt: null,
+				});
+				expect(await windowOf("RET-A")).toMatchObject({
+					expiresAt: first.value.retiredAt,
+					startsAt: "2000-01-01T00:00:00.000Z",
+					amountCents: 1000,
+					minSubtotalCents: 2000,
+					maxUses: 50,
+					maxUsesPerCustomer: 2,
+				});
+			},
+		);
+
+		test("retireCoupon drops a start still in the future, so the window is not left inverted", async () => {
+			await retirable("ret-later", { startsAt: "2999-01-01T00:00:00.000Z" });
+			const result = await client.retireCoupon("ret-later");
+			expect(result.ok && result.value.previous.startsAt).toBe("2999-01-01T00:00:00.000Z");
+			expect((await windowOf("RET-LATER"))?.startsAt).toBeNull();
+		});
+
+		test("retireCoupon on a coupon that already ended answers already_ended and writes nothing", async () => {
+			await retirable("ret-old", { expiresAt: "2000-01-01T00:00:00Z" });
+			expect(await client.retireCoupon("ret-old")).toEqual({ ok: false, reason: "already_ended" });
+			expect((await windowOf("RET-OLD"))?.expiresAt).toBe("2000-01-01T00:00:00Z");
+		});
+
+		test("retireCoupon on an unknown coupon is not_found", async () => {
+			expect(await client.retireCoupon("ret-missing")).toEqual({ ok: false, reason: "not_found" });
 		});
 
 		test("coupons: create, LWW-edit, read, delete", async () => {
