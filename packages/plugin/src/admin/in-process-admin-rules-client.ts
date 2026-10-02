@@ -87,6 +87,8 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
 	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
@@ -108,8 +110,6 @@ import {
 	requireNonNegativeInteger,
 } from "../commerce/commerce-input.js";
 import {
-	isCouponCodeConflictError,
-	isCouponIdCollisionError,
 	isShippingMethodIdCollisionError,
 	isShippingMethodNotFoundError,
 	isShippingRateExistsError,
@@ -743,7 +743,9 @@ const CREATE_PARENT_MISSING = 404;
  * Run one create and answer its store's KNOWN refusals as the create result's
  * own `{ ok: false, status }` arm (see the class doc's "A COLLISION IS THE
  * EXCEPTION"). Matched STRUCTURALLY, by the error's `code`, so the mapping
- * survives a bundle boundary. Every one of these is raised before the store
+ * survives a bundle boundary. The coupon refusals are the PORT's
+ * (`@otta-sh/domain`, ADR-0025) and hold for every adapter; the shipping/tax
+ * collisions are still the document store's own, since their ports declare none. Every one of these is raised before the store
  * writes anything (or after it has given its claim back), which is the whole
  * licence for answering rather than rejecting; any other throw propagates.
  */

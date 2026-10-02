@@ -102,9 +102,23 @@ export function couponStoreContract(
 		test("create refuses a code that differs from a live coupon's only in case", async () => {
 			const { store } = await makeStore();
 			await store.create(fixedCoupon());
-			await expect(store.create(fixedCoupon({ id: "c-lower", code: "save5" }))).rejects.toThrow();
+			// STRUCTURAL, not "some error": the code is the port's contract
+			// (`CouponCodeConflictError`), so a caller maps it the same on every adapter.
+			await expect(
+				store.create(fixedCoupon({ id: "c-lower", code: "save5" })),
+			).rejects.toMatchObject({ code: "COUPON_CODE_CONFLICT" });
 			expect(await store.findById("c-lower")).toBeNull();
 			expect((await store.findByCode("save5"))?.id).toBe("c1");
+		});
+
+		test("create refuses an id a live coupon already holds — never adopting someone else's coupon", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await expect(
+				store.create(fixedCoupon({ code: "OTHER", amountCents: cents(900) })),
+			).rejects.toMatchObject({ code: "COUPON_ID_COLLISION" });
+			expect((await store.findById("c1"))?.amountCents).toBe(500);
+			expect(await store.findByCode("OTHER")).toBeNull();
 		});
 
 		test("percentage coupon round-trips rateBps + cap", async () => {
