@@ -84,4 +84,23 @@ describe("the cancel notices when the money and the order part ways", () => {
 		expect(description).toContain("closes the order as refunded");
 		expect(description).toContain("restock");
 	});
+
+	test("a retried cancel that kept the first attempt's restock says the units came back, whatever the box says", async () => {
+		// The operator unticked Return to stock on the retry; the first attempt had
+		// already restocked, and the domain kept that choice (ADR-0026).
+		const result = await dispatchOrdersAction(
+			"orders:cancel-customer_request",
+			{ orderId: ORDER_ID, reason: "customer_request", state: "paid", restock: "false" },
+			surface({
+				ok: true,
+				cancelled: true,
+				refund: { amountCents: 2400, currency: "USD" },
+				restockedUnits: 2,
+				restockSkipped: [],
+			}),
+		);
+		const description = String(result?.notice?.description);
+		expect(description).toContain("2 items returned to stock");
+		expect(description).not.toContain("Nothing was returned to stock");
+	});
 });

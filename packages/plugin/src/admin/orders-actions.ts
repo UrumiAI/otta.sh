@@ -638,9 +638,15 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 /** What a cancellation did with the order's units, as a sentence led by a space —
  *  or nothing, when it had none to return (an unpaid or digital-only order). */
 function restockSentence(restock: boolean, units: number): string {
-	if (!restock) return " Nothing was returned to stock.";
-	if (units === 0) return "";
-	return units === 1 ? " 1 item returned to stock." : ` ${String(units)} items returned to stock.`;
+	// The units the cancellation REPORTS, not the checkbox: a retry keeps the first
+	// attempt's restock choice (ADR-0026), so units may be back although the box was
+	// unticked on the retry.
+	if (units > 0) {
+		return units === 1
+			? " 1 item returned to stock."
+			: ` ${String(units)} items returned to stock.`;
+	}
+	return restock ? "" : " Nothing was returned to stock.";
 }
 
 /** Lines the restock could not return, as a sentence led by a space — so the
