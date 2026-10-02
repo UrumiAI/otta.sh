@@ -17,6 +17,9 @@ import type { CheckoutFailureReason } from "@otta-sh/plugin";
 
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
 
+const STALE_CHECKOUT_PAGE =
+	"This checkout page was out of date — please review your order and place it again.";
+
 /**
  * #305 part 1 — the buyer's selection, refused at the summary or at place.
  * Derived from the plugin's wire union with `Extract<>` and checked with
@@ -101,8 +104,10 @@ const MESSAGES: Record<string, string> = {
 	// Issue #133: a stale/second tab placed with the key of a cart that was
 	// already ordered. The redirect back to /checkout re-renders the form with
 	// the CURRENT cart's key, so placing again simply works.
-	IDEMPOTENCY_KEY_REUSED:
-		"This checkout page was out of date — please review your order and place it again.",
+	IDEMPOTENCY_KEY_REUSED: STALE_CHECKOUT_PAGE,
+	// The site's own (QA T1-10): the form's key names a cart the cookie does not
+	// — the page was reviewed for another cart. Same fact, same remedy.
+	CHECKOUT_STALE: STALE_CHECKOUT_PAGE,
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
 	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",

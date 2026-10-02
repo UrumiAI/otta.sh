@@ -48,6 +48,8 @@ const KNOWN_TOKENS = [
 	"CURRENCY_MISMATCH",
 	"PAYMENT_INTENT_FAILED",
 	"IDEMPOTENCY_KEY_REUSED",
+	// The site's own: a review page placed for a cart the cookie no longer names.
+	"CHECKOUT_STALE",
 	"INVALID_SHIPPING_ADDRESS",
 	"INVALID_EMAIL",
 	"ORDER_NOT_FOUND",
@@ -102,6 +104,11 @@ describe("cartErrorMessage", () => {
 		expect(message).toMatch(/new cart/i);
 		expect(message).not.toMatch(/review your cart|try again/i);
 		expect(message).not.toMatch(/charged|refund/i);
+	});
+
+	test("CHECKOUT_STALE says the page was out of date and to review again — it blames nobody", () => {
+		expect(cartErrorMessage("CHECKOUT_STALE")).toBe(cartErrorMessage("IDEMPOTENCY_KEY_REUSED"));
+		expect(cartErrorMessage("CHECKOUT_STALE")).toMatch(/out of date/i);
 	});
 
 	test("INVALID_EMAIL is specific enough to act on", () => {
