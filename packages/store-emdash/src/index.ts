@@ -294,6 +294,10 @@ export {
 	type EmdashCredentialVerifierOptions,
 } from "./emdash-credential-verifier.js";
 export {
+	EmdashAttemptThrottle,
+	type EmdashAttemptThrottleOptions,
+} from "./emdash-attempt-throttle.js";
+export {
 	DEFAULT_SESSION_TTL_MS,
 	EmdashSessionStore,
 	type EmdashSessionStoreOptions,
