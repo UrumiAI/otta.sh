@@ -943,7 +943,7 @@ gone.)*
 
 **Why Settings opens nothing, stated as a ruling.** Every group's **label** now carries its own
 current values — `Store — <name>`, `Checkout & holds — 15 min hold · low stock at 5`,
-`Payments & email — configured` — so the screen answers "what is this
+`Payments & email — Stripe test · webhook set · email set` — so the screen answers "what is this
 set to?" with **zero** clicks rather than one group's worth (D-6's discipline, applied to a
 settings screen). An opened group answers one question and buries the other two; three labels answer
 three. Label builders: `settings-form.ts:641-674`; the reasoning is at `:480-489`. Zero open groups
@@ -1483,7 +1483,7 @@ evaluates against `undefined` (R-12b). Do **not** use `condition` to smuggle a h
 | Closed set, >8 options, **and the field never prefills** | `combobox` | Searchable, and it renders the label. Only safe unprefilled (R-12a). |
 | Closed set, >8 options, **prefilling** | `select` | A long dropdown beats a control that shows one value and submits another. Its values must still pass F-6c. |
 | Date | `date_input` | Yields `YYYY-MM-DD`; normalize server-side. |
-| Secret | **`text_input`, always empty**, with the contract in the **placeholder** (`blank keeps current`) | Never echo the stored value — which no variant does, so masking hides only the operator's own keystrokes. `secret_input` has **no live use** in the console after INC-09; whether a secret is *set* is a fact about the credential and belongs in the group's D-6 **label**, not in the field. A `secret_input` is not forbidden; it must earn its masking against a real shoulder-surfing threat, and echoing-the-stored-value is not one. |
+| Secret | **`secret_input`, always empty** — no `initial_value`, no `has_value` — with the status in the **label** (`— set` / `— not set`) and the contract in the **placeholder** (`leave blank to keep`) | Never echo the stored value — which no variant does. U-8 (QA 2026-10-02) brought the masking back for the keystrokes themselves: a live Stripe key is typed or pasted on this screen, and a password box keeps it off the screen for anyone nearby. `has_value` stays out: it makes the host draw a fake `••••••••` value that "reveals" to the same dots. Whether a secret is *set* is a fact about the credential; it goes in the field label and the group's D-6 **label**, never in the field's value. |
 | Free text over one line | `text_input` with `multiline: true` | |
 
 **F-6a — a `select`, `radio` or `combobox` must never render blank.** `SelectElement` has no
@@ -3152,13 +3152,13 @@ Three accordions. The fourth group this section once specified, `Service connect
 service it authenticated to (ADR-0020); its write-only-field discipline (INC-09, below) carries over
 unchanged to `Payments & email`, which holds **one form per credential** for the same reason the
 two tokens had two: each is set independently, and a combined form would make saving one require
-re-entering the others. The tree below matches `settings-form.ts` as built, copy included — two of
-its context strings still say "service" and are due a code fix, not a spec change.
+re-entering the others. The tree below matches `settings-form.ts` as built, copy included (U-8 replaced the build's
+wording — "service", "write-only", "CAIP-2", "TTL" — with the operator's).
 
 ```
 header      "Settings"
-context     "Display name is cosmetic; the rest is operational and lives in the service."
-                                                                                  (≤140)
+context     "Your store's name, how checkout holds stock, and the payment and email accounts
+             the store uses."                                                     (≤140)
 banner      (cond) notice, or the fail-closed error banner (variant "error")
 ── ALL THREE GROUPS RENDER `default_open: false` (INC-15). ZERO open groups is legal:
    S-3 caps at one per response and sets no floor. Each LABEL carries its own current
@@ -3174,48 +3174,74 @@ accordion   block_id settings:checkout
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:
                      the label says so rather than implying a zero (E-3, D-6b)
             default_open FALSE
-            └─ context "These persist in the commerce service and affect live checkout."
-                                                                                  (≤200)
+            └─ context "These apply to live checkout as soon as you save them."   (≤200)
                form  cf{"settings:ops", {holdTtl, lowStock}}                     ← S-4
-                     text_input  "Cart hold TTL (minutes)"   initial_value "15"
-                     text_input  "Low-stock threshold"        initial_value "5"
-                     ← both were `number_input`; F-6 routes non-money integers through
-                       text_input with one `/^\d+$/` parse. They are NOT money, so
-                       `number_input` was not a violation — this is consistency, not a fix.
-                     submit "Save operational settings"       → save-operational
+                     text_input  "Cart hold time (minutes)"   initial_value "15"
+                     text_input  "Low-stock threshold"         initial_value "5"
+                     ← F-6: one `/^\d+$/` parse. U-8: ALL-OR-NOTHING — a present value
+                       that is blank, signed, fractional, non-numeric or out of range
+                       (1–10080 minutes; 0–2147483647) is refused by field name and
+                       nothing is saved; the form keeps what was typed (J6), the label
+                       keeps what is stored. "Settings saved" states the new values.
+                     submit "Save checkout settings"          → save-operational
 accordion   block_id settings:payments
-            label "Payments & email — configured"  |  "Payments & email — no <short>, …"
-            ← lists only what is MISSING (short names: stripe key, webhook, email, x402,
-              edge). "configured"/"no x" are facts ABOUT credentials, never any part of
-              one: only booleans reach the label
+            label "Payments & email — <Stripe> · <webhook> · <email>"
+            ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
+              live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
+              value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
+              "no email". The optional x402 and edge keys state their status on their
+              own fields. Longest render is exactly 60 (X-11).
             default_open FALSE
-            └─ context "Payment and email credentials, stored write-only — a blank submit
-                        keeps the current one. None is ever displayed."           (≤200)
+            └─ context "Keys are never shown once saved. Leave a field blank to keep the
+                        key you saved before."                                    (≤200)
+               per credential: context (the expected shape, e.g. "Starts with sk_live_ or
+                     sk_test_ …"), then its form:
                form × 5, one per credential, each cf{"settings:<actionId>",
                      {gen:"<save generation>"}}                          ← AMENDED (INC-09)
-                     text_input "Stripe secret key"                → save-stripe-secret-key
-                     text_input "Stripe webhook signing secret"    → save-stripe-webhook-secret
-                     text_input "Email provider API key"           → save-email-api-key
-                     text_input "x402 facilitator API key"         → save-x402-facilitator-secret
-                     text_input "Stripe webhook edge token (optional)"
-                                                                   → save-webhook-edge-token
-                     placeholder "Enter new <noun> (blank keeps current)"
-                     ← PLAIN `text_input`, always empty. NO `secret_input`, NO `has_value`,
-                       NO `initial_value`
-               context "These are configuration, not credentials, so they are shown back to
-                        you. The x402 destination wallet is where buyers' payments go — x402
-                        checkout stays unavailable until it is set."
+                     secret_input "Stripe secret key — set|not set"
+                                                         → save-stripe-secret-key
+                     secret_input "Stripe webhook signing secret — …"
+                                                         → save-stripe-webhook-secret
+                     secret_input "Email provider API key — …"  → save-email-api-key
+                     secret_input "x402 facilitator API key — …"
+                                                         → save-x402-facilitator-secret
+                     secret_input "Stripe webhook edge token (optional) — …"
+                                                         → save-webhook-edge-token
+                     placeholder  set: "Set — leave blank to keep it, or enter a new one"
+                                  not set: the shape to paste ("sk_live_… or sk_test_…")
+                     ← U-8: always empty, NO `has_value`, NO `initial_value`. Saved TRIMMED,
+                       after a shape check (sk_/rk_ live|test, whsec_, re_ when the email
+                       endpoint is Resend, else one line with no spaces); a wrong shape is
+                       refused naming the field, never echoing the value.
+               actions (only under a SET key)
+                     button "Remove <noun>" danger, confirm states what stops working
+                                                         → clear-payment-secret {secret}
+                     ← a removal notice names where to find the key again; a Remove on
+                       a key not stored answers "No <key> was stored — nothing was removed."
+               context "The settings below are shown as saved. Crypto (x402) checkout
+                        stays off until a destination wallet is set."
+               banner alert (cond) a stored http sign-in page saved before the https
+                     rule: "The links in sign-in emails point to an http page, so their
+                     tokens travel unencrypted when clicked — change this address to https. …"
+               context × n (cond, on a refused save) each broken rule in full; the banner
+                     names every field, and the form keeps what was typed (J6) — a
+                     sign-in URL without any user:pw@ part
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
-                     text_input "Order email from-address"   placeholder "no-reply@otta.local"
-                     text_input "Sign-in link page (absolute URL of the storefront's /account/verify page)"
-                                                     placeholder "https://shop.example/account/verify"
+                     text_input "Order email from-address"
+                                        placeholder "Your Shop <orders@yourdomain.com>"
+                     text_input "Sign-in page address (your storefront's /account/verify page)"
+                                        placeholder "https://shop.example/account/verify"
+                                        ← U-8: https://, or http:// on localhost only
                      text_input "x402 destination wallet"
-                     text_input "x402 accepted networks (comma-separated CAIP-2)"
+                     text_input "x402 networks, comma-separated"
                      submit "Save payment settings"          → save-payment-settings
 ```
 
 **Why the masked variant went, and why the carrier had to grow a `gen` (INC-09).** Both are one
-change and neither works without the other.
+change and neither works without the other. *(U-8, 2026-10-02, amends the first bullet: the
+fields are `secret_input` again — without `has_value`, which was the source of the confusion —
+because a live key typed on screen is the shoulder-surfing case the field table asks for. The
+`gen` remount below is unchanged and still needed: a `secret_input` is mount-only too.)*
 
 - **`secret_input` bought nothing here and cost clarity.** The field is *always* empty — the stored
   token is never echoed under any variant — so masking dots an operator's own keystrokes while

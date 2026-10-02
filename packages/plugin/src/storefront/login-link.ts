@@ -56,6 +56,25 @@ export function isValidLoginLinkUrl(value: string): boolean {
 	);
 }
 
+/** The hosts a clear-text (`http:`) sign-in page may name: this machine only. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * What the Settings SAVE accepts (U-8): a {@link isValidLoginLinkUrl} URL that
+ * is also `https:`, or `http:` on this machine. The emailed link carries a
+ * sign-in token, so a clear-text page anywhere else would send it across the
+ * network readable. Matches the rule the order emails apply to the storefront
+ * origin they derive from this setting.
+ *
+ * The SEND path keeps {@link isValidLoginLinkUrl}: a value saved before this
+ * rule existed is still used rather than silently turning sign-in off.
+ */
+export function isSavableLoginLinkUrl(value: string): boolean {
+	if (!isValidLoginLinkUrl(value)) return false;
+	const url = new URL(value);
+	return url.protocol === "https:" || LOOPBACK_HOSTS.has(url.hostname);
+}
+
 /** The configured sign-in page, or `undefined` when it is unset, invalid, or kv
  *  cannot be read. Never throws, and never falls back to anything else. */
 export async function resolveLoginLinkUrl(ctx: PluginContext): Promise<string | undefined> {
