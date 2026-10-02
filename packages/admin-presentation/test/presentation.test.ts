@@ -25,6 +25,9 @@ import { describe, expect, test } from "vitest";
 import {
 	ABSENT,
 	CANCEL_BANNER,
+	CANCEL_GROUP_LABEL,
+	cancelBannerDescription,
+	cancelGroupLabel,
 	DATE_LOCALE,
 	LABEL_BUDGET,
 	MARK_REFUNDED_CONFIRM,
@@ -1231,6 +1234,24 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 			"Cancel this order as “Out of stock”? This is permanent — the order cannot be un-cancelled, and the held stock is released.",
 		);
 		expect(CANCEL_BANNER.description).toContain("“cancelled”");
+	});
+
+	test("a PAID order's cancel copy never claims released stock, and says it does not refund", () => {
+		// On this build Cancel order neither refunds nor restocks a paid order: its
+		// holds are committed, so the release is a no-op. The copy must not imply either.
+		expect(cancelBannerDescription("pending")).toBe(CANCEL_BANNER.description);
+		for (const state of ["paid", "processing"]) {
+			const banner = cancelBannerDescription(state);
+			expect(banner).not.toContain("held stock");
+			expect(banner).toContain("does not refund");
+			expect(banner).toContain("Money → Refunds");
+			const confirm = cancelConfirmText("Out of stock", state);
+			expect(confirm).not.toContain("held stock");
+			expect(confirm).toContain("does not refund the buyer");
+			expect(cancelGroupLabel(state)).toBe("Cancel order — permanent, does not refund");
+		}
+		expect(cancelConfirmText("Out of stock", "pending")).toBe(cancelConfirmText("Out of stock"));
+		expect(cancelGroupLabel("pending")).toBe(CANCEL_GROUP_LABEL);
 	});
 
 	test("the over-refund refusal names what to enter INSTEAD", () => {

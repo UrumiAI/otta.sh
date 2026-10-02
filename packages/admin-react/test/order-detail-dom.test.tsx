@@ -906,3 +906,31 @@ test("Mark refunded asks first, and its confirm says no money moves and the buye
 	expect(text).toContain("does not move money");
 	expect(text).toContain("does not email the buyer");
 });
+
+// ── the cancel group's copy is the order's own: a paid order is not refunded by it ──
+
+test("a PAID order's cancel group says it does not refund, and never promises released stock", async () => {
+	const view = await show({
+		...detailFor("paid"),
+		vocabulary: {
+			...VOCABULARY,
+			oneClickCancellationReasons: [{ value: "customer_request", label: "Customer requested it" }],
+		},
+	});
+	await fire(tab(view, "fulfilment"), "click");
+	const group = one(view, '[data-testid="detail-cancel"]').textContent ?? "";
+	expect(group).toContain("does not refund");
+	expect(group).not.toContain("held stock");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	const confirm = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(confirm).toContain("does not refund the buyer");
+	expect(confirm).not.toContain("held stock");
+});
+
+test("a PENDING order's cancel group still says it releases the held stock", async () => {
+	const view = await show(detailFor("pending", NEVER_CAPTURED));
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="detail-cancel"]').textContent ?? "").toContain(
+		"releases the held stock",
+	);
+});

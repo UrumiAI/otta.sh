@@ -378,9 +378,23 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// raw `orders:transition-cancelled` records no reason, releases no stock hold,
 		// and on a paid order keeps the money with a "cancelled" email. The domain
 		// refuses it; Cancel order is the one way to cancel.
-		for (const [seed, state, emails] of [
-			[{ capturedCents: TOTAL_CENTS }, "paid", ["paid"]],
-			[{ paid: false }, "pending", []],
+		// The advice is keyed on the state the operator saw: a paid order's says
+		// Cancel order does not refund (and that a FULL refund closes the order as
+		// refunded — so "refund first, then cancel" would be a dead end); an unpaid
+		// one's has no money to talk about.
+		for (const [seed, state, emails, description] of [
+			[
+				{ capturedCents: TOTAL_CENTS },
+				"paid",
+				["paid"],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer — to return their money, use Money → Refunds (a full refund closes the order as refunded).",
+			],
+			[
+				{ paid: false },
+				"pending",
+				[],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why and returns its held stock.",
+			],
 		] as const) {
 			const id = await seedOrder(seed);
 			const result = await act("orders:transition-cancelled", {
@@ -391,8 +405,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 			expect(result.notice).toEqual({
 				variant: "error",
 				title: "Use Cancel order to cancel an order",
-				description:
-					"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer: refund under Money → Refunds first.",
+				description,
 			});
 			const order = await readOrder(id);
 			expect(order.state).toBe(state);

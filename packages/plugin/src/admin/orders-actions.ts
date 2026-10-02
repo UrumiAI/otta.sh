@@ -72,7 +72,11 @@ import {
 	fit,
 	formatAmount as formatTotal,
 } from "@otta-sh/admin-presentation";
-import type { AdminOrdersSurface, RefundsSummaryWire } from "./admin-orders-surface.js";
+import type {
+	AdminOrdersSurface,
+	RefundsSummaryWire,
+	TransitionRefusal,
+} from "./admin-orders-surface.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
 import type { SelectOption } from "../types.js";
 
@@ -243,17 +247,61 @@ const PAID_BY_PROVIDER_ONLY: Notice = {
 };
 
 /**
- * A bare `cancelled` move (QA T1-4), from any state. It records no reason and
- * releases no stock hold, so Cancel order is the one way to cancel. The copy does
- * NOT promise that Cancel order refunds: on this build it does not — the buyer is
- * refunded under Money → Refunds.
+ * A bare `cancelled` move (QA T1-4), from any state — keyed on the state the
+ * operator SAW. It records no reason and releases no stock hold, so Cancel order is
+ * the one way to cancel. An unpaid order's advice is about its held stock. A paid
+ * order's says Cancel order does not refund (it does not, on this build) and points
+ * at Money → Refunds — without "refund first, then cancel": a FULL refund closes the
+ * order as `refunded`, after which it can no longer be cancelled.
  */
-const USE_CANCEL_ORDER: Notice = {
+function useCancelOrder(observedState: string): Notice {
+	return {
+		variant: "error",
+		title: "Use Cancel order to cancel an order",
+		description:
+			observedState === "pending"
+				? "Nothing was changed. Cancel an order with Cancel order below, which records why and returns its held stock."
+				: "Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer — to return their money, use Money → Refunds (a full refund closes the order as refunded).",
+	};
+}
+
+/** The generic refusal: the move is not in the state machine, or the order vanished. */
+const STATUS_CHANGE_FAILED: Notice = {
 	variant: "error",
-	title: "Use Cancel order to cancel an order",
+	title: "Status change failed",
 	description:
-		"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer: refund under Money → Refunds first.",
+		"That status change could not be applied — check the order state, then retry in a moment.",
 };
+
+/**
+ * Every refusal mapped to its notice — EXHAUSTIVELY: a refusal added to
+ * `TransitionRefusal` without copy is a compile error here, never a silent fall
+ * into the generic notice. `undefined` (a refused input with no domain reason) is
+ * the generic one.
+ */
+function transitionRefusalNotice(
+	reason: TransitionRefusal | undefined,
+	observedState: string,
+): Notice {
+	if (reason === undefined) return STATUS_CHANGE_FAILED;
+	switch (reason) {
+		// Neither button is offered for such an order, so these two are hand-made or
+		// stale payloads. Say WHY, because the operator's next step is not "retry".
+		case "MANUAL_PAYMENT_NOT_ALLOWED":
+			return PAID_BY_PROVIDER_ONLY; // T1-3
+		case "USE_CANCEL":
+			return useCancelOrder(observedState); // T1-4
+		case "ORDER_NOT_FOUND":
+		case "INVALID_TRANSITION":
+			return STATUS_CHANGE_FAILED;
+		default:
+			return assertNever(reason);
+	}
+}
+
+function assertNever(value: never): never {
+	throw new Error(`unhandled transition refusal: ${String(value)}`);
+}
 
 /** A Mark refunded that applied (ADR-0026 Decision 3): bookkeeping for a refund
  *  made outside Otta — it says so, because nothing else on the screen will. */
@@ -304,20 +352,7 @@ function transitionAction(toState: string): OrdersAction {
 		}
 		const key = `admin-transition:${orderId}:${toState}`;
 		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
-		// Neither button is offered for such an order, so these are hand-made or stale
-		// payloads. Say WHY, because the operator's next step is not "retry".
-		if (!result.ok && result.reason === "MANUAL_PAYMENT_NOT_ALLOWED") {
-			return applied(PAID_BY_PROVIDER_ONLY); // T1-3
-		}
-		if (!result.ok && result.reason === "USE_CANCEL") return applied(USE_CANCEL_ORDER); // T1-4
-		if (!result.ok) {
-			return applied({
-				variant: "error",
-				title: "Status change failed",
-				description:
-					"That status change could not be applied — check the order state, then retry in a moment.",
-			});
-		}
+		if (!result.ok) return applied(transitionRefusalNotice(result.reason, observedState));
 		if (!result.transitioned) {
 			// The guarded flip matched 0 rows — already in that state, or a lost race.
 			// Not a failure: surface a non-error notice rather than a silent success.

@@ -197,11 +197,32 @@ export const CANCEL_CONFIRM = {
 	deny: "Keep the order",
 } as const;
 
-/** The cancel confirm's sentence, named by the human REASON LABEL rather than
- *  the wire value — the operator picked a label and must read the same one
- *  back. */
-export function cancelConfirmText(reasonLabel: string): string {
-	return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`;
+/**
+ * The cancel confirm's sentence, named by the human REASON LABEL rather than the
+ * wire value — the operator picked a label and must read the same one back — and
+ * keyed on the order's STATE (ADR-0026). Only an unpaid order has held stock to
+ * release; a paid order's units were sold and its money captured, and on this build
+ * Cancel order neither refunds nor restocks it, so its sentence says so instead.
+ * `state` absent ⇒ the pending wording.
+ */
+export function cancelConfirmText(reasonLabel: string, state = "pending"): string {
+	if (state === "pending") {
+		return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`;
+	}
+	return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled. Cancelling does not refund the buyer.`;
+}
+
+/** The Cancel group's alert sentence for an order in `state` — {@link CANCEL_BANNER}'s
+ *  for an unpaid order; for a paid one, no released-stock claim and an explicit
+ *  "does not refund" (ADR-0026). */
+export function cancelBannerDescription(state: string): string {
+	if (state === "pending") return CANCEL_BANNER.description;
+	return "Cancelling moves this order to “cancelled” and emails the buyer. It does not refund a paid order — use Money → Refunds for that. It cannot be undone.";
+}
+
+/** The Cancel group's label for an order in `state` (D-6a: the consequence). */
+export function cancelGroupLabel(state: string): string {
+	return state === "pending" ? CANCEL_GROUP_LABEL : "Cancel order — permanent, does not refund";
 }
 
 // ── the detail: the refunded transition ──────────────────────────────────────
@@ -288,7 +309,8 @@ export function refundTooHighInline(amount: string, remaining: string): string {
 // Shared for the same reason every string above is: two Orders screens in one
 // sidebar must not label the same group two ways.
 
-/** The Cancel group. Names what cancelling COSTS, not merely that it cancels. */
+/** The Cancel group of an UNPAID order. Names what cancelling COSTS, not merely that
+ *  it cancels. A paid order's is {@link cancelGroupLabel}'s. */
 export const CANCEL_GROUP_LABEL = "Cancel order — permanent, releases held stock";
 
 /** The partial-refund group. A bare noun would make the most dangerous control

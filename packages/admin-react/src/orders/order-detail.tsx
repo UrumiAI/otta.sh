@@ -42,7 +42,6 @@
 import {
 	CANCEL_BANNER,
 	CANCEL_CONFIRM,
-	CANCEL_GROUP_LABEL,
 	CANCEL_PICK_REASON,
 	CUSTOMER_CONTEXT_UNAVAILABLE,
 	FULFILMENT_LABELS,
@@ -63,7 +62,9 @@ import {
 	TIMELINE_UNAVAILABLE,
 	UNNAMED_REFUND_RECIPIENT,
 	buyerReferenceText,
+	cancelBannerDescription,
 	cancelConfirmText,
+	cancelGroupLabel,
 	fit,
 	formatAmount,
 	formatDate,
@@ -1167,11 +1168,11 @@ export function OrderDetail({
 							</section>
 						)}
 
-						<Group testId="detail-cancel" label={CANCEL_GROUP_LABEL}>
+						<Group testId="detail-cancel" label={cancelGroupLabel(order.state)}>
 							<Notice
 								variant="alert"
 								title={CANCEL_BANNER.title}
-								description={CANCEL_BANNER.description}
+								description={cancelBannerDescription(order.state)}
 							/>
 							<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
 							{/* One button per reason the plugin says has an id, taken from the list
@@ -1193,7 +1194,7 @@ export function OrderDetail({
 												actionId: `orders:cancel-${reason.value}`,
 												value: { orderId: order.id, reason: reason.value, state: order.state },
 												title: CANCEL_CONFIRM.title,
-												text: cancelConfirmText(reason.label),
+												text: cancelConfirmText(reason.label, order.state),
 												confirmLabel: CANCEL_CONFIRM.confirm,
 												denyLabel: CANCEL_CONFIRM.deny,
 											});
@@ -1258,7 +1259,7 @@ export function OrderDetail({
 														state: order.state,
 													},
 													title: CANCEL_CONFIRM.title,
-													text: cancelConfirmText(label),
+													text: cancelConfirmText(label, order.state),
 													confirmLabel: CANCEL_CONFIRM.confirm,
 													denyLabel: CANCEL_CONFIRM.deny,
 												});
