@@ -10,7 +10,8 @@ refund email states the amount refunded (QA T1-6; ADR-0026's email amendment; AD
 - **`@otta-sh/domain`.**
   - **Partial refunds email the buyer.** An admin refund (`purpose: "refund"`) that leaves
     money captured is announced by a new `refund-issued` notice (template
-    `order-partially-refunded`, "Refund issued"). The notice is appended in the write that
+    `order-refund-issued`, "Refund issued", neutral wording because it also announces a lost-race
+    cancellation's full refund). The notice is appended in the write that
     finalizes the refund. A cancellation whose order shipped before the flip enqueues the same
     notice for its refund.
   - **One notice mechanism.** Notices are now first-wins per `(orderId, kind, refundId)`, and
@@ -32,3 +33,10 @@ refund email states the amount refunded (QA T1-6; ADR-0026's email amendment; AD
     write enqueued was delivered, and the console's notices follow it.
   - `sendOrderEmailsNow` resolves to `{ configured, sent }`. `InProcessAdminOrdersClient` takes
     `now` for its deadlines.
+- **Review round 1.**
+  - A notice stored without a `refundId` (before this change) matches any refund of its kind.
+  - "Queued" copy no longer promises a time: "The buyer's email is queued and will be retried
+    automatically."
+  - A cancel notice puts the email status before the not-restocked list and fits the list to
+    the banner.
+  - The lost-race cancel sends its refund notice inline and says whether it went.

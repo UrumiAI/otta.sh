@@ -187,14 +187,16 @@ sent no email at all.
   is left. It is best-effort and never fails the write (ADR-0005's second 2026-10-02 amendment). The write reports `email: sent |
   queued | unconfigured`, decided by whether the row THIS write enqueued was delivered; the
   dispatchers' `onSent` reports which rows went out. The console says "emailed" only for `sent`,
-  "queued — it will go out within a few minutes" for `queued`, and "no email provider" for
+  "queued and will be retried automatically" for `queued` (no time promise — a failed send is
+  backed off), and "no email provider" for
   `unconfigured`.
 - **Which refunds email the buyer.** An admin refund in its own right (`purpose: "refund"`) that
-  leaves money captured emails the buyer with `order-partially-refunded`, through a
+  leaves money captured emails the buyer with `order-refund-issued`, through a
   `refund-issued` NOTICE row appended in the write that finalizes the refund. That covers a gateway refund and also a MANUAL refund recorded in Money → Refunds,
   because recording one is the operator attesting the money was sent. Its wording is neutral about
-  how the money went back ("We've issued a partial refund for your order"), since a manual x402
-  refund goes to a wallet. A refund that reaches the ceiling is announced by the `refunded` email,
+  how much and how the money went back ("We've issued a refund for your order"; the amount is on
+  its "Refunded" line): the same notice announces a lost-race cancellation's FULL refund, and a
+  manual x402 refund goes to a wallet. A refund that reaches the ceiling is announced by the `refunded` email,
   which states Σ refunded. Two things never email: a Mark refunded, because it attests nothing
   and moves no money (Decision 3), and a cancellation's refund, which the cancelled email carries.
   The exception is a cancellation that lost the race to a shipment: no cancelled email will go,
@@ -206,3 +208,8 @@ sent no email at all.
   so each refund announces itself once, and a late payment's notice now carries its refund id.
   A late-payment refund has its own purpose (`late-payment`) and sends only its notice: exactly
   one email, pinned in the late-payment contract.
+  A notice entry stored before refund ids existed (no `refundId`) matches any refund of its
+  kind, so a late-payment replay after deploy does not email twice.
+- **The lost race's email goes inline too.** When a cancellation loses the race to a shipment,
+  its refund's `refund-issued` notice is sent inline like any write's email, and the console's
+  notice says whether it went.

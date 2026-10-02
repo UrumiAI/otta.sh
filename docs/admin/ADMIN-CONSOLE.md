@@ -2225,9 +2225,9 @@ it — **never a blanket "the buyer has been emailed"**:
 | `email` | Sentence in the notice |
 |---|---|
 | `sent` — the row this write enqueued was delivered | *The buyer has been emailed.* (fulfilment: *…emailed their tracking.*) |
-| `queued` — the provider failed or was slow; the cron sends it | *The buyer's email is queued — it will go out within a few minutes.* |
+| `queued` — the provider failed or was slow; the cron retries it | *The buyer's email is queued and will be retried automatically.* |
 | `unconfigured` — no email provider in this bundle | *No email was sent — this store has no email provider set up.* |
-| absent — the write enqueued none (a replay; Mark refunded) | nothing about email; Mark refunded says *no money was moved and the buyer was not emailed* |
+| absent — the write enqueued none (a replay; Mark refunded) | nothing about email; Mark refunded says *No money moved and the buyer was not emailed.* |
 
 A status move therefore answers with a notice (`Order marked <state>` + the sentence) where it used
 to answer `null`. The inline send is best-effort and bounded and can never fail the write.
