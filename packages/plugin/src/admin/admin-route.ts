@@ -1,4 +1,4 @@
-import type { RouteHandler, SandboxedRouteContext } from "../types.js";
+import type { Block, RouteHandler, SandboxedRouteContext } from "../types.js";
 import {
 	COUPONS_ACTION_IDS,
 	COUPONS_PAGE,
@@ -163,7 +163,37 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
 		}
 
-		// 6. Fallback — em-dash house style for an unrecognized interaction.
+		// 6. An UNKNOWN PAGE gets a not-found screen, not an empty tree. A bookmark
+		// to a retired Block Kit page (`/orders`, `/products` — ADR-0015) or a typo
+		// used to render nothing at all, which reads as a broken console.
+		if (type === "page_load" && page !== undefined) return pageNotFound(page);
+
+		// 7. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
+	};
+}
+
+/**
+ * What an unknown `page_load` renders. Header + one page-level `context` (≤140,
+ * §1) — no banner, because nothing failed: the page simply does not exist.
+ *
+ * SCOPE: this covers the `otta` descriptor only. An unknown path under the React
+ * `otta-console` descriptor never reaches this route — that descriptor
+ * deliberately has no routes (ADR-0014 D3), so the host falls back to its own
+ * sandboxed-page renderer, which answers "Plugin responded with 404: …". Fixing
+ * that needs either a route on `otta-console` (an ADR-0014 amendment) or a host
+ * change, and is out of this module's reach.
+ */
+function pageNotFound(page: string): { blocks: Block[] } {
+	// Bounded so the interpolated path cannot push the line past the budget.
+	const shown = page.length > 32 ? `${page.slice(0, 31)}…` : page;
+	return {
+		blocks: [
+			{ type: "header", text: "Page not found" },
+			{
+				type: "context",
+				text: `There is no Otta page at ${shown}. Pick one from the sidebar — Orders and Pricing & inventory are there too.`,
+			},
+		],
 	};
 }
