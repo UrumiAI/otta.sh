@@ -81,7 +81,7 @@ interface Outcome {
 }
 
 async function invoke(ctx: PluginContext, input: Record<string, unknown>): Promise<Outcome> {
-	const handler = createSettingsFormHandler({ storeThemes: undefined });
+	const handler = createSettingsFormHandler();
 	return (await handler({ input, request: req }, ctx)) as unknown as Outcome;
 }
 
