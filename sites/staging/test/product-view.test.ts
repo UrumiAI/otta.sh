@@ -48,6 +48,7 @@ const render = (purchaseModel: ProductPurchase): Promise<string> => {
 		dimmed: purchaseModel.soldOut,
 		degradedLead: null,
 		errorMessage: null,
+		errorAction: null,
 		purchase: purchaseModel,
 		showNotForSale: false,
 	};
