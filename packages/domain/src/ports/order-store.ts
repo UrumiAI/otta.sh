@@ -454,9 +454,10 @@ export interface OrderStore {
 	 * repeated deliveries during a provider outage cannot spend that budget and park
 	 * the email `failed` within minutes. A cut-short inline attempt is released
 	 * uncounted, so it may recur on a later delivery before the sweep takes the row
-	 * (the provider `Idempotency-Key` dedupes it); and a row the cron has already backed off — an
-	 * uncounted timeout leaves `attempts` at 0 but `timeouts` above it — is never
-	 * retried inline, so a request can never undercut the cron's backoff.
+	 * (the provider `Idempotency-Key` dedupes it); and a row the cron has already
+	 * backed off — an uncounted timeout leaves `attempts` at 0 but `timeouts` above
+	 * it — is never retried inline, so a request can never undercut the cron's
+	 * backoff.
 	 */
 	claimNextEmailForOrder(
 		orderId: OrderId,

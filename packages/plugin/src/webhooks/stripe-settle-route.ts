@@ -76,7 +76,9 @@ export const SETTLE_PROVIDER_TIMEOUT_MS = 3_000;
 
 /** Room kept, after a refund create, for the storage writes that record it
  *  (finalize, resolve, notice): a create starts only while its whole bound plus
- *  this still fit in the request's deadline. */
+ *  this still fit in the request's deadline. It is an ESTIMATE of those writes, not
+ *  a bound on them; an overrun is absorbed by the headroom the 8 s request budget
+ *  leaves under Stripe's ~10 s delivery timeout (~2 s). */
 export const SETTLE_REFUND_STORAGE_MS = 500;
 
 export interface StripeWebhookSettleInput {
@@ -286,8 +288,9 @@ export function createStripeWebhookSettleHandler(
 		// 30 s default could still be in flight when the redelivery arrives; each call
 		// is bounded by SETTLE_PROVIDER_TIMEOUT_MS AND by what is left of the request's
 		// deadline when it starts (asked per call), so a stalled call classifies
-		// (retryable read, or an unverified create) well inside the delivery, and the
-		// next attempt resumes the same reservation under the same key.
+		// (retryable read, or an unverified create after its full bound) well inside
+		// the delivery, and the next attempt resumes the same reservation under the
+		// same key.
 		//
 		// The CREATE is the exception to "bounded by what is left": a create that
 		// times out is AMBIGUOUS (it may have reached Stripe) and lands as "verify in
@@ -336,9 +339,8 @@ export function createStripeWebhookSettleHandler(
 
 		// ── The order's emails, NOW — best-effort, after the settle is decided ───
 		// The confirmation used to wait for the next sweep tick, behind the rest of the
-		// queue; the
-		// settle has just made it due, so send it with the settlement (ADR-0005's
-		// 2026-10-02 amendment). Four properties, each load-bearing:
+		// queue; the settle has just made it due, so send it with the settlement
+		// (ADR-0005's 2026-10-02 amendment). Four properties, each load-bearing:
 		//
 		//  - OUTSIDE the BUSY→503 mapping above, and the response is computed from
 		//    `settled` alone. `sendOrderEmailsNow` never throws, but even if it could,
