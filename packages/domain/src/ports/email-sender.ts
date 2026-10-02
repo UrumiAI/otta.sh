@@ -21,9 +21,10 @@ export type EmailTemplate =
 	 *  a payment landed after the order expired or was cancelled, and was
 	 *  refunded automatically. */
 	| "order-late-payment-refunded"
-	/** A NOTICE (`OrderNotice` "refund-issued"): an admin refund that left money
-	 *  captured — one per refund, stating its own amount. */
-	| "order-partially-refunded";
+	/** A NOTICE (`OrderNotice` "refund-issued"): a refund announced on its own — an
+	 *  admin partial refund, or a lost-race cancellation's refund — one per refund,
+	 *  stating its own amount. */
+	| "order-refund-issued";
 
 export interface SendEmailInput {
 	to: Email;

@@ -262,6 +262,9 @@ export type CancelOrderWithRefundOutcome =
 			restockedUnits: number;
 			/** The state the order moved to instead (shipped, say). */
 			movedTo: OrderState | null;
+			/** The refund whose `refund-issued` notice now tells the buyer — so a caller
+			 *  can send it inline. Null when nothing was refunded. */
+			refundId: string | null;
 	  }
 	/** The refund leg failed and the order was NOT cancelled; `refundFailure` says
 	 *  why, with `refundOrder`'s own taxonomy (retryable, rejected, unknown, …). */
@@ -533,6 +536,7 @@ export async function cancelOrderWithRefund(
 			refund,
 			restockedUnits,
 			movedTo: fresh?.state ?? null,
+			refundId: refundLeg.refundId,
 		};
 	}
 	return { ok: false, reason: "NOT_CANCELLABLE" };

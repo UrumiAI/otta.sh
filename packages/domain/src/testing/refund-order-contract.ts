@@ -701,7 +701,7 @@ export function refundOrderContract(
 			};
 			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
 			expect(await drain(h, sent)).toBe(1);
-			expect(sent.countByTemplate("order-partially-refunded", id)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
 			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(300);
 			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
 			expect(await drain(h, sent)).toBe(0);
@@ -728,7 +728,7 @@ export function refundOrderContract(
 				});
 			}
 			expect(await drain(h, sent)).toBe(3);
-			const partials = sent.sends.filter((m) => m.template === "order-partially-refunded");
+			const partials = sent.sends.filter((m) => m.template === "order-refund-issued");
 			expect(partials.map((m) => m.data["noticeAmountCents"])).toEqual([300, 200]);
 			const full = sent.sends.filter((m) => m.template === "order-refunded");
 			expect(full).toHaveLength(1);
@@ -773,7 +773,7 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-mail-man"),
 			});
 			expect(await drain(h, sent)).toBe(1);
-			expect(sent.countByTemplate("order-partially-refunded", id)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
 		});
 
 		test("a cancellation's or a late payment's refund sends no admin refund email of its own", async () => {

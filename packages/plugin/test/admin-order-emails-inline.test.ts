@@ -195,7 +195,7 @@ describe("an admin write sends its email at once, in order", () => {
 			fullyRefunded: false,
 			email: "sent",
 		});
-		const mail = sender.sends.find((s) => s.template === "order-partially-refunded");
+		const mail = sender.sends.find((s) => s.template === "order-refund-issued");
 		expect(mail?.data["noticeAmountCents"]).toBe(400);
 	});
 

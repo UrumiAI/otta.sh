@@ -973,7 +973,9 @@ export class InMemoryOrderStore implements OrderStore {
 				(r) =>
 					r.orderId === orderId &&
 					r.notice?.kind === notice.kind &&
-					(r.notice.refundId ?? null) === (notice.refundId ?? null),
+					// A legacy entry (no refundId, written before refund ids existed) stands
+					// for any refund of its kind, so a replay after deploy does not re-send.
+					(r.notice.refundId === undefined || r.notice.refundId === notice.refundId),
 			)
 		) {
 			return false;

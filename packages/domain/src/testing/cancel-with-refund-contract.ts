@@ -609,6 +609,8 @@ export function cancelWithRefundContract(
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
 				restockedUnits: QTY,
 				movedTo: "shipped",
+				// The refund it carries, so the caller can send its notice inline.
+				refundId: (await h.orderStore.listRefunds(id))[0]?.id,
 			});
 			const order = await h.orderStore.getById(id);
 			expect(order?.state).toBe("shipped");
@@ -619,13 +621,13 @@ export function cancelWithRefundContract(
 			// The buyer still hears about their money: the cancelled email that would have
 			// carried it will never go, so the refund announces itself — exactly once.
 			const sent = await drainEmails(h);
-			expect(sent.countByTemplate("order-partially-refunded", id)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
 			expect(sent.countByTemplate("order-cancelled", id)).toBe(0);
-			const mail = sent.sends.find((m) => m.template === "order-partially-refunded");
+			const mail = sent.sends.find((m) => m.template === "order-refund-issued");
 			expect(mail?.data["noticeAmountCents"]).toBe(TOTAL_CENTS);
 			// A retry neither cancels nor emails again.
 			await cancelWith(h, gw, id, { orderStore: racing });
-			expect((await drainEmails(h)).countByTemplate("order-partially-refunded", id)).toBe(0);
+			expect((await drainEmails(h)).countByTemplate("order-refund-issued", id)).toBe(0);
 		});
 
 		// -- the stock a cancellation returns, exactly once ------------------------

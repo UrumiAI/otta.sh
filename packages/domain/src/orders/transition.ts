@@ -13,6 +13,7 @@ import {
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
+import { sumFinalizedRefunds } from "./refund-order.js";
 import {
 	emailTemplateForNotice,
 	emailTemplateForState,
@@ -473,9 +474,7 @@ async function refundedTotal(
 	orderStore: OrderStore,
 	order: Order,
 ): Promise<{ amount: number; currency: string } | null> {
-	let total = 0;
-	for (const r of await orderStore.listRefunds(order.id))
-		if (r.status === "recorded") total += r.amount;
+	const total = sumFinalizedRefunds(await orderStore.listRefunds(order.id));
 	return total === 0 ? null : { amount: total, currency: order.totals.currency };
 }
 

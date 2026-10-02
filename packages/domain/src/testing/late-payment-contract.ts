@@ -244,6 +244,28 @@ export function latePaymentContract(
 			expect(await drainRows(store, s.order.id, now), "no second email").toEqual([]);
 		});
 
+		test("a notice stored before refund ids existed still dedupes: a replay after deploy does not email twice", async () => {
+			// A late-payment notice written by the previous build carries no `refundId`.
+			// The replay's notice carries one; the legacy entry must still count as it.
+			const h = await makeHarness();
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			const s = await seedExpiredOrder(h, "legacy");
+			const store = h.settleDeps.orderStore;
+			const now = h.settleDeps.clock.now().toISOString();
+			await drainNotices(store, s.order.id, now);
+			expect(
+				await store.enqueueNotice(s.order.id, {
+					kind: "late-payment-refunded",
+					amount: cents(TOTAL_CENTS),
+					currency: USD,
+				}),
+			).toBe(true);
+			await settleOrder(h.settleDeps, gateway, succeeded(gateway, s, "evt_legacy"));
+			const rows = await drainRows(store, s.order.id, now);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.notice?.refundId).toBeUndefined();
+		});
+
 		test("two deliveries of the same event settling CONCURRENTLY refund once and notify once", async () => {
 			const h = await makeHarness();
 			const gateway = new FakePaymentGateway({ id: "stripe" });

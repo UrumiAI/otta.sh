@@ -279,14 +279,17 @@ describe("renderEmail customer-login-link", () => {
 describe("renderEmail refund emails", () => {
 	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
 
-	test("a partial refund states its own amount, neutral about how the money went back", () => {
-		const rendered = renderEmail("order-partially-refunded", {
+	test("a refund-issued email states its own amount, neutral about how much and how", () => {
+		const rendered = renderEmail("order-refund-issued", {
 			...base,
 			noticeAmountCents: 600,
 			noticeCurrency: "USD",
 		});
 		expect(rendered.subject).toBe("Refund issued — order ord-1");
-		expect(rendered.text).toContain("We've issued a partial refund for your order.");
+		// Neutral: it also announces a FULL refund on an order that cannot flip to
+		// refunded (a cancellation that lost the race to a shipment).
+		expect(rendered.text).toContain("We've issued a refund for your order.");
+		expect(rendered.text).not.toContain("partial");
 		expect(rendered.text).toContain("Refunded: 6.00 USD");
 		expect(rendered.text).not.toContain("Total:");
 		expect(rendered.text).not.toContain("original payment method");

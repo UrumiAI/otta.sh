@@ -204,12 +204,14 @@ const ORDER_COPY: Record<
 		subject: "Payment refunded",
 		body: "A payment arrived after your order expired, so we couldn't accept it and have refunded it in full. It can take 5–10 business days to appear on your statement.",
 	},
-	// An admin refund that left money captured (QA T1-6). Neutral about HOW the money
-	// went back: a manual (x402) refund is sent by the merchant to a wallet, not "to
-	// your original payment method". Its figure is the notice's own (`Refunded: X`).
-	"order-partially-refunded": {
+	// A refund announced on its own (QA T1-6): an admin partial refund, or a
+	// cancellation's FULL refund on an order that shipped before it could be
+	// cancelled. So the body is neutral about HOW MUCH — the figure is on the
+	// `Refunded: X` line — and about HOW: a manual (x402) refund goes to a wallet, not
+	// "to your original payment method".
+	"order-refund-issued": {
 		subject: "Refund issued",
-		body: "We've issued a partial refund for your order.",
+		body: "We've issued a refund for your order.",
 	},
 };
 

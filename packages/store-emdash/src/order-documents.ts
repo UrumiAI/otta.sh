@@ -733,7 +733,10 @@ export function findNoticeEntry(
 	return doc.emailOutbox.find(
 		(entry) =>
 			entry.notice?.kind === notice.kind &&
-			(entry.notice.refundId ?? null) === (notice.refundId ?? null),
+			// A legacy entry (no refundId — written before refund ids existed) stands for
+			// any refund of its kind, so a late-payment replay after deploy does not send
+			// its notice a second time.
+			(entry.notice.refundId === undefined || entry.notice.refundId === notice.refundId),
 	);
 }
 
