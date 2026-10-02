@@ -73,25 +73,35 @@ what changes is **when the first delivery attempt happens**.
   only a row no dispatcher has tried: `attempts === 0` **and** `timeouts === 0`, checked inside
   the same compare-and-set, on top of the due predicate. An uncounted timeout leaves
   `attempts` at 0, but its row is the sweep's to retry, on the sweep's backoff. So the inline
-  path makes at most one attempt per row, every retry is the cron's, and the total budget
-  (`maxAttempts`) is unchanged. Otherwise repeated Stripe redeliveries or x402 re-posts
+  path makes at most one COUNTED attempt per row, every counted retry is the cron's, and the
+  total budget (`maxAttempts`) is unchanged. A cut-short inline attempt (below) is uncounted
+  and may recur on a later delivery before the sweep takes the row; the provider
+  `Idempotency-Key` dedupes it. Otherwise repeated Stripe redeliveries or x402 re-posts
   during a provider outage would each spend an attempt, and could park the confirmation
   `failed` within minutes.
 - **One deadline per settle request.** The plugin has no `waitUntil` (see ADR-0004's
   2026-09-29 amendment), so the work is awaited inline. The settle route can also make up to
-  two Stripe calls for a late payment's refund (ADR-0022's first 2026-10-02 amendment), each capped at 3 s.
-  Bounds that each fit do not add up to one that does, so each route fixes **one 8 s deadline
-  as it starts** (`settle-deadline.ts`). Every slow step after verification draws on it,
-  taking `min(its own cap, what is left)` as each call starts. The whole delivery therefore
-  stays under Stripe's ~10 s webhook timeout. The settle's own storage work is charged to the
+  two Stripe calls for a late payment's refund (ADR-0022's first 2026-10-02 amendment): a
+  pre-flight read and a create, each capped at 3 s. Bounds that each fit do not add up to one
+  that does, so each route fixes **one 8 s deadline as it starts** (`settle-deadline.ts`). On
+  the Stripe route every slow step after verification draws on it. A READ takes
+  `min(its own cap, what is left)` as it starts; a timed-out read issued nothing. The refund
+  CREATE is **its full bound or not started**: a timed-out create is ambiguous (it may have
+  reached Stripe) and would flag the order "verify in Stripe" and block the automatic retry.
+  So it starts only while 3 s plus the writes after it still fit; otherwise it answers
+  not-started, and the refund stays reserved, uncounted, for the redelivery or the sweep.
+  This is the same rule as the sweep's late-refunds leg, in one shared helper
+  (`boundedRefundStripeOptions`). Worst case, then: storage, a read of at most 3 s, and a
+  3 s create only if it fits, all inside 8 s, with the inline email taking what is left. The
+  whole delivery therefore stays under Stripe's ~10 s webhook timeout. The settle's own storage work is charged to the
   deadline by running first. The inline wait is at most 5 s and never past the deadline, and
   a spent deadline skips the attempt. Each inline send is capped at 3 s
   (`ORDER_EMAIL_INLINE_TIMEOUT_MS`, defined as the login email's ceiling), or at what is left
   of the wait when it starts if that is less. Once the wait runs out, the drain claims
   nothing new. The claim takes a 1-minute lease instead of the sweep's 5 minutes, so a
-  request that dies mid-send holds the row only briefly. The x402 page-gate route uses the
-  same budget, so a shopper waiting on that page can see the response delayed by up to that
-  wait. This was accepted rather than given a tighter x402-only budget, because a provider
+  request that dies mid-send holds the row only briefly. The x402 route uses the deadline
+  for the inline email only; its facilitator call keeps its own bound. A shopper waiting on
+  the x402 page gate can therefore see the response delayed by up to the inline wait. This was accepted rather than given a tighter x402-only budget, because a provider
   that answers takes about one round trip.
 - **An inline timeout is never the provider's fault.** The sweep gives each send its full
   allowance, so a timeout there counts against the provider: it is backed off, recorded,
