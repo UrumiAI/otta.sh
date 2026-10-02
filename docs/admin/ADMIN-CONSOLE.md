@@ -1535,6 +1535,22 @@ paragraph is deleted, not relocated.
 
 ---
 
+### 7.x Value rules on the rules screens *(added 2026-10-02, QA)*
+
+Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
+in-process rules client, so no caller of the surface can store the value:
+
+- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
+  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
+  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
+  is never refused on read or edit.
+- **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
+  (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
+  discount to the subtotal.
+- **Free-shipping threshold only on a `free_shipping` method.** `shippingCost` never reads it for a
+  flat rate, so a non-blank threshold on a flat-rate method's rate is refused with that reason.
+
 ## 8. Destructive actions
 
 One rule, applied identically on every screen.

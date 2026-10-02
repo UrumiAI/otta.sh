@@ -25,7 +25,7 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
-import { isIsoCurrencyCode } from "./currency-codes.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,

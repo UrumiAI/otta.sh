@@ -4306,6 +4306,26 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
 		});
 
+		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
+			// The console checks this first; the client is the second line, so no
+			// caller of the surface can store a price nobody is quoted in.
+			await client.createZone({ id: "cur-z", name: "Cur" });
+			await client.createMethod("cur-z", { id: "cur-m", name: "M", type: "flat_rate" });
+			await expect(
+				client.createRate("cur-m", { currency: "XYZ", amountCents: 500 }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			await expect(
+				client.createCoupon({
+					id: "cur-c",
+					code: "CURXYZ",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "XYZ",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			expect(await client.getCoupon("CURXYZ")).toBeNull();
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so

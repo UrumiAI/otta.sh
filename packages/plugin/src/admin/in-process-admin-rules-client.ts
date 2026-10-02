@@ -75,6 +75,7 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	isIsoCurrencyCode,
 	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
@@ -286,7 +287,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		input: ShippingRateInput,
 	): Promise<RulesCreateResult<ShippingRateWire>> {
 		requireIdToken("methodId", methodId);
-		requireCurrencyCode("currency", input.currency);
+		requireAuthoredCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
 		if (min !== undefined && min !== null) requireNonNegativeInteger("minSubtotalCents", min);
@@ -532,7 +533,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const startsAt = optionalInstantText("startsAt", input.startsAt);
 		const expiresAt = optionalInstantText("expiresAt", input.expiresAt);
 		if (input.currency !== undefined && input.currency !== null) {
-			requireCurrencyCode("currency", input.currency);
+			requireAuthoredCurrency("currency", input.currency);
 		}
 		const coupon = await this.#stores.couponStore.create({
 			id: input.id,
@@ -712,6 +713,19 @@ function toDeleteResult(res: { ok: true } | { ok: false; reason: string }): Rule
 function requireFullReplaceKey(field: string, edit: object): void {
 	if (!Object.hasOwn(edit, field) || (edit as Record<string, unknown>)[field] === undefined) {
 		throw new CommerceInputError(field, "is required (send an explicit value to replace it)");
+	}
+}
+
+/**
+ * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
+ * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
+ * only — reads and edits name a currency that already exists, and refusing a
+ * stored code on read would strand a row written before this rule.
+ */
+function requireAuthoredCurrency(field: string, value: string): void {
+	requireCurrencyCode(field, value);
+	if (!isIsoCurrencyCode(value)) {
+		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
 	}
 }
 

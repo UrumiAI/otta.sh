@@ -30,7 +30,7 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
-import { isIsoCurrencyCode } from "./currency-codes.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
