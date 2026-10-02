@@ -52,4 +52,9 @@ const model: AccountLoginModel = {
 };
 ---
 
-<Storefront view="accountLogin" model={model} title="Sign in or create an account" />
+<Storefront
+	view="accountLogin"
+	model={model}
+	title="Sign in or create an account"
+	signedIn={email !== null}
+/>

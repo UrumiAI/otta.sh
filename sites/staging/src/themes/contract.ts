@@ -48,12 +48,20 @@ export interface ChromeModel {
 	description: string | null;
 	/** The primary menu, Account link already appended. */
 	navItems: readonly ChromeNavItem[];
-	/** Units in the cart, or `null` for "this page read no cart" (never `0`). */
+	/** Units in the cart, or `null` for "no count to draw" — no cart read on this
+	 *  page, no cart cookie, or an empty or unreadable cart. */
 	cartCount: number | null;
 	/** The spoken form of `cartCount` ("3 items"), `null` exactly when it is. */
 	cartCountLabel: string | null;
 	/** The currency CODE the page quoted, or `null` when it quoted none (§7). */
 	currency: string | null;
+	/**
+	 * `true` only when this request carried a session the plugin still honours
+	 * (asked for a theme that opts into `shopperState`); `false` for signed out or
+	 * not known. The nav's own Account entry is already relabelled for it ("Your
+	 * account"); a theme may also style on it. Never the email.
+	 */
+	signedIn: boolean;
 	themeId: ThemeId;
 	/**
 	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer,
@@ -579,6 +587,18 @@ export interface ThemeViews {
  */
 export interface ThemeChromeNeeds {
 	cartLines?: boolean;
+	/**
+	 * This theme's chrome shows the SHOPPER'S STATE on every storefront page: the
+	 * cart's count beside the cart link, and whether they are signed in (QA U-12,
+	 * U-14). The shell then reads the count (`lib/chrome-state.ts`) for a request
+	 * carrying a cart cookie and asks whether the session is live for one carrying
+	 * a session cookie — never otherwise — and hands over `ChromeModel.cartCount`
+	 * and `ChromeModel.signedIn`. The middleware keeps every such page private,
+	 * no-store and out of the route cache. Both reads fail soft and skip the
+	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
+	 * its own count.
+	 */
+	shopperState?: boolean;
 }
 
 export interface ThemeModule {

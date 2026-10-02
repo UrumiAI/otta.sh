@@ -113,9 +113,12 @@ const model: AccountOrderModel = {
 };
 ---
 
+{/* An answer about THIS session's order (the order, or NOT_FOUND) means the
+    session is live: the header can say so without asking again. */}
 <Storefront
 	view="accountOrder"
 	model={model}
 	title={label}
 	currency={order?.currency ?? null}
+	signedIn={order !== null || notFound ? true : undefined}
 />

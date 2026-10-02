@@ -74,4 +74,11 @@ const model: AccountOrdersModel = {
 };
 ---
 
-<Storefront view="accountOrders" model={model} title="Your orders" />
+{/* A list came back, so the session is live: the header can say so without
+    asking again. Unknown (busy, unavailable) ⇒ the shell decides. */}
+<Storefront
+	view="accountOrders"
+	model={model}
+	title="Your orders"
+	signedIn={orders !== null ? true : undefined}
+/>
