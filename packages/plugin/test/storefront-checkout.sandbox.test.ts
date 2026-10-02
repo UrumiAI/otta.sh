@@ -1411,13 +1411,33 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(replay["clientAction"]).toEqual(first["clientAction"]);
 	});
 
-	test("storefront/order/resume (QA U-2): the order id alone gets the SAME PaymentIntent — the same key and body at Stripe, no second order, only a hint of the email", async () => {
+	test("storefront/order/resume (QA U-2): the order id plus its email gets the SAME PaymentIntent — the same key and body at Stripe, no second order, only a hint of the email", async () => {
 		const cartId = await seedThreeLineCart();
 		const first = await placeCart(cartId);
 		expect(first["ok"]).toBe(true);
 		const orderId = first["orderId"] as string;
 
-		const resumed = resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId }));
+		// The order id ALONE is not enough (QA U-2): no proof, nothing asked of Stripe.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId }))).toEqual({
+			ok: false,
+			reason: "PROOF_REQUIRED",
+		});
+		const wrong = resultOf(
+			await stripeBoot.invokeRoute("storefront/order/resume", {
+				orderId,
+				email: "someone.else@example.com",
+			}),
+		);
+		expect(wrong).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+		expect(stripe.requests).toHaveLength(1);
+
+		// The order's email, typed again (case aside), is the proof.
+		const resumed = resultOf(
+			await stripeBoot.invokeRoute("storefront/order/resume", {
+				orderId,
+				email: ` ${BUYER_REF.toUpperCase()} `,
+			}),
+		);
 
 		expect(resumed, JSON.stringify(resumed)).toMatchObject({
 			ok: true,

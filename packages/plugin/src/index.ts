@@ -462,6 +462,7 @@ export {
 	type PaymentIntentWire,
 	type PublicOrderResult,
 	type ResumeOrderPaymentResult,
+	type ResumeProof,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
 	type QuoteDestinationWire,

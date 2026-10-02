@@ -79,7 +79,7 @@ describe("storefront/order/resume", () => {
 
 		const result = await resume({ orderId: ORDER_ID });
 
-		expect(resumeOrderPayment).toHaveBeenCalledWith(ORDER_ID);
+		expect(resumeOrderPayment).toHaveBeenCalledWith(ORDER_ID, {});
 		expect(result).toEqual({
 			ok: true,
 			orderId: ORDER_ID,
@@ -90,16 +90,34 @@ describe("storefront/order/resume", () => {
 		expect(JSON.stringify(result)).not.toContain('pi_123"');
 	});
 
-	test("reads nothing but the order id: a smuggled cart, key or email is never forwarded", async () => {
-		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "ORDER_NOT_PAYABLE" });
+	test("forwards the order id and the PROOF (cart, session, email) — nothing else", async () => {
+		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "PROOF_REQUIRED" });
 		await resume({
 			orderId: ORDER_ID,
 			cartId: "cart-x",
-			idempotencyKey: "checkout:cart-x",
+			sessionToken: "sess-1",
+			email: "a@b.co",
+			idempotencyKey: "checkout:cart-y",
 			buyerRef: "attacker@example.com",
 		});
-		expect(resumeOrderPayment).toHaveBeenCalledTimes(1);
-		expect(resumeOrderPayment.mock.calls[0]).toEqual([ORDER_ID]);
+		expect(resumeOrderPayment.mock.calls[0]).toEqual([
+			ORDER_ID,
+			{ cartId: "cart-x", sessionToken: "sess-1", email: "a@b.co" },
+		]);
+	});
+
+	test("no proof is forwarded as none; blank or non-string proof is dropped", async () => {
+		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "PROOF_REQUIRED" });
+		await resume({ orderId: ORDER_ID, cartId: "  ", sessionToken: 7, email: "" });
+		expect(resumeOrderPayment.mock.calls[0]).toEqual([ORDER_ID, {}]);
+	});
+
+	test("an over-long email is EMAIL_MISMATCH without a client call", async () => {
+		expect(await resume({ orderId: ORDER_ID, email: `${"a".repeat(400)}@b.co` })).toEqual({
+			ok: false,
+			reason: "EMAIL_MISMATCH",
+		});
+		expect(resumeOrderPayment).not.toHaveBeenCalled();
 	});
 
 	test.each([[""], ["   "], ["has space"], ["x".repeat(300)]])(
@@ -115,13 +133,17 @@ describe("storefront/order/resume", () => {
 		expect(resumeOrderPayment).not.toHaveBeenCalled();
 	});
 
-	test.each([["ORDER_NOT_FOUND"], ["ORDER_NOT_PAYABLE"], ["PAYMENT_INTENT_FAILED"]])(
-		"a refusal (%s) passes through as its reason",
-		async (reason) => {
-			resumeOrderPayment.mockResolvedValue({ ok: false, reason });
-			expect(await resume({ orderId: ORDER_ID })).toEqual({ ok: false, reason });
-		},
-	);
+	test.each([
+		["ORDER_NOT_FOUND"],
+		["ORDER_NOT_PAYABLE"],
+		["PAYMENT_INTENT_FAILED"],
+		["PROOF_REQUIRED"],
+		["EMAIL_MISMATCH"],
+		["THROTTLED"],
+	])("a refusal (%s) passes through as its reason", async (reason) => {
+		resumeOrderPayment.mockResolvedValue({ ok: false, reason });
+		expect(await resume({ orderId: ORDER_ID })).toEqual({ ok: false, reason });
+	});
 
 	test("an intent already in flight is BUSY and retryable, like the place route's", async () => {
 		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "PAYMENT_INTENT_IN_FLIGHT" });

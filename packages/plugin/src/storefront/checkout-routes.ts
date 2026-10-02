@@ -24,7 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
-import { isIdToken } from "../commerce/commerce-input.js";
+import { BUYER_REF_MAX, isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -38,6 +38,7 @@ import type {
 	QuoteFailureReason,
 	QuoteRequestWire,
 	QuoteResult,
+	ResumeProof,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -134,9 +135,14 @@ export interface OrderRouteInput {
 	locale?: unknown;
 }
 
-/** Only the order id (and the locale the total is formatted in): nothing else
- *  in the input is read. */
-export type OrderResumeRouteInput = OrderRouteInput;
+/** The order id, the SECOND FACTOR (any one of cart, session, email — see
+ *  `commerce/resume-proof.ts`) and the locale the total is formatted in. Nothing
+ *  else in the input is read. */
+export interface OrderResumeRouteInput extends OrderRouteInput {
+	cartId?: unknown;
+	sessionToken?: unknown;
+	email?: unknown;
+}
 
 /** What the totals were computed WITH — the form echoes it, so the place
  *  prices exactly what the buyer reviewed. `null` ⇒ not applied. */
@@ -284,7 +290,16 @@ export type OrderResumeRouteResult =
 			buyerRefHint: string;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
-	| { ok: false; reason: "ORDER_NOT_FOUND" | "ORDER_NOT_PAYABLE" | CheckoutFailureReason }
+	| {
+			ok: false;
+			reason:
+				| "ORDER_NOT_FOUND"
+				| "ORDER_NOT_PAYABLE"
+				| "PROOF_REQUIRED"
+				| "EMAIL_MISMATCH"
+				| "THROTTLED"
+				| CheckoutFailureReason;
+	  }
 	| RenderGuardFailure;
 
 /**
@@ -688,11 +703,17 @@ export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 		});
 }
 
+/** A non-blank string, or nothing. */
+function proofText(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
 /**
- * Resume a pending order's payment from the order page (QA U-2) — on ANY device:
- * the order id is the whole credential, exactly as for `storefront/order`, and
- * nothing else in the input is read. No cart id, no key, no email can be
- * smuggled in to steer the replay; the client replays the order's OWN checkout.
+ * Resume a pending order's payment from the order page (QA U-2) — on ANY device,
+ * but NOT on the order id alone: the caller also holds the order's cart, a
+ * session owning it, or its email (`commerce/resume-proof.ts`). No key or buyer
+ * can be smuggled in to steer the replay; the client replays the order's OWN
+ * checkout.
  *
  * What this grants beyond the order read is the client secret of the order's
  * existing PaymentIntent — i.e. the means to PAY that order, for as long as it is
@@ -711,8 +732,26 @@ export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteIn
 				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
 			}
 
+			// The second factor: only non-blank strings, bounded. An email longer
+			// than any buyer reference can be cannot match, and is refused without
+			// spending a throttle slot or a store read.
+			const proof: ResumeProof = {};
+			const cartId = proofText(routeCtx.input.cartId);
+			const sessionToken = proofText(routeCtx.input.sessionToken);
+			const email = proofText(routeCtx.input.email);
+			if (cartId !== undefined && isIdToken(cartId)) proof.cartId = cartId;
+			if (sessionToken !== undefined && sessionToken.length <= 400) {
+				proof.sessionToken = sessionToken;
+			}
+			if (email !== undefined) {
+				if (email.length > BUYER_REF_MAX) {
+					return { ok: false as const, reason: "EMAIL_MISMATCH" as const };
+				}
+				proof.email = email;
+			}
+
 			const client = await makeCommerceClient(ctx);
-			const result = await client.resumeOrderPayment(input.orderId);
+			const result = await client.resumeOrderPayment(input.orderId, proof);
 			if (!result.ok) {
 				// A same-key intent still in flight (a double click on "Complete
 				// payment") is BUSY and retryable, as on the place route.
