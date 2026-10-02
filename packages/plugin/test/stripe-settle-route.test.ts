@@ -1113,3 +1113,90 @@ describe("(xii) ONE deadline for the whole settle: the refund calls and the inli
 		expect(await cronWouldClaim("ord-deadline-mail")).toMatchObject({ attempts: 1 });
 	});
 });
+
+describe("(xiii) the late-payment refund CREATE gets its full bound or is not started", () => {
+	// A timed-out create is AMBIGUOUS (it may have reached Stripe): it lands as
+	// GATEWAY_UNVERIFIED, flags the order "verify in Stripe", and blocks the automatic
+	// retry. So the shared deadline may clip the pre-flight READ, but must never hand
+	// the create a sliver: with too little left it is not started at all.
+	test("a settle whose pre-flight read leaves too little time issues NO create: the refund stays reserved, uncounted, never 'verify in Stripe'", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await harness.ctx.kv.set(STRIPE_SECRET_KEY_KEY, "sk_test_settle_route");
+		await seedPendingOrder("ord-late-create");
+		expect(
+			await harness.stores.orderStore.expire(
+				toOrderId("ord-late-create"),
+				"2100-01-01T00:00:00.000Z",
+			),
+		).toBe(true);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		let clock = 0;
+		const calls: string[] = [];
+		const ctx: PluginContext = {
+			...harness.ctx,
+			http: {
+				async fetch(url: string, init?: RequestInit): Promise<Response> {
+					calls.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+					// The pre-flight read is slow: by the time it answers, 7 s of the
+					// request's 8 s are gone.
+					clock += 7_000;
+					return new Response(
+						JSON.stringify({
+							id: "pi_ord-late-create",
+							latest_charge: { amount_refunded: 0, amount_captured: AMOUNT, currency: "usd" },
+						}),
+						{ status: 200 },
+					);
+				},
+			},
+		};
+
+		const res = await invoke(
+			await signedDelivery("ord-late-create"),
+			{},
+			{ ctx, now: () => clock },
+		);
+
+		// Retryable, so Stripe redelivers and the redelivery (or the sweep) resumes the
+		// SAME reservation under the SAME key with a whole create's time.
+		expect(res).toMatchObject({ ok: false, status: 503, reason: "LATE_PAYMENT_REFUND_RETRYABLE" });
+		expect(calls).toEqual(["GET /v1/payment_intents/pi_ord-late-create"]); // no POST /v1/refunds
+		const ledger = await harness.stores.orderStore.readOrderLedger(toOrderId("ord-late-create"));
+		expect(ledger?.refunds.map((r) => r.status)).toEqual(["reserved"]);
+		expect(ledger?.refundRetries.map((r) => r.attempts)).toEqual([0]); // not counted
+		expect(ledger?.order.reconciliationFlag ?? "").not.toContain("verify in");
+	});
+
+	test("with a whole create's time left, the create is issued with its FULL bound", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await harness.ctx.kv.set(STRIPE_SECRET_KEY_KEY, "sk_test_settle_route");
+		await seedPendingOrder("ord-late-full");
+		await harness.stores.orderStore.expire(toOrderId("ord-late-full"), "2100-01-01T00:00:00.000Z");
+		const calls: string[] = [];
+		const ctx: PluginContext = {
+			...harness.ctx,
+			http: {
+				async fetch(url: string, init?: RequestInit): Promise<Response> {
+					const path = new URL(url).pathname;
+					calls.push(`${init?.method ?? "GET"} ${path}`);
+					return new Response(
+						JSON.stringify(
+							path === "/v1/refunds"
+								? { id: "re_1", amount: AMOUNT, currency: "usd", status: "succeeded" }
+								: {
+										id: "pi_ord-late-full",
+										latest_charge: { amount_refunded: 0, amount_captured: AMOUNT, currency: "usd" },
+									},
+						),
+						{ status: 200 },
+					);
+				},
+			},
+		};
+
+		const res = await invoke(await signedDelivery("ord-late-full"), {}, { ctx });
+
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(calls).toEqual(["GET /v1/payment_intents/pi_ord-late-full", "POST /v1/refunds"]);
+	});
+});

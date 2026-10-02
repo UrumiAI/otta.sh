@@ -32,6 +32,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vit
 import {
 	ORDER_EMAIL_INLINE_DEADLINE_MS,
 	ORDER_EMAIL_INLINE_TIMEOUT_MS,
+	cutShortTimeouts,
 	sendOrderEmailsNow,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
@@ -354,5 +355,42 @@ describe("failures are logged with the order id and the message only", () => {
 		expect(args.every((a) => typeof a === "string")).toBe(true);
 		expect(args.join(" ")).toContain("ord-store-err");
 		expect(args.join(" ")).toContain("storage exploded");
+	});
+});
+
+/** What `cutShortTimeouts(sender).send` rejects with, or `undefined`. */
+async function rejectionOf(sender: EmailSender): Promise<unknown> {
+	return cutShortTimeouts(sender)
+		.send({
+			to: "a@example.com" as never,
+			template: "order-confirmation",
+			data: {},
+			idempotencyKey: "k",
+		})
+		.then(
+			() => undefined,
+			(err: unknown) => err,
+		);
+}
+
+describe("cutShortTimeouts", () => {
+	test("re-marks a timeout cut short and KEEPS its real allowance", async () => {
+		const err = await rejectionOf({
+			send: () => Promise.reject(new EmailSendTimeoutError(1_234)),
+		});
+		expect(err).toBeInstanceOf(EmailSendTimeoutError);
+		expect(err).toMatchObject({ cutShort: true, timeoutMs: 1_234 });
+	});
+
+	test("a bridged timeout that dropped its allowance falls back to the inline ceiling", async () => {
+		const err = await rejectionOf({
+			send: () => Promise.reject({ name: "EmailSendTimeoutError" }),
+		});
+		expect(err).toMatchObject({ cutShort: true, timeoutMs: ORDER_EMAIL_INLINE_TIMEOUT_MS });
+	});
+
+	test("any other failure passes through untouched", async () => {
+		const boom = new Error("provider said no");
+		expect(await rejectionOf({ send: () => Promise.reject(boom) })).toBe(boom);
 	});
 });

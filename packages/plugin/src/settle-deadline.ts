@@ -9,15 +9,25 @@
  * attempt (ADR-0005's 2026-10-02 amendment). Each had its own bound, but bounds that
  * each fit do not add up to one that does: two 3 s refund calls plus a 5 s email
  * wait is already past 10 s. So the handler fixes one deadline as it starts, and
- * every slow step after that takes a per-call timeout of `min(its own ceiling, what
- * is left)`. The settle's own storage work, whose compare-and-set retries have no
- * fixed bound, is charged against the same clock simply by running first.
+ * every slow step after that draws on it. The settle's own storage work, whose
+ * compare-and-set retries have no fixed bound, is charged against the same clock
+ * simply by running first.
  *
- * A step that finds the budget spent gets 1 ms — never 0, which some runtimes read as
- * "no timeout", the opposite of what a caller out of time wants. Each step already
- * treats a timeout as recoverable: a refund call that times out is classified
- * retryable or unverified and resumed under the same key by the redelivery; an
- * inline email that is cut off is released uncounted for the cron.
+ * TWO RULES, BY WHAT A TIMEOUT MEANS:
+ *  - a call whose timeout is RECOVERABLE — the refund pre-flight read (it issued
+ *    nothing: retryable) and an inline email send (released uncounted) — takes
+ *    `min(its own ceiling, what is left)` as it starts (`boundedBy`), never below
+ *    1 ms — never 0, which some runtimes read as "no timeout";
+ *  - the refund CREATE is "full bound or not started" (`boundedRefundStripeOptions`,
+ *    shared with the sweep). A timed-out create is AMBIGUOUS — it may have reached
+ *    Stripe — and would flag the order "verify in Stripe"; so it starts only while
+ *    its whole bound plus the writes after it still fit, and otherwise answers
+ *    not-started, leaving the refund reserved, uncounted, for the redelivery.
+ *
+ * Worst case on the Stripe route: storage, a read of at most 3 s, a 3 s create only
+ * if it fits, then the inline email from whatever is left — inside 8 s. The x402
+ * route uses the deadline for its inline email only; its facilitator call keeps its
+ * own bound.
  */
 
 /** The whole request's budget, from its start: comfortably under Stripe's ~10 s,

@@ -1,7 +1,7 @@
 /**
  * Send one order's due outbox emails NOW, inline in the request that made them due
  * — the payment-settle routes, so a shopper's order confirmation goes out with the
- * settlement instead of up to a whole `SWEEP_SCHEDULE` period (15 minutes) later.
+ * settlement instead of on the next sweep tick, behind the rest of the queue.
  * ADR-0005's 2026-10-02 amendment records the decision.
  *
  * BEST-EFFORT, AND THE CRON IS STILL THE GUARANTEE. Nothing about the outbox
@@ -30,10 +30,12 @@
  *  - it is CHEAP when there is nothing to do — the sender (two kv reads) is built
  *    only once a row has been claimed, so a replay costs one read of the order;
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
- *    (`onlyUnattempted`), so it makes at most one attempt per row and every retry
- *    is the cron's; the total budget (`maxAttempts`) is unchanged. Repeated Stripe
- *    redeliveries or x402 re-posts during a provider outage therefore cannot spend
- *    it and park the confirmation `failed` within minutes.
+ *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
+ *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
+ *    Repeated Stripe redeliveries or x402 re-posts during a provider outage
+ *    therefore cannot spend it and park the confirmation `failed` within minutes. A
+ *    cut-short inline attempt is uncounted and may recur on a later delivery before
+ *    the sweep takes the row; the `Idempotency-Key` dedupes it.
  *
  * WHY ONLY THIS ORDER'S ROWS. `dispatchOrderEmails` drains the whole queue, up to
  * 100 rows across every order — a cron's job, not a request's. The order-scoped
@@ -248,17 +250,18 @@ function lazySender(
  * doing — backed off, recorded, counted past a limit. An inline send gets less (3 s,
  * and less still near the request's deadline), so its timeout says nothing about
  * the provider: re-marked `cutShort`, the drain releases the row uncounted and due
- * at once, and the cron sends it with the full allowance.
+ * at once, and the cron sends it with the full allowance. Exported for its test.
  */
-function cutShortTimeouts(sender: EmailSender): EmailSender {
+export function cutShortTimeouts(sender: EmailSender): EmailSender {
 	return {
 		async send(input) {
 			try {
 				await sender.send(input);
 			} catch (err) {
 				if (isEmailSendTimeoutError(err) && !isCutShortEmailTimeout(err)) {
-					const timeoutMs = (err as { timeoutMs?: unknown }).timeoutMs;
-					throw new EmailSendTimeoutError(typeof timeoutMs === "number" ? timeoutMs : 0, {
+					// The original allowance, kept; only a bridged copy that dropped the field
+					// falls back to the inline ceiling (the most it could have been given).
+					throw new EmailSendTimeoutError(err.timeoutMs ?? ORDER_EMAIL_INLINE_TIMEOUT_MS, {
 						cutShort: true,
 					});
 				}

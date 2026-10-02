@@ -28,12 +28,17 @@ so the email waits for the next tick even after a payment has settled.
 - **`@otta-sh/plugin`.** After an ok settle, `webhooks/stripe/settle` and
   `entitlements/x402/settle` call `sendOrderEmailsNow` for the order the settlement reports.
   The call is best-effort and cannot change the response. It runs outside the 503 mappings
-  and never throws. It makes at most one attempt per row, so redeliveries cannot spend the
-  retry budget; the total budget (`maxAttempts`) is unchanged. The sender is built only once
+  and never throws. It makes at most one COUNTED inline attempt per row, so redeliveries
+  cannot spend the retry budget; the total budget (`maxAttempts`) is unchanged. A cut-short
+  inline attempt is uncounted and may recur on a later delivery before the sweep takes the
+  row; the `Idempotency-Key` dedupes it provider-side. The sender is built only once
   a row has been claimed, so a replay costs one order read.
 - **One deadline per settle request.** `settle-deadline.ts` fixes an 8 s deadline as the
-  route starts. A late payment's Stripe refund calls (each also capped at
-  `SETTLE_PROVIDER_TIMEOUT_MS`) and the inline email wait (capped at 5 s) both draw on it, so
+  route starts. A late payment's Stripe refund pre-flight read takes
+  `min(SETTLE_PROVIDER_TIMEOUT_MS, what is left)`. The refund CREATE gets its full bound or
+  is not started (`boundedRefundStripeOptions`, shared with the sweep's late-refunds leg),
+  because a timed-out create is ambiguous; a create that is not started leaves the refund
+  reserved, uncounted. The inline email wait (capped at 5 s) takes what is left, so
   the whole request stays under Stripe's ~10 s. A spent budget skips the inline attempt.
   Each inline send is capped at the login email's 3 s, or at what is left of the wait if
   less, and an inline timeout is marked cut short. It is therefore released uncounted, and

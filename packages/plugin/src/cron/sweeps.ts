@@ -173,6 +173,11 @@ import {
 import { makeEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
+	boundedRefundStripeOptions,
+	type BoundedRefundStripeOptions,
+	type RefundTimeBudget,
+} from "../payments/bounded-refund-options.js";
+import {
 	resolvePaymentGateways,
 	type PaymentGateways,
 } from "../payments/resolve-payment-gateways.js";
@@ -448,17 +453,12 @@ const LATE_REFUND_MIN_UNIT_MS =
  *    — otherwise the gateway answers RETRYABLE having issued nothing, the row
  *    stays `reserved`, and the domain reschedules it.
  */
-export function lateRefundStripeOptions(legBudget: { remainingMs(): number }): {
-	requestTimeoutMs: () => number;
-	refundCreateTimeoutMs: number;
-	beforeRefundCreate: () => boolean;
-} {
-	return {
-		requestTimeoutMs: () => Math.max(1, Math.min(LATE_REFUND_CREATE_MS, legBudget.remainingMs())),
-		refundCreateTimeoutMs: LATE_REFUND_CREATE_MS,
-		beforeRefundCreate: () =>
-			legBudget.remainingMs() >= LATE_REFUND_CREATE_MS + LATE_REFUND_STORAGE_MS,
-	};
+export function lateRefundStripeOptions(legBudget: RefundTimeBudget): BoundedRefundStripeOptions {
+	// The rule lives in ONE helper, shared with the settle webhook's refund.
+	return boundedRefundStripeOptions(legBudget, {
+		createMs: LATE_REFUND_CREATE_MS,
+		storageMs: LATE_REFUND_STORAGE_MS,
+	});
 }
 
 /** Calls every tick makes before any leg: the setting read and the cadence-state

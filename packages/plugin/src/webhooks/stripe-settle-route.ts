@@ -59,6 +59,7 @@ import {
 	type SendOrderEmailsNowOptions,
 } from "../email/send-order-emails-now.js";
 import { stripeWebhookSecretFromKv } from "../payment-secrets.js";
+import { boundedRefundStripeOptions } from "../payments/bounded-refund-options.js";
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { settleDeadline } from "../settle-deadline.js";
 import type { RouteHandler } from "../types.js";
@@ -72,6 +73,11 @@ export const STRIPE_WEBHOOK_SETTLE_ROUTE = "webhooks/stripe/settle";
  *  (the pre-flight read, then the create), so 3 s each keeps the pair well inside
  *  Stripe's ~10 s webhook delivery timeout. See the handler. */
 export const SETTLE_PROVIDER_TIMEOUT_MS = 3_000;
+
+/** Room kept, after a refund create, for the storage writes that record it
+ *  (finalize, resolve, notice): a create starts only while its whole bound plus
+ *  this still fit in the request's deadline. */
+export const SETTLE_REFUND_STORAGE_MS = 500;
 
 export interface StripeWebhookSettleInput {
 	/** The webhook's RAW bytes, base64-encoded — see the module doc. */
@@ -282,10 +288,25 @@ export function createStripeWebhookSettleHandler(
 		// deadline when it starts (asked per call), so a stalled call classifies
 		// (retryable read, or an unverified create) well inside the delivery, and the
 		// next attempt resumes the same reservation under the same key.
+		//
+		// The CREATE is the exception to "bounded by what is left": a create that
+		// times out is AMBIGUOUS (it may have reached Stripe) and lands as "verify in
+		// Stripe", blocking the automatic retry. So, exactly as the sweep's
+		// late-refunds leg does (`boundedRefundStripeOptions`, one shared rule), the
+		// pre-flight READ takes min(SETTLE_PROVIDER_TIMEOUT_MS, left) and the create
+		// gets its FULL bound or is not started — NOT_STARTED leaves the refund
+		// reserved, uncounted, for the redelivery or the sweep. Worst case the request
+		// spends: storage, then a read ≤ 3 s, then a create of 3 s only if 3 s plus the
+		// writes after it still fit — all inside the 8 s deadline, and the inline email
+		// takes only what is left after that.
 		const gateway =
-			(await stripeGatewayFromCtx(ctx, {
-				requestTimeoutMs: deadline.boundedBy(SETTLE_PROVIDER_TIMEOUT_MS),
-			})) ?? new StripePaymentGateway({ webhookSecret });
+			(await stripeGatewayFromCtx(
+				ctx,
+				boundedRefundStripeOptions(deadline, {
+					createMs: SETTLE_PROVIDER_TIMEOUT_MS,
+					storageMs: SETTLE_REFUND_STORAGE_MS,
+				}),
+			)) ?? new StripePaymentGateway({ webhookSecret });
 		const stores = createInProcessCommerceStores(ctx);
 		const deps: SettleDeps = {
 			orderStore: stores.orderStore,
@@ -314,7 +335,8 @@ export function createStripeWebhookSettleHandler(
 		}
 
 		// ── The order's emails, NOW — best-effort, after the settle is decided ───
-		// The confirmation used to wait for the next cron tick (up to 15 minutes); the
+		// The confirmation used to wait for the next sweep tick, behind the rest of the
+		// queue; the
 		// settle has just made it due, so send it with the settlement (ADR-0005's
 		// 2026-10-02 amendment). Four properties, each load-bearing:
 		//
@@ -329,9 +351,11 @@ export function createStripeWebhookSettleHandler(
 		//    chance to send. When nothing is due (the usual replay) the cost is one read
 		//    of the order document: the sender is built only once a row is claimed.
 		//  - FIRST ATTEMPTS ONLY. The inline claim skips any row a dispatcher has
-		//    already tried — at most one inline attempt per row, the total budget
-		//    (`maxAttempts`) unchanged — so redeliveries during a provider outage
-		//    cannot spend it and park the confirmation `failed`.
+		//    already tried — at most one COUNTED inline attempt per row, the total
+		//    budget (`maxAttempts`) unchanged — so redeliveries during a provider outage
+		//    cannot spend it and park the confirmation `failed`. (A cut-short inline
+		//    attempt is uncounted and may recur on a later delivery; the
+		//    Idempotency-Key dedupes it.)
 		//  - Scoped to THIS order (`claimNextEmailForOrder`), never the global drain,
 		//    and bounded by what the refund calls left of the request's ONE deadline;
 		//    the cron leg stays the at-least-once backstop.
