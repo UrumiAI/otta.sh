@@ -134,6 +134,15 @@ let seq = 0;
  *  every case mints its own — no case can observe another's order. */
 const NS = "oa";
 
+/** The states the order's email outbox holds an entry for — what the buyer has
+ *  been, or will be, emailed about. Read off the order document itself. */
+async function outboxStates(id: string): Promise<string[]> {
+	const doc = (await storage["orders"]?.get(id)) as {
+		emailOutbox?: { toState: string }[];
+	} | null;
+	return (doc?.emailOutbox ?? []).map((entry) => entry.toState);
+}
+
 beforeAll(async () => {
 	({ storage } = await storageBridge());
 	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
@@ -340,6 +349,85 @@ describe("the Orders write path (workerd sandbox)", () => {
 			expect(result.notice?.title, JSON.stringify(state)).toBe("That action could not be read");
 			expect((await readOrder(id)).state, JSON.stringify(state)).toBe("paid");
 		}
+	});
+
+	test("an unpaid CARD order cannot be marked paid by hand — refused in the domain, nothing moves (T1-3)", async () => {
+		// The console no longer offers the button (orders-console-route.sandbox), but
+		// the payload is operator-alterable, so the WRITE must refuse it too: a click
+		// here used to email "we've received your payment" and count the revenue with
+		// nothing captured.
+		const id = await seedOrder({ paid: false });
+		const result = await act("orders:transition-paid", {
+			orderId: id,
+			toState: "paid",
+			state: "pending",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
+		expect(result.notice?.description).toBe(
+			"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+		);
+		const order = await readOrder(id);
+		expect(order.state).toBe("pending");
+		// Nothing was enqueued for the buyer either.
+		expect(await outboxStates(id)).toEqual([]);
+	});
+
+	test("a hand-made bare `cancelled` is refused on a PAID and on an UNPAID order — nothing cancelled, nothing emailed (T1-4)", async () => {
+		// The console offers no bare cancel, but the payload is operator-alterable: a
+		// raw `orders:transition-cancelled` records no reason, releases no stock hold,
+		// and on a paid order keeps the money with a "cancelled" email. The domain
+		// refuses it; Cancel order is the one way to cancel.
+		// The advice is keyed on the state the operator saw: a paid order's says
+		// Cancel order does not refund (and that a FULL refund closes the order as
+		// refunded — so "refund first, then cancel" would be a dead end); an unpaid
+		// one's has no money to talk about.
+		for (const [seed, state, emails, description] of [
+			[
+				{ capturedCents: TOTAL_CENTS },
+				"paid",
+				["paid"],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer — to return their money, use Money → Refunds (a full refund closes the order as refunded).",
+			],
+			[
+				{ paid: false },
+				"pending",
+				[],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why and returns its held stock.",
+			],
+		] as const) {
+			const id = await seedOrder(seed);
+			const result = await act("orders:transition-cancelled", {
+				orderId: id,
+				toState: "cancelled",
+				state,
+			});
+			expect(result.notice).toEqual({
+				variant: "error",
+				title: "Use Cancel order to cancel an order",
+				description,
+			});
+			const order = await readOrder(id);
+			expect(order.state).toBe(state);
+			expect(order.cancellation).toBeNull();
+			expect(await outboxStates(id)).toEqual(emails);
+		}
+	});
+
+	test("Mark refunded applies and SAYS it moved no money and emailed nobody", async () => {
+		const id = await seedOrder();
+		const result = await act("orders:transition-refunded", {
+			orderId: id,
+			toState: "refunded",
+			state: "paid",
+		});
+		expect(result.notice).toEqual({
+			variant: "default",
+			title: "Marked refunded",
+			description: "No money moved and the buyer was not emailed.",
+		});
+		expect((await readOrder(id)).state).toBe("refunded");
+		expect(await outboxStates(id)).toEqual(["paid"]);
 	});
 
 	test("a no-op transition (ok but transitioned:false) reports a NON-error notice", async () => {

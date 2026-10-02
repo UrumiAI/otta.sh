@@ -91,7 +91,7 @@ interface SeedOptions {
 	 *  own rows with. */
 	tag: string;
 	totalCents?: number;
-	state?: "paid" | "processing";
+	state?: "pending" | "paid" | "processing";
 }
 
 /** One order, seeded through the SAME adapters the console's in-process client
@@ -123,7 +123,7 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		],
 		totals: { subtotal: cents(total), total: cents(total), currency: currency("USD") },
 	});
-	await orderStore.markPaid(toOrderId(id));
+	if (options.state !== "pending") await orderStore.markPaid(toOrderId(id));
 	if (options.state === "processing") {
 		await orderStore.transition({
 			orderId: toOrderId(id),
@@ -507,6 +507,18 @@ describe("the console's read/write branch on the otta admin route", () => {
 		const id = await seedOrder({ tag, state: "processing" });
 		const result = await invoke({ type: READ, resource: "orders.detail", orderId: id });
 		expect(result["transitions"]).toEqual(["refunded"]);
+	});
+
+	test("an unpaid CARD order is offered no `paid` — only Stripe's confirmation settles it (T1-3)", async () => {
+		// QA marked an unpaid Stripe order paid in one click: the buyer was told their
+		// payment was received and the reports counted the revenue. The offer is the
+		// domain's `adminNextStates`, so the button is gone here and the write is
+		// refused in the domain as well (orders-actions.sandbox.test.ts).
+		const tag = "unpaid-card";
+		const id = await seedOrder({ tag, state: "pending" });
+		const result = await invoke({ type: READ, resource: "orders.detail", orderId: id });
+		expect((result["order"] as Record<string, unknown>)["state"]).toBe("pending");
+		expect(result["transitions"]).toEqual(["expired"]);
 	});
 
 	test("an unknown order is a refusal with copy, at HTTP 200 (G5)", async () => {

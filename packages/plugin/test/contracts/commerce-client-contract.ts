@@ -282,6 +282,13 @@ export interface CommerceClientTierArrange {
 	session(email: string): Promise<ArrangedSession>;
 	/** Seed one guest order; resolves to its orderId. */
 	order(spec: ArrangedOrder): Promise<string>;
+	/**
+	 * Settle a seeded order `pending → paid` the way the payment provider's
+	 * confirmation does (the settle path's `markPaid`), with no capture recorded. The
+	 * admin surface cannot do it (ADR-0026: no manual mark-paid), so a case that
+	 * needs a paid order arranges one here.
+	 */
+	settle(orderId: string): Promise<void>;
 	/** Seed one address belonging to `session`'s customer. */
 	address(session: ArrangedSession, spec: { name: string }): Promise<void>;
 	/** Seed a shipping zone + method (+ rate, when the spec carries one). */
@@ -2621,9 +2628,11 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						},
 					],
 				},
-				// DERIVED, never re-listed: exactly the domain state machine's row for
-				// `pending`.
-				allowedTransitions: ["paid", "expired", "cancelled"],
+				// DERIVED, never re-listed: the domain's `adminNextStates` — the state
+				// machine's row for `pending` MINUS `paid` (only the payment provider's
+				// confirmation settles an order, QA T1-3) and MINUS a bare `cancelled`
+				// (Cancel order is the one way to cancel, QA T1-4).
+				allowedTransitions: ["expired"],
 			});
 
 			// An id that never existed is a "not found" state, not an error banner.
@@ -2634,20 +2643,25 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		test("a legal transition moves the order, its replay is a no-op, and an illegal one conflicts", async () => {
 			await tier.arrange.order({ orderId: "adm-o-trans", buyerRef: "trans@example.test" });
+			await tier.arrange.settle("adm-o-trans");
 
 			expect(
-				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
+				await orders.transitionOrder("adm-o-trans", "processing", {
+					idempotencyKey: "adm-o-trans-1",
+				}),
 			).toEqual({ ok: true, transitioned: true });
 			// THE REPLAY, under the same key: already there, so nothing moved — and the
 			// surface says so rather than reporting a second transition.
 			expect(
-				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
+				await orders.transitionOrder("adm-o-trans", "processing", {
+					idempotencyKey: "adm-o-trans-1",
+				}),
 			).toEqual({ ok: true, transitioned: false });
 
-			// `paid → pending` is not a row in the machine.
+			// `processing → pending` is not a row in the machine.
 			expect(
 				await orders.transitionOrder("adm-o-trans", "pending", { idempotencyKey: "adm-o-trans-2" }),
-			).toEqual({ ok: false, status: 409 });
+			).toEqual({ ok: false, status: 409, reason: "INVALID_TRANSITION" });
 			expect(
 				await orders.transitionOrder("adm-o-missing", "paid", { idempotencyKey: "adm-o-trans-3" }),
 			).toEqual({ ok: false, status: 404 });
@@ -2658,15 +2672,34 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					idempotencyKey: "adm-o-trans-4",
 				}),
 			).toEqual({ ok: false, status: 400 });
+			// A bare cancel is refused from any state (QA T1-4): Cancel order, which
+			// records why, is the one way to cancel.
+			expect(
+				await orders.transitionOrder("adm-o-trans", "cancelled", {
+					idempotencyKey: "adm-o-trans-5",
+				}),
+			).toEqual({ ok: false, status: 409, reason: "USE_CANCEL" });
+
+			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order and not
+			// an x402 one. (The no-method case — the refusal failing CLOSED — cannot be
+			// arranged on this surface; the domain's orderTransitionContract pins it.)
+			for (const [id, paymentMethod] of [
+				["adm-o-trans-card", "stripe"],
+				["adm-o-trans-x402", "x402"],
+			] as const) {
+				await tier.arrange.order({ orderId: id, buyerRef: `${id}@example.test`, paymentMethod });
+				expect(await orders.transitionOrder(id, "paid", { idempotencyKey: `${id}-1` })).toEqual({
+					ok: false,
+					status: 409,
+					reason: "MANUAL_PAYMENT_NOT_ALLOWED",
+				});
+				expect((await orders.getOrder(id))?.order.state).toBe("pending");
+			}
 
 			const read = await orders.getOrder("adm-o-trans");
-			expect(read?.order.state).toBe("paid");
-			expect(read?.allowedTransitions).toEqual([
-				"processing",
-				"completed",
-				"cancelled",
-				"refunded",
-			]);
+			expect(read?.order.state).toBe("processing");
+			// STEERED in the domain: no bare `cancelled` from any state.
+			expect(read?.allowedTransitions).toEqual(["shipped", "refunded"]);
 		});
 
 		// ── resolveReconciliation ─────────────────────────────────────────
@@ -2802,18 +2835,18 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		// stood; the type guards them, and this proves the composition honours it.
 
 		test("a guest's read of a SHIPPED order trims fulfillment to carrier and tracking, never the staff witness", async () => {
-			await tier.arrange.order({ orderId: "adm-o-pubful", buyerRef: "pubful@example.test" });
+			await tier.arrange.order({
+				orderId: "adm-o-pubful",
+				buyerRef: "pubful@example.test",
+			});
 			// Fulfillment IS the `processing → shipped` flip, so the order has to be
 			// walked there first — a pending one is NOT_FULFILLABLE.
-			for (const [to, key] of [
-				["paid", "adm-o-pubful-t1"],
-				["processing", "adm-o-pubful-t2"],
-			] as const) {
-				expect(await orders.transitionOrder("adm-o-pubful", to, { idempotencyKey: key })).toEqual({
-					ok: true,
-					transitioned: true,
-				});
-			}
+			await tier.arrange.settle("adm-o-pubful");
+			expect(
+				await orders.transitionOrder("adm-o-pubful", "processing", {
+					idempotencyKey: "adm-o-pubful-t2",
+				}),
+			).toEqual({ ok: true, transitioned: true });
 			expect(
 				await orders.recordFulfillment(
 					"adm-o-pubful",
@@ -2919,7 +2952,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		// ── getTimeline + notes ───────────────────────────────────────────
 
 		test("the timeline starts at `created`, says its state history is unaudited, and then merges both", async () => {
-			await tier.arrange.order({ orderId: "adm-o-tl", buyerRef: "tl@example.test" });
+			await tier.arrange.order({
+				orderId: "adm-o-tl",
+				buyerRef: "tl@example.test",
+			});
 
 			expect(await orders.getTimeline("adm-o-tl")).toEqual({
 				orderId: "adm-o-tl",
@@ -2937,9 +2973,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					{ idempotencyKey: "adm-o-tl-note" },
 				),
 			).toMatchObject({ ok: true, appended: true });
-			expect(
-				await orders.transitionOrder("adm-o-tl", "paid", { idempotencyKey: "adm-o-tl-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("adm-o-tl");
 
 			const after = await orders.getTimeline("adm-o-tl");
 			expect(after?.stateChangesAudited).toBe(true);
@@ -3914,12 +3948,8 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				buyerRef: "rev3@example.test",
 				unitPrice: { amount: 9900, currency: "CAD" },
 			});
-			expect(
-				await orders.transitionOrder("rep-rev-1", "paid", { idempotencyKey: "rep-rev-1-paid" }),
-			).toEqual({ ok: true, transitioned: true });
-			expect(
-				await orders.transitionOrder("rep-rev-2", "paid", { idempotencyKey: "rep-rev-2-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("rep-rev-1");
+			await tier.arrange.settle("rep-rev-2");
 
 			const window = await windowAroundOrder("rep-rev-1");
 			const buckets = (await reporting.getRevenue(window, "day")).filter(
@@ -3980,8 +4010,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// ── reporting: getOrdersByStatus ──────────────────────────────────
 
 		test("orders-by-status counts EVERY state, with no allow-list, and omits the empty ones", async () => {
-			await tier.arrange.order({ orderId: "rep-obs-1", buyerRef: "obs1@example.test" });
-			await tier.arrange.order({ orderId: "rep-obs-2", buyerRef: "obs2@example.test" });
+			await tier.arrange.order({
+				orderId: "rep-obs-1",
+				buyerRef: "obs1@example.test",
+			});
+			await tier.arrange.order({
+				orderId: "rep-obs-2",
+				buyerRef: "obs2@example.test",
+			});
 			await tier.arrange.order({ orderId: "rep-obs-3", buyerRef: "obs3@example.test" });
 			const window = await windowAroundOrder("rep-obs-1");
 			// A DELTA, not an absolute: the other slice's orders share this window on a
@@ -3990,14 +4026,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			// PENDING, so the deltas below say the states MOVED rather than merely that
 			// a count went up.
 			const before = await reporting.getOrdersByStatus(window);
+			await tier.arrange.settle("rep-obs-1");
 			expect(
-				await orders.transitionOrder("rep-obs-1", "paid", { idempotencyKey: "rep-obs-1-paid" }),
-			).toEqual({ ok: true, transitioned: true });
-			expect(
-				await orders.transitionOrder("rep-obs-2", "cancelled", {
-					idempotencyKey: "rep-obs-2-cancel",
-				}),
-			).toEqual({ ok: true, transitioned: true });
+				await orders.cancelOrder(
+					"rep-obs-2",
+					{ reason: "customer_request", cancelledBy: "ops@example.test" },
+					{ idempotencyKey: "rep-obs-2-cancel" },
+				),
+			).toEqual({ ok: true, cancelled: true });
 
 			const after = await reporting.getOrdersByStatus(window);
 			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);
@@ -4043,11 +4079,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				unitPrice: { amount: 2000, currency: "USD" },
 				quantity: 1,
 			});
-			for (const orderId of ["rep-top-a1", "rep-top-a2"]) {
-				expect(
-					await orders.transitionOrder(orderId, "paid", { idempotencyKey: `${orderId}-paid` }),
-				).toEqual({ ok: true, transitioned: true });
-			}
+			for (const orderId of ["rep-top-a1", "rep-top-a2"]) await tier.arrange.settle(orderId);
 
 			const window = await windowAroundOrder("rep-top-a1");
 			const rows = (
@@ -4079,9 +4111,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				unitPrice: { amount: 1, currency: "USD" },
 				quantity: BIG_QTY,
 			});
-			expect(
-				await orders.transitionOrder("rep-top-big", "paid", { idempotencyKey: "rep-top-big-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("rep-top-big");
 
 			const window = await windowAroundOrder("rep-top-big");
 			const row = (await reporting.getTopProducts(window, "quantity", TOP_PRODUCTS_MAX_LIMIT)).find(

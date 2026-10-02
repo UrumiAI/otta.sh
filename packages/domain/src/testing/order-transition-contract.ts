@@ -16,6 +16,7 @@ import {
 	dispatchOrderEmails,
 	dispatchOrderEmailsForOrder,
 	transitionOrder,
+	transitionOrderAsAdmin,
 } from "../orders/transition.js";
 import type { FakeEmailSender } from "./fake-email-sender.js";
 
@@ -91,6 +92,13 @@ function drive(h: OrderTransitionHarness, id: OrderId, to: OrderState) {
 	return transitionOrder(
 		{ orderStore: h.store },
 		{ orderId: id, toState: to, idempotencyKey: idempotencyKey(`t:${id}:${to}`) },
+	);
+}
+
+function adminDrive(h: OrderTransitionHarness, id: OrderId, to: OrderState) {
+	return transitionOrderAsAdmin(
+		{ orderStore: h.store },
+		{ orderId: id, toState: to, idempotencyKey: idempotencyKey(`a:${id}:${to}`) },
 	);
 }
 
@@ -450,6 +458,86 @@ export function orderTransitionContract(
 			expect(await dispatch(h)).toBe(1);
 			expect(h.emailSender.countByTemplate("order-confirmation", a)).toBe(1);
 			expect(h.emailSender.countByTemplate("order-confirmation", b)).toBe(1);
+		});
+
+		// -- the admin's status moves (transitionOrderAsAdmin) -------------------
+
+		for (const method of ["stripe", "x402", null] as const) {
+			test(`the admin cannot mark a ${String(method)} order paid — no offline method exists to settle by hand`, async () => {
+				// Fails CLOSED: only a payment method DECLARED offline may be marked paid by
+				// hand, and none is today. A gateway order is settled by its gateway; an
+				// order with no method on file has nothing that could have been paid.
+				const h = await makeHarness();
+				const id = await seed(h, { paymentMethod: method });
+				const res = await adminDrive(h, id, "paid");
+				expect(res).toEqual({ ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" });
+				expect((await h.store.getById(id))?.state).toBe("pending");
+				// Nothing was enqueued: no "we've received your payment" for money nobody saw.
+				expect(await dispatch(h)).toBe(0);
+			});
+		}
+
+		for (const from of ["pending", "paid", "processing"] as const) {
+			test(`a bare admin → cancelled on a ${from} order is refused — Cancel order records why`, async () => {
+				// A bare transition records no reason, releases no adopted hold (only expiry
+				// records a release intent) and, on a paid order, keeps the money with a
+				// "cancelled" email (QA T1-4). Cancel order is the one path; refused in the
+				// domain, whatever a hand-made request sends.
+				const h = await makeHarness();
+				const id = await seed(h);
+				if (from !== "pending") await drive(h, id, "paid");
+				if (from === "processing") await drive(h, id, "processing");
+				await dispatch(h);
+				h.emailSender.reset();
+				expect(await adminDrive(h, id, "cancelled")).toEqual({ ok: false, reason: "USE_CANCEL" });
+				expect((await h.store.getById(id))?.state).toBe(from);
+				expect(await dispatch(h)).toBe(0);
+			});
+		}
+
+		test("an admin Mark refunded moves the state but emails the buyer nothing", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await dispatch(h);
+			h.emailSender.reset();
+			const res = await adminDrive(h, id, "refunded");
+			expect(res).toMatchObject({ ok: true, transitioned: true });
+			expect((await h.store.getById(id))?.state).toBe("refunded");
+			// Bookkeeping only: no money moved, so no "your order has been refunded".
+			expect(await dispatch(h)).toBe(0);
+			expect(h.emailSender.countByTemplate("order-refunded", id)).toBe(0);
+			// The move is still audited like any other.
+			const events = await h.store.listEventsForOrder(id);
+			expect(events.at(-1)).toMatchObject({ fromState: "paid", toState: "refunded" });
+		});
+
+		test("every other admin move emails the buyer exactly as a transition does", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await dispatch(h);
+			const res = await adminDrive(h, id, "processing");
+			expect(res).toMatchObject({ ok: true, transitioned: true });
+			expect(await dispatch(h)).toBe(1);
+			expect(h.emailSender.countByTemplate("order-processing", id)).toBe(1);
+		});
+
+		test("an admin move replayed is a no-op, and an illegal one is refused", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await dispatch(h);
+			await adminDrive(h, id, "processing");
+			expect(await adminDrive(h, id, "processing")).toMatchObject({
+				ok: true,
+				transitioned: false,
+			});
+			expect(await adminDrive(h, id, "pending")).toEqual({
+				ok: false,
+				reason: "INVALID_TRANSITION",
+			});
+			expect(await dispatch(h)).toBe(1);
 		});
 
 		test("a forced rollback mid-transition leaves neither the state change nor the outbox row", async () => {

@@ -25,6 +25,9 @@ import { describe, expect, test } from "vitest";
 import {
 	ABSENT,
 	CANCEL_BANNER,
+	CANCEL_GROUP_LABEL,
+	cancelBannerDescription,
+	cancelGroupLabel,
 	DATE_LOCALE,
 	LABEL_BUDGET,
 	MARK_REFUNDED_CONFIRM,
@@ -1233,6 +1236,24 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 		expect(CANCEL_BANNER.description).toContain("“cancelled”");
 	});
 
+	test("a PAID order's cancel copy never claims released stock, and says it does not refund", () => {
+		// On this build Cancel order neither refunds nor restocks a paid order: its
+		// holds are committed, so the release is a no-op. The copy must not imply either.
+		expect(cancelBannerDescription("pending")).toBe(CANCEL_BANNER.description);
+		for (const state of ["paid", "processing"]) {
+			const banner = cancelBannerDescription(state);
+			expect(banner).not.toContain("held stock");
+			expect(banner).toContain("does not refund");
+			expect(banner).toContain("Money → Refunds");
+			const confirm = cancelConfirmText("Out of stock", state);
+			expect(confirm).not.toContain("held stock");
+			expect(confirm).toContain("does not refund the buyer");
+			expect(cancelGroupLabel(state)).toBe("Cancel order — permanent, does not refund");
+		}
+		expect(cancelConfirmText("Out of stock", "pending")).toBe(cancelConfirmText("Out of stock"));
+		expect(cancelGroupLabel("pending")).toBe(CANCEL_GROUP_LABEL);
+	});
+
 	test("the over-refund refusal names what to enter INSTEAD", () => {
 		// The React tier's hand-copy stated the fact and dropped the instruction.
 		expect(refundTooHighText("$900.00", "$50.00")).toBe(
@@ -1255,6 +1276,13 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 
 	test("the mark-refunded confirm separates the ledger from the money", () => {
 		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
+	});
+
+	test("the mark-refunded confirm says the buyer is NOT emailed, and when to use it (T1-6)", () => {
+		// The move enqueues no email any more (`transitionOrderAsAdmin`): the copy must
+		// not leave the operator believing the buyer heard about a refund.
+		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not email the buyer");
+		expect(MARK_REFUNDED_CONFIRM.text).toContain("outside Otta");
 	});
 
 	test("the list's search label names EVERY axis the filter searches", () => {

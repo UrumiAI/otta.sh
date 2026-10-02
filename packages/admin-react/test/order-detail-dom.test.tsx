@@ -885,3 +885,52 @@ test("the refund confirm sends the FINALIZED total as its watermark", async () =
 		String(FINALIZED_CENTS),
 	);
 });
+
+// ── T1-3 / T1-6: the status buttons are the server's, and Mark refunded is bookkeeping ──
+
+test("the status buttons are exactly the transitions the server offers — no Mark paid it withheld", async () => {
+	// The plugin withholds `paid` for an order its payment provider settles
+	// (`adminNextStates`), so a pending card order arrives with `expired` alone and the
+	// screen must not invent the rest.
+	const view = await show({ ...detailFor("pending", NEVER_CAPTURED), transitions: ["expired"] });
+	await fire(tab(view, "fulfilment"), "click");
+	expect(view.container.querySelector('[data-testid="transition-paid"]')).toBeNull();
+	expect(one(view, '[data-testid="transition-expired"]').textContent).toContain("Mark expired");
+});
+
+test("Mark refunded asks first, and its confirm says no money moves and the buyer is not emailed", async () => {
+	const view = await show({ ...detailFor("paid"), transitions: ["processing", "refunded"] });
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="transition-refunded"]'), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(text).toContain("does not move money");
+	expect(text).toContain("does not email the buyer");
+});
+
+// ── the cancel group's copy is the order's own: a paid order is not refunded by it ──
+
+test("a PAID order's cancel group says it does not refund, and never promises released stock", async () => {
+	const view = await show({
+		...detailFor("paid"),
+		vocabulary: {
+			...VOCABULARY,
+			oneClickCancellationReasons: [{ value: "customer_request", label: "Customer requested it" }],
+		},
+	});
+	await fire(tab(view, "fulfilment"), "click");
+	const group = one(view, '[data-testid="detail-cancel"]').textContent ?? "";
+	expect(group).toContain("does not refund");
+	expect(group).not.toContain("held stock");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	const confirm = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(confirm).toContain("does not refund the buyer");
+	expect(confirm).not.toContain("held stock");
+});
+
+test("a PENDING order's cancel group still says it releases the held stock", async () => {
+	const view = await show(detailFor("pending", NEVER_CAPTURED));
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="detail-cancel"]').textContent ?? "").toContain(
+		"releases the held stock",
+	);
+});

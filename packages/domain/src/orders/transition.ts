@@ -12,11 +12,12 @@ import {
 	isEmailSendTimeoutError,
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
-import type { Order, OrderState } from "./model.js";
+import type { Order, OrderState, PaymentMethod } from "./model.js";
 import {
 	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	legalNextStates,
 } from "./state-machine.js";
 
 export interface TransitionOrderDeps {
@@ -56,22 +57,147 @@ export async function transitionOrder(
 	deps: TransitionOrderDeps,
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderResult> {
+	const pre = await precheckTransition(deps, cmd);
+	if (pre.done !== undefined) return pre.done;
+	return applyTransition(deps, pre.order, cmd, emailTemplateForState(cmd.toState) !== null);
+}
+
+/**
+ * The checks every transition use-case makes before its own rules, in ONE place so
+ * `transitionOrder` and `transitionOrderAsAdmin` cannot drift: the order exists;
+ * already being at the target is an idempotent no-op (a redelivery / double admin
+ * call); and the move is in the state machine. `done` is the answer when one of
+ * them decided it; otherwise `order` is the order to move.
+ */
+async function precheckTransition(
+	deps: TransitionOrderDeps,
+	cmd: TransitionOrderCommand,
+): Promise<{ done: TransitionOrderResult; order?: never } | { done?: never; order: Order }> {
 	const order = await deps.orderStore.getById(cmd.orderId);
-	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-	// Idempotent no-op: already at the target (a redelivery / double admin call).
-	if (order.state === cmd.toState) return { ok: true, transitioned: false, order };
+	if (order === null) return { done: { ok: false, reason: "ORDER_NOT_FOUND" } };
+	if (order.state === cmd.toState) return { done: { ok: true, transitioned: false, order } };
 	if (!isLegalOrderTransition(order.state, cmd.toState)) {
-		return { ok: false, reason: "INVALID_TRANSITION" };
+		return { done: { ok: false, reason: "INVALID_TRANSITION" } };
 	}
-	const template = emailTemplateForState(cmd.toState);
+	return { order };
+}
+
+/** The guarded flip both transition use-cases end in, once legality is settled. */
+async function applyTransition(
+	deps: TransitionOrderDeps,
+	order: Order,
+	cmd: TransitionOrderCommand,
+	enqueueEmail: boolean,
+): Promise<{ ok: true; transitioned: boolean; order: Order }> {
 	const res = await deps.orderStore.transition({
 		orderId: cmd.orderId,
 		fromState: order.state,
 		toState: cmd.toState,
 		idempotencyKey: cmd.idempotencyKey,
-		enqueueEmail: template !== null,
+		enqueueEmail,
 	});
 	return { ok: true, transitioned: res.transitioned, order: res.order ?? order };
+}
+
+// -- the admin's status moves -------------------------------------------------
+
+/**
+ * How each payment method's money is confirmed: by its GATEWAY (Stripe's
+ * `payment_intent.succeeded`, x402's facilitator verify) or OFFLINE, by a person
+ * who saw the money arrive.
+ *
+ * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
+ * transfer" or "cash on delivery") must declare which kind it is, and only an
+ * `offline` one may be marked paid by hand. None is today.
+ */
+const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
+	stripe: "gateway",
+	x402: "gateway",
+};
+
+/**
+ * True iff an admin may mark an order paid by `method` BY HAND — only a method
+ * declared `offline`. FAILS CLOSED: a gateway method is paid when its gateway says
+ * so (the settle path's `markPaid`), and an order with NO method on file (`null`, a
+ * historical or hand-seeded order) has nothing that could have been paid, so it is
+ * refused too. With no offline method declared today, this is always false.
+ */
+export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
+	if (method === null) return false;
+	return PAYMENT_METHOD_SETTLEMENT[method] === "offline";
+}
+
+/**
+ * The status moves the admin console may OFFER for an order: the state machine's
+ * legal moves, minus a manual `paid` that {@link manualPaymentAllowed} refuses and
+ * minus `cancelled`, which an admin reaches only through Cancel order. Read by the
+ * console instead of `legalNextStates`, so it never renders a button
+ * {@link transitionOrderAsAdmin} would refuse.
+ */
+export function adminNextStates(order: Pick<Order, "state" | "paymentMethod">): OrderState[] {
+	return legalNextStates(order.state).filter(
+		(to) => !(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) && to !== "cancelled",
+	);
+}
+
+export type TransitionOrderAsAdminResult =
+	| TransitionOrderResult
+	/** `pending → paid` asked for an order whose payment method is not declared
+	 *  offline — its gateway settles it, or there is no method to settle at all. */
+	| { ok: false; reason: "MANUAL_PAYMENT_NOT_ALLOWED" }
+	/** A bare `→ cancelled` — Cancel order is the admin's only way to cancel. */
+	| { ok: false; reason: "USE_CANCEL" };
+
+/** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
+ *  maps to copy. */
+export type TransitionOrderAsAdminFailure = Extract<
+	TransitionOrderAsAdminResult,
+	{ ok: false }
+>["reason"];
+
+/**
+ * A status move made BY HAND in the admin console. It is {@link transitionOrder} —
+ * the same legality, the same idempotent no-op, the same guarded flip — with three
+ * rules that keep a manual move honest about money (QA T1-3, T1-4, T1-6;
+ * ADR-0026):
+ *
+ *  - **No manual `pending → paid` unless the method is declared offline** — none is
+ *    today, so never. A card order is paid when Stripe says so, through the settle
+ *    path's `markPaid`. A click here could otherwise tell the buyer "we've received
+ *    your payment", count revenue in the reports and release the order for
+ *    fulfilment with nothing captured.
+ *  - **No bare `→ cancelled`, from any state.** It records no reason, releases no
+ *    adopted stock hold (only the expiry flip records a release intent), sends a
+ *    reasonless "cancelled" email, and on a paid order keeps the money silently
+ *    (QA T1-4). Cancel order — the store's `cancelOrder`, which records the reason
+ *    and the release intent — is the admin's one way to cancel. (It does not refund
+ *    a paid order: that is Money → Refunds.)
+ *  - **`→ refunded` emails nobody.** A manual Mark refunded moves no money — it
+ *    records a refund made OUTSIDE Otta (the Stripe dashboard, a bank transfer) —
+ *    so it must not send the buyer "your order has been refunded" on Otta's word.
+ *    Money moved through `refundOrder` emails the buyer from the ledger write.
+ *
+ * All three are refused in the domain, so a hand-made request is refused exactly
+ * as the console's missing button implies.
+ *
+ * WHY A SEPARATE USE-CASE rather than a flag on `transitionOrder`: `transitionOrder`
+ * is the generic state-machine command every suite drives orders through, and
+ * these are rules about who is acting, not about the machine. The admin console is
+ * the only production caller of either.
+ */
+export async function transitionOrderAsAdmin(
+	deps: TransitionOrderDeps,
+	cmd: TransitionOrderCommand,
+): Promise<TransitionOrderAsAdminResult> {
+	const pre = await precheckTransition(deps, cmd);
+	if (pre.done !== undefined) return pre.done;
+	const order = pre.order;
+	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
+		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
+	}
+	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
+	const enqueueEmail = cmd.toState !== "refunded" && emailTemplateForState(cmd.toState) !== null;
+	return applyTransition(deps, order, cmd, enqueueEmail);
 }
 
 // -- outbox dispatcher --------------------------------------------------------
