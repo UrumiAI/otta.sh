@@ -1577,20 +1577,33 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
 	});
 
-	test("a second checkout of a placed cart under a NEW key is the typed CART_CHECKED_OUT", async () => {
-		const cartId = await seedThreeLineCart();
-		expect((await placeCart(cartId))["ok"]).toBe(true);
+	// QA T1-10: the key is checkout:<cartId> by construction, and the route
+	// now ENFORCES that rather than trusting its caller. Forwarded as given, a
+	// caller could post checkout:<another cart> against its own cart and bind
+	// that key to the wrong order, locking the other cart out with
+	// IDEMPOTENCY_KEY_REUSED for good. A key that is not this cart's is
+	// CHECKOUT_STALE — a page reviewed for some other cart — and nothing is
+	// minted, adopted or asked of Stripe.
+	test.each([
+		["another cart's key", (cartId: string) => `checkout:${cartId}-other`],
+		["a key that is not a checkout key", (cartId: string) => cartId],
+		["this cart's key with a suffix", (cartId: string) => `checkout:${cartId}:again`],
+	])(
+		"%s is the typed CHECKOUT_STALE — no order, no intent, and the cart still places under its own key",
+		async (_label, keyFor) => {
+			const cartId = await seedThreeLineCart();
+			orderOps.length = 0;
 
-		const second = await place({
-			cartId,
-			buyerRef: BUYER_REF,
-			idempotencyKey: `checkout:${cartId}:again`,
-		});
+			const stale = await place({ cartId, buyerRef: BUYER_REF, idempotencyKey: keyFor(cartId) });
 
-		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
-	});
+			expect(stale).toEqual({ ok: false, reason: "CHECKOUT_STALE" });
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+			expect(await placeCart(cartId)).toMatchObject({ ok: true, alreadyPlaced: false });
+		},
+	);
 
-	test("the OLD cart's key submitted against a NEW cart (a stale tab) is the typed IDEMPOTENCY_KEY_REUSED — no intent, and the new cart still places under its own key (issue #133)", async () => {
+	test("the OLD cart's key submitted against a NEW cart (a stale tab) is CHECKOUT_STALE — and can no longer lock the old cart's key onto the new cart (issue #133, QA T1-10)", async () => {
 		const oldCart = await seedThreeLineCart();
 		expect((await placeCart(oldCart))["ok"]).toBe(true);
 		const newCart = await seedThreeLineCart();
@@ -1602,10 +1615,41 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			idempotencyKey: `checkout:${oldCart}`,
 		});
 
-		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(stale).toEqual({ ok: false, reason: "CHECKOUT_STALE" });
 		expect(stripe.requests).toHaveLength(0);
 		expect(await placeCart(newCart)).toMatchObject({ ok: true, alreadyPlaced: false });
 	});
+
+	test("a second place of a placed cart under its own key replays the SAME order — the only key the route accepts", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+
+		const second = await placeCart(cartId);
+
+		expect(second).toMatchObject({ ok: true, orderId: first["orderId"] });
+	});
+
+	test("Stripe still answering idempotency_key_in_use after the adapter's wait is BUSY (retryable), never PAYMENT_INTENT_FAILED (QA T1-9)", async () => {
+		// The first click's request never lands within the adapter's ~3 s budget.
+		// Nothing failed, so the shopper gets the store's "busy, try again in a
+		// few seconds", whose retry replays the same key.
+		const cartId = await seedThreeLineCart();
+		stripe.respondWith(() => ({
+			status: 409,
+			body: { error: { code: "idempotency_key_in_use", type: "idempotency_error" } },
+		}));
+
+		const result = await placeCart(cartId);
+
+		expect(result).toEqual({ ok: false, error: "BUSY", retryable: true });
+		expect(stripe.requests.length).toBeGreaterThan(1);
+		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
+
+		// The first request lands: the same key now places the SAME pending order.
+		stripe.reset();
+		expect(await placeCart(cartId)).toMatchObject({ ok: true, alreadyPlaced: false });
+	}, 20_000);
 
 	test("a line whose hold was released before checkout is the typed RESERVATION_LOST", async () => {
 		const cartId = await seedThreeLineCart();

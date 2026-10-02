@@ -194,6 +194,16 @@ export interface StripePaymentGatewayOptions {
 	/** Injectable `fetch` for the DEFAULT http transport (used only when
 	 *  `transport` is omitted and `secretKey` is set). Defaults to the global. */
 	fetch?: typeof fetch;
+	/**
+	 * The pauses before each replay of a create that Stripe answered 409
+	 * `idempotency_key_in_use` — a same-key request still in flight. Defaults to
+	 * {@link DEFAULT_IN_FLIGHT_BACKOFF_MS}. Test seam; production omits it.
+	 */
+	inFlightBackoffMs?: readonly number[];
+	/** Injectable pause for {@link inFlightBackoffMs} (tests record it rather
+	 *  than wait). Defaults to a `setTimeout` promise. The elapsed-time cap
+	 *  ({@link IN_FLIGHT_BUDGET_MS}) reads `clock`. */
+	sleep?: (ms: number) => Promise<void>;
 	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
 	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
 	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
@@ -329,6 +339,51 @@ export type StripeCreatePaymentIntentResult =
  * how settlement maps back to the order — so the offline handle is sufficient for
  * the verified-settlement contract.
  */
+/**
+ * How long `createIntent` waits for a same-key request that is still in flight
+ * before replaying it: up to four replays, 3 s of pauses in all — and no replay
+ * started past {@link IN_FLIGHT_BUDGET_MS} of ELAPSED time, round trips included.
+ *
+ * WHY THIS EXISTS. A buyer who double-clicks "Continue to payment" sends two
+ * places with the same `checkout:<cartId>` key ~100 ms apart. Both reach Stripe
+ * with the same `Idempotency-Key`, and Stripe answers the second 409
+ * `idempotency_key_in_use` while the first is still being processed. That is not
+ * a failed payment — it is "ask again in a moment": once the first request
+ * lands, a replay of the identical body returns the SAME intent. Surfacing it
+ * as `PAYMENT_INTENT_FAILED` told a buyer who had done nothing wrong that their
+ * payment could not start.
+ *
+ * WHY BOUNDED, AND THIS SHORT. A PaymentIntent create normally completes in
+ * well under a second, so 3 s covers the overlap a double-click produces with
+ * room for a slow Stripe. The wait runs inside the buyer's checkout request (and
+ * a Worker's), so it is capped on elapsed time as well as on the sleeps: slow
+ * replies must not stretch it. Past it the error is thrown with `inFlight: true`,
+ * which the domain answers as PAYMENT_INTENT_IN_FLIGHT and the storefront as
+ * "busy, try again in a few seconds" — a retry replays the same key.
+ */
+export const DEFAULT_IN_FLIGHT_BACKOFF_MS: readonly number[] = [250, 500, 1000, 1250];
+
+/** The elapsed-time ceiling on waiting out an in-flight same-key request: no
+ *  replay STARTS once this much time has passed since the first attempt began
+ *  (so the last one can end past it by at most one round trip). 3 s of pauses
+ *  plus room for the round trips between them; a slower Stripe gets fewer
+ *  replays, never a longer checkout request. */
+export const IN_FLIGHT_BUDGET_MS = 3500;
+
+/** Stripe's code for "a request with this Idempotency-Key is still being
+ *  processed" — the ONLY 409 that a replay is guaranteed to resolve. */
+const IDEMPOTENCY_KEY_IN_USE = "idempotency_key_in_use";
+
+function isInFlightReplay(result: StripeCreatePaymentIntentResult): boolean {
+	return !result.ok && result.status === 409 && result.code === IDEMPOTENCY_KEY_IN_USE;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
 export class StripePaymentGateway implements PaymentGateway {
 	readonly id = "stripe" as const;
 	/** True iff a `secretKey` is configured (ADR-0008): the refund path needs it
@@ -340,6 +395,8 @@ export class StripePaymentGateway implements PaymentGateway {
 	readonly #transport: StripeTransport | undefined;
 	readonly #toleranceSeconds: number;
 	readonly #clock: Clock;
+	readonly #inFlightBackoffMs: readonly number[];
+	readonly #sleep: (ms: number) => Promise<void>;
 
 	constructor(options: StripePaymentGatewayOptions) {
 		if (options.webhookSecret.length === 0) {
@@ -363,6 +420,8 @@ export class StripePaymentGateway implements PaymentGateway {
 		this.refundable = secretKey !== undefined && this.#transport !== undefined;
 		this.#toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
 		this.#clock = options.clock ?? { now: () => new Date() };
+		this.#inFlightBackoffMs = options.inFlightBackoffMs ?? DEFAULT_IN_FLIGHT_BACKOFF_MS;
+		this.#sleep = options.sleep ?? defaultSleep;
 	}
 
 	/**
@@ -426,7 +485,12 @@ export class StripePaymentGateway implements PaymentGateway {
 	 *
 	 * A live failure throws the domain's gateway-agnostic {@link PaymentIntentError}
 	 * (`retryable` = network / 5xx / 429 / 409), which `createOrderFromCart` maps
-	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error.
+	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error. One
+	 * failure is waited out first rather than surfaced: a 409
+	 * `idempotency_key_in_use` (a same-key request still in flight — a
+	 * double-click) is replayed with a short bounded backoff, which returns the
+	 * first request's intent ({@link DEFAULT_IN_FLIGHT_BACKOFF_MS}); one still in
+	 * flight after that is thrown with `inFlight: true`.
 	 *
 	 * **Every live intent carries a `description`** rendered from the domain's
 	 * structured lines by {@link formatStripeIntentDescription}, plus `shipping`
@@ -469,7 +533,7 @@ export class StripePaymentGateway implements PaymentGateway {
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
-			const created = await this.#transport.createPaymentIntent({
+			const request: StripeCreatePaymentIntentInput = {
 				orderId: input.orderId,
 				// Integer minor units, straight through — no float math, ever. Sound only
 				// because every non-exponent-2 currency was rejected above.
@@ -484,11 +548,29 @@ export class StripePaymentGateway implements PaymentGateway {
 					lines: input.lines,
 				}),
 				...(shipping !== undefined ? { shipping } : {}),
-			});
+			};
+			// The SAME request object is replayed, so every attempt serializes a
+			// byte-identical body — Stripe refuses a same-key replay whose
+			// parameters differ. Only `idempotency_key_in_use` is waited out (see
+			// DEFAULT_IN_FLIGHT_BACKOFF_MS); every other failure surfaces at once.
+			const startedAt = this.#clock.now().getTime();
+			let created = await this.#transport.createPaymentIntent(request);
+			for (const pause of this.#inFlightBackoffMs) {
+				if (!isInFlightReplay(created)) break;
+				const elapsed = this.#clock.now().getTime() - startedAt;
+				if (elapsed + pause > IN_FLIGHT_BUDGET_MS) break;
+				await this.#sleep(pause);
+				created = await this.#transport.createPaymentIntent(request);
+			}
 			if (!created.ok) {
+				const inFlight = isInFlightReplay(created);
 				throw new PaymentIntentError({
 					gateway: this.id,
-					retryable: created.class === "retryable",
+					retryable: inFlight || created.class === "retryable",
+					// Still in flight after the budget: not a failed payment. The domain
+					// answers it PAYMENT_INTENT_IN_FLIGHT, which the place route turns
+					// into "busy, try again" rather than "we couldn't start a payment".
+					...(inFlight ? { inFlight: true } : {}),
 					...(created.status !== undefined ? { providerStatus: created.status } : {}),
 					...(created.code !== undefined ? { providerCode: created.code } : {}),
 				});
