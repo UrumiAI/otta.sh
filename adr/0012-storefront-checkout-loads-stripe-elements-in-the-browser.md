@@ -267,3 +267,28 @@ amendment, which also adds the server-side prevention and the automatic refund).
 - The guard's read costs one document read (the plugin reads the order and its ledgers
   together). The `latePayment` derivation riding on it does no I/O and short-circuits for a
   `pending` order — the only state the guard lets through — so the guard pays nothing for it.
+
+## Amended 2026-10-02 — the confirmation page's poll runs only after Stripe's redirect, and adds no history
+
+**What changed and why.** QA U-13: the bounded poll counted its hops in the URL (`?p=1…8`), so
+every hop was a new URL and a new history entry — eight Backs to leave the page — and it ran for
+every `pending` order, including one simply awaiting payment, where nothing is about to change.
+
+**The amendment.** Decision 2 stands: the page still carries **zero** client JavaScript.
+
+- The poll runs only while a change is expected: a `pending` order the buyer has just paid for
+  (Stripe's redirect parameters present — decision 5's one use of them, which now also picks
+  whether the page polls). An order awaiting payment, or past its hold, does not poll; it offers
+  "Check again", and its copy no longer promises that the page will update.
+- Each hop is `<meta http-equiv="refresh" content="4">` with **no `url=`**. It reloads the same
+  URL, which browsers handle as a replacement of the current history entry, not a new one (the
+  HTML standard's same-URL rule; checked in Chromium, where `history.length` stays put across
+  hops). Reloading the same URL also keeps the redirect parameters across hops, so every hop
+  shows the "confirming" copy; the page still never renders, forwards or trusts them.
+- With the URL fixed, the hop count lives in a short-lived cookie (`otta_order_poll`:
+  `<orderId>:<hop>`, HttpOnly, `SameSite=Lax`, `path=/orders/`, 2 minutes), still bounded to 8
+  hops. "Check again" links to `""` — the same URL — for the same reasons.
+- Superseded wording: the 2026-10-02 amendment above says a lapsed pending order "keeps the
+  bounded poll" and "this page will update". It no longer polls; its copy now reads "If you
+  already paid, check again in a minute — if the order has expired by then, your payment will be
+  refunded."

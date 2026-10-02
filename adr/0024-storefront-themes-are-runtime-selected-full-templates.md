@@ -259,3 +259,29 @@ repo, for a merchant who asks for one. So the admin-facing half of this decision
 Reopens this amendment: a second theme shipping in this repo, or a request for merchants to choose
 one in the admin — at which point a picker is designed for it, not restored by default.
 
+
+## Amended 2026-10-02 — a theme may draw the shopper's state in its chrome; such pages are private
+
+QA U-14: the header's cart count appeared only on `/cart`, the one page that already read the
+cart. QA U-12: the header looked the same signed in and signed out.
+
+- **A second opt-in chrome capability, `chrome.shopperState`** (Tempered sets it): the cart's
+  unit count beside the cart link, and whether the shopper is signed in, on every storefront
+  page off the checkout flow. The shell reads the count (`lib/chrome-state.ts`: one cart read,
+  no retry, fail soft to "no badge") only for a request carrying a cart cookie, and asks whether
+  the session is live (`storefront/account/me`) only for a request carrying a session cookie. The
+  chrome receives a boolean; the email never leaves the shell, and the theme's own Account entry
+  reads "Your account". `/checkout`, `/checkout/pay` and `/orders/<id>` make neither read;
+  `/cart` and the account pages pass what they already know.
+- **Caching.** Both facts are one visitor's. The middleware now treats a request carrying a cart
+  OR a session cookie, under a theme that draws shopper state, exactly as it treated a cart
+  cookie under `cartLines`: its HTML is `private, no-store` and kept out of the route cache,
+  before and after the page. A request with neither cookie renders the neutral header and its
+  caching is untouched; that is the only copy a shared cache may hold, so the worst a
+  cookie-blind cache can do is hand a shopper a header missing their state, never someone
+  else's. A CDN that caches HTML should bypass its cache when `otta_cart` or `otta_session` is
+  present.
+- **Cost.** A shopper with a cart pays one cart read per page view, and a signed-in one an
+  account read; a visitor with neither pays nothing. Client-side fetching from a private
+  endpoint was considered and not chosen: it would keep those pages cacheable for shoppers too,
+  but it puts client JavaScript on every page, which ADR-0012 decision 2 fences to two pages.
