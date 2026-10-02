@@ -72,6 +72,9 @@ const { order, errorMessage } = Astro.props.model;
 						totalLabel={order.totalLabel}
 						excludesUncalculated={order.excludesUncalculated}
 					/>
+					{order.refundedNote !== null && (
+						<p class="account-order-refunded u-mono">{order.refundedNote}</p>
+					)}
 				</section>
 			</div>
 		</>

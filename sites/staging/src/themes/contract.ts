@@ -462,7 +462,7 @@ export interface OrderModel {
 	deadEnd: boolean;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];
-	/** "Total", or "Paid" once settled. */
+	/** "Paid" once the money was captured (refunded included), else "Total". */
 	totalLabel: string;
 	/** The sign-in page. The page owns the path; a theme only links to it. For a
 	 *  shopper who is not signed in as this order's owner: the sign-in link joins
@@ -540,8 +540,11 @@ export interface AccountOrderModel {
 		 *  order was never priced for shipping or tax, never $0.00. */
 		sumRows: SumRow[];
 		total: CheckoutAmountView;
-		/** "Paid" / "Refunded" / "Total" (`orderTotalLabel`), as on the order page. */
+		/** "Paid" / "Total" (the domain's `orderTotalLabel`), as on the order page. */
 		totalLabel: string;
+		/** "Refunded $5.00" — what the order's ledger shows refunded, as its own line
+		 *  under the total; `null` when the ledger shows none. */
+		refundedNote: string | null;
 		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
 		excludesUncalculated: boolean;
 	} | null;

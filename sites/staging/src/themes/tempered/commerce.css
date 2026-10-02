@@ -1049,6 +1049,15 @@
 	margin-bottom: 1.5rem;
 }
 
+/* The ledger's refunded figure, under the paid total: a fact about the money,
+   set quieter than the total it qualifies. */
+[data-theme-id] .account-order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+
 [data-theme-id] .account-order-cols {
 	display: grid;
 	grid-template-columns: 1.15fr 1fr;

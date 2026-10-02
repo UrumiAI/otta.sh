@@ -41,7 +41,12 @@
  * theme's `OrderView` since Phase 3, and `checkout-client-js.test.ts` walks
  * page → shell → registry → every view for exactly that.
  */
-import { orderLabel, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import {
+	orderLabel,
+	orderTotalLabel,
+	STOREFRONT_ORDER_ROUTE,
+	type OrderRouteResult,
+} from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
 import {
@@ -62,7 +67,7 @@ import {
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
 import { orderStamp } from "../../lib/order-stamp.js";
-import { orderProgress, orderSumRows, orderTotalLabel } from "../../lib/order-view.js";
+import { orderProgress, orderSumRows } from "../../lib/order-view.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import { isOrderPayable } from "../../lib/pay-guard.js";
 import type { OrderModel } from "../../themes/contract.js";
@@ -262,8 +267,9 @@ const model: OrderModel = {
 	deadEnd,
 	ledgerRows,
 	sumRows,
-	/* "Paid" for every state the money was captured in, "Refunded" once it went
-	   back in full, else "Total" (§7) — the account's order page uses the same. */
+	/* The domain's one rule (shared with the account page and the emails): "Paid"
+	   for every state the money was captured in, refunded included — a refund is
+	   the stamp's to say — else "Total" (§7). */
 	totalLabel: order === null ? "Total" : orderTotalLabel(order.state),
 	accountSignInHref: ACCOUNT_LOGIN_PATH,
 	accountOrdersHref: ownsOrder ? ACCOUNT_HOME_PATH : null,

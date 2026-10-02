@@ -289,6 +289,17 @@ export function accountOrderStatus(
 	return STATE_LABELS[order.state] ?? order.state.replaceAll("_", " ");
 }
 
+/**
+ * The refunded figure on the account's order page, as its own line beside the
+ * paid total — only where the order's ledger shows recorded refunds
+ * (`AccountOrderWire.refundedCents`). `null` for none, which includes a refund
+ * made outside Otta ("Mark refunded", ADR-0026): the order's status then says
+ * "Refunded", and the page invents no amount for it.
+ */
+export function orderRefundedNote(refundedCents: number, currencyCode: string): string | null {
+	return refundedCents > 0 ? `Refunded ${orderMoney(refundedCents, currencyCode)}` : null;
+}
+
 const PLACED_ON = new Intl.DateTimeFormat("en-US", {
 	month: "short",
 	day: "numeric",

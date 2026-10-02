@@ -5,13 +5,16 @@
  *
  *  - the totals rows: "Not calculated" is decided by the plugin's
  *    `orderTotalsFlags`, never printed as $0.00;
- *  - the total's label: "Paid" for every state the money was captured in, never
- *    for a quote, and "Refunded" once it went back in full;
+ *  - the total's label: the domain's `orderTotalLabel` ("Paid" for every state
+ *    the money was captured in, refunded included; "Total" otherwise);
  *  - the step tracker: Payment is "completed" only for an order that was paid.
  */
-import { buildCheckoutTotals, orderTotalsFlags } from "@otta-sh/plugin";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { buildCheckoutTotals, orderTotalLabel, orderTotalsFlags } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
-import { orderProgress, orderSumRows, orderTotalLabel } from "../src/lib/order-view.js";
+import { orderProgress, orderSumRows } from "../src/lib/order-view.js";
+import { SRC } from "./theme-views.js";
 
 const BREAKDOWN = {
 	currency: "USD",
@@ -23,24 +26,24 @@ const BREAKDOWN = {
 	appliedCouponCode: null,
 };
 
-describe("orderTotalLabel — what the total row is called", () => {
-	test.each(["paid", "processing", "shipped", "delivered", "completed"])(
-		"%s: the money was captured, so the total is what was PAID",
-		(state) => {
-			expect(orderTotalLabel(state)).toBe("Paid");
-		},
-	);
-
-	test("refunded: the order only reaches this state when the refund covers it in full", () => {
-		expect(orderTotalLabel("refunded")).toBe("Refunded");
+describe("orderTotalLabel — the order pages use the domain's one rule", () => {
+	test("both order pages take it from @otta-sh/plugin (the domain's), not a copy of their own", () => {
+		for (const page of ["orders/[orderId].astro", "account/orders/[id].astro"]) {
+			const source = readFileSync(path.join(SRC, "pages", page), "utf8");
+			expect(source, page).toMatch(
+				/import \{[^}]*\borderTotalLabel\b[^}]*\} from "@otta-sh\/plugin"/,
+			);
+		}
+		expect(readFileSync(path.join(SRC, "lib/order-view.ts"), "utf8")).not.toMatch(
+			/export function orderTotalLabel/,
+		);
 	});
 
-	test.each(["pending", "expired", "failed", "cancelled", "something_new"])(
-		"%s: nothing (or nothing that is kept) was paid, so it is only a Total",
-		(state) => {
-			expect(orderTotalLabel(state)).toBe("Total");
-		},
-	);
+	test("a refunded order's figure is what was Paid — the refund is said separately", () => {
+		expect(orderTotalLabel("refunded")).toBe("Paid");
+		expect(orderTotalLabel("shipped")).toBe("Paid");
+		expect(orderTotalLabel("pending")).toBe("Total");
+	});
 });
 
 describe("orderSumRows — the totals rows, by the order page's own rule", () => {

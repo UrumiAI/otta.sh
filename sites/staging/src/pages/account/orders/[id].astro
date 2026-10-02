@@ -15,6 +15,7 @@ import {
 	ACCOUNT_ORDER_ROUTE,
 	buildCheckoutTotals,
 	orderLabel,
+	orderTotalLabel,
 	orderTotalsFlags,
 	type AccountOrderResult,
 } from "@otta-sh/plugin";
@@ -25,9 +26,10 @@ import {
 	currentSessionToken,
 	orderMoney,
 	orderPlacedOn,
+	orderRefundedNote,
 } from "../../../lib/account.js";
 import { orderStamp } from "../../../lib/order-stamp.js";
-import { orderSumRows, orderTotalLabel } from "../../../lib/order-view.js";
+import { orderSumRows } from "../../../lib/order-view.js";
 import { isOrderPayable } from "../../../lib/pay-guard.js";
 import { SITE_LOCALE } from "../../../lib/site-locale.js";
 import { keepPrivate } from "../../../lib/no-store.js";
@@ -103,6 +105,8 @@ if (order !== null) {
 		sumRows: orderSumRows(totals),
 		total: totals.total,
 		totalLabel: orderTotalLabel(order.state),
+		/* Its own line, from the ledger only — never a relabelled total. */
+		refundedNote: orderRefundedNote(order.refundedCents, order.totals.currency),
 		excludesUncalculated: totals.totalExcludesUncalculated,
 	};
 }

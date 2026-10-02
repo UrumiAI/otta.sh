@@ -41,6 +41,7 @@ import {
 	accountOrderStatus,
 	orderMoney,
 	orderPlacedOn,
+	orderRefundedNote,
 	sessionOwnsOrder,
 	signedInEmail,
 	verifyFailureToken,
@@ -525,6 +526,16 @@ describe("accountOrderStatus — the list says what the order page says", () => 
 			accountOrderStatus({ state: "cancelled", holdExpiresAt: LAPSED }, NOW),
 		];
 		expect(new Set(labels).size).toBe(labels.length);
+	});
+});
+
+describe("orderRefundedNote — a refunded figure only where the ledger shows one", () => {
+	test("recorded refunds read as their own figure beside the paid total", () => {
+		expect(orderRefundedNote(500, "USD")).toBe("Refunded $5.00");
+	});
+
+	test("nothing on the ledger (or a refund made outside Otta) shows no figure", () => {
+		expect(orderRefundedNote(0, "USD")).toBeNull();
 	});
 });
 
