@@ -149,10 +149,16 @@ test.describe("checkout in the browser", () => {
 		if ((await region.count()) > 0 && (await region.isVisible())) await region.fill("CA");
 
 		const before = page.url();
+		// Placed by pressing ENTER in the email field, not by clicking: the place
+		// form's default button is the hidden intent=enter submit (review round 1),
+		// never Apply. The made-up coupon is refused and echoed as refusedCoupon,
+		// so this Enter places rather than re-applying it.
 		const [place] = await Promise.all([
 			page.waitForResponse((res) => new URL(res.url()).pathname === "/checkout/place"),
-			submit.click(),
+			form.locator('input[name="email"]').press("Enter"),
 		]);
+		const posted = new URLSearchParams(place.request().postData() ?? "");
+		expect(posted.get("intent"), "Enter did not go through the hidden enter button").toBe("enter");
 
 		// THE ASSERTIONS: the browser sent the real origin, and the guard let it through.
 		const origin = await place.request().headerValue("origin");

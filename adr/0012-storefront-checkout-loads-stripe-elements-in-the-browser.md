@@ -309,7 +309,8 @@ form, because the redirect may carry no personal data (decision 6's reasoning).
 
   One consequence, stated: anyone holding the order link can SPEND an order's 5 email tries,
   locking the email route for up to 15 minutes. The cart and owning-session routes still work
-  through it, and the buyer can always start a new checkout.
+  through it, and the buyer can always start a new checkout — which creates a SECOND order, while
+  the throttled one keeps holding its stock until its own hold expires.
 
   The plugin enforces this itself (`storefront/order/resume` is public), not only the site. The
   id alone answers `PROOF_REQUIRED` and asks the provider nothing. What the order link already

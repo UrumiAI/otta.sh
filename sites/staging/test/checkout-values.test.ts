@@ -554,7 +554,32 @@ describe("Enter in a details field — its own hidden default button (intent=ent
 			expect(enter).toContain('tabindex="-1"');
 			expect(enter).toContain('aria-hidden="true"');
 			expect(enter).toContain('class="u-sr-only"');
-			expect(body.indexOf('value="enter"')).toBeLessThan(body.indexOf('value="apply-coupon"'));
+			const enterAt = body.indexOf(enter);
+			// It precedes EVERY submit control the place form owns — those carrying
+			// form="checkout-place" and those inside <form id="checkout-place"> — so it
+			// is the form's default button whatever is added later.
+			const owned: number[] = [];
+			for (const m of body.matchAll(/<button\b[^>]*>/g)) {
+				const tag = m[0];
+				if (tag === enter) continue;
+				if (/type="(button|reset)"/.test(tag)) continue;
+				if (tag.includes('form="checkout-place"')) owned.push(m.index ?? -1);
+			}
+			const place = /<form[^>]*id="checkout-place"[^>]*>[\s\S]*?<\/form>/.exec(body);
+			expect(place, "no place form").not.toBeNull();
+			const placeAt = place!.index;
+			for (const m of place![0].matchAll(/<button\b[^>]*>/g)) {
+				if (!/type="(button|reset)"/.test(m[0])) owned.push(placeAt + (m.index ?? 0));
+			}
+			expect(owned.length, "no other submit control found").toBeGreaterThan(2);
+			for (const at of owned) expect(enterAt, `a submit at ${at}`).toBeLessThan(at);
+			// Rendered under the SAME condition as the place form itself.
+			expect(body).toMatch(
+				/locked === null && !ended && \(\s*<button\s+type="submit"\s+class="u-sr-only"[^>]*value="enter"/,
+			);
+			expect(body).toMatch(
+				/locked === null && !ended && \(\s*<form method="POST" action="\/checkout\/place"[^>]*id="checkout-place"/,
+			);
 		},
 	);
 
