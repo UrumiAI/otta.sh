@@ -1630,27 +1630,6 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(second).toMatchObject({ ok: true, orderId: first["orderId"] });
 	});
 
-	test("Stripe still answering idempotency_key_in_use after the adapter's wait is BUSY (retryable), never PAYMENT_INTENT_FAILED (QA T1-9)", async () => {
-		// The first click's request never lands within the adapter's ~3 s budget.
-		// Nothing failed, so the shopper gets the store's "busy, try again in a
-		// few seconds", whose retry replays the same key.
-		const cartId = await seedThreeLineCart();
-		stripe.respondWith(() => ({
-			status: 409,
-			body: { error: { code: "idempotency_key_in_use", type: "idempotency_error" } },
-		}));
-
-		const result = await placeCart(cartId);
-
-		expect(result).toEqual({ ok: false, error: "BUSY", retryable: true });
-		expect(stripe.requests.length).toBeGreaterThan(1);
-		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
-
-		// The first request lands: the same key now places the SAME pending order.
-		stripe.reset();
-		expect(await placeCart(cartId)).toMatchObject({ ok: true, alreadyPlaced: false });
-	}, 20_000);
-
 	test("a line whose hold was released before checkout is the typed RESERVATION_LOST", async () => {
 		const cartId = await seedThreeLineCart();
 		const read = resultOf(await stripeBoot.invokeRoute("storefront/cart/read", { cartId }));

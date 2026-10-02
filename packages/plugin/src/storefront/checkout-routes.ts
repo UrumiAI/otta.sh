@@ -243,6 +243,12 @@ export type CheckoutPlaceRouteResult =
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
+	/**
+	 * The idempotency key is not this cart's `checkout:<cartId>` — a page reviewed
+	 * for some other cart, or a caller trying to bind another cart's key to this
+	 * one. Nothing was minted, adopted or asked of the payment provider.
+	 */
+	| { ok: false; reason: "CHECKOUT_STALE" }
 	| RenderGuardFailure;
 
 export type OrderRouteResult =
@@ -535,6 +541,18 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 		renderGuard(STOREFRONT_CHECKOUT_PLACE_ROUTE, async () => {
 			const input = parseCheckoutPlaceInput(routeCtx.input);
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			// The key is `checkout:<cartId>` BY CONSTRUCTION (the summary derives it),
+			// and this route — public, reachable directly — now enforces that rather
+			// than trusting its caller (QA T1-10). Taken as given, a caller could
+			// place its own cart under `checkout:<another cart>`; that key would then
+			// name the wrong order, and the other cart's real checkout would fail
+			// IDEMPOTENCY_KEY_REUSED for good. Refused, not rewritten: the key is also
+			// the review page's statement of which cart it priced, so a mismatch is a
+			// stale page, and placing this cart against it would charge totals the
+			// buyer never saw.
+			if (input.idempotencyKey !== checkoutIdempotencyKey(input.cartId)) {
+				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.createOrder(
