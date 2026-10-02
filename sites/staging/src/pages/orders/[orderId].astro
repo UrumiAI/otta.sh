@@ -42,6 +42,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { orderStamp } from "../../lib/order-stamp.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { OrderModel } from "../../themes/contract.js";
 
@@ -82,47 +83,19 @@ const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
 const shouldPoll = isPending && pollAttempt < MAX_POLLS;
 const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
 
-interface StateCopy {
-	/** The stamp's headline — the largest type on the page. */
-	headline: string;
-	/** What it means and what happens next. */
-	body: string | null;
-}
-
 /**
- * The order's own state → what we are willing to say. Copy lives here so the
- * template stays a mapping and the honesty rules are readable in one place.
- *
- * These are the page's OWN sentences, split at the boundary that was already in
- * them — §10 says quote the copy that exists rather than rewriting it, and the
- * stamp simply wants the first sentence larger than the second. The expired
- * body is the one line taken from the mockup: it says the same thing the old
- * sentence did and adds the fact a buyer looking at a lapsed order needs most.
+ * The order's own state → what we are willing to say: `lib/order-stamp.ts`, where
+ * the honesty rules are unit-tested. The one sentence that depends on more than
+ * the state — whether anything was charged on an expired or cancelled order — is
+ * decided by `order.latePayment`, which the plugin derives from the payments and
+ * refunds ledgers: "Nothing was charged" only when nothing was captured, and "we've
+ * refunded it" only once the refund is on the ledger.
  */
-const COPY: Record<string, StateCopy> = {
-	paid: { headline: "Order confirmed.", body: "Thank you — we've received your payment." },
-	failed: { headline: "The payment did not go through.", body: "No charge was made." },
-	expired: {
-		headline: "This order expired.",
-		body: "Payment didn't complete in time, so the items went back on sale. Nothing was charged.",
-	},
-	cancelled: { headline: "This order was cancelled.", body: null },
-	refunded: { headline: "This order has been refunded.", body: null },
-};
-
-const pendingCopy: StateCopy = returnedFromStripe
-	? {
-			headline: "Payment submitted.",
-			body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
-		}
-	: { headline: "This order is awaiting payment.", body: null };
-
-const stamp: StateCopy | null =
-	state === null
-		? null
-		: isPending
-			? pendingCopy
-			: (COPY[state] ?? { headline: `Order status: ${state}.`, body: null });
+const stamp = orderStamp({
+	state,
+	latePayment: order?.latePayment ?? "none",
+	returnedFromStripe,
+});
 
 /** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
  *  rather than a comparison so no other state can ever pick up the word. */

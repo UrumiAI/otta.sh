@@ -353,6 +353,21 @@ describe("POST /webhooks/stripe — the plugin's status is replayed, never swall
 		expect(calls).toHaveLength(1);
 	});
 
+	test("a late payment's RETRYABLE refund ⇒ 503 with the same Retry-After — any `retryable` refusal gets one", async () => {
+		const { handler, calls } = makeDispatcher({
+			ok: false,
+			status: 503,
+			reason: "LATE_PAYMENT_REFUND_RETRYABLE",
+			retryable: true,
+		});
+
+		const response = await POST(makeContext(handler));
+
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBe(String(BUSY_RETRY_AFTER_SECONDS));
+		expect(calls).toHaveLength(1);
+	});
+
 	test("a non-busy status carries no Retry-After", async () => {
 		const { handler } = makeDispatcher({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
 
