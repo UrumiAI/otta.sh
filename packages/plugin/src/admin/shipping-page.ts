@@ -1562,7 +1562,23 @@ function saveMethodAction() {
 				description: "Enter a name and a valid type.",
 			});
 		}
+		// A free_shipping → flat_rate switch strands any threshold its rates carry:
+		// the domain stops reading it, and listing every currency's rate to clear
+		// them is not a read this surface offers. So the switch is allowed and SAID.
+		const before =
+			type === "flat_rate"
+				? (await client.listMethods(zoneId)).find((m) => m.id === methodId)?.type
+				: undefined;
 		const result = await client.updateMethod(methodId, { name, type });
+		if (result.ok && before === "free_shipping") {
+			return showList([zoneId], {
+				// A `Notice` is default|error only; the TITLE carries the consequence.
+				variant: "default",
+				title: "Saved as flat rate",
+				description:
+					"If any of this method's rates had a free-shipping threshold, it no longer applies — a flat rate always charges its rate. Blank it on those rates to keep the screens honest.",
+			});
+		}
 		return showList([zoneId], saveMethodNotice(result));
 	});
 }

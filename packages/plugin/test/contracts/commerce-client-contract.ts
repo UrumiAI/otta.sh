@@ -4326,6 +4326,38 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.getCoupon("CURXYZ")).toBeNull();
 		});
 
+		test("a free-shipping threshold on a FLAT-RATE method's rate is refused on create and edit; a blank one is fine", async () => {
+			await client.createZone({ id: "thr-z", name: "Thr" });
+			await client.createMethod("thr-z", { id: "thr-flat", name: "Flat", type: "flat_rate" });
+			await expect(
+				client.createRate("thr-flat", {
+					currency: "USD",
+					amountCents: 500,
+					minSubtotalCents: 3500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			expect((await client.createRate("thr-flat", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			await expect(
+				client.updateRate("thr-flat", "USD", {
+					amountCents: 500,
+					minSubtotalCents: 3500,
+					expectedAmountCents: 500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			await client.createMethod("thr-z", { id: "thr-free", name: "Free", type: "free_shipping" });
+			expect(
+				(
+					await client.createRate("thr-free", {
+						currency: "USD",
+						amountCents: 500,
+						minSubtotalCents: 3500,
+					})
+				).ok,
+			).toBe(true);
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
@@ -4504,7 +4536,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 		test("shipping: getRate reads one method's rate in one currency, and absence is null rather than an error", async () => {
 			await client.createZone({ id: "gr-zone", name: "Get Rate" });
-			await client.createMethod("gr-zone", { id: "gr-method", name: "Flat", type: "flat_rate" });
+			// FREE SHIPPING, because the row below carries a threshold — and a
+			// threshold is refused on a flat-rate method's rate.
+			await client.createMethod("gr-zone", {
+				id: "gr-method",
+				name: "Free",
+				type: "free_shipping",
+			});
 
 			// A method with no rate yet: the read is an ABSENCE, not a failure.
 			expect(await client.getRate("gr-method", "USD")).toBeNull();

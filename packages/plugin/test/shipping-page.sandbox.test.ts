@@ -891,6 +891,28 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		});
 	});
 
+	test("switching a free-shipping method to FLAT RATE says its thresholds stop applying", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [{ methodId: "free", currency: "USD", amountCents: 499, minSubtotalCents: 5000 }],
+		});
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:free"),
+			"shipping:save-method",
+		);
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Free over $50", type: "Flat rate" },
+			editForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("flat_rate");
+		expect(String(bannerOf(blocks)?.title)).toBe("Saved as flat rate");
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/if any of this method's rates had a free-shipping threshold/i,
+		);
+		expect(String(bannerOf(blocks)?.description)).toMatch(/threshold/i);
+	});
+
 	test("create-method carries the zoneId invisibly (no visible field) and writes the method UNDER that zone, then reloads the methods level", async () => {
 		await seedShipping();
 		const createForm = formFor(
@@ -1282,6 +1304,35 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 			amountCents: 599,
 			minSubtotalCents: null,
 		});
+	});
+
+	test("saving an existing flat-rate rate that carries a LEGACY threshold asks for it to be blanked; blanking it saves", async () => {
+		// The fixture's `standard` is a flat-rate method whose USD rate was stored
+		// with a $35 threshold before the rule — the edit form prefills it.
+		await seedShipping();
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		expect(field(editForm, "minSubtotal")?.initial_value).toBe("35.00");
+		const untouched = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "35.00" },
+			editForm?.block_id,
+		);
+		expect(String(bannerOf(untouched)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents).toBe(
+			3500,
+		);
+
+		const blanked = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "" },
+			formFor(untouched, "shipping:save-rate")?.block_id ?? editForm?.block_id,
+		);
+		expect(bannerOf(blanked)?.variant).toBe("default");
+		expect(
+			(await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents,
+		).toBeNull();
 	});
 
 	test("a concurrent-edit conflict loses the CAS: the fresh rate is reloaded with a re-apply warning, never a clobber", async () => {

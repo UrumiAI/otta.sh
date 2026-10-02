@@ -290,7 +290,10 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireAuthoredCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
-		if (min !== undefined && min !== null) requireNonNegativeInteger("minSubtotalCents", min);
+		if (min !== undefined && min !== null) {
+			requireNonNegativeInteger("minSubtotalCents", min);
+			await this.#refuseFlatRateThreshold(methodId);
+		}
 		const rate = await this.#stores.shippingRules.createRate({
 			methodId,
 			currency: toCurrency(input.currency),
@@ -319,6 +322,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireFullReplaceKey("minSubtotalCents", edit);
 		if (edit.minSubtotalCents !== null) {
 			requireNonNegativeInteger("minSubtotalCents", edit.minSubtotalCents);
+			await this.#refuseFlatRateThreshold(methodId);
 		}
 		const res = await this.#stores.shippingRules.updateRate(
 			methodId,
@@ -332,6 +336,24 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (res.ok) return { ok: true, value: toRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
 		return { ok: false, reason: "stale", current: toRateWire(res.current) };
+	}
+
+	/**
+	 * A free-shipping threshold only means something on a `free_shipping` method:
+	 * the domain's `shippingCost` charges a flat rate's amount whatever the
+	 * subtotal. Storing one on a flat-rate method's rate is a promise of free
+	 * shipping checkout never keeps, so it is refused — the console says why
+	 * first. One method read, and only when a threshold was actually sent; a
+	 * missing method is left to the store's own `not_found`/404 answer.
+	 */
+	async #refuseFlatRateThreshold(methodId: string): Promise<void> {
+		const method = await this.#stores.shippingRules.getMethod(methodId);
+		if (method?.type === "flat_rate") {
+			throw new CommerceInputError(
+				"minSubtotalCents",
+				"only applies to a free_shipping method (a flat rate always charges its amount)",
+			);
+		}
 	}
 
 	/** A LEAF delete: idempotent, and it NEVER answers `in_use` — nothing
