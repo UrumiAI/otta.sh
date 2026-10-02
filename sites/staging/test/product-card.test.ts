@@ -63,14 +63,6 @@ describe("ProductCard — the heading level is the page's to choose", () => {
 	});
 });
 
-describe("ProductCard — the coil's tint follows the grid position", () => {
-	test("the index reaches MediaPanel", async () => {
-		const tint = async (index: number): Promise<string | undefined> =>
-			/--coil-tint: var\((--u-tint-\w+)\)/.exec(await card({ index }))?.[1];
-		expect(new Set([await tint(0), await tint(1), await tint(2)]).size).toBe(3);
-	});
-});
-
 describe("ProductCard — money (§7)", () => {
 	test("prints the view model's formatted price verbatim", async () => {
 		expect(await card({ price: "$15.00", availability: "in_stock" })).toContain("$15.00");

@@ -203,8 +203,16 @@ A fresh install must look intentional with zero images. Each product gets a **co
 Archimedean spiral swept as a ribbon that tapers to a point at its inner end, drawn on the
 neutral panel, in one of `--u-tint-violet` / `--u-tint-straw` / `--u-tint-blue`.
 
-Generate it — do not hand-author path data. Centre, turn count, rotation and outer radius all
-key off the product slug so each one crops differently instead of repeating like a logo.
+Generate it — do not hand-author path data. Centre, turn count, rotation, outer radius **and
+tint** all key off the product slug so each one crops differently instead of repeating like a
+logo — and so a product wears the same coil on its card, its page and its cart line. The tint
+once cycled by grid position (every three cards showed all three), which left the product page
+and the cart, with no grid, on the slug's hash: QA found the Tee blue-grey in the shop and tan on
+its own page. One product in two colours a click apart is the worse failure; the price is that a
+small catalog can repeat a tint (the three-product seed draws two straw coils), and the
+geometry still tells two products apart.
+**Decided, not drift:** the user approved fixed-per-product tints on 2026-10-02, superseding
+the position cycling added by the reviewer revision in `70973ef` — do not restore it.
 Reference implementation is in the mockup's `coilPath()`. It must:
 
 - be `aria-hidden` (it carries no information);

@@ -102,10 +102,9 @@ const CONFIGURED = [
 
 	<section id="cards">
 		<p class="u-label eyebrow">ProductCard · MediaPanel · PriceTag · StockRule</p>
-		<p class="u-label cap">tints cycle by grid position — every three cards show all three</p>
+		<p class="u-label cap">each product keeps its own tint on every page</p>
 		<div class="grid">
 			<ProductCard
-				index={0}
 				href="#"
 				slug="otta-tee"
 				title="Otta Tee"
@@ -114,7 +113,6 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
-				index={1}
 				href="#"
 				slug="otta-mug"
 				title="Otta Mug"
@@ -123,7 +121,6 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
-				index={2}
 				href="#"
 				slug="otta-sticker-pack"
 				title="Otta Sticker Pack"
@@ -131,7 +128,7 @@ const CONFIGURED = [
 				price="$12.00"
 				availability="out_of_stock"
 			/>
-			<ProductCard index={3} href="#" slug="otta-poster" title="Otta Poster" price={null} />
+			<ProductCard href="#" slug="otta-poster" title="Otta Poster" price={null} />
 			{/* On sale: the struck was-price beside the price. */}
 			<ProductCard
 				href="#"
@@ -157,7 +154,7 @@ const CONFIGURED = [
 
 	<section id="coils">
 		<p class="u-label eyebrow">MediaPanel · the coil is keyed to the slug (§5)</p>
-		<p class="u-label cap">no index — the tint falls back to the slug's own hash (a PDP, a cart line)</p>
+		<p class="u-label cap">drawing and tint both keyed to the slug — the same coil on every page</p>
 		<div class="coils">
 			{
 				// "a" and "" are the degenerate ends of the hash: one code unit,

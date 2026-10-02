@@ -298,8 +298,8 @@ describe("§8 — the home hero and its degraded rule", () => {
 });
 
 describe("the catalog grid", () => {
-	test("cards get their grid position, so the coil tints cycle (§5)", () => {
-		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,200}index=\{index\}/);
+	test("cards are NOT tinted by grid position — a product wears one colour on every page (§5)", () => {
+		expect(SHOP_VIEW).not.toMatch(/index=\{index\}/);
 	});
 
 	test("a card with no live price gets `null`, not a figure and not a zero", () => {
