@@ -446,6 +446,16 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 							? null
 							: { amountCents: res.refund.amount, currency: res.refund.currency },
 					restockedUnits: res.restockedUnits,
+					movedTo: res.movedTo,
+				};
+			case "CANCEL_INCOMPLETE_AFTER_REFUND":
+				// The refund happened; the restock or the flip then failed. A retry finishes
+				// it — the console says so, with the money that moved.
+				return {
+					ok: false,
+					status: 409,
+					reason: res.reason,
+					refund: { amountCents: res.refund.amount, currency: res.refund.currency },
 				};
 			case "ORDER_NOT_FOUND":
 				return { ok: false, status: 404, reason: res.reason };

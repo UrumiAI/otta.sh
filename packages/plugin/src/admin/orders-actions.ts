@@ -599,7 +599,12 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 	// to read rather than an input to correct — `NOT_CANCELLABLE` above all, which
 	// means the order cannot be cancelled at all now.
 	if (!result.ok && result.reason === "CANCEL_LOST_AFTER_REFUND") {
-		return applied(cancelLostNotice(result.refund ?? null, result.restockedUnits ?? 0));
+		return applied(
+			cancelLostNotice(result.refund ?? null, result.restockedUnits ?? 0, result.movedTo ?? null),
+		);
+	}
+	if (!result.ok && result.reason === "CANCEL_INCOMPLETE_AFTER_REFUND" && result.refund) {
+		return applied(cancelIncompleteNotice(result.refund));
 	}
 	if (!result.ok) return applied(cancelFailureNotice(result.reason, result.refundFailure));
 	if (!result.cancelled) {
@@ -647,13 +652,27 @@ function skippedSentence(skipped: ReadonlyArray<{ sku: string; quantity: number 
 }
 
 /**
- * The one cancel outcome where money MOVED but the order did not close: it shipped
- * between the refund and the cancel. The order is flagged; this says what moved and
- * what to do next.
+ * The refund went through, then the restock or the cancel flip FAILED. The order is
+ * still paid and flagged; clicking Cancel order again finishes it, and its refund
+ * replays under its key rather than repeating.
+ */
+function cancelIncompleteNotice(refund: { amountCents: number; currency: string }): Notice {
+	return {
+		variant: "error",
+		title: "Refunded, but the cancel didn’t finish",
+		description: `Refunded ${formatTotal(refund.amountCents, refund.currency)}, but the cancel didn’t finish — click Cancel order again (it will not refund twice).`,
+	};
+}
+
+/**
+ * The cancel outcome where money MOVED but the order did not close: it left every
+ * cancellable state (`movedTo`, usually shipped) between the refund and the cancel.
+ * The order is flagged; this says what moved, where the order went, and what to do.
  */
 function cancelLostNotice(
 	refund: { amountCents: number; currency: string } | null,
 	restockedUnits: number,
+	movedTo: string | null,
 ): Notice {
 	const money =
 		refund === null
@@ -667,7 +686,7 @@ function cancelLostNotice(
 		variant: "error",
 		title: "Refunded, but the order was not cancelled",
 		description: fit(
-			`${money} — it shipped first, and ${stock}. It is flagged: contact the buyer, then stop the shipment or use Mark refunded. Don’t ship or refund it again unchecked.`,
+			`${money} — it moved to ${movedTo ?? "another state"} first, and ${stock}. It is flagged: contact the buyer and check the order; don’t ship or refund it again unchecked.`,
 			BANNER_BUDGET,
 		),
 	};
@@ -696,7 +715,7 @@ function cancelFailureNotice(
 				variant: "error",
 				title: "Not cancelled — the refund can’t be issued from here",
 				description:
-					"Nothing was changed. Otta can’t return this order’s payment automatically. Send the buyer their money yourself, then record it as a manual refund in Money → Refunds.",
+					"Nothing was changed. Otta can’t return this order’s payment automatically. Send the buyer their money yourself and record it as a manual refund in Money → Refunds — a full refund closes the order as refunded, so restock the items by hand if they came back.",
 			};
 		case "MULTIPLE_CAPTURES":
 			return {

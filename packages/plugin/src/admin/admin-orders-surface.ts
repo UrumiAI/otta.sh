@@ -403,10 +403,13 @@ export type CancelOrderResult =
 			/** With `reason: "REFUND_FAILED"`: the refund leg's own typed reason
 			 *  (`GATEWAY_RETRYABLE`, `GATEWAY_TERMINAL`, `GATEWAY_UNVERIFIED`, …). */
 			refundFailure?: string;
-			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: what DID move before the order
-			 *  shipped — the refund and the units restocked. */
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"` or
+			 *  `"CANCEL_INCOMPLETE_AFTER_REFUND"`: what DID move — the refund, and (lost)
+			 *  the units restocked. */
 			refund?: { amountCents: number; currency: string } | null;
 			restockedUnits?: number;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: the state the order moved to. */
+			movedTo?: string | null;
 	  };
 
 /**

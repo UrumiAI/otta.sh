@@ -259,7 +259,7 @@ export function cancelConfirmText(reasonLabel: string, effects: CancelEffects): 
 export function cancelBannerText(effects: CancelEffects): string {
 	if (effects.stock === "release") return CANCEL_BANNER.description;
 	if (effects.refund !== null && !effects.refundAutomatic) {
-		return `Otta can’t refund this order’s ${effects.refund} automatically, so it can’t be cancelled here — that would keep the buyer’s money. Send the refund yourself, then record it as a manual refund in Money → Refunds.`;
+		return `Otta can’t refund this order’s ${effects.refund} automatically, so it can’t be cancelled here — that would keep the buyer’s money. Send the refund yourself and record it as a manual refund in Money → Refunds — a full refund closes the order as refunded, so restock the items by hand if they came back.`;
 	}
 	const parts = [
 		effects.refund === null
