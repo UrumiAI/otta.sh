@@ -10,4 +10,5 @@ instead of rejecting. Those errors are raised before anything is written, so the
 longer reach the console's custom-action net as "Action outcome unknown — the action may
 already have been applied". The screens name the conflict ("A tax rate with the ID
 "std-us" already exists") and keep the operator's typing on the create screen. Any other
-store failure still rejects.
+store failure still rejects. A duplicate coupon notice also says that a retried
+create may have collided with its own first attempt, so the operator checks the list.

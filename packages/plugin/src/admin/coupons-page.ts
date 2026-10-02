@@ -1778,7 +1778,7 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 			// 409 is the store's collision, refused before anything was written. It
 			// cannot say WHICH of the two was taken, so the copy names both.
 			result.status === 409
-				? `The ID or the code "${code}" is already used by another coupon (codes match whatever their case) — change it and try again.`
+				? `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`
 				: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
 	};
 }

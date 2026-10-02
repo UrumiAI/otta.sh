@@ -854,6 +854,9 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toBe("Coupon not created");
 		expect(String(banner?.description)).toMatch(/already used by another coupon/i);
+		// A double-submitted create collides with ITSELF: the first one landed. The
+		// copy says so rather than sending the operator to invent a new code.
+		expect(String(banner?.description)).toMatch(/if you just retried.*check the list/i);
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
 		// The create screen comes back with what was typed (DA-3a-i) — a duplicate
 		// is one field away from a success.
