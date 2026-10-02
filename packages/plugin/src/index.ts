@@ -453,6 +453,12 @@ export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 // site's email field.
 export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+	type ShopperStateInput,
+	type ShopperStateResult,
+} from "./storefront/shopper-state-route.js";
+export {
 	type AccountOrderWire,
 	type CheckoutFailureReason,
 	type CheckoutResult,

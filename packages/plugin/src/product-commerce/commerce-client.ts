@@ -324,6 +324,14 @@ export interface CommerceClient {
 	 *  read measures against (issue #127). For shopper-facing copy. */
 	getCartHoldTtlMinutes(): Promise<number>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	/**
+	 * The storefront header's two facts, as cheaply as they can be known: the
+	 * cart's state and unit count (ONE cart-document read — no hold expiry, no
+	 * price join) and whether the session is live (ONE session-document read — no
+	 * customer read, and never who). Either input absent or unusable ⇒ `null` /
+	 * `false` without a read. Read-only.
+	 */
+	getShopperState(input: { cartId?: string; sessionToken?: string }): Promise<ShopperStateWire>;
 	addCartLine(
 		cartId: string,
 		sku: string,
@@ -739,6 +747,14 @@ export interface CartLineWire {
 	qty: number;
 	reservationId: string | null;
 	expiresAt: string | null;
+}
+
+/** {@link CommerceClient.getShopperState}'s answer. `cart.count` is the sum of
+ *  line quantities as stored (`0` for an empty cart); `cart` is `null` for no
+ *  cart id, an unusable one, or a cart that does not exist. */
+export interface ShopperStateWire {
+	cart: { state: string; count: number } | null;
+	signedIn: boolean;
 }
 
 /** `replaceCart`'s answer: the new cart, or why the named cart cannot be replaced. */

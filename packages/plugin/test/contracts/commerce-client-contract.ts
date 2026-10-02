@@ -1473,6 +1473,20 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(read.order.createdAt).toBe(publicRead.order.createdAt);
 		});
 
+		// The storefront header's two facts (QA U-12, U-14): the cart's units and a
+		// yes/no for the session — never who, and nothing at all for unusable input.
+		test("getShopperState: the cart's state and units, and whether the session is live — never who", async () => {
+			const cartId = await tier.arrange.cart("USD");
+			const { bearer } = await tier.arrange.session("id-shopper-state@example.test");
+			const state = await client.getShopperState({ cartId, sessionToken: bearer });
+			expect(state).toEqual({ cart: { state: "active", count: 0 }, signedIn: true });
+			expect(JSON.stringify(state)).not.toContain("example.test");
+			expect(await client.getShopperState({})).toEqual({ cart: null, signedIn: false });
+			expect(
+				await client.getShopperState({ cartId: "id-cart-never-minted", sessionToken: "forged" }),
+			).toEqual({ cart: null, signedIn: false });
+		});
+
 		test("getMyAccount names the session's own email, and nothing for an unusable bearer", async () => {
 			const { bearer } = await tier.arrange.session("id-whoami@example.test");
 			expect(await client.getMyAccount(bearer)).toEqual({

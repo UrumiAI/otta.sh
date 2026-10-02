@@ -129,6 +129,7 @@ import type {
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
+	ShopperStateWire,
 	QuoteResult,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
@@ -142,6 +143,7 @@ import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
 	COUPON_CODE_MAX,
+	isIdToken,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
@@ -540,6 +542,33 @@ export class InProcessCommerceClient implements CommerceClient {
 		const cart = await getCart(await this.#liveCartDeps(), cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		return { ok: true, cart: serializeCart(cart) };
+	}
+
+	/**
+	 * The header's facts in at most two document reads (see the port). Deliberately
+	 * NOT `getCart`: that expires lapsed holds (writes) and the route around it
+	 * joins live prices, and its store read looks up every line's reservation — the
+	 * header needs none of it, and pays for this on every uncached page. Lines whose
+	 * hold lapsed are still lines of the cart until something touches it, so the
+	 * count is the cart as stored (`CartStore.units`).
+	 */
+	async getShopperState(input: {
+		cartId?: string;
+		sessionToken?: string;
+	}): Promise<ShopperStateWire> {
+		const { cartId, sessionToken } = input;
+		const [cart, customerId] = await Promise.all([
+			cartId !== undefined && cartId.length > 0 && isIdToken(cartId)
+				? this.#stores.cartStore.units(cartId)
+				: Promise.resolve(null),
+			sessionToken !== undefined && sessionToken.length > 0
+				? this.#stores.sessionStore.validate(sessionToken)
+				: Promise.resolve(null),
+		]);
+		return {
+			cart: cart === null ? null : { state: cart.state, count: cart.units },
+			signedIn: customerId !== null,
+		};
 	}
 
 	/**
