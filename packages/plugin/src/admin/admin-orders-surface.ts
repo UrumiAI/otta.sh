@@ -326,15 +326,25 @@ export type AddNoteResult =
 	| { ok: true; appended: boolean; note: OrderNoteWire }
 	| { ok: false; status: number };
 
+/** Why the admin transition was refused — the domain's `TransitionOrderAsAdminFailure`,
+ *  restated here as a closed union (this module imports no domain type, MOD-4), so a
+ *  caller comparing against it is checked by the compiler and the in-process client
+ *  cannot return a reason missing from it. */
+export type TransitionRefusal =
+	| "ORDER_NOT_FOUND"
+	| "INVALID_TRANSITION"
+	| "MANUAL_PAYMENT_NOT_ALLOWED"
+	| "USE_CANCEL";
+
 /** POST transition returns a discriminated result (like `updateSettings`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.
  *  On a failure, `reason` carries the domain's typed reason when one applies —
  *  `MANUAL_PAYMENT_NOT_ALLOWED` (a manual mark-paid — only the payment provider
- *  settles an order today) and `USE_CANCEL` (a bare cancel of a paid order) get
- *  their own copy. */
+ *  settles an order today) and `USE_CANCEL` (any bare cancel — Cancel order is the
+ *  one way) get their own copy. */
 export type TransitionOrderResult =
 	| { ok: true; transitioned: boolean }
-	| { ok: false; status: number; reason?: string };
+	| { ok: false; status: number; reason?: TransitionRefusal };
 
 /** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
  *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.

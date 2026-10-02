@@ -364,30 +364,56 @@ describe("the Orders write path (workerd sandbox)", () => {
 		});
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
-		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		expect(result.notice?.description).toBe(
+			"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+		);
 		const order = await readOrder(id);
 		expect(order.state).toBe("pending");
 		// Nothing was enqueued for the buyer either.
 		expect(await outboxStates(id)).toEqual([]);
 	});
 
-	test("a hand-made bare `cancelled` on a PAID order is refused — nothing cancelled, nothing emailed (T1-4)", async () => {
+	test("a hand-made bare `cancelled` is refused on a PAID and on an UNPAID order — nothing cancelled, nothing emailed (T1-4)", async () => {
 		// The console offers no bare cancel, but the payload is operator-alterable: a
-		// raw `orders:transition-cancelled` would close a paid order with the money kept,
-		// no restock and a "cancelled" email. The domain refuses it.
-		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
-		const result = await act("orders:transition-cancelled", {
+		// raw `orders:transition-cancelled` records no reason, releases no stock hold,
+		// and on a paid order keeps the money with a "cancelled" email. The domain
+		// refuses it; Cancel order is the one way to cancel.
+		for (const [seed, state, emails] of [
+			[{ capturedCents: TOTAL_CENTS }, "paid", ["paid"]],
+			[{ paid: false }, "pending", []],
+		] as const) {
+			const id = await seedOrder(seed);
+			const result = await act("orders:transition-cancelled", {
+				orderId: id,
+				toState: "cancelled",
+				state,
+			});
+			expect(result.notice).toEqual({
+				variant: "error",
+				title: "Use Cancel order to cancel an order",
+				description:
+					"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer: refund under Money → Refunds first.",
+			});
+			const order = await readOrder(id);
+			expect(order.state).toBe(state);
+			expect(order.cancellation).toBeNull();
+			expect(await outboxStates(id)).toEqual(emails);
+		}
+	});
+
+	test("Mark refunded applies and SAYS it moved no money and emailed nobody", async () => {
+		const id = await seedOrder();
+		const result = await act("orders:transition-refunded", {
 			orderId: id,
-			toState: "cancelled",
+			toState: "refunded",
 			state: "paid",
 		});
-		expect(result.notice?.variant).toBe("error");
-		expect(result.notice?.title).toBe("Use Cancel order to cancel a paid order");
-		expect(String(result.notice?.description)).toContain("Nothing was changed");
-		const order = await readOrder(id);
-		expect(order.state).toBe("paid");
-		expect(order.cancellation).toBeNull();
-		// The settlement's confirmation is the only email on the order.
+		expect(result.notice).toEqual({
+			variant: "default",
+			title: "Marked refunded",
+			description: "No money moved and the buyer was not emailed.",
+		});
+		expect((await readOrder(id)).state).toBe("refunded");
 		expect(await outboxStates(id)).toEqual(["paid"]);
 	});
 

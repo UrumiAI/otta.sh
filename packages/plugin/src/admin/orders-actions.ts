@@ -229,27 +229,38 @@ const applied = (notice: Notice | null): OrdersActionResult => ({ ok: true, noti
 // -- transitions --------------------------------------------------------------
 
 /**
- * A manual mark-paid (QA T1-3). An order becomes paid when Stripe (or the x402
- * facilitator) confirms the charge, and on its own; a person marking it paid would
- * tell the buyer their payment arrived and count revenue nobody captured. No
- * payment method is declared offline today, so this is every manual mark-paid.
+ * A manual mark-paid (QA T1-3). Otta marks an order paid only when its payment
+ * provider confirms the charge; a person marking it paid would tell the buyer their
+ * payment arrived and count revenue nobody captured. No payment method is declared
+ * offline today, so this is every manual mark-paid — including an order with no
+ * method on file, which nothing will ever settle (so no "it becomes paid by itself").
  */
 const PAID_BY_PROVIDER_ONLY: Notice = {
 	variant: "error",
 	title: "Only the payment provider can mark this order paid",
 	description:
-		"Nothing was changed. This order becomes paid by itself when its payment provider confirms the charge. If the buyer paid you some other way, cancel this order instead.",
+		"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
 };
 
 /**
- * A bare `cancelled` move on a paid order (QA T1-4) — it would close the order with
- * the buyer's money kept and no reason on file. Cancel order is the path.
+ * A bare `cancelled` move (QA T1-4), from any state. It records no reason and
+ * releases no stock hold, so Cancel order is the one way to cancel. The copy does
+ * NOT promise that Cancel order refunds: on this build it does not — the buyer is
+ * refunded under Money → Refunds.
  */
 const USE_CANCEL_ORDER: Notice = {
 	variant: "error",
-	title: "Use Cancel order to cancel a paid order",
+	title: "Use Cancel order to cancel an order",
 	description:
-		"Nothing was changed. A paid order is cancelled with Cancel order below, which records why — a bare status change would leave the buyer’s money and the stock untouched.",
+		"Nothing was changed. Cancel an order with Cancel order below, which records why. Cancelling does not refund the buyer: refund under Money → Refunds first.",
+};
+
+/** A Mark refunded that applied (ADR-0026 Decision 3): bookkeeping for a refund
+ *  made outside Otta — it says so, because nothing else on the screen will. */
+const MARKED_REFUNDED: Notice = {
+	variant: "default",
+	title: "Marked refunded",
+	description: "No money moved and the buyer was not emailed.",
 };
 
 /**
@@ -316,7 +327,7 @@ function transitionAction(toState: string): OrdersAction {
 				description: "The order is already in that state.",
 			});
 		}
-		return applied(null);
+		return applied(toState === "refunded" ? MARKED_REFUNDED : null);
 	};
 }
 

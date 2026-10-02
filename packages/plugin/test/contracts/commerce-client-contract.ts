@@ -2626,9 +2626,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					],
 				},
 				// DERIVED, never re-listed: the domain's `adminNextStates` — the state
-				// machine's row for `pending` MINUS `paid`, because this is a Stripe order
-				// and only Stripe's confirmation may settle it (QA T1-3).
-				allowedTransitions: ["expired", "cancelled"],
+				// machine's row for `pending` MINUS `paid` (only the payment provider's
+				// confirmation settles an order, QA T1-3) and MINUS a bare `cancelled`
+				// (Cancel order is the one way to cancel, QA T1-4).
+				allowedTransitions: ["expired"],
 			});
 
 			// An id that never existed is a "not found" state, not an error banner.
@@ -2668,16 +2669,17 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					idempotencyKey: "adm-o-trans-4",
 				}),
 			).toEqual({ ok: false, status: 400 });
-			// A bare cancel of an order holding the buyer's money is refused (QA T1-4):
-			// Cancel order is the path.
+			// A bare cancel is refused from any state (QA T1-4): Cancel order, which
+			// records why, is the one way to cancel.
 			expect(
 				await orders.transitionOrder("adm-o-trans", "cancelled", {
 					idempotencyKey: "adm-o-trans-5",
 				}),
 			).toEqual({ ok: false, status: 409, reason: "USE_CANCEL" });
 
-			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order, and
-			// not one with no payment method on file either — the refusal fails closed.
+			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order and not
+			// an x402 one. (The no-method case — the refusal failing CLOSED — cannot be
+			// arranged on this surface; the domain's orderTransitionContract pins it.)
 			for (const [id, paymentMethod] of [
 				["adm-o-trans-card", "stripe"],
 				["adm-o-trans-x402", "x402"],
@@ -2693,7 +2695,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 			const read = await orders.getOrder("adm-o-trans");
 			expect(read?.order.state).toBe("processing");
-			// STEERED in the domain: no bare `cancelled` on an order that may hold money.
+			// STEERED in the domain: no bare `cancelled` from any state.
 			expect(read?.allowedTransitions).toEqual(["shipped", "refunded"]);
 		});
 
@@ -4023,10 +4025,12 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			const before = await reporting.getOrdersByStatus(window);
 			await tier.arrange.settle("rep-obs-1");
 			expect(
-				await orders.transitionOrder("rep-obs-2", "cancelled", {
-					idempotencyKey: "rep-obs-2-cancel",
-				}),
-			).toEqual({ ok: true, transitioned: true });
+				await orders.cancelOrder(
+					"rep-obs-2",
+					{ reason: "customer_request", cancelledBy: "ops@example.test" },
+					{ idempotencyKey: "rep-obs-2-cancel" },
+				),
+			).toEqual({ ok: true, cancelled: true });
 
 			const after = await reporting.getOrdersByStatus(window);
 			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);

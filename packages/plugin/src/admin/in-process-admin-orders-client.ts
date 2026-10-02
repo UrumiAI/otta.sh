@@ -18,8 +18,9 @@
  *    with a count of none);
  *  - `cursorRejected` is only ever `true`, never `false` and never "present but
  *    unset" — it means "you asked for a page you did not get";
- *  - `allowedTransitions` is DERIVED from the domain state machine
- *    (`legalNextStates`), never re-listed here;
+ *  - `allowedTransitions` is DERIVED from the domain (`adminNextStates`: the state
+ *    machine minus a manual `paid` and minus a bare `cancelled`), never re-listed
+ *    here;
  *  - `deletedAt`-style tombstone semantics carry over from products: a non-null
  *    stamp means tombstoned, and nothing collapses it into absence;
  *  - `shippingAddress` is the order's immutable checkout SNAPSHOT (ADR-0009) and
@@ -233,7 +234,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *  current state. An id that never existed resolves to `null` — the console
 	 *  renders a "not found" state, not an error banner. The transitions come
 	 *  STRAIGHT from the domain (`adminNextStates`: the state machine minus a manual
-	 *  `paid` for an order its gateway settles), never re-derived console-side. */
+	 *  `paid` — no payment method may be settled by hand today — and minus a bare
+	 *  `cancelled`, which Cancel order replaces), never re-derived console-side. */
 	async getOrder(orderId: string): Promise<OrderDetailResult | null> {
 		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
@@ -246,9 +248,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 
 	/** POST an order-status transition, as the admin makes it
 	 *  (`transitionOrderAsAdmin`). Legality lives in the domain; an unknown order is
-	 *  the route's 404, and an illegal move or a manual mark-paid of a
-	 *  gateway-settled order its 409 — the latter with its reason, so the console can
-	 *  say why. */
+	 *  the route's 404, and an illegal move, a manual mark-paid
+	 *  (`MANUAL_PAYMENT_NOT_ALLOWED`) or a bare cancel (`USE_CANCEL`) its 409 — with
+	 *  the reason, so the console can say why. */
 	async transitionOrder(
 		orderId: string,
 		toState: string,
