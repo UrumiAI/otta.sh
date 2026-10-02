@@ -25,6 +25,7 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
+import { idInputProblem } from "./id-input.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
@@ -1324,6 +1325,14 @@ function createZoneAction() {
 					{ kind: "new-zone", draft },
 				);
 			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					undefined,
+					{ variant: "error", title: "Zone not created", description: idProblem },
+					{ kind: "new-zone", draft },
+				);
+			}
 			const checked = await checkZoneRegions(client, readString(values.regions) ?? "", null);
 			if (!checked.ok) {
 				return showList(undefined, checked.notice("Zone not created"), { kind: "new-zone", draft });
@@ -1488,6 +1497,14 @@ function createMethodAction() {
 						title: "Method not created",
 						description: "Enter a method ID, a name, and a valid type.",
 					},
+					{ kind: "new-method", draft },
+				);
+			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					[zoneId],
+					{ variant: "error", title: "Method not created", description: idProblem },
 					{ kind: "new-method", draft },
 				);
 			}

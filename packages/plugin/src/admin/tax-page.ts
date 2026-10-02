@@ -22,6 +22,7 @@ import {
 	type TaxClassWire,
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
+import { idInputProblem } from "./id-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -1049,6 +1050,14 @@ function createClassAction() {
 				{ kind: "new-class", draft },
 			);
 		}
+		const idProblem = idInputProblem(id);
+		if (idProblem !== undefined) {
+			return showList(
+				undefined,
+				{ variant: "error", title: "Tax class not created", description: idProblem },
+				{ kind: "new-class", draft },
+			);
+		}
 		const result = await client.createTaxClass({ id, name });
 		const notice = createClassNotice(result, id, name);
 		// A SERVICE refusal keeps the draft too (a duplicate id is one edit away);
@@ -1215,6 +1224,8 @@ function createRateAction() {
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
+		const idProblem = idInputProblem(id);
+		if (idProblem !== undefined) return err(idProblem);
 		const bps = parsePercentToBps(readString(values.ratePercent) ?? "");
 		if (bps === null) {
 			return err("Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).");

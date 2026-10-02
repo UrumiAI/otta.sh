@@ -25,6 +25,7 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { idInputProblem } from "./id-input.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -1715,6 +1716,8 @@ function createCouponAction() {
 			if (id.length === 0 || code.length === 0) {
 				return err("Enter both a coupon ID and a code.");
 			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) return err(idProblem);
 			if (type !== "fixed_amount" && type !== "percentage") {
 				return err("Choose a valid coupon type.");
 			}

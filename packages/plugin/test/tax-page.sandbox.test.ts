@@ -343,6 +343,22 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(await taxRules.listClasses()).toEqual([{ id: "standard", name: "Standard" }]);
 	});
 
+	test("a tax rate ID with a space is refused ON the create screen, in words, with the typing kept", async () => {
+		await seedRules();
+		const screen = await openNewRateScreen("standard");
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std us",
+			zoneId: "eu",
+			ratePercent: "9",
+			appliesToShipping: false,
+		});
+		const banner = bannerOf(refused);
+		expect(String(banner?.title)).toBe("Tax rate not created");
+		expect(String(banner?.description)).toMatch(/can't contain spaces/i);
+		expect(formInitialValues(refused, "tax:create-rate")).toMatchObject({ id: "std us" });
+		expect(await findRate("eu", "std us")).toBeUndefined();
+	});
+
 	test("creating a tax RATE with an id another rate holds says so, and keeps the operator's typing", async () => {
 		await seedRules();
 		const screen = await openNewRateScreen("standard");

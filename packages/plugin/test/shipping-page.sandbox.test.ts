@@ -448,6 +448,25 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect((await shippingRules.listZones()).filter((z) => z.id === "us")).toHaveLength(1);
 	});
 
+	test("a zone ID with a space is refused ON the create screen, in words, with the typing kept — nothing is written", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "QA JP!",
+			name: "Japan",
+			regions: "JP",
+		});
+		const banner = bannerOf(blocks);
+		expect(String(banner?.title)).toBe("Zone not created");
+		expect(String(banner?.description)).toMatch(/can't contain spaces/i);
+		expect(String(banner?.description)).not.toMatch(/outcome unknown|ASCII/i);
+		expect(formInitialValues(blocks, "shipping:create-zone")).toEqual({
+			id: "QA JP!",
+			name: "Japan",
+			regions: "JP",
+		});
+		expect(await shippingRules.getZone("QA JP!")).toBeNull();
+	});
+
 	test("the create screen carries the F-8 line about regions — ISO codes, exact, most specific wins (ADR-0021); the page context stays terse", async () => {
 		await seedShipping();
 		const blocks = await loadZones();
