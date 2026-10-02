@@ -307,6 +307,10 @@ form, because the redirect may carry no personal data (decision 6's reasoning).
     (`login_challenge_claims`, `liveSlots`), offered as the `AttemptThrottle` port and
     `EmdashAttemptThrottle` adapter.
 
+  One consequence, stated: anyone holding the order link can SPEND an order's 5 email tries,
+  locking the email route for up to 15 minutes. The cart and owning-session routes still work
+  through it, and the buyer can always start a new checkout.
+
   The plugin enforces this itself (`storefront/order/resume` is public), not only the site. The
   id alone answers `PROOF_REQUIRED` and asks the provider nothing. What the order link already
   implies — whether the order exists and whether it can still be paid — is answered before the
