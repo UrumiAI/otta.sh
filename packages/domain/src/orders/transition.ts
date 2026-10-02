@@ -6,7 +6,11 @@ import {
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { CustomerStore } from "../ports/customer-store.js";
-import type { EmailSender } from "../ports/email-sender.js";
+import {
+	type EmailSender,
+	isCutShortEmailTimeout,
+	isEmailSendTimeoutError,
+} from "../ports/email-sender.js";
 import type { OrderStore } from "../ports/order-store.js";
 import type { Order, OrderState } from "./model.js";
 import { emailTemplateForState, isLegalOrderTransition } from "./state-machine.js";
@@ -84,7 +88,62 @@ export interface DispatchOrderEmailsOptions {
 	maxAttempts?: number;
 	/** Safety cap on rows drained per invocation. */
 	batchLimit?: number;
+	/**
+	 * Asked before each CLAIM; `false` ends the drain. The plugin's cron tick runs
+	 * this inside a host hook with a hard timeout, and passes its time budget here.
+	 * The check sits before the claim, never after it, because a row claimed and
+	 * then abandoned stays leased — unsent — for the whole lease, while an
+	 * unclaimed row simply goes out on the next tick.
+	 */
+	shouldContinue?: () => boolean;
+	/**
+	 * Asked once more just BEFORE the send — after the claim and the order and
+	 * customer reads, which take time of their own. `false` hands the claimed row
+	 * back untried (`releaseEmailClaim`, the attempt not counted) and ends the
+	 * drain. Default: always send.
+	 */
+	canSend?: () => boolean;
+	/**
+	 * Called for each timeout PAST `maxUncountedTimeouts` on a row — the point at
+	 * which "slow" has become "not working", so the caller can raise an alert (the
+	 * plugin logs it with `console.error`). From then on each timeout also counts
+	 * as an attempt, so the row parks with reason "provider kept timing out".
+	 */
+	onRepeatedTimeouts?: (row: { id: string; orderId: OrderId; timeouts: number }) => void;
+	/** Uncounted timeouts a row is allowed. Default: {@link MAX_UNCOUNTED_TIMEOUTS}. */
+	maxUncountedTimeouts?: number;
 }
+
+/**
+ * A timed-out row is retried after a backoff: one minute, doubling per timeout,
+ * capped at fifteen. Forward, so the row goes BEHIND the other due rows instead
+ * of being claimed first again on the next run — one stuck row must not stall
+ * the queue.
+ */
+export const TIMEOUT_BACKOFF_BASE_MS = 60_000;
+export const TIMEOUT_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** Timeouts a row may take uncounted. Past this a provider is not slow but not
+ *  working, and continuing to retry for free would hide that forever. */
+export const MAX_UNCOUNTED_TIMEOUTS = 10;
+
+/** The backoff after a row's `timeouts`-th timeout. */
+export function timeoutBackoffMs(timeouts: number): number {
+	const doublings = Math.max(0, timeouts - 1);
+	return Math.min(TIMEOUT_BACKOFF_MAX_MS, TIMEOUT_BACKOFF_BASE_MS * 2 ** Math.min(doublings, 20));
+}
+
+/**
+ * How long a row the dispatcher claimed but could not TRY (its caller was out of
+ * time before the send) waits before it is due again. Short, because nothing is
+ * wrong with the row; but forward, so that a run short of time cannot hand the
+ * same row back to the head of the queue every time and keep the rows behind it
+ * from a run that does have time.
+ */
+export const UNTRIED_RETRY_MS = 30_000;
+
+/** The reason a row parked by repeated timeouts carries. */
+export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
 
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -114,6 +173,7 @@ export async function dispatchOrderEmails(
 
 	let sent = 0;
 	for (let i = 0; i < batchLimit; i++) {
+		if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 		const row = await deps.orderStore.claimNextEmail(nowIso, leaseUntil);
 		if (row === null) break;
 
@@ -126,6 +186,13 @@ export async function dispatchOrderEmails(
 			continue;
 		}
 
+		if (options.canSend !== undefined && !options.canSend()) {
+			await deps.orderStore.releaseEmailClaim(row.id, {
+				retryAt: new Date(now.getTime() + UNTRIED_RETRY_MS).toISOString(),
+			});
+			break;
+		}
+
 		try {
 			await deps.emailSender.send({
 				to: await resolveRecipient(deps, order),
@@ -135,7 +202,34 @@ export async function dispatchOrderEmails(
 			});
 			await deps.orderStore.markEmailSent(row.id, nowIso);
 			sent++;
-		} catch {
+		} catch (err) {
+			// A send cut off by the CALLER's timeout is not a failed attempt: hand the
+			// row back uncounted, and stop — the time is gone, and re-claiming the
+			// same row inside this drain would only time out again.
+			// Cut short by the CALLER (given less than its full allowance): not the
+			// provider's doing, so no backoff and no timeout recorded — due at once.
+			if (isCutShortEmailTimeout(err)) {
+				await deps.orderStore.releaseEmailClaim(row.id);
+				break;
+			}
+			if (isEmailSendTimeoutError(err)) {
+				const timeouts = row.timeouts + 1;
+				const retryAt = new Date(now.getTime() + timeoutBackoffMs(timeouts)).toISOString();
+				if (timeouts <= (options.maxUncountedTimeouts ?? MAX_UNCOUNTED_TIMEOUTS)) {
+					// Uncounted, but BACKED OFF: forward, behind every other due row.
+					await deps.orderStore.releaseEmailClaim(row.id, { retryAt, timedOut: true });
+				} else {
+					// Past the limit: reported, and counted like any failed attempt (the
+					// claim already counted it), parking the row with its own reason.
+					options.onRepeatedTimeouts?.({ id: row.id, orderId: row.orderId, timeouts });
+					await deps.orderStore.rescheduleEmail(
+						row.id,
+						row.attempts >= maxAttempts ? null : retryAt,
+						TIMEOUT_FAILURE_REASON,
+					);
+				}
+				break;
+			}
 			// row.attempts already counts this attempt (incremented on claim). Back
 			// off to `leaseUntil` (a future time) so the row is retried on the NEXT
 			// tick, not re-picked within this same drain loop; park it `failed` once

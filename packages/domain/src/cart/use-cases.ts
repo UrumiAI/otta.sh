@@ -10,6 +10,12 @@ import {
 } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
+import {
+	listLimitFor,
+	mayContinue,
+	type SweepBatchOptions,
+	type SweepBatchResult,
+} from "../sweep/batch.js";
 
 /**
  * IO-free cart orchestration over `CartStore` + `InventoryStore` + `Clock`
@@ -302,17 +308,35 @@ export async function removeLine(
  * actually reclaimed (flips won).
  */
 export async function expireHolds(deps: CartDeps, at?: Date): Promise<number> {
+	return (await expireHoldsBatch(deps, at)).count;
+}
+
+/**
+ * `expireHolds`, bounded: at most `limit` holds attempted, each only while
+ * `shouldContinue` allows, reporting whether the expired set was `drained`. The
+ * scheduled sweep calls this so a hold backlog drains over several ticks instead
+ * of overrunning the host's hook timeout (see `sweep/batch.ts`). A hold not
+ * reached is still expired-and-listed next time; the guarded flip is unchanged.
+ */
+export async function expireHoldsBatch(
+	deps: CartDeps,
+	at?: Date,
+	options: SweepBatchOptions = {},
+): Promise<SweepBatchResult> {
 	const now = at ?? deps.clock.now();
 	const nowIso = now.toISOString();
 	const cutoff = cutoffIso(deps, now);
 
-	const expired = await deps.cartStore.listExpired(nowIso, cutoff);
+	const expired = await deps.cartStore.listExpired(nowIso, cutoff, listLimitFor(options));
 	let reclaimed = 0;
+	let attempted = 0;
 	for (const hold of expired) {
+		if (!mayContinue(options, attempted)) return { count: reclaimed, drained: false };
+		attempted++;
 		const won = await deps.cartStore.expireHold(hold.reservationId, nowIso, cutoff);
 		if (won) reclaimed++;
 	}
-	return reclaimed;
+	return { count: reclaimed, drained: true };
 }
 
 type ActiveCartGuard = { ok: true; cart: Cart } | { ok: false; reason: CartFailure };

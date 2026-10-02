@@ -1,3 +1,5 @@
+import type { ExpiryListOptions } from "../ports/cart-store.js";
+import { assertSweepLimit } from "../sweep/batch.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import {
 	type CustomerId,
@@ -7,6 +9,7 @@ import {
 	orderId as toOrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { ReleaseEmailClaimOptions } from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
@@ -90,6 +93,8 @@ interface StoredOutbox {
 	toState: OrderState;
 	status: OutboxStatus;
 	attempts: number;
+	timeouts: number;
+	failureReason: string | null;
 	leaseUntil: string | null;
 	sentAt: string | null;
 	createdAt: string;
@@ -211,9 +216,11 @@ export class InMemoryOrderStore implements OrderStore {
 		return true;
 	}
 
-	async listExpirable(now: string): Promise<OrderId[]> {
+	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
+		assertSweepLimit(options.limit);
 		const out: OrderId[] = [];
 		for (const stored of this.#orders.values()) {
+			if (options.limit !== undefined && out.length >= options.limit) break;
 			if (stored.order.state === "pending" && stored.order.holdExpiresAt <= now) {
 				out.push(stored.order.id);
 			}
@@ -776,6 +783,7 @@ export class InMemoryOrderStore implements OrderStore {
 			orderId: row.orderId as OrderId,
 			toState: row.toState,
 			attempts: row.attempts,
+			timeouts: row.timeouts,
 		};
 	}
 
@@ -786,11 +794,22 @@ export class InMemoryOrderStore implements OrderStore {
 		row.sentAt = now;
 	}
 
-	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
+		const row = this.#outbox.find((r) => r.id === id);
+		if (row === undefined || row.status !== "sending") return;
+		row.status = "pending";
+		// In this fake a lease IS the backoff (claimability is lease-driven).
+		row.leaseUntil = options.retryAt ?? null;
+		row.attempts = Math.max(0, row.attempts - 1);
+		if (options.timedOut === true) row.timeouts += 1;
+	}
+
+	async rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void> {
 		const row = this.#outbox.find((r) => r.id === id);
 		if (row === undefined) return;
 		if (retryAt === null) {
 			row.status = "failed";
+			row.failureReason = reason ?? null;
 			row.leaseUntil = null;
 		} else {
 			row.status = "pending";
@@ -799,6 +818,12 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	// -- test surface ---------------------------------------------------------
+
+	/** The first outbox row for an order, as stored (a copy). */
+	outboxEntry(orderId: string): Readonly<StoredOutbox> | undefined {
+		const row = this.#outbox.find((r) => r.orderId === orderId);
+		return row === undefined ? undefined : { ...row };
+	}
 
 	/** Payments recorded (for contract assertions). */
 	payments(orderId: string): StoredPayment[] {
@@ -854,6 +879,8 @@ export class InMemoryOrderStore implements OrderStore {
 			toState,
 			status: "pending",
 			attempts: 0,
+			timeouts: 0,
+			failureReason: null,
 			leaseUntil: null,
 			sentAt: null,
 			createdAt: this.#clock.now().toISOString(),

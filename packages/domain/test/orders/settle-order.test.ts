@@ -339,6 +339,7 @@ describe("settleOrder", () => {
 			claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
 			markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.orderStore.rescheduleEmail(id, at),
+			releaseEmailClaim: (id) => h.orderStore.releaseEmailClaim(id),
 		};
 	}
 

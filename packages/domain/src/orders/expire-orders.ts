@@ -2,6 +2,12 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { OrderStore } from "../ports/order-store.js";
+import {
+	listLimitFor,
+	mayContinue,
+	type SweepBatchOptions,
+	type SweepBatchResult,
+} from "../sweep/batch.js";
 
 export interface ExpireOrdersDeps {
 	orderStore: OrderStore;
@@ -22,10 +28,29 @@ export interface ExpireOrdersDeps {
  * trigger. Returns the count of orders actually expired.
  */
 export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<number> {
+	return (await expireOrdersBatch(deps, at)).count;
+}
+
+/**
+ * `expireOrders`, bounded: at most `limit` orders attempted, each only while
+ * `shouldContinue` allows, reporting whether the expirable set was `drained`.
+ * The scheduled sweep calls this so a backlog drains over several ticks instead of
+ * overrunning the host's hook timeout (see `sweep/batch.ts`). Stopping between two
+ * orders is safe: each order's flip-then-release is its own guarded unit, and an
+ * order not reached is still `pending` and still listed next time.
+ */
+export async function expireOrdersBatch(
+	deps: ExpireOrdersDeps,
+	at?: Date,
+	options: SweepBatchOptions = {},
+): Promise<SweepBatchResult> {
 	const now = (at ?? deps.clock.now()).toISOString();
-	const ids = await deps.orderStore.listExpirable(now);
+	const ids = await deps.orderStore.listExpirable(now, listLimitFor(options));
 	let expired = 0;
+	let attempted = 0;
 	for (const id of ids) {
+		if (!mayContinue(options, attempted)) return { count: expired, drained: false };
+		attempted++;
 		const won = await deps.orderStore.expire(id, now);
 		if (!won) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
@@ -46,5 +71,5 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 		// coupon sweeper releases any redemption whose order is `expired` as the retry.
 		await deps.couponStore.releaseByOrder(order.id);
 	}
-	return expired;
+	return { count: expired, drained: true };
 }

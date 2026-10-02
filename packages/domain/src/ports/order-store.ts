@@ -1,3 +1,4 @@
+import type { ExpiryListOptions } from "./cart-store.js";
 import type { Cents, Currency } from "../money/cents.js";
 import type {
 	CustomerId,
@@ -53,7 +54,7 @@ export interface OrderStore {
 	 */
 	expire(orderId: OrderId, now: string): Promise<boolean>;
 	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
-	listExpirable(now: string): Promise<OrderId[]>;
+	listExpirable(now: string, options?: ExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 
@@ -348,7 +349,23 @@ export interface OrderStore {
 	 * unfound row as a no-op, a document adapter throws a typed retryable error,
 	 * and neither may report success without having written the reschedule.
 	 */
-	rescheduleEmail(id: string, retryAt: string | null): Promise<void>;
+	rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void>;
+	/**
+	 * Hand a claimed row back UNTRIED: `pending`, due at once, and with the
+	 * attempt its claim counted taken back off. For a dispatcher that claimed a
+	 * row and then could not try it — its time ran out before the send, or the
+	 * send was cut off by the dispatcher's own timeout — so the row's
+	 * `maxAttempts` budget is spent only on tries the provider actually got. The
+	 * locate semantics are `markEmailSent`'s; only a `sending` row is released, so
+	 * a double release is a no-op.
+	 *
+	 * `retryAt` moves the row's due time FORWARD (a backoff — without it the row is
+	 * due at once); `timedOut` also records one more dispatcher timeout on it
+	 * (`OutboxEmail.timeouts`). A row released with a forward due time sits behind
+	 * every other due row, so one that keeps timing out cannot hold the head of the
+	 * queue.
+	 */
+	releaseEmailClaim(id: string, options?: ReleaseEmailClaimOptions): Promise<void>;
 }
 
 /** The store-level resolve command. `outcome`/`reason`/`resolvedBy` are already
@@ -469,12 +486,27 @@ export interface OrderTransitionResult {
 }
 
 /** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
+/** How {@link OrderStore.releaseEmailClaim} hands a row back. */
+export interface ReleaseEmailClaimOptions {
+	/** When the row is due again (a backoff). Absent: due at once. */
+	readonly retryAt?: string;
+	/** The send was cut off for time: record one more timeout on the row. */
+	readonly timedOut?: boolean;
+}
+
 export interface OutboxEmail {
 	id: string;
 	orderId: OrderId;
 	toState: OrderState;
 	/** Delivery attempts so far (incremented on claim) — drives retry budgeting. */
 	attempts: number;
+	/** Sends that timed out with their FULL allowance (`EmailSendTimeoutError`,
+	 *  not cut short) — not attempts, but counted separately so a provider that is
+	 *  merely slow is backed off and, past a limit, reported and counted after all.
+	 *  It stops at that limit (`MAX_UNCOUNTED_TIMEOUTS`): from then on a timeout is
+	 *  recorded as an attempt instead, so the row's `attempts` carries the rest. 0
+	 *  when absent. */
+	timeouts: number;
 }
 
 /** A line to snapshot into `order_items` — price + title already resolved from

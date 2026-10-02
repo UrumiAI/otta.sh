@@ -367,6 +367,74 @@ export function orderStoreContract(
 			expect(ids).toEqual([orderId("ord-2")]);
 		});
 
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpirable honours a limit, returning at most that many due orders", async () => {
+			const { store } = await makeHarness();
+			for (const n of [1, 2, 3]) {
+				await store.createFromCart(
+					physicalInput({
+						orderId: orderId(`ord-${String(n)}`),
+						idempotencyKey: idempotencyKey(`key-${String(n)}`),
+						holdExpiresAt: "2026-07-10T00:20:00.000Z",
+					}),
+				);
+			}
+			const now = "2026-07-10T00:30:00.000Z";
+			const limited = await store.listExpirable(now, { limit: 2 });
+			expect(limited).toHaveLength(2);
+			expect(await store.listExpirable(now)).toHaveLength(3);
+			expect(await store.listExpirable(now, { limit: 10 })).toHaveLength(3);
+			await expect(store.listExpirable(now, { limit: 0 })).rejects.toThrow(RangeError);
+		});
+
+		// The cron sweep claims an outbox row and only then learns whether there is
+		// time left to send it. Handing the row back must not cost one of its
+		// attempts — an attempt that never reached the provider is not an attempt.
+		test("releaseEmailClaim returns a claimed row to the queue, due now, WITHOUT counting the attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1")); // enqueues the confirmation
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.attempts).toBe(1);
+			// While claimed, it is leased: not claimable again.
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+
+			await store.releaseEmailClaim(first!.id);
+
+			// Claimable again AT ONCE (no backoff), and the attempt was not counted.
+			const again = await store.claimNextEmail(now, lease);
+			expect(again?.id).toBe(first!.id);
+			expect(again?.attempts).toBe(1);
+		});
+
+		// A TIMED-OUT row is handed back with a FORWARD due time and its timeout
+		// counted, so it moves behind every other due row instead of being claimed
+		// first on every run — still without spending an attempt.
+		test("releaseEmailClaim with a retryAt backs the row off and counts a timeout, not an attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1"));
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.timeouts).toBe(0);
+			await store.releaseEmailClaim(first!.id, {
+				retryAt: "2026-07-10T00:02:00.000Z",
+				timedOut: true,
+			});
+			// Not due before its retry time…
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+			// …due after it, attempt uncounted and the timeout recorded.
+			const later = await store.claimNextEmail(
+				"2026-07-10T00:02:00.000Z",
+				"2026-07-10T00:07:00.000Z",
+			);
+			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
+		});
+
 		// -- Admin Orders console: view-only keyset list --------------------------
 
 		test("listOrders on an empty store returns no rows and a null cursor", async () => {

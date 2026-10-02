@@ -164,6 +164,7 @@ export type {
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
+	ReleaseEmailClaimOptions,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
@@ -177,7 +178,14 @@ export type {
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
-export type { EmailSender, EmailTemplate, SendEmailInput } from "./ports/email-sender.js";
+export {
+	EmailSendTimeoutError,
+	isCutShortEmailTimeout,
+	isEmailSendTimeoutError,
+	type EmailSender,
+	type EmailTemplate,
+	type SendEmailInput,
+} from "./ports/email-sender.js";
 export type {
 	CreateCustomerInput,
 	CustomerStore,
@@ -213,6 +221,12 @@ export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from ".
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
+	MAX_UNCOUNTED_TIMEOUTS,
+	TIMEOUT_BACKOFF_BASE_MS,
+	TIMEOUT_BACKOFF_MAX_MS,
+	TIMEOUT_FAILURE_REASON,
+	timeoutBackoffMs,
+	UNTRIED_RETRY_MS,
 	transitionOrder,
 	type DispatchOrderEmailsDeps,
 	type DispatchOrderEmailsOptions,
@@ -345,7 +359,8 @@ export {
 	type OrderTimelineDeps,
 	type OrderTimelineEntry,
 } from "./orders/order-timeline.js";
-export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
@@ -406,6 +421,7 @@ export {
 	type ClaimMutationInput,
 	type ClaimMutationResult,
 	type ExpiredHold,
+	type ExpiryListOptions,
 	type RecordedCartMutation,
 	type ReservationLifecycle,
 	type UpsertLineInput,
@@ -415,6 +431,7 @@ export {
 	createCart,
 	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
+	expireHoldsBatch,
 	getCart,
 	removeLine,
 	updateLine,
