@@ -16,6 +16,11 @@
 - Note: 2026-10-01 — five of the six themes (`plinth`, `pressing`, `batch`, `jumble`, `counter`)
   moved out of this repo; only `tempered` ships here. The decision is unchanged. See "Note
   2026-10-01 — five themes moved out of this repo" at the end.
+- Amended: 2026-10-02 — **the admin offers no theme choice.** The Themes screen, its live preview
+  and the Settings "Store theme" radio are removed; the store renders Tempered. Decision 2 ("the
+  merchant picks the theme in the admin") and the 2026-09-30 Themes-screen amendment are retired;
+  the rest of the theme system stays. See "Amendment 2026-10-02 — no theme choice in the admin" at
+  the end.
 
 ## Context
 
@@ -221,8 +226,36 @@ Decision 10's list now reads as history: only `tempered` ships here, and it rema
 the fallback. A stored `settings:storeTheme` naming a removed id falls back to Tempered, as the
 Consequences already state for any id a later build drops.
 
+*(The admin-facing part of the next paragraph — the admin preview, the `__OTTA_STORE_THEMES__`
+define, the Store theme setting and the Themes screen — is superseded by the amendment of
+2026-10-02, which removes them.)*
+
 The theme system stays whole — the contract, manifest, registry, resolver, shell, the admin preview,
 the opt-in chrome bag read (`chrome.cartLines`, `lib/bag.ts`, `forms/CartLineFields.astro`), the
 `__OTTA_STORE_THEMES__` define, the plugin's Store theme setting and the admin Themes screen — as the
 host side external themes will plug into. Mechanisms no shipped theme exercises today (the bag read,
 the preview of a non-default theme) are covered by an in-test fixture theme rather than dropped.
+
+## Amendment 2026-10-02 — no theme choice in the admin
+
+With one theme shipping here (the note of 2026-10-01), a theme picker offers a single option, and
+the product owner wants none from the start: external themes will come from the separate themes
+repo, for a merchant who asks for one. So the admin-facing half of this decision is removed:
+
+- **Removed:** the React **Themes** screen (`otta-console` `/themes`, its `themes.list` read and
+  `themes:activate` write), the admin-only **live preview** (`?preview_theme`, its session cookie,
+  the "Previewing …" pill and the middleware branch that decided it), the Settings **"Store theme"**
+  radio and its `save-theme` action, and the `__OTTA_STORE_THEMES__` define that fed both pickers.
+  Decision 2 and the 2026-09-30 Themes-screen amendment are retired with them.
+- **Also removed:** the Themes-card metadata (`description` and `preview` on manifest entries), the
+  `tempered.webp` screenshot, `scripts/capture-theme-previews.ts` and its test — the admin cards were
+  their only reader.
+- **Kept, unchanged:** the contract, manifest (`id`, `label`), registry, shell, the opt-in chrome
+  bag read, the dev `?theme=` override and the resolver — which still reads the stored
+  `settings:storeTheme` and falls back to Tempered. **Nothing in this repo writes that setting any
+  more**: activating a theme from the separate themes repo needs a write path that ships with it
+  (or a later change here). Until one exists, every request renders Tempered.
+
+Reopens this amendment: a second theme shipping in this repo, or a request for merchants to choose
+one in the admin — at which point a picker is designed for it, not restored by default.
+

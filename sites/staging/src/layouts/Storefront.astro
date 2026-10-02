@@ -24,7 +24,6 @@
  */
 import { getMenu, getSiteSettings } from "emdash";
 import SafeJsonLd from "../components/SafeJsonLd.astro";
-import ThemePreviewPill from "../components/ThemePreviewPill.astro";
 import {
 	cartCountLabel,
 	FALLBACK_MENU_ITEMS,
@@ -47,9 +46,7 @@ import type {
 	ShopModel,
 } from "../themes/contract.js";
 import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
-import { requestThemePreview, themePreviewExitHref } from "../lib/theme-preview.js";
 import { readBag } from "../lib/bag.js";
-import { STORE_THEMES } from "../themes/manifest.js";
 import { activeTheme } from "../themes/resolve.js";
 
 interface ShellProps {
@@ -213,9 +210,6 @@ const jsonLd = props.view === "product" ? (props.jsonLd ?? null) : null;
 /* Tempered's commerce views are every theme's fallback; their sheet is linked
    here, on the pages that render one, rather than by any one theme's Layout. */
 const viewSheet = props.view === undefined ? null : fallbackSheetFor(theme, props.view);
-/* An admin's live theme preview (lib/theme-preview.ts): the marker and its exit. */
-const previewing = requestThemePreview(Astro.locals);
-const previewLabel = STORE_THEMES.find((entry) => entry.id === previewing)?.label ?? null;
 ---
 
 <Layout chrome={chrome}>
@@ -252,9 +246,4 @@ const previewLabel = STORE_THEMES.find((entry) => entry.id === previewing)?.labe
 		)
 	}
 	{jsonLd !== null && <SafeJsonLd data={jsonLd} />}
-	{
-		previewLabel !== null && (
-			<ThemePreviewPill label={previewLabel} exitHref={themePreviewExitHref(Astro.url)} />
-		)
-	}
 </Layout>

@@ -196,26 +196,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(`${String(banner?.title)} ${String(banner?.description)}`).toMatch(/1–200 characters/);
 	});
 
-	test("store theme: the sandbox bundle bakes no __OTTA_STORE_THEMES__, so no theme picker renders and save-theme is refused", async () => {
+	test("Settings offers no store-theme choice: the store ships one theme (ADR-0024, amendment 2026-10-02)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const loaded = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		expect(formFor(loaded, "save-theme")).toBeUndefined();
+		// The Store group's label states the display name alone — no theme.
 		expect(groupLabels(loaded).get("settings:store")).toBe("Store — no display name");
-
-		const refused = await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-theme",
-			values: { storeTheme: "tempered" },
-		});
-		const blocks = blocksOf(refused);
-		assertBlockContract(blocks, { screen: "settings", level: "list" });
-		expectAllRealFormsPresent(blocks);
-		expect(findBlocks(blocks, "banner").find((b) => b.variant === "error")).toBeDefined();
-		expect(toastOf(refused)?.type).not.toBe("success");
-		expect(formFor(blocks, "save-theme")).toBeUndefined();
 	});
 
 	test("holdTtlMinutes and lowStockThreshold save through the real in-process settings store, with a success toast", async () => {

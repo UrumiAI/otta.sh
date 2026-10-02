@@ -724,8 +724,9 @@ export interface SelectFieldSpec {
  *  trigger shows the raw VALUE (R-17a), and a prefilled `combobox` can be cleared
  *  to `null` (F-6). A radio syncs its display from `initial_value` the way R-12a
  *  describes, so emit it only through `carriedForm`, which keys the form on the
- *  prefill and remounts it when the value changes. The Settings "Store theme"
- *  picker is the one user. */
+ *  prefill and remounts it when the value changes. No screen uses one today
+ *  (the Settings "Store theme" picker was its only user); it stays as part of
+ *  the mirrored Block Kit vocabulary. */
 export interface RadioFieldSpec {
 	type: "radio";
 	action_id: string;

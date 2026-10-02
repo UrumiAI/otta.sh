@@ -19,7 +19,7 @@
  *    theme's pages. A theme's Layout LINKS its sheets through `?url`.
  *
  * And the registry is held to the manifest, which is the single theme list
- * (the admin's options come from it via the `__OTTA_STORE_THEMES__` define).
+ * (it once fed the admin's theme picker too; that picker is gone).
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -139,13 +139,7 @@ describe("the theme list has one source", () => {
 		expect(THEME_DIRS).toEqual(STORE_THEMES.map((theme) => theme.id).toSorted());
 	});
 
-	test("astro.config.ts bakes the manifest into __OTTA_STORE_THEMES__ rather than a copy", () => {
-		const config = readFileSync(path.resolve(SRC, "../astro.config.ts"), "utf8");
-		expect(config).toContain('import { STORE_THEMES } from "./src/themes/manifest.js"');
-		expect(config).toMatch(/__OTTA_STORE_THEMES__:\s*JSON\.stringify\(\s*STORE_THEMES\.map\(/);
-	});
-
-	test("the manifest is pure data — astro.config imports it, so it may import nothing", () => {
+	test("the manifest is pure data — it may import nothing", () => {
 		expect(code("themes/manifest.ts")).not.toMatch(/^\s*import\s/m);
 	});
 });

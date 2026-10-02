@@ -18,6 +18,10 @@
 - Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
   is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
   Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
+- Amended: 2026-10-02 — **the Themes screen is removed again**, with the Settings radio, by
+  [ADR-0024's amendment of the same date](./0024-storefront-themes-are-runtime-selected-full-templates.md):
+  the store ships one theme and the admin offers no choice. The 2026-09-30 amendment below is
+  history; `otta-console` serves Orders and Pricing & inventory only.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -325,3 +329,13 @@ browser — including a tab opened with "Open in new tab".
 
 **Reopens this amendment:** a second React screen justified by this one instead of by its own gaps;
 the Settings radio being removed; or the Themes screen acquiring a write other than `saveStoreTheme`.
+
+## Amendment 2026-10-02 — the Themes screen is removed
+
+The storefront ships one theme, so the admin offers no theme choice ([ADR-0024's amendment of the
+same date](./0024-storefront-themes-are-runtime-selected-full-templates.md)). The Themes screen
+(`/themes`) leaves `admin.pages` and the console-screens registry, and its `themes.*` branch leaves
+the `otta` admin route. Nothing else in this record changes: Decision 6's scope is Orders and
+Pricing & inventory again, and the reasons recorded in the 2026-09-30 amendment for why such a
+screen could not be Block Kit still stand for any future one.
+

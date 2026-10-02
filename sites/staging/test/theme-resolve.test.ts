@@ -128,7 +128,8 @@ describe("the `?theme=` override — dev only", () => {
 
 describe("round trip — the plugin's kv write is the site's getPluginSetting read", () => {
 	let db: Parameters<typeof runMigrations>[0];
-	/** Invoke the fixture plugin's route, which writes exactly like the admin form will. */
+	/** Invoke the fixture plugin's route, which writes the setting the way any
+	 *  `otta` plugin code writing `settings:storeTheme` would. */
 	let save: (theme: unknown) => Promise<void>;
 
 	beforeAll(async () => {
@@ -144,7 +145,7 @@ describe("round trip — the plugin's kv write is the site's getPluginSetting re
 				id: "otta",
 				version: "0.0.0-test",
 				routes: {
-					"save-theme": {
+					"write-theme": {
 						handler: async (ctx) => {
 							await ctx.kv.set(`settings:${STORE_THEME_SETTING}`, ctx.input);
 							return { ok: true };
@@ -155,8 +156,8 @@ describe("round trip — the plugin's kv write is the site's getPluginSetting re
 		);
 		await manager.activate("otta");
 		save = async (theme) => {
-			const result = await manager.invokeRoute("otta", "save-theme", {
-				request: new Request("http://shop.test/_emdash/api/plugins/otta/save-theme"),
+			const result = await manager.invokeRoute("otta", "write-theme", {
+				request: new Request("http://shop.test/_emdash/api/plugins/otta/write-theme"),
 				body: theme,
 			});
 			expect(result.success, JSON.stringify(result.error)).toBe(true);

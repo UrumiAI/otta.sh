@@ -1,8 +1,9 @@
 /**
  * Which theme renders THIS request.
  *
- * THE SETTING. The merchant picks a theme in the plugin's admin Settings form
- * (its "Store theme" radio), which writes plugin kv `settings:storeTheme`.
+ * THE SETTING. The active theme is plugin kv `settings:storeTheme`. Nothing in
+ * this repo writes it today (the admin's picker was removed — see below); a
+ * theme installed from the separate themes repo must ship its own write path.
  * EmDash's `createKVAccess` prefixes every plugin kv key with `plugin:<id>:`,
  * so the row lands in the options table as `plugin:otta:settings:storeTheme` —
  * and EmDash's public `getPluginSetting(pluginId, key)` reads exactly
@@ -25,14 +26,14 @@
  * e2e — only when `import.meta.env.DEV`, which a production build replaces with
  * `false`, so the branch is dead code in anything deployed.
  *
- * THE ADMIN PREVIEW. `?preview_theme=<id>` (and its session cookie) IS honoured
- * in production, for a signed-in admin only — decided by `src/middleware.ts`
- * through `lib/theme-preview.ts`, which records the answer on `locals`. This
- * module only reads that answer; it never sees the cookie or the user.
+ * NO ADMIN PICKER. The store ships one theme, Tempered; the admin's Themes
+ * screen, its live preview and the Settings "Store theme" choice were removed
+ * (ADR-0024's amendment of 2026-10-02). The stored setting is still READ, so a theme
+ * installed from the separate themes repo can be activated by whatever ships
+ * with it; anything unknown falls back to Tempered.
  */
 import { OTTA_PLUGIN_ID } from "@otta-sh/plugin";
 import { getPluginSetting } from "emdash";
-import { requestThemePreview } from "../lib/theme-preview.js";
 import { DEFAULT_THEME_ID, isThemeId, type ThemeId } from "./manifest.js";
 
 /** The kv key's suffix — the plugin writes `settings:storeTheme`. */
@@ -78,11 +79,7 @@ const perRequest = new WeakMap<object, Promise<ThemeId>>();
 export function activeTheme(astro: { url: URL; locals: object }): Promise<ThemeId> {
 	let pending = perRequest.get(astro.locals);
 	if (pending === undefined) {
-		const preview = requestThemePreview(astro.locals);
-		pending =
-			preview === null
-				? resolveActiveThemeId({ url: astro.url, dev: import.meta.env.DEV })
-				: Promise.resolve(preview);
+		pending = resolveActiveThemeId({ url: astro.url, dev: import.meta.env.DEV });
 		perRequest.set(astro.locals, pending);
 	}
 	return pending;

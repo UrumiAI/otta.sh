@@ -9,7 +9,6 @@
 		"build": "astro check && astro build",
 		"preview": "astro preview",
 		"typecheck": "astro check",
-		"capture:theme-previews": "node --experimental-strip-types scripts/capture-theme-previews.ts",
 		"deploy": "wrangler deploy"
 	},
 	"dependencies": {
