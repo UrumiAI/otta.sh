@@ -158,7 +158,7 @@ breaking changes before 1.0.
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
 shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
-an email API is configured and the Settings "Sign-in link page" (`settings:loginLinkUrl`)
+an email API is configured and the Settings "Sign-in page address" (`settings:loginLinkUrl`)
 points at the storefront's `/account/verify` page.
 
 The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout** and

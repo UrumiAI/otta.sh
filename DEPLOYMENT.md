@@ -286,8 +286,10 @@ order of appearance in a deployment's life:
   Unicode domain) still sends, and is logged once per isolate (`settings:emailFrom is not a
   deliverable address`); it must be fixed or cleared before the payment settings form will
   save again. **Magic-link login mail** goes out through the same sender, and only once Settings
-  → "Sign-in link page" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
+  → "Sign-in page address" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
   `/account/verify` page — the emailed link points there and never at the request's origin.
+  The save requires `https://` (plain `http://` only for `localhost`, `127.0.0.1` or `[::1]`),
+  because the link carries a sign-in token.
   With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
   success, issues nothing, and logs once server-side. For the reference site, set it to
   `https://<your-site>/account/verify`.
@@ -301,9 +303,10 @@ order of appearance in a deployment's life:
 > 2. Add and verify your sending domain in Resend (its SPF and DKIM DNS records); a DMARC
 >    record with `p=none` is recommended to start. Without a verified domain Resend only sends
 >    from `onboarding@resend.dev`, and only to the Resend account owner's own address.
-> 3. In admin Settings, save the Resend API key and a from-address on that verified domain —
+> 3. In admin Settings, save the Resend API key (it starts `re_`; with Resend configured the
+>    save refuses any other shape) and a from-address on that verified domain —
 >    `orders@yourdomain.com` or `Your Shop <orders@yourdomain.com>`.
-> 4. Set "Sign-in link page" to the public `https://<your-site>/account/verify` URL — a
+> 4. Set "Sign-in page address" to the public `https://<your-site>/account/verify` URL — a
 >    localhost or http URL in a customer's inbox is a dead link.
 >
 > Resend's free tier is 3,000 emails/month and 100/day. A refused send throws with Resend's
