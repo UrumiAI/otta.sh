@@ -31,8 +31,7 @@ const STALE_CHECKOUT_PAGE =
  * method are checked, so nothing was charged.
  */
 const SELECTION_MESSAGES = {
-	COUPON_NOT_FOUND:
-		"We couldn't find that coupon code — check it and try again (codes are case-sensitive).",
+	COUPON_NOT_FOUND: "We couldn't find that coupon code — check the spelling and try again.",
 	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
 	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
 	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",

@@ -231,7 +231,7 @@ async function place(context: APIContext): Promise<Response> {
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
 	// every redirect below can carry it back: it is not personal data. Trimmed,
-	// never case-folded (lookup is case-sensitive); blank ⇒ OMITTED, never `""`,
+	// never case-folded here (the plugin's lookup ignores case, ADR-0025); blank ⇒ OMITTED, never `""`,
 	// which the commerce client would refuse. A code over the plugin's cap is
 	// refused here as what it is — no such coupon — without a dispatch.
 	const coupon = readCouponCode(formString(form.get("couponCode")));
