@@ -98,6 +98,13 @@ describe("StripePaymentGateway.cancelIntent (mock transport)", () => {
 	});
 });
 
+const cancel = (t: StripeTransport) =>
+	t.cancelPaymentIntent?.({ intentId: "pi_1", idempotencyKey: "k", secretKey: SK });
+const intentWith = (status: string) =>
+	new Response(JSON.stringify({ id: "pi_1", object: "payment_intent", status }), {
+		status: 200,
+	});
+
 describe("createStripeHttpTransport.cancelPaymentIntent (stub fetch — NO network)", () => {
 	test("POSTs /v1/payment_intents/{id}/cancel with reason=abandoned, Bearer auth, pinned version and the native Idempotency-Key", async () => {
 		let seen: { url: string; method?: string; headers: Headers; body: string } | undefined;
@@ -174,12 +181,6 @@ describe("createStripeHttpTransport.cancelPaymentIntent (stub fetch — NO netwo
 		});
 		return { transport, calls };
 	}
-	const cancel = (t: StripeTransport) =>
-		t.cancelPaymentIntent?.({ intentId: "pi_1", idempotencyKey: "k", secretKey: SK });
-	const intentWith = (status: string) =>
-		new Response(JSON.stringify({ id: "pi_1", object: "payment_intent", status }), {
-			status: 200,
-		});
 
 	test("payment_intent_unexpected_state + the intent SUCCEEDED ⇒ not_cancellable: the payment landed, settle owns it", async () => {
 		const { transport, calls } = unexpectedStateThen(intentWith("succeeded"));
@@ -273,10 +274,9 @@ describe("cancelPaymentIntent is SHORT-bounded — a cron leg must not wait 30 s
 			fetch: ((_target: Parameters<typeof fetch>[0], init?: RequestInit) =>
 				init?.method === "POST"
 					? Promise.resolve(
-							new Response(
-								JSON.stringify({ error: { code: "payment_intent_unexpected_state" } }),
-								{ status: 400 },
-							),
+							new Response(JSON.stringify({ error: { code: "payment_intent_unexpected_state" } }), {
+								status: 400,
+							}),
 						)
 					: new Promise<Response>((_resolve, reject) => {
 							init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
@@ -284,7 +284,11 @@ describe("cancelPaymentIntent is SHORT-bounded — a cron leg must not wait 30 s
 		});
 		const started = Date.now();
 		expect(
-			await transport.cancelPaymentIntent?.({ intentId: "pi_1", idempotencyKey: "k", secretKey: SK }),
+			await transport.cancelPaymentIntent?.({
+				intentId: "pi_1",
+				idempotencyKey: "k",
+				secretKey: SK,
+			}),
 		).toEqual({ ok: false, class: "retryable" });
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});

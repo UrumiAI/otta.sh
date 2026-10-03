@@ -227,7 +227,10 @@ export function intentCancelContract(
 			);
 			expect(settled.ok).toBe(true);
 			expect((await h.settleDeps.orderStore.getById(s.order.id))?.state).toBe("paid");
-			expect(await expireOrders(h.expireDeps, at(s, 5 * MINUTE)), "a paid order never expires").toBe(0);
+			expect(
+				await expireOrders(h.expireDeps, at(s, 5 * MINUTE)),
+				"a paid order never expires",
+			).toBe(0);
 		});
 
 		test("each cancel ATTEMPT carries its own idempotency key — a provider replays a saved failure for a reused key", async () => {

@@ -32,14 +32,18 @@ describe("the pay page closes itself at its deadline (QA2 M1c)", () => {
 
 	test("a BUNDLED module script (ADR-0012's one scripted page) drives `startPayDeadline`", () => {
 		expect(bundled, "a non-inline <script> on the pay page").toBeDefined();
-		expect(bundled!.body).toMatch(/import \{[^}]*startPayDeadline[^}]*\} from "\.\.\/\.\.\/lib\/pay-deadline\.js"/);
+		expect(bundled!.body).toMatch(
+			/import \{[^}]*startPayDeadline[^}]*\} from "\.\.\/\.\.\/lib\/pay-deadline\.js"/,
+		);
 		// Wake-ups re-check: a throttled background tab's timer is not trusted.
 		expect(bundled!.body).toMatch(/visibilitychange/);
 		expect(bundled!.body).toMatch(/pageshow/);
 	});
 
 	test("a submit after the deadline is stopped in the CAPTURE phase on the document — before Stripe's handler can run", () => {
-		expect(bundled!.body).toMatch(/document\.addEventListener\(\s*"submit",[\s\S]*?,\s*true,?\s*\)/);
+		expect(bundled!.body).toMatch(
+			/document\.addEventListener\(\s*"submit",[\s\S]*?,\s*true,?\s*\)/,
+		);
 		expect(bundled!.body).toMatch(/allowSubmit\(\)/);
 		expect(bundled!.body).toMatch(/stopImmediatePropagation\(\)/);
 	});

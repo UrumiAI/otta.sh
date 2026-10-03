@@ -67,7 +67,10 @@ function latePaymentSentence(
  * the payment came too late and will be refunded. The page polls (bounded) until
  * the refund is on the ledger, and only says it refreshes while it does.
  */
-function returnedLateSentence(verb: "expired" | "was cancelled" | "failed", polling: boolean): string {
+function returnedLateSentence(
+	verb: "expired" | "was cancelled" | "failed",
+	polling: boolean,
+): string {
 	return `Your payment arrived after this order ${verb}, so it will be refunded — once it is, it can take 5–10 days to appear. ${
 		polling ? "This page refreshes automatically." : "Check again in a minute."
 	}`;

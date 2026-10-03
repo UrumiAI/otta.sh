@@ -39,7 +39,7 @@ function fakeEnv(start: number): PayDeadlineEnv & {
 		/** Time passes and timers fire on schedule. */
 		advance(ms) {
 			now += ms;
-			for (const [id, t] of [...timers]) {
+			for (const [id, t] of timers) {
 				if (t.at <= now) {
 					timers.delete(id);
 					t.fn();

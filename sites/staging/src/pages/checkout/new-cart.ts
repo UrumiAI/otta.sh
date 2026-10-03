@@ -30,7 +30,11 @@
  * Anything smarter — reactivating a `checked_out` cart — is a domain change and
  * belongs in its own PR.
  */
-import { CART_COOKIE_NAME, STOREFRONT_ORDER_ABANDON_ROUTE, type OrderAbandonRouteResult } from "@otta-sh/plugin";
+import {
+	CART_COOKIE_NAME,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+	type OrderAbandonRouteResult,
+} from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";

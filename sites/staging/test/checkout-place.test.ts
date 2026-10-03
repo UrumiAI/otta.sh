@@ -248,7 +248,9 @@ describe("6a — /checkout/new-cart clears BOTH cookies", () => {
 
 		const response = await NEW_CART_POST(context);
 
-		expect(calls).toEqual([{ route: STOREFRONT_ORDER_ABANDON_ROUTE, body: { cartId: "cart-abc" } }]);
+		expect(calls).toEqual([
+			{ route: STOREFRONT_ORDER_ABANDON_ROUTE, body: { cartId: "cart-abc" } },
+		]);
 		expect(response.headers.get("location")).toBe("/products");
 	});
 
@@ -259,7 +261,9 @@ describe("6a — /checkout/new-cart clears BOTH cookies", () => {
 		const response = await NEW_CART_POST(context);
 
 		expect(response.headers.get("location")).toBe("/products");
-		expect(cookieOps.filter((op) => op.op === "delete").map((op) => op.name)).toContain("otta_cart");
+		expect(cookieOps.filter((op) => op.op === "delete").map((op) => op.name)).toContain(
+			"otta_cart",
+		);
 	});
 
 	test("no cart cookie: nothing to cancel, no dispatch, and the stash still goes", async () => {

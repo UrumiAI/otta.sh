@@ -56,7 +56,8 @@ export interface PaymentGateway {
 	/**
 	 * Withdraw a payment the buyer has NOT completed, so it can no longer be paid
 	 * — the mirror of `createIntent`, called by the intent-cancel sweep
-	 * (`cancelDueIntents`) once an unpaid order has left `pending`.
+	 * (`cancelDueIntents`) once an unpaid order's time to pay has run out — at its
+	 * hold deadline, or at once when it is cancelled unpaid.
 	 *
 	 * WHY THIS EXISTS. An expired order's PaymentIntent used to stay live: a buyer
 	 * who kept the pay page (or its cookie) open past the hold could still pay it,
