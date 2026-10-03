@@ -46,6 +46,7 @@ import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { PAY_CLOSED_LEAD } from "../../lib/pay-deadline.js";
 import { payButtonLabel } from "../../lib/totals.js";
 import type { PayModel } from "../../themes/contract.js";
 import { keepPrivate } from "../../lib/no-store.js";
@@ -84,6 +85,16 @@ if (refuseTo !== null) return Astro.redirect(refuseTo, 303);
  *  at place-time and the label rule lives in `totals.ts`. */
 const payLabel = payButtonLabel(stash.total?.formatted);
 
+/** The page's own deadline, for its script (QA2 M1c): the hold deadline AND the
+ *  server's now, so the browser only measures the time elapsed since load and a
+ *  wrong browser clock cannot move it. From the read the guard just made; an
+ *  unanswerable read states none, and the script then closes nothing. */
+const payDeadline =
+	orderRead !== null && !isBusyResult(orderRead) && orderRead.ok
+		? orderRead.order.holdExpiresAt
+		: undefined;
+const renderedAt = new Date().toISOString();
+
 /** The frame around the card fields — see the `payment` slot below. */
 const model: PayModel = {
 	paymentConfigured: STRIPE_PUBLISHABLE_KEY !== undefined,
@@ -120,9 +131,24 @@ const model: PayModel = {
 							data-client-secret={stash.clientSecret}
 							data-publishable-key={STRIPE_PUBLISHABLE_KEY}
 							data-return-url={orderUrl}
+							data-pay-deadline={payDeadline}
+							data-pay-server-now={renderedAt}
 						/>
 					</div>
 					<p id="payment-error" class="pay-error" role="alert" hidden />
+					{/* QA2 M1c: shown by the deadline script when the hold runs out
+					    while this page is open. Rendered hidden, never built by the
+					    script, so its words and its link are the page's. What it
+					    promises matches ADR-0022's 2026-10-03 amendment: a payment
+					    that arrived in time is kept, a late one is refunded — the
+					    order page says which. */}
+					<div id="payment-closed" hidden>
+						<Notice lead={PAY_CLOSED_LEAD}>
+							This order can't be paid any more. If you paid just before, your order page shows
+							whether the payment arrived in time — a payment that arrived too late is refunded.{" "}
+							<a href={orderPath}>View your order</a>.
+						</Notice>
+					</div>
 					<button id="payment-submit" type="submit" class="u-btn">
 						{payLabel}
 					</button>
@@ -156,6 +182,18 @@ const model: PayModel = {
 							errorBox.textContent = message;
 							errorBox.hidden = false;
 							submit.disabled = true;
+						}
+
+						/** Set by the deadline script (below) when the hold runs out
+						 *  while this page is open (QA2 M1c). */
+						function payClosed() {
+							return form.dataset.payClosed === "true";
+						}
+
+						/** Pay comes back after a failed attempt — unless the time to
+						 *  pay ran out meanwhile. */
+						function reenable() {
+							submit.disabled = payClosed();
 						}
 
 						if (typeof Stripe !== "function") {
@@ -429,6 +467,9 @@ const model: PayModel = {
 						// no error.
 						form.addEventListener("submit", function (event) {
 							event.preventDefault();
+							// The deadline script stops a late submit before it gets here;
+							// this is the belt for a browser where that script did not run.
+							if (payClosed()) return;
 							errorBox.hidden = true;
 							submit.disabled = true;
 							stripe
@@ -445,7 +486,7 @@ const model: PayModel = {
 											result.error.message ||
 												"That payment could not be completed. No charge has been made.",
 										);
-										submit.disabled = false;
+										reenable();
 										// `retheme` stands down while the submit is disabled, so a
 										// palette that changed during the confirm was skipped.
 										// Re-enabling the button is the moment it can catch up.
@@ -454,7 +495,7 @@ const model: PayModel = {
 								})
 								.catch(function () {
 									fail("That payment could not be completed. No charge has been made.");
-									submit.disabled = false;
+									reenable();
 									retheme();
 								});
 						});
@@ -498,6 +539,58 @@ const model: PayModel = {
 							// stands, and the payment is untouched.
 						}
 					})();
+				</script>
+
+				{/* THE DEADLINE (QA2 M1c) — a bundled module, so it imports the
+				    deciding (`lib/pay-deadline.ts`, tested with a fake clock) rather
+				    than restating it. Still this page's own script: ADR-0012 lets
+				    exactly this page carry client JS. At the deadline it disables
+				    Pay, hides the hold sentence, shows the closed notice and marks
+				    the form, which the inline handler above refuses on. */}
+				<script>
+					import { payCloseAt, startPayDeadline } from "../../lib/pay-deadline.js";
+
+					const loadedAt = Date.now();
+					const mount = document.getElementById("payment-element");
+					const form = document.getElementById("payment-form");
+					const submit = document.getElementById("payment-submit");
+					const closedNotice = document.getElementById("payment-closed");
+					if (mount && form && submit && closedNotice) {
+						const deadline = startPayDeadline(
+							payCloseAt(mount.dataset.payDeadline, mount.dataset.payServerNow, loadedAt),
+							{
+								close() {
+									form.dataset.payClosed = "true";
+									(submit as HTMLButtonElement).disabled = true;
+									closedNotice.hidden = false;
+									for (const note of document.querySelectorAll<HTMLElement>("[data-pay-hold]")) {
+										note.hidden = true;
+									}
+								},
+							},
+							{
+								now: () => Date.now(),
+								setTimer: (fn, ms) => window.setTimeout(fn, ms),
+								clearTimer: (handle) => window.clearTimeout(handle as number),
+							},
+						);
+						// A throttled or sleeping tab: re-check the moment it is looked at.
+						const wake = (): void => void deadline.check();
+						document.addEventListener("visibilitychange", wake);
+						window.addEventListener("focus", wake);
+						window.addEventListener("pageshow", wake);
+						// CAPTURE on the document runs before the form's own handler, so
+						// a submit after the deadline never reaches Stripe.
+						document.addEventListener(
+							"submit",
+							(event) => {
+								if (event.target !== form || deadline.allowSubmit()) return;
+								event.preventDefault();
+								event.stopImmediatePropagation();
+							},
+							true,
+						);
+					}
 				</script>
 			</Fragment>
 		)

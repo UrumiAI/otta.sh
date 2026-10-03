@@ -676,7 +676,16 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 				frontmatter,
 			)?.[0] ?? "";
 		expect(holdNote, "the hold note reads the order's deadline only").not.toBe("");
-		expect(frontmatter.replace(holdNote, "").match(/orderRead/g) ?? []).toHaveLength(2);
+		// QA2 M1c: the deadline script is handed the same `holdExpiresAt` — and
+		// nothing else from the read.
+		const deadline =
+			/const payDeadline =\s*orderRead !== null && !isBusyResult\(orderRead\) && orderRead\.ok\s*\?\s*orderRead\.order\.holdExpiresAt\s*:\s*undefined;/.exec(
+				frontmatter,
+			)?.[0] ?? "";
+		expect(deadline, "the page's deadline is the order's holdExpiresAt only").not.toBe("");
+		expect(
+			frontmatter.replace(holdNote, "").replace(deadline, "").match(/orderRead/g) ?? [],
+		).toHaveLength(2);
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {
