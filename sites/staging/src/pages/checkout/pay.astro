@@ -222,15 +222,25 @@ const model: PayModel = {
 						}
 
 						/**
-						 * Did Stripe refuse because the intent was WITHDRAWN — cancelled
-						 * at the deadline by the server (QA2 M1)? Then the truth is the
-						 * closed notice, not Stripe's own wording about intent states.
+						 * What a Stripe refusal says about the INTENT, read from its own
+						 * status (review round 2): `payment_intent_unexpected_state` is
+						 * Stripe's answer both for an intent withdrawn at the deadline
+						 * (QA2 M1) and for one that already succeeded — paid in another
+						 * tab. So:
+						 *  - succeeded / processing → "landed": the money moved or is
+						 *    moving; the order page says how it ended.
+						 *  - canceled, or unexpected_state with no readable status →
+						 *    "withdrawn": the time to pay has run out.
+						 *  - anything else → null: an ordinary decline, Stripe's words.
 						 */
-						function isWithdrawn(error) {
-							if (!error) return false;
-							if (error.code === "payment_intent_unexpected_state") return true;
+						function refusalOf(error) {
+							if (!error) return null;
 							var intent = error.payment_intent;
-							return !!intent && intent.status === "canceled";
+							var status = intent ? intent.status : undefined;
+							if (status === "succeeded" || status === "processing") return "landed";
+							if (status === "canceled") return "withdrawn";
+							if (error.code === "payment_intent_unexpected_state") return "withdrawn";
+							return null;
 						}
 
 						if (typeof Stripe !== "function") {
@@ -519,7 +529,14 @@ const model: PayModel = {
 									// away to the return_url. Nothing on this page ever
 									// decides that an order is paid — the webhook does.
 									if (result && result.error) {
-										if (isWithdrawn(result.error)) {
+										var refusal = refusalOf(result.error);
+										if (refusal === "landed") {
+											// Paid already (another tab, or a retry): the order page,
+											// which reads the order's own state, not this one.
+											window.location.assign(returnUrl);
+											return;
+										}
+										if (refusal === "withdrawn") {
 											closePayment();
 											return;
 										}

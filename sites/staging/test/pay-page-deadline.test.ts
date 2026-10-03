@@ -84,14 +84,26 @@ describe("the pay page closes itself at its deadline (QA2 M1c)", () => {
 		expect(bundled!.body).not.toMatch(/closedNotice\.hidden = false/);
 	});
 
-	test("a Stripe refusal meaning the intent was WITHDRAWN shows the closed notice, never Stripe's raw message", () => {
+	test("a Stripe refusal is read by the INTENT's status: canceled or unknown → the closed notice; succeeded or processing → the order page", () => {
+		// Review round 2: `payment_intent_unexpected_state` is also what Stripe says
+		// for an intent that already SUCCEEDED (paid in another tab) — leading with
+		// "The time to pay has run out." there would be false.
 		const body = inline!.body;
-		expect(body).toMatch(/payment_intent_unexpected_state/);
-		expect(body).toMatch(/status === "canceled"/);
-		// The withdrawn branch closes the page before any `fail(...)` with Stripe's text.
-		const branch = body.indexOf("isWithdrawn(result.error)");
-		expect(branch).toBeGreaterThan(-1);
-		expect(branch).toBeLessThan(body.indexOf("result.error.message"));
+		const fn = body.slice(body.indexOf("function refusalOf("));
+		const decide = fn.slice(0, fn.indexOf("\n\t\t\t\t\t\t}\n") + 8);
+		expect(decide).toMatch(/status === "succeeded" \|\| status === "processing"\) return "landed"/);
+		expect(decide).toMatch(/status === "canceled"\) return "withdrawn"/);
+		expect(decide).toMatch(/payment_intent_unexpected_state[\s\S]*return "withdrawn"/);
+		// The landed branch goes to the order page; the withdrawn one closes the page;
+		// both before any `fail(...)` with Stripe's own text.
+		const landed = body.indexOf('refusal === "landed"');
+		const withdrawn = body.indexOf('refusal === "withdrawn"');
+		expect(landed).toBeGreaterThan(-1);
+		expect(withdrawn).toBeGreaterThan(-1);
+		expect(body.slice(landed, withdrawn)).toMatch(/window\.location\.assign\(returnUrl\)/);
+		expect(body.slice(withdrawn, withdrawn + 120)).toMatch(/closePayment\(\)/);
+		expect(Math.max(landed, withdrawn)).toBeLessThan(body.indexOf("result.error.message"));
+		expect(body).not.toMatch(/isWithdrawn\(/);
 	});
 
 	test("the view's hold sentence carries the hook the script hides it by", () => {
