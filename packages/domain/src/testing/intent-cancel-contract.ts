@@ -177,17 +177,79 @@ export function intentCancelContract(
 			expect(gateway.cancelCalls.map((c) => c.intentId)).toEqual([s.intentId]);
 		});
 
-		test("a pending order past its hold that the expiry has not reached yet is rescheduled, not cancelled", async () => {
+		test("a pending order past its hold is withdrawn AT THE DEADLINE, whether or not the expiry has reached it", async () => {
+			// QA2 M1a: the cancel used to be pushed back while the expiry lagged, so the
+			// order expired with its intent still payable. Withdrawal no longer waits
+			// for the expiry: past the hold the order can no longer be paid, so the
+			// intent goes at once — and the order stays `pending` until the expiry
+			// releases its stock, exactly as before.
 			const h = await makeHarness();
 			const gateway = new FakePaymentGateway({ id: "stripe" });
 			const s = await seedPendingOrder(h, "4");
 
-			expect(await sweep(h, gateway, at(s, MINUTE))).toBe(1);
+			expect(await sweep(h, gateway, at(s, 0)), "due exactly at the hold").toBe(1);
 
-			expect(gateway.cancelCalls).toHaveLength(0);
+			expect(gateway.cancelCalls.map((c) => c.intentId)).toEqual([s.intentId]);
 			const intent = await intentOf(h, s.order.id);
-			expect(intent.cancelOutcome).toBeNull();
-			expect((intent.cancelDueAt ?? "") > at(s, MINUTE).toISOString()).toBe(true);
+			expect(intent.cancelOutcome).toBe("cancelled");
+			expect(intent.cancelDueAt).toBeNull();
+			expect((await h.settleDeps.orderStore.getById(s.order.id))?.state).toBe("pending");
+
+			expect(await expireOrders(h.expireDeps, at(s, 5 * MINUTE))).toBe(1);
+			expect(await sweep(h, gateway, at(s, 6 * MINUTE)), "withdrawn once, never again").toBe(0);
+			expect(gateway.cancelCalls).toHaveLength(1);
+		});
+
+		test("a payment that lands between the deadline and the expiry (the cancel lost the race) is ACCEPTED: the stock was still held", async () => {
+			// ADR-0022 (2026-10-03 amendment): a payment confirmed before the withdrawal
+			// reached the provider settles a still-pending order normally — its adopted
+			// stock is still held, so nothing is oversold. Only after the expiry is a
+			// payment late (and refunded).
+			const h = await makeHarness();
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			gateway.setCancelResult({ ok: true, outcome: "not_cancellable" });
+			const s = await seedPendingOrder(h, "4b");
+
+			await sweep(h, gateway, at(s, 30_000));
+			expect((await intentOf(h, s.order.id)).cancelOutcome).toBe("not_cancellable");
+
+			const settled = await settleOrder(
+				{ ...h.settleDeps, clock: { now: () => at(s, 40_000) } },
+				gateway,
+				gateway.webhook({
+					outcome: "succeeded",
+					orderId: s.order.id,
+					providerRef: s.intentId,
+					amount: TOTAL_CENTS,
+					currency: "USD",
+					dedupeKey: "evt_ic_4b",
+				}),
+			);
+			expect(settled.ok).toBe(true);
+			expect((await h.settleDeps.orderStore.getById(s.order.id))?.state).toBe("paid");
+			expect(await expireOrders(h.expireDeps, at(s, 5 * MINUTE)), "a paid order never expires").toBe(0);
+		});
+
+		test("each cancel ATTEMPT carries its own idempotency key — a provider replays a saved failure for a reused key", async () => {
+			// Stripe saves the first result for a key, failures included, and answers
+			// every replay with it: a retry under the same key would only ever see the
+			// first attempt's 500 again. A repeat cancel is harmless (cancelling a
+			// cancelled intent changes nothing), so each attempt gets a fresh key.
+			const h = await makeHarness();
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			gateway.setCancelResult({ ok: false, reason: "RETRYABLE" });
+			const s = await seedPendingOrder(h, "4c");
+
+			let now = at(s, MINUTE);
+			for (let i = 0; i < 3; i++) {
+				await sweep(h, gateway, now);
+				now = new Date(now.getTime() + 60 * MINUTE);
+			}
+
+			const keys = gateway.cancelCalls.map((c) => String(c.idempotencyKey));
+			expect(keys).toHaveLength(3);
+			expect(new Set(keys).size).toBe(3);
+			expect(keys[0]).toBe(`cancel-intent:${s.intentId}`);
 		});
 
 		test("a RETRYABLE (or throwing) cancel is retried by the sweep, a bounded number of times, then given up", async () => {
