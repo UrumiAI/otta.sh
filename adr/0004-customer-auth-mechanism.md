@@ -148,3 +148,25 @@ identical for every address, and the site never asks it which arm ran.
 - **Limits.** A browser that clears its cookies, or several browsers, are each counted alone; the
   notice then errs towards the ordinary one, which now names the cap. The cap and window are
   mirrored in the site (`lib/account.ts`) only to word the notices; the plugin enforces them.
+
+## Amended 2026-10-03 — the account's order page offers what the order page does
+
+QA round 2 (X1, A2–A7, U-3). Identity and ownership rules above are unchanged.
+
+- **The owner's order read carries the delivery address and the tracking**
+  (`AccountOrderWire.shippingAddress`, without the contact fields; `fulfillment` as the public
+  read trims it). Only the owner's read has the address; the public read still omits it. The
+  account's order page shows both, links the order's public page, and offers "Complete payment"
+  through the same page-owned resume path while the order can be paid (the session is the second
+  factor the resume already accepts).
+- **A short reference is shown to the shopper.** List rows and the order page show the first 8
+  characters of the order id ("621A6C23"), with the time it was placed, so two orders of the same
+  thing can be told apart and quoted to the store, whose order search takes an id prefix. This
+  relaxes "a shopper never sees the order id" to "never the whole id"; the label is still the
+  products.
+- **Pages name the signed-in email** (the account pages are private). Sign-out lands on
+  `/?signed-out=1`, which says "You're signed out." only when no session cookie is left, and that
+  render is private. Signed in, the sign-in page hides its form behind "Use a different email".
+- **The sign-in email names the store** from "Store display name", else from the From address's
+  display name; a bare From address still gives none. Its link is an inline-styled button with
+  the URL kept as the fallback.
