@@ -295,5 +295,10 @@ ADR-0019's amendment of this date reorders the sweep's tick. Two points concern 
    intent still live. The lead stamp is written when the lead is tried, so a lead the tick
    cannot fit does not keep the money legs waiting tick after tick. The give-up escalation still
    runs at the head (right after `cancel-intents`) in every other minute.
+3. **The starvation guard can go ahead of it** (ADR-0019's amendment of this date, item 9): a
+   leg passed over nine ticks in a row runs before `cancel-intents`, once. In such a tick a due
+   withdrawal may wait about one more minute; if the starving leg is `expire-orders`, an order may
+   expire before its intent is withdrawn. A payment in that minute is kept while the order is still
+   held, and refunded automatically once it has expired — the late-payment path of the first block.
 
 The decision of this record is unchanged.

@@ -1576,6 +1576,10 @@ reserved room for a whole 22-call unit before asking whether anything was due.
    **starvation guard** puts a leg passed over `STARVING_TICKS` (9) ticks in a row ahead of even
    `cancel-intents`, once, except in a tick a late refund leads; ordinary aging only places a leg
    right behind it.
+   **The guard's cost to the cancel-first rule:** in a guard tick a due intent withdrawal may wait
+   about one more minute. If the starving leg is `expire-orders`, an order may expire before its
+   intent is withdrawn; a payment in that minute is kept while the order is still held, and refunded
+   automatically once it has expired (the late-payment path, ADR-0022).
    With fix/late-charge-window's read-back of a refused cancel and its give-up flag, the worst
    cancel unit is 7 calls (measured on the merge); the estimate is 7. Behind such a cancel an
    order expiry and a stranded sku carry do not fit either, but they fit behind an ordinary one

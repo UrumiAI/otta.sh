@@ -752,7 +752,8 @@ export interface CommerceSweepOptions {
 	 *  the query budget (`batchesFor`) — 1 to 10. */
 	readonly intentCancelBatch?: number;
 	/**
-	 * TEST-ONLY: replace a leg's body with one that is handed the tick's COUNTED
+	 * @internal TEST-ONLY — not part of the plugin's public surface; may change or go
+	 * without notice. Replace a leg's body with one that is handed the tick's COUNTED
 	 * context. Used to pin the runner's own rules (a refusal the body swallowed still
 	 * marks the leg incomplete) without staging a store that happens to misbehave.
 	 * Never set by the plugin.
