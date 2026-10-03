@@ -1476,3 +1476,105 @@ the Paid preset; one who leaves the default drains at the Free pace, and one who
 gets ticks failing with D1's per-invocation cap. The every-tick legs issue their (mostly empty) discovery reads every minute. A budget-cut
 tick can leave a scan an interval later than before. ADR-0022's window ("the order's hold plus up to one
 run of the plugin's scheduled sweep") shrinks accordingly; its decision is unaffected.
+
+## Amendment 2026-10-03 — a hard query ceiling, fair turns, and a cheaper order expiry (QA2 M2)
+
+**What this changes.** How the tick of the 2026-10-02 amendment spends its budget, and what one
+order expiry costs. What each sweeper must complete is unchanged.
+
+**Context.** The second QA round ran a store on the Workers Free preset (30 calls a tick) under a
+modest backlog. One order expiry cost 22 calls, so lapsed orders expired about one every three
+minutes and lagged by up to 43. The legs behind the three critical ones were deferred for hours —
+`coupon-orphans` 180 ticks in a row, `sku-transfers` 175, `hold-intents` 145 (a paid order's stock
+commit two hours late). Two ticks used 334 and 44 calls against the budget of 30; on a real Worker
+on Workers Free (50 per invocation) both fail. And idle ticks logged `order-emails 0 (more next
+tick)` and deferred `expire-orders` with 10 of 30 calls used.
+
+The overrun was `reporting-heal`. A closed day's FIRST heal absorbs every live rollup claim of that
+day — two calls each — inside one `reconcile` call, and the tick checks only between days. The
+44-call tick was the same leg on a smaller day. `prune-challenges` had the same shape (a delete per
+row, nothing between them). The idle oddity had two causes: the outbox counted a claim attempt that
+found nothing as a claim, so a batch of one always read "more next tick"; and `expire-orders`
+reserved room for a whole 22-call unit before asking whether anything was due.
+
+**Decision.**
+
+1. **A hard ceiling.** The tick's call counter REFUSES the call that would pass the budget
+   (`SweepQueryCeilingError`, thrown before the call is made). While the legs run the ceiling is the
+   budget less one call, kept for the cadence-state write. The cooperative checks of the 2026-10-02
+   amendment still keep every unit under it; the ceiling is the backstop for a unit whose estimate is
+   wrong. A leg it stops is reported `incomplete` (not failed) and logged by name. An email send the
+   ceiling interrupts is handed back like a send the tick cut short (uncounted).
+2. **Every call is attributed** to the leg running when it was made, or to the tick's own reads.
+   The summary carries `queries` per leg and `overheadQueries`. A tick that did work logs one line:
+   `[otta] cron sweep used 27 of 30 queries (…): cancel-intents 2, expire-orders 14, …, tick 3;
+   deferred to the next tick: …`.
+3. **Every leg stops at its share.**
+   - `reporting-heal` reconciles each day with a page budget sized to the calls the leg has left
+     (`maxReconcilePages`; a unit is a page or an absorbed claim). A day that runs out while
+     absorbing has made progress — absorbed claims stay absorbed and are skipped next time — so it is
+     `incomplete` and resumes next tick, its cursor not moved. A day whose orders cannot even be read
+     within the most this budget could ever give the leg fails loudly (raise the setting).
+   - `prune-challenges` takes a `shouldContinue` (the port's `PruneChallengesOptions`), asked before
+     each read and delete.
+   - `hold-intents` sizes each row from the order in hand (three reads, about seven calls per
+     outstanding reservation and two per intent stamp) before it starts it. A row too big for any
+     slice the budget could give is clamped to the leg's whole slice and finished across ticks: its
+     per-id writes persist.
+   - Every leg now has a share. A leg its share stopped gets a second go, on whatever the tick has
+     left, after every leg has had its turn — a share is a cap, not a reservation.
+4. **The order, and fairness.** `cancel-intents` runs first, then `expire-orders`, `order-emails`,
+   `hold-intents`, `expire-holds`, `late-refunds`, and housekeeping (`prune-challenges` and the four
+   scans) last (`LEG_PRIORITY`). The rotation of the lead by minute is gone. **Aging** replaces it: a
+   leg passed over `AGING_TICKS` (3) ticks in a row with work goes to the head of the next tick,
+   longest wait first, ties to the lower-priority leg. Its share always holds one unit of its work,
+   so no leg waits without bound. On a Free tick where a late refund is due and its lead interval
+   has passed, the late-refund resume leads ahead of even `cancel-intents` (ADR-0022's amendment of
+   this date). `prune-challenges` moves to the fifteen-minute cadence: it is hygiene a customer
+   never waits on.
+5. **No due check is paid twice, and none is paid for an answer already known.** `expire-orders`,
+   `expire-holds`, `order-emails` and `hold-intents` each ask one indexed "anything due?" read; idle,
+   they are not deferred, so an idle tick never reserves room for work it does not have. The
+   expiry's list IS its due check, handed to the domain (`ExpireOrdersBatchOptions.due`). A leg
+   deferred last tick with known work skips its check. The outbox counts claims from the store's own
+   answer. An idle tick is 8 calls.
+6. **`coupon-orphans` no longer waits for a drained `expire-orders`.** It walks its window and STOPS
+   at a redemption whose order is still `pending` past its hold, without moving its cursor past it,
+   until the expiry has flipped that order. Same "two faults" bound, and no deferral for hours.
+7. **One order expiry is 13 calls, not 22** (a three-line order 23, not 40). The use-case no longer
+   re-reads the order the flip wrote and no longer releases its holds a second time
+   (`OrderStore.expireWithOrder` answers the flip and the expired order in one call). It releases
+   in ONE batched call (`InventoryStore.releaseAdoptedMany`) only when the store has not already
+   done so, and touches the coupon store only for an order that carried a coupon
+   (`appliedCouponCode`; the sweeper's `expired` arm is the backstop). The document store completes
+   the release intent from the flip's own document and revision: one batched, order-scoped release
+   (one aggregate read and one prune per SKU) and one compare-and-set to close the intent. The
+   reporting rollup no longer pre-reads its claim (ADR-0023's amendment of this date). The floor is
+   the flip (2), the email locator (1), the rollup delta (4), the release (5 for one line on one
+   SKU: the index, the aggregate, the reserve key, the terminal state, the prune) and the stamp (1).
+   Each is a guarded write the crash-safety rules of this record need. Going lower means dropping
+   one of those guarantees.
+8. **Batches on the Free preset are one hold, one order, one email a tick.** A bite of two made the
+   hold leg's list alone six calls, and it could not start behind the other legs' due checks. A
+   second unit never fits a Free tick anyway. The hold listing's per-candidate check is sized to the
+   candidate (about three calls), not to a candidate and a flip. A dead cart it examines is healed
+   out of the index, and a live hold found with no room left is flipped next tick, as the first
+   candidate.
+
+**Measured** (`cron-sweep-backlog.test.ts`: a backlog in every leg at once on the Free preset — 50
+lapsed orders, ten with a payable intent, ten abandoned carts, five paid orders owing their commit
+and email, expired challenges, a stranded carry, lost sku pointers, an unhealed closed day, orphaned
+redemptions and a late refund). No tick passed 30 calls, counted from outside the sweep and by the
+sweep itself, and the two agree. `cancel-intents` was never deferred. Every leg did some of its work
+within seven ticks, and no leg waited more than six in a row. All 50 orders expired by minute 71
+(about 0.7 a minute, while everything else progressed too). Everything was done by minute 120. With
+only an expiry backlog: one order a minute (20 in 22 ticks). Before: about one every three minutes,
+with everything else starved. The suite pins ≥ 0.6 a minute, every leg's progress within 12 ticks
+and no wait longer than 8.
+
+**Accepted costs.** On Workers Free with every leg backlogged, an order that lapses behind N others
+stays `pending` for about N to 1.5·N minutes. A closed day's first rollup heal on Free absorbs about
+five claims a tick (a day of a few hundred transitions heals within the hour). A store with more
+abandoned checkouts per minute than that needs Workers Paid. The aging state lives in the sweep's
+`ctx.kv` state document; a store that loses it falls back to plain priority order until the next
+tick writes it again.

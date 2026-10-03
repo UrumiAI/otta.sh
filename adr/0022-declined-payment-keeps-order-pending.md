@@ -273,3 +273,27 @@ existing loud `COMMIT_LOST` anomaly and flag the order — the same path any los
 The new `intentCancelContract` (`@otta-sh/domain/testing`, fakes and the document store over
 SQLite, Postgres and D1) pins all of the above. The order document gains `paymentIntents` and an
 indexed `intentCancelDueAt`.
+
+## Amended 2026-10-03 — `cancel-intents` runs first; late refunds rank above housekeeping
+
+ADR-0019's amendment of this date reorders the sweep's tick. Two points concern this record:
+
+1. **`cancel-intents` runs FIRST in every tick**, ahead of the expiry. A payment intent due for
+   withdrawal is withdrawn before anything else can spend the minute. The second block above
+   put it right behind the three critical legs, and on Workers Free under an expiry backlog
+   those could use the whole minute, so a cancel waited. One subtlety: the intents of the orders
+   this tick's expiry bite is about to flip are left for a second, cheap due check right after
+   that flip, in the same tick. A store that waits for the expiry before withdrawing such an
+   intent would otherwise push it back a recheck interval at the head and miss it after the flip.
+   Every other due intent — a lapsed order the bite will not reach this tick included — is
+   withdrawn at the head. The backlog suite pins that the leg is never deferred.
+2. **`late-refunds` ranks above housekeeping** (after the money legs and the outbox), not last.
+   On the Workers Free preset it still leads one tick per fifteen minutes while refunds are
+   pending, and now ahead of even `cancel-intents`. A resume is about 25 calls and needs a tick
+   nothing else has touched. The money it returns has already been taken. That tick's intent
+   cancels and expiries wait one minute together, so no order expires that minute with its
+   intent still live. The lead stamp is written when the lead is tried, so a lead the tick
+   cannot fit does not keep the money legs waiting tick after tick. The give-up escalation still
+   runs at the head (right after `cancel-intents`) in every other minute.
+
+The decision of this record is unchanged.
