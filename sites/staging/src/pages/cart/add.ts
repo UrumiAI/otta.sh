@@ -217,7 +217,10 @@ export const POST: APIRoute = async (context) => {
 		// A stale cookie pointing at a vanished cart: drop it so the next
 		// add mints a fresh cart instead of failing forever.
 		if (token === "CART_NOT_FOUND") clearCartCookie(context);
-		return seeOther(context, returnTo, token);
+		// One unit refused is a sold-out item: "try a smaller quantity" would send
+		// the shopper looking for a quantity below 1 (QA2 F). More than one keeps
+		// the quantity sentence, which is true either way.
+		return seeOther(context, returnTo, token === "OUT_OF_STOCK" && qty === 1 ? "SOLD_OUT" : token);
 	}
 
 	return seeOther(context, "/cart");

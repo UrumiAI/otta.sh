@@ -64,6 +64,9 @@ const MESSAGES: Record<string, string> = {
 	// for that case and for a sold-out item alike. The available count is not
 	// named because the OUT_OF_STOCK refusal does not carry one.
 	OUT_OF_STOCK: "Sorry, we don't have enough of that in stock — try a smaller quantity.",
+	// The site's own (cart/add.ts): ONE unit refused OUT_OF_STOCK — there is no
+	// smaller quantity to try (QA2 F).
+	SOLD_OUT: "Sorry, this item is sold out.",
 	// Built from the plugin's own cap, so the number cannot drift. "At a time":
 	// the cap is per request, and an add can still take a line past it.
 	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
