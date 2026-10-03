@@ -283,6 +283,19 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
  */
 export const AGING_TICKS = 3;
 
+/**
+ * THE STARVATION GUARD (review of QA2 M2). A leg passed over this many ticks in a
+ * row goes ahead of even `cancel-intents`. Some units cannot fit behind an intent
+ * cancel on the Workers Free preset at all — a hold expiry with its list (about
+ * 20 calls) or a stock-commit completion (about 15), plus a cancel (about 11 with
+ * its gateway reads and due check) and the tick's own reads, pass 30 — so while
+ * cancels keep coming, ordinary aging (which places a leg right BEHIND
+ * `cancel-intents`) would never let them run. Three aging periods: long enough
+ * that a burst of cancels finishes first, bounded so nothing waits forever.
+ * `cron-leg-costs.test.ts` pins which legs need it.
+ */
+export const STARVING_TICKS = 3 * AGING_TICKS;
+
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
 	"expire-holds": "expiry",
@@ -336,6 +349,25 @@ export const SWEEP_TICK_QUERY_BUDGET = DEFAULT_BACKGROUND_WORK;
 
 /** Calls kept back for the writes after the legs (the cadence state, a cursor). */
 const RESERVE_QUERIES = 2;
+
+/**
+ * What a leg keeps back after its units: the cadence-state write, and — for a scan
+ * that saves an advancing cursor at the end — that write too. A leg with no trailing
+ * write of its own keeping room for one would refuse a unit that fits (on Free, an
+ * order expiry behind an intent cancel, by exactly that one call).
+ */
+export function legReserveQueries(leg: SweepLeg): number {
+	return MAINTENANCE_LEGS.includes(leg) ? RESERVE_QUERIES : 1;
+}
+
+/** One unit of `leg` with its fixed entry reads, at the bite `queryBudget` gets — what
+ *  the leg must have room for to start. */
+export function legStartCalls(leg: SweepLeg, queryBudget: number): number {
+	const costs = LEG_QUERY_COSTS[leg];
+	const entry =
+		leg === "expire-holds" ? expireHoldsEntry(batchesFor(queryBudget).expiry) : costs.entry;
+	return entry + costs.unit;
+}
 
 /**
  * The longest one email send may take from the sweep: the whole send is raced
@@ -557,7 +589,7 @@ export function lateRefundStripeOptions(legBudget: RefundTimeBudget): BoundedRef
 
 /** Calls every tick makes before any leg: the setting read and the cadence-state
  *  read. */
-const TICK_OVERHEAD_QUERIES = 2;
+export const TICK_OVERHEAD_QUERIES = 2;
 
 /** What an IDLE tick spends, MEASURED (DEPLOYMENT.md §5: "an idle tick is 8
  *  queries"): the setting and cadence-state reads plus one "anything due?" read for
@@ -959,7 +991,11 @@ export async function runCommerceSweeps(
 		// A share never shrinks a leg below ONE unit of its own work: on the Free
 		// preset one order expiry is most of a share, and a share smaller than that
 		// would refuse the leg on every tick, silently, forever.
-		const legBudget = budget.leg(LEG_SHARES[leg] ?? WHOLE_TICK, entry + costs.unit);
+		const legBudget = budget.leg(
+			LEG_SHARES[leg] ?? WHOLE_TICK,
+			entry + costs.unit,
+			legReserveQueries(leg),
+		);
 		if (!legBudget.canStart(entry, costs.unit)) {
 			record({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
 			deferredByBudget.push(leg);
@@ -1037,7 +1073,7 @@ export async function runCommerceSweeps(
 	): Promise<void> => {
 		const costs = LEG_QUERY_COSTS[leg];
 		const entry = leg === "expire-holds" ? expireHoldsEntry(expiryLimit) : costs.entry;
-		const legBudget = budget.leg(WHOLE_TICK, entry + costs.unit);
+		const legBudget = budget.leg(WHOLE_TICK, entry + costs.unit, legReserveQueries(leg));
 		if (!legBudget.canStart(entry, costs.unit)) return;
 		try {
 			const result = await budget.charge(leg, () => body(legBudget));
@@ -1450,6 +1486,12 @@ export async function runCommerceSweeps(
 		lateRefundsDueNow && lateRefundsMustLead && isDue(state.lastRun["late-refunds"], now);
 	if (leadsThisTick) await lateRefundsLeg(true);
 
+	// The starvation guard (`STARVING_TICKS`): a leg passed over that long goes ahead
+	// of even the intent cancels, once, so a unit too big to run behind a cancel still
+	// runs while cancels keep coming. Not in a tick a late refund leads.
+	const starving = leadsThisTick ? undefined : starvingLeg(state.waits);
+	if (starving !== undefined) await runners[starving]();
+
 	await runners["cancel-intents"]();
 
 	if (lateRefundsDueNow && !leadsThisTick) {
@@ -1474,7 +1516,7 @@ export async function runCommerceSweeps(
 
 	const order = tickOrder(state.waits);
 	for (const leg of order) {
-		if (leg === "cancel-intents") continue;
+		if (leg === "cancel-intents" || leg === starving) continue;
 		await runners[leg]();
 		// An expiry that flipped orders this tick may have made their intents due (a
 		// store that schedules the withdrawal at the flip): one more due check, so
@@ -1574,6 +1616,17 @@ export function tickOrder(waits: Partial<Record<SweepLeg, number>>): SweepLeg[] 
 		(x, y) => (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x),
 	);
 	return [...aged, ...LEG_PRIORITY.filter((leg) => !aged.includes(leg))];
+}
+
+/** The leg the starvation guard puts ahead of `cancel-intents` this tick, if any:
+ *  the longest wait at or past `STARVING_TICKS` (ties: the lower-priority leg).
+ *  `late-refunds` is excluded — it has its own lead. */
+export function starvingLeg(waits: Partial<Record<SweepLeg, number>>): SweepLeg | undefined {
+	const rank = (leg: SweepLeg): number => LEG_PRIORITY.indexOf(leg);
+	return LEG_PRIORITY.filter(
+		(leg) =>
+			leg !== "cancel-intents" && leg !== "late-refunds" && (waits[leg] ?? 0) >= STARVING_TICKS,
+	).toSorted((x, y) => (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x))[0];
 }
 
 /**

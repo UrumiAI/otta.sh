@@ -190,8 +190,8 @@ export class TickBudget {
 	/** A leg's view of the budget, capped at `share` of the total from here — but
 	 *  never below `floorQueries` (one unit of the leg's own work), or a small
 	 *  budget would refuse a costly leg on every tick. */
-	leg(share: LegShare, floorQueries = 0): LegBudget {
-		return new LegBudget(this, share, floorQueries);
+	leg(share: LegShare, floorQueries = 0, reserveQueries?: number): LegBudget {
+		return new LegBudget(this, share, floorQueries, reserveQueries);
 	}
 }
 
@@ -202,8 +202,13 @@ export class LegBudget {
 	/** Set once any gate of this leg refused a unit: the leg stopped early. */
 	stopped = false;
 
-	constructor(budget: TickBudget, share: LegShare, floorQueries = 0) {
+	readonly #reserveQueries: number;
+
+	/** `reserveQueries`: calls kept back after this leg — by default the tick's; a
+	 *  leg that writes nothing after its units needs only the cadence-state write. */
+	constructor(budget: TickBudget, share: LegShare, floorQueries = 0, reserveQueries?: number) {
 		this.#budget = budget;
+		this.#reserveQueries = reserveQueries ?? budget.limits.reserveQueries;
 		const { ms, queries } = budget.limits;
 		this.#endMs = Math.min(ms, budget.elapsedMs() + share.time * ms);
 		this.#endQueries = Math.min(
@@ -225,8 +230,8 @@ export class LegBudget {
 	/** Calls this leg may still make, reserve kept back. Never negative. */
 	remainingQueries(): number {
 		const q = this.#budget.queriesUsed();
-		const { queries, reserveQueries } = this.#budget.limits;
-		return Math.max(0, Math.min(this.#endQueries - q, queries - reserveQueries - q));
+		const { queries } = this.#budget.limits;
+		return Math.max(0, Math.min(this.#endQueries - q, queries - this.#reserveQueries - q));
 	}
 
 	/** Time this leg may still spend, reserve kept back. Never negative. */
@@ -277,7 +282,8 @@ export class LegBudget {
 	#fits(unitMs: number, unitQueries: number): boolean {
 		const t = this.#budget.elapsedMs();
 		const q = this.#budget.queriesUsed();
-		const { ms, queries, reserveMs, reserveQueries } = this.#budget.limits;
+		const { ms, queries, reserveMs } = this.#budget.limits;
+		const reserveQueries = this.#reserveQueries;
 		return (
 			t + unitMs < this.#endMs &&
 			t + unitMs + reserveMs < ms &&

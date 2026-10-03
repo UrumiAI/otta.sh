@@ -15,7 +15,7 @@
  * and cheap (no "0 (more next tick)", no expiry deferred for want of room it never
  * needed).
  */
-import { cents, currency, idempotencyKey } from "@otta-sh/domain";
+import { cents, currency, idempotencyKey, sku as toSku } from "@otta-sh/domain";
 import {
 	collectionOf,
 	EmdashCouponStore,
@@ -32,6 +32,7 @@ import {
 	type SweepLeg,
 } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
+import { STARVING_TICKS } from "../src/cron/sweeps.js";
 import {
 	adapters,
 	DAY_MS,
@@ -40,6 +41,7 @@ import {
 	MINUTE_MS,
 	placeOrder,
 	recordingSender,
+	seedLapsedHolds,
 	sweepContext,
 	type CallCounter,
 } from "./cron-sweep-fixtures.js";
@@ -364,4 +366,53 @@ describe("a refusal the leg swallowed still counts", () => {
 		});
 		expect(leg(next, "sku-transfers").notDue).toBeUndefined();
 	}, 120_000);
+});
+
+/** What a REAL Stripe cancel unit spends on Free (gateway secret reads, the ledger,
+ *  the cancel, the write: ten calls) — and it withdraws nothing, so it is due again. */
+async function realCancelUnit(counted: PluginContext): Promise<number> {
+	for (let i = 0; i < 10; i++) await counted.kv.get(`stripe-unit-${String(i)}`);
+	return 1;
+}
+
+describe("a leg too big to run behind an intent cancel", () => {
+	test("still gets the head of a tick when intent cancels keep coming (the starvation guard)", async () => {
+		// Three expired orders with a payable intent each keep `cancel-intents` (first in
+		// every tick) due; its body is replaced by one that spends what a REAL Stripe
+		// cancel unit does on Free — the gateway's secret reads, the ledger read, the
+		// cancel, the write: ten calls — and withdraws nothing, so it is due every tick.
+		// A lapsed cart hold (about 20 calls with its list) cannot fit behind that and the
+		// tick's reads, so priority and ordinary aging alone would starve it.
+		const base = adapters(storage);
+		for (let i = 0; i < 3; i++) {
+			const placed = await placeOrder(
+				storage,
+				`cancelling-${String(i)}`,
+				new Date(NOW.getTime() - 30 * MINUTE_MS),
+				new Date(NOW.getTime() - HOUR_MS + i * 1000),
+			);
+			await base.orderStore.recordPaymentIntent({
+				orderId: toOrderId(placed.id),
+				gateway: "stripe",
+				intentId: `pi_cancelling_${String(i)}`,
+			});
+			expect(await base.orderStore.expire(toOrderId(placed.id), NOW.toISOString())).toBe(true);
+		}
+		const holdSku = await seedLapsedHolds(storage, "starved", 1, NOW);
+		const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: FREE });
+		const cursors = memoryCursors();
+		let heldBack: number | null = null;
+		for (let tick = 0; tick < 2 * STARVING_TICKS && heldBack === null; tick++) {
+			const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+				...options({ cursors }),
+				legBodies: { "cancel-intents": realCancelUnit },
+				now: new Date(NOW.getTime() + tick * MINUTE_MS),
+			});
+			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(FREE);
+			if (leg(summary, "expire-holds").count > 0) heldBack = tick;
+		}
+		expect(heldBack, "the lapsed hold was expired").not.toBeNull();
+		expect(heldBack!).toBeLessThanOrEqual(STARVING_TICKS + 1);
+		expect(await adapters(storage).inventory.getOnHand(toSku(holdSku))).toBe(1);
+	}, 180_000);
 });

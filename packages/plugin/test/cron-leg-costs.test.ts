@@ -47,7 +47,15 @@ import {
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
-import { LATE_REFUND_ESCALATION_UNIT, LEG_QUERY_COSTS } from "../src/cron/sweeps.js";
+import {
+	LATE_REFUND_ESCALATION_UNIT,
+	LEG_QUERY_COSTS,
+	legReserveQueries,
+	legStartCalls,
+	MAINTENANCE_LEGS,
+	SWEEP_LEGS,
+	TICK_OVERHEAD_QUERIES,
+} from "../src/cron/sweeps.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../src/types.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
@@ -543,6 +551,35 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			s.reportingStore.reconcile({ from: `${day}T00:00:00.000Z`, to: `${day}T23:59:59.999Z` }),
 		);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["reporting-heal"].unit);
+	});
+});
+
+describe("the cost table against the Workers Free preset (review of QA2 M2)", () => {
+	// `cancel-intents` runs first in every tick. A leg whose ONE unit cannot fit behind
+	// one intent cancel and the tick's fixed reads would wait for as long as cancels
+	// keep coming — unless the starvation guard gives it the head of a tick. This pins
+	// which legs rely on the guard, from the estimates the tick actually admits on, so
+	// a cost-table change that adds one is a deliberate decision, not an accident.
+	const FREE = 30;
+	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
+		// The setting and cadence-state reads, then late-refunds' due check at the head.
+		const fixed = TICK_OVERHEAD_QUERIES + 1;
+		const cancel =
+			1 + LEG_QUERY_COSTS["cancel-intents"].entry + LEG_QUERY_COSTS["cancel-intents"].unit;
+		const needsHead: string[] = [];
+		for (const leg of SWEEP_LEGS) {
+			// The late-refund lead has its own rule (it leads ahead of the cancel).
+			if (leg === "cancel-intents" || leg === "late-refunds") continue;
+			const own =
+				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
+				legStartCalls(leg, FREE) +
+				legReserveQueries(leg);
+			if (fixed + cancel + own <= FREE) continue;
+			needsHead.push(leg);
+			expect(fixed + own, `${leg} alone at the head`).toBeLessThanOrEqual(FREE);
+		}
+		// Measured: a hold expiry with its list (~20) and a stock-commit completion (~15).
+		expect(needsHead.toSorted()).toEqual(["expire-holds", "hold-intents"]);
 	});
 });
 
