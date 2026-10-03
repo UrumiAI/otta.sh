@@ -27,6 +27,7 @@ function order(over: Partial<PublicOrderView> = {}): PublicOrderView {
 		fulfillment: null,
 		cancellation: null,
 		latePayment: "none",
+		refundedCents: 0,
 		...over,
 	};
 }

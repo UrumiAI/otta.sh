@@ -147,6 +147,9 @@ export interface HomeModel {
 	 * would omit; each home then renders its hero alone.
 	 */
 	cards: readonly ShopCard[];
+	/** A one-line notice the page decided on ("You're signed out." after sign-out,
+	 *  QA2 A5), or `null`. */
+	notice: string | null;
 }
 
 // ── Shop ──────────────────────────────────────────────────────────────────
@@ -364,6 +367,9 @@ export interface CheckoutLockedModel {
 	/** The way on for a locked, payable order: the page-owned resume path
 	 *  (QA U-2) — a link, never a form re-asking for the email the order keeps. */
 	resumeHref: string;
+	/** Place found this order already placed — by another tab — with another
+	 *  email: the sentence naming its (masked) address, or `null` (QA2 X2). */
+	otherEmailNotice: string | null;
 }
 
 export interface CheckoutModel {
@@ -507,6 +513,10 @@ export interface OrderModel {
 	sumRows: SumRow[];
 	/** "Paid" once the money was captured (refunded included), else "Total". */
 	totalLabel: string;
+	/** "Refunded $20.00" — what the order's refunds ledger shows returned, as its
+	 *  own line under the total (QA2 X3); `null` when the ledger shows none (a
+	 *  refund made outside Otta included: the status alone says it). */
+	refundedNote: string | null;
 	/** The sign-in page. The page owns the path; a theme only links to it. For a
 	 *  shopper who is not signed in as this order's owner: the sign-in link joins
 	 *  the order to the list of the email it was placed with. */
@@ -518,9 +528,12 @@ export interface OrderModel {
 }
 
 export interface AccountLoginModel {
-	/** Signed in already: who, and where their orders are — shown above the form
-	 *  (which still works, to switch address). `null` ⇔ signed out. */
-	signedIn: { email: string; ordersHref: string } | null;
+	/** Signed in already: who, where their orders are, and the way to sign in as
+	 *  another address (`switchHref`). `null` ⇔ signed out. */
+	signedIn: { email: string; ordersHref: string; switchHref: string } | null;
+	/** Show the sign-in form: signed out, or signed in and asking to use a
+	 *  different email (QA2 A6) — never a bare form under "You're signed in". */
+	showForm: boolean;
 	/** `?sent=1` or `?sent=many`: a link was asked for. */
 	sent: boolean;
 	/** The notice's copy, the page's call: the generic sentence, the same for
@@ -553,7 +566,7 @@ export interface AccountOrderRow {
 	 *  says about it, list-sized: never "Awaiting payment" for an order that can
 	 *  no longer be paid. */
 	state: string;
-	/** When it was placed ("Oct 2, 2026", UTC) and the instant for `<time>`;
+	/** When it was placed ("Oct 2, 2026, 14:05 UTC") and the instant for `<time>`;
 	 *  `null` when the date is unreadable. Rows arrive newest first. */
 	placed: { text: string; iso: string } | null;
 	/** "1 item" / "3 items". */
@@ -565,6 +578,9 @@ export interface AccountOrdersModel {
 	/** Non-null ⇔ the list could not be read (BUSY or unavailable copy). */
 	errorMessage: string | null;
 	rows: readonly AccountOrderRow[];
+	/** The signed-in email, named on the page (it is private); `null` when the
+	 *  page could not ask. */
+	signedInAs: string | null;
 }
 
 export interface AccountOrderModel {
@@ -590,8 +606,20 @@ export interface AccountOrderModel {
 		refundedNote: string | null;
 		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
 		excludesUncalculated: boolean;
+		/** "Complete payment" — the page-owned resume path, for a pending order
+		 *  that can still be paid; `null` otherwise (QA2 X1). */
+		payHref: string | null;
+		/** The order's own public page. */
+		orderPageHref: string;
+		/** Carrier and tracking once shipped; `trackingUrl` only when it is an
+		 *  http(s) address. */
+		tracking: { carrier: string; trackingNumber: string; trackingUrl: string | null } | null;
+		/** Where it is going, as display lines; `null` when no address was taken. */
+		addressLines: string[] | null;
 	} | null;
 	errorMessage: string;
+	/** The signed-in email, named on the page; `null` when unknown. */
+	signedInAs: string | null;
 }
 
 // ── Theme module ──────────────────────────────────────────────────────────
@@ -642,8 +670,7 @@ export interface ThemeChromeNeeds {
 	 * none without either — and hands over `ChromeModel.cartCount` (no badge for an
 	 * empty cart, on every page) and `ChromeModel.signedIn`. The middleware keeps every such page private,
 	 * no-store and out of the route cache. Both reads fail soft and skip the
-	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
-	 * its own count.
+	 * pay page (`/checkout/pay`); `/cart` passes its own count.
 	 */
 	shopperState?: boolean;
 }

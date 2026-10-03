@@ -38,6 +38,7 @@ export {
 	normalizeCountryCode,
 	normalizeSubdivision,
 	parseZoneRegions,
+	REGION_CODE_PATTERN,
 	validateZoneRegionsInput,
 	type NormalizeSubdivisionResult,
 	type ValidateZoneRegionsResult,

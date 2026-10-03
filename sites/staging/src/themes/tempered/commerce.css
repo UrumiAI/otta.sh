@@ -784,6 +784,15 @@
 	color: var(--u-ink);
 }
 
+/* The ledger's refunded figure under the total (QA2 X3): the account page's
+   `.account-order-refunded`, on the confirmation. */
+[data-theme-id] .order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+
 [data-theme-id] .order-ship {
 	margin: 0;
 	font-size: 0.8125rem;
@@ -964,6 +973,17 @@
 [data-theme-id] .account-orders-head-row form {
 	margin: 0;
 }
+[data-theme-id] .account-orders-session {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1rem;
+}
+[data-theme-id] .account-orders-who {
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
 
 [data-theme-id] .account-orders-title {
 	font-family: var(--u-display);
@@ -986,6 +1006,16 @@
 	font-size: 0.875rem;
 	color: var(--u-mute);
 }
+/* The theme's quiet link, as on the order page's keep-this-link line. */
+[data-theme-id] .account-orders-empty-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-orders-empty-link:hover {
+	text-decoration-color: var(--u-straw);
+}
 
 [data-theme-id] .account-orders-list {
 	list-style: none;
@@ -994,9 +1024,12 @@
 	border-top: var(--u-hair);
 }
 
+/* Each row is its own grid, so every track past the name is a FIXED width:
+   `auto` tracks sized to each row's own text, and a row whose status or total
+   was shorter drifted out of line with the rest (QA2 A3). */
 [data-theme-id] .account-orders-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1.4fr) 1fr auto auto auto;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 11.5rem 4.5rem 6.5rem;
 	gap: 1rem;
 	align-items: baseline;
 	padding: 0.875rem 0;
@@ -1016,6 +1049,7 @@
 [data-theme-id] .account-orders-items {
 	color: var(--u-mute);
 }
+
 [data-theme-id] .account-orders-date {
 	white-space: nowrap;
 }
@@ -1042,6 +1076,66 @@
 }
 [data-theme-id] .account-order-back a:hover {
 	color: var(--u-ink);
+}
+[data-theme-id] .account-order-back {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 0.5rem 1rem;
+}
+[data-theme-id] .account-order-who {
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+
+/* Complete payment and the order's own page (QA2 X1). They follow the status
+   (or its note) directly, so that line gives up half its gap to them. */
+[data-theme-id] .account-order-state:has(+ .account-order-actions),
+[data-theme-id] .account-order-note:has(+ .account-order-actions) {
+	margin-bottom: 1rem;
+}
+[data-theme-id] .account-order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+	margin: 0 0 2rem;
+	font-size: 0.875rem;
+}
+[data-theme-id] .account-order-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-order-link:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-order-ship {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+}
+[data-theme-id] .account-order-ship .u-mono {
+	font-size: 0.75rem;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .account-order-address {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding-top: 1rem;
+	border-top: var(--u-hair);
+}
+[data-theme-id] .account-order-address address {
+	display: flex;
+	flex-direction: column;
+	font-style: normal;
+	font-size: 0.875rem;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
 }
 
 [data-theme-id] .account-order-title {

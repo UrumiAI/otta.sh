@@ -407,7 +407,8 @@ describe("customer-login-link copy", () => {
 			storeName: "Goa Coffee",
 		});
 		const href = "https://shop.example/account/verify?challenge=c1&amp;token=t1";
-		expect(rendered.html).toContain(`<a href="${href}">Sign in to Goa Coffee</a>`);
+		expect(rendered.html).toMatch(/<a href="[^"]*" style="[^"]*">Sign in to Goa Coffee<\/a>/);
+		expect(rendered.html).toContain(`<a href="${href}" style=`);
 		expect(rendered.html).toContain(`copy this link into your browser:<br>${href}`);
 		expect(rendered.text).toContain(loginUrl);
 	});

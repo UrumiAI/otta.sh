@@ -52,7 +52,8 @@ import { checkoutEmailNote, currentSessionToken, signedInEmail } from "../../lib
 import { keepPrivate } from "../../lib/no-store.js";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { resumeHref } from "../../lib/checkout-resume.js";
-import { reviewErrorToken } from "../../lib/checkout-review.js";
+import { lockedOtherEmailNotice, reviewErrorToken } from "../../lib/checkout-review.js";
+import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import {
 	draftAddressValues,
 	readCheckoutDraft,
@@ -254,7 +255,16 @@ const model: CheckoutModel = {
 	errorMessage:
 		shownError !== null && placeCouponError === null ? cartErrorMessage(shownError) : null,
 	checkedOut,
-	locked: locked === null ? null : { id: locked.id, resumeHref: resumeHref(locked.id) },
+	locked:
+		locked === null
+			? null
+			: {
+					id: locked.id,
+					resumeHref: resumeHref(locked.id),
+					/* Another tab placed this order with another email (QA2 X2):
+					   which (masked), from the stash place just wrote. */
+					otherEmailNotice: lockedOtherEmailNotice(error, locked, readCheckoutStash(Astro.cookies)),
+				},
 	ended,
 	couponValue,
 	refusedCouponCode: couponError !== null || placeCouponError !== null ? couponValue : null,

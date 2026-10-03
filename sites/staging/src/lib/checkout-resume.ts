@@ -23,8 +23,9 @@
  * Like `pay-guard.ts`, the logic lives here because `.astro` and endpoint files
  * have no render harness in this package.
  */
-import type { OrderResumeRouteResult } from "@otta-sh/plugin";
+import type { OrderResumeRouteResult, OrderRouteResult } from "@otta-sh/plugin";
 import { checkoutStashTotal, type CheckoutStash } from "./checkout-cookie.js";
+import { isOrderPayable } from "./pay-guard.js";
 
 export const RESUME_PATH = "/checkout/resume";
 
@@ -113,4 +114,25 @@ export function resumeOutcome(
  */
 export function isCrossSiteNavigation(request: Request): boolean {
 	return request.headers.get("sec-fetch-site") === "cross-site";
+}
+
+/**
+ * What `/checkout/resume/email` shows for the order in its URL (QA2 N7), from the
+ * same public order read the order page makes:
+ *  - `not_found` — a DEFINITIVE "no such order": the order page's 404 and its
+ *    sentence, and no email form (asking for an email for an order that does not
+ *    exist is a dead end, and the order page already answers this id with a 404);
+ *  - `order_page` — the order exists but cannot be paid now (not pending, or past
+ *    its hold): its own page says why;
+ *  - `form` — a payable order, OR an unanswered read (busy, unreachable): the
+ *    resume itself re-checks everything, so a hiccup here costs nothing.
+ */
+export function resumeEmailGate(
+	result: OrderRouteResult | null,
+	now: Date,
+): "not_found" | "order_page" | "form" {
+	if (result === null) return "form";
+	if (!result.ok)
+		return "reason" in result && result.reason === "ORDER_NOT_FOUND" ? "not_found" : "form";
+	return isOrderPayable(result.order, now) ? "form" : "order_page";
 }

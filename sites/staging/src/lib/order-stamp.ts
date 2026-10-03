@@ -51,7 +51,7 @@ function latePaymentSentence(
 	latePayment: PublicOrderView["latePayment"],
 ): string | null {
 	if (latePayment === "refunded") {
-		return `A payment arrived after this order ${verb}, so we've refunded it — it can take 5–10 days to appear.`;
+		return `A payment arrived after this order ${verb}, so we've refunded it — it can take 5–10 business days to appear.`;
 	}
 	if (latePayment === "refund_pending") {
 		// Captured and not (yet) back: never "nothing was charged", and never
@@ -59,7 +59,7 @@ function latePaymentSentence(
 		// a person's job (a gateway that cannot refund, a refusal the provider gave),
 		// and the wire deliberately does not say which — so the page promises only
 		// THAT it will be refunded.
-		return `A payment arrived after this order ${verb}. It will be refunded — once it is, it can take 5–10 days to appear.`;
+		return `A payment arrived after this order ${verb}. It will be refunded — once it is, it can take 5–10 business days to appear.`;
 	}
 	return null;
 }
