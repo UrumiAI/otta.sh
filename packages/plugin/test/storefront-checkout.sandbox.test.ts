@@ -1487,7 +1487,16 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 		expect(result["ok"]).toBe(true);
 		expect(Object.keys(result).toSorted()).toEqual(
-			["alreadyPlaced", "clientAction", "ok", "orderId", "state", "total"].toSorted(),
+			[
+				"alreadyPlaced",
+				"buyerRefHint",
+				"clientAction",
+				"emailMatches",
+				"ok",
+				"orderId",
+				"state",
+				"total",
+			].toSorted(),
 		);
 		const wire = JSON.stringify(result);
 		expect(wire).not.toContain(BUYER_REF);
@@ -1616,6 +1625,9 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				state: "paid",
 				alreadyPlaced: true,
 				clientAction: { kind: "none" },
+				// The order's email, masked — never the address (QA2 X2).
+				buyerRefHint: expect.stringMatching(/^.•••@.•••\.[a-z]+$/i),
+				emailMatches: true,
 			});
 			expect(replay).not.toHaveProperty("total");
 			expect(stripe.requests).toHaveLength(0);
