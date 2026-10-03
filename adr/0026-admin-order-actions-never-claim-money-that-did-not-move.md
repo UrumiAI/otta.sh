@@ -258,6 +258,29 @@ on the ledger and what a cancellation refunded and restocked.
 cancel email; the earlier review's decision stands (it invites disputes over the merchant's
 mistake). The email reads as the plain cancellation, with no Reason line, as before.
 
+**An unverified refund is resolved by a person.** A refund whose provider call timed out is
+held `unverified`: it keeps its ceiling capacity until someone checks the provider. Nothing else
+ever settled it — a same-key retry answers `GATEWAY_UNVERIFIED` without calling the provider, no
+webhook finalizes it, and Mark refunded and cancel-with-refund both refuse `REFUND_IN_FLIGHT` —
+so the order could never be closed. `resolveUnverifiedRefund` gives the two answers, each behind
+a confirm in Money → Refunds and idempotent:
+
+- **Confirmed at the provider** → the row is finalized exactly as the gateway's success would
+  be (`finalizeRefund`): recorded with the provider's refund id if the operator has it (else a
+  `confirmed-by-operator:` marker), the ceiling flip to `refunded` when it completes the refund,
+  and the same one refund email, sent at once.
+- **It didn't happen** → `voidUnverifiedRefund`: `unverified → voided`, capacity released; Mark
+  refunded stays guarded by the money still held.
+
+Only an `unverified` row can be resolved (a reserved, recorded or voided one, or another order's
+key, is refused); a replay of the same answer changes nothing; the operator the host names is
+recorded on the row (`resolvedBy`). This closes the earlier follow-up "admin confirms a refund at
+the provider". When the refund path's own RESUME finds the provider already showing money on a
+reservation, the flag it writes now names the provider's figures and points to this action.
+
+Provider figures in flags are written in the currency's real minor-unit exponent (ICU's table:
+JPY 0, USD 2, BHD 3).
+
 **Consequences.**
 - A Stripe order with money still held can only reach `refunded` through the ledger, so its
   buyer's page and its "Refunded $X" line agree with the money.

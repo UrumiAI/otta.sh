@@ -550,6 +550,7 @@ export class InMemoryOrderStore implements OrderStore {
 		const now = this.#clock.now().toISOString();
 		row.status = "recorded";
 		row.refundRef = input.refundRef;
+		if (input.resolvedBy !== undefined) row.resolvedBy = input.resolvedBy;
 		let fullyRefunded = false;
 		if (stored !== undefined) {
 			stored.order.updatedAt = now;
@@ -594,6 +595,21 @@ export class InMemoryOrderStore implements OrderStore {
 		);
 		if (row === undefined) return false;
 		row.status = "voided";
+		return true;
+	}
+
+	async voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person says the provider never issued it;
+		// the capacity is released and who said so is kept on the row.
+		const row = this.#refunds.find(
+			(r) => r.idempotencyKey === input.idempotencyKey && r.status === "unverified",
+		);
+		if (row === undefined) return false;
+		row.status = "voided";
+		row.resolvedBy = input.resolvedBy;
 		return true;
 	}
 

@@ -295,6 +295,18 @@ export type RefundOrderResult =
 	  }
 	| { ok: false; status: number; reason?: string };
 
+/** {@link AdminOrdersSurface.resolveUnverifiedRefund}'s answer. */
+export type ResolveUnverifiedRefundResult =
+	| {
+			ok: true;
+			/** False ⇒ the same answer was already recorded (a replay). */
+			changed: boolean;
+			fullyRefunded: boolean;
+			/** The refund email a confirmation sent — absent for a void or a replay. */
+			email?: InlineEmailStatus;
+	  }
+	| { ok: false; status: number; reason?: string };
+
 /** An append-only order note (admin-UX Increment 0) on the wire. */
 export interface OrderNoteWire {
 	id: string;
@@ -614,6 +626,19 @@ export interface AdminOrdersSurface {
 		refund: { amountCents: number; currency: string; reason?: string | null; refundedBy: string },
 		opts: { idempotencyKey: string },
 	): Promise<RefundOrderResult>;
+
+	/** A person's answer to a refund whose provider outcome is UNKNOWN (review
+	 *  round 2): `confirmed` finalizes it (refundRef optional), `voided` releases
+	 *  it. Idempotent; only an `unverified` row can be resolved. */
+	resolveUnverifiedRefund(
+		orderId: string,
+		input: {
+			refundKey: string;
+			outcome: "confirmed" | "voided";
+			refundRef?: string;
+			resolvedBy: string;
+		},
+	): Promise<ResolveUnverifiedRefundResult>;
 
 	/** Read an order's append-only notes. A failure throws — the caller degrades
 	 *  to an empty notes surface, never a hard error. */

@@ -11,12 +11,29 @@ export const PROVIDER_REFUNDED_FLAG_PREFIX = "Provider shows this payment fully 
  *  never unlocks Mark refunded, because money is still held. */
 export const PROVIDER_PARTLY_REFUNDED_FLAG_PREFIX = "Not refunded in full";
 
-/** Integer minor units as a plain decimal with the currency code ("3.50 USD"),
- *  for an operator-facing flag. Integer math only. */
+/** The currency's minor-unit digits from ICU's own table (JPY 0, USD 2, BHD 3)
+ *  — the same source the admin's `formatMoney` reads. 2 when ICU cannot say. */
+function minorUnitDigits(currency: string): number {
+	try {
+		return (
+			new Intl.NumberFormat("en-US", { style: "currency", currency }).resolvedOptions()
+				.maximumFractionDigits ?? 2
+		);
+	} catch {
+		return 2;
+	}
+}
+
+/** Integer minor units as a plain decimal with the currency code ("3.50 USD",
+ *  "1500 JPY", "1.234 BHD"), for an operator-facing flag. Integer string math,
+ *  in the currency's real minor-unit exponent (review round 2). */
 export function flagAmount(minor: number, currency: string): string {
-	const abs = Math.abs(minor);
-	const cents = abs % 100;
-	return `${minor < 0 ? "-" : ""}${String((abs - cents) / 100)}.${String(cents).padStart(2, "0")} ${currency}`;
+	const digits = minorUnitDigits(currency);
+	const sign = minor < 0 ? "-" : "";
+	const abs = String(Math.abs(minor));
+	if (digits === 0) return `${sign}${abs} ${currency}`;
+	const padded = abs.padStart(digits + 1, "0");
+	return `${sign}${padded.slice(0, -digits)}.${padded.slice(-digits)} ${currency}`;
 }
 
 /**

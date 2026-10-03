@@ -273,3 +273,90 @@ describe("a refund replayed after it was recorded (QA round 2)", () => {
 		expect(result.notice?.description).toContain("$7.00 now remains refundable");
 	});
 });
+
+describe("resolving an unverified refund (review round 2)", () => {
+	function withResolve(result: unknown) {
+		const { client } = surface("shipped");
+		const calls: unknown[] = [];
+		(client as unknown as Record<string, unknown>)["resolveUnverifiedRefund"] = (
+			...args: unknown[]
+		) => {
+			calls.push(args);
+			return Promise.resolve(result);
+		};
+		return { client, calls };
+	}
+
+	test("Confirmed at the provider: records the operator and the provider id, and says what happened", async () => {
+		const { client, calls } = withResolve({
+			ok: true,
+			changed: true,
+			fullyRefunded: true,
+			email: "sent",
+		});
+		const result = await act(
+			client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "k1", refundRef: " re_dash " },
+			OPERATOR,
+		);
+		expect(calls[0]).toEqual([
+			ORDER_ID,
+			{ refundKey: "k1", outcome: "confirmed", refundRef: "re_dash", resolvedBy: OPERATOR },
+		]);
+		expect(result.notice?.title).toBe("Refund confirmed");
+		expect(result.notice?.description).toMatch(/fully refunded/);
+		expect(result.notice?.description).toContain("The buyer has been emailed.");
+	});
+
+	test("It didn't happen: voids it and says the amount can be refunded again", async () => {
+		const { client, calls } = withResolve({ ok: true, changed: true, fullyRefunded: false });
+		const result = await act(
+			client,
+			"orders:resolve-refund-voided",
+			{ orderId: ORDER_ID, refundKey: "k1" },
+			OPERATOR,
+		);
+		expect(calls[0]).toEqual([
+			ORDER_ID,
+			{ refundKey: "k1", outcome: "voided", resolvedBy: OPERATOR },
+		]);
+		expect(result.notice?.title).toBe("Marked as not refunded");
+		expect(result.notice?.description).toMatch(/can be refunded again/);
+	});
+
+	test("a replay says it was already resolved; a row no longer waiting says so", async () => {
+		const replay = await act(
+			withResolve({ ok: true, changed: false, fullyRefunded: false }).client,
+			"orders:resolve-refund-voided",
+			{ orderId: ORDER_ID, refundKey: "k1" },
+			OPERATOR,
+		);
+		expect(replay.notice?.title).toBe("Already resolved");
+		const stale = await act(
+			withResolve({ ok: false, status: 409, reason: "NOT_UNVERIFIED" }).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "k1" },
+			OPERATOR,
+		);
+		expect(stale.notice?.variant).toBe("error");
+		expect(stale.notice?.description).toMatch(/^Nothing was changed/);
+	});
+});
+
+describe("the provider-refunded notices name the kept flag (review round 2)", () => {
+	test("a refund refused as already refunded says an open flag is kept", async () => {
+		const { client } = surface("paid");
+		client.refundOrder = () =>
+			Promise.resolve({ ok: false, status: 409, reason: "PROVIDER_ALREADY_REFUNDED" }) as never;
+		const result = await act(
+			client,
+			"orders:refund",
+			{ orderId: ORDER_ID, amountCents: "500", refundedSoFarCents: "0", currency: "USD" },
+			OPERATOR,
+		);
+		expect(result.notice?.description).toContain(
+			"the order's reconciliation flag says which — unless it already had an open flag, which is kept; resolve that one and try the refund again.",
+		);
+	});
+});

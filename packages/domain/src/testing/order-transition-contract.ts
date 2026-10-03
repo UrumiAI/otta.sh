@@ -583,6 +583,33 @@ export function orderTransitionContract(
 			});
 		}
 
+		test("an unverified refund resolved as 'it didn't happen' leaves Mark refunded guarded by the money still held", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await capture(h, id, "stripe");
+			const key = idempotencyKey(`void-unv:${id}`);
+			await h.store.reserveRefund({
+				orderId: id,
+				amount: cents(1500),
+				currency: USD,
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: null,
+				reason: null,
+				refundedBy: "ops",
+				idempotencyKey: key,
+			});
+			await h.store.markRefundUnverified(key);
+			expect(await h.store.voidUnverifiedRefund({ idempotencyKey: key, resolvedBy: "ops" })).toBe(
+				true,
+			);
+			expect(await adminDrive(h, id, "refunded")).toEqual({
+				ok: false,
+				reason: "REFUND_THROUGH_MONEY",
+			});
+		});
+
 		test("Mark refunded is allowed once the provider itself reported the payment refunded (the refund ledger's flag)", async () => {
 			const h = await makeHarness();
 			const id = await seed(h);

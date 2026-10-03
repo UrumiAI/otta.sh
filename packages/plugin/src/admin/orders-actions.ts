@@ -93,6 +93,9 @@ const ACTION_CANCEL = ORDERS_ACTIONS.custom("cancel");
 /** Both the DA-2b full-remaining refund and the partial refund the surface
  *  confirms for itself. */
 const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
+/** A person's answer to a refund whose provider outcome is unknown (review round 2). */
+const ACTION_RESOLVE_REFUND_CONFIRMED = ORDERS_ACTIONS.custom("resolve-refund-confirmed");
+const ACTION_RESOLVE_REFUND_VOIDED = ORDERS_ACTIONS.custom("resolve-refund-voided");
 
 /** `transition-<state>` — one DISTINCT verb per state, derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
@@ -889,7 +892,7 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
 				variant: "error",
 				title: "Not cancelled — already refunded at the provider",
 				description:
-					"Nothing was changed. Your payment provider shows this payment already refunded, in full or in part (possibly from its dashboard). The order’s reconciliation flag says which: if in full, Mark refunded is offered now — use it before resolving the flag.",
+					"Nothing was changed. Your payment provider shows this payment already refunded, in full or in part (possibly from its dashboard) — the order's reconciliation flag says which — unless it already had an open flag, which is kept; resolve that one and try the refund again. If refunded in full, Mark refunded is offered — use it before resolving the flag.",
 			};
 		case "GATEWAY_TERMINAL":
 		case "REFUND_NOT_SUPPORTED":
@@ -1083,6 +1086,60 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	});
 };
 
+/**
+ * Resolve a refund whose provider outcome is UNKNOWN (review round 2): the
+ * operator checked the provider. `confirmed` records it as refunded (the provider
+ * refund id is optional), `voided` releases it. The surface confirms first; the
+ * domain refuses any row that is not `unverified`, and a replay changes nothing.
+ * The operator the host named is recorded on the row.
+ */
+function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersAction {
+	return async (client, payload, operator) => {
+		const orderId = readString(payload["orderId"]);
+		const refundKey = (readString(payload["refundKey"]) ?? "").trim();
+		if (orderId === undefined || refundKey.length === 0) return applied(UNREADABLE);
+		const refundRef = (readString(payload["refundRef"]) ?? "").trim();
+		const result = await client.resolveUnverifiedRefund(orderId, {
+			refundKey,
+			outcome,
+			...(outcome === "confirmed" && refundRef.length > 0 ? { refundRef } : {}),
+			resolvedBy: operator ?? "admin",
+		});
+		if (!result.ok) {
+			return applied({
+				variant: "error",
+				title: "Refund not resolved",
+				description:
+					result.reason === "NOT_UNVERIFIED"
+						? "Nothing was changed — this refund is no longer waiting on a check. Reload Money → Refunds to see its status."
+						: "Nothing was changed — that refund could not be found on this order. Reload and try again.",
+			});
+		}
+		if (!result.changed) {
+			return applied({
+				variant: "default",
+				title: "Already resolved",
+				description: "This refund was already resolved that way; nothing changed.",
+			});
+		}
+		if (outcome === "voided") {
+			return applied({
+				variant: "default",
+				title: "Marked as not refunded",
+				description:
+					"The refund is recorded as never issued, and that amount can be refunded again from Money → Refunds. No money moved and the buyer was not emailed.",
+			});
+		}
+		return applied({
+			variant: "default",
+			title: "Refund confirmed",
+			description: `The refund is recorded as issued by your payment provider${
+				result.fullyRefunded ? ", and the order is now fully refunded" : ""
+			}.${emailSentence(result.email)}`,
+		});
+	};
+}
+
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's
  *  typed reason, NEVER the raw status/URL. The ambiguous-timeout case is explicit:
  *  do NOT retry, re-check the provider first (ADR-0008 error taxonomy). */
@@ -1105,7 +1162,7 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				variant: "error",
 				title: "Provider already refunded",
 				description:
-					"Your payment provider shows this order already refunded, or this amount would refund more than it still holds (possibly after a dashboard refund). Nothing was issued. The order’s reconciliation flag says which: if it was refunded in full, Mark refunded is offered now — use it before resolving the flag.",
+					"Your payment provider shows this order already refunded, or this amount would refund more than it still holds (possibly after a dashboard refund). Nothing was issued — the order's reconciliation flag says which — unless it already had an open flag, which is kept; resolve that one and try the refund again. If refunded in full, Mark refunded is offered — use it before resolving the flag.",
 			};
 		case "GATEWAY_RETRYABLE":
 			return {
@@ -1168,6 +1225,8 @@ const ORDERS_ACTIONS_BY_ID: Readonly<Record<string, OrdersAction>> = {
 	[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction,
 	[ACTION_CANCEL]: cancelOrderAction,
 	[ACTION_REFUND]: refundOrderAction,
+	[ACTION_RESOLVE_REFUND_CONFIRMED]: resolveUnverifiedRefundAction("confirmed"),
+	[ACTION_RESOLVE_REFUND_VOIDED]: resolveUnverifiedRefundAction("voided"),
 	// One handler per state, keyed by the SAME derived id the control uses.
 	...Object.fromEntries(
 		ORDER_STATES.map((state) => [

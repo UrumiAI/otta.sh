@@ -297,3 +297,90 @@ test("a tracking URL that is not http(s) is shown as text, never a link", async 
 	await fire(tab(view, "fulfilment"), "click");
 	expect(view.container.querySelector('[data-testid="detail-fulfilment"] a')).toBeNull();
 });
+
+// ── review round 2: resolving a refund whose outcome is unknown ──────────────
+
+const UNKNOWN: RefundsSummary = {
+	refunds: [
+		{
+			amountCents: 400_000,
+			currency: CUR,
+			refundRef: null,
+			idempotencyKey: "admin-refund:7e4ce728:400000:0",
+			refundedBy: "ops@example.test",
+			createdAt: "2026-03-04T11:00:00.000Z",
+			status: "unverified",
+		},
+	],
+	currency: CUR,
+	capturedTotalCents: TOTAL_CENTS,
+	refundedTotalCents: 400_000,
+	finalizedTotalCents: 0,
+	ceilingCents: TOTAL_CENTS,
+	remainingCents: TOTAL_CENTS - 400_000,
+	paymentMethod: "card",
+	refundable: true,
+};
+
+async function confirmAndSend(
+	view: Mounted,
+	testId: string,
+): Promise<Record<string, unknown> | undefined> {
+	await fire(one<HTMLButtonElement>(view, `[data-testid="${testId}"]`), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	apiFetch.mockClear();
+	apiFetch.mockResolvedValue(
+		new Response(JSON.stringify({ data: { ok: true, notice: null } }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-yes"]'), "click");
+	const body = apiFetch.mock.calls
+		.map((call) => JSON.parse(String(call[1]?.body ?? "{}")) as Record<string, unknown>)
+		.find(
+			(b) =>
+				typeof b["action_id"] === "string" &&
+				String(b["action_id"]).startsWith("orders:resolve-refund"),
+		);
+	return { ...body, confirmText: text };
+}
+
+test("an unverified refund offers 'Confirmed at the provider', behind a confirm, with the provider id it was given", async () => {
+	const view = await show(detailFor("paid", UNKNOWN));
+	await fire(tab(view, "money"), "click");
+	const ref = one<HTMLInputElement>(view, '[data-testid="resolve-refund-ref"]');
+	await React.act(async () => {
+		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+			ref,
+			"re_dash_9",
+		);
+		ref.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	const sent = await confirmAndSend(view, "resolve-refund-confirmed");
+	expect(String(sent?.["confirmText"])).toMatch(/payment provider shows/i);
+	expect(sent?.["action_id"]).toBe("orders:resolve-refund-confirmed");
+	expect(sent?.["value"]).toEqual({
+		orderId: ORDER_ID,
+		refundKey: "admin-refund:7e4ce728:400000:0",
+		refundRef: "re_dash_9",
+	});
+});
+
+test("an unverified refund offers 'It didn't happen', behind a confirm", async () => {
+	const view = await show(detailFor("paid", UNKNOWN));
+	await fire(tab(view, "money"), "click");
+	const sent = await confirmAndSend(view, "resolve-refund-voided");
+	expect(String(sent?.["confirmText"])).toMatch(/can be refunded again/i);
+	expect(sent?.["action_id"]).toBe("orders:resolve-refund-voided");
+	expect(sent?.["value"]).toEqual({
+		orderId: ORDER_ID,
+		refundKey: "admin-refund:7e4ce728:400000:0",
+	});
+});
+
+test("a recorded refund offers no resolve controls", async () => {
+	const view = await show(detailFor("paid"));
+	await fire(tab(view, "money"), "click");
+	expect(view.container.querySelector('[data-testid="resolve-refund-confirmed"]')).toBeNull();
+});

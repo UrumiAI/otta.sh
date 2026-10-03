@@ -291,6 +291,11 @@ export {
 	type TransitionOrderResult,
 } from "./orders/transition.js";
 export {
+	resolveUnverifiedRefund,
+	type ResolveUnverifiedRefundCommand,
+	type ResolveUnverifiedRefundResult,
+} from "./orders/resolve-unverified-refund.js";
+export {
 	PROVIDER_PARTLY_REFUNDED_FLAG_PREFIX,
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	providerRefundedFlag,

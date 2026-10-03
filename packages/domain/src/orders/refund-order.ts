@@ -12,7 +12,11 @@ import type {
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import type { Order } from "./model.js";
-import { isProviderRefundFlag, providerRefundedFlag } from "./provider-refunded-flag.js";
+import {
+	flagAmount,
+	isProviderRefundFlag,
+	providerRefundedFlag,
+} from "./provider-refunded-flag.js";
 
 export interface RefundOrderDeps {
 	orderStore: OrderStore;
@@ -421,9 +425,15 @@ export async function refundOrder(
 				// nothing is flagged; an owner still in flight finalizes from
 				// `unverified` just the same.
 				if (await deps.orderStore.markRefundUnverified(cmd.idempotencyKey)) {
+					// The provider's own figures, when the pre-flight gave them (review
+					// round 2), so the operator resolving it sees what the provider shows.
+					const figures =
+						gwRes.provider === undefined
+							? ""
+							: ` The provider shows ${flagAmount(gwRes.provider.refunded, target.currency)} of ${flagAmount(gwRes.provider.captured, target.currency)} refunded.`;
 					await deps.orderStore.flagReconciliation(
 						cmd.orderId,
-						`refund ${String(target.amount)} ${target.currency} (key ${cmd.idempotencyKey}): the provider already shows it refunded but the ledger never finalized it — check the provider before refunding again`,
+						`refund ${String(target.amount)} ${target.currency} (key ${cmd.idempotencyKey}): the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
 					);
 				}
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };

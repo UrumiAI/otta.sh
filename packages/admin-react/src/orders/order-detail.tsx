@@ -503,6 +503,7 @@ export function RefundsPanel({
 	setAmountError,
 	amountRef,
 	refundedByRef,
+	onResolveUnverified,
 }: {
 	readonly refunds: RefundsSummary;
 	readonly currency: string;
@@ -518,8 +519,17 @@ export function RefundsPanel({
 	readonly setAmountError: (refusal: RefundRefusal | null) => void;
 	readonly amountRef: React.RefObject<HTMLInputElement | null>;
 	readonly refundedByRef: React.RefObject<HTMLInputElement | null>;
+	/** A person's answer to a refund whose provider outcome is unknown (review
+	 *  round 2); the screen confirms it first. Absent ⇒ no controls. */
+	readonly onResolveUnverified?: (
+		refund: RefundsSummary["refunds"][number],
+		outcome: "confirmed" | "voided",
+		refundRef: string,
+	) => void;
 }): React.ReactElement {
 	const refundMode = refundPanelMode(refunds);
+	// The provider refund id typed for each unknown-outcome row, by its key.
+	const [resolveRefs, setResolveRefs] = React.useState<Readonly<Record<string, string>>>({});
 	// A `voided` attempt moved nothing and is not a refund; it stays on the wire
 	// for audit only. Everything else is listed WITH its status.
 	const listed = refunds.refunds.filter((refund) => refund.status !== "voided");
@@ -630,6 +640,57 @@ export function RefundsPanel({
 						))}
 					</Table>
 				)}
+
+				{/* A refund whose outcome is UNKNOWN holds its amount until a person
+				    checks the provider (review round 2): it is resolved here, either
+				    way, behind a confirm. */}
+				{onResolveUnverified !== undefined &&
+					listed
+						.filter(
+							(refund) => refundRowStatus(refund) === "unverified" && refund.idempotencyKey != null,
+						)
+						.map((refund) => {
+							const key = refund.idempotencyKey ?? "";
+							return (
+								<Group
+									key={`resolve:${key}`}
+									testId="resolve-refund"
+									label={`Outcome unknown — ${formatAmount(refund.amountCents, refund.currency ?? cur)}: check your payment provider, then record what it shows`}
+									defaultOpen
+								>
+									<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+										<Field label="Provider refund id (optional)">
+											<input
+												className="otta-focusable"
+												data-testid="resolve-refund-ref"
+												style={inputStyle}
+												placeholder="e.g. re_…"
+												value={resolveRefs[key] ?? ""}
+												onChange={(event) =>
+													setResolveRefs({ ...resolveRefs, [key]: event.target.value })
+												}
+											/>
+										</Field>
+										<div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+											<Button
+												testId="resolve-refund-confirmed"
+												disabled={busy}
+												label="Confirmed at the provider"
+												onClick={() =>
+													onResolveUnverified(refund, "confirmed", resolveRefs[key] ?? "")
+												}
+											/>
+											<Button
+												testId="resolve-refund-voided"
+												disabled={busy}
+												label="It didn’t happen"
+												onClick={() => onResolveUnverified(refund, "voided", "")}
+											/>
+										</div>
+									</div>
+								</Group>
+							);
+						})}
 
 				{/* The empty state says its piece once, in the heading. Repeating the
 				    same sentence in the body read as a rendering fault, and the defect
@@ -1475,6 +1536,34 @@ export function OrderDetail({
 							setAmountError={setAmountError}
 							amountRef={amountRef}
 							refundedByRef={refundedByRef}
+							onResolveUnverified={(refund, outcome, refundRef) => {
+								const amount = formatAmount(refund.amountCents, refund.currency ?? cur);
+								const trimmed = refundRef.trim();
+								setPending({
+									actionId:
+										outcome === "confirmed"
+											? "orders:resolve-refund-confirmed"
+											: "orders:resolve-refund-voided",
+									value: {
+										orderId: order.id,
+										refundKey: refund.idempotencyKey ?? "",
+										...(outcome === "confirmed" && trimmed.length > 0
+											? { refundRef: trimmed }
+											: {}),
+									},
+									title:
+										outcome === "confirmed"
+											? `Record the ${amount} refund as issued?`
+											: `Record the ${amount} refund as never issued?`,
+									text:
+										outcome === "confirmed"
+											? "Only if your payment provider shows this refund. It is recorded as refunded — the order closes as refunded if this completes it — and the buyer is emailed."
+											: "Only if your payment provider shows no such refund. It is recorded as never issued, and that amount can be refunded again. No money moves and the buyer is not emailed.",
+									confirmLabel:
+										outcome === "confirmed" ? "Yes, it was refunded" : "Yes, it didn’t happen",
+									denyLabel: "Keep as is",
+								});
+							}}
 						/>
 					))}
 

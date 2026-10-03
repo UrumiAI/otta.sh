@@ -285,10 +285,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The combination that used to blank a console: a control rendered for an id
 		// the dispatcher does not know. The set is read straight off the dispatch
 		// table, and this drives every member to prove it.
-		// 5 named + one per order state + one per ONE-CLICK cancellation reason.
-		// `other` has no one-click control, so it derives no id (and the deleted
-		// `-review` pair derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(5 + 10 + 4);
+		// 7 named (incl. the two answers to an unverified refund, review round 2) +
+		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
+		// one-click control, so it derives no id (and the deleted `-review` pair
+		// derives none either).
+		expect(ORDERS_ACTION_IDS.size).toBe(7 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-other")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-review")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:refund-review")).toBe(false);

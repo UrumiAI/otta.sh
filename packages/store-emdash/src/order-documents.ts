@@ -382,6 +382,9 @@ export interface RefundEntryDoc {
 	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
 	 *  checkbox then says (ADR-0026). Absent on every other row. */
 	restock?: boolean;
+	/** Who resolved the row by hand when its outcome was unknown (`unverified` →
+	 *  recorded or voided). Absent otherwise. */
+	resolvedBy?: string;
 }
 
 /**
