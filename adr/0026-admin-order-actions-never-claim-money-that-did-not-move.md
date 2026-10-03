@@ -213,3 +213,51 @@ sent no email at all.
 - **The lost race's email goes inline too.** When a cancellation loses the race to a shipment,
   its refund's `refund-issued` notice is sent inline like any write's email, and the console's
   notice says whether it went.
+
+## Amended 2026-10-03 — Mark refunded only where no captured money is still held
+
+QA round 2 (M4): on a shipped Stripe order with $10.00 captured and $3.50 refunded, Mark
+refunded closed the order as `refunded`. The buyer's order page then said "refunded" while the
+shop still held $6.50. Decision 3 kept Mark refunded as "the only way to close an order whose
+refund was made outside Otta"; it did not ask whether the money was in fact outside Otta.
+
+**The rule.** `transitionOrderAsAdmin` refuses `→ refunded` with `REFUND_THROUGH_MONEY`, and
+`adminNextStates(order, ledger)` does not offer it, unless `markRefundedAllowed` holds, decided
+from the refund ledger:
+
+1. **The method returns money outside Otta.** A per-method declaration, like the settlement
+   one: Stripe is `provider`, x402 is `outside` (it cannot refund automatically; the operator
+   sends the money). For an `outside` method, Mark refunded is what records that.
+2. **Nothing is left to refund through the provider.** `unrefundedCapturedCents` = succeeded
+   payments less every refund that is not `voided` (recorded, or reserved/unverified and so
+   still holding its capacity). Zero means there is no money Money → Refunds could still return.
+3. **The provider itself reported the payment already refunded.** When a refund's pre-flight
+   answers `PROVIDER_ALREADY_REFUNDED` (refunded in the provider's dashboard), `refundOrder` now
+   flags the order for reconciliation with `PROVIDER_REFUNDED_FLAG_PREFIX` — never over an
+   already-open flag, which is left for a person. While that flag is open, Mark refunded is
+   offered. This is the path for a Stripe order refunded outside Otta: start the refund in
+   Money → Refunds; Otta checks with the provider, issues nothing, and the order can then be
+   marked refunded (and the flag resolved).
+
+Otherwise the operator is sent to Money → Refunds, which returns the money and emails the buyer.
+The refusal copy says what to do about a dashboard refund.
+
+**Who made a move.** `transitionOrderAsAdmin` takes an `actor`, recorded on the flip's audit
+event. The console passes the signed-in operator the host names on the private admin route
+(`routeCtx.user`: display name, else email). Refunds and cancels with no typed name are recorded
+by the same operator rather than "admin". History shows them, and it now also lists each refund
+on the ledger and what a cancellation refunded and restocked.
+
+**The pricing-error reason reaches the buyer.** The cancelled email's customer-safe reasons now
+include `pricing_error` ("there was an error in the price it was listed at"): a cancellation
+with no reason read worse than an honest one that names the store's mistake. `fraud_suspected`
+and `other` still never reach the buyer.
+
+**Consequences.**
+- A Stripe order with money still held can only reach `refunded` through the ledger, so its
+  buyer's page and its "Refunded $X" line agree with the money.
+- An order refunded in the dashboard needs one extra step (the Money → Refunds attempt that
+  finds it) before it can be closed. A store with an open anomaly flag on that order resolves
+  that flag first.
+- The admin order read now reads the order's ledger (the same one document) to compute its
+  offers.
