@@ -296,6 +296,11 @@ export const AGING_TICKS = 3;
  */
 export const STARVING_TICKS = 3 * AGING_TICKS;
 
+/** How many lapsed orders past the bite the expiry's list reads, so orders still
+ *  waiting on their intent's withdrawal do not hide the expirable ones behind them.
+ *  One page either way: this costs rows, not queries. */
+const EXPIRY_LOOKAHEAD = 10;
+
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
 	"expire-holds": "expiry",
@@ -1240,11 +1245,36 @@ export async function runCommerceSweeps(
 			},
 		);
 
-	// The due check IS the leg's list (`expiryLimit + 1` orders, so a longer backlog
-	// still reads as not drained), read once and handed to the domain.
+	// The due check IS the leg's list, read once and handed to the domain: the
+	// lapsed pending orders, oldest deadline first, LESS every order whose payment
+	// intent is due for withdrawal and not yet withdrawn (QA3 N1). An order is never
+	// expired while the buyer could still pay it: `cancel-intents` (first in every
+	// tick) withdraws the intent, and the expiry takes the order on the same tick or
+	// a later one. `intentCancelDueAt` is the order's own indexed "earliest due
+	// unresolved intent", read off the same page — no extra query. An intent whose
+	// cancel FAILED and was rescheduled is not due until its retry, so a provider
+	// outage never holds stock: that order expires, and a late payment on it is
+	// refunded (ADR-0022). The page is wider than the bite (`EXPIRY_LOOKAHEAD`), so
+	// the orders waiting on a withdrawal do not block the ones behind them; a list of
+	// `bite + 1` still reads as "not drained" when there is more.
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
-		(expirable ??= stores.orderStore.listExpirable(nowIso, { limit: expiryLimit + 1 }));
+		(expirable ??= (async () => {
+			const page = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).query({
+				where: { state: "pending", holdExpiresAt: { lte: nowIso } },
+				orderBy: { holdExpiresAt: "asc" },
+				limit: Math.min(100, expiryLimit + 1 + EXPIRY_LOOKAHEAD),
+			});
+			const eligible: OrderId[] = [];
+			for (const { data } of page.items) {
+				if (data.state !== "pending" || data.holdExpiresAt > nowIso) continue;
+				const dueAt = data.intentCancelDueAt ?? null;
+				if (dueAt !== null && dueAt <= nowIso) continue; // its intent comes first
+				eligible.push(toOrderId(data.orderId));
+				if (eligible.length > expiryLimit) break;
+			}
+			return eligible;
+		})());
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
@@ -1337,19 +1367,6 @@ export async function runCommerceSweeps(
 	let intentCancelsDue: Promise<readonly OrderId[]> | undefined;
 	const intentCancelsDueIds = (): Promise<readonly OrderId[]> =>
 		(intentCancelsDue ??= stores.orderStore.listIntentCancelsDue(nowIso, intentCancelLimit));
-	// At the HEAD of the tick, the intents of the orders this tick's expiry bite is
-	// about to flip are left for the run right after that flip (below): a store that
-	// waits for the expiry before withdrawing an intent would otherwise push them
-	// back a recheck interval here, and the expiry's own run would then find them not
-	// yet due. Every other due intent — including a lapsed order the bite will not
-	// reach this tick — is withdrawn at the head. The list is the expiry's own (one
-	// read, shared).
-	const intentCancelsAtHead = async (): Promise<readonly OrderId[]> => {
-		const due = await intentCancelsDueIds();
-		if (due.length === 0) return due;
-		const bite = new Set((await expirableIds()).slice(0, batchLeft("expire-orders", expiryLimit)));
-		return due.filter((id) => !bite.has(id));
-	};
 	const cancelIntentsLeg = async (): Promise<void> =>
 		await run(
 			"cancel-intents",
@@ -1378,7 +1395,7 @@ export async function runCommerceSweeps(
 					{
 						limit,
 						shouldContinue: () => gate(),
-						due: secondPass ? await intentCancelsDueIds() : await intentCancelsAtHead(),
+						due: await intentCancelsDueIds(),
 						canStartCancel: () => {
 							const ok = legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS;
 							if (!ok) legBudget.stopped = true;
@@ -1389,7 +1406,7 @@ export async function runCommerceSweeps(
 				noteUnits("cancel-intents", count, legBudget);
 				return legResult(count, legBudget.stopped || count >= limit);
 			},
-			{ isDue: async () => (await intentCancelsAtHead()).length > 0, cheapDueCheck: true },
+			{ isDue: async () => (await intentCancelsDueIds()).length > 0, cheapDueCheck: true },
 		);
 
 	const holdIntentsLeg = async (): Promise<void> =>
@@ -1521,15 +1538,6 @@ export async function runCommerceSweeps(
 	for (const leg of order) {
 		if (leg === "cancel-intents" || leg === starving) continue;
 		await runners[leg]();
-		// An expiry that flipped orders this tick may have made their intents due (a
-		// store that schedules the withdrawal at the flip): one more due check, so
-		// they are withdrawn in the same tick rather than the next.
-		if (leg === "expire-orders" && (unitsDone["expire-orders"] ?? 0) > 0) {
-			intentCancelsDue = undefined;
-			secondPass = true;
-			await runners["cancel-intents"]();
-			secondPass = false;
-		}
 	}
 
 	// THE SECOND PASS. A share is a cap, not a reservation — but a cap alone wastes
