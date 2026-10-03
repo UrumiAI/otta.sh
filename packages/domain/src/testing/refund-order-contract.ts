@@ -409,12 +409,74 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(0); // never called — capability, not discovery
 		});
 
+		// Review round 1: Stripe's pre-flight also refuses a refund that would
+		// over-refund after a PARTIAL dashboard refund. That is not "refunded outside
+		// Otta" — money is still held — so the flag names both amounts and does not
+		// unlock Mark refunded.
+		test("a PARTIAL provider refund is flagged with both amounts and never as fully refunded", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-part", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(350), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-part"),
+			});
+			const flag = (await h.orderStore.getById(id))?.reconciliationFlag ?? "";
+			expect(flag).toContain("partially refunded at the provider: 3.50 USD of 10.00 USD");
+			expect(flag.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX)).toBe(false);
+
+			// Refunded the rest in the dashboard, then tried again: the newer, full
+			// answer replaces the provider's own earlier partial one.
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(650),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-part-2"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toMatch(
+				new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`),
+			);
+		});
+
+		test("a PROVIDER_ALREADY_REFUNDED without the provider's amounts flags nothing (unknown is not refunded)", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-unknown", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-unknown"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+		});
+
 		test("a PROVIDER_ALREADY_REFUNDED never overwrites an order's open reconciliation flag", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight-flagged", totalCents: 1000 });
 			await h.orderStore.flagReconciliation(id, "an earlier anomaly");
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
 			await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id,
 				amount: cents(500),
@@ -429,7 +491,11 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
 			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id,
 				amount: cents(500),
@@ -438,11 +504,12 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-preflight"),
 			});
 			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-			// The provider's own word is kept on the order (QA2 M4): it is what lets
-			// the admin close an order refunded outside Otta with Mark refunded.
-			expect((await h.orderStore.getById(id))?.reconciliationFlag).toMatch(
-				new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`),
-			);
+			// The provider's own word that the payment is FULLY refunded is kept on the
+			// order (QA2 M4): it is what lets the admin close an order refunded outside
+			// Otta with Mark refunded — and it says to do that BEFORE resolving it.
+			const flag = (await h.orderStore.getById(id))?.reconciliationFlag ?? "";
+			expect(flag).toMatch(new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`));
+			expect(flag).toMatch(/Mark refunded.*before.*resolv/i);
 			// Reserve-before-issue: the reservation was inserted then VOIDED (nothing
 			// issued). It stays as an audit row but releases its ceiling capacity — the
 			// ACTIVE Σ is 0 and the order never flipped.

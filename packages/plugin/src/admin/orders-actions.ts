@@ -301,7 +301,16 @@ const REFUND_THROUGH_MONEY: Notice = {
 	variant: "error",
 	title: "Refund it in Money → Refunds",
 	description:
-		"Nothing was changed. This order still has captured money that Otta hasn’t refunded, so marking it refunded would tell the buyer it was. Refund it in Money → Refunds — that returns the money and emails the buyer. If you already refunded it in your payment provider’s dashboard, start the refund there anyway: Otta checks with the provider first, issues nothing, and then lets you mark the order refunded.",
+		"Nothing was changed. This order still has captured money that Otta hasn’t refunded, so marking it refunded would tell the buyer it was. Refund it in Money → Refunds — that returns the money and emails the buyer. If you already refunded it in your payment provider’s dashboard, start the refund in Money → Refunds anyway: Otta checks with the provider first, issues nothing, and then lets you mark the order refunded.",
+};
+
+/** Mark refunded while a refund is reserved or unverified (review round 1): its
+ *  outcome decides whether money is still held — the cancel path's rule. */
+const REFUND_IN_FLIGHT: Notice = {
+	variant: "error",
+	title: "Not marked refunded — a refund is unresolved",
+	description:
+		"Nothing was changed. A refund on this order is still unresolved — check Money → Refunds first, and your payment provider, before marking the order refunded.",
 };
 
 /** The generic refusal: the move is not in the state machine, or the order vanished. */
@@ -332,6 +341,8 @@ function transitionRefusalNotice(
 			return useCancelOrder(observedState); // T1-4
 		case "REFUND_THROUGH_MONEY":
 			return REFUND_THROUGH_MONEY; // QA2 M4
+		case "REFUND_IN_FLIGHT":
+			return REFUND_IN_FLIGHT;
 		case "ORDER_NOT_FOUND":
 		case "INVALID_TRANSITION":
 			return STATUS_CHANGE_FAILED;
@@ -878,7 +889,7 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
 				variant: "error",
 				title: "Not cancelled — already refunded at the provider",
 				description:
-					"Nothing was changed. Your payment provider shows this payment already refunded (possibly from its dashboard). If you refunded it there, use Mark refunded to close the order — it is offered now — then resolve the order’s reconciliation flag.",
+					"Nothing was changed. Your payment provider shows this payment already refunded, in full or in part (possibly from its dashboard). The order’s reconciliation flag says which: if in full, Mark refunded is offered now — use it before resolving the flag.",
 			};
 		case "GATEWAY_TERMINAL":
 		case "REFUND_NOT_SUPPORTED":
@@ -1094,7 +1105,7 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				variant: "error",
 				title: "Provider already refunded",
 				description:
-					"Your payment provider shows this order already refunded (possibly from its dashboard). Nothing was issued. If you refunded it there, use Mark refunded to close the order — it is offered now — then resolve the order’s reconciliation flag.",
+					"Your payment provider shows this order already refunded, or this amount would refund more than it still holds (possibly after a dashboard refund). Nothing was issued. The order’s reconciliation flag says which: if it was refunded in full, Mark refunded is offered now — use it before resolving the flag.",
 			};
 		case "GATEWAY_RETRYABLE":
 			return {

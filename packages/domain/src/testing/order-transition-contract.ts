@@ -553,6 +553,36 @@ export function orderTransitionContract(
 			expect((await h.store.getById(id))?.state).toBe("paid");
 		});
 
+		// Review round 1: a reserved or unverified refund is a promise, not money back —
+		// an unverified full refund that later voids would otherwise have let Mark
+		// refunded close an order whose money the shop still holds.
+		for (const status of ["reserved", "unverified"] as const) {
+			test(`Mark refunded is refused REFUND_IN_FLIGHT while a refund is ${status}`, async () => {
+				const h = await makeHarness();
+				const id = await seed(h);
+				await drive(h, id, "paid");
+				await capture(h, id, "stripe");
+				const key = idempotencyKey(`inflight:${id}`);
+				await h.store.reserveRefund({
+					orderId: id,
+					amount: cents(1500),
+					currency: USD,
+					kind: "gateway",
+					gateway: "stripe",
+					refundRef: null,
+					reason: null,
+					refundedBy: "ops",
+					idempotencyKey: key,
+				});
+				if (status === "unverified") await h.store.markRefundUnverified(key);
+				expect(await adminDrive(h, id, "refunded")).toEqual({
+					ok: false,
+					reason: "REFUND_IN_FLIGHT",
+				});
+				expect((await h.store.getById(id))?.state).toBe("paid");
+			});
+		}
+
 		test("Mark refunded is allowed once the provider itself reported the payment refunded (the refund ledger's flag)", async () => {
 			const h = await makeHarness();
 			const id = await seed(h);

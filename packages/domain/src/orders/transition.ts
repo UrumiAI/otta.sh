@@ -155,15 +155,39 @@ export interface RefundLedgerFacts {
 
 /**
  * Captured money the refunds ledger has not returned: `succeeded` payments less
- * every refund that is not `voided` (recorded, or reserved/unverified — in flight,
- * holding its capacity). Never below zero.
+ * RECORDED refunds only. A reserved or unverified row is a promise, not money
+ * back (it may still void — review round 1). Never below zero.
  */
 export function unrefundedCapturedCents(facts: RefundLedgerFacts): number {
 	let captured = 0;
 	for (const p of facts.payments) if (p.status === "succeeded") captured += p.amount;
 	let returned = 0;
-	for (const r of facts.refunds) if (r.status !== "voided") returned += r.amount;
+	for (const r of facts.refunds) if (r.status === "recorded") returned += r.amount;
 	return Math.max(0, captured - returned);
+}
+
+/**
+ * Why an admin may NOT mark this order refunded, or `null` when they may:
+ *  - `REFUND_IN_FLIGHT` — a refund on the ledger is still reserved or unverified:
+ *    its outcome decides whether money is still held, so it is resolved first
+ *    (the cancel path's rule);
+ *  - `REFUND_THROUGH_MONEY` — captured money its provider can still return
+ *    ({@link markRefundedAllowed}).
+ */
+export function markRefundedRefusal(
+	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	facts: RefundLedgerFacts,
+): "REFUND_IN_FLIGHT" | "REFUND_THROUGH_MONEY" | null {
+	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
+		return "REFUND_IN_FLIGHT";
+	}
+	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
+		return null;
+	}
+	if (unrefundedCapturedCents(facts) === 0) return null;
+	return order.reconciliationFlag?.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX) === true
+		? null
+		: "REFUND_THROUGH_MONEY";
 }
 
 /**
@@ -173,10 +197,12 @@ export function unrefundedCapturedCents(facts: RefundLedgerFacts): number {
  *  - its method returns money OUTSIDE Otta (x402), so a refund made there is
  *    exactly what this records; or
  *  - the ledger shows NOTHING left to refund through the provider; or
- *  - the provider itself reported the payment already refunded — the flag
+ *  - the provider itself reported the payment refunded IN FULL — the flag
  *    `refundOrder` writes on that pre-flight answer
  *    ({@link PROVIDER_REFUNDED_FLAG_PREFIX}): the refund was made outside Otta, in
- *    the provider's dashboard.
+ *    the provider's dashboard. A partial one never unlocks it.
+ * And never while a refund on the ledger is still reserved or unverified
+ * (`REFUND_IN_FLIGHT`, {@link markRefundedRefusal}).
  * Otherwise the money goes back through Money → Refunds, which returns it and
  * emails the buyer.
  */
@@ -184,11 +210,7 @@ export function markRefundedAllowed(
 	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): boolean {
-	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
-		return true;
-	}
-	if (unrefundedCapturedCents(facts) === 0) return true;
-	return order.reconciliationFlag?.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX) === true;
+	return markRefundedRefusal(order, facts) === null;
 }
 
 /**
@@ -220,7 +242,9 @@ export type TransitionOrderAsAdminResult =
 	| { ok: false; reason: "USE_CANCEL" }
 	/** Mark refunded on an order whose captured money the ledger has not returned
 	 *  through its provider ({@link markRefundedAllowed}): use Money → Refunds. */
-	| { ok: false; reason: "REFUND_THROUGH_MONEY" };
+	| { ok: false; reason: "REFUND_THROUGH_MONEY" }
+	/** Mark refunded while a refund on the order is still reserved or unverified. */
+	| { ok: false; reason: "REFUND_IN_FLIGHT" };
 
 /** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
  *  maps to copy. */
@@ -277,9 +301,8 @@ export async function transitionOrderAsAdmin(
 		// The one admin move decided by the money: read the ledgers (only for it).
 		const ledger = await deps.orderStore.readOrderLedger(cmd.orderId);
 		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		if (!markRefundedAllowed(ledger.order, ledger)) {
-			return { ok: false, reason: "REFUND_THROUGH_MONEY" };
-		}
+		const refusal = markRefundedRefusal(ledger.order, ledger);
+		if (refusal !== null) return { ok: false, reason: refusal };
 	}
 	const enqueueEmail = cmd.toState !== "refunded" && emailTemplateForState(cmd.toState) !== null;
 	return applyTransition(deps, order, cmd, enqueueEmail);

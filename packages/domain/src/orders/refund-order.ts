@@ -12,7 +12,7 @@ import type {
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import type { Order } from "./model.js";
-import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
+import { isProviderRefundFlag, providerRefundedFlag } from "./provider-refunded-flag.js";
 
 export interface RefundOrderDeps {
 	orderStore: OrderStore;
@@ -394,15 +394,18 @@ export async function refundOrder(
 				// so the capacity is released.
 				if (createdReservation) {
 					await deps.orderStore.voidRefund(cmd.idempotencyKey);
-					// The provider's own word that this payment was refunded outside
-					// Otta (its dashboard) is kept on the order — the evidence Mark
-					// refunded needs to close it (QA2 M4). Never over an open flag: an
-					// unreviewed anomaly is not this function's to overwrite.
-					if (order.reconciliationFlag === null) {
-						await deps.orderStore.flagReconciliation(
-							cmd.orderId,
-							`${PROVIDER_REFUNDED_FLAG_PREFIX} — Otta issued nothing. If it was refunded outside Otta, use Mark refunded to close the order, then resolve this flag.`,
-						);
+					// The provider's own word is kept on the order (QA2 M4): refunded IN
+					// FULL outside Otta is the evidence Mark refunded needs to close it;
+					// a PARTIAL dashboard refund is only stated, both amounts named, and
+					// unlocks nothing; no figures, no flag. Never over an open flag that is
+					// not the provider's own earlier answer: an unreviewed anomaly is not
+					// this function's to overwrite.
+					const flag = providerRefundedFlag(gwRes.provider, order.totals.currency);
+					if (
+						flag !== null &&
+						(order.reconciliationFlag === null || isProviderRefundFlag(order.reconciliationFlag))
+					) {
+						await deps.orderStore.flagReconciliation(cmd.orderId, flag);
 					}
 					return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
 				}

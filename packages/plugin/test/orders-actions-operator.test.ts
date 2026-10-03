@@ -197,7 +197,23 @@ describe("Mark refunded while money is still held (QA2 M4)", () => {
 			title: "Refund it in Money → Refunds",
 		});
 		expect(result.notice?.description).toMatch(/^Nothing was changed\./);
-		expect(result.notice?.description).toMatch(/dashboard/);
+		expect(result.notice?.description).toContain(
+			"start the refund in Money → Refunds anyway: Otta checks with the provider first, issues nothing, and then lets you mark the order refunded.",
+		);
+	});
+
+	test("while a refund is unresolved, the refusal says to check Money → Refunds first (review round 1)", async () => {
+		const { client } = surface("shipped", { ok: false, status: 409, reason: "REFUND_IN_FLIGHT" });
+		const result = await act(
+			client,
+			"orders:transition-refunded",
+			{ orderId: ORDER_ID, toState: "refunded", state: "shipped" },
+			OPERATOR,
+		);
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.description).toContain(
+			"A refund on this order is still unresolved — check Money → Refunds first",
+		);
 	});
 });
 

@@ -229,15 +229,21 @@ from the refund ledger:
    one: Stripe is `provider`, x402 is `outside` (it cannot refund automatically; the operator
    sends the money). For an `outside` method, Mark refunded is what records that.
 2. **Nothing is left to refund through the provider.** `unrefundedCapturedCents` = succeeded
-   payments less every refund that is not `voided` (recorded, or reserved/unverified and so
-   still holding its capacity). Zero means there is no money Money → Refunds could still return.
-3. **The provider itself reported the payment already refunded.** When a refund's pre-flight
-   answers `PROVIDER_ALREADY_REFUNDED` (refunded in the provider's dashboard), `refundOrder` now
-   flags the order for reconciliation with `PROVIDER_REFUNDED_FLAG_PREFIX` — never over an
-   already-open flag, which is left for a person. While that flag is open, Mark refunded is
-   offered. This is the path for a Stripe order refunded outside Otta: start the refund in
-   Money → Refunds; Otta checks with the provider, issues nothing, and the order can then be
-   marked refunded (and the flag resolved).
+   payments less RECORDED refunds. A reserved or unverified refund is a promise, not money back
+   (an unverified full refund may still void), so it does not count.
+3. **The provider itself reported the payment refunded in full.** When a refund's pre-flight
+   answers `PROVIDER_ALREADY_REFUNDED`, the Stripe adapter now returns its own figures (refunded,
+   captured). Refunded in full ⇒ `refundOrder` flags the order with `PROVIDER_REFUNDED_FLAG_PREFIX`,
+   and that flag unlocks Mark refunded. Refunded in part (the pre-flight also refuses an amount
+   that would over-run a partial dashboard refund) ⇒ an informational flag naming both amounts
+   ("partially refunded at the provider: 3.50 USD of 10.00 USD") that unlocks nothing. No figures
+   ⇒ no flag: unknown is not refunded. A flag is never written over an open one, except the
+   provider's own earlier answer. The unlocking flag tells the operator to mark the order refunded
+   BEFORE resolving the flag, because resolving it removes the permission.
+
+**Never while a refund is unresolved.** Whatever the above, `→ refunded` is refused with
+`REFUND_IN_FLIGHT` (and not offered) while any refund on the order is reserved or unverified —
+its outcome decides whether money is still held. This is the cancel path's rule.
 
 Otherwise the operator is sent to Money → Refunds, which returns the money and emails the buyer.
 The refusal copy says what to do about a dashboard refund.

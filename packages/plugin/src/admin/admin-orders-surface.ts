@@ -373,7 +373,10 @@ export type TransitionRefusal =
 	| "USE_CANCEL"
 	/** Mark refunded while the ledger still holds captured money its provider can
 	 *  return (QA2 M4): the money goes back through Money → Refunds. */
-	| "REFUND_THROUGH_MONEY";
+	| "REFUND_THROUGH_MONEY"
+	/** Mark refunded while a refund on the order is still reserved or unverified:
+	 *  its outcome is resolved in Money → Refunds first. */
+	| "REFUND_IN_FLIGHT";
 
 /** POST transition returns a discriminated result (like `updateSettings`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.

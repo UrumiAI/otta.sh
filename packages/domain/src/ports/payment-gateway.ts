@@ -145,7 +145,18 @@ export interface RefundInput {
  */
 export type RefundResult =
 	| { ok: true; refundRef: string; amount: Cents; currency: Currency }
-	| { ok: false; reason: RefundFailureReason };
+	| {
+			ok: false;
+			reason: RefundFailureReason;
+			/**
+			 * On `PROVIDER_ALREADY_REFUNDED`: the provider's own figures from the
+			 * pre-flight read — what it shows refunded, and what it captured, in the
+			 * payment's minor units. They tell a payment refunded IN FULL outside Otta
+			 * from a partial dashboard refund the requested amount would over-run.
+			 * Absent when the adapter cannot say.
+			 */
+			provider?: { refunded: number; captured: number };
+	  };
 
 export type RefundFailureReason =
 	| "UNSUPPORTED"

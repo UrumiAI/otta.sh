@@ -2,6 +2,7 @@ import {
 	adminNextStates,
 	manualPaymentAllowed,
 	markRefundedAllowed,
+	markRefundedRefusal,
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	unrefundedCapturedCents,
 } from "@otta-sh/domain";
@@ -75,12 +76,11 @@ describe("Mark refunded is offered only where no money is left to return through
 		expect(markRefundedAllowed(stripePaid, partly)).toBe(false);
 	});
 
-	test("nothing left to refund (in-flight rows count as returning; voided rows do not)", () => {
+	test("nothing left to refund: only RECORDED refunds count as returned; voided rows do not", () => {
 		const covered = {
 			payments: [{ amount: 1000, status: "succeeded" }],
 			refunds: [
-				{ amount: 600, status: "recorded" },
-				{ amount: 400, status: "reserved" },
+				{ amount: 1000, status: "recorded" },
 				{ amount: 1000, status: "voided" },
 			],
 		};
@@ -90,6 +90,33 @@ describe("Mark refunded is offered only where no money is left to return through
 		expect(
 			unrefundedCapturedCents({ payments: [{ amount: 1000, status: "failed" }], refunds: [] }),
 		).toBe(0);
+	});
+
+	test.each(["reserved", "unverified"])(
+		"a %s refund is not money returned: Mark refunded is refused REFUND_IN_FLIGHT and not offered",
+		(status) => {
+			const inFlight = {
+				payments: [{ amount: 1000, status: "succeeded" }],
+				refunds: [{ amount: 1000, status }],
+			};
+			expect(unrefundedCapturedCents(inFlight)).toBe(1000);
+			expect(markRefundedRefusal(stripePaid, inFlight)).toBe("REFUND_IN_FLIGHT");
+			expect(markRefundedAllowed(stripePaid, inFlight)).toBe(false);
+			expect(adminNextStates(stripePaid, inFlight)).not.toContain("refunded");
+			// Even where the provider reported it refunded, or the method is outside:
+			// an unresolved refund on the ledger is resolved first.
+			const flagged = { ...stripePaid, reconciliationFlag: `${PROVIDER_REFUNDED_FLAG_PREFIX} — x` };
+			expect(markRefundedRefusal(flagged, inFlight)).toBe("REFUND_IN_FLIGHT");
+		},
+	);
+
+	test("a PARTIAL provider refund flag does not unlock Mark refunded", () => {
+		const partial = {
+			...stripePaid,
+			reconciliationFlag:
+				"Provider shows this payment partially refunded: 3.50 USD of 10.00 USD — x",
+		};
+		expect(markRefundedRefusal(partial, CAPTURED)).toBe("REFUND_THROUGH_MONEY");
 	});
 
 	test("the provider reported the payment already refunded (the ledger's flag): offered", () => {
