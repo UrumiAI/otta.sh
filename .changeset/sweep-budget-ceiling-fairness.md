@@ -23,7 +23,9 @@ starved (QA2 M2).
 - **Order and fairness.** `cancel-intents` runs first. Then come `expire-orders`, `order-emails`,
   `hold-intents`, `expire-holds`, `late-refunds`, and housekeeping last (`LEG_PRIORITY`). A leg
   passed over three ticks in a row with work goes to the head of the next tick (`AGING_TICKS`,
-  `tickOrder`). The by-minute rotation of the lead is gone. `coupon-orphans` no longer waits for a
+  `tickOrder`); one passed over nine goes ahead of even `cancel-intents` (`STARVING_TICKS`), for
+  the hold expiry and stock-commit units that cannot fit behind an intent cancel on Free. The
+  by-minute rotation of the lead is gone. `coupon-orphans` no longer waits for a
   drained `expire-orders`: it stops its walk at an order the expiry has not reached yet.
 - **Idle ticks.** An empty outbox is no longer reported "0 (more next tick)", and `expire-orders`
   is never deferred for room it did not need. Every every-minute leg asks one "anything due?"

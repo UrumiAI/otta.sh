@@ -12,6 +12,11 @@ One order expiry costs 13 storage calls instead of 22 (a three-line order 23 ins
   so, and frees the coupon only for an order that carried one (`appliedCouponCode`).
   It also takes an optional pre-listed `due` set (`ExpireOrdersBatchOptions`), so the
   sweep's "is there any work?" read is not paid twice.
+**BREAKING for out-of-tree stores:** `OrderStore.expireWithOrder` and
+`InventoryStore.releaseAdoptedMany` are new REQUIRED port methods. A custom `OrderStore` or
+`InventoryStore` must implement both before upgrading; the expiry sweep calls them on every
+lapsed order.
+
 - **New required port methods.** `OrderStore.expireWithOrder(orderId, now)` answers
   `null` for a lost flip, else `{ order, holdsReleased }`. `InventoryStore.releaseAdoptedMany(ids, orderId)`
   is `releaseAdopted` for many ids (same per-id rule; grouped per SKU). Any custom

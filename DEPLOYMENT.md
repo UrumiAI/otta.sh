@@ -461,7 +461,9 @@ anything else spends the tick), then `expire-orders`, the outbox, `hold-intents`
 stock commit) and `expire-holds`, then `late-refunds`, and housekeeping last. Each leg may use
 only a share of the tick, never less than one unit of its own work; a leg its share stopped
 gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
-three ticks in a row with work goes to the head of the next tick. A tick that did work logs one
+three ticks in a row with work goes to the head of the next tick (right behind
+`cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
+expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
 line naming what each leg spent:
 
 ```
@@ -517,9 +519,11 @@ seven ticks and no leg waited more than six in a row; all 50 orders expired by m
 0.7 a minute, while everything else progressed too); everything was done by minute 120. With
 only an expiry backlog it is about **one order a minute**. So an order that lapses behind a
 backlog of N others on Free stays `pending` (its stock off sale; the pay page already refuses
-it) for about N to 1.5·N minutes. A store that abandons more than about one checkout a minute, or
-that wants a lapsed order's stock back on sale within a minute or two under load, has outgrown
-the Free preset.
+it) for about N to 1.5·N minutes. Free sustains about **0.7 expiries a minute** under a backlog; a
+store whose orders lapse faster than that holds their stock off sale longer and longer — raise the
+budget (the Paid preset, on Workers Paid) in that case. A store that abandons more than about one
+checkout a minute, or that wants a lapsed order's stock back on sale within a minute or two under
+load, has outgrown the Free preset.
 
 `cancel-intents` (withdrawing a lapsed or unpaid-cancelled order's Stripe PaymentIntent) runs
 first in every tick: about 5 calls per order (one of them the Stripe cancel) plus up to 5

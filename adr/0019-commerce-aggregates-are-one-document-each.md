@@ -1541,6 +1541,12 @@ reserved room for a whole 22-call unit before asking whether anything was due.
 6. **`coupon-orphans` no longer waits for a drained `expire-orders`.** It walks its window and STOPS
    at a redemption whose order is still `pending` past its hold, without moving its cursor past it,
    until the expiry has flipped that order. Same "two faults" bound, and no deferral for hours.
+   One residual of the coupon skip in 7: a coupon release for an order whose
+   `appliedCouponCode` is missing (a redemption the expiry therefore did not free) waits for this
+   leg — up to its fifteen-minute cadence plus any aging wait (`AGING_TICKS`, at most
+   `STARVING_TICKS` under a backlog) — before the use is returned. Safe direction: the coupon
+   looks one use fuller than it is meanwhile.
+
 7. **One order expiry is 13 calls, not 22** (a three-line order 23, not 40). The use-case no longer
    re-reads the order the flip wrote and no longer releases its holds a second time
    (`OrderStore.expireWithOrder` answers the flip and the expired order in one call). It releases
@@ -1560,6 +1566,16 @@ reserved room for a whole 22-call unit before asking whether anything was due.
    candidate (about three calls), not to a candidate and a flip. A dead cart it examines is healed
    out of the index, and a live hold found with no room left is flipped next tick, as the first
    candidate.
+
+9. **Review round (same date).** A refusal a leg's body SWALLOWED (a unit loop that catches
+   each unit's failure, as the kv cursor store does a write) still marks the leg incomplete and
+   unstamped: the budget remembers which leg it refused. Legs with no trailing write keep back one
+   call (the cadence state), not two. And a static invariant (`cron-leg-costs.test.ts`) checks one
+   unit of every leg against one intent cancel and the tick's fixed reads on Free: every leg fits
+   except `expire-holds` (~20 with its list) and `hold-intents` (~15). For those two the
+   **starvation guard** puts a leg passed over `STARVING_TICKS` (9) ticks in a row ahead of even
+   `cancel-intents`, once, except in a tick a late refund leads; ordinary aging only places a leg
+   right behind it.
 
 **Measured** (`cron-sweep-backlog.test.ts`: a backlog in every leg at once on the Free preset — 50
 lapsed orders, ten with a payable intent, ten abandoned carts, five paid orders owing their commit
