@@ -97,6 +97,8 @@ export class TickBudget {
 	#legsDone = false;
 	readonly #byLeg = new Map<string, number>();
 	readonly #refused = new Set<string>();
+	#commitLeft = 0;
+	#overrun = 0;
 
 	constructor(clock: () => number, startedAtMs: number, limits: TickBudgetLimits) {
 		this.#clock = clock;
@@ -125,7 +127,12 @@ export class TickBudget {
 	 */
 	countQuery(): void {
 		const ceiling = this.ceiling();
-		if (this.#queries >= ceiling) {
+		if (this.#queries >= ceiling && this.#commitLeft > 0) {
+			// The record of an external action already taken (QA3 N2): allowed past the
+			// ceiling, within the window `allowCommit` opened, and counted as overrun.
+			this.#commitLeft--;
+			this.#overrun++;
+		} else if (this.#queries >= ceiling) {
 			// Remembered per leg, so a leg that SWALLOWED the refusal (a unit loop that
 			// catches each unit's failure) is still known to have stopped short.
 			if (this.#currentLeg !== null) this.#refused.add(this.#currentLeg);
@@ -158,7 +165,39 @@ export class TickBudget {
 			return await body();
 		} finally {
 			this.#currentLeg = previous;
+			this.endCommit();
 		}
+	}
+
+	/**
+	 * THE COMMIT WINDOW (QA3 N2). A provider call has just happened — an email went
+	 * out, an intent was withdrawn — and the next few calls RECORD it (mark the email
+	 * sent, resolve the intent). Refusing those leaves the action unrecorded, and the
+	 * next tick does it again: QA saw "Checkout expired" emails sent twice and three
+	 * times, each first send in a tick stopped at the ceiling part-way through a unit.
+	 * So for at most `calls` calls, until `endCommit` (the leg's next unit check, or
+	 * the leg's end), the ceiling does not refuse. The legs check before the provider
+	 * call that its record fits (`headroom`), so this only matters when an estimate
+	 * is wrong — and then a tick overruns its budget by at most the window, which
+	 * `overrunQueries` reports, rather than repeating an email.
+	 */
+	allowCommit(calls: number): void {
+		this.#commitLeft = calls;
+	}
+
+	/** Close the commit window (see `allowCommit`). */
+	endCommit(): void {
+		this.#commitLeft = 0;
+	}
+
+	/** Calls the ceiling still admits this tick (outside a commit window). */
+	headroom(): number {
+		return Math.max(0, this.ceiling() - this.#queries);
+	}
+
+	/** Calls made past the ceiling inside commit windows this tick. */
+	overrunQueries(): number {
+		return this.#overrun;
 	}
 
 	/** Whether the ceiling refused a call made by `leg` this tick — whether or not

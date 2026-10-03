@@ -301,6 +301,26 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  *  One page either way: this costs rows, not queries. */
 const EXPIRY_LOOKAHEAD = 10;
 
+/**
+ * QA3 N2 — the calls a provider unit needs AFTER its last pre-check: checked before
+ * the provider call (`headroom`), and allowed past the ceiling once the call has
+ * happened (`allowCommit`), so an action is never repeated for want of its record.
+ *  - An email, from just before the send: the refund-total and recipient reads (two),
+ *    building the sender (two kv reads, the first send), the request (one), and
+ *    marking it sent (three: the read, the write, the locator) — eight.
+ *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
+ *    subrequests), the intent's resolution (two) and, on a last attempt, the
+ *    give-up flag (two) — six; its record is the last four.
+ * A late-refund resume needs no window: its unit gate already demands room for a
+ * whole resume (`LEG_QUERY_COSTS`), and a resume interrupted after the create is
+ * re-driven under the SAME idempotency key, which Stripe answers with the refund it
+ * already made — no second refund.
+ */
+const EMAIL_SEND_AND_RECORD_CALLS = 8;
+const EMAIL_RECORD_CALLS = 3;
+const CANCEL_CALL_AND_RECORD_CALLS = 6;
+const CANCEL_RECORD_CALLS = 4;
+
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
 	"expire-holds": "expiry",
@@ -466,7 +486,13 @@ export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds
  */
 export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonly unit: number }> =
 	{
-		"order-emails": { entry: 0, unit: 8 },
+		// The claim (its page, the read and the write: three), the order read, and then
+		// EMAIL_SEND_AND_RECORD_CALLS: the
+		// reads before the send, building the real sender (two kv reads, the first
+		// send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
+		// check; 8 counted only an injected sender, and the ceiling then fell after the
+		// send — the duplicate emails of N2.
+		"order-emails": { entry: 0, unit: 12 },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
 		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
@@ -521,7 +547,7 @@ function expireHoldsEntry(expiryBatch: number): number {
  * Free (30): 1 hold, 1 order, 1 email a tick (QA2 M2: a bite of 2 holds made the
  * hold leg's list alone 6 calls, and it could not start behind the money legs'
  * due checks — a second unit never fits a Free tick anyway). Paid (600): 18
- * holds/orders, 22 emails — the time budget, not the count, usually ends a Paid
+ * holds/orders, 15 emails — the time budget, not the count, usually ends a Paid
  * tick first.
  */
 export function batchesFor(queryBudget: number): {
@@ -766,6 +792,9 @@ export interface CommerceSweepOptions {
 	readonly legBodies?: Partial<Record<SweepLeg, (ctx: PluginContext) => Promise<number>>>;
 	readonly emailSenderFactory?: (
 		requestTimeoutMs: () => number,
+		/** The tick's COUNTED context — what the real sender builds from, so a suite
+		 *  can model its kv reads and its request as the budget sees them. */
+		ctx: PluginContext,
 	) => Promise<EmailSender | undefined>;
 }
 
@@ -1127,8 +1156,15 @@ export async function runCommerceSweeps(
 		await run(
 			"order-emails",
 			async (legBudget) => {
-				const emailSender = outboxSender(ctx, options, legBudget);
-				if (emailSender === undefined) return { count: 0, skipped: true };
+				const provider = outboxSender(ctx, options, legBudget);
+				if (provider === undefined) return { count: 0, skipped: true };
+				// A delivered email is RECORDED, whatever the ceiling says (QA3 N2).
+				const emailSender: EmailSender = {
+					async send(input) {
+						await provider.send(input);
+						budget.allowCommit(EMAIL_RECORD_CALLS);
+					},
+				};
 				const batchLimit = batchLeft("order-emails", emailLimit);
 				if (batchLimit === 0) return { count: 0 };
 				assertSweepLimit(batchLimit);
@@ -1150,13 +1186,19 @@ export async function runCommerceSweeps(
 					},
 					{
 						batchLimit,
-						shouldContinue: () => gate(),
+						shouldContinue: () => {
+							budget.endCommit();
+							return gate();
+						},
 						// Asked again just before the send: the claim and the order/customer
-						// reads take time of their own. Too little left, and the row goes back
-						// untried — its attempt not counted — rather than being sent with a
-						// timeout too short to succeed.
+						// reads take time of their own. Too little left — time, or calls for
+						// the rest of the unit INCLUDING marking it sent (QA3 N2: never send
+						// what cannot be recorded) — and the row goes back untried, its
+						// attempt not counted.
 						canSend: () => {
-							const ok = legBudget.remainingMs() >= MIN_SEND_MS;
+							const ok =
+								legBudget.remainingMs() >= MIN_SEND_MS &&
+								budget.headroom() >= EMAIL_SEND_AND_RECORD_CALLS;
 							if (!ok) legBudget.stopped = true;
 							return ok;
 						},
@@ -1390,14 +1432,22 @@ export async function runCommerceSweeps(
 					{
 						orderStore: stores.orderStore,
 						clock: { now: () => now },
-						gateways: sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
+						// A withdrawal is RECORDED, whatever the ceiling says (QA3 N2).
+						gateways: recordingCancels(
+							sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
+							() => budget.allowCommit(CANCEL_RECORD_CALLS),
+						),
 					},
 					{
 						limit,
 						shouldContinue: () => gate(),
 						due: await intentCancelsDueIds(),
 						canStartCancel: () => {
-							const ok = legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS;
+							budget.endCommit();
+							// Time for a whole cancel, and calls for it AND its record.
+							const ok =
+								legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS &&
+								budget.headroom() >= CANCEL_CALL_AND_RECORD_CALLS;
 							if (!ok) legBudget.stopped = true;
 							return ok;
 						},
@@ -1750,6 +1800,35 @@ function sweepGateways(
 	};
 }
 
+/** The gateways, each `cancelIntent` followed by `afterCall` once it has returned —
+ *  what opens the commit window for the withdrawal's record. */
+function recordingCancels(
+	gateways: () => Promise<PaymentGateways>,
+	afterCall: () => void,
+): () => Promise<PaymentGateways> {
+	return async () => {
+		const resolved = await gateways();
+		const wrapped: PaymentGateways = {};
+		for (const [method, gateway] of Object.entries(resolved)) {
+			if (gateway === undefined) continue;
+			wrapped[method as keyof PaymentGateways] = {
+				...gateway,
+				id: gateway.id,
+				refundable: gateway.refundable,
+				createIntent: (input) => gateway.createIntent(input),
+				verifyConfirmation: (raw) => gateway.verifyConfirmation(raw),
+				refund: (input) => gateway.refund(input),
+				async cancelIntent(input) {
+					const result = await gateway.cancelIntent(input);
+					afterCall();
+					return result;
+				},
+			};
+		}
+		return wrapped;
+	};
+}
+
 /**
  * The outbox's sender, or `undefined` when this deployment has none.
  *
@@ -1776,7 +1855,7 @@ function outboxSender(
 		Math.max(1, Math.min(SWEEP_EMAIL_SEND_TIMEOUT_MS, legBudget.remainingMs()));
 	let built: Promise<EmailSender | undefined> | undefined;
 	const attempt = async (input: Parameters<EmailSender["send"]>[0]): Promise<void> => {
-		built ??= factory(timeoutMs);
+		built ??= factory(timeoutMs, ctx);
 		const sender = await built;
 		// Unreachable while the URL check above and `makeEmailSender` agree; a throw
 		// here is a failed send, rescheduled like any other.
