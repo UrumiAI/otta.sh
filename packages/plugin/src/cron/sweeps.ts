@@ -105,31 +105,39 @@
  *    more just before it. A send cut off either way is handed back WITHOUT
  *    counting an attempt (`releaseEmailClaim`): a timeout is not a provider
  *    failure, and a row must never be parked `failed` for our own deadline;
- *  - each of the three critical legs may use only a SHARE of the tick (never less
- *    than one unit of its own work), so a hung provider or a hold backlog cannot
- *    take it all;
+ *  - each leg may use only a SHARE of the tick (never less than one unit of its own
+ *    work), so a hung provider or a backlog cannot take it all — and a leg its share
+ *    stopped gets a SECOND PASS on whatever the tick has left once every leg has had
+ *    its turn (a share is a cap, not a reservation);
  *  - the expiry legs take bounded bites (`expiryBatchLimit`), so a backlog drains
- *    over several ticks instead of eating one.
+ *    over several ticks instead of eating one;
+ *  - and the counter itself refuses any call past the budget
+ *    (`SweepQueryCeilingError`, see `tick-budget.ts`): the backstop for a unit
+ *    whose estimate was wrong. Every call is attributed to its leg, and a tick that
+ *    did work logs one line saying what each leg spent.
  *
- * The three CRITICAL legs — the outbox (a customer is waiting on it) and the two
- * expiry legs (stock back on sale) — run before everything else, and take turns
- * LEADING by minute: on the Free preset one unit of real work is most of the
- * budget, so under a backlog the leader is often the only one that can run, and
- * a fixed order would let one leg's backlog starve the other two. Then the
- * completers, then the scans.
+ * THE ORDER (QA2 M2, `LEG_PRIORITY` and `tickOrder`). `cancel-intents` first —
+ * a due payment intent is withdrawn before anything can spend the tick — then the
+ * money legs (`expire-orders`, `hold-intents`, `expire-holds`), the outbox, the
+ * late-refund retry, and housekeeping last. Priority alone starves on the Free
+ * preset (QA saw legs deferred for hours), so a leg passed over `AGING_TICKS`
+ * ticks in a row with work goes to the head of the next tick: no leg waits
+ * without bound, however busy the others are. `cron-sweep-backlog.test.ts`
+ * simulates a backlog in every leg and pins the numbers.
  *
  * AND THE SCANS KEEP THEIR OLD CADENCE. The task is due every minute now (the
  * site's Worker cron's own resolution), which is what holds and mail need. The
- * four scan legs (`MAINTENANCE_LEGS`) are a different cost: each reads up to
+ * four scan legs and the sign-in challenge prune (`MAINTENANCE_LEGS`) are a
+ * different cost: each reads up to
  * `maxPages` pages of a collection, and `reporting-heal` re-reconciles the closed
  * day, on every run. Fifteen times the reads would buy nothing — they heal crash
  * residue, which is rare and not customer-visible within minutes — so each runs
  * only when `MAINTENANCE_LEG_INTERVAL_MS` has passed since it last COMPLETED (a
  * stamp in the cursor store). A scan the budget deferred or cut short is not
  * stamped, so it is due again on the very next tick. The other legs are not
- * free when idle — each issues its discovery read (one query, a little more for
- * the outbox claim and the settings read) — but that is a handful of queries a
- * minute, not a page budget.
+ * free when idle — each asks one indexed "anything due?" read, and the tick reads
+ * its setting and cadence state — eight queries an idle minute, not a page budget.
+ * A leg the budget deferred last tick is not asked again (its work is known).
  *
  * THE HOLD TTL IS THE ADMIN'S SETTING. One settings read per tick feeds
  * `expireHolds`' `ttlMs` — the same `holdTtlMinutes` the in-process client reads
@@ -153,8 +161,11 @@ import {
 	type OrderState,
 } from "@otta-sh/domain";
 import {
+	CARTS_COLLECTION,
 	collectionOf,
 	COUPON_REDEMPTIONS_COLLECTION,
+	EmdashReportingStore,
+	isScanPageLimitError,
 	ORDER_SKU_INDEX_COLLECTION,
 	orderSkuIndexId,
 	orderSkuKeys,
@@ -184,19 +195,17 @@ import {
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
 import type { PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
-import { type LegBudget, type LegShare, TickBudget, WHOLE_TICK } from "./tick-budget.js";
+import {
+	isSweepQueryCeilingError,
+	type LegBudget,
+	type LegShare,
+	TickBudget,
+	WHOLE_TICK,
+} from "./tick-budget.js";
 
-/** The eleven legs in PRIORITY order, since a tick that runs out of budget defers
- *  whatever is left: the three critical legs (the outbox, then the two expiry
- *  legs — which of the three LEADS rotates by minute, see the head comment), then
- *  the intent-cancel drain (late-payment PREVENTION, right behind the expiry it
- *  follows, so an order expired this tick has its intent withdrawn this tick),
- *  then the self-narrowing completers, then the four scans, then the BEST-EFFORT
- *  `late-refunds` retry (ADR-0022's 2026-10-02 amendment) — last, because a
- *  Stripe round trip is the most expensive unit any leg has and nothing a
- *  customer is waiting on may be deferred for it. `coupon-orphans` must stay
- *  after `expire-orders`: its `expired` arm is that leg's retry. A summary always
- *  lists the legs in THIS order, whichever critical leg led. */
+/** The eleven legs in the order a SUMMARY lists them (and the order the sweep ran
+ *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
+ *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
 	"order-emails",
 	"expire-holds",
@@ -215,16 +224,72 @@ export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
  * The legs that run on the slow cadence rather than every tick: the four that walk
- * a collection (or a whole closed day) on every run. The other five find their
- * work from a predicate that narrows as the work completes, so an idle run is one
- * empty query — cheap enough for every minute.
+ * a collection (or a whole closed day) on every run, and the sign-in challenge
+ * prune. The others find their work from a predicate that narrows as the work
+ * completes, so an idle run is one empty query — cheap enough for every minute.
  */
 export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
+	// Not a scan, but housekeeping on the same footing (QA2 M2): expired and used
+	// sign-in challenges are refused at verify time whatever this does, so deleting
+	// them is storage hygiene, not something a customer waits on — and its two
+	// discovery reads every minute were a fifteenth of an idle Free tick.
+	"prune-challenges",
 	"sku-transfers",
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
 ];
+
+/**
+ * The order a tick runs its legs in (QA2 M2), before aging (`tickOrder`):
+ *
+ *  1. `cancel-intents` — ALWAYS first: an intent due at its order's hold deadline is
+ *     withdrawn before anything else can spend the tick, so no lapsed order stays
+ *     payable while the expiry catches up (late-payment prevention).
+ *  2. `expire-orders` (stock back on sale), then `order-emails` (a customer who
+ *     just paid is waiting on the confirmation — one email is about eight calls),
+ *     then `hold-intents` (a paid order's stock commit, an expired one's release;
+ *     the hold already took the units off sale, so the commit is bookkeeping that
+ *     must happen, not stock a shopper can see), then `expire-holds` (stock held
+ *     by abandoned carts — the costliest unit, about twenty calls on Free);
+ *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
+ *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
+ *  4. housekeeping: `prune-challenges` and the four scans. `coupon-orphans` stays
+ *     after `expire-orders`, though it no longer depends on it finishing.
+ *
+ * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
+ */
+export const LEG_PRIORITY: readonly SweepLeg[] = [
+	"cancel-intents",
+	"expire-orders",
+	"order-emails",
+	"hold-intents",
+	"expire-holds",
+	"late-refunds",
+	"prune-challenges",
+	"sku-transfers",
+	"order-sku-index",
+	"reporting-heal",
+	"coupon-orphans",
+];
+
+/**
+ * After this many ticks in a row passed over with work (deferred by the budget, or
+ * not reached at all), a leg goes to the head of the next tick, right behind
+ * `cancel-intents` (QA2 M2's starvation fix). Three: long enough that a one-minute
+ * spike does not reorder the tick, short enough that a paid order's stock commit
+ * waits minutes, not hours.
+ */
+export const AGING_TICKS = 3;
+
+/** The legs with a per-tick batch, and which batch. */
+const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
+	"expire-holds": "expiry",
+	"expire-orders": "expiry",
+	"order-emails": "email",
+	"cancel-intents": "intentCancels",
+	"late-refunds": "lateRefunds",
+};
 
 /** How often a maintenance leg runs: the fifteen minutes the WHOLE sweep used to
  *  wait, kept for the legs whose read cost it was actually bounding. */
@@ -330,6 +395,18 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// late-payment refund — so `minimumQueryBudget` ignores it. On the Workers Free
 	// preset under an expiry backlog it waits behind the critical legs.
 	"cancel-intents": { time: 0.2, queries: 0.3 },
+	// QA2 M2: a leg without a share took everything left, so under a backlog the
+	// first housekeeping leg (or the stock-commit completer, behind a crash) spent
+	// the rest of every tick and the ones after it waited for aging to rescue them.
+	// Capped, the tick's leftovers are spread; the floor still holds one unit each.
+	"hold-intents": { time: 0.5, queries: 0.5 },
+	"prune-challenges": { time: 0.2, queries: 0.2 },
+	"sku-transfers": { time: 0.3, queries: 0.3 },
+	"order-sku-index": { time: 0.3, queries: 0.3 },
+	// Larger: each attempt at a day owing its first heal re-reads the day's pages
+	// before it can absorb anything, so a thin slice is mostly overhead.
+	"reporting-heal": { time: 0.6, queries: 0.6 },
+	"coupon-orphans": { time: 0.3, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
@@ -340,9 +417,9 @@ export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds
  * What a leg's calls cost before its first checked unit (`entry`) and per unit
  * (`unit`), in storage/kv/egress calls. MEASURED — `cron-leg-costs.test.ts` runs
  * one real unit of each leg through the counting context against SQLite and
- * fails if any exceeds its figure here (one order expiry is 22 calls: the guarded
- * flip, the re-read, the adopted hold's release and the coupon release, each a
- * read plus a compare-and-set or two); they matter only until a loop has seen a real unit, after which
+ * fails if any exceeds its figure here (one order expiry is 13 calls since QA2 M2,
+ * 22 before: the guarded flip, the email locator, the rollup delta, the batched
+ * hold release and the intent stamp); they matter only until a loop has seen a real unit, after which
  * its gate uses the slowest observed. Without them a leg's first unit — and its
  * unchecked entry reads — would always be admitted, and on Workers Free one
  * `hold-intents` row alone is a third of the budget. `expire-holds` adds two calls
@@ -353,12 +430,21 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 	{
 		"order-emails": { entry: 0, unit: 8 },
 		"expire-holds": { entry: 2, unit: 14 },
-		"expire-orders": { entry: 1, unit: 22 },
+		// The flip, the email locator, the rollup delta, the batched hold release and
+		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
+		// costs more, and the gate learns it from the first unit it sees.
+		"expire-orders": { entry: 1, unit: 13 },
 		"hold-intents": { entry: 1, unit: 14 },
-		"prune-challenges": { entry: 2, unit: 0 },
+		// entry: the two arms' first page reads; unit: one delete.
+		"prune-challenges": { entry: 2, unit: 1 },
 		"sku-transfers": { entry: 2, unit: 12 },
 		"order-sku-index": { entry: 2, unit: 3 },
-		"reporting-heal": { entry: 1, unit: 3 },
+		// unit: one closed day's reads (its currencies, its pin, a page of orders, a
+		// page of claims, the commit: about five) and room to absorb at least one claim
+		// (two calls) — a day owing its first heal must make PROGRESS when admitted,
+		// not spend its whole allowance re-reading pages. The leg bounds a bigger day
+		// by the calls it has left (`healReportingRollups`), so it never exceeds them.
+		"reporting-heal": { entry: 1, unit: 8 },
 		"coupon-orphans": { entry: 2, unit: 7 },
 		// entry: resolving the gateways (their secret kv reads: 2 for Stripe, up to 3
 		// more with x402 configured) — once, and only when a unit needs them. The due
@@ -374,6 +460,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"cancel-intents": { entry: 5, unit: 5 },
 	};
 
+/** What examining one cart in the hold listing costs, at most: the cart (already in
+ *  the page), its reservations' liveness reads, and a heal write for a dead one. */
+const LIST_CANDIDATE_CALLS = 3;
+
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
  *  listed candidate (it lists `batch + 1`). */
 function expireHoldsEntry(expiryBatch: number): number {
@@ -384,12 +474,15 @@ function expireHoldsEntry(expiryBatch: number): number {
 /**
  * The per-tick bites a query budget can afford, from the MEASURED costs: as many
  * units as the leg's share holds, each with its list read (about two calls per
- * candidate) — between 2 and 50 for the expiry legs, 1 and 25 for the outbox.
+ * candidate) — between 1 and 50 for the expiry legs, 1 and 25 for the outbox.
  * Sized from the budget rather than left to the per-unit checks because the
  * expiry LIST (`batch + 1` candidates) is read before those checks run.
  *
- * Free (30): 2 holds/orders, 1 email. Paid (600): 18 holds/orders, 22 emails —
- * the time budget, not the count, usually ends a Paid tick first.
+ * Free (30): 1 hold, 1 order, 1 email a tick (QA2 M2: a bite of 2 holds made the
+ * hold leg's list alone 6 calls, and it could not start behind the money legs'
+ * due checks — a second unit never fits a Free tick anyway). Paid (600): 18
+ * holds/orders, 22 emails — the time budget, not the count, usually ends a Paid
+ * tick first.
  */
 export function batchesFor(queryBudget: number): {
 	expiry: number;
@@ -402,7 +495,7 @@ export function batchesFor(queryBudget: number): {
 	const holdShare = LEG_SHARES["expire-holds"]?.queries ?? 1;
 	const emailShare = LEG_SHARES["order-emails"]?.queries ?? 1;
 	return {
-		expiry: clampInt((queryBudget * holdShare) / holds, 2, 50),
+		expiry: clampInt((queryBudget * holdShare) / holds, 1, 50),
 		email: clampInt((queryBudget * emailShare) / emails, 1, 25),
 		// Best-effort Stripe round trips: at most a handful a minute even on Paid.
 		lateRefunds: clampInt(
@@ -465,10 +558,11 @@ export function lateRefundStripeOptions(legBudget: RefundTimeBudget): BoundedRef
  *  read. */
 const TICK_OVERHEAD_QUERIES = 2;
 
-/** What an IDLE tick spends before the last leg, MEASURED (DEPLOYMENT.md §5: "an
- *  idle tick is 8 queries"): the overhead plus every other leg's discovery read.
- *  A budget that cannot hold this plus one late-refund unit is one where that leg
- *  can never run last — so there, and only there, it leads. */
+/** What an IDLE tick spends, MEASURED (DEPLOYMENT.md §5: "an idle tick is 8
+ *  queries"): the setting and cadence-state reads plus one "anything due?" read for
+ *  each every-minute leg. A budget that cannot hold this plus one late-refund unit
+ *  is one where that leg can never run behind the others — so there, and only
+ *  there, it leads. */
 const IDLE_TICK_QUERIES = 8;
 
 /**
@@ -521,6 +615,9 @@ export interface SweepLegOutcome {
 	/** Loud, human-readable markers a leg wants surfaced (a genuinely lost hold).
 	 *  Also logged, and — for a hold anomaly — written to the order itself. */
 	readonly anomalies?: readonly string[];
+	/** The storage, kv and egress calls this leg made this tick, its due check
+	 *  included (QA2 M2: a tick's spend is visible by leg). */
+	readonly queries: number;
 }
 
 /** One tick's report. Always returned — a leg that threw is a row in here. */
@@ -537,6 +634,8 @@ export interface CommerceSweepSummary {
 		readonly expiryBatch: number;
 		readonly emailBatch: number;
 		readonly queriesUsed: number;
+		/** Calls made outside every leg: the setting read and the cadence state. */
+		readonly overheadQueries: number;
 	};
 }
 
@@ -591,7 +690,7 @@ export interface CommerceSweepOptions {
 	 *  instant so its own bookkeeping counts. Default: when this call began. */
 	readonly startedAtMs?: number;
 	/** Most holds, and most orders, each expiry leg attempts per tick. Default:
-	 *  scaled from the query budget (`batchesFor`) — 2 on the Free preset, 50 on Paid. */
+	 *  scaled from the query budget (`batchesFor`) — 1 on the Free preset, 18 on Paid. */
 	readonly expiryBatchLimit?: number;
 	/** Most outbox rows the email leg claims per tick. Default: scaled from the
 	 *  query budget — 10 on the Free preset, 25 on Paid. */
@@ -711,12 +810,23 @@ export async function runCommerceSweeps(
 	const emailLimit = options.emailBatchLimit ?? batches.email;
 	const lateRefundLimit = options.lateRefundBatch ?? batches.lateRefunds;
 	const intentCancelLimit = options.intentCancelBatch ?? batches.intentCancels;
+	const batchLimits = {
+		expiry: expiryLimit,
+		email: emailLimit,
+		intentCancels: intentCancelLimit,
+		lateRefunds: lateRefundLimit,
+	};
 	const state = await readState(cursors);
 	let stateChanged = false;
-	const legs: SweepLegOutcome[] = [];
+	const legs: Omit<SweepLegOutcome, "queries">[] = [];
 	const deferredByBudget: SweepLeg[] = [];
+	const stoppedAtCeiling: SweepLeg[] = [];
+	/** Legs that ran (or found nothing) this tick, and legs that waited. */
+	const reached = new Set<SweepLeg>();
+	const waited = new Set<SweepLeg>();
 
 	const noteDeferral = (leg: SweepLeg): void => {
+		waited.add(leg);
 		const streak = (state.deferrals[leg] ?? 0) + 1;
 		state.deferrals[leg] = streak;
 		stateChanged = true;
@@ -727,35 +837,107 @@ export async function runCommerceSweeps(
 			);
 		}
 	};
+	const clearDeferral = (leg: SweepLeg): void => {
+		reached.add(leg);
+		if ((state.deferrals[leg] ?? 0) > 0) {
+			delete state.deferrals[leg];
+			stateChanged = true;
+		}
+	};
+
+	/** Set for the work-conserving second pass (see below): a leg runs again on
+	 *  what the tick has left, with no share cap, and its outcome is merged. */
+	let secondPass = false;
+	/** Legs the BUDGET stopped (their share, not their batch) — the second pass's
+	 *  candidates — and the units each batched leg has done, so a second go never
+	 *  passes the per-tick batch. */
+	const stoppedByBudget = new Set<SweepLeg>();
+	const unitsDone: Partial<Record<SweepLeg, number>> = {};
+	const batchLeft = (leg: SweepLeg, limit: number): number =>
+		// A malformed limit passes through untouched, so the use-case refuses it loudly.
+		Number.isInteger(limit) && limit > 0 ? Math.max(0, limit - (unitsDone[leg] ?? 0)) : limit;
+	const noteUnits = (leg: SweepLeg, count: number, legBudget: LegBudget): void => {
+		unitsDone[leg] = (unitsDone[leg] ?? 0) + count;
+		if (legBudget.stopped) stoppedByBudget.add(leg);
+	};
+	const record = (outcome: Omit<SweepLegOutcome, "queries">): void => {
+		const earlier = legs.findIndex((entry) => entry.leg === outcome.leg);
+		if (earlier === -1) {
+			legs.push(outcome);
+			return;
+		}
+		const first = legs[earlier]!;
+		// A second go the budget could not start leaves the first outcome as it was.
+		if (outcome.deferred === true) return;
+		legs[earlier] = {
+			...first,
+			...outcome,
+			count: first.count + outcome.count,
+			...(first.anomalies !== undefined || outcome.anomalies !== undefined
+				? { anomalies: [...(first.anomalies ?? []), ...(outcome.anomalies ?? [])] }
+				: {}),
+		};
+		if (outcome.incomplete !== true) delete (legs[earlier] as { incomplete?: true }).incomplete;
+	};
 
 	const run = async (
 		leg: SweepLeg,
-		body: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok">>,
+		body: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok" | "queries">>,
 		hooks: LegHooks = {},
 	): Promise<void> => {
+		if (secondPass) {
+			await runAgain(leg, body, hooks);
+			return;
+		}
 		const maintenance = MAINTENANCE_LEGS.includes(leg);
+		// A malformed per-tick batch fails its leg LOUDLY on every tick, before any due
+		// check — never an idle-looking leg that quietly sweeps nothing forever.
+		const batch = BATCHED[leg];
+		if (batch !== undefined) {
+			try {
+				assertSweepLimit(batchLimits[batch]);
+			} catch (err) {
+				record(failedOutcome(leg, err));
+				reached.add(leg);
+				console.error(`[otta] cron sweep ${leg} FAILED:`, err);
+				return;
+			}
+		}
 		if (maintenance && !isDue(state.lastRun[leg], now)) {
 			// Quiet on purpose: four "not due" lines a minute would bury the lines
 			// that matter. The summary still lists the leg.
-			legs.push({ leg, ok: true, count: 0, notDue: true });
+			record({ leg, ok: true, count: 0, notDue: true });
+			reached.add(leg);
 			return;
 		}
-		// A best-effort leg asks first whether it has ANY work (one query). Idle, it
-		// is not "deferred" — there was nothing to defer — so no line, no warning
-		// and no state write; only a leg with work due can be deferred.
-		if (hooks.isDue !== undefined) {
+		// A leg with a cheap "is there any work?" check (one query) asks it first. Idle,
+		// it is not "deferred" — there was nothing to defer — so no line, no warning and
+		// no state write; only a leg with work due can be deferred.
+		// A leg the budget deferred LAST tick with work known is not asked again: its
+		// due check would cost a query a tick for an answer already in hand, and under
+		// a backlog those reads were a sixth of a Free tick. It goes straight to its
+		// budget check; if it runs and the work has gone, it simply finds nothing.
+		const knownDue = (state.deferrals[leg] ?? 0) > 0 && hooks.cheapDueCheck !== true;
+		if (hooks.isDue !== undefined && !knownDue) {
 			if (!budget.leg(WHOLE_TICK).canStart(1, 0)) {
 				// Not even room to ask. The summary says "not reached" (`deferred`), but
-				// quietly — no line, no streak — since nothing says there is work.
-				legs.push({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
+				// quietly — no line, no streak — since nothing says there is work. It still
+				// WAITED, which is what ages it to the head of a later tick.
+				record({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
+				waited.add(leg);
 				return;
 			}
-			if (!(await hooks.isDue())) {
-				legs.push({ leg, ok: true, count: 0 });
-				if ((state.deferrals[leg] ?? 0) > 0) {
-					delete state.deferrals[leg];
-					stateChanged = true;
-				}
+			let due: boolean;
+			try {
+				due = await budget.charge(leg, hooks.isDue);
+			} catch (err) {
+				record(failedOutcome(leg, err));
+				reached.add(leg);
+				return;
+			}
+			if (!due) {
+				record({ leg, ok: true, count: hooks.extraCount?.() ?? 0 });
+				clearDeferral(leg);
 				return;
 			}
 		}
@@ -764,33 +946,30 @@ export async function runCommerceSweeps(
 		// refuses the limit loudly — rather than a NaN quietly deferring it forever.
 		const entry = leg === "expire-holds" ? expireHoldsEntry(expiryLimit) : costs.entry;
 		// A share never shrinks a leg below ONE unit of its own work: on the Free
-		// preset one order expiry is most of the budget, and a share smaller than
-		// that would refuse the leg on every tick, silently, forever.
+		// preset one order expiry is most of a share, and a share smaller than that
+		// would refuse the leg on every tick, silently, forever.
 		const legBudget = budget.leg(LEG_SHARES[leg] ?? WHOLE_TICK, entry + costs.unit);
 		if (!legBudget.canStart(entry, costs.unit)) {
-			legs.push({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
+			record({ leg, ok: true, count: hooks.extraCount?.() ?? 0, deferred: true });
 			deferredByBudget.push(leg);
 			noteDeferral(leg);
 			return;
 		}
 		try {
-			const result = await body(legBudget);
+			const result = await budget.charge(leg, () => body(legBudget));
 			const outcome = {
 				leg,
 				ok: true,
 				...result,
 				count: result.count + (hooks.extraCount?.() ?? 0),
 			};
-			legs.push(outcome);
+			record(outcome);
 			if (outcome.deferred === true) {
-				// Deferred by its own body (a dependency), which logged why.
+				// Deferred by its own body, which logged why.
 				noteDeferral(leg);
 				return;
 			}
-			if ((state.deferrals[leg] ?? 0) > 0) {
-				delete state.deferrals[leg];
-				stateChanged = true;
-			}
+			clearDeferral(leg);
 			logOutcome(outcome);
 			// A scan cut short is NOT stamped: it resumes on the very next tick, from
 			// its cursor, rather than waiting out another interval.
@@ -799,13 +978,23 @@ export async function runCommerceSweeps(
 				stateChanged = true;
 			}
 		} catch (err) {
+			if (isSweepQueryCeilingError(err)) {
+				// The backstop fired: this leg's unit cost more than its estimate. Not a
+				// failure — the call was refused before it was made, every write before it
+				// was a guarded unit — and the leg resumes next tick. Loud, because an
+				// estimate that is too low is a bug in LEG_QUERY_COSTS.
+				record({ leg, ok: true, count: hooks.extraCount?.() ?? 0, incomplete: true });
+				stoppedAtCeiling.push(leg);
+				clearDeferral(leg);
+				console.warn(
+					`[otta] cron sweep ${leg} stopped at the tick's query ceiling (${String(err.ceiling)})` +
+						" part-way through a unit; it resumes next tick",
+				);
+				return;
+			}
 			// One label, one catch — a leg that throws must not starve the rest.
-			legs.push({
-				leg,
-				ok: false,
-				count: 0,
-				error: err instanceof Error ? err.message : String(err),
-			});
+			record(failedOutcome(leg, err));
+			reached.add(leg);
 			console.error(`[otta] cron sweep ${leg} FAILED:`, err);
 			// A FAILED scan is stamped: retrying a broken full scan every minute would
 			// multiply its cost and its error log by fifteen and fix nothing. It is
@@ -817,112 +1006,216 @@ export async function runCommerceSweeps(
 		}
 	};
 
-	const orderEmailsLeg = async (): Promise<void> =>
-		await run("order-emails", async (legBudget) => {
-			const emailSender = outboxSender(ctx, options, legBudget);
-			// Still `undefined` on a deployment whose bundle carries no email API URL,
-			// and that reports `skipped` rather than pretending to drain the outbox — an
-			// undrained outbox and a silently discarded one look identical from here.
-			if (emailSender === undefined) return { count: 0, skipped: true };
-			const batchLimit = emailLimit;
-			assertSweepLimit(batchLimit);
-			// Checked before each CLAIM, so a stop never strands a leased row; and only
-			// when a send could still finish inside the leg (`MIN_SEND_MS` at least).
-			const gate = legBudget.gate(MIN_SEND_MS, LEG_QUERY_COSTS["order-emails"].unit);
-			let claimsAllowed = 0;
-			const count = await dispatchOrderEmails(
-				{
-					orderStore: stores.orderStore,
-					emailSender,
-					customerStore: stores.customerStore,
-					clock: stores.clock,
-				},
-				{
-					batchLimit,
-					shouldContinue: () => {
-						if (!gate()) return false;
-						claimsAllowed++;
-						return true;
+	/** The second pass's run: no due check (the first pass found work), the whole
+	 *  of what is left as the cap, no deferral bookkeeping. */
+	const runAgain = async (
+		leg: SweepLeg,
+		body: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok" | "queries">>,
+		hooks: LegHooks,
+	): Promise<void> => {
+		const costs = LEG_QUERY_COSTS[leg];
+		const entry = leg === "expire-holds" ? expireHoldsEntry(expiryLimit) : costs.entry;
+		const legBudget = budget.leg(WHOLE_TICK, entry + costs.unit);
+		if (!legBudget.canStart(entry, costs.unit)) return;
+		try {
+			const result = await budget.charge(leg, () => body(legBudget));
+			const outcome = { leg, ok: true, ...result, count: result.count };
+			record(outcome);
+			logOutcome(outcome);
+			if (MAINTENANCE_LEGS.includes(leg) && outcome.incomplete !== true) {
+				state.lastRun[leg] = nowIso;
+				stateChanged = true;
+			}
+		} catch (err) {
+			if (isSweepQueryCeilingError(err)) {
+				stoppedAtCeiling.push(leg);
+				console.warn(
+					`[otta] cron sweep ${leg} stopped at the tick's query ceiling (${String(err.ceiling)})` +
+						" part-way through a unit; it resumes next tick",
+				);
+				return;
+			}
+			record({ ...failedOutcome(leg, err), count: hooks.extraCount?.() ?? 0 });
+			console.error(`[otta] cron sweep ${leg} FAILED:`, err);
+		}
+	};
+
+	// ── the legs ──────────────────────────────────────────────────────────────
+
+	// Whether this deployment can send at all: an unwired outbox reports `skipped`
+	// without asking the store anything.
+	const canSendEmail =
+		options.emailSender !== undefined ||
+		options.emailSenderFactory !== undefined ||
+		(IN_PROCESS_EGRESS_URLS.emailApiUrl !== undefined &&
+			IN_PROCESS_EGRESS_URLS.emailApiUrl.length > 0);
+	const orderEmailsLeg = async (): Promise<void> => {
+		if (!canSendEmail) {
+			const outcome = { leg: "order-emails" as const, ok: true, count: 0, skipped: true };
+			record(outcome);
+			reached.add("order-emails");
+			logOutcome(outcome);
+			return;
+		}
+		await run(
+			"order-emails",
+			async (legBudget) => {
+				const emailSender = outboxSender(ctx, options, legBudget);
+				if (emailSender === undefined) return { count: 0, skipped: true };
+				const batchLimit = batchLeft("order-emails", emailLimit);
+				if (batchLimit === 0) return { count: 0 };
+				assertSweepLimit(batchLimit);
+				// Checked before each CLAIM, so a stop never strands a leased row; and only
+				// when a send could still finish inside the leg (`MIN_SEND_MS` at least).
+				const gate = legBudget.gate(MIN_SEND_MS, LEG_QUERY_COSTS["order-emails"].unit);
+				// Counted from the store's own answer, so "more left" means a row was
+				// actually claimed — an empty outbox is never "0 (more next tick)".
+				let claimed = 0;
+				const orderStore = countClaims(stores.orderStore, () => {
+					claimed++;
+				});
+				const count = await dispatchOrderEmails(
+					{
+						orderStore,
+						emailSender,
+						customerStore: stores.customerStore,
+						clock: stores.clock,
 					},
-					// Asked again just before the send: the claim and the order/customer
-					// reads take time of their own. Too little left, and the row goes back
-					// untried — its attempt not counted — rather than being sent with a
-					// timeout too short to succeed.
-					canSend: () => {
-						const ok = legBudget.remainingMs() >= MIN_SEND_MS;
-						if (!ok) legBudget.stopped = true;
-						return ok;
+					{
+						batchLimit,
+						shouldContinue: () => gate(),
+						// Asked again just before the send: the claim and the order/customer
+						// reads take time of their own. Too little left, and the row goes back
+						// untried — its attempt not counted — rather than being sent with a
+						// timeout too short to succeed.
+						canSend: () => {
+							const ok = legBudget.remainingMs() >= MIN_SEND_MS;
+							if (!ok) legBudget.stopped = true;
+							return ok;
+						},
+						// Alertable: past ten timeouts a provider is not slow but not working,
+						// and from here each timeout counts toward parking the row.
+						onRepeatedTimeouts: (row) => {
+							console.error(
+								`[otta] cron sweep order-emails: the email provider has timed out ${String(row.timeouts)} times` +
+									` on outbox row ${row.id} (order ${String(row.orderId)}); further timeouts now count as` +
+									" failed attempts and the email will be parked — check the email provider",
+							);
+						},
 					},
-					// Alertable: past ten timeouts a provider is not slow but not working,
-					// and from here each timeout counts toward parking the row.
-					onRepeatedTimeouts: (row) => {
-						console.error(
-							`[otta] cron sweep order-emails: the email provider has timed out ${String(row.timeouts)} times` +
-								` on outbox row ${row.id} (order ${String(row.orderId)}); further timeouts now count as` +
-								" failed attempts and the email will be parked — check the email provider",
-						);
-					},
-				},
-			);
-			// The dispatcher reports only what it sent, so "more left" is inferred: the
-			// budget stopped it, or every claim the batch allowed was taken. The second
-			// can also mean the outbox emptied on exactly the last claim — reported as
-			// `incomplete` then, harmlessly, since the next tick finds nothing.
-			return legResult(count, legBudget.stopped || claimsAllowed >= batchLimit);
-		});
+				);
+				noteUnits("order-emails", claimed, legBudget);
+				// "More left": the budget stopped it with a claim still to try, or every
+				// claim the batch allowed found a row. The second can also mean the outbox
+				// emptied on exactly the last claim — reported `incomplete` then, harmlessly,
+				// since the next tick finds nothing.
+				return legResult(count, legBudget.stopped || claimed >= batchLimit);
+			},
+			{
+				// One indexed read: is any outbox row due? The claim re-applies the same
+				// predicate, so a "yes" here that a peer drains first costs one claim query.
+				isDue: async () =>
+					(
+						await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).query({
+							where: { emailDueAt: { lte: nowIso } },
+							limit: 1,
+						})
+					).items.length > 0,
+			},
+		);
+	};
 
 	const expireHoldsLeg = async (): Promise<void> =>
-		await run("expire-holds", async (legBudget) => {
-			// The parity gap, closed: ONE settings read per tick drives the TTL that
-			// both the cart hold and this sweep are measured against.
-			const settings = await stores.settingsStore.get();
-			return batchOutcome(
-				await expireHoldsBatch(
-					{
-						cartStore: stores.cartStore,
-						inventoryStore: stores.inventory,
-						clock: stores.clock,
-						ttlMs: settings.holdTtlMinutes * 60_000,
-					},
-					now,
-					{
-						limit: expiryLimit,
-						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-holds"].unit),
-						// The candidate list's own bound: each cart it examines costs a call
-						// or two, and a run of carts that yield nothing must not be read in
-						// full. Its own gate, so list rows are not mistaken for flips — and
-						// sized to keep room for ONE flip after the next candidate, or the
-						// list could spend the leg's whole share and expire nothing, every
-						// tick.
-						shouldContinueListing: legBudget.gate(0, 2 + LEG_QUERY_COSTS["expire-holds"].unit),
-					},
-				),
-			);
-		});
-	const expireOrdersLeg = async (): Promise<void> =>
-		await run("expire-orders", async (legBudget) =>
-			batchOutcome(
-				await expireOrdersBatch(
-					{
-						orderStore: stores.orderStore,
-						inventoryStore: stores.inventory,
-						couponStore: stores.couponStore,
-						clock: stores.clock,
-					},
-					now,
-					{
-						limit: expiryLimit,
-						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
-					},
-				),
-			),
+		await run(
+			"expire-holds",
+			async (legBudget) => {
+				// The parity gap, closed: ONE settings read per tick drives the TTL that
+				// both the cart hold and this sweep are measured against.
+				const limit = batchLeft("expire-holds", expiryLimit);
+				if (limit === 0) return { count: 0 };
+				const settings = await stores.settingsStore.get();
+				return batchOutcome(
+					await expireHoldsBatch(
+						{
+							cartStore: stores.cartStore,
+							inventoryStore: stores.inventory,
+							clock: stores.clock,
+							ttlMs: settings.holdTtlMinutes * 60_000,
+						},
+						now,
+						{
+							limit,
+							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-holds"].unit),
+							// The candidate list's own bound: each cart it examines costs a call
+							// or three, and a run of carts that yield nothing must not be read in
+							// full. Its own gate, so list rows are not mistaken for flips. Sized
+							// to the candidate, not to a candidate AND a flip (QA2 M2): on the Free
+							// preset that left room to examine one cart a tick, so a run of dead
+							// carts ahead of a live hold took a tick each. A dead cart the list
+							// examines is HEALED out of the index — progress, not waste — and a
+							// live hold it finds with no room left to flip is flipped next tick,
+							// when it is the first candidate.
+							shouldContinueListing: legBudget.gate(0, LIST_CANDIDATE_CALLS),
+						},
+					),
+					(count) => noteUnits("expire-holds", count, legBudget),
+					// A list the budget cut short reads as "drained" to the use-case (it got
+					// a short list); it is not — more carts may be lapsed behind it.
+					legBudget.stopped,
+				);
+			},
+			{
+				// One indexed read: does any cart's derived hold deadline say "lapsed"? The
+				// listing then decides which holds really can be expired (and heals a dead
+				// cart's index so it stops matching).
+				isDue: async () =>
+					(
+						await collectionOf(storage, CARTS_COLLECTION).query({
+							where: { holdExpiresAt: { lte: nowIso } },
+							limit: 1,
+						})
+					).items.length > 0,
+			},
 		);
-	// ── late-refunds: best-effort, LAST — except where a resume unit cannot fit as
-	// the last leg at all (the Workers Free preset: one unit, ~26 calls with its
-	// entry, needs a tick nothing else has spent yet). There it LEADS one tick per
-	// maintenance interval when it has work, capped at ONE unit, which is what lets
-	// a Free store make progress at all — at the price of the critical legs going
-	// second in that one minute. On Paid it never leads.
+
+	// The due check IS the leg's list (`expiryLimit + 1` orders, so a longer backlog
+	// still reads as not drained), read once and handed to the domain.
+	let expirable: Promise<readonly OrderId[]> | undefined;
+	const expirableIds = (): Promise<readonly OrderId[]> =>
+		(expirable ??= stores.orderStore.listExpirable(nowIso, { limit: expiryLimit + 1 }));
+	const expireOrdersLeg = async (): Promise<void> =>
+		await run(
+			"expire-orders",
+			async (legBudget) => {
+				const limit = batchLeft("expire-orders", expiryLimit);
+				if (limit === 0) return { count: 0 };
+				return batchOutcome(
+					await expireOrdersBatch(
+						{
+							orderStore: stores.orderStore,
+							inventoryStore: stores.inventory,
+							couponStore: stores.couponStore,
+							clock: stores.clock,
+						},
+						now,
+						{
+							limit,
+							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
+							due: await expirableIds(),
+						},
+					),
+					(count) => noteUnits("expire-orders", count, legBudget),
+				);
+			},
+			{ isDue: async () => (await expirableIds()).length > 0, cheapDueCheck: true },
+		);
+
+	// ── late-refunds: best-effort — except where a resume unit cannot fit behind the
+	// money legs at all (the Workers Free preset: one unit, ~26 calls with its entry,
+	// needs a tick nothing else has spent yet). There it LEADS (right after the
+	// intent-cancel drain) one tick per maintenance interval when it has work, capped
+	// at ONE unit, which is what lets a Free store make progress at all. On Paid it
+	// never leads.
 	// The due check IS the resume step's list (`lateRefundLimit` orders), read once
 	// per tick and handed to the domain, so the leg never pays for its list twice.
 	let lateRefundsDue: Promise<readonly OrderId[]> | undefined;
@@ -930,9 +1223,16 @@ export async function runCommerceSweeps(
 		(lateRefundsDue ??= stores.orderStore.listRefundRetriesDue(nowIso, lateRefundLimit));
 	const lateRefundsAreDue = async (): Promise<boolean> => (await lateRefundsDueIds()).length > 0;
 	let lateRefundsRan = false;
+	let lateRefundsEscalated = 0;
 	const lateRefundsLeg = async (leading = false): Promise<void> => {
 		if (lateRefundsRan) return;
 		lateRefundsRan = true;
+		if (leading) {
+			// Stamped when the lead is TRIED: one attempt per interval, admitted or not,
+			// so a lead the tick cannot fit does not keep the money legs waiting.
+			state.lastRun["late-refunds"] = nowIso;
+			stateChanged = true;
+		}
 		const limit = leading ? 1 : lateRefundLimit;
 		await run(
 			"late-refunds",
@@ -944,6 +1244,7 @@ export async function runCommerceSweeps(
 				// unit needs it (see `lateRefundStripeOptions`). The domain re-drives the
 				// SAME key, so a resume can never be a second refund.
 				assertSweepLimit(limit);
+
 				const gate = legBudget.gate(LATE_REFUND_MIN_UNIT_MS, LEG_QUERY_COSTS["late-refunds"].unit);
 				const count = await retryLatePaymentRefunds(
 					{
@@ -952,180 +1253,357 @@ export async function runCommerceSweeps(
 						clock: { now: () => now },
 						gateways: sweepGateways(ctx, options, lateRefundStripeOptions(legBudget)),
 					},
-					{ limit, shouldContinue: gate, due: await lateRefundsDueIds() },
+					{ limit, shouldContinue: () => gate(), due: await lateRefundsDueIds() },
 				);
 				return legResult(count, legBudget.stopped || count >= limit);
 			},
-			{ isDue: lateRefundsAreDue, extraCount: () => lateRefundsEscalated },
+			{ isDue: lateRefundsAreDue, extraCount: () => lateRefundsEscalated, cheapDueCheck: true },
 		);
 	};
-	// When late-refund work is due, the head of the tick does ONE of two things:
-	//  - where a unit cannot fit as the last leg, once per maintenance interval, the
-	//    leg LEADS with one unit (its resume step gives a refund past the ~3-day
-	//    limit up itself, without a provider call);
-	//  - otherwise the give-up ESCALATION runs — no provider call, its own age-ranked
-	//    list and a few calls — so a refund the resume step cannot afford is still
-	//    handed to a human within a tick of passing the limit, instead of
-	//    "retrying" forever.
-	// The due check is one query, so an idle tick pays exactly that.
-	// IDLE_TICK_QUERIES was measured before `cancel-intents` existed; its idle due
-	// check is one more query ahead of this leg.
+	// IDLE_TICK_QUERIES was measured with every every-minute leg's due check; a
+	// budget that cannot hold that plus one late-refund unit is one where that leg
+	// can never run behind the others — so there, and only there, it leads.
 	const lateRefundsMustLead =
 		queryBudget <
 		IDLE_TICK_QUERIES +
 			1 +
-			1 +
 			LEG_QUERY_COSTS["late-refunds"].entry +
 			LEG_QUERY_COSTS["late-refunds"].unit +
 			RESERVE_QUERIES;
-	let lateRefundsEscalated = 0;
-	if (await lateRefundsAreDue()) {
-		if (lateRefundsMustLead && isDue(state.lastRun["late-refunds"], now)) {
-			state.lastRun["late-refunds"] = nowIso;
-			stateChanged = true;
-			await lateRefundsLeg(true);
-		} else {
-			const escalation = budget.leg(WHOLE_TICK, 1 + LATE_REFUND_ESCALATION_UNIT);
-			if (escalation.canStart(1, LATE_REFUND_ESCALATION_UNIT)) {
-				try {
-					lateRefundsEscalated = await escalateStaleLateRefunds(
+
+	// The due check IS the leg's list, read once and handed to the domain.
+	let intentCancelsDue: Promise<readonly OrderId[]> | undefined;
+	const intentCancelsDueIds = (): Promise<readonly OrderId[]> =>
+		(intentCancelsDue ??= stores.orderStore.listIntentCancelsDue(nowIso, intentCancelLimit));
+	// At the HEAD of the tick, the intents of the orders this tick's expiry bite is
+	// about to flip are left for the run right after that flip (below): a store that
+	// waits for the expiry before withdrawing an intent would otherwise push them
+	// back a recheck interval here, and the expiry's own run would then find them not
+	// yet due. Every other due intent — including a lapsed order the bite will not
+	// reach this tick — is withdrawn at the head. The list is the expiry's own (one
+	// read, shared).
+	const intentCancelsAtHead = async (): Promise<readonly OrderId[]> => {
+		const due = await intentCancelsDueIds();
+		if (due.length === 0) return due;
+		const bite = new Set((await expirableIds()).slice(0, batchLeft("expire-orders", expiryLimit)));
+		return due.filter((id) => !bite.has(id));
+	};
+	const cancelIntentsLeg = async (): Promise<void> =>
+		await run(
+			"cancel-intents",
+			async (legBudget) => {
+				// Late-payment PREVENTION, in its own leg — never inside `expire-orders`, so
+				// a provider's latency or outage can never slow the stock release — and FIRST
+				// in every tick: an intent due at its order's hold deadline is withdrawn
+				// before the expiry (or anything else) can spend the tick, so a backlog of
+				// lapsed orders never leaves one payable. Each unit admitted by the tick's
+				// gate with room for one WHOLE cancel, the gateways resolved once (from the
+				// counted context) and only when a unit needs them. A cancel is never
+				// started with less than `INTENT_CANCEL_CALL_MS` left and is never clipped
+				// below it — so a timeout is always the provider's, and the tick running out
+				// costs no attempt. A transient failure is rescheduled by the domain and
+				// retried by this leg on a later tick — nothing else retries it.
+				const limit = batchLeft("cancel-intents", intentCancelLimit);
+				if (limit === 0) return { count: 0 };
+				assertSweepLimit(limit);
+				const gate = legBudget.gate(INTENT_CANCEL_CALL_MS, LEG_QUERY_COSTS["cancel-intents"].unit);
+				const count = await cancelDueIntents(
+					{
+						orderStore: stores.orderStore,
+						clock: { now: () => now },
+						gateways: sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
+					},
+					{
+						limit,
+						shouldContinue: () => gate(),
+						due: secondPass ? await intentCancelsDueIds() : await intentCancelsAtHead(),
+						canStartCancel: () => {
+							const ok = legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS;
+							if (!ok) legBudget.stopped = true;
+							return ok;
+						},
+					},
+				);
+				noteUnits("cancel-intents", count, legBudget);
+				return legResult(count, legBudget.stopped || count >= limit);
+			},
+			{ isDue: async () => (await intentCancelsAtHead()).length > 0, cheapDueCheck: true },
+		);
+
+	const holdIntentsLeg = async (): Promise<void> =>
+		await run(
+			"hold-intents",
+			async (legBudget) => await completeHoldIntents(storage, stores, nowIso, options, legBudget),
+			{
+				// One indexed read: does any order owe hold work? (`holdsPendingAt` goes
+				// null as the work completes, so this narrows by itself.)
+				isDue: async () =>
+					(
+						await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).query({
+							where: { holdsPendingAt: { lte: nowIso } },
+							limit: 1,
+						})
+					).items.length > 0,
+			},
+		);
+
+	const runners: Record<SweepLeg, () => Promise<void>> = {
+		"cancel-intents": cancelIntentsLeg,
+		"expire-orders": expireOrdersLeg,
+		"hold-intents": holdIntentsLeg,
+		"expire-holds": expireHoldsLeg,
+		"order-emails": orderEmailsLeg,
+		"late-refunds": () => lateRefundsLeg(),
+		"prune-challenges": async () =>
+			await run("prune-challenges", async (legBudget) => {
+				// Bounded: the prune deletes one row per call, and a pile of expired
+				// sign-in challenges must not spend a whole tick (QA2 M2) — a check before
+				// each delete, the rest next tick.
+				const gate = legBudget.gate(0, 1);
+				const count = await stores.credentialVerifier.pruneChallenges(nowIso, {
+					shouldContinue: () => gate(),
+				});
+				return legResult(count, legBudget.stopped);
+			}),
+		"sku-transfers": async () =>
+			await run(
+				"sku-transfers",
+				async (legBudget) => await sweepSkuTransfers(storage, stores, cursors, options, legBudget),
+			),
+		"order-sku-index": async () =>
+			await run(
+				"order-sku-index",
+				async (legBudget) =>
+					await healOrderSkuIndex(storage, stores, now, cursors, options, legBudget),
+			),
+		"reporting-heal": async () =>
+			await run(
+				"reporting-heal",
+				async (legBudget) =>
+					await healReportingRollups(
+						storage,
+						stores,
+						now,
+						cursors,
+						options,
+						legBudget,
+						queryBudget,
+					),
+			),
+		"coupon-orphans": async () =>
+			await run(
+				"coupon-orphans",
+				async (legBudget) =>
+					await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget),
+			),
+	};
+
+	// ── the order ─────────────────────────────────────────────────────────────
+	//
+	// `cancel-intents` first (late-payment prevention: an intent due at its order's
+	// deadline is withdrawn before anything else can spend the tick) — except in the
+	// one tick per interval a Free store's late-refund resume leads (below). Then any
+	// leg that has WAITED `AGING_TICKS` ticks in a row with work — longest wait first —
+	// so no leg is starved however busy the others are. Then the rest in
+	// `LEG_PRIORITY`: the money legs ahead of the customer-facing outbox, and both
+	// ahead of housekeeping.
+	// When late-refund work is due, the head of the tick does ONE of two things:
+	//  - where a unit cannot fit behind the others (the Workers Free preset), once
+	//    per maintenance interval, the leg LEADS with one unit — AHEAD of even
+	//    `cancel-intents`: a resume is about 25 calls and needs a tick nothing else
+	//    has touched, and the money it returns has already been taken. That tick's
+	//    intent cancels and expiries wait one minute together, so no order expires
+	//    with its intent still live. (Its resume step gives a refund past the ~3-day
+	//    limit up itself, without a provider call.)
+	//  - otherwise the give-up ESCALATION runs, right after `cancel-intents` — no
+	//    provider call, its own age-ranked list and a few calls — so a refund the
+	//    resume step cannot afford is still handed to a human within a tick of passing
+	//    the limit, instead of "retrying" forever.
+	// The due check is one query, so an idle tick pays exactly that.
+	const lateRefundsDueNow = budget.leg(WHOLE_TICK).canStart(1, 0)
+		? await budget.charge("late-refunds", lateRefundsAreDue).catch(() => false)
+		: false;
+	const leadsThisTick =
+		lateRefundsDueNow && lateRefundsMustLead && isDue(state.lastRun["late-refunds"], now);
+	if (leadsThisTick) await lateRefundsLeg(true);
+
+	await runners["cancel-intents"]();
+
+	if (lateRefundsDueNow && !leadsThisTick) {
+		const escalation = budget.leg(WHOLE_TICK, 1 + LATE_REFUND_ESCALATION_UNIT);
+		if (escalation.canStart(1, LATE_REFUND_ESCALATION_UNIT)) {
+			try {
+				lateRefundsEscalated = await budget.charge("late-refunds", () =>
+					escalateStaleLateRefunds(
 						{
 							orderStore: stores.orderStore,
 							paymentEventStore: stores.paymentEventStore,
 							clock: { now: () => now },
 						},
 						{ shouldContinue: escalation.gate(0, LATE_REFUND_ESCALATION_UNIT) },
-					);
-				} catch (err) {
-					console.error("[otta] cron sweep late-refunds escalation FAILED:", err);
-				}
+					),
+				);
+			} catch (err) {
+				console.error("[otta] cron sweep late-refunds escalation FAILED:", err);
 			}
 		}
 	}
 
-	// ROTATE which critical leg leads. One unit of real work is most of the Free
-	// preset's budget (an order expiry is ~23 calls of 30), so under a backlog the
-	// leg that runs first is often the only one that can — and a fixed order would
-	// let the first leg's backlog starve the other two forever. Rotating by minute
-	// gives each the head of the tick one minute in three; a leg with nothing to do
-	// costs only its discovery read, so an idle leader leaves the rest for the
-	// others. (On the Paid preset all three usually run every tick.)
-	const critical = [orderEmailsLeg, expireHoldsLeg, expireOrdersLeg];
-	const lead = Math.floor(now.getTime() / 60_000) % critical.length;
-	for (let k = 0; k < critical.length; k++) {
-		await critical[(lead + k) % critical.length]!();
-	}
-
-	// The due check IS the leg's list, read once and handed to the domain.
-	let intentCancelsDue: Promise<readonly OrderId[]> | undefined;
-	const intentCancelsDueIds = (): Promise<readonly OrderId[]> =>
-		(intentCancelsDue ??= stores.orderStore.listIntentCancelsDue(nowIso, intentCancelLimit));
-	await run(
-		"cancel-intents",
-		async (legBudget) => {
-			// Late-payment PREVENTION, in its own leg — never inside `expire-orders`, so
-			// a provider's latency or outage can never slow the stock release. Drains the
-			// intents that came DUE (at their order's hold, or at an unpaid cancel); each
-			// unit admitted by the tick's gate with room for one WHOLE cancel, the
-			// gateways resolved once (from the counted context) and only when a unit
-			// needs them. A cancel is never started with less than
-			// `INTENT_CANCEL_CALL_MS` left and is never clipped below it — so a timeout
-			// is always the provider's, and the tick running out costs no attempt. A
-			// transient failure is rescheduled by the domain and retried by this leg on
-			// a later tick — nothing else retries it.
-			assertSweepLimit(intentCancelLimit);
-			const gate = legBudget.gate(INTENT_CANCEL_CALL_MS, LEG_QUERY_COSTS["cancel-intents"].unit);
-			const count = await cancelDueIntents(
-				{
-					orderStore: stores.orderStore,
-					clock: { now: () => now },
-					gateways: sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
-				},
-				{
-					limit: intentCancelLimit,
-					shouldContinue: gate,
-					due: await intentCancelsDueIds(),
-					canStartCancel: () => {
-						const ok = legBudget.remainingMs() >= INTENT_CANCEL_CALL_MS;
-						if (!ok) legBudget.stopped = true;
-						return ok;
-					},
-				},
-			);
-			return legResult(count, legBudget.stopped || count >= intentCancelLimit);
-		},
-		{ isDue: async () => (await intentCancelsDueIds()).length > 0 },
-	);
-
-	await run(
-		"hold-intents",
-		async (legBudget) => await completeHoldIntents(storage, stores, nowIso, options, legBudget),
-	);
-
-	await run("prune-challenges", async () => ({
-		count: await stores.credentialVerifier.pruneChallenges(nowIso),
-	}));
-
-	await run(
-		"sku-transfers",
-		async (legBudget) => await sweepSkuTransfers(storage, stores, cursors, options, legBudget),
-	);
-
-	await run(
-		"order-sku-index",
-		async (legBudget) => await healOrderSkuIndex(storage, stores, now, cursors, options, legBudget),
-	);
-
-	await run(
-		"reporting-heal",
-		async (legBudget) => await healReportingRollups(stores, now, cursors, options, legBudget),
-	);
-
-	await run("coupon-orphans", async (legBudget) => {
-		// The `expired` arm is the retry for a release `expire-orders` owed, and it
-		// relies on that leg having run to the end in this same tick: a redemption it
-		// judges while an overdue order is still `pending` is stepped over for good.
-		// So a tick whose `expire-orders` did not finish defers this leg instead.
-		const expiry = legs.find((entry) => entry.leg === "expire-orders");
-		if (
-			expiry === undefined ||
-			!expiry.ok ||
-			expiry.deferred === true ||
-			expiry.incomplete === true
-		) {
-			console.log(
-				"[otta] cron sweep coupon-orphans deferred: expire-orders did not finish this tick",
-			);
-			return { count: 0, deferred: true };
+	const order = tickOrder(state.waits);
+	for (const leg of order) {
+		if (leg === "cancel-intents") continue;
+		await runners[leg]();
+		// An expiry that flipped orders this tick may have made their intents due (a
+		// store that schedules the withdrawal at the flip): one more due check, so
+		// they are withdrawn in the same tick rather than the next.
+		if (leg === "expire-orders" && (unitsDone["expire-orders"] ?? 0) > 0) {
+			intentCancelsDue = undefined;
+			secondPass = true;
+			await runners["cancel-intents"]();
+			secondPass = false;
 		}
-		return await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget);
-	});
-
-	await lateRefundsLeg();
-
-	if (deferredByBudget.length > 0) {
-		console.log(
-			`[otta] cron sweep deferred to the next tick: ${deferredByBudget.join(", ")}` +
-				` (${String(budget.elapsedMs())}ms of ${String(budget.limits.ms)}ms,` +
-				` ${String(budget.queriesUsed())} of ${String(budget.limits.queries)} queries)`,
-		);
 	}
+
+	// THE SECOND PASS. A share is a cap, not a reservation — but a cap alone wastes
+	// what the legs after a capped leg did not need: a Free tick with only an expiry
+	// backlog would stop at one order with half its budget unspent. So a leg that
+	// stopped with work left (and not at the ceiling) goes again, in the same order,
+	// on whatever the tick has left — the money legs first. Its due list is read
+	// again, since the first pass consumed the one it had.
+	expirable = undefined;
+	intentCancelsDue = undefined;
+	secondPass = true;
+	for (const leg of ["cancel-intents" as const, ...order.filter((x) => x !== "cancel-intents")]) {
+		const first = legs.find((entry) => entry.leg === leg);
+		if (first === undefined || first.ok !== true || first.incomplete !== true) continue;
+		// Only a leg its SHARE stopped: one that used its whole per-tick batch is done
+		// for this tick, and one the ceiling stopped has nothing left to spend.
+		if (!stoppedByBudget.has(leg) || stoppedAtCeiling.includes(leg)) continue;
+		if (leg === "late-refunds") continue;
+		stoppedByBudget.delete(leg);
+		await runners[leg]();
+	}
+	secondPass = false;
+
+	// ── after the legs ────────────────────────────────────────────────────────
+
+	// The aging record: a leg that waited (deferred, or not reached) adds a tick; a
+	// leg that ran, or found nothing to do, starts again from zero.
+	for (const leg of SWEEP_LEGS) {
+		const before = state.waits[leg] ?? 0;
+		if (waited.has(leg) && !reached.has(leg)) {
+			state.waits[leg] = before + 1;
+			stateChanged = true;
+		} else if (reached.has(leg) && before > 0) {
+			delete state.waits[leg];
+			stateChanged = true;
+		}
+	}
+
+	budget.finishLegs();
+	logTick(budget, legs, deferredByBudget, stoppedAtCeiling);
 	if (stateChanged) await cursors.write(STATE_CURSOR, JSON.stringify(state));
 
-	const order = (leg: SweepLeg): number => SWEEP_LEGS.indexOf(leg);
-	legs.sort((x, y) => order(x.leg) - order(y.leg));
+	const listed = (leg: SweepLeg): number => SWEEP_LEGS.indexOf(leg);
+	const reported = legs
+		.map((entry) => ({ ...entry, queries: budget.queriesFor(entry.leg) }))
+		.toSorted((x, y) => listed(x.leg) - listed(y.leg));
 	return {
 		task,
 		scheduledAt: nowIso,
-		legs,
+		legs: reported,
 		budget: {
 			timeMs: budget.limits.ms,
 			queries: budget.limits.queries,
 			expiryBatch: expiryLimit,
 			emailBatch: emailLimit,
 			queriesUsed: budget.queriesUsed(),
+			overheadQueries: budget.overheadQueries(),
 		},
 	};
+}
+
+/** A leg that threw: its own row, never a rejected tick. */
+function failedOutcome(leg: SweepLeg, err: unknown): Omit<SweepLegOutcome, "queries"> {
+	return { leg, ok: false, count: 0, error: err instanceof Error ? err.message : String(err) };
+}
+
+/**
+ * This tick's leg order (after `cancel-intents`, which always runs first): every leg
+ * that has waited at least `AGING_TICKS` ticks in a row, longest wait first (ties:
+ * the lower-priority leg first), then the rest in `LEG_PRIORITY`.
+ *
+ * THE FAIRNESS RULE (QA2 M2). Priority alone starves: on the Workers Free preset
+ * under a backlog the first leg or two spend the tick, and QA saw `coupon-orphans`
+ * deferred 180 ticks in a row, `sku-transfers` 175, `hold-intents` 145 — a paid
+ * order's stock commit two hours late. Aging bounds that: a leg passed over for
+ * `AGING_TICKS` ticks goes to the head of the next one, where its share always holds
+ * one unit of its work. With every leg backlogged at once the aged legs take turns
+ * at the head, so each still runs within a bounded number of ticks (the backlog
+ * suite pins it).
+ */
+export function tickOrder(waits: Partial<Record<SweepLeg, number>>): SweepLeg[] {
+	const rank = (leg: SweepLeg): number => LEG_PRIORITY.indexOf(leg);
+	// Equal waits: the LOWER-priority leg first — the higher one runs right after it
+	// anyway in the ordinary order, and it is the lower one that keeps losing.
+	const aged = LEG_PRIORITY.filter((leg) => (waits[leg] ?? 0) >= AGING_TICKS).toSorted(
+		(x, y) => (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x),
+	);
+	return [...aged, ...LEG_PRIORITY.filter((leg) => !aged.includes(leg))];
+}
+
+/**
+ * The tick's one summary line, when it did anything worth reading: what it spent,
+ * by leg (and the tick's own reads), and what it left for the next tick. An idle
+ * tick — every leg found nothing — is silent.
+ */
+function logTick(
+	budget: TickBudget,
+	legs: readonly Omit<SweepLegOutcome, "queries">[],
+	deferred: readonly SweepLeg[],
+	stoppedAtCeiling: readonly SweepLeg[],
+): void {
+	const busy = legs.some(
+		(entry) => entry.count > 0 || entry.incomplete === true || entry.ok === false,
+	);
+	if (!busy && deferred.length === 0 && stoppedAtCeiling.length === 0) return;
+	const spent = SWEEP_LEGS.filter((leg) => budget.queriesFor(leg) > 0).map(
+		(leg) => `${leg} ${String(budget.queriesFor(leg))}`,
+	);
+	spent.push(`tick ${String(budget.overheadQueries())}`);
+	console.log(
+		`[otta] cron sweep used ${String(budget.queriesUsed())} of ${String(budget.limits.queries)} queries` +
+			` (${String(budget.elapsedMs())}ms of ${String(budget.limits.ms)}ms): ${spent.join(", ")}` +
+			(deferred.length > 0 ? `; deferred to the next tick: ${deferred.join(", ")}` : "") +
+			(stoppedAtCeiling.length > 0
+				? `; stopped at the ceiling: ${stoppedAtCeiling.join(", ")}`
+				: ""),
+	);
+}
+
+/**
+ * The order store, counting each `claimNextEmail` that came back with a row. A
+ * delegating object rather than a proxy: the store's `#private` fields need their
+ * own receiver.
+ */
+function countClaims<S extends object>(store: S, onClaim: () => void): S {
+	return new Proxy(store, {
+		get(target, prop) {
+			const value: unknown = Reflect.get(target, prop, target);
+			if (typeof value !== "function") return value;
+			if (prop === "claimNextEmail") {
+				return async (...args: unknown[]) => {
+					const row: unknown = await (value as (...a: unknown[]) => Promise<unknown>).apply(
+						target,
+						args,
+					);
+					if (row !== null && row !== undefined) onClaim();
+					return row;
+				};
+			}
+			return (value as (...a: unknown[]) => unknown).bind(target);
+		},
+	});
 }
 
 // ── budget, cadence & logging ───────────────────────────────────────────────
@@ -1248,6 +1726,12 @@ function outboxSender(
 				if (isEmailSendTimeoutError(err)) {
 					throw new EmailSendTimeoutError(limitMs, { cutShort });
 				}
+				// The tick's query ceiling refused a call inside the send (building the
+				// sender reads kv): that is the sweep's own limit, never the provider's
+				// failure — handed back due at once, uncounted, like a send cut short.
+				if (isSweepQueryCeilingError(err)) {
+					throw new EmailSendTimeoutError(limitMs, { cutShort: true });
+				}
 				throw err;
 			} finally {
 				clearTimeout(timer);
@@ -1266,7 +1750,7 @@ let loggedSkipped = false;
  * tick a minute, nine idle lines would bury the lines that matter. Failures
  * (`console.error`) and deferrals (their own line) are logged elsewhere.
  */
-function logOutcome(outcome: SweepLegOutcome): void {
+function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 	if (outcome.skipped === true) {
 		if (!loggedSkipped) {
 			loggedSkipped = true;
@@ -1285,11 +1769,18 @@ function logOutcome(outcome: SweepLegOutcome): void {
 	}
 }
 
-function batchOutcome(result: { count: number; drained: boolean }): {
+function batchOutcome(
+	result: { count: number; drained: boolean },
+	onUnits?: (count: number) => void,
+	cutShort = false,
+): {
 	count: number;
 	incomplete?: true;
 } {
-	return result.drained ? { count: result.count } : { count: result.count, incomplete: true };
+	onUnits?.(result.count);
+	return result.drained && !cutShort
+		? { count: result.count }
+		: { count: result.count, incomplete: true };
 }
 
 function isDue(lastRunIso: string | undefined, now: Date): boolean {
@@ -1306,6 +1797,9 @@ function isDue(lastRunIso: string | undefined, now: Date): boolean {
 interface LegHooks {
 	/** One cheap query: is there any work? `false` ⇒ a quiet, idle leg. */
 	readonly isDue?: () => Promise<boolean>;
+	/** The due check is the leg's own work list, which its body needs anyway — so
+	 *  it is always asked (the "deferred last tick" shortcut saves nothing). */
+	readonly cheapDueCheck?: boolean;
 	/** Units a step outside the leg's body completed for it this tick (counted in
 	 *  its outcome, run or deferred). */
 	readonly extraCount?: () => number;
@@ -1314,18 +1808,25 @@ interface LegHooks {
 interface SweepState {
 	lastRun: Partial<Record<SweepLeg, string>>;
 	deferrals: Partial<Record<SweepLeg, number>>;
+	/** Ticks in a row each leg was passed over with work (deferred, or not reached)
+	 *  — what ages it to the head of a tick (`tickOrder`). */
+	waits: Partial<Record<SweepLeg, number>>;
 }
 
 /** A lost or garbled state only makes every scan due and resets the streaks —
  *  the same "a lost cursor costs a re-read" rule as every other cursor here. */
 async function readState(cursors: SweepCursorStore): Promise<SweepState> {
-	const state: SweepState = { lastRun: {}, deferrals: {} };
+	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {} };
 	const raw = await cursors.read(STATE_CURSOR);
 	if (raw === null) return state;
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals } = parsed as { lastRun?: unknown; deferrals?: unknown };
+		const { lastRun, deferrals, waits } = parsed as {
+			lastRun?: unknown;
+			deferrals?: unknown;
+			waits?: unknown;
+		};
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
 			if (typeof stamp === "string" && (MAINTENANCE_LEGS.includes(leg) || leg === "late-refunds")) {
@@ -1335,6 +1836,10 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 			const streak = (deferrals as Record<string, unknown> | undefined)?.[leg];
 			if (typeof streak === "number" && Number.isInteger(streak) && streak > 0) {
 				state.deferrals[leg] = streak;
+			}
+			const waited = (waits as Record<string, unknown> | undefined)?.[leg];
+			if (typeof waited === "number" && Number.isInteger(waited) && waited > 0) {
+				state.waits[leg] = waited;
 			}
 		}
 		return state;
@@ -1431,19 +1936,23 @@ async function scanWindow<T>(
  * rows, never inside one — a row's work is a guarded write sequence that is safe
  * to stop BEFORE but pointless to abandon halfway. `handled` is what a cursor may
  * advance past; `incomplete` is set when time (in the read or the walk) left rows
- * for the next tick.
+ * for the next tick, or a row asked to wait. `estimate`, when a leg can size a row
+ * from the document in hand, is that row's expected calls, checked before it runs.
  */
 async function walkWindow<T>(
 	window: ScannedWindow<T>,
 	budget: LegBudget,
 	leg: SweepLeg,
-	visit: (item: { id: string; data: T }) => Promise<void>,
+	visit: (item: { id: string; data: T }) => Promise<void | "stop">,
+	estimate?: (item: { id: string; data: T }) => number,
 ): Promise<{ handled: readonly { id: string; data: T }[]; incomplete: boolean }> {
 	let handled = 0;
 	const gate = budget.gate(0, LEG_QUERY_COSTS[leg].unit);
 	for (const item of window.items) {
-		if (!gate()) break;
-		await visit(item);
+		if (!gate(estimate?.(item))) break;
+		// "stop": the row cannot be judged yet. It is NOT handled, so a cursor stays
+		// before it and the next tick starts there.
+		if ((await visit(item)) === "stop") break;
 		handled++;
 	}
 	const allHandled = handled === window.items.length;
@@ -1711,41 +2220,68 @@ async function completeHoldIntents(
 		options,
 		budget,
 	);
-	const walked = await walkWindow(window, budget, "hold-intents", async (item) => {
-		const id = toOrderId(item.data.orderId);
-		const attempts = [
-			{ kind: "adopt" as const, result: await stores.orderStore.completeHoldAdoption(id) },
-			{ kind: "commit" as const, result: await stores.orderStore.completeHoldCommit(id) },
-			{ kind: "release" as const, result: await stores.orderStore.completeHoldRelease(id) },
-		];
-		const lost = attempts.filter((attempt) => attempt.result.lost.length > 0);
-		completed += attempts.filter((attempt) => attempt.result.completed).length;
-		if (lost.length === 0) return;
-		// HAZARD 2. The completers decided from a non-versioned read; re-read the
-		// order NOW and keep only the losses that are still the order's problem.
-		const current = await orders.get(item.data.orderId);
-		const state = current === null ? null : current.state;
-		if (state === null) return;
-		const real: string[] = [];
-		for (const attempt of lost) {
-			if (!INTENT_OWNER_STATE[attempt.kind].includes(state as OrderState)) continue;
-			for (const reservationId of attempt.result.lost) {
-				anomalies.push(`${item.data.orderId}:${attempt.kind}:${reservationId}`);
-				real.push(`${attempt.kind} ${reservationId}`);
+	const walked = await walkWindow(
+		window,
+		budget,
+		"hold-intents",
+		async (item) => {
+			const id = toOrderId(item.data.orderId);
+			const attempts = [
+				{ kind: "adopt" as const, result: await stores.orderStore.completeHoldAdoption(id) },
+				{ kind: "commit" as const, result: await stores.orderStore.completeHoldCommit(id) },
+				{ kind: "release" as const, result: await stores.orderStore.completeHoldRelease(id) },
+			];
+			const lost = attempts.filter((attempt) => attempt.result.lost.length > 0);
+			completed += attempts.filter((attempt) => attempt.result.completed).length;
+			if (lost.length === 0) return;
+			// HAZARD 2. The completers decided from a non-versioned read; re-read the
+			// order NOW and keep only the losses that are still the order's problem.
+			const current = await orders.get(item.data.orderId);
+			const state = current === null ? null : current.state;
+			if (state === null) return;
+			const real: string[] = [];
+			for (const attempt of lost) {
+				if (!INTENT_OWNER_STATE[attempt.kind].includes(state as OrderState)) continue;
+				for (const reservationId of attempt.result.lost) {
+					anomalies.push(`${item.data.orderId}:${attempt.kind}:${reservationId}`);
+					real.push(`${attempt.kind} ${reservationId}`);
+				}
 			}
-		}
-		// ADR-0019 §7.13: an anomaly must always be RECORDABLE. The hook's return
-		// value is not a record — the cron executor discards it — so the finding goes
-		// onto the order, where an operator (and the admin's reconciliation surface)
-		// will actually meet it.
-		if (real.length > 0) {
-			await stores.orderStore.flagReconciliation(
-				id,
-				`cron sweep: hold reservations lost while the order was ${state} — ${real.join(", ")}`,
-			);
-		}
-	});
+			// ADR-0019 §7.13: an anomaly must always be RECORDABLE. The hook's return
+			// value is not a record — the cron executor discards it — so the finding goes
+			// onto the order, where an operator (and the admin's reconciliation surface)
+			// will actually meet it.
+			if (real.length > 0) {
+				await stores.orderStore.flagReconciliation(
+					id,
+					`cron sweep: hold reservations lost while the order was ${state} — ${real.join(", ")}`,
+				);
+			}
+		},
+		holdIntentCost,
+	);
 	return legResult(completed, walked.incomplete, anomalies);
+}
+
+/**
+ * What completing one order's outstanding hold intents costs, from the document in
+ * hand: the three completers' order reads, then per reservation id of each
+ * OUTSTANDING intent a settle (about seven calls: the index, the aggregate, the key,
+ * the terminal state, the prune) and the intent's stamp (two). A ten-line order owes
+ * far more than the one-line unit `LEG_QUERY_COSTS` measures, and the gate must
+ * know before it starts the row, not after (QA2 M2).
+ */
+function holdIntentCost(item: { data: OrderDoc }): number {
+	let calls = 3;
+	for (const intent of [
+		item.data.holdsAdopted,
+		item.data.holdsCommitted,
+		item.data.holdsReleased,
+	]) {
+		if (intent === undefined || intent === null || intent.completedAt !== null) continue;
+		calls += 7 * intent.reservationIds.length + 2;
+	}
+	return calls;
 }
 
 /**
@@ -1778,13 +2314,27 @@ async function completeHoldIntents(
  * keeps the days it finished and the next tick resumes at the first it did not. (The
  * closed day is the last of every walk, so a walk cut short simply re-does it on
  * the tick that completes.)
+ *
+ * AND ONE DAY IS BOUNDED BY THE CALLS THE LEG HAS LEFT (QA2 M2). A day's FIRST heal
+ * absorbs every live rollup claim the day's orders made — two calls each — inside
+ * one `reconcile`, and QA logged that as one tick of 334 queries against a budget of
+ * 30. So each day is reconciled by a store whose page budget (`maxReconcilePages`:
+ * one unit per page of orders or claims, and per claim absorbed) is what the leg
+ * can still afford. A day that runs out ABSORBING has made progress — every claim
+ * it absorbed stays absorbed and is skipped next time — so it is `incomplete` and
+ * resumes next tick; the cursor does not move past it. A day whose orders cannot
+ * even be READ within the most this budget could ever give the leg is too big for
+ * the setting, and fails loudly (stamped, retried at the cadence) rather than
+ * overrunning: raise "Background work per minute".
  */
 async function healReportingRollups(
+	storage: AdapterStorageAccess,
 	stores: InProcessCommerceStores,
 	now: Date,
 	cursors: SweepCursorStore,
 	options: CommerceSweepOptions,
 	budget: LegBudget,
+	queryBudget: number,
 ): Promise<{ count: number; incomplete?: true }> {
 	const closed = dayKey(new Date(now.getTime() - DAY_MS));
 	const floor = addDays(
@@ -1808,17 +2358,54 @@ async function healReportingRollups(
 			incomplete = true;
 			break;
 		}
-		const result = await stores.reportingStore.reconcile({
-			from: `${day}T00:00:00.000Z`,
-			to: `${day}T23:59:59.999Z`,
+		const units = reconcileUnitsFor(budget.remainingQueries());
+		const bounded = new EmdashReportingStore({
+			storage,
+			clock: stores.clock,
+			maxReconcilePages: units,
 		});
-		written += result.documentsWritten;
-		finished = day;
+		try {
+			const result = await bounded.reconcile({
+				from: `${day}T00:00:00.000Z`,
+				to: `${day}T23:59:59.999Z`,
+			});
+			written += result.documentsWritten;
+			finished = day;
+		} catch (err) {
+			if (!isScanPageLimitError(err)) throw err;
+			// Out of calls for this day. Absorbing, it made progress: resume next tick.
+			if (
+				err.operation === "absorbReportingClaims" ||
+				units < reconcileUnitsFor(queryBudget * 0.9)
+			) {
+				incomplete = true;
+				break;
+			}
+			throw new Error(
+				`reporting-heal: ${day} is too large to reconcile within one tick's query budget` +
+					` (${String(queryBudget)}): its orders alone need more than ${String(units)} pages.` +
+					' Raise "Background work per minute" (DEPLOYMENT.md §5)',
+				{ cause: err },
+			);
+		}
 	}
 	// One write for the walk, naming the last day FINISHED: a cut-short walk
 	// resumes at the first day it did not reach.
 	if (finished !== null) await cursors.write(REPORTING_CURSOR, finished);
 	return legResult(written, incomplete);
+}
+
+/**
+ * The reconcile page budget the given calls can pay for. A unit is a page read (one
+ * call) or a claim absorbed (two), and the reconcile also makes reads it does not
+ * count (a pin and a commit per currency). A day spends at least three page units
+ * (its currencies, its orders, its claims), so half of what is left, less two for
+ * the uncounted reads, never lets the day spend more than the calls given — for a
+ * day in one currency; a second currency can cost one more, which the tick's hard
+ * ceiling still holds.
+ */
+function reconcileUnitsFor(calls: number): number {
+	return Math.max(1, Math.floor((calls - 2) / 2));
 }
 
 function dayKey(at: Date): string {
@@ -1853,14 +2440,16 @@ function addDays(day: string, delta: number): string {
  * normal case (already released by `expireOrders`) finds no redemption holding a use.
  * A declined-and-abandoned order ends on exactly this path (ADR-0022).
  *
- * It relies on ORDER within a tick: this leg runs after `expire-orders` — and only
- * when that leg ran to the END this tick (a deferred or cut-short `expire-orders`
- * defers this leg too, see `runCommerceSweeps`) — and the
- * grace window (`DEFAULT_COUPON_GRACE_MS`) is not shorter than the order hold
- * (`DEFAULT_CHECKOUT_TTL_MS`), so by the time a redemption is old enough to be
- * judged its order is already due and has been through `expire-orders` in the same
- * tick. The residual — that leg failing outright AND the later release then
- * crashing — needs two faults.
+ * A redemption is judged only once its order has LEFT `pending`: one whose order is
+ * still pending past its hold (the expiry has not reached it yet) stops the walk,
+ * and the cursor stays before it until `expire-orders` has flipped it. It used to
+ * rely instead on `expire-orders` having run to the end in the same tick, and
+ * deferred itself otherwise — which under an expiry backlog on the Workers Free
+ * preset meant never (QA saw it deferred 180 ticks in a row, QA2 M2). The grace
+ * window (`DEFAULT_COUPON_GRACE_MS`) is not shorter than the order hold
+ * (`DEFAULT_CHECKOUT_TTL_MS`), so a redemption old enough to be judged has an order
+ * that is due by then. The residual — the expiry's release crashing AND this
+ * release then crashing — needs two faults.
  *
  * `cancelled` is deliberately NOT released: `cancelOrder` releases no coupon, and a
  * sweeper that did would silently reverse that shipped policy an hour after the
@@ -1910,6 +2499,7 @@ async function releaseOrphanedRedemptions(
 	const cutoff = new Date(
 		now.getTime() - (options.couponGraceMs ?? DEFAULT_COUPON_GRACE_MS),
 	).toISOString();
+	const nowIso = now.toISOString();
 	const from = await cursors.read(COUPON_CURSOR);
 	const createdAt = from === null ? { lt: cutoff } : { gt: from, lt: cutoff };
 	const window = await scanWindow<CouponRedemptionDoc>(
@@ -1921,6 +2511,12 @@ async function releaseOrphanedRedemptions(
 	let released = 0;
 	const walked = await walkWindow(window, budget, "coupon-orphans", async (item) => {
 		const order = await stores.orderStore.getById(toOrderId(item.data.orderId));
+		// An order the expiry has not reached yet (pending, its hold already lapsed)
+		// cannot be judged: it is about to become `expired`, which this leg would then
+		// owe a release. Wait for it — the walk stops here, the cursor stays before it.
+		if (order !== null && order.state === "pending" && order.holdExpiresAt <= nowIso) {
+			return "stop";
+		}
 		// A missing order is an orphan; an EXPIRED one is owed its coupon back and may
 		// have lost the release to a crash (see above). Every other state keeps it.
 		if (order !== null && order.state !== "expired") return;

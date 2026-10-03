@@ -282,6 +282,49 @@ describe("the cron hook", () => {
 	}, 120_000);
 });
 
+describe("the tick's query budget, inside the isolate (QA2 M2)", () => {
+	test("every leg reports its own calls, and they add up to the tick's total", async () => {
+		const summary = await tick();
+		let sum = summary.budget.overheadQueries;
+		for (const entry of summary.legs) sum += entry.queries;
+		expect(sum).toBe(summary.budget.queriesUsed);
+		expect(summary.budget.queriesUsed).toBeLessThanOrEqual(summary.budget.queries);
+	}, 120_000);
+
+	test("a pile of expired sign-in challenges is pruned a bite per tick, never past the Free budget", async () => {
+		// The shape of QA's 334-query tick: one leg whose work is a call per row, with
+		// nothing between the rows to stop it. Through the real hook, on the default
+		// (Workers Free) budget, every tick stays inside it and the pile still drains.
+		const challenges = collectionOf<Record<string, unknown>>(storage, "login_challenges");
+		const expired = new Date(Date.now() - HOUR_MS).toISOString();
+		for (let i = 0; i < 60; i++) {
+			await challenges.put(`sweep-pile-${String(i)}`, {
+				challengeId: `sweep-pile-${String(i)}`,
+				email: `pile${String(i)}@example.test`,
+				emailLower: `pile${String(i)}@example.test`,
+				tokenHash: "x",
+				createdAt: expired,
+				expiresAt: expired,
+				consumedAt: null,
+				consumed: "no",
+			});
+		}
+		let pruned = 0;
+		for (let i = 0; i < 30 && pruned < 60; i++) {
+			// (Counts any other expired challenge the suite left, too.)
+			// The prune is on the slow cadence: clear the stamp so each tick may run it.
+			await clearSweepState();
+			const summary = await tick();
+			expect(summary.budget.queries).toBe(30);
+			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(30);
+			pruned += leg(summary, "prune-challenges").count;
+		}
+		for (let i = 0; i < 60; i++) {
+			expect(await challenges.get(`sweep-pile-${String(i)}`), `pile ${String(i)}`).toBeNull();
+		}
+	}, 180_000);
+});
+
 describe("the tick's cadence, inside the isolate", () => {
 	test("the scans are stamped in the isolate's kv: once each has run, a tick a moment later runs only the every-tick legs", async () => {
 		// Through the same boot-scoped `ctx.kv` the deployment's cursors live in —
@@ -428,6 +471,9 @@ describe("the four ported sweeps", () => {
 		const issued = await verifier.issueChallenge(toEmail(`${suffix}@example.test`));
 		expect(issued.ok).toBe(true);
 
+		// On the slow cadence since QA2 M2 (housekeeping): due again, as a fresh
+		// isolate's first tick would find it.
+		await clearSweepState();
 		const first = leg(await tick(), "prune-challenges");
 		expect(first.count).toBeGreaterThanOrEqual(1);
 		const second = leg(await tick(), "prune-challenges");
