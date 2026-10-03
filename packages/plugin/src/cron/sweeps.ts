@@ -197,6 +197,7 @@ import type { PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
 	isSweepQueryCeilingError,
+	SweepQueryCeilingError,
 	type LegBudget,
 	type LegShare,
 	TickBudget,
@@ -716,6 +717,13 @@ export interface CommerceSweepOptions {
 	/** Most orders the `cancel-intents` leg examines per tick. Default: scaled from
 	 *  the query budget (`batchesFor`) — 1 to 10. */
 	readonly intentCancelBatch?: number;
+	/**
+	 * TEST-ONLY: replace a leg's body with one that is handed the tick's COUNTED
+	 * context. Used to pin the runner's own rules (a refusal the body swallowed still
+	 * marks the leg incomplete) without staging a store that happens to misbehave.
+	 * Never set by the plugin.
+	 */
+	readonly legBodies?: Partial<Record<SweepLeg, (ctx: PluginContext) => Promise<number>>>;
 	readonly emailSenderFactory?: (
 		requestTimeoutMs: () => number,
 	) => Promise<EmailSender | undefined>;
@@ -882,9 +890,12 @@ export async function runCommerceSweeps(
 
 	const run = async (
 		leg: SweepLeg,
-		body: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok" | "queries">>,
+		realBody: (budget: LegBudget) => Promise<Omit<SweepLegOutcome, "leg" | "ok" | "queries">>,
 		hooks: LegHooks = {},
 	): Promise<void> => {
+		const replaced = options.legBodies?.[leg];
+		const body: typeof realBody =
+			replaced === undefined ? realBody : async () => ({ count: await replaced(ctx) });
 		if (secondPass) {
 			await runAgain(leg, body, hooks);
 			return;
@@ -955,8 +966,14 @@ export async function runCommerceSweeps(
 			noteDeferral(leg);
 			return;
 		}
+		// Units a body finished before a refusal it swallowed — still reported.
+		let doneBeforeRefusal = 0;
 		try {
 			const result = await budget.charge(leg, () => body(legBudget));
+			if (budget.wasRefused(leg)) {
+				doneBeforeRefusal = result.count;
+				throw new SweepQueryCeilingError(budget.ceiling(), leg);
+			}
 			const outcome = {
 				leg,
 				ok: true,
@@ -983,7 +1000,12 @@ export async function runCommerceSweeps(
 				// failure — the call was refused before it was made, every write before it
 				// was a guarded unit — and the leg resumes next tick. Loud, because an
 				// estimate that is too low is a bug in LEG_QUERY_COSTS.
-				record({ leg, ok: true, count: hooks.extraCount?.() ?? 0, incomplete: true });
+				record({
+					leg,
+					ok: true,
+					count: doneBeforeRefusal + (hooks.extraCount?.() ?? 0),
+					incomplete: true,
+				});
 				stoppedAtCeiling.push(leg);
 				clearDeferral(leg);
 				console.warn(
@@ -1019,6 +1041,7 @@ export async function runCommerceSweeps(
 		if (!legBudget.canStart(entry, costs.unit)) return;
 		try {
 			const result = await budget.charge(leg, () => body(legBudget));
+			if (budget.wasRefused(leg)) throw new SweepQueryCeilingError(budget.ceiling(), leg);
 			const outcome = { leg, ok: true, ...result, count: result.count };
 			record(outcome);
 			logOutcome(outcome);

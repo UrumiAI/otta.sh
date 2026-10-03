@@ -96,6 +96,7 @@ export class TickBudget {
 	#currentLeg: string | null = null;
 	#legsDone = false;
 	readonly #byLeg = new Map<string, number>();
+	readonly #refused = new Set<string>();
 
 	constructor(clock: () => number, startedAtMs: number, limits: TickBudgetLimits) {
 		this.#clock = clock;
@@ -124,7 +125,12 @@ export class TickBudget {
 	 */
 	countQuery(): void {
 		const ceiling = this.ceiling();
-		if (this.#queries >= ceiling) throw new SweepQueryCeilingError(ceiling, this.#currentLeg);
+		if (this.#queries >= ceiling) {
+			// Remembered per leg, so a leg that SWALLOWED the refusal (a unit loop that
+			// catches each unit's failure) is still known to have stopped short.
+			if (this.#currentLeg !== null) this.#refused.add(this.#currentLeg);
+			throw new SweepQueryCeilingError(ceiling, this.#currentLeg);
+		}
 		this.#queries++;
 		if (this.#currentLeg !== null) {
 			this.#byLeg.set(this.#currentLeg, (this.#byLeg.get(this.#currentLeg) ?? 0) + 1);
@@ -153,6 +159,12 @@ export class TickBudget {
 		} finally {
 			this.#currentLeg = previous;
 		}
+	}
+
+	/** Whether the ceiling refused a call made by `leg` this tick — whether or not
+	 *  the leg let the error reach its runner. */
+	wasRefused(leg: string): boolean {
+		return this.#refused.has(leg);
 	}
 
 	/** Calls attributed to `leg` this tick. */

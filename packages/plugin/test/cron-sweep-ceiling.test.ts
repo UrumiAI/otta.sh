@@ -44,6 +44,7 @@ import {
 	type CallCounter,
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+import type { PluginContext } from "../src/types.js";
 import { orderId as toOrderId } from "@otta-sh/domain";
 
 const FREE = 30;
@@ -321,5 +322,44 @@ describe("coupon-orphans under an expiry backlog", () => {
 		expect(leg(caught, "expire-orders")).toMatchObject({ ok: true, count: 1 });
 		expect(leg(caught, "coupon-orphans")).toMatchObject({ ok: true, count: 1 });
 		expect((await coupons.findById("coupon-wait"))?.usesCount).toBe(0);
+	}, 120_000);
+});
+
+describe("a refusal the leg swallowed still counts", () => {
+	test("a leg that catches every unit's error is reported incomplete and NOT stamped when the ceiling refused one of its calls", async () => {
+		// A unit loop that swallows each unit's failure (as `kvCursors` does a cursor
+		// write, or a store does a best-effort note) would otherwise turn a refused call
+		// into a clean finish — and a scan stamped "done" waits out its whole interval.
+		const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: FREE });
+		const cursors = memoryCursors();
+		let refusals = 0;
+		const greedy = async (counted: PluginContext): Promise<number> => {
+			let done = 0;
+			for (let i = 0; i < 100; i++) {
+				try {
+					await counted.kv.get(`unit-${String(i)}`);
+					done++;
+				} catch {
+					refusals++;
+				}
+			}
+			return done;
+		};
+		const first = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			...options({ cursors }),
+			legBodies: { "sku-transfers": greedy },
+		});
+		expect(refusals).toBeGreaterThan(0);
+		expect(first.budget.queriesUsed).toBeLessThanOrEqual(FREE);
+		expect(leg(first, "sku-transfers")).toMatchObject({ ok: true, incomplete: true });
+		expect(
+			logs.some((line) => line.includes("sku-transfers stopped at the tick's query ceiling")),
+		).toBe(true);
+		// Not stamped: due again on the very next tick, not fifteen minutes on.
+		const next = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			...options({ cursors }),
+			now: new Date(NOW.getTime() + MINUTE_MS),
+		});
+		expect(leg(next, "sku-transfers").notDue).toBeUndefined();
 	}, 120_000);
 });
