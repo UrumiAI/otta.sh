@@ -471,6 +471,13 @@ line naming what each leg spent:
   order-emails 8, overhead 3; deferred to the next tick: hold-intents, expire-holds
 ```
 
+The expiry never flips an order whose payment intent is due and not yet withdrawn: the
+withdrawal comes first, in the same tick or the one before. And a provider call is always
+recorded. An email is sent, or an intent withdrawn, only with room left for its record, and
+the record is never refused once the call has been made. If an estimate is ever wrong, the
+line ends `N past the ceiling to record a provider call` and the tick overruns its budget by
+those few calls, rather than sending the email again.
+
 A leg the budget did not reach is listed as deferred and runs on a later tick — that is not a
 failure, and a backlog (say, hundreds of expired holds after an outage) drains over several
 ticks. Five deferrals in a row of the same leg log a warning.
@@ -503,7 +510,8 @@ Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) 
 that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
-scans come due adds about 17–20 more; one email is about **8**, one hold expired about
+scans come due adds about 17–20 more; one email is about **12** (the claim, the order, the
+sender's key and from-address reads, the request, marking it sent), one hold expired about
 **20** with its list on Free, one order expired **13** for a one-line order (22 before the
 QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
 about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
@@ -551,7 +559,7 @@ operational setting, beside the cart hold TTL, with two presets: **Workers Free 
 default, and **Workers Paid (600)** — set it to the plan the store actually runs on. The sweep
 reads it once per tick (that read counts against the budget) and sizes its per-tick bites from
 it and the measured costs: Free takes 1 hold, 1 order and 1 email a tick at most (a second never
-fits a Free tick); Paid up to 18, 18 and 22, which clears a backlog of the size QA saw (14–18 due
+fits a Free tick); Paid up to 18, 18 and 15, which clears a backlog of the size QA saw (14–18 due
 in one tick) in about one tick.
 The 9.5 s time budget applies on both plans, so on Paid it — not the query count — is usually
 what ends a busy tick. **30 is also the minimum**: below it the costliest critical unit (a hold
