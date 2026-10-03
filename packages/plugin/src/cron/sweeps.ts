@@ -296,11 +296,6 @@ export const AGING_TICKS = 3;
  */
 export const STARVING_TICKS = 3 * AGING_TICKS;
 
-/** How many lapsed orders past the bite the expiry's list reads, so orders still
- *  waiting on their intent's withdrawal do not hide the expirable ones behind them.
- *  One page either way: this costs rows, not queries. */
-const EXPIRY_LOOKAHEAD = 10;
-
 /**
  * QA3 N2 — the calls a provider unit needs AFTER its last pre-check: checked before
  * the provider call (`headroom`), and allowed past the ceiling once the call has
@@ -1287,36 +1282,19 @@ export async function runCommerceSweeps(
 			},
 		);
 
-	// The due check IS the leg's list, read once and handed to the domain: the
-	// lapsed pending orders, oldest deadline first, LESS every order whose payment
-	// intent is due for withdrawal and not yet withdrawn (QA3 N1). An order is never
-	// expired while the buyer could still pay it: `cancel-intents` (first in every
-	// tick) withdraws the intent, and the expiry takes the order on the same tick or
-	// a later one. `intentCancelDueAt` is the order's own indexed "earliest due
-	// unresolved intent", read off the same page — no extra query. An intent whose
-	// cancel FAILED and was rescheduled is not due until its retry, so a provider
-	// outage never holds stock: that order expires, and a late payment on it is
-	// refunded (ADR-0022). The page is wider than the bite (`EXPIRY_LOOKAHEAD`), so
-	// the orders waiting on a withdrawal do not block the ones behind them; a list of
-	// `bite + 1` still reads as "not drained" when there is more.
+	// The due check IS the leg's list, read once and handed to the domain: the lapsed
+	// pending orders, oldest deadline first, LESS every order whose payment intent is
+	// due for withdrawal and not yet withdrawn (QA3 N1 — the port's `excludeIntentDue`).
+	// An order is never expired while the buyer could still pay it: `cancel-intents`
+	// (first in every tick) withdraws the intent, and the expiry takes the order on
+	// the same tick or a later one. `expiryLimit + 1`, so a longer backlog still reads
+	// as not drained.
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
-		(expirable ??= (async () => {
-			const page = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).query({
-				where: { state: "pending", holdExpiresAt: { lte: nowIso } },
-				orderBy: { holdExpiresAt: "asc" },
-				limit: Math.min(100, expiryLimit + 1 + EXPIRY_LOOKAHEAD),
-			});
-			const eligible: OrderId[] = [];
-			for (const { data } of page.items) {
-				if (data.state !== "pending" || data.holdExpiresAt > nowIso) continue;
-				const dueAt = data.intentCancelDueAt ?? null;
-				if (dueAt !== null && dueAt <= nowIso) continue; // its intent comes first
-				eligible.push(toOrderId(data.orderId));
-				if (eligible.length > expiryLimit) break;
-			}
-			return eligible;
-		})());
+		(expirable ??= stores.orderStore.listExpirable(nowIso, {
+			limit: expiryLimit + 1,
+			excludeIntentDue: true,
+		}));
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",

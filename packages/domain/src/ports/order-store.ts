@@ -70,8 +70,19 @@ export interface OrderStore {
 	 * `InventoryStore.releaseAdoptedMany`, which is order-scoped and idempotent.
 	 */
 	expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null>;
-	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
-	listExpirable(now: string, options?: ExpiryListOptions): Promise<OrderId[]>;
+	/**
+	 * Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`, oldest
+	 * deadline first.
+	 *
+	 * `excludeIntentDue` (QA3 N1): leave out every order with a payment intent that
+	 * is DUE for withdrawal and not yet withdrawn (`cancelOutcome` null and
+	 * `cancelDueAt <= now`) — such an order must not expire while the buyer can still
+	 * pay it; `cancelDueIntents` withdraws it first. An intent whose cancel failed and
+	 * was rescheduled is not due until its retry, so a provider outage never holds an
+	 * order. `limit` then counts the orders LISTED, not the ones read: the store keeps
+	 * reading past excluded ones (within its page bound).
+	 */
+	listExpirable(now: string, options?: OrderExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 
@@ -1311,4 +1322,10 @@ export interface ExpiredOrder {
 	readonly order: Order;
 	/** True when the store already released every hold the order adopted. */
 	readonly holdsReleased: boolean;
+}
+
+/** {@link OrderStore.listExpirable}'s options. */
+export interface OrderExpiryListOptions extends ExpiryListOptions {
+	/** Leave out orders whose payment intent is due and not yet withdrawn. */
+	readonly excludeIntentDue?: boolean;
 }
