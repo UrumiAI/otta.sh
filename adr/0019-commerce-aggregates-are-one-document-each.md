@@ -1640,7 +1640,12 @@ Two rules now apply to every leg that calls a provider and then writes:
   6 for a cancel.
 - **The record is never refused.** Once the provider call returns, a commit window (email 3,
   cancel 4) lets the record past the ceiling. A tick overruns its budget only by that window, and
-  only when an estimate was wrong; the log line says how many calls.
+  only when an estimate was wrong; the log line says how many calls. Review: above the Workers Free preset the
+  largest window (4) is kept out of the ceiling the legs plan against
+  (`MAX_COMMIT_WINDOW`), so a tick never passes its configured budget. On the Free preset (30)
+  reserving it cost a quarter of the expiry pace in the backlog simulation, so it is not kept:
+  the worst Free tick is 34 calls, inside the 20 the preset leaves the host under Workers Free's
+  50 (`COMMIT_WINDOW_EXEMPT_BUDGET`). The cadence-state write follows any such overrun.
 
 A late-refund resume needs neither. Its unit gate already demands room for a whole resume, and an
 interrupted one is re-driven under the same key, which Stripe answers with the refund it already

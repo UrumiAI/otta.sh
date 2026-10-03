@@ -474,9 +474,13 @@ line naming what each leg spent:
 The expiry never flips an order whose payment intent is due and not yet withdrawn: the
 withdrawal comes first, in the same tick or the one before. And a provider call is always
 recorded. An email is sent, or an intent withdrawn, only with room left for its record, and
-the record is never refused once the call has been made. If an estimate is ever wrong, the
-line ends `N past the ceiling to record a provider call` and the tick overruns its budget by
-those few calls, rather than sending the email again.
+the record is never refused once the call has been made. Above the Free preset the record's
+window (at most 4 calls) is kept out of the ceiling the legs plan against, so a tick never
+uses more than its configured budget. On the Free preset (30) it is not: reserving it cost a
+quarter of the Free expiry pace. There, if an estimate is ever wrong, the line ends
+`N past the ceiling to record a provider call`, and the tick uses at most 34 of Workers
+Free's 50, which still leaves the host 16. **If you set a custom budget, keep it at least 4
+under your plan's per-invocation limit after the host's own share.**
 
 A leg the budget did not reach is listed as deferred and runs on a later tick — that is not a
 failure, and a backlog (say, hundreds of expired holds after an outage) drains over several

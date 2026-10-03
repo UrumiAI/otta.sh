@@ -62,6 +62,24 @@ export const WHOLE_TICK: LegShare = { time: 1, queries: 1 };
 const CEILING_RESERVE = 1;
 
 /**
+ * The largest commit window any leg opens (`allowCommit`): an intent withdrawal's
+ * record. Kept OUT of the ceiling the units see (review of QA3 N2), so a record
+ * that runs past that ceiling still lands inside the configured budget: a tick's
+ * worst case is the budget, never more.
+ */
+export const MAX_COMMIT_WINDOW = 4;
+
+/**
+ * The budget at and below which the commit window is NOT kept out of the units'
+ * ceiling: the Workers Free preset (30). Keeping four of its 30 calls back for a
+ * window that only opens when an estimate is wrong cost a quarter of the Free
+ * expiry pace in the backlog simulation; instead a Free tick's worst case is 34
+ * calls, which the 20 of Workers Free's 50 the preset leaves the host absorbs
+ * (DEPLOYMENT.md §5). Every larger budget keeps the window inside it.
+ */
+export const COMMIT_WINDOW_EXEMPT_BUDGET = 30;
+
+/**
  * The call that would have passed the tick's query budget, refused BEFORE it was
  * made. Not a storage failure: the work it interrupted is a guarded unit any later
  * tick completes. `leg` is the leg that was running, or null for the tick's own reads.
@@ -127,7 +145,13 @@ export class TickBudget {
 	 */
 	countQuery(): void {
 		const ceiling = this.ceiling();
-		if (this.#queries >= ceiling && this.#commitLeft > 0) {
+		if (
+			this.#queries >= ceiling &&
+			this.#commitLeft > 0 &&
+			// Within the budget when the window is reserved; on the Free preset, past it
+			// by at most the window (see COMMIT_WINDOW_EXEMPT_BUDGET).
+			(this.#commitReserve() === 0 || this.#queries < this.#limits.queries - CEILING_RESERVE)
+		) {
 			// The record of an external action already taken (QA3 N2): allowed past the
 			// ceiling, within the window `allowCommit` opened, and counted as overrun.
 			this.#commitLeft--;
@@ -147,7 +171,22 @@ export class TickBudget {
 	/** The most calls the tick may have made so far: the budget, less the call kept
 	 *  for the cadence-state write while the legs are still running. */
 	ceiling(): number {
-		return this.#limits.queries - (this.#legsDone ? 0 : CEILING_RESERVE);
+		// After the legs, the cadence-state write may use the call kept for it — moved
+		// on by any window overrun on the Free preset, so a recorded email never costs
+		// the tick its state.
+		if (this.#legsDone) return this.#limits.queries + this.#overrun;
+		return this.#limits.queries - CEILING_RESERVE - this.#commitReserve();
+	}
+
+	/** The commit window kept out of the units' ceiling (see `MAX_COMMIT_WINDOW`). */
+	#commitReserve(): number {
+		return this.#limits.queries > COMMIT_WINDOW_EXEMPT_BUDGET ? MAX_COMMIT_WINDOW : 0;
+	}
+
+	/** What the legs' own checks plan against: the budget less the commit window
+	 *  every record may need (see `MAX_COMMIT_WINDOW`). */
+	unitQueries(): number {
+		return this.#limits.queries - this.#commitReserve();
 	}
 
 	/** The legs are done: the trailing write may use the last call. */
@@ -248,7 +287,8 @@ export class LegBudget {
 	constructor(budget: TickBudget, share: LegShare, floorQueries = 0, reserveQueries?: number) {
 		this.#budget = budget;
 		this.#reserveQueries = reserveQueries ?? budget.limits.reserveQueries;
-		const { ms, queries } = budget.limits;
+		const { ms } = budget.limits;
+		const queries = budget.unitQueries();
 		this.#endMs = Math.min(ms, budget.elapsedMs() + share.time * ms);
 		this.#endQueries = Math.min(
 			queries,
@@ -269,7 +309,7 @@ export class LegBudget {
 	/** Calls this leg may still make, reserve kept back. Never negative. */
 	remainingQueries(): number {
 		const q = this.#budget.queriesUsed();
-		const { queries } = this.#budget.limits;
+		const queries = this.#budget.unitQueries();
 		return Math.max(0, Math.min(this.#endQueries - q, queries - this.#reserveQueries - q));
 	}
 
@@ -321,7 +361,8 @@ export class LegBudget {
 	#fits(unitMs: number, unitQueries: number): boolean {
 		const t = this.#budget.elapsedMs();
 		const q = this.#budget.queriesUsed();
-		const { ms, queries, reserveMs } = this.#budget.limits;
+		const { ms, reserveMs } = this.#budget.limits;
+		const queries = this.#budget.unitQueries();
 		const reserveQueries = this.#reserveQueries;
 		return (
 			t + unitMs < this.#endMs &&

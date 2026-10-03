@@ -38,6 +38,11 @@ import {
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 import type { PluginContext } from "../src/types.js";
+import { COMMIT_WINDOW_EXEMPT_BUDGET, MAX_COMMIT_WINDOW } from "../src/cron/tick-budget.js";
+
+test("the window is reserved above the Workers Free preset", () => {
+	expect(COMMIT_WINDOW_EXEMPT_BUDGET).toBe(30);
+});
 
 const NOW = new Date(Math.floor((Date.now() + 2 * HOUR_MS) / MINUTE_MS) * MINUTE_MS);
 /** Tick budgets that put the ceiling at every call of one unit, and past it. */
@@ -60,19 +65,22 @@ async function tightThenDrain(
 	extra: Parameters<typeof runCommerceSweeps>[2],
 	start: Date = NOW,
 	followClock = false,
-): Promise<void> {
+): Promise<number> {
 	const ctx = sweepContext(storage);
+	let firstTickUsed = 0;
 	const cursors = memoryCursors();
 	for (let tick = 0; tick < 6; tick++) {
 		if (followClock) vi.setSystemTime(new Date(start.getTime() + tick * 20 * MINUTE_MS));
-		await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
 			cursors,
 			...extra,
 			queryBudget: tick === 0 ? budget : 1000,
 			// Past any lease and any short retry the tight tick may have left.
 			now: new Date(start.getTime() + tick * 20 * MINUTE_MS),
 		});
+		if (tick === 0) firstTickUsed = summary.budget.queriesUsed;
 	}
+	return firstTickUsed;
 }
 
 describe("the ceiling inside a provider unit never repeats the provider call", () => {
@@ -175,6 +183,49 @@ describe("the ceiling inside a provider unit never repeats the provider call", (
 			expect(stripe.refundCalls.length - before).toBe(1);
 			const refunds = await s.orderStore.listRefunds(toOrderId(late.id));
 			expect(refunds.map((refund) => refund.status)).toEqual(["recorded"]);
+		},
+		60_000,
+	);
+});
+
+describe("a commit window never takes a tick past its configured budget (review)", () => {
+	// A provider unit that costs MORE than its estimate: this sender makes four calls
+	// of its own before the request (as a real one might, refreshing a token), so the
+	// email's record lands past the ceiling and runs in the commit window. The record
+	// still runs (no duplicate) — and the tick still stays within its configured
+	// budget, because the window is kept out of the ceiling the units see.
+	// Every budget above the Workers Free preset keeps the window inside the budget;
+	// the Free preset may pass it by at most the window (COMMIT_WINDOW_EXEMPT_BUDGET).
+	test.each(Array.from({ length: 58 }, (_, i) => i + 3))(
+		"ceiling at %i calls: the tick uses at most its budget (Free: plus the window), and sends once",
+		async (budget) => {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			const { storage } = await makeSqliteStorage(commerceStorageLayout());
+			const start = new Date();
+			await placePaidOrderOwingCommit(storage, "mail-heavy", start);
+			const sent: SendEmailInput[] = [];
+			const heavySender = async (_timeout: () => number, counted: PluginContext) => {
+				await counted.kv.get("email-api-key");
+				await counted.kv.get("email-from");
+				return {
+					async send(input: SendEmailInput) {
+						for (let i = 0; i < 4; i++) await counted.kv.get(`token-${String(i)}`);
+						await counted.kv.get("the-request");
+						sent.push(input);
+					},
+				};
+			};
+			const used = await tightThenDrain(
+				storage,
+				budget,
+				{ emailSenderFactory: heavySender },
+				start,
+				true,
+			);
+			vi.useRealTimers();
+			const allowance = budget <= 30 ? MAX_COMMIT_WINDOW : 0;
+			expect(used, `tick at budget ${String(budget)}`).toBeLessThanOrEqual(budget + allowance);
+			expect(sent).toHaveLength(1);
 		},
 		60_000,
 	);
