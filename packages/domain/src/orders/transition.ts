@@ -13,6 +13,7 @@ import {
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
+import { orderTotalLabel } from "./order-total-label.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import {
@@ -488,6 +489,20 @@ async function drainOutbox(
 				: row.toState === "refunded"
 					? await refundedTotal(deps.orderStore, order)
 					: null;
+		// Any OTHER state email for an order whose money was captured (processing,
+		// shipped, …) states what the ledger has refunded so far beside its "Paid"
+		// total (QA round 2). A cancellation states its own refund.
+		const refundedSoFar =
+			row.notice === null &&
+			row.toState !== "refunded" &&
+			row.toState !== "cancelled" &&
+			orderTotalLabel(row.toState) === "Paid"
+				? await refundedTotal(deps.orderStore, order)
+				: null;
+		const stateData = {
+			...buildOrderEmailData(order, row.toState),
+			...(refundedSoFar !== null ? { refundedSoFarCents: refundedSoFar.amount } : {}),
+		};
 
 		try {
 			await deps.emailSender.send({
@@ -495,7 +510,7 @@ async function drainOutbox(
 				template,
 				data:
 					refunded === null
-						? buildOrderEmailData(order, row.toState)
+						? stateData
 						: {
 								...buildOrderEmailData(order, row.toState),
 								// The OWN figure — the money refunded, never the order total

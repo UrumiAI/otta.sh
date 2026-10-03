@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+	customerSafeCancellationCopy,
 	EMAIL_NOT_CALCULATED_LABEL,
 	renderEmail,
 	type EmailRenderContext,
@@ -436,5 +437,42 @@ describe("customer-login-link copy", () => {
 		expect(rendered.subject).toBe("Sign in to <i>Shop</i> Bcc: x");
 		expect(rendered.html).not.toContain("<i>");
 		expect(rendered.html).toContain("&lt;i&gt;Shop&lt;/i&gt;");
+	});
+});
+
+describe("a state email after a partial refund (QA round 2)", () => {
+	test("states the refund under the paid total, never 'Paid' alone", () => {
+		const rendered = renderEmail(
+			"order-processing",
+			{
+				orderId: "o1",
+				state: "processing",
+				currency: "USD",
+				totalCents: 1000,
+				subtotalCents: 1000,
+				discountCents: 0,
+				lines: [{ sku: "S", title: "Lamp", quantity: 1, unitPriceCents: 1000 }],
+				refundedSoFarCents: 400,
+			},
+			{ formatMoney: stubMoney },
+		);
+		const paid = rendered.text.indexOf("Paid:");
+		const refunded = rendered.text.indexOf("Refunded so far:");
+		expect(paid).toBeGreaterThan(-1);
+		expect(refunded).toBeGreaterThan(paid);
+		expect(rendered.text).toContain(`Refunded so far: ${stubMoney(400, "USD")}`);
+	});
+});
+
+describe("the cancelled email's reason line (QA round 2)", () => {
+	test("a pricing error is stated, in words for the buyer", () => {
+		expect(customerSafeCancellationCopy("pricing_error")).toBe(
+			"there was an error in the price it was listed at",
+		);
+	});
+
+	test("fraud and other still never reach the buyer", () => {
+		expect(customerSafeCancellationCopy("fraud_suspected")).toBeUndefined();
+		expect(customerSafeCancellationCopy("other")).toBeUndefined();
 	});
 });
