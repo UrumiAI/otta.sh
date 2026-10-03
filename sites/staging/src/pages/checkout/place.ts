@@ -72,7 +72,7 @@ import {
 	notAFormResponse,
 	readFormBody,
 } from "../../lib/otta-api.js";
-import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -139,7 +139,9 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 		if (country === undefined) fields.country = "missing";
 		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: true, fields };
 	}
-	if (!COUNTRY_SHAPE.test(country)) {
+	// Shaped like a code but naming no country ("ZZ"): refused here with the
+	// field marked (QA2 edge H) — dispatched, the plugin's refusal named none.
+	if (!COUNTRY_SHAPE.test(country) || !COUNTRY_CODES.has(country.toUpperCase())) {
 		return {
 			ok: false,
 			error: INVALID_SHIPPING_ADDRESS,
