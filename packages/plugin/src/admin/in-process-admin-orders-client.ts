@@ -296,11 +296,14 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *  `cancelled`, which Cancel order replaces), never re-derived console-side. */
 	async getOrder(orderId: string): Promise<OrderDetailResult | null> {
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null) return null;
+		// The ledger read, not the bare order: Mark refunded is offered only where
+		// it cannot hide captured money (`adminNextStates` reads the payments and
+		// refunds, QA2 M4). The same one document read.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return null;
 		return {
-			order: toOrderDetailWire(order),
-			allowedTransitions: adminNextStates(order),
+			order: toOrderDetailWire(ledger.order),
+			allowedTransitions: adminNextStates(ledger.order, ledger),
 		};
 	}
 
@@ -312,7 +315,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	async transitionOrder(
 		orderId: string,
 		toState: string,
-		opts: { idempotencyKey: string },
+		opts: { idempotencyKey: string; actor?: string },
 	): Promise<TransitionOrderResult> {
 		// The write's one deadline, fixed HERE — see `#writeDeadline`.
 		const deadline = this.#writeDeadline();
@@ -320,14 +323,21 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		try {
 			requireIdToken("orderId", orderId);
 			target = requireOrderState("toState", toState);
+			if (opts.actor !== undefined) requireBoundedText("actor", opts.actor, 1, 200);
 		} catch (err) {
 			if (isCommerceInputError(err)) return { ok: false, status: 400 };
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
+		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
 			{ orderStore: this.#stores.orderStore },
-			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
+			{
+				orderId: toOrderId(orderId),
+				toState: target,
+				idempotencyKey: toIdempotencyKey(key),
+				...(actor !== undefined ? { actor } : {}),
+			},
 		);
 		if (res.ok) {
 			// A move that enqueued an email sends it now. Mark refunded enqueues none

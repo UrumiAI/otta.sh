@@ -5,6 +5,7 @@ import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
 import { refundOrder, sumRefunds } from "../orders/refund-order.js";
 import type { OrderStore } from "../ports/order-store.js";
+import { PROVIDER_REFUNDED_FLAG_PREFIX } from "../orders/provider-refunded-flag.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import { FakeEmailSender } from "./fake-email-sender.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
@@ -408,6 +409,22 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(0); // never called — capability, not discovery
 		});
 
+		test("a PROVIDER_ALREADY_REFUNDED never overwrites an order's open reconciliation flag", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-flagged", totalCents: 1000 });
+			await h.orderStore.flagReconciliation(id, "an earlier anomaly");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-flagged"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe("an earlier anomaly");
+		});
+
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight", totalCents: 1000 });
@@ -421,6 +438,11 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-preflight"),
 			});
 			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			// The provider's own word is kept on the order (QA2 M4): it is what lets
+			// the admin close an order refunded outside Otta with Mark refunded.
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toMatch(
+				new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`),
+			);
 			// Reserve-before-issue: the reservation was inserted then VOIDED (nothing
 			// issued). It stays as an audit row but releases its ceiling capacity — the
 			// ACTIVE Σ is 0 and the order never flipped.

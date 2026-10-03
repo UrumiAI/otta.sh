@@ -720,6 +720,7 @@ export class InMemoryOrderStore implements OrderStore {
 			input.fromState,
 			input.toState,
 			input.enqueueEmail,
+			input.actor ?? null,
 		);
 		const order = await this.getById(input.orderId);
 		return { transitioned, order };
@@ -1070,16 +1071,22 @@ export class InMemoryOrderStore implements OrderStore {
 
 	// -- internals ------------------------------------------------------------
 
-	#guardedFlip(orderId: OrderId, from: OrderState, to: OrderState, enqueue?: boolean): boolean {
+	#guardedFlip(
+		orderId: OrderId,
+		from: OrderState,
+		to: OrderState,
+		enqueue?: boolean,
+		actor: string | null = null,
+	): boolean {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
-		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
-		// no modeled who (markPaid/transition).
-		this.#appendEvent(orderId, from, to, null);
+		// (already-flipped / lost race) writes NO event. The actor is the admin's,
+		// when a `transition` carries one; markPaid has none.
+		this.#appendEvent(orderId, from, to, actor);
 		// A PAID order owes no intent cancels: resolve its unresolved intents in the
 		// same step as the flip, exactly as the real adapter does in the same write.
 		if (to === "paid") {

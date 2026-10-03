@@ -359,7 +359,10 @@ export type TransitionRefusal =
 	| "ORDER_NOT_FOUND"
 	| "INVALID_TRANSITION"
 	| "MANUAL_PAYMENT_NOT_ALLOWED"
-	| "USE_CANCEL";
+	| "USE_CANCEL"
+	/** Mark refunded while the ledger still holds captured money its provider can
+	 *  return (QA2 M4): the money goes back through Money → Refunds. */
+	| "REFUND_THROUGH_MONEY";
 
 /** POST transition returns a discriminated result (like `updateSettings`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.
@@ -518,7 +521,9 @@ export interface AdminOrdersSurface {
 	transitionOrder(
 		orderId: string,
 		toState: string,
-		opts: { idempotencyKey: string },
+		/** `actor`: who made the move — the signed-in operator the console names —
+		 *  recorded on the audit event History shows. */
+		opts: { idempotencyKey: string; actor?: string },
 	): Promise<TransitionOrderResult>;
 
 	/** Resolve an order's reconciliation flag (admin-UX Increment 1). The

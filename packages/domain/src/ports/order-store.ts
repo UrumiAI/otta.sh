@@ -630,6 +630,8 @@ export interface OrderTransitionInput {
 	/** Enqueue an outbox row for `toState` in the same transaction. False for a
 	 *  state with no template (`failed`) so no undeliverable row is ever written. */
 	enqueueEmail: boolean;
+	/** Who made the move — recorded on the flip's audit event. Absent ⇒ `null`. */
+	actor?: string;
 }
 
 export interface OrderTransitionResult {

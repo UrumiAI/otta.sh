@@ -312,9 +312,23 @@ export interface SandboxedRequest {
 	headers: Record<string, string>;
 }
 
+/**
+ * The signed-in caller the host names on a PRIVATE route (EmDash's
+ * `toRouteCallerInfo`: `routeCtx.user`, absent on a public route). The admin
+ * console's writes record it as who made them.
+ */
+export interface RouteCaller {
+	id?: string;
+	email?: string | null;
+	name?: string | null;
+	role?: unknown;
+}
+
 export interface SandboxedRouteContext<TInput = unknown> {
 	input: TInput;
 	request: SandboxedRequest;
+	/** The authenticated caller — private routes only. */
+	user?: RouteCaller;
 }
 
 export type RouteHandler<TInput = unknown> = (

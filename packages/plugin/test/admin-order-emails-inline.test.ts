@@ -19,6 +19,7 @@
  */
 import {
 	cents,
+	PROVIDER_REFUNDED_FLAG_PREFIX,
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
@@ -139,6 +140,12 @@ describe("an admin write sends its email at once, in order", () => {
 
 	test("Mark refunded emails nobody and says so by reporting no email", async () => {
 		const id = await seedPaid("ord-markref");
+		// Refunded outside Otta, as the provider reported (QA2 M4): the only way a
+		// Stripe order with captured money may be marked refunded.
+		await harness.stores.orderStore.flagReconciliation(
+			id,
+			`${PROVIDER_REFUNDED_FLAG_PREFIX} — test`,
+		);
 		const sender = new FakeEmailSender();
 		const orders = adminClient({ emailSender: sender });
 		expect(await orders.transitionOrder(id, "refunded", { idempotencyKey: "k-r" })).toEqual({
@@ -146,6 +153,29 @@ describe("an admin write sends its email at once, in order", () => {
 			transitioned: true,
 		});
 		expect(sender.countByTemplate("order-refunded", id)).toBe(0);
+	});
+
+	test("Mark refunded is neither offered nor accepted while captured money is unrefunded (QA2 M4)", async () => {
+		const id = await seedPaid("ord-markref-held");
+		const orders = adminClient({ emailSender: new FakeEmailSender() });
+		expect((await orders.getOrder(id))?.allowedTransitions).not.toContain("refunded");
+		expect(await orders.transitionOrder(id, "refunded", { idempotencyKey: "k-held" })).toEqual({
+			ok: false,
+			status: 409,
+			reason: "REFUND_THROUGH_MONEY",
+		});
+		expect((await harness.stores.orderStore.getById(id))?.state).toBe("paid");
+	});
+
+	test("a status move records the operator who made it (History's Who)", async () => {
+		const id = await seedPaid("ord-actor");
+		const orders = adminClient({ emailSender: new FakeEmailSender() });
+		await orders.transitionOrder(id, "processing", {
+			idempotencyKey: "k-actor",
+			actor: "ops@example.test",
+		});
+		const events = await harness.stores.orderStore.listEventsForOrder(id);
+		expect(events.at(-1)).toMatchObject({ toState: "processing", actor: "ops@example.test" });
 	});
 
 	test("fulfilment sends the shipped email with its tracking", async () => {

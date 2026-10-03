@@ -525,6 +525,8 @@ export class EmdashOrderStore implements OrderStore {
 			fromState: input.fromState,
 			toState: input.toState,
 			enqueueEmail: input.enqueueEmail,
+			// The admin's move carries who made it, onto the flip's audit event.
+			...(input.actor !== undefined ? { actor: input.actor } : {}),
 			// `markPaid`/`expire` route through this same primitive, so a bare
 			// transition into those states records the same intent they would.
 			...(input.toState === "paid"

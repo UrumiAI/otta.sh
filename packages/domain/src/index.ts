@@ -275,8 +275,11 @@ export {
 	UNTRIED_RETRY_MS,
 	adminNextStates,
 	manualPaymentAllowed,
+	markRefundedAllowed,
 	transitionOrder,
 	transitionOrderAsAdmin,
+	unrefundedCapturedCents,
+	type RefundLedgerFacts,
 	type TransitionOrderAsAdminFailure,
 	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
@@ -286,6 +289,7 @@ export {
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
+export { PROVIDER_REFUNDED_FLAG_PREFIX } from "./orders/provider-refunded-flag.js";
 export {
 	requestLogin,
 	verifyLogin,

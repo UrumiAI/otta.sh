@@ -169,9 +169,13 @@ export interface OrdersActionResult {
  *  exactly as a Block Kit `button.value` or a decoded carrier was. */
 export type OrdersActionPayload = Readonly<Record<string, string>>;
 
+/** `operator`: the signed-in admin the host named on the route (`routeCtx.user`,
+ *  via `operatorName`) — who a write records as having made it when the form named
+ *  nobody. Absent when the host named nobody. */
 type OrdersAction = (
 	client: AdminOrdersSurface,
 	payload: OrdersActionPayload,
+	operator?: string,
 ) => Promise<OrdersActionResult>;
 
 /**
@@ -286,6 +290,20 @@ function useCancelOrder(observedState: string): Notice {
 	};
 }
 
+/**
+ * Mark refunded on an order whose captured money the ledger has not returned (QA2
+ * M4, ADR-0026 amended 2026-10-03). Marking it would close the order and tell the
+ * buyer's page "refunded" while the shop still held the money. The way is Money →
+ * Refunds; a refund already made in the provider's dashboard is found there too —
+ * its check against the provider then lets Mark refunded close the order.
+ */
+const REFUND_THROUGH_MONEY: Notice = {
+	variant: "error",
+	title: "Refund it in Money → Refunds",
+	description:
+		"Nothing was changed. This order still has captured money that Otta hasn’t refunded, so marking it refunded would tell the buyer it was. Refund it in Money → Refunds — that returns the money and emails the buyer. If you already refunded it in your payment provider’s dashboard, start the refund there anyway: Otta checks with the provider first, issues nothing, and then lets you mark the order refunded.",
+};
+
 /** The generic refusal: the move is not in the state machine, or the order vanished. */
 const STATUS_CHANGE_FAILED: Notice = {
 	variant: "error",
@@ -312,6 +330,8 @@ function transitionRefusalNotice(
 			return PAID_BY_PROVIDER_ONLY; // T1-3
 		case "USE_CANCEL":
 			return useCancelOrder(observedState); // T1-4
+		case "REFUND_THROUGH_MONEY":
+			return REFUND_THROUGH_MONEY; // QA2 M4
 		case "ORDER_NOT_FOUND":
 		case "INVALID_TRANSITION":
 			return STATUS_CHANGE_FAILED;
@@ -350,7 +370,7 @@ const MARKED_REFUNDED: Notice = {
  * is nothing to hand back.
  */
 function transitionAction(toState: string): OrdersAction {
-	return async (client, payload) => {
+	return async (client, payload, operator) => {
 		const orderId = readString(payload["orderId"]);
 		if (orderId === undefined) return applied(UNREADABLE);
 		const observedState = readWatermark(payload["state"]);
@@ -372,7 +392,12 @@ function transitionAction(toState: string): OrdersAction {
 			});
 		}
 		const key = `admin-transition:${orderId}:${toState}`;
-		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
+		// Who made the move — the signed-in operator the host named — for History,
+		// which showed "—" for every hand-made status move (QA2).
+		const result = await client.transitionOrder(orderId, toState, {
+			idempotencyKey: key,
+			...(operator !== undefined ? { actor: operator } : {}),
+		});
 		if (!result.ok) return applied(transitionRefusalNotice(result.reason, observedState));
 		if (!result.transitioned) {
 			// The guarded flip matched 0 rows — already in that state, or a lost race.
@@ -580,7 +605,7 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
  * (see {@link OrdersActionResult}). What each refusal owes them is a notice that
  * names WHAT happened and WHY, which is what every branch below returns.
  */
-const cancelOrderAction: OrdersAction = async (client, payload) => {
+const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const reason = readString(payload["reason"]) ?? "";
@@ -622,7 +647,9 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 		{
 			reason,
 			...(detail.length > 0 ? { detail } : {}),
-			cancelledBy: cancelledBy.length > 0 ? cancelledBy : "admin",
+			// The typed name, else the signed-in operator (QA2: a cancel's refund was
+			// recorded BY "admin"), else "admin".
+			cancelledBy: cancelledBy.length > 0 ? cancelledBy : (operator ?? "admin"),
 			restock,
 		},
 		{ idempotencyKey: key },
@@ -851,7 +878,7 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
 				variant: "error",
 				title: "Not cancelled — already refunded at the provider",
 				description:
-					"Nothing was changed. Your payment provider shows this payment already refunded (possibly from its dashboard). Reconcile it, then use Mark refunded to close the order.",
+					"Nothing was changed. Your payment provider shows this payment already refunded (possibly from its dashboard). If you refunded it there, use Mark refunded to close the order — it is offered now — then resolve the order’s reconciliation flag.",
 			};
 		case "GATEWAY_TERMINAL":
 		case "REFUND_NOT_SUPPORTED":
@@ -942,12 +969,11 @@ function staleLedgerNotice(
  * is refused by the SERVICE as `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`
  * and rendered by {@link refundFailureNotice}. See ADR-0015's amendment.
  *
- * NOR IS THERE A `Refunded by` GUARD, for the same reason: the `REFUND_BY_REQUIRED`
- * refusal also lived only on that step. A blank one is recorded as `admin` below.
- * Attribution is therefore enforced by the surface alone — recorded, with its known
- * gap, in the same amendment.
+ * NOR IS THERE A `Refunded by` GUARD: a blank one is recorded as the signed-in
+ * operator the host named (`routeCtx.user`, QA2), and only as `admin` when the
+ * host named nobody.
  */
-const refundOrderAction: OrdersAction = async (client, payload) => {
+const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const amountCents = parseCents(payload["amountCents"]);
@@ -995,7 +1021,9 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 			amountCents,
 			currency,
 			...(reason.length > 0 ? { reason } : {}),
-			refundedBy: refundedBy.length > 0 ? refundedBy : "admin",
+			// The typed name, else the signed-in operator — "full remaining" carries no
+			// name, and "a different amount" no longer requires one (QA2) — else "admin".
+			refundedBy: refundedBy.length > 0 ? refundedBy : (operator ?? "admin"),
 		},
 		{ idempotencyKey: key },
 	);
@@ -1052,7 +1080,7 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				variant: "error",
 				title: "Provider already refunded",
 				description:
-					"Your payment provider shows this order already refunded (possibly from its dashboard). Nothing was issued — reconcile the provider before trying again.",
+					"Your payment provider shows this order already refunded (possibly from its dashboard). Nothing was issued. If you refunded it there, use Mark refunded to close the order — it is offered now — then resolve the order’s reconciliation flag.",
 			};
 		case "GATEWAY_RETRYABLE":
 			return {
@@ -1150,8 +1178,9 @@ export async function dispatchOrdersAction(
 	actionId: string,
 	payload: OrdersActionPayload,
 	client: AdminOrdersSurface,
+	operator?: string,
 ): Promise<OrdersActionResult | undefined> {
 	const action = ORDERS_ACTIONS_BY_ID[actionId];
 	if (action === undefined) return undefined;
-	return await action(client, payload);
+	return await action(client, payload, operator);
 }

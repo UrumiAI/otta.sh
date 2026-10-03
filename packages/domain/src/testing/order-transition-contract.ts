@@ -18,6 +18,7 @@ import {
 	transitionOrder,
 	transitionOrderAsAdmin,
 } from "../orders/transition.js";
+import { PROVIDER_REFUNDED_FLAG_PREFIX } from "../orders/provider-refunded-flag.js";
 import type { FakeEmailSender } from "./fake-email-sender.js";
 
 export interface OrderTransitionHarness {
@@ -510,6 +511,85 @@ export function orderTransitionContract(
 			// The move is still audited like any other.
 			const events = await h.store.listEventsForOrder(id);
 			expect(events.at(-1)).toMatchObject({ fromState: "paid", toState: "refunded" });
+		});
+
+		// QA2 M4 (ADR-0026, amended 2026-10-03): Mark refunded closed a Stripe order
+		// that still held captured money the ledger never returned, and the buyer's
+		// page then said "refunded". Refused in the domain unless nothing is left
+		// to refund through the provider, the provider itself reported the payment
+		// refunded, or the method returns money outside Otta.
+		async function capture(h: OrderTransitionHarness, id: OrderId, gateway: "stripe" | "x402") {
+			await h.store.recordPayment({
+				orderId: id,
+				gateway,
+				providerRef: `pay_${id}`,
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+		}
+
+		test("an admin Mark refunded on a Stripe order with captured, unrefunded money is refused", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await capture(h, id, "stripe");
+			// A partial refund through the ledger still leaves money to return.
+			await h.store.recordRefund({
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: "re_part",
+				reason: null,
+				refundedBy: "admin@example.test",
+				idempotencyKey: idempotencyKey(`part:${id}`),
+			});
+			expect(await adminDrive(h, id, "refunded")).toEqual({
+				ok: false,
+				reason: "REFUND_THROUGH_MONEY",
+			});
+			expect((await h.store.getById(id))?.state).toBe("paid");
+		});
+
+		test("Mark refunded is allowed once the provider itself reported the payment refunded (the refund ledger's flag)", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			await capture(h, id, "stripe");
+			await h.store.flagReconciliation(id, `${PROVIDER_REFUNDED_FLAG_PREFIX} — test`);
+			expect(await adminDrive(h, id, "refunded")).toMatchObject({ ok: true, transitioned: true });
+		});
+
+		test("Mark refunded is allowed for a method that returns money outside Otta (x402)", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, { paymentMethod: "x402" });
+			await drive(h, id, "paid");
+			await capture(h, id, "x402");
+			expect(await adminDrive(h, id, "refunded")).toMatchObject({ ok: true, transitioned: true });
+		});
+
+		test("an admin move records WHO made it on the audit event", async () => {
+			const h = await makeHarness();
+			const id = await seed(h);
+			await drive(h, id, "paid");
+			const res = await transitionOrderAsAdmin(
+				{ orderStore: h.store },
+				{
+					orderId: id,
+					toState: "processing",
+					idempotencyKey: idempotencyKey(`who:${id}`),
+					actor: "ops@example.test",
+				},
+			);
+			expect(res).toMatchObject({ ok: true, transitioned: true });
+			const events = await h.store.listEventsForOrder(id);
+			expect(events.at(-1)).toMatchObject({
+				fromState: "paid",
+				toState: "processing",
+				actor: "ops@example.test",
+			});
 		});
 
 		test("every other admin move emails the buyer exactly as a transition does", async () => {

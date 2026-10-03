@@ -372,16 +372,37 @@ async function consoleDetail(
 async function consoleAct(
 	input: OrdersConsoleInput,
 	ctx: PluginContext,
+	operator: string | undefined,
 ): Promise<OrdersActionResult | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
 	if (!ORDERS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
 	const client = await createClient(ctx);
-	const outcome = await dispatchOrdersAction(actionId, readConsolePayload(input.value), client);
+	const outcome = await dispatchOrdersAction(
+		actionId,
+		readConsolePayload(input.value),
+		client,
+		operator,
+	);
 	// Unreachable while the gate above reads the same table — kept because the two
 	// are separate statements, and "the id was registered but nothing ran" must
 	// never fall through to a quiet success.
 	return outcome ?? UNKNOWN_ACTION;
+}
+
+/**
+ * Who the host says is signed in, as a write records it: the display name, else
+ * the email; `undefined` when the host named nobody (QA2: History showed "—", and
+ * refunds were recorded BY "admin"). The route is private, so the host has
+ * authenticated this caller before the plugin runs.
+ */
+export function operatorName(
+	user: { name?: string | null; email?: string | null } | undefined,
+): string | undefined {
+	const name = user?.name?.trim() ?? "";
+	if (name.length > 0) return name.slice(0, 200);
+	const email = user?.email?.trim() ?? "";
+	return email.length > 0 ? email.slice(0, 200) : undefined;
 }
 
 /**
@@ -392,7 +413,7 @@ export function createOrdersConsoleHandler(): RouteHandler<OrdersConsoleInput> {
 		const input = routeCtx.input;
 		try {
 			if (readString(input.type) === CONSOLE_ACT_INTERACTION) {
-				return await consoleAct(input, ctx);
+				return await consoleAct(input, ctx, operatorName(routeCtx.user));
 			}
 			const resource = readString(input.resource);
 			if (resource === "orders.list") return await consoleList(input, ctx);
