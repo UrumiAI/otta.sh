@@ -526,7 +526,8 @@ checkout a minute, or that wants a lapsed order's stock back on sale within a mi
 load, has outgrown the Free preset.
 
 `cancel-intents` (withdrawing a lapsed or unpaid-cancelled order's Stripe PaymentIntent) runs
-first in every tick: about 5 calls per order (one of them the Stripe cancel) plus up to 5
+first in every tick: about 5 calls per order (one of them the Stripe cancel; up to 7 when Stripe
+refuses the cancel and the intent is read back and, on its last attempt, given up) plus up to 5
 secret reads to build the gateway, at most 20% of the time and 30% of the queries, 1–10 orders a
 tick scaled from the budget, each cancel given a fixed 1.5 s and started only with that much
 left; the intents of the orders the tick's expiry is about to flip are withdrawn right after
