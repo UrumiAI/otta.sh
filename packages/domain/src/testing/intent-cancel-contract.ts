@@ -313,7 +313,11 @@ export function intentCancelContract(
 
 			const flag = (await h.settleDeps.orderStore.getById(s.order.id))?.reconciliationFlag ?? "";
 			expect(flag).toContain(s.intentId);
-			expect(flag).toMatch(/refunded automatically/);
+			// It states the real rule (ADR-0022, 2026-10-03): a payment while the order
+			// is still held is a sale; after the expiry or a cancel it is refunded.
+			expect(flag).toMatch(
+				/a payment on it is kept while the order is still held, and refunded automatically once the order has expired or been cancelled\./,
+			);
 
 			// An order already flagged for something else keeps ITS flag.
 			const other = await seedPendingOrder(h, "9b");

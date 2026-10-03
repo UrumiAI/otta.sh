@@ -235,7 +235,7 @@ async function settleIntent(
 	if (order.reconciliationFlag === null) {
 		await deps.orderStore.flagReconciliation(
 			orderId,
-			`Could not withdraw payment intent ${intent.intentId} at the provider (${res.reason}, ${String(attempts)} attempt(s)). It may still be payable; a payment on it will be refunded automatically.`,
+			`Could not withdraw payment intent ${intent.intentId} at the provider (${res.reason}, ${String(attempts)} attempt(s)). It may still be payable: a payment on it is kept while the order is still held, and refunded automatically once the order has expired or been cancelled.`,
 		);
 	}
 }
