@@ -225,6 +225,7 @@ export type { Session, SessionStore, SessionSummary } from "./ports/session-stor
 export type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
+	PruneChallengesOptions,
 	VerifyChallengeResult,
 } from "./ports/credential-verifier.js";
 export type { Address, AddressKind, Customer } from "./customers/model.js";

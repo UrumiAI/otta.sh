@@ -139,5 +139,19 @@ export function credentialVerifierContract(
 			// The live challenge survived the prune and still verifies.
 			expect((await h.verifier.verifyChallenge(live.challengeId, live.token)).ok).toBe(true);
 		});
+
+		test("pruneChallenges stops when shouldContinue says no, and a later run removes the rest", async () => {
+			const h = await makeHarness();
+			for (const n of [1, 2, 3]) await issue(h.verifier, email(`old${String(n)}@example.com`));
+			h.advance(h.challengeTtlMs + 1);
+
+			let allowed = 1;
+			const first = await h.verifier.pruneChallenges(h.now(), {
+				shouldContinue: () => allowed-- > 0,
+			});
+			expect(first).toBeLessThanOrEqual(1);
+			expect(first + (await h.verifier.pruneChallenges(h.now()))).toBe(3);
+			expect(await h.verifier.pruneChallenges(h.now(), { shouldContinue: () => false })).toBe(0);
+		});
 	});
 }
