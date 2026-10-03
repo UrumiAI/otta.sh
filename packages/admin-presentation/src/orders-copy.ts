@@ -333,6 +333,17 @@ export const REFUND_PARTIAL_BANNER_TITLE = "A recorded refund cannot be reversed
 export const REFUND_AMOUNT_INVALID =
 	"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.";
 
+/** A refund amount with more decimal places than the currency's cents (QA round
+ *  2: "7.001" was answered "enter a valid amount greater than zero", which it
+ *  already was). */
+export const REFUND_AMOUNT_PRECISION =
+	"Use at most 2 decimal places for the refund amount (e.g. 19.99). Nothing was changed.";
+
+/** True when an otherwise-plain amount has more than two decimal places. */
+export function hasExcessDecimals(input: string): boolean {
+	return /^\d+\.\d{3,}$/.test(input.trim());
+}
+
 /** A refund with nobody recorded as issuing it. */
 export const REFUND_BY_REQUIRED =
 	"Enter who is issuing or recording this refund. Nothing was changed.";

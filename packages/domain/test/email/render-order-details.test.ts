@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+	customerSafeCancellationCopy,
 	EMAIL_NOT_CALCULATED_LABEL,
 	renderEmail,
 	type EmailRenderContext,
@@ -437,5 +438,50 @@ describe("customer-login-link copy", () => {
 		expect(rendered.subject).toBe("Sign in to <i>Shop</i> Bcc: x");
 		expect(rendered.html).not.toContain("<i>");
 		expect(rendered.html).toContain("&lt;i&gt;Shop&lt;/i&gt;");
+	});
+});
+
+describe("a state email after a partial refund (QA round 2)", () => {
+	test("states the refund under the paid total, never 'Paid' alone", () => {
+		const rendered = renderEmail(
+			"order-processing",
+			{
+				orderId: "o1",
+				state: "processing",
+				currency: "USD",
+				totalCents: 1000,
+				subtotalCents: 1000,
+				discountCents: 0,
+				lines: [{ sku: "S", title: "Lamp", quantity: 1, unitPriceCents: 1000 }],
+				refundedSoFarCents: 400,
+			},
+			{ formatMoney: stubMoney },
+		);
+		const paid = rendered.text.indexOf("Paid:");
+		const refunded = rendered.text.indexOf("Refunded so far:");
+		expect(paid).toBeGreaterThan(-1);
+		expect(refunded).toBeGreaterThan(paid);
+		expect(rendered.text).toContain(`Refunded so far: ${stubMoney(400, "USD")}`);
+	});
+});
+
+describe("the cancelled email for a pricing error stays private, and still reads naturally (QA round 2)", () => {
+	test("no reason, no dangling 'Reason:', and the plain cancellation body", () => {
+		expect(customerSafeCancellationCopy("pricing_error")).toBeUndefined();
+		const rendered = renderEmail(
+			"order-cancelled",
+			{
+				orderId: "o1",
+				state: "cancelled",
+				currency: "USD",
+				totalCents: 1000,
+				lines: [{ sku: "S", title: "Lamp", quantity: 1, unitPriceCents: 1000 }],
+				cancellation: { reason: "pricing_error", detail: "listed at $1 by mistake" },
+			},
+			{ formatMoney: stubMoney },
+		);
+		expect(rendered.text.startsWith("Your order has been cancelled.")).toBe(true);
+		expect(rendered.text).not.toMatch(/Reason|pricing|price|mistake/i);
+		expect(rendered.text).not.toMatch(/\n\n\n/);
 	});
 });

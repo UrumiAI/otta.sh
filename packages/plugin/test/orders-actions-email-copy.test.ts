@@ -75,6 +75,7 @@ function surface(state: string, email: InlineEmailStatus | undefined): AdminOrde
 		getTimeline: refuse("getTimeline"),
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
+		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
 	};
 }
 

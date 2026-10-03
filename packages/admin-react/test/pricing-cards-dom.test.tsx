@@ -524,6 +524,46 @@ test("Remove asks first, and never offers to take more than there is", async () 
 	expect(writes()).toEqual([]);
 });
 
+// QA round 2: Add 100,000,000 applied with no confirm, while Remove always asks.
+test("a very large Add asks first, says what the count becomes, and adds only on Yes", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act")
+			return Promise.resolve(json({ ok: true, notice: null }));
+		return Promise.resolve(detail({ onHand: 24 }));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "100000000");
+	await fire(button(c, "Add"), "click");
+	const dialog = c.querySelector('[data-testid="otta-confirm"]');
+	expect(dialog?.textContent).toContain("Add 100,000,000 to stock?");
+	expect(dialog?.textContent).toContain("You'll have 100,000,024");
+	expect(writes()).toEqual([]);
+
+	await fire(c.querySelector('[data-testid="otta-confirm-yes"]')!, "click");
+	await flush();
+	expect(writes()).toEqual([
+		expect.objectContaining({
+			action_id: "products:restock",
+			value: expect.objectContaining({ qty: "100000000", onHand: "24" }),
+		}),
+	]);
+});
+
+test("an ordinary Add (up to 10,000) is still one click", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act")
+			return Promise.resolve(json({ ok: true, notice: null }));
+		return Promise.resolve(detail({}));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "10000");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(writes()).toHaveLength(1);
+});
+
 test("a field changed elsewhere since the merchant started stops the save, and says so", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();

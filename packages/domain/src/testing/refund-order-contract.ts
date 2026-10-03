@@ -4,7 +4,9 @@ import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/i
 import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
 import { refundOrder, sumRefunds } from "../orders/refund-order.js";
+import { resolveUnverifiedRefund } from "../orders/resolve-unverified-refund.js";
 import type { OrderStore } from "../ports/order-store.js";
+import { PROVIDER_REFUNDED_FLAG_PREFIX } from "../orders/provider-refunded-flag.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import { FakeEmailSender } from "./fake-email-sender.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
@@ -408,11 +410,344 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(0); // never called — capability, not discovery
 		});
 
+		// Review round 1: Stripe's pre-flight also refuses a refund that would
+		// over-refund after a PARTIAL dashboard refund. That is not "refunded outside
+		// Otta" — money is still held — so the flag names both amounts and does not
+		// unlock Mark refunded.
+		test("a PARTIAL provider refund is flagged with both amounts and never as fully refunded", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-part", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(350), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-part"),
+			});
+			const flag = (await h.orderStore.getById(id))?.reconciliationFlag ?? "";
+			expect(flag).toContain("partially refunded at the provider: 3.50 USD of 10.00 USD");
+			expect(flag.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX)).toBe(false);
+
+			// Refunded the rest in the dashboard, then tried again: the newer, full
+			// answer replaces the provider's own earlier partial one.
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(650),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-part-2"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toMatch(
+				new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`),
+			);
+		});
+
+		test("a PROVIDER_ALREADY_REFUNDED without the provider's amounts flags nothing (unknown is not refunded)", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-unknown", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-unknown"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+		});
+
+		// Review round 2: the RESUME arm (the pre-flight finds the provider already
+		// shows money on a reservation this call did not create) holds the row
+		// unverified and flags it — and now names the provider's figures too.
+		test("a resumed reservation the provider shows refunded is held unverified, its flag naming the provider's figures", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-resume-figures", totalCents: 1000 });
+			const key = idempotencyKey("rf-resume-figures");
+			await h.orderStore.reserveRefund({
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: null,
+				reason: null,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			expect((await h.orderStore.getRefundByIdempotencyKey(key))?.status).toBe("unverified");
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toContain(
+				"The provider shows 10.00 USD of 10.00 USD refunded.",
+			);
+		});
+
+		// Review round 2: an `unverified` refund could never be closed — retries
+		// answer GATEWAY_UNVERIFIED, no webhook finalizes it, and Mark refunded and
+		// cancel refuse REFUND_IN_FLIGHT. A person resolves it.
+		async function unverifiedRefund(h: RefundOrderHarness, idText: string, amount = 1000) {
+			const id = await h.seedPaidOrder({ id: idText, totalCents: 1000 });
+			const key = idempotencyKey(`rf-unv-${idText}`);
+			await h.orderStore.reserveRefund({
+				orderId: id,
+				amount: cents(amount),
+				currency: USD,
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: null,
+				reason: null,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			});
+			await h.orderStore.markRefundUnverified(key);
+			return { id, key };
+		}
+
+		test("resolve CONFIRMED: the row is recorded with the provider id, the order closes, the refunded email goes once, the operator is recorded; a replay changes nothing", async () => {
+			const h = await makeHarness();
+			const { id, key } = await unverifiedRefund(h, "ord-unv-confirm");
+			const sent = new FakeEmailSender();
+			await drain(h, sent);
+			sent.reset();
+			const cmd = {
+				orderId: id,
+				refundKey: key,
+				outcome: "confirmed" as const,
+				refundRef: "re_dash_1",
+				resolvedBy: "ops@example.test",
+			};
+			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+				ok: true,
+				changed: true,
+				fullyRefunded: true,
+			});
+			const row = await h.orderStore.getRefundByIdempotencyKey(key);
+			expect(row).toMatchObject({
+				status: "recorded",
+				refundRef: "re_dash_1",
+				resolvedBy: "ops@example.test",
+			});
+			expect((await h.orderStore.getById(id))?.state).toBe("refunded");
+			expect(await drain(h, sent)).toBe(1);
+			expect(sent.countByTemplate("order-refunded", id)).toBe(1);
+
+			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+				ok: true,
+				changed: false,
+			});
+			expect(await drain(h, sent)).toBe(0);
+		});
+
+		test("resolve CONFIRMED without a provider id records one that names the operator's confirmation", async () => {
+			const h = await makeHarness();
+			const { id, key } = await unverifiedRefund(h, "ord-unv-noref", 400);
+			await resolveUnverifiedRefund(
+				{ orderStore: h.orderStore },
+				{ orderId: id, refundKey: key, outcome: "confirmed", resolvedBy: "ops" },
+			);
+			const row = await h.orderStore.getRefundByIdempotencyKey(key);
+			expect(row?.status).toBe("recorded");
+			expect(row?.refundRef).toMatch(/^confirmed-by-operator:/);
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+		});
+
+		// Final round: resolving clears the flag that sent the operator here (the
+		// resume arm's "never finalized" flag for THIS refund) — compare-and-clear on
+		// that exact flag; any other flag stays.
+		for (const outcome of ["confirmed", "voided"] as const) {
+			test(`resolve ${outcome.toUpperCase()} clears the unverified-refund flag it answers, and only that flag`, async () => {
+				const h = await makeHarness();
+				const id = await h.seedPaidOrder({ id: `ord-unv-flag-${outcome}`, totalCents: 1000 });
+				const key = idempotencyKey(`rf-unv-flag-${outcome}`);
+				await h.orderStore.reserveRefund({
+					orderId: id,
+					amount: cents(400),
+					currency: USD,
+					kind: "gateway",
+					gateway: "stripe",
+					refundRef: null,
+					reason: null,
+					refundedBy: "admin",
+					idempotencyKey: key,
+				});
+				const gw = new FakePaymentGateway({ id: "stripe" });
+				gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+				await refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(400),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: key,
+				});
+				expect((await h.orderStore.getById(id))?.reconciliationFlag).toContain(String(key));
+				await resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: id, refundKey: key, outcome, resolvedBy: "ops" },
+				);
+				const after = await h.orderStore.getById(id);
+				expect(after?.reconciliationFlag).toBeNull();
+				expect(after?.reconciliationResolution?.resolvedBy).toBe("ops");
+
+				// Any other flag is never cleared by a resolve.
+				const other = await unverifiedRefund(h, `ord-unv-flag-other-${outcome}`, 300);
+				await h.orderStore.flagReconciliation(other.id, "an unrelated anomaly");
+				await resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: other.id, refundKey: other.key, outcome, resolvedBy: "ops" },
+				);
+				expect((await h.orderStore.getById(other.id))?.reconciliationFlag).toBe(
+					"an unrelated anomaly",
+				);
+			});
+		}
+
+		test("resolve VOIDED: capacity is released, the order stays as it was, nothing is emailed; a replay changes nothing", async () => {
+			const h = await makeHarness();
+			const { id, key } = await unverifiedRefund(h, "ord-unv-void");
+			const sent = new FakeEmailSender();
+			await drain(h, sent);
+			sent.reset();
+			const cmd = {
+				orderId: id,
+				refundKey: key,
+				outcome: "voided" as const,
+				resolvedBy: "ops@example.test",
+			};
+			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+				ok: true,
+				changed: true,
+			});
+			expect(await h.orderStore.getRefundByIdempotencyKey(key)).toMatchObject({
+				status: "voided",
+				resolvedBy: "ops@example.test",
+			});
+			expect(sumRefunds(await h.orderStore.listRefunds(id)), "capacity released").toBe(0);
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			expect(await drain(h, sent)).toBe(0);
+			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+				ok: true,
+				changed: false,
+			});
+			// Capacity back: a fresh refund now fits.
+			const fresh = await refundOrder(
+				{ orderStore: h.orderStore },
+				new FakePaymentGateway({ id: "stripe" }),
+				{
+					orderId: id,
+					amount: cents(1000),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey("rf-unv-void-fresh"),
+				},
+			);
+			expect(fresh.ok).toBe(true);
+		});
+
+		test("only an UNVERIFIED row can be resolved: a reserved, a recorded the other way, a voided the other way, or a missing one is refused", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-unv-guard", totalCents: 1000 });
+			const reservedKey = idempotencyKey("rf-unv-guard-reserved");
+			await h.orderStore.reserveRefund({
+				orderId: id,
+				amount: cents(200),
+				currency: USD,
+				kind: "gateway",
+				gateway: "stripe",
+				refundRef: null,
+				reason: null,
+				refundedBy: "admin",
+				idempotencyKey: reservedKey,
+			});
+			const resolve = (refundKey: string, outcome: "confirmed" | "voided") =>
+				resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: id, refundKey: idempotencyKey(refundKey), outcome, resolvedBy: "ops" },
+				);
+			expect(await resolve(reservedKey, "confirmed")).toEqual({
+				ok: false,
+				reason: "NOT_UNVERIFIED",
+			});
+			expect(await resolve("rf-nope", "voided")).toEqual({ ok: false, reason: "REFUND_NOT_FOUND" });
+
+			const recorded = await refundOrder(
+				{ orderStore: h.orderStore },
+				new FakePaymentGateway({ id: "stripe" }),
+				{
+					orderId: id,
+					amount: cents(300),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey("rf-unv-guard-recorded"),
+				},
+			);
+			expect(recorded.ok).toBe(true);
+			expect(await resolve("rf-unv-guard-recorded", "voided")).toEqual({
+				ok: false,
+				reason: "NOT_UNVERIFIED",
+			});
+			expect(await resolve(reservedKey, "voided")).toEqual({ ok: false, reason: "NOT_UNVERIFIED" });
+			// Another order's refund key never resolves against this order.
+			const other = await unverifiedRefund(h, "ord-unv-guard-other");
+			expect(
+				await resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: id, refundKey: other.key, outcome: "voided", resolvedBy: "ops" },
+				),
+			).toEqual({ ok: false, reason: "REFUND_NOT_FOUND" });
+		});
+
+		test("a PROVIDER_ALREADY_REFUNDED never overwrites an order's open reconciliation flag", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-flagged", totalCents: 1000 });
+			await h.orderStore.flagReconciliation(id, "an earlier anomaly");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-flagged"),
+			});
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe("an earlier anomaly");
+		});
+
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
 			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id,
 				amount: cents(500),
@@ -421,6 +756,12 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-preflight"),
 			});
 			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			// The provider's own word that the payment is FULLY refunded is kept on the
+			// order (QA2 M4): it is what lets the admin close an order refunded outside
+			// Otta with Mark refunded — and it says to do that BEFORE resolving it.
+			const flag = (await h.orderStore.getById(id))?.reconciliationFlag ?? "";
+			expect(flag).toMatch(new RegExp(`^${PROVIDER_REFUNDED_FLAG_PREFIX}`));
+			expect(flag).toMatch(/Mark refunded.*before.*resolv/i);
 			// Reserve-before-issue: the reservation was inserted then VOIDED (nothing
 			// issued). It stays as an audit row but releases its ceiling capacity — the
 			// ACTIVE Σ is 0 and the order never flipped.

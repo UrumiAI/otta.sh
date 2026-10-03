@@ -213,3 +213,82 @@ sent no email at all.
 - **The lost race's email goes inline too.** When a cancellation loses the race to a shipment,
   its refund's `refund-issued` notice is sent inline like any write's email, and the console's
   notice says whether it went.
+
+## Amended 2026-10-03 — Mark refunded only where no captured money is still held
+
+QA round 2 (M4): on a shipped Stripe order with $10.00 captured and $3.50 refunded, Mark
+refunded closed the order as `refunded`. The buyer's order page then said "refunded" while the
+shop still held $6.50. Decision 3 kept Mark refunded as "the only way to close an order whose
+refund was made outside Otta"; it did not ask whether the money was in fact outside Otta.
+
+**The rule.** `transitionOrderAsAdmin` refuses `→ refunded` with `REFUND_THROUGH_MONEY`, and
+`adminNextStates(order, ledger)` does not offer it, unless `markRefundedAllowed` holds, decided
+from the refund ledger:
+
+1. **The method returns money outside Otta.** A per-method declaration, like the settlement
+   one: Stripe is `provider`, x402 is `outside` (it cannot refund automatically; the operator
+   sends the money). For an `outside` method, Mark refunded is what records that.
+2. **Nothing is left to refund through the provider.** `unrefundedCapturedCents` = succeeded
+   payments less RECORDED refunds. A reserved or unverified refund is a promise, not money back
+   (an unverified full refund may still void), so it does not count.
+3. **The provider itself reported the payment refunded in full.** When a refund's pre-flight
+   answers `PROVIDER_ALREADY_REFUNDED`, the Stripe adapter now returns its own figures (refunded,
+   captured). Refunded in full ⇒ `refundOrder` flags the order with `PROVIDER_REFUNDED_FLAG_PREFIX`,
+   and that flag unlocks Mark refunded. Refunded in part (the pre-flight also refuses an amount
+   that would over-run a partial dashboard refund) ⇒ an informational flag naming both amounts
+   ("partially refunded at the provider: 3.50 USD of 10.00 USD") that unlocks nothing. No figures
+   ⇒ no flag: unknown is not refunded. A flag is never written over an open one, except the
+   provider's own earlier answer. The unlocking flag tells the operator to mark the order refunded
+   BEFORE resolving the flag, because resolving it removes the permission.
+
+**Never while a refund is unresolved.** Whatever the above, `→ refunded` is refused with
+`REFUND_IN_FLIGHT` (and not offered) while any refund on the order is reserved or unverified —
+its outcome decides whether money is still held. This is the cancel path's rule.
+
+Otherwise the operator is sent to Money → Refunds, which returns the money and emails the buyer.
+The refusal copy says what to do about a dashboard refund.
+
+**Who made a move.** `transitionOrderAsAdmin` takes an `actor`, recorded on the flip's audit
+event. The console passes the signed-in operator the host names on the private admin route
+(`routeCtx.user`: display name, else email). Refunds and cancels with no typed name are recorded
+by the same operator rather than "admin". History shows them, and it now also lists each refund
+on the ledger and what a cancellation refunded and restocked.
+
+**The pricing-error reason stays private.** QA asked for a Reason line on the "Pricing error"
+cancel email; the earlier review's decision stands (it invites disputes over the merchant's
+mistake). The email reads as the plain cancellation, with no Reason line, as before.
+
+**An unverified refund is resolved by a person.** A refund whose provider call timed out is
+held `unverified`: it keeps its ceiling capacity until someone checks the provider. Nothing else
+ever settled it — a same-key retry answers `GATEWAY_UNVERIFIED` without calling the provider, no
+webhook finalizes it, and Mark refunded and cancel-with-refund both refuse `REFUND_IN_FLIGHT` —
+so the order could never be closed. `resolveUnverifiedRefund` gives the two answers, each behind
+a confirm in Money → Refunds and idempotent:
+
+- **Confirmed at the provider** → the row is finalized exactly as the gateway's success would
+  be (`finalizeRefund`): recorded with the provider's refund id if the operator has it (else a
+  `confirmed-by-operator:` marker), the ceiling flip to `refunded` when it completes the refund,
+  and the same one refund email, sent at once.
+- **It didn't happen** → `voidUnverifiedRefund`: `unverified → voided`, capacity released; Mark
+  refunded stays guarded by the money still held.
+
+Only an `unverified` row can be resolved (a reserved, recorded or voided one, or another order's
+key, is refused); a replay of the same answer changes nothing; the operator the host names is
+recorded on the row (`resolvedBy`). A successful resolve compare-and-clears the order's "never
+finalized" flag for that refund (exact text, as cancel-with-refund clears its own) and never any
+other flag. A wrong "it didn't happen" cannot pay twice: a new refund's pre-check asks the
+provider first and issues nothing if it is already refunded. This closes the earlier follow-up "admin confirms a refund at
+the provider". When the refund path's own RESUME finds the provider already showing money on a
+reservation, the flag it writes now names the provider's figures and points to this action.
+
+Provider figures in flags are written in the currency's real minor-unit exponent (ICU's table:
+JPY 0, USD 2, BHD 3).
+
+**Consequences.**
+- A Stripe order with money still held can only reach `refunded` through the ledger, so its
+  buyer's page and its "Refunded $X" line agree with the money.
+- An order refunded in the dashboard needs one extra step (the Money → Refunds attempt that
+  finds it) before it can be closed. A store with an open anomaly flag on that order resolves
+  that flag first.
+- The admin order read now reads the order's ledger (the same one document) to compute its
+  offers.

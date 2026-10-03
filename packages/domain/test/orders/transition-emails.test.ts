@@ -78,6 +78,48 @@ async function drive(store: InMemoryOrderStore, id: string, to: OrderState) {
 	);
 }
 
+describe("a state email after a partial refund states the refund (QA round 2)", () => {
+	test("the processing email carries what the ledger shows refunded so far", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await drive(store, "ord-1", "paid");
+		await store.recordPayment({
+			orderId: orderId("ord-1"),
+			gateway: "stripe",
+			providerRef: "pi_1",
+			amount: cents(500),
+			currency: USD,
+			status: "succeeded",
+		});
+		await dispatchOrderEmails({ orderStore: store, emailSender, clock });
+		await store.recordRefund({
+			orderId: orderId("ord-1"),
+			amount: cents(200),
+			currency: USD,
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: "re_1",
+			reason: null,
+			refundedBy: "ops",
+			idempotencyKey: idempotencyKey("r-1"),
+		});
+		await drive(store, "ord-1", "processing");
+		await dispatchOrderEmails({ orderStore: store, emailSender, clock });
+		const processing = emailSender.sends.find((s) => s.template === "order-processing");
+		expect(processing?.data).toMatchObject({ refundedSoFarCents: 200 });
+	});
+
+	test("with nothing refunded, the field is absent", async () => {
+		const { store, clock, emailSender } = harness();
+		await store.createFromCart(pending());
+		await drive(store, "ord-1", "paid");
+		await drive(store, "ord-1", "processing");
+		await dispatchOrderEmails({ orderStore: store, emailSender, clock });
+		const processing = emailSender.sends.find((s) => s.template === "order-processing");
+		expect(processing?.data).not.toHaveProperty("refundedSoFarCents");
+	});
+});
+
 describe("outbox-backed transition emails (5.3)", () => {
 	test("paid to processing enqueues exactly one order-processing email", async () => {
 		const { store, clock, emailSender } = harness();

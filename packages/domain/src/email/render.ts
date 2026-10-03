@@ -287,6 +287,11 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 	push("Tax", calculated(data["taxCents"], data["taxCalculated"], currency, money));
 	const totalLabel = isRefund ? "Order total" : orderTotalLabel(str(data["state"]) ?? "");
 	push(totalLabel, money(data["totalCents"], currency));
+	// A state email sent after a partial refund (QA round 2): "Paid: $10.00" alone
+	// read as if all of it were still held. The ledger's refunded figure follows it.
+	if (!isRefund && data["refundedSoFarCents"] !== undefined) {
+		push("Refunded so far", money(data["refundedSoFarCents"], currency));
+	}
 	if (rows.length === 0) return null;
 	return {
 		text: rows.map(([label, value]) => `${label}: ${value}`).join("\n"),
