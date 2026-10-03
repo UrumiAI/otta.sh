@@ -466,7 +466,7 @@ line naming what each leg spent:
 
 ```
 [otta] cron sweep used 27 of 30 queries (180ms of 9500ms): cancel-intents 2, expire-orders 14,
-  order-emails 8, tick 3; deferred to the next tick: hold-intents, expire-holds
+  order-emails 8, overhead 3; deferred to the next tick: hold-intents, expire-holds
 ```
 
 A leg the budget did not reach is listed as deferred and runs on a later tick — that is not a

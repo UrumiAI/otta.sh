@@ -1524,8 +1524,9 @@ export async function runCommerceSweeps(
 	}
 
 	budget.finishLegs();
-	logTick(budget, legs, deferredByBudget, stoppedAtCeiling);
 	if (stateChanged) await cursors.write(STATE_CURSOR, JSON.stringify(state));
+	// After the state write, so the line's total is the tick's whole spend.
+	logTick(budget, legs, deferredByBudget, stoppedAtCeiling);
 
 	const listed = (leg: SweepLeg): number => SWEEP_LEGS.indexOf(leg);
 	const reported = legs
@@ -1577,7 +1578,7 @@ export function tickOrder(waits: Partial<Record<SweepLeg, number>>): SweepLeg[] 
 
 /**
  * The tick's one summary line, when it did anything worth reading: what it spent,
- * by leg (and the tick's own reads), and what it left for the next tick. An idle
+ * by leg (and the tick's own reads, as `overhead`), and what it left for the next tick. An idle
  * tick — every leg found nothing — is silent.
  */
 function logTick(
@@ -1593,7 +1594,7 @@ function logTick(
 	const spent = SWEEP_LEGS.filter((leg) => budget.queriesFor(leg) > 0).map(
 		(leg) => `${leg} ${String(budget.queriesFor(leg))}`,
 	);
-	spent.push(`tick ${String(budget.overheadQueries())}`);
+	spent.push(`overhead ${String(budget.overheadQueries())}`);
 	console.log(
 		`[otta] cron sweep used ${String(budget.queriesUsed())} of ${String(budget.limits.queries)} queries` +
 			` (${String(budget.elapsedMs())}ms of ${String(budget.limits.ms)}ms): ${spent.join(", ")}` +

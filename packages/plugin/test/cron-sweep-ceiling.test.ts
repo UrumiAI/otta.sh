@@ -207,6 +207,8 @@ describe("per-leg query accounting", () => {
 		for (const entry of summary.legs) {
 			if (entry.queries > 0) expect(line).toContain(`${entry.leg} ${String(entry.queries)}`);
 		}
+		// The tick's own reads (the setting, the cadence state) are named as overhead.
+		expect(line).toContain(`overhead ${String(summary.budget.overheadQueries)}`);
 	}, 120_000);
 });
 

@@ -12,7 +12,7 @@ starved (QA2 M2).
   QA logged ticks of 334 and 44.
 - **Per-leg accounting.** Every summary leg carries `queries`, and the summary carries
   `budget.overheadQueries`. A tick that did work logs one line: `[otta] cron sweep used N of M
-  queries (…): <leg> <calls>, …, tick <calls>; deferred to the next tick: …`. The old
+  queries (…): <leg> <calls>, …, overhead <calls>; deferred to the next tick: …`. The old
   `deferred to the next tick: … (Xms of Yms, N of M queries)` line is folded into it.
 - **Every leg stops at its share.** `reporting-heal` bounds each day's reconcile by the calls it
   has left and resumes a first heal across ticks (it was the 334-query tick).

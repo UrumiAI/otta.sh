@@ -1507,7 +1507,7 @@ reserved room for a whole 22-call unit before asking whether anything was due.
    ceiling interrupts is handed back like a send the tick cut short (uncounted).
 2. **Every call is attributed** to the leg running when it was made, or to the tick's own reads.
    The summary carries `queries` per leg and `overheadQueries`. A tick that did work logs one line:
-   `[otta] cron sweep used 27 of 30 queries (…): cancel-intents 2, expire-orders 14, …, tick 3;
+   `[otta] cron sweep used 27 of 30 queries (…): cancel-intents 2, expire-orders 14, …, overhead 3;
    deferred to the next tick: …`.
 3. **Every leg stops at its share.**
    - `reporting-heal` reconciles each day with a page budget sized to the calls the leg has left
