@@ -81,7 +81,10 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 			{ ...BREAKDOWN, discountCents: 500, totalCents: 1900, appliedCouponCode: "SAVE5" },
 			{ locale: "en", shippingSelected: false, taxZoneSelected: false },
 		);
-		expect(orderSumRows(totals)[1]?.label).toBe("Discount · SAVE5");
+		// The code rides as its own field, so the label's uppercase styling can
+		// never re-spell it: the merchant's stored spelling, as the emails print it
+		// (QA round 2: "qa2admin2" read "QA2ADMIN2" on the order page).
+		expect(orderSumRows(totals)[1]).toMatchObject({ label: "Discount", code: "SAVE5" });
 	});
 });
 

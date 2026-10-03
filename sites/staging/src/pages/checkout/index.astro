@@ -228,10 +228,11 @@ const ledgerRows = lines.map((line) => ({
 	money: line.lineTotal?.formatted ?? "priced at checkout",
 }));
 
-/** The coupon code rides on the row's own label rather than a second line: it
- *  IS the name of that discount, and the totals block has one slot per row. */
-const discountLabel =
-	totals.appliedCouponCode !== null ? `Discount · ${totals.appliedCouponCode}` : "Discount";
+/** The coupon code rides on the row itself rather than a second line: it IS the
+ *  name of that discount, and the totals block has one slot per row. It is the
+ *  row's `code`, not part of its label, so the label's uppercase cannot re-spell
+ *  it (QA round 2). */
+const discountCode = totals.appliedCouponCode !== null ? { code: totals.appliedCouponCode } : {};
 
 /**
  * Straight off the view model (§7). The only thing this page adds is the
@@ -240,7 +241,7 @@ const discountLabel =
  */
 const sumRows = [
 	{ label: "Subtotal", amount: totals.subtotal },
-	{ label: discountLabel, amount: totals.discount, fallback: "No coupon applied" },
+	{ label: "Discount", ...discountCode, amount: totals.discount, fallback: "No coupon applied" },
 	{ label: "Shipping", amount: totals.shipping },
 	{ label: "Tax", amount: totals.tax },
 ];

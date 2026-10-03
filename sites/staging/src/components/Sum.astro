@@ -60,7 +60,15 @@ const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excl
 	{
 		rows.map((row) => (
 			<div class="row">
-				<span class="u-label label">{row.label}</span>
+				<span class="u-label label">
+					{row.label}
+					{row.code !== undefined && (
+						<>
+							{" · "}
+							<span class="code">{row.code}</span>
+						</>
+					)}
+				</span>
 				{isUncalculated(row.amount) ? (
 					<span class="u-mono uncalc">{sumRowText(row)}</span>
 				) : (
@@ -104,6 +112,12 @@ const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excl
 		font-weight: 400;
 		color: var(--u-mute);
 		text-align: right;
+	}
+
+	/* A coupon code, in the spelling the merchant stored — out of the label's
+	   uppercase, which re-spelled it (QA round 2). */
+	.code {
+		text-transform: none;
 	}
 
 	.total {
