@@ -353,3 +353,35 @@ every `pending` order, including one simply awaiting payment, where nothing is a
   bounded poll" and "this page will update". It no longer polls; its copy now reads "If you
   already paid, check again in a minute — if the order has expired by then, your payment will be
   refunded."
+
+## Amended 2026-10-03 — the pay page keeps its own deadline; the return page tells the truth about a late payment
+
+**What changed and why (QA2 M1c, M3).** A pay tab left open past the hold kept a live Pay button
+and "reserved for 14 more minutes", and a click charged the buyer for an order that was expiring.
+And a buyer sent back by Stripe with `redirect_status=succeeded` on an order that had already
+expired read "Nothing was charged." — the webhook had not recorded the payment yet.
+
+**The amendment.** Decision 2 stands: `/checkout/pay` is still the only page with client
+JavaScript, and the confirmation page still carries none.
+
+- **The pay page closes itself at its deadline.** The page passes its script the order's
+  `holdExpiresAt` and the server's "now" at render (`data-pay-deadline`, `data-pay-server-now`
+  on the mount), from the read the guard already makes. A second, BUNDLED module script on the
+  same page (`lib/pay-deadline.ts`, tested with a fake clock) measures only the time elapsed
+  since load, so a wrong browser clock cannot move the deadline; re-checks on visibility, focus
+  and pageshow, since a background tab's timer cannot be trusted; and at the deadline disables
+  Pay, hides the hold sentence (`data-pay-hold`, the view's hook), and shows a page-rendered,
+  hidden-until-then notice: "The time to pay has run out." with a link to the order. A submit
+  after the deadline is stopped in the capture phase on the document, before Stripe's handler
+  runs, and the inline handler refuses on the form's closed flag as well — it never re-enables
+  Pay once closed. A payment already under way at the deadline is left alone. An unreadable
+  deadline closes nothing: the server-side withdrawal and refund remain the backstop.
+- **Decision 5 is widened by one more clause.** `redirect_status` is now read, in the page
+  frontmatter only, for one further copy choice: on an `expired`, `cancelled` or `failed` order
+  whose ledger does not yet show a late payment, a `succeeded` or `processing` return says "Your
+  payment arrived after this order expired, so it will be refunded — once it is, it can take
+  5–10 days to appear", instead of "Nothing was charged". The page then runs the same bounded,
+  same-URL poll as a just-paid pending order, until the refund is on the ledger (`latePayment:
+  refunded`), and offers "Check again" when the poll ends first. A declined or abandoned return
+  keeps "Nothing was charged". The parameters are still never rendered or forwarded, and still
+  decide nothing about the order's state.
