@@ -489,8 +489,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// entry: resolving the gateways (their secret kv reads) — once, only when a
 		// unit needs them; the due list is the leg's due check, charged before this.
 		// unit: one order's ledger read, the Stripe cancel (one subrequest) and the
-		// intent's bookkeeping write.
-		"cancel-intents": { entry: 5, unit: 5 },
+		// intent's bookkeeping write — 5 — and, at worst, the read-back of an intent
+		// Stripe refused to cancel (a second subrequest) and, on the last attempt, the
+		// give-up flag on the order: 7, measured with fix/late-charge-window merged.
+		"cancel-intents": { entry: 5, unit: 7 },
 	};
 
 /** What examining one cart in the hold listing costs, at most: the cart (already in

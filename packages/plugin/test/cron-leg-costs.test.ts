@@ -26,6 +26,7 @@ import {
 	escalateStaleLateRefunds,
 	expireOrdersBatch,
 	cancelDueIntents,
+	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
 	retryLatePaymentRefunds,
 	settleOrder,
 	type PaymentGateway,
@@ -515,6 +516,63 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		);
 	});
 
+	// The WORST cancel unit: Stripe refuses the cancel (payment_intent_unexpected_state),
+	// the transport reads the intent back (a second subrequest) and finds it still
+	// payable, and this is the last attempt — so the intent is given up and the order
+	// flagged. Measured with fix/late-charge-window merged (which adds the read-back
+	// and the give-up flag): 7 — the ledger 1, the cancel POST and intent GET 2, the
+	// give-up write 2, the flag 2. Without that branch the same case is 5 (no flag).
+	test("cancel-intents worst unit: a refused cancel read back as payable, on its last attempt, given up and flagged", async () => {
+		const placed = await placeOrder(
+			"cancel-intent-worst",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+		);
+		const s = counted();
+		const id = toOrderId(placed.id);
+		await s.orderStore.recordPaymentIntent({
+			orderId: id,
+			gateway: "stripe",
+			intentId: "pi_cost_worst",
+		});
+		await s.orderStore.expire(id, new Date().toISOString());
+		await s.orderStore.updatePaymentIntentCancel(id, "pi_cost_worst", {
+			cancelDueAt: new Date(Date.now() - MINUTE_MS).toISOString(),
+			cancelAttempts: DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS - 1,
+			cancelOutcome: null,
+		});
+		const fake = new FakePaymentGateway({ id: "stripe" });
+		const stripe: PaymentGateway = {
+			id: "stripe",
+			refundable: true,
+			createIntent: (i) => fake.createIntent(i),
+			verifyConfirmation: (raw) => fake.verifyConfirmation(raw),
+			refund: (i) => fake.refund(i),
+			async cancelIntent() {
+				counter.calls += 2;
+				return { ok: false, reason: "RETRYABLE" };
+			},
+		};
+		const due = await s.orderStore.listIntentCancelsDue(new Date().toISOString(), 1);
+		expect(due).toEqual([id]);
+		const used = await cost(() =>
+			cancelDueIntents(
+				{
+					orderStore: s.orderStore,
+					clock: { now: () => new Date() },
+					gateways: () => ({ stripe }),
+				},
+				{ limit: 1, due },
+			),
+		);
+		const [intent] = await s.orderStore.listPaymentIntents(id);
+		expect(intent?.cancelOutcome).toBe("failed");
+		expect(used, `measured ${String(used)}`).toBeLessThanOrEqual(
+			LEG_QUERY_COSTS["cancel-intents"].unit,
+		);
+		// The measured worst case, pinned: lowering the estimate below it is a regression.
+		expect(LEG_QUERY_COSTS["cancel-intents"].unit).toBeGreaterThanOrEqual(7);
+	});
+
 	test("cancel-intents entry: resolving the deployment's gateways (their secret reads)", async () => {
 		const ctx = {
 			http: { fetch: () => Promise.reject(new Error("no egress")) },
@@ -561,6 +619,8 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 	// which legs rely on the guard, from the estimates the tick actually admits on, so
 	// a cost-table change that adds one is a deliberate decision, not an accident.
 	const FREE = 30;
+	/** An ordinary cancel unit, measured above: ledger, cancel, bookkeeping write. */
+	const ORDINARY_CANCEL_UNIT = 5;
 	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
 		// The setting and cadence-state reads, then late-refunds' due check at the head.
 		const fixed = TICK_OVERHEAD_QUERIES + 1;
@@ -578,8 +638,26 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 			needsHead.push(leg);
 			expect(fixed + own, `${leg} alone at the head`).toBeLessThanOrEqual(FREE);
 		}
-		// Measured: a hold expiry with its list (~20) and a stock-commit completion (~15).
-		expect(needsHead.toSorted()).toEqual(["expire-holds", "hold-intents"]);
+		// Measured: a hold expiry with its list (~20) and a stock-commit completion (~15)
+		// never fit behind a cancel. An order expiry (14 with its due check) and a stranded
+		// sku carry (12 with its cursor) do not fit behind the WORST cancel (a refused,
+		// read-back, given-up and flagged one: 7)...
+		expect(needsHead.toSorted()).toEqual([
+			"expire-holds",
+			"expire-orders",
+			"hold-intents",
+			"sku-transfers",
+		]);
+		// ...but they fit behind an ordinary one (5), which is every cancel but an
+		// intent's last failing attempt — for them the guard is a backstop, not the pace.
+		const ordinaryCancel = 1 + LEG_QUERY_COSTS["cancel-intents"].entry + ORDINARY_CANCEL_UNIT;
+		for (const leg of ["expire-orders", "sku-transfers"] as const) {
+			const own =
+				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
+				legStartCalls(leg, FREE) +
+				legReserveQueries(leg);
+			expect(fixed + ordinaryCancel + own, leg).toBeLessThanOrEqual(FREE);
+		}
 	});
 });
 
