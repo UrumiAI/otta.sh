@@ -322,8 +322,9 @@ changes, and one decision recorded.
    unchanged). An intent is never withdrawn before its order's hold.
 
    **The gap that remains** is the time between the deadline and the next sweep tick that
-   reaches the intent: about a minute when the sweep is idle, longer if `cancel-intents` is
-   starved by the critical legs ahead of it on a Free-preset backlog. A payment confirmed in
+   reaches the intent: about a minute, since `cancel-intents` runs first in every tick (the
+   amendment above); one minute more in a tick the `late-refunds` lead or the starvation guard
+   puts ahead of it. A payment confirmed in
    that gap (only from a client that ignored the page's own deadline, or one confirmed in the
    final seconds and still `processing`) is handled by decision 4 below while the order is
    `pending`, and refunded once it has expired. The previous block's paragraph "The gap that
