@@ -199,3 +199,60 @@ describe("Mark refunded while money is still held (QA2 M4)", () => {
 		expect(result.notice?.description).toMatch(/dashboard/);
 	});
 });
+
+describe("a refund replayed after it was recorded (QA round 2)", () => {
+	function withLedger(refunds: unknown[], finalized: number) {
+		const { client, calls } = surface("paid");
+		client.getRefunds = () =>
+			Promise.resolve({
+				refunds,
+				currency: "USD",
+				capturedTotalCents: 1000,
+				refundedTotalCents: finalized,
+				finalizedTotalCents: finalized,
+				ceilingCents: 1000,
+				remainingCents: 1000 - finalized,
+				paymentMethod: "stripe",
+				refundable: true,
+			}) as never;
+		return { client, calls };
+	}
+
+	test("the operator's own retry of a recorded refund says it is already recorded, not that someone else refunded", async () => {
+		const { client, calls } = withLedger(
+			[
+				{
+					status: "recorded",
+					amountCents: 100,
+					idempotencyKey: `admin-refund:${ORDER_ID}:100:0`,
+				},
+			],
+			100,
+		);
+		const result = await act(
+			client,
+			"orders:refund",
+			{ orderId: ORDER_ID, amountCents: "100", refundedSoFarCents: "0", currency: "USD" },
+			OPERATOR,
+		);
+		expect(calls.refund).toHaveLength(0);
+		expect(result.notice).toMatchObject({ variant: "default", title: "Already refunded" });
+		expect(result.notice?.description).not.toMatch(/someone else/);
+	});
+
+	test("a ledger moved by another refund says so without blaming anyone", async () => {
+		const { client } = withLedger(
+			[{ status: "recorded", amountCents: 300, idempotencyKey: "admin-refund:other:300:0" }],
+			300,
+		);
+		const result = await act(
+			client,
+			"orders:refund",
+			{ orderId: ORDER_ID, amountCents: "100", refundedSoFarCents: "0", currency: "USD" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
+		expect(result.notice?.description).toMatch(/another tab or by someone else/);
+		expect(result.notice?.description).toContain("$7.00 now remains refundable");
+	});
+});

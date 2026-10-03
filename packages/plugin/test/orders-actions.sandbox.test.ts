@@ -793,10 +793,10 @@ describe("the Orders write path (workerd sandbox)", () => {
 			refundedBy: "carol",
 		});
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
-		expect(result.notice?.description).toContain("someone else refunded this order");
+		expect(result.notice?.description).toContain("in another tab or by someone else");
 		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
 		// states an effect and leaves the operator to guess whether they hit a bug.
-		expect(result.notice?.description).toContain("$5.00 was staged");
+		expect(result.notice?.description).toContain("$5.00 was not refunded");
 		expect(result.notice?.description).toContain("$6.00 now remains refundable");
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
@@ -1035,7 +1035,9 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 
 		// THE DOUBLE-SUBMIT: the same confirm clicked again. Its watermark is now
 		// stale, so the console refuses it before the write — and, what matters
-		// here, Stripe is asked for nothing more.
+		// here, Stripe is asked for nothing more. It is THIS refund, already on the
+		// ledger, so the notice says so rather than "someone else refunded" (QA
+		// round 2).
 		const again = await actOn(stripeBoot, "orders:refund", {
 			orderId: id,
 			amountCents: "500",
@@ -1044,7 +1046,7 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 			reason: "damaged",
 			refundedBy: "carol",
 		});
-		expect(again.notice?.title).toBe("The refund ledger changed — nothing was refunded");
+		expect(again.notice?.title).toBe("Already refunded");
 		expect(refundPosts()).toHaveLength(1);
 		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
 	});

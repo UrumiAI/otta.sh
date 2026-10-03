@@ -911,6 +911,15 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
  * the causal clause is the fact, it is what stops them retrying identically, and at
  * 76 characters it is nowhere near the 240 budget — so this was never length-driven.
  */
+/** This refund was already recorded — a double-click, a retry or a resubmitted
+ *  page after it went through. Nothing more was refunded. */
+const ALREADY_REFUNDED: Notice = {
+	variant: "default",
+	title: "Already refunded",
+	description:
+		"This refund was already recorded (a duplicate submission); nothing more was refunded, and the ledger above shows it.",
+};
+
 function staleLedgerNotice(
 	submittedAmountCents: number,
 	live: RefundsSummaryWire,
@@ -920,7 +929,7 @@ function staleLedgerNotice(
 		variant: "error",
 		title: "The refund ledger changed — nothing was refunded",
 		description: fit(
-			`${formatTotal(submittedAmountCents, cur)} was staged and was not recorded — someone else refunded this order since you started. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
+			`${formatTotal(submittedAmountCents, cur)} was not refunded: a refund was recorded since this page loaded — in another tab or by someone else. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
 			BANNER_BUDGET,
 		),
 	};
@@ -1001,14 +1010,24 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 		});
 	}
 	const liveCur = live.currency.length > 0 ? live.currency : currency;
+	// The observed watermark is the third key component (F-2a) — NOT a nonce.
+	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
 	if (live.finalizedTotalCents !== observedSoFar) {
+		// THIS submission already recorded (a retry or a resubmitted page after it
+		// went through): the ledger moved because of it. Saying "someone else
+		// refunded this order" blamed a stranger for the operator's own refund (QA
+		// round 2).
+		const ownRecorded = live.refunds.some(
+			(r) =>
+				r.status === "recorded" &&
+				(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
+		);
+		if (ownRecorded) return applied(ALREADY_REFUNDED);
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
 		// drawn and this click. This is the ONLY window now checked server-side, and
 		// the surface's own pre-dialog validation cannot see it.
 		return applied(staleLedgerNotice(amountCents, live, liveCur));
 	}
-	// The observed watermark is the third key component (F-2a) — NOT a nonce.
-	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
 	const voidedAttempts = live.refunds.filter(
 		(r) =>
 			r.status === "voided" &&
@@ -1034,12 +1053,7 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	if (result.duplicate) {
 		// A benign replay: the SAME amount against the SAME watermark, i.e. a
 		// double-click. A different amount would have produced a different key.
-		return applied({
-			variant: "default",
-			title: "Already refunded",
-			description:
-				"This refund was already recorded (a duplicate submission); the ledger above is unchanged.",
-		});
+		return applied(ALREADY_REFUNDED);
 	}
 	if (result.fullyRefunded) {
 		return applied({
