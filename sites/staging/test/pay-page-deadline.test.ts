@@ -10,7 +10,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { PAY_CANCELLED_LEAD, PAY_CLOSED_LEAD } from "../src/lib/pay-deadline.js";
+import {
+	PAY_CANCELLED_LEAD,
+	PAY_CLOSED_LEAD,
+	WITHDRAWN_EARLY_MARGIN_MS,
+} from "../src/lib/pay-deadline.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const PAY = readFileSync(path.join(SRC, "pages/checkout/pay.astro"), "utf8");
@@ -93,7 +97,11 @@ describe("the pay page closes itself at its deadline (QA2 M1c)", () => {
 		const decide = fn.slice(0, fn.indexOf("\n\t\t\t\t\t\t}\n") + 8);
 		expect(decide).toMatch(/status === "succeeded" \|\| status === "processing"\) return "landed"/);
 		expect(decide).toMatch(/status === "canceled"\) return "withdrawn"/);
-		expect(decide).toMatch(/payment_intent_unexpected_state[\s\S]*return "withdrawn"/);
+		// Review of QA3 N4: a refusal with no readable intent status says only "it
+		// cannot be paid" — the deadline's copy, never "cancelled", which only a
+		// canceled intent may claim.
+		expect(decide).toMatch(/payment_intent_unexpected_state[\s\S]*return "closed"/);
+		expect(decide).not.toMatch(/payment_intent_unexpected_state[\s\S]*return "withdrawn"/);
 		// The landed branch goes to the order page; the withdrawn one closes the page;
 		// both before any `fail(...)` with Stripe's own text.
 		const landed = body.indexOf('refusal === "landed"');
@@ -121,6 +129,18 @@ describe("the pay page closes itself at its deadline (QA2 M1c)", () => {
 		const withdrawn = body.indexOf('refusal === "withdrawn"');
 		expect(body.slice(withdrawn, withdrawn + 400)).toMatch(/payCloseAt/);
 		expect(body).toMatch(/payment-cancelled-body/);
+	});
+
+	test("review of QA3 N4: the inline script reads the early-withdrawal margin from the page, not a literal", () => {
+		expect(PAY).toMatch(/data-withdrawn-margin-ms=\{WITHDRAWN_EARLY_MARGIN_MS\}/);
+		expect(WITHDRAWN_EARLY_MARGIN_MS).toBe(60_000);
+		const body = inline!.body;
+		expect(body).toMatch(/dataset\.withdrawnMarginMs/);
+		expect(body).not.toMatch(/60000|60_000/);
+		// The no-status refusal closes with the deadline's copy.
+		const closed = body.indexOf('refusal === "closed"');
+		expect(closed).toBeGreaterThan(-1);
+		expect(body.slice(closed, closed + 200)).toMatch(/closePayment\("closed"\)/);
 	});
 
 	test("the view's hold sentence carries the hook the script hides it by", () => {

@@ -46,7 +46,11 @@ import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { PAY_CANCELLED_LEAD, PAY_CLOSED_LEAD } from "../../lib/pay-deadline.js";
+import {
+	PAY_CANCELLED_LEAD,
+	PAY_CLOSED_LEAD,
+	WITHDRAWN_EARLY_MARGIN_MS,
+} from "../../lib/pay-deadline.js";
 import { payButtonLabel } from "../../lib/totals.js";
 import type { PayModel } from "../../themes/contract.js";
 import { keepPrivate } from "../../lib/no-store.js";
@@ -124,7 +128,7 @@ const model: PayModel = {
 	{
 		model.paymentConfigured && (
 			<Fragment slot="payment">
-				<form id="payment-form">
+				<form id="payment-form" data-withdrawn-margin-ms={WITHDRAWN_EARLY_MARGIN_MS}>
 					<div class="mount">
 						<div
 							id="payment-element"
@@ -245,8 +249,11 @@ const model: PayModel = {
 						 * tab. So:
 						 *  - succeeded / processing → "landed": the money moved or is
 						 *    moving; the order page says how it ended.
-						 *  - canceled, or unexpected_state with no readable status →
-						 *    "withdrawn": the time to pay has run out.
+						 *  - canceled → "withdrawn": the time ran out, or (well before
+						 *    the deadline) the order was cancelled.
+						 *  - unexpected_state with no readable status → "closed": the
+						 *    deadline's copy — it cannot be paid, and nothing says it was
+						 *    cancelled (review of QA3 N4).
 						 *  - anything else → null: an ordinary decline, Stripe's words.
 						 */
 						function refusalOf(error) {
@@ -255,7 +262,7 @@ const model: PayModel = {
 							var status = intent ? intent.status : undefined;
 							if (status === "succeeded" || status === "processing") return "landed";
 							if (status === "canceled") return "withdrawn";
-							if (error.code === "payment_intent_unexpected_state") return "withdrawn";
+							if (error.code === "payment_intent_unexpected_state") return "closed";
 							return null;
 						}
 
@@ -558,11 +565,17 @@ const model: PayModel = {
 											// cancelled, not timed out — `withdrawnBecause` in
 											// lib/pay-deadline.ts, restated for this inline script.
 											var closeAt = Number(form.dataset.payCloseAt);
+											var margin = Number(form.dataset.withdrawnMarginMs);
 											var cancelled =
 												form.dataset.payCloseAt !== undefined &&
 												isFinite(closeAt) &&
-												Date.now() < closeAt - 60000;
+												isFinite(margin) &&
+												Date.now() < closeAt - margin;
 											closePayment(cancelled ? "cancelled" : "closed");
+											return;
+										}
+										if (refusal === "closed") {
+											closePayment("closed");
 											return;
 										}
 										fail(
