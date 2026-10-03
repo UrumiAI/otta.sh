@@ -53,10 +53,11 @@ const { paymentConfigured, notConfiguredLead, orderPath, emailHint, holdNote } =
 			</p>
 
 			{/* How long the order is held (QA U-14): relative, true in every zone
-			    when the page loads, and the deadline WITH its zone, which stays
-			    true after — this page does not tick. */}
+			    when the page loads, and the deadline WITH its zone. `data-pay-hold`
+			    is the page script's hook (QA2 M1c): at the deadline it hides this
+			    sentence and shows the page's "time to pay has run out" notice. */}
 			{holdNote !== null && (
-				<p class="pay-hold">
+				<p class="pay-hold" data-pay-hold>
 					{holdNote.lead}, until <time datetime={holdNote.iso}>{holdNote.until}</time>. After
 					that the items go back on sale and this order can't be paid.
 				</p>

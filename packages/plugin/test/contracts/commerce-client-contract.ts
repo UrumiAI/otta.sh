@@ -2632,6 +2632,78 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
+		// ── "Start a new cart" cancels the cart's unpaid order (QA2 X4) ────
+		//
+		// The cart page's "Start a new cart" says it clears any payment still in
+		// progress. It only cleared cookies: the old order stayed pending, its
+		// stock held and its PaymentIntent payable from another tab. Now the cart
+		// (the cookie — the same possession proof `resumeOrderPayment` accepts)
+		// cancels the order it became, if that order is still unpaid: the plain
+		// cancel, which releases the held stock and makes the intent due for
+		// withdrawal at once. Anything else is a no-op success: nothing is in
+		// progress to clear.
+
+		test.skipIf(tier.payments === undefined)(
+			"abandonCartOrder cancels the cart's PENDING order — once; a replay changes nothing (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("abandon", "abandon@example.test", { amount: 1100 });
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: true,
+					orderId: placed.orderId,
+				});
+				const read = await client.getPublicOrder(placed.orderId);
+				if (!read.ok) throw new Error("order vanished");
+				expect(read.order.state).toBe("cancelled");
+				// It can no longer be resumed — the cart's way back to paying is gone.
+				expect(await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId })).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: false,
+					orderId: placed.orderId,
+				});
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"abandonCartOrder never touches a PAID order — nothing is in progress to clear (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("abandon-paid", "abandon-paid@example.test", {
+					amount: 1200,
+				});
+				await tier.arrange.settle(placed.orderId);
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: false,
+					orderId: placed.orderId,
+				});
+				const read = await client.getPublicOrder(placed.orderId);
+				if (!read.ok) throw new Error("order vanished");
+				expect(read.order.state).toBe("paid");
+			},
+		);
+
+		test("abandonCartOrder of a cart with no order, or no such cart, is a no-op success; a malformed id is rejected", async () => {
+			const active = await tier.arrange.cart("USD");
+			expect(await client.abandonCartOrder(active)).toEqual({
+				ok: true,
+				cancelled: false,
+				orderId: null,
+			});
+			expect(await client.abandonCartOrder("00000000-0000-4000-8000-000000000000")).toEqual({
+				ok: true,
+				cancelled: false,
+				orderId: null,
+			});
+			await expectRejectedInput(client.abandonCartOrder("not an id"), "cartId");
+		});
+
 		// ── the input bounds, on both transports ───────────────────────────
 		//
 		// These were proven on the in-process transport alone, where they were

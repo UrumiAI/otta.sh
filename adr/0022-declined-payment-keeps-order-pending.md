@@ -302,3 +302,71 @@ ADR-0019's amendment of this date reorders the sweep's tick. Two points concern 
    held, and refunded automatically once it has expired — the late-payment path of the first block.
 
 The decision of this record is unchanged.
+
+## Amended 2026-10-03 — the intent is withdrawn at the deadline, and a payment before the expiry is a sale
+
+QA round 2 found buyers still being charged and then refunded on expiring orders (QA2 M1). The
+store owner's decision stands: a late charge is **prevented** — the PaymentIntent is withdrawn
+when the order's time to pay runs out — and refunded if it still lands. Three causes, three
+changes, and one decision recorded.
+
+1. **Withdrawn at the deadline, not after the expiry (M1a).** The leg used to push a due cancel
+   back five minutes at a time while the order was still `pending`, "never withdrawing the
+   intent of an order that could still settle cleanly". Under an expiry backlog that left the
+   order expired with its intent still payable, which is exactly the window the previous block
+   set out to close. Past its hold an order can no longer be paid by any honest path — the pay
+   page refuses it on load (ADR-0012) and now closes itself at the deadline in an open tab, and
+   resume refuses it — so `cancelDueIntents` now withdraws a due intent whether the order is
+   still `pending` past its hold or has already left `pending` unpaid. The order keeps its stock
+   until the expiry runs; the expiry stays a pure state-and-stock transition (decision 2 above is
+   unchanged). An intent is never withdrawn before its order's hold.
+
+   **The gap that remains** is the time between the deadline and the next sweep tick that
+   reaches the intent: about a minute when the sweep is idle, longer if `cancel-intents` is
+   starved by the critical legs ahead of it on a Free-preset backlog. A payment confirmed in
+   that gap (only from a client that ignored the page's own deadline, or one confirmed in the
+   final seconds and still `processing`) is handled by decision 4 below while the order is
+   `pending`, and refunded once it has expired. The previous block's paragraph "The gap that
+   remains, recorded" is superseded by this one.
+
+2. **Each cancel attempt has its own idempotency key.** `cancel-intent:<intentId>` for the first
+   attempt, `cancel-intent:<intentId>:<n>` after. Stripe saves the first result for a key —
+   failures included — and replays it, so a retry under the same key could never get past a
+   transient 500. A repeat cancel is harmless: a withdrawn intent stays withdrawn.
+
+3. **A refused cancel is read, never assumed (M1b).** Stripe answers
+   `payment_intent_unexpected_state` whenever the intent is not in a status it cancels from at
+   that moment. It cancels from `requires_payment_method`, `requires_confirmation`,
+   `requires_action`, `requires_capture` and, rarely, `processing`
+   (<https://docs.stripe.com/api/payment_intents/cancel>). The adapter mapped that code straight
+   to `not_cancellable` and the leg resolved the intent, although the PI was still payable
+   (orders 621a6c23, 04250058). The Stripe transport now reads the PaymentIntent, inside the
+   cancel's own time bound: `succeeded` is `not_cancellable` (the payment landed — settle accepts
+   or refunds it), `canceled` is `cancelled`, and any other status or a failed read is
+   RETRYABLE, so the leg asks again on a later tick under a fresh key. The port's
+   `not_cancellable` now means "the intent succeeded" and nothing else.
+
+4. **Decision: a payment that settles after the deadline but before the expiry is accepted
+   (M1d).** The order is still `pending` and its adopted stock is still held, so settling it
+   oversells nothing; refusing it would refund a buyer who did nothing wrong and cost the
+   merchant the fee for no one's benefit. This is the original decision of this record, kept
+   deliberately. After the expiry the same payment is late and refunded (the first amendment).
+   The copy matches: the pay page's closed notice says "If you paid just before, your order page
+   shows whether the payment arrived in time — a payment that arrived too late is refunded", and
+   a lapsed pending order's page says "if the order has expired by then, your payment will be
+   refunded".
+
+5. **"Start a new cart" cancels the cart's unpaid order (QA2 X4).** Its copy said it cleared
+   any payment still in progress; it cleared cookies only. `/checkout/new-cart` now first calls
+   the public `storefront/order/abandon` route with the cart cookie (the same possession proof
+   resume accepts). If the order that cart became is still `pending`, it is cancelled with the
+   plain cancel (`customer_request`, by `shopper`) — which releases its held stock and, by
+   block 2's point 1, makes its intent due for withdrawal at once — and a payment that still
+   lands is refunded like any payment on a cancelled unpaid order. A paid, expired or already
+   cancelled order is not touched. If the cancel cannot be confirmed (busy, unreachable) the
+   site clears nothing and says so, rather than drop the shopper's only handle on a live order.
+
+`intentCancelContract` gains the deadline-withdrawal, accept-before-expiry and per-attempt-key
+cases (fakes and the document store on SQLite; Postgres and D1 run the same suite in CI); the
+Stripe transport's cancel tests cover every status; the commerce-client contract and the
+sandbox cover the abandon route.

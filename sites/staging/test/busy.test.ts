@@ -26,6 +26,7 @@ vi.mock("../src/lib/stripe-config.js", () => ({
 }));
 
 import {
+	STOREFRONT_ORDER_ABANDON_ROUTE,
 	STOREFRONT_ORDER_RESUME_ROUTE,
 	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
@@ -157,6 +158,22 @@ describe("dispatchOttaRoute — one automatic retry, only when replay is safe", 
 		const result = await dispatchOttaRoute(
 			handler,
 			STOREFRONT_ORDER_RESUME_ROUTE,
+			input,
+			new URL(SITE),
+		);
+
+		expect(result).toEqual(ok);
+		expect(calls.map((c) => c.body)).toEqual([input, input]);
+	});
+
+	test("storefront/order/abandon is retried once — its cancel runs on a key derived from the order (QA2 X4)", async () => {
+		const ok = { ok: true, cancelled: true };
+		const { handler, calls } = scripted({ [STOREFRONT_ORDER_ABANDON_ROUTE]: [BUSY_RESULT, ok] });
+		const input = { cartId: "c" };
+
+		const result = await dispatchOttaRoute(
+			handler,
+			STOREFRONT_ORDER_ABANDON_ROUTE,
 			input,
 			new URL(SITE),
 		);
