@@ -20,7 +20,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { APIContext } from "astro";
-import { ORDER_ADDRESS_MAX_LENGTHS, STOREFRONT_CHECKOUT_PLACE_ROUTE } from "@otta-sh/plugin";
+import {
+	ORDER_ADDRESS_MAX_LENGTHS,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+} from "@otta-sh/plugin";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
 import { viewSources } from "./theme-views.js";
@@ -71,9 +75,13 @@ function harness(
 		const route = routePath.replace(/^\//, "");
 		const body = (await request.json()) as Record<string, unknown>;
 		calls.push(body);
-		return route === STOREFRONT_CHECKOUT_PLACE_ROUTE
-			? { success: true, data: reply }
-			: { success: false };
+		if (route === STOREFRONT_CHECKOUT_PLACE_ROUTE) return { success: true, data: reply };
+		// Start a new cart first stops the cart's unpaid order (QA2 X4) and clears
+		// nothing unless that is confirmed; here there was nothing to cancel.
+		if (route === STOREFRONT_ORDER_ABANDON_ROUTE) {
+			return { success: true, data: { ok: true, cancelled: false } };
+		}
+		return { success: false };
 	};
 	const url = new URL(opts.url ?? "/checkout/place", SITE);
 	const jar = new Map<string, string>(
