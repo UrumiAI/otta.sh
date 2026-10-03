@@ -553,9 +553,13 @@ export interface AccountOrderRow {
 	 *  says about it, list-sized: never "Awaiting payment" for an order that can
 	 *  no longer be paid. */
 	state: string;
-	/** When it was placed ("Oct 2, 2026", UTC) and the instant for `<time>`;
+	/** When it was placed ("Oct 2, 2026, 14:05 UTC") and the instant for `<time>`;
 	 *  `null` when the date is unreadable. Rows arrive newest first. */
 	placed: { text: string; iso: string } | null;
+	/** The order's short reference (`orderShortRef`: "621A6C23") — what tells two
+	 *  orders of the same thing apart, and what the store's order search takes
+	 *  (QA2 A2). Never the whole id. */
+	ref: string;
 	/** "1 item" / "3 items". */
 	items: string;
 	total: string;
@@ -565,6 +569,9 @@ export interface AccountOrdersModel {
 	/** Non-null ⇔ the list could not be read (BUSY or unavailable copy). */
 	errorMessage: string | null;
 	rows: readonly AccountOrderRow[];
+	/** The signed-in email, named on the page (it is private); `null` when the
+	 *  page could not ask. */
+	signedInAs: string | null;
 }
 
 export interface AccountOrderModel {
@@ -590,8 +597,22 @@ export interface AccountOrderModel {
 		refundedNote: string | null;
 		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
 		excludesUncalculated: boolean;
+		/** The short reference, as in the list. */
+		ref: string;
+		/** "Complete payment" — the page-owned resume path, for a pending order
+		 *  that can still be paid; `null` otherwise (QA2 X1). */
+		payHref: string | null;
+		/** The order's own public page. */
+		orderPageHref: string;
+		/** Carrier and tracking once shipped; `trackingUrl` only when it is an
+		 *  http(s) address. */
+		tracking: { carrier: string; trackingNumber: string; trackingUrl: string | null } | null;
+		/** Where it is going, as display lines; `null` when no address was taken. */
+		addressLines: string[] | null;
 	} | null;
 	errorMessage: string;
+	/** The signed-in email, named on the page; `null` when unknown. */
+	signedInAs: string | null;
 }
 
 // ── Theme module ──────────────────────────────────────────────────────────

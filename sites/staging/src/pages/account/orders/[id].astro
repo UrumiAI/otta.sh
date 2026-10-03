@@ -25,9 +25,10 @@ import {
 	accountOrderStatus,
 	currentSessionToken,
 	orderMoney,
-	orderPlacedOn,
 	orderRefundedNote,
+	signedInEmail,
 } from "../../../lib/account.js";
+import { accountOrderExtras, orderPlacedAt, orderShortRef } from "../../../lib/account-order.js";
 import { orderStamp } from "../../../lib/order-stamp.js";
 import { orderSumRows } from "../../../lib/order-view.js";
 import { isOrderPayable } from "../../../lib/pay-guard.js";
@@ -100,7 +101,7 @@ if (order !== null) {
 		label,
 		state: accountOrderStatus(order, now),
 		stateNote: stamp?.body ?? null,
-		placed: orderPlacedOn(order.createdAt),
+		placed: orderPlacedAt(order.createdAt),
 		ledgerRows,
 		sumRows: orderSumRows(totals),
 		total: totals.total,
@@ -108,12 +109,23 @@ if (order !== null) {
 		/* Its own line, from the ledger only — never a relabelled total. */
 		refundedNote: orderRefundedNote(order.refundedCents, order.totals.currency),
 		excludesUncalculated: totals.totalExcludesUncalculated,
+		ref: orderShortRef(order.id),
+		/* What the public order page offers for this order (QA2 X1): Complete
+		   payment while it can be paid (the same resume path; this session
+		   proves ownership), the tracking, the address — this page is private,
+		   the public one never shows it — and the order's own page. */
+		...accountOrderExtras(order, now),
 	};
 }
 
 const model: AccountOrderModel = {
 	order: detail,
 	errorMessage: cartErrorMessage(busy ? "BUSY" : notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE"),
+	/* Who is signed in, named on this private page (QA2 A7). */
+	signedInAs:
+		order !== null
+			? await signedInEmail(getPublicPluginApiRouteHandler(Astro.locals), Astro.cookies, Astro.url)
+			: null,
 };
 ---
 
