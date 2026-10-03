@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { PAY_CLOSED_LEAD } from "../src/lib/pay-deadline.js";
+import { PAY_CANCELLED_LEAD, PAY_CLOSED_LEAD } from "../src/lib/pay-deadline.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const PAY = readFileSync(path.join(SRC, "pages/checkout/pay.astro"), "utf8");
@@ -101,9 +101,26 @@ describe("the pay page closes itself at its deadline (QA2 M1c)", () => {
 		expect(landed).toBeGreaterThan(-1);
 		expect(withdrawn).toBeGreaterThan(-1);
 		expect(body.slice(landed, withdrawn)).toMatch(/window\.location\.assign\(returnUrl\)/);
-		expect(body.slice(withdrawn, withdrawn + 120)).toMatch(/closePayment\(\)/);
+		expect(body.slice(withdrawn, withdrawn + 900)).toMatch(/closePayment\(/);
 		expect(Math.max(landed, withdrawn)).toBeLessThan(body.indexOf("result.error.message"));
 		expect(body).not.toMatch(/isWithdrawn\(/);
+	});
+
+	test("QA3 N4: an intent withdrawn well before the deadline shows the CANCELLED notice, not 'the time to pay has run out'", () => {
+		expect(PAY).toMatch(/<div id="payment-cancelled-body" hidden>/);
+		expect(PAY).toMatch(/\{PAY_CANCELLED_LEAD\}/);
+		expect(PAY_CANCELLED_LEAD).toBe("This order was cancelled.");
+		const cancelled = PAY.slice(PAY.indexOf('<div id="payment-cancelled-body"'));
+		expect(cancelled.slice(0, cancelled.indexOf("</div>"))).toMatch(
+			/href=\{orderPath\}>View your order<\/a>/,
+		);
+		// The module hands the inline script the close instant it computed; the inline
+		// refusal branch decides from it.
+		expect(bundled!.body).toMatch(/form\.dataset\.payCloseAt = /);
+		const body = inline!.body;
+		const withdrawn = body.indexOf('refusal === "withdrawn"');
+		expect(body.slice(withdrawn, withdrawn + 400)).toMatch(/payCloseAt/);
+		expect(body).toMatch(/payment-cancelled-body/);
 	});
 
 	test("the view's hold sentence carries the hook the script hides it by", () => {
