@@ -670,8 +670,7 @@ export interface ThemeChromeNeeds {
 	 * none without either — and hands over `ChromeModel.cartCount` (no badge for an
 	 * empty cart, on every page) and `ChromeModel.signedIn`. The middleware keeps every such page private,
 	 * no-store and out of the route cache. Both reads fail soft and skip the
-	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
-	 * its own count.
+	 * pay page (`/checkout/pay`); `/cart` passes its own count.
 	 */
 	shopperState?: boolean;
 }

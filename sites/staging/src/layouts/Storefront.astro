@@ -20,7 +20,8 @@
  * (`ThemeModule.chrome.cartLines` — e.g. a bag drawer or a bag strip), and one
  * whose chrome draws the SHOPPER'S STATE (`chrome.shopperState`: the cart count
  * and "Your account" on every page — QA U-12, U-14; Tempered opts in). For
- * those themes only, and only off the checkout flow, the shell makes one guarded
+ * those themes only — the bag off the checkout flow, the shopper's state off the
+ * pay page — the shell makes one guarded
  * read: the cart's lines (`lib/bag.ts`), or for `shopperState` ONE dispatch of
  * the lean `storefront/shopper-state` route for the count and a yes/no on the
  * session — never who (`lib/chrome-state.ts`). Each read happens ONLY when the request
@@ -188,13 +189,17 @@ const bagPending = drawsBag
 
 /**
  * The shopper's state, for a theme whose chrome draws it (the note at the top).
- * Off the checkout flow (`/checkout`, `/checkout/pay` — the payment path — and
- * `/orders/<id>`, which is `no-referrer` and carries Stripe's parameters); `/cart`
- * passes its own count. Each read is made only for a request carrying its cookie
- * (no cookie ⇒ no dispatch), started here so both run alongside the settings
- * read. The middleware has already made such a response private.
+ * Everywhere but `/checkout/pay`, the payment path, which keeps its header to the
+ * one job it has. `/checkout` and `/orders/<id>` get the count too (QA2 U-14):
+ * both are private pages already, and this is a server-side dispatch — nothing
+ * here reaches a URL or a Referer, so the order page's `no-referrer` and Stripe's
+ * parameters in its URL are untouched; on the order page a cart that became the
+ * order is terminal and draws no badge. `/cart` passes its own count. Each read
+ * is made only for a request carrying its cookie (no cookie ⇒ no dispatch),
+ * started here so both run alongside the settings read. The middleware has
+ * already made such a response private.
  */
-const SHOPPERLESS_VIEWS: ReadonlySet<string> = new Set(["checkout", "pay", "order"]);
+const SHOPPERLESS_VIEWS: ReadonlySet<string> = new Set(["pay"]);
 const drawsShopper =
 	theme.chrome?.shopperState === true && !SHOPPERLESS_VIEWS.has(props.view ?? "");
 /* ONE lean dispatch for whatever the page did not already supply (lib/chrome-state.ts). */

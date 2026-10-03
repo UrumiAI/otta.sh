@@ -26,3 +26,16 @@ describe("the home page never states a catalog size it does not know (QA2 A9)", 
 		);
 	});
 });
+
+describe("the header's cart count reaches /checkout and /orders/<id> (QA2 U-14)", () => {
+	test("only the pay page is left out of the shopper-state read", () => {
+		const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
+		expect(shell).toMatch(/const SHOPPERLESS_VIEWS: ReadonlySet<string> = new Set\(\["pay"\]\);/);
+	});
+
+	test("both pages are private already, before the shell reads anything", () => {
+		for (const file of ["pages/checkout/index.astro", "pages/orders/[orderId].astro"]) {
+			expect(readFileSync(path.join(SRC, file), "utf8")).toContain("keepPrivate(Astro);");
+		}
+	});
+});
