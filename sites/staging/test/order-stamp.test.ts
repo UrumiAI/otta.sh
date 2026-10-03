@@ -114,3 +114,47 @@ describe("orderStamp — the confirming copy says whether the page is still chec
 		expect(body).toMatch(/check again/i);
 	});
 });
+
+describe("orderStamp — back from Stripe with a successful payment on an order that is already dead (QA2 M3)", () => {
+	// QA2: a stale pay tab paid an EXPIRED order; Stripe sent the buyer back with
+	// redirect_status=succeeded, and the page said "Nothing was charged." — the
+	// webhook had not recorded the payment yet. The redirect still decides nothing
+	// about the ORDER; it only stops the page claiming that no money moved.
+	const back = { ...base, returnedFromStripe: true, returnedPaid: true } as const;
+
+	test("expired, nothing on the ledger yet: says the payment arrived late and will be refunded — never 'Nothing was charged'", () => {
+		const stamp = orderStamp({ ...back, state: "expired", polling: true });
+		expect(stamp?.headline).toBe("This order expired.");
+		expect(stamp?.body).toBe(
+			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+		);
+	});
+
+	test("once the poll has stopped it says to check again, not that the page updates", () => {
+		const stamp = orderStamp({ ...back, state: "expired", polling: false });
+		expect(stamp?.body).toBe(
+			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 days to appear. Check again in a minute.",
+		);
+	});
+
+	test("the refund recorded: the ledger's sentence, and no promise of an update", () => {
+		const stamp = orderStamp({ ...back, state: "expired", latePayment: "refunded" });
+		expect(stamp?.body).toBe(
+			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired, so we've refunded it — it can take 5–10 days to appear.",
+		);
+	});
+
+	test("cancelled and failed say the same, by their own verb", () => {
+		expect(orderStamp({ ...back, state: "cancelled", polling: true })?.body).toBe(
+			"Your payment arrived after this order was cancelled, so it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+		);
+		const failed = orderStamp({ ...back, state: "failed", polling: false });
+		expect(failed?.body).not.toContain("No charge was made");
+		expect(failed?.body).toContain("Your payment arrived after this order failed");
+	});
+
+	test("a return WITHOUT a successful status (declined, abandoned) keeps 'Nothing was charged'", () => {
+		const stamp = orderStamp({ ...base, returnedFromStripe: true, state: "expired" });
+		expect(stamp?.body).toContain("Nothing was charged.");
+	});
+});

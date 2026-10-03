@@ -120,6 +120,13 @@ if (busy) markBusy(Astro.response);
 /** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
  *  copy — the value is never rendered, forwarded, or trusted. */
 const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
+/** …and did Stripe say the payment went through (or is going through)? Read ONLY
+ *  so a dead order's page does not say "Nothing was charged" before the webhook
+ *  has recorded a late payment, and polls until its refund is (QA2 M3). Never
+ *  rendered, forwarded, or trusted to decide anything about the order. */
+const returnStatus = Astro.url.searchParams.get("redirect_status");
+const returnedPaid =
+	returnedFromStripe && (returnStatus === "succeeded" || returnStatus === "processing");
 
 const state = order?.state ?? null;
 const isPending = state === "pending";
@@ -150,8 +157,14 @@ const pollKey =
 		? null
 		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
 const pollHop =
-	pollKey !== null && isPending && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
-const shouldPoll = shouldPollOrder({ state, returnedFromStripe, hop: pollHop });
+	pollKey !== null && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
+const shouldPoll = shouldPollOrder({
+	state,
+	returnedFromStripe,
+	hop: pollHop,
+	returnedPaid,
+	latePayment: order?.latePayment ?? "none",
+});
 if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
 /* "Check again" reloads this same URL too: `""` is the document's own address,
    which keeps the confirming copy for a buyer back from Stripe, adds no history
@@ -172,6 +185,7 @@ const stamp = orderStamp({
 	returnedFromStripe,
 	holdLapsed,
 	polling: shouldPoll,
+	returnedPaid,
 });
 
 /**
@@ -227,7 +241,12 @@ const ownsOrder =
    same client secret, re-stashed. The stash was just deleted above; the resume
    writes it again. */
 const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
-const canCheckAgain = isPending && !shouldPoll;
+/* A late payment on a dead order whose refund is not recorded yet, once the
+   poll has stopped: the stamp says "Check again in a minute", so the page
+   offers it (QA2 M3). */
+const lateRefundUnrecorded =
+	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
+const canCheckAgain = (isPending || lateRefundUnrecorded) && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 
 /** A resume that could not reach the pay page says why here — only for the
