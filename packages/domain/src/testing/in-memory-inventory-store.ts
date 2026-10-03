@@ -220,6 +220,11 @@ export class InMemoryInventoryStore implements InventoryStore {
 		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
 	}
 
+	/** `releaseAdopted` for many ids: the same per-id rule, duplicates collapsed. */
+	async releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void> {
+		for (const id of new Set(reservationIds)) await this.releaseAdopted(id, orderId);
+	}
+
 	/**
 	 * The guarded `held → adopted` flip (Phase 4 §5): hands a cart's live
 	 * reservation to an order, setting `orderId` and re-pointing `expiresAt` to the

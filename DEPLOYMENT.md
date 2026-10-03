@@ -436,11 +436,12 @@ editing a text field should not be able to move it.
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
 hook when it comes due. One task drives all eleven sweep legs: they share a store composition
 and a clock, and splitting them would only put eleven rows in contention on the same documents. The
-four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) run at
-most every fifteen minutes inside that task, because each reads a page budget of a collection
-per run; the outbox, the two expiry legs, the challenge prune and the hold-intent completer run
-every tick, so a fifteen-minute hold expires within about a minute of its deadline and a queued
-email goes out within about a minute.
+four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
+sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
+scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
+fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
+within about a minute.
 
 **Each tick is budgeted — in time and in D1 queries.** The `cron` hook declares a 15 s timeout
 (the host stops waiting for a hook after it; raised from EmDash's 5 s default so a slow email
@@ -448,13 +449,31 @@ provider's send fits). The tick's budget starts at hook entry: 9.5 s of wall tim
 D1 and the provider, not CPU, so Workers Free's CPU limit is unaffected — and, by default, 30 storage/kv/egress calls (each one D1 query or one
 subrequest — see "Background work per minute" below), checked before each leg and before each
 unit of work inside one (each hold or order flip, each outbox claim, each scanned page or row,
-each reporting day). The expiry legs' candidate lists are bounded by a count and stopped by the
-budget too, and never offer a lapsed hold that can no longer be expired (so a few such holds
-cannot block the live ones behind them). The three customer-facing legs — the outbox and the
-two expiry legs — run first and take turns leading, one minute in three each. A leg the budget
-did not reach is logged as `[otta] cron sweep deferred to the next tick: …` and runs on the
-next tick — that is not a failure, and a backlog (say, hundreds of expired holds after an
-outage) drains over several ticks. Five deferrals in a row of the same leg log a warning.
+each reporting day, each pruned challenge). The expiry legs' candidate lists are bounded by a
+count and stopped by the budget too, and never offer a lapsed hold that can no longer be expired
+(so a few such holds cannot block the live ones behind them). **The budget is a hard ceiling**:
+the counter refuses any call past it (the leg it stops is logged by name as `stopped at the
+tick's query ceiling` and resumes next tick), so no tick can use more than the setting — on the
+Free preset, never more than 30 of Workers Free's 50.
+
+**Which leg runs first.** `cancel-intents` first (a due PaymentIntent is withdrawn before
+anything else spends the tick), then `expire-orders`, the outbox, `hold-intents` (a paid order's
+stock commit) and `expire-holds`, then `late-refunds`, and housekeeping last. Each leg may use
+only a share of the tick, never less than one unit of its own work; a leg its share stopped
+gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
+three ticks in a row with work goes to the head of the next tick (right behind
+`cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
+expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
+line naming what each leg spent:
+
+```
+[otta] cron sweep used 27 of 30 queries (180ms of 9500ms): cancel-intents 2, expire-orders 14,
+  order-emails 8, overhead 3; deferred to the next tick: hold-intents, expire-holds
+```
+
+A leg the budget did not reach is listed as deferred and runs on a later tick — that is not a
+failure, and a backlog (say, hundreds of expired holds after an outage) drains over several
+ticks. Five deferrals in a row of the same leg log a warning.
 
 **Order emails: a timeout is retried later, and only counts once it keeps happening.** Each send
 gets at most 5 s, or what is left of the outbox's share of the tick, whichever is sooner — and
@@ -484,30 +503,45 @@ Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) 
 that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
-four scans come due adds about 17–20 more; one email is about **8**, one hold expired about
-**14**, one order expired about **22** (plus its list read), one order whose hold bookkeeping
-needs completing about 14. So **on Workers Free, with backlogs everywhere, a tick advances about
-one unit of whichever customer-facing leg leads it — roughly one email, one hold or one order a
-minute, each leg leading one minute in three** — enough for a small store. The four scans, and
-`coupon-orphans` especially (it runs last, and only in a tick whose order expiry finished), may
-run much less often than every fifteen minutes while Free is working through a backlog. A store
-that abandons more checkouts than that per minute has outgrown Workers Free. Right behind the
-three critical legs runs `cancel-intents` (withdrawing an expired or unpaid-cancelled order's
-Stripe PaymentIntent): best-effort, about 5 calls per order (one of them the Stripe cancel)
-plus up to 5 secret reads to build the gateway, at most 20% of the time and 30% of the queries,
-1–10 orders a tick scaled from the budget, each cancel given a fixed 1.5 s and started only with
-that much left. On Workers Free it runs when the critical legs leave room and is deferred
-otherwise — a cancel it does not reach is covered by the late-payment refund. The last leg,
-`late-refunds` (resuming a late payment's automatic refund after a transient Stripe failure),
-is **best-effort**: a tick with nothing due pays one query for it and logs nothing. One resume
-is about 20 calls (two of them Stripe subrequests, the rest mostly the refund's finalize and its
-reporting write) plus up to 5 secret reads to build the gateway; a unit is started only with
-3.5 s left (a pre-flight, a whole 2.5 s create — a create that times out is ambiguous, so it is
-never started with less — and the writes after it). It runs last; only where it cannot fit
-there — **Workers Free** — does it, while refunds are pending, **lead one tick per fifteen
-minutes**, resuming one refund: that lead tick takes most of that minute's budget, so the
-critical legs go second in it (at most once per fifteen minutes, and only while late refunds
-are pending). In the other minutes a cheap give-up step — no Stripe call, its own list of the
+scans come due adds about 17–20 more; one email is about **8**, one hold expired about
+**20** with its list on Free, one order expired **13** for a one-line order (22 before the
+QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
+about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
+transition it absorbs; it is spread over ticks (about five absorbed a Free tick) instead of
+being done in one.
+
+**What Workers Free (30) sustains** — measured by `cron-sweep-backlog.test.ts`, which seeds work
+in every leg at once (50 lapsed orders, ten of them with a payable intent, ten abandoned carts,
+five paid orders owing their stock commit and confirmation, expired challenges, a stranded sku
+carry, lost sku pointers, an unhealed closed day, orphaned coupon redemptions and a late refund)
+and sweeps it minute by minute: no tick passed 30 queries; every leg did some of its work within
+seven ticks and no leg waited more than six in a row; all 50 orders expired by minute 71 (about
+0.7 a minute, while everything else progressed too); everything was done by minute 120. With
+only an expiry backlog it is about **one order a minute**. So an order that lapses behind a
+backlog of N others on Free stays `pending` (its stock off sale; the pay page already refuses
+it) for about N to 1.5·N minutes. Free sustains about **0.7 expiries a minute** under a backlog; a
+store whose orders lapse faster than that holds their stock off sale longer and longer — raise the
+budget (the Paid preset, on Workers Paid) in that case. A store that abandons more than about one
+checkout a minute, or that wants a lapsed order's stock back on sale within a minute or two under
+load, has outgrown the Free preset.
+
+`cancel-intents` (withdrawing a lapsed or unpaid-cancelled order's Stripe PaymentIntent) runs
+first in every tick: about 5 calls per order (one of them the Stripe cancel; up to 7 when Stripe
+refuses the cancel and the intent is read back and, on its last attempt, given up) plus up to 5
+secret reads to build the gateway, at most 20% of the time and 30% of the queries, 1–10 orders a
+tick scaled from the budget, each cancel given a fixed 1.5 s and started only with that much
+left; the intents of the orders the tick's expiry is about to flip are withdrawn right after
+that flip, in the same tick. `late-refunds` (resuming a late payment's automatic refund after a
+transient Stripe failure) is **best-effort**: a tick with nothing due pays one query for it and
+logs nothing. One resume is about 20 calls (two of them Stripe subrequests, the rest mostly the
+refund's finalize and its reporting write) plus up to 5 secret reads to build the gateway; a
+unit is started only with 3.5 s left (a pre-flight, a whole 2.5 s create — a create that times
+out is ambiguous, so it is never started with less — and the writes after it). It runs after
+the money legs and the outbox; only where it cannot fit there — **Workers Free** — does it,
+while refunds are pending, **lead one tick per fifteen minutes** (ahead of even
+`cancel-intents`), resuming one refund: that lead tick takes most of that minute's budget, so
+the intent cancels and the expiry wait one minute together (at most once per fifteen minutes,
+and only while late refunds are pending). In the other minutes a cheap give-up step — no Stripe call, its own list of the
 oldest retries, about 9 calls — runs at the head of the tick, so a refund past the ~3-day limit
 is handed to a human within a tick on every plan. On Paid it never leads and resumes up to five
 a tick, within 40% of the query budget.
@@ -516,12 +550,13 @@ a tick, within 40% of the query budget.
 operational setting, beside the cart hold TTL, with two presets: **Workers Free (30)**, the
 default, and **Workers Paid (600)** — set it to the plan the store actually runs on. The sweep
 reads it once per tick (that read counts against the budget) and sizes its per-tick bites from
-it and the measured costs: Free takes 2 holds, 2 orders and 1 email a tick at most; Paid up to 18,
-18 and 22, which clears a backlog of the size QA saw (14–18 due in one tick) in about one tick.
+it and the measured costs: Free takes 1 hold, 1 order and 1 email a tick at most (a second never
+fits a Free tick); Paid up to 18, 18 and 22, which clears a backlog of the size QA saw (14–18 due
+in one tick) in about one tick.
 The 9.5 s time budget applies on both plans, so on Paid it — not the query count — is usually
-what ends a busy tick. **30 is also the minimum**: below it the costliest critical unit (an order
-expiry, about 23 calls with its list, plus the tick's own reads and reserve) could never start,
-and order expiry would stop silently. Any whole number from 30 to 900 is accepted on save
+what ends a busy tick. **30 is also the minimum**: below it the costliest critical unit (a hold
+expiry with its list, about 20 calls, plus the tick's own reads and reserve) could not start
+behind the other legs' due checks, and hold expiry would stall. Any whole number from 30 to 900 is accepted on save
 (anything else is refused with a message, never clamped); a stored value outside those bounds is
 ignored for the Free preset. **Choosing Paid on Workers Free is a mistake the platform
 punishes**: ticks then fail with D1's "too many API requests by single Worker invocation" once
@@ -530,6 +565,25 @@ day from the sweep when idle (8 a minute, plus the scans every fifteen), each re
 of rows and writing almost none — well under the 5 million rows read and 100,000 rows written a
 day. The host's own share of each scheduled event was not measured; on Free, 20 queries is the
 allowance left for it, and on Paid the 600 preset leaves 400 of the 1000.
+
+**Choosing the budget.**
+
+- **On Workers Free, keep 30.** It is the most the sweep can take and still leave the host's
+  own work in the same event (its executor, scheduled publishing, cleanup, heartbeat) about 20
+  of the 50. Watch the `cron sweep used N of 30 queries` lines: a store whose ticks are
+  routinely full, with `deferred to the next tick` naming the same legs minute after minute, or
+  with expiry lag growing after a sale, needs Workers Paid — not a higher Free number.
+- **On Workers Paid, choose 600.** That clears tens of expiries and emails a tick and leaves 400
+  of D1's 1000 per-invocation queries for the host. Anything up to 900 is accepted, for a store
+  that measured its host share; past that the 9.5 s time budget, not the query count, ends a
+  busy tick anyway.
+- **Never more than the plan allows.** A number above 50 on Workers Free makes the sweep plan
+  ticks the platform refuses partway (D1's "too many API requests by single Worker invocation"):
+  the work is not lost — every unit is a guarded write a later tick completes — but nothing
+  finishes reliably.
+- The log line's per-leg figures say where a full tick went: a leg that keeps taking most of the
+  budget with the same work (a large closed day's rollup heal, a huge outbox) is what to
+  investigate, not the budget.
 
 Two kinds of `wrangler tail` lines mean something beyond a slow tick:
 `[cron] Hook failed for otta:commerce-sweeps: Error: Hook timeout` (a single storage call or

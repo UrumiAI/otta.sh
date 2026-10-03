@@ -47,6 +47,7 @@ import {
 	type Email,
 	type IdGen,
 	type IssueChallengeResult,
+	type PruneChallengesOptions,
 	type VerifyChallengeResult,
 } from "@otta-sh/domain";
 import {
@@ -274,19 +275,38 @@ export class EmdashCredentialVerifier implements CustomerCredentialVerifier {
 	 * slots would buy nothing except a second write and a race with a live
 	 * admission.
 	 */
-	async pruneChallenges(now: string): Promise<number> {
+	async pruneChallenges(now: string, options: PruneChallengesOptions = {}): Promise<number> {
+		// `shouldContinue` is asked before every read and every delete; once it says
+		// no, both arms stop — what is left is still prunable next time.
+		let stopped = false;
+		const mayContinue = (): boolean => {
+			if (!stopped && options.shouldContinue !== undefined && !options.shouldContinue()) {
+				stopped = true;
+			}
+			return !stopped;
+		};
 		let removed = 0;
-		removed += await this.#pruneArm("pruneConsumedChallenges", { consumed: "yes" });
-		removed += await this.#pruneArm("pruneExpiredChallenges", { expiresAt: { lte: now } });
+		removed += await this.#pruneArm("pruneConsumedChallenges", { consumed: "yes" }, mayContinue);
+		removed += await this.#pruneArm(
+			"pruneExpiredChallenges",
+			{ expiresAt: { lte: now } },
+			mayContinue,
+		);
 		return removed;
 	}
 
-	async #pruneArm(operation: string, where: WhereClause): Promise<number> {
+	async #pruneArm(
+		operation: string,
+		where: WhereClause,
+		mayContinue: () => boolean,
+	): Promise<number> {
 		let removed = 0;
 		for (let page = 0; page < this.#maxPrunePages; page++) {
+			if (!mayContinue()) return removed;
 			const result = await this.#challenges.query({ where, limit: PRUNE_PAGE_SIZE });
 			if (result.items.length === 0) return removed;
 			for (const { id } of result.items) {
+				if (!mayContinue()) return removed;
 				if (await this.#challenges.delete(id)) removed++;
 			}
 		}

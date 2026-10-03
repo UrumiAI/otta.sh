@@ -317,6 +317,7 @@ describe("settleOrder", () => {
 				return h.orderStore.markPaid(id);
 			},
 			expire: (id, at) => h.orderStore.expire(id, at),
+			expireWithOrder: (id, at) => h.orderStore.expireWithOrder(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
 			recordPaymentIntent: (i) => h.orderStore.recordPaymentIntent(i),

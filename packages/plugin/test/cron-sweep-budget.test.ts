@@ -122,11 +122,19 @@ describe("the sweep's schedule and timeout are pinned", () => {
 		expect(SWEEP_TICK_QUERY_BUDGET).toBeLessThanOrEqual(30);
 	});
 
-	test("the critical legs come first, expiry before the coupon sweeper, and only scans are on the slow cadence", () => {
+	test("the critical legs come first in the summary, expiry before the coupon sweeper, and only housekeeping is on the slow cadence", () => {
 		expect(SWEEP_LEGS.slice(0, 3)).toEqual([...CRITICAL_LEGS]);
 		expect(SWEEP_LEGS.indexOf("expire-orders")).toBeLessThan(SWEEP_LEGS.indexOf("coupon-orphans"));
+		// The four scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
+		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
-			["coupon-orphans", "order-sku-index", "reporting-heal", "sku-transfers"].toSorted(),
+			[
+				"coupon-orphans",
+				"order-sku-index",
+				"prune-challenges",
+				"reporting-heal",
+				"sku-transfers",
+			].toSorted(),
 		);
 		expect(MAINTENANCE_LEG_INTERVAL_MS).toBe(15 * MINUTE_MS);
 	});
@@ -178,11 +186,12 @@ describe("the tick's time budget", () => {
 
 	test("a slow outbox is cut off BEFORE a claim, does not starve the expiries, and the unsent mail goes out on later ticks", async () => {
 		const suffix = `mail-${crypto.randomUUID()}`;
-		for (const n of [1, 2, 3, 4]) await placePaidOrder(`${suffix}-${String(n)}`);
+		for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) await placePaidOrder(`${suffix}-${String(n)}`);
 		const clock = new SimulatedClock();
 		const sent: SendEmailInput[] = [];
-		// Each send costs 1.5 s: the outbox's share of the tick holds a few, and
-		// the rest wait for the next tick rather than overrunning this one.
+		// Each send costs 1.5 s: the outbox's share of the tick holds a few (and the
+		// second pass a few more of what the other legs left), and the rest wait for
+		// the next tick rather than overrunning this one.
 		const options = baseOptions({
 			tickClock: clock.read,
 			emailSender: recordingSender(sent, () => clock.advance(1500)),
@@ -190,7 +199,7 @@ describe("the tick's time budget", () => {
 
 		const first = await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, options);
 		const firstSent = sent.filter((input) => String(input.data.orderId).includes(suffix));
-		expect(firstSent.length).toBeLessThan(4);
+		expect(firstSent.length).toBeLessThan(8);
 		expect(clock.elapsed()).toBeLessThanOrEqual(SWEEP_TICK_BUDGET_MS);
 		expect(outcome(first, "order-emails").incomplete).toBe(true);
 		// A slow outbox takes its share, not the tick: the expiries still ran.
@@ -202,7 +211,7 @@ describe("the tick's time budget", () => {
 			await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, options);
 		}
 		const allSent = sent.filter((input) => String(input.data.orderId).includes(suffix));
-		expect(new Set(allSent.map((input) => input.data.orderId)).size).toBe(4);
+		expect(new Set(allSent.map((input) => input.data.orderId)).size).toBe(8);
 	}, 120_000);
 
 	test("a provider that hangs for 30 s is cut off by the send timeout, inside the budget", async () => {
@@ -422,7 +431,7 @@ describe("the query budget is an operational setting (Background work per minute
 		expect(summary.budget).toMatchObject({
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 30,
-			expiryBatch: 2,
+			expiryBatch: 1,
 			emailBatch: 1,
 		});
 	}, 120_000);
@@ -481,9 +490,12 @@ describe("the query budget is an operational setting (Background work per minute
 		const ctx = context(storage, { [BACKGROUND_WORK_KEY]: MIN_BACKGROUND_WORK });
 		const progressed = new Set<string>();
 		const start = Date.now();
+		// One cursor store across the ticks, as `ctx.kv` is in production: the
+		// fairness rule ages a passed-over leg from the state it keeps there.
+		const cursors = memoryCursors();
 		for (let minute = 0; minute < 6; minute++) {
 			const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
-				cursors: memoryCursors(),
+				cursors,
 				emailSender: recordingSender([]),
 				now: new Date(start + minute * MINUTE_MS),
 			});
@@ -543,11 +555,13 @@ describe("dead carts at the listing step (Free budget)", () => {
 		// The default (Free) budget, as a store on Workers Free runs it.
 		const ctx = context(storage);
 		const start = Date.now();
+		// One cursor store across the ticks, as `ctx.kv` is in production (the tick's
+		// fairness state lives there).
+		const cursors = memoryCursors();
 		for (let tick = 0; tick < 8 && (await s.inventory.getOnHand(live)) === 0; tick++) {
 			await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
-				cursors: memoryCursors(),
+				cursors,
 				emailSender: recordingSender([]),
-				// Advance the minute so the critical legs' rotation is exercised too.
 				now: new Date(start + tick * MINUTE_MS),
 			});
 		}
@@ -617,7 +631,7 @@ describe("the hook's own bookkeeping", () => {
 });
 
 describe("bounded expiry batches", () => {
-	test("expire-holds takes at most its batch per tick, and the coupon sweeper waits for a drained expire-orders", async () => {
+	test("expire-holds takes at most its batch per tick, and the coupon sweeper no longer waits for a drained expire-orders", async () => {
 		const suffix = `batch-${crypto.randomUUID()}`;
 		await seedExpiredHolds(suffix, 3);
 		await placeExpirableOrder(`${suffix}-o1`);
@@ -627,10 +641,10 @@ describe("bounded expiry batches", () => {
 		const first = await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, options);
 		expect(outcome(first, "expire-holds")).toMatchObject({ ok: true, count: 1, incomplete: true });
 		expect(outcome(first, "expire-orders")).toMatchObject({ ok: true, count: 1, incomplete: true });
-		// The coupon sweeper's `expired` arm is the retry for a release expire-orders
-		// owed; judging redemptions while expiry is still mid-backlog could step its
-		// cursor past an order that is about to expire.
-		expect(outcome(first, "coupon-orphans")).toMatchObject({ ok: true, deferred: true });
+		// QA2 M2: the coupon sweeper used to defer itself until expire-orders drained —
+		// under a Free backlog, for hours. It now runs, and stops its walk at an order
+		// the expiry has not reached yet instead (cron-sweeps.sandbox pins that).
+		expect(outcome(first, "coupon-orphans").deferred).toBeUndefined();
 
 		const drained = baseOptions({ expiryBatchLimit: 100 });
 		const second = await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, drained);

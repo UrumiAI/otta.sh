@@ -164,6 +164,7 @@ export type {
 	CreateOrderLineInput,
 	CreateOrderResult,
 	CreateOrderTotalsInput,
+	ExpiredOrder,
 	OrderCustomerKey,
 	OrderEvent,
 	OrderEventKind,
@@ -224,6 +225,7 @@ export type { Session, SessionStore, SessionSummary } from "./ports/session-stor
 export type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
+	PruneChallengesOptions,
 	VerifyChallengeResult,
 } from "./ports/credential-verifier.js";
 export type { Address, AddressKind, Customer } from "./customers/model.js";
@@ -427,7 +429,12 @@ export {
 	type OrderTimelineDeps,
 	type OrderTimelineEntry,
 } from "./orders/order-timeline.js";
-export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export {
+	expireOrders,
+	expireOrdersBatch,
+	type ExpireOrdersBatchOptions,
+	type ExpireOrdersDeps,
+} from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
 export {
 	cancelDueIntents,

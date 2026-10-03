@@ -22,6 +22,21 @@
  * or one unit of its own work, if that is more — clipped by what is left. A share is a cap, not a reservation — an idle leg
  * leaves its share to the legs after it — but it means a hung email provider, or a
  * hold backlog, can take its share of the tick and not the whole of it.
+ *
+ * WHY A HARD CEILING AS WELL (QA2 M2). The checks above are cooperative: they admit
+ * a unit on an ESTIMATE of its calls, and a leg whose unit is one call the tick cannot
+ * see inside — a store method that loops — is not checked at all. QA caught exactly
+ * that: one tick at 334 of 30 queries, a closed day's rollup heal absorbing every
+ * live claim inside one `reconcile`. On Workers Free (50 per invocation) that tick
+ * fails. So the counter itself REFUSES the call that would pass the budget
+ * (`SweepQueryCeilingError`, thrown before the call is made): while the legs run the
+ * ceiling is the budget less one call, kept for the cadence-state write after them,
+ * and that write may use the last one. The legs' own checks keep their units under
+ * it; the ceiling is the backstop that makes "never over the budget" true even when
+ * an estimate is wrong, and the leg it stops is reported and logged by name.
+ *
+ * AND EVERY CALL IS ATTRIBUTED to the leg running when it was made (or to the tick's
+ * own reads), so a summary and the log can say which leg spent what.
  */
 
 export interface TickBudgetLimits {
@@ -43,11 +58,45 @@ export interface LegShare {
 
 export const WHOLE_TICK: LegShare = { time: 1, queries: 1 };
 
+/** Calls the ceiling keeps back while the legs run: the cadence-state write. */
+const CEILING_RESERVE = 1;
+
+/**
+ * The call that would have passed the tick's query budget, refused BEFORE it was
+ * made. Not a storage failure: the work it interrupted is a guarded unit any later
+ * tick completes. `leg` is the leg that was running, or null for the tick's own reads.
+ */
+export class SweepQueryCeilingError extends Error {
+	override readonly name = "SweepQueryCeilingError";
+	readonly ceiling: number;
+	readonly leg: string | null;
+
+	constructor(ceiling: number, leg: string | null) {
+		super(
+			`the sweep tick reached its ceiling of ${String(ceiling)} queries` +
+				(leg === null ? "" : ` in ${leg}`) +
+				"; the rest runs on the next tick",
+		);
+		this.ceiling = ceiling;
+		this.leg = leg;
+	}
+}
+
+/** Structural test for {@link SweepQueryCeilingError}: it may be re-thrown or
+ *  wrapped by code that does not import this module. */
+export function isSweepQueryCeilingError(err: unknown): err is SweepQueryCeilingError {
+	return err instanceof Error && err.name === "SweepQueryCeilingError";
+}
+
 export class TickBudget {
 	readonly #clock: () => number;
 	readonly #startedAtMs: number;
 	#limits: TickBudgetLimits;
 	#queries = 0;
+	#currentLeg: string | null = null;
+	#legsDone = false;
+	readonly #byLeg = new Map<string, number>();
+	readonly #refused = new Set<string>();
 
 	constructor(clock: () => number, startedAtMs: number, limits: TickBudgetLimits) {
 		this.#clock = clock;
@@ -69,8 +118,65 @@ export class TickBudget {
 		this.#limits = { ...this.#limits, queries };
 	}
 
+	/**
+	 * Count one storage/kv/egress call, attributed to the running leg — or REFUSE it
+	 * (`SweepQueryCeilingError`, before the call is made) when it would pass the
+	 * ceiling. See the head comment.
+	 */
 	countQuery(): void {
+		const ceiling = this.ceiling();
+		if (this.#queries >= ceiling) {
+			// Remembered per leg, so a leg that SWALLOWED the refusal (a unit loop that
+			// catches each unit's failure) is still known to have stopped short.
+			if (this.#currentLeg !== null) this.#refused.add(this.#currentLeg);
+			throw new SweepQueryCeilingError(ceiling, this.#currentLeg);
+		}
 		this.#queries++;
+		if (this.#currentLeg !== null) {
+			this.#byLeg.set(this.#currentLeg, (this.#byLeg.get(this.#currentLeg) ?? 0) + 1);
+		}
+	}
+
+	/** The most calls the tick may have made so far: the budget, less the call kept
+	 *  for the cadence-state write while the legs are still running. */
+	ceiling(): number {
+		return this.#limits.queries - (this.#legsDone ? 0 : CEILING_RESERVE);
+	}
+
+	/** The legs are done: the trailing write may use the last call. */
+	finishLegs(): void {
+		this.#legsDone = true;
+		this.#currentLeg = null;
+	}
+
+	/** Run `body` with every call it makes attributed to `leg`. Legs run one at a
+	 *  time, so one current leg is enough. */
+	async charge<T>(leg: string, body: () => Promise<T>): Promise<T> {
+		const previous = this.#currentLeg;
+		this.#currentLeg = leg;
+		try {
+			return await body();
+		} finally {
+			this.#currentLeg = previous;
+		}
+	}
+
+	/** Whether the ceiling refused a call made by `leg` this tick — whether or not
+	 *  the leg let the error reach its runner. */
+	wasRefused(leg: string): boolean {
+		return this.#refused.has(leg);
+	}
+
+	/** Calls attributed to `leg` this tick. */
+	queriesFor(leg: string): number {
+		return this.#byLeg.get(leg) ?? 0;
+	}
+
+	/** Calls made outside any leg: the setting read, the cadence state. */
+	overheadQueries(): number {
+		let legs = 0;
+		for (const n of this.#byLeg.values()) legs += n;
+		return this.#queries - legs;
 	}
 
 	elapsedMs(): number {
@@ -84,8 +190,8 @@ export class TickBudget {
 	/** A leg's view of the budget, capped at `share` of the total from here — but
 	 *  never below `floorQueries` (one unit of the leg's own work), or a small
 	 *  budget would refuse a costly leg on every tick. */
-	leg(share: LegShare, floorQueries = 0): LegBudget {
-		return new LegBudget(this, share, floorQueries);
+	leg(share: LegShare, floorQueries = 0, reserveQueries?: number): LegBudget {
+		return new LegBudget(this, share, floorQueries, reserveQueries);
 	}
 }
 
@@ -96,8 +202,13 @@ export class LegBudget {
 	/** Set once any gate of this leg refused a unit: the leg stopped early. */
 	stopped = false;
 
-	constructor(budget: TickBudget, share: LegShare, floorQueries = 0) {
+	readonly #reserveQueries: number;
+
+	/** `reserveQueries`: calls kept back after this leg — by default the tick's; a
+	 *  leg that writes nothing after its units needs only the cadence-state write. */
+	constructor(budget: TickBudget, share: LegShare, floorQueries = 0, reserveQueries?: number) {
 		this.#budget = budget;
+		this.#reserveQueries = reserveQueries ?? budget.limits.reserveQueries;
 		const { ms, queries } = budget.limits;
 		this.#endMs = Math.min(ms, budget.elapsedMs() + share.time * ms);
 		this.#endQueries = Math.min(
@@ -116,6 +227,13 @@ export class LegBudget {
 		return this.#fits(0, entryQueries + Math.max(1, unitQueries));
 	}
 
+	/** Calls this leg may still make, reserve kept back. Never negative. */
+	remainingQueries(): number {
+		const q = this.#budget.queriesUsed();
+		const { queries } = this.#budget.limits;
+		return Math.max(0, Math.min(this.#endQueries - q, queries - this.#reserveQueries - q));
+	}
+
 	/** Time this leg may still spend, reserve kept back. Never negative. */
 	remainingMs(): number {
 		const t = this.#budget.elapsedMs();
@@ -131,11 +249,17 @@ export class LegBudget {
 	 * hold flip is several calls). Bound, so it can be handed to a domain use-case
 	 * as-is.
 	 */
-	gate(minUnitMs = 0, minUnitQueries = 1): () => boolean {
+	gate(minUnitMs = 0, minUnitQueries = 1): (unitHint?: number) => boolean {
 		let last: { ms: number; queries: number } | undefined;
 		let unitMs = 0;
 		let unitQueries = Math.max(1, minUnitQueries);
-		return () => {
+		// The most this leg could EVER be given: a unit estimated above it is clamped
+		// to it, so an oversized unit (a ten-line order's completion) still runs when
+		// the leg has its whole slice — and the ceiling, not a refusal on every tick
+		// forever, is what stops it part-way. Its guarded writes persist, so the next
+		// attempt starts further on.
+		const cap = Math.max(1, this.remainingQueries());
+		return (unitHint?: number) => {
 			const now = { ms: this.#budget.elapsedMs(), queries: this.#budget.queriesUsed() };
 			if (last !== undefined) {
 				unitMs = Math.max(unitMs, now.ms - last.ms);
@@ -147,7 +271,9 @@ export class LegBudget {
 			// fourteen-call hold flip slow, and admitting it on a zero estimate is how a
 			// tick overran its budget.
 			const perCallMs = now.queries > 0 ? now.ms / now.queries : 0;
-			const ok = this.#fits(Math.max(unitMs, minUnitMs, unitQueries * perCallMs), unitQueries);
+			// A caller that can size THIS unit (an order's outstanding holds) says so.
+			const thisUnit = Math.min(cap, Math.max(unitQueries, unitHint ?? 0));
+			const ok = this.#fits(Math.max(unitMs, minUnitMs, thisUnit * perCallMs), thisUnit);
 			if (!ok) this.stopped = true;
 			return ok;
 		};
@@ -156,7 +282,8 @@ export class LegBudget {
 	#fits(unitMs: number, unitQueries: number): boolean {
 		const t = this.#budget.elapsedMs();
 		const q = this.#budget.queriesUsed();
-		const { ms, queries, reserveMs, reserveQueries } = this.#budget.limits;
+		const { ms, queries, reserveMs } = this.#budget.limits;
+		const reserveQueries = this.#reserveQueries;
 		return (
 			t + unitMs < this.#endMs &&
 			t + unitMs + reserveMs < ms &&
