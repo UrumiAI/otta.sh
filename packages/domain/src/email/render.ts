@@ -95,7 +95,7 @@ export function renderEmail(
 	// "Cancel with reason" slice: the cancelled email may carry WHY — but ONLY
 	// through the explicit CUSTOMER-SAFE mapping below (PR #64 review blocker).
 	// The recipient is the buyer, so sensitive reasons (fraud_suspected,
-	// other) and the admin's free-text detail must NEVER reach
+	// pricing_error, other) and the admin's free-text detail must NEVER reach
 	// this channel; those render the plain generic body, exactly like a
 	// bare-transition cancellation that carries no reason at all.
 	const cancellation =
@@ -391,15 +391,11 @@ function oneLine(value: string): string {
  * The CUSTOMER-SAFE cancellation-reason copy (PR #64 review blocker). This is an
  * explicit ALLOWLIST, not a label table: only reasons that are safe to state to
  * the buyer map to copy; every other reason — `fraud_suspected` (tips off
- * fraudulent actors, and harms innocent customers on a false positive), `other`
+ * fraudulent actors, and harms innocent customers on a false positive),
+ * `pricing_error` (invites disputes over the merchant's mistake), `other`
  * (free-form catch-all), or any unrecognized value — returns `undefined` and the
  * email renders NO reason line at all (just the generic cancellation body). The
  * full reason + detail remain admin-only, on the order detail page.
- *
- * `pricing_error` was excluded at first ("invites disputes over the merchant's
- * mistake") and is stated since QA round 2 (ADR-0026 amended 2026-10-03): a
- * cancellation with no reason read worse than an honest one, and the copy names
- * the store's error, not the buyer.
  */
 export function customerSafeCancellationCopy(reason: string): string | undefined {
 	switch (reason) {
@@ -407,10 +403,6 @@ export function customerSafeCancellationCopy(reason: string): string | undefined
 			return "at your request";
 		case "out_of_stock":
 			return "an item was unavailable";
-		// QA round 2: a pricing-error cancel sent a reasonless email, which left the
-		// buyer guessing. Stated plainly, as the store's mistake — not the buyer's.
-		case "pricing_error":
-			return "there was an error in the price it was listed at";
 		default:
 			return undefined;
 	}

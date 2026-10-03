@@ -101,9 +101,9 @@ describe("renderEmail order-shipped", () => {
 
 // The cancelled template carries WHY only through the explicit CUSTOMER-SAFE
 // allowlist (admin-UX Increment 1, "cancel with reason" + the PR #64 review
-// blocker): safe reasons (customer_request, out_of_stock and — since QA round 2 —
-// pricing_error) render exactly their safe copy; sensitive reasons
-// (fraud_suspected, other) render NO reason line at all; and the admin's free-text detail NEVER reaches the
+// blocker): safe reasons (customer_request, out_of_stock) render exactly their
+// safe copy; sensitive reasons (fraud_suspected, pricing_error, other) render
+// NO reason line at all; and the admin's free-text detail NEVER reaches the
 // customer email for ANY reason value.
 
 describe("renderEmail order-cancelled", () => {
@@ -133,7 +133,7 @@ describe("renderEmail order-cancelled", () => {
 		expect(rendered.text).not.toContain("out_of_stock");
 	});
 
-	test.each(["fraud_suspected", "other"])(
+	test.each(["fraud_suspected", "pricing_error", "other"])(
 		"%s produces NO reason text in the customer email (generic body only)",
 		(reason) => {
 			const rendered = renderEmail("order-cancelled", {
@@ -242,12 +242,9 @@ describe("customerSafeCancellationCopy", () => {
 	test("safe reasons map to exactly their safe copy", () => {
 		expect(customerSafeCancellationCopy("customer_request")).toBe("at your request");
 		expect(customerSafeCancellationCopy("out_of_stock")).toBe("an item was unavailable");
-		expect(customerSafeCancellationCopy("pricing_error")).toBe(
-			"there was an error in the price it was listed at",
-		);
 	});
 
-	test.each(["fraud_suspected", "other", "anything_else", ""])(
+	test.each(["fraud_suspected", "pricing_error", "other", "anything_else", ""])(
 		"%s is not customer-safe (undefined)",
 		(reason) => {
 			expect(customerSafeCancellationCopy(reason)).toBeUndefined();

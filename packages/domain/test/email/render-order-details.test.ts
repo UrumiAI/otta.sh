@@ -464,15 +464,23 @@ describe("a state email after a partial refund (QA round 2)", () => {
 	});
 });
 
-describe("the cancelled email's reason line (QA round 2)", () => {
-	test("a pricing error is stated, in words for the buyer", () => {
-		expect(customerSafeCancellationCopy("pricing_error")).toBe(
-			"there was an error in the price it was listed at",
+describe("the cancelled email for a pricing error stays private, and still reads naturally (QA round 2)", () => {
+	test("no reason, no dangling 'Reason:', and the plain cancellation body", () => {
+		expect(customerSafeCancellationCopy("pricing_error")).toBeUndefined();
+		const rendered = renderEmail(
+			"order-cancelled",
+			{
+				orderId: "o1",
+				state: "cancelled",
+				currency: "USD",
+				totalCents: 1000,
+				lines: [{ sku: "S", title: "Lamp", quantity: 1, unitPriceCents: 1000 }],
+				cancellation: { reason: "pricing_error", detail: "listed at $1 by mistake" },
+			},
+			{ formatMoney: stubMoney },
 		);
-	});
-
-	test("fraud and other still never reach the buyer", () => {
-		expect(customerSafeCancellationCopy("fraud_suspected")).toBeUndefined();
-		expect(customerSafeCancellationCopy("other")).toBeUndefined();
+		expect(rendered.text.startsWith("Your order has been cancelled.")).toBe(true);
+		expect(rendered.text).not.toMatch(/Reason|pricing|price|mistake/i);
+		expect(rendered.text).not.toMatch(/\n\n\n/);
 	});
 });

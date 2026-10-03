@@ -248,10 +248,9 @@ event. The console passes the signed-in operator the host names on the private a
 by the same operator rather than "admin". History shows them, and it now also lists each refund
 on the ledger and what a cancellation refunded and restocked.
 
-**The pricing-error reason reaches the buyer.** The cancelled email's customer-safe reasons now
-include `pricing_error` ("there was an error in the price it was listed at"): a cancellation
-with no reason read worse than an honest one that names the store's mistake. `fraud_suspected`
-and `other` still never reach the buyer.
+**The pricing-error reason stays private.** QA asked for a Reason line on the "Pricing error"
+cancel email; the earlier review's decision stands (it invites disputes over the merchant's
+mistake). The email reads as the plain cancellation, with no Reason line, as before.
 
 **Consequences.**
 - A Stripe order with money still held can only reach `refunded` through the ledger, so its
