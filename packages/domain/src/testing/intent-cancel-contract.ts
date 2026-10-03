@@ -299,6 +299,32 @@ export function intentCancelContract(
 			}
 		});
 
+		test("giving up FLAGS the order for reconciliation, naming the intent — once, and never over an existing flag", async () => {
+			// QA2 follow-up: a give-up was only a log line. The refund still backstops
+			// a payment on the intent, but an admin should see that the intent may be
+			// payable, so the order is flagged (the badge on the orders console).
+			const h = await makeHarness();
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			gateway.setCancelResult({ ok: false, reason: "TERMINAL" });
+			const s = await seedPendingOrder(h, "9");
+			await expireOrders(h.expireDeps, at(s, MINUTE));
+
+			await sweep(h, gateway, at(s, MINUTE));
+
+			const flag = (await h.settleDeps.orderStore.getById(s.order.id))?.reconciliationFlag ?? "";
+			expect(flag).toContain(s.intentId);
+			expect(flag).toMatch(/refunded automatically/);
+
+			// An order already flagged for something else keeps ITS flag.
+			const other = await seedPendingOrder(h, "9b");
+			await expireOrders(h.expireDeps, at(other, MINUTE));
+			await h.settleDeps.orderStore.flagReconciliation(other.order.id, "an earlier anomaly");
+			await sweep(h, gateway, at(other, MINUTE));
+			expect((await h.settleDeps.orderStore.getById(other.order.id))?.reconciliationFlag).toBe(
+				"an earlier anomaly",
+			);
+		});
+
 		test("a cancel the caller has no time for is NOT started and NOT counted — the intent stays due, its attempts unchanged", async () => {
 			const h = await makeHarness();
 			const gateway = new FakePaymentGateway({ id: "stripe" });

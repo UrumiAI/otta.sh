@@ -29,7 +29,7 @@ import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
-import { InProcessCommerceClient } from "./in-process-commerce-client.js";
+import { ABANDON_CANCEL_CALL_MS, InProcessCommerceClient } from "./in-process-commerce-client.js";
 
 /**
  * One client per invocation, matching the request-scoped lifecycle the
@@ -59,5 +59,9 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// LOGIN sender, with its short ceiling: the send is awaited inline.
 		resolveEmailSender: () =>
 			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
+		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
+		resolveWithdrawGateways: () =>
+			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
 	});
 }

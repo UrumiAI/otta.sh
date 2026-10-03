@@ -71,6 +71,8 @@ import {
 	startStripeApiStub,
 	stripeLikeResponder,
 	type StripeApiStub,
+	type StripeRecordedRequest,
+	type StripeResponder,
 } from "./helpers/stripe-api-stub.js";
 import {
 	loadPluginInSandbox,
@@ -542,6 +544,10 @@ beforeEach(async () => {
 	productGets.length = 0;
 	orderOps.length = 0;
 });
+
+/** Is this the Stripe cancel of a PaymentIntent? */
+const isCancel = (req: StripeRecordedRequest) =>
+	req.method === "POST" && /^\/v1\/payment_intents\/[^/]+\/cancel$/.test(req.path);
 
 describe("storefront/checkout/summary (workerd sandbox)", () => {
 	test("a MULTI-line cart costs ONE batched commerce read per leg and ZERO per-line reads (the N+1 guard)", async () => {
@@ -1472,15 +1478,126 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			ok: true,
 			cancelled: false,
 		});
-		// The cart's own way back to paying is closed: nothing asked of Stripe.
+		// The cart's own way back to paying is closed: nothing asked of Stripe beyond
+		// the create and the abandon's one withdrawal of the intent.
 		expect(
 			resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId, cartId })),
 		).toEqual({ ok: false, reason: "ORDER_NOT_PAYABLE" });
-		expect(stripe.requests).toHaveLength(1);
+		expect(stripe.requests.map((r) => `${r.method} ${r.path.replace(/pi_[^/]+/, "pi")}`)).toEqual([
+			"POST /v1/payment_intents",
+			"POST /v1/payment_intents/pi/cancel",
+		]);
 		// No cart id, no call.
 		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", {}))).toEqual({
 			ok: false,
 			error: "INVALID_INPUT",
+		});
+	});
+
+	/**
+	 * QA2 X4 follow-up: after the abandon's cancel, the intent is withdrawn at Stripe
+	 * IN the request — best-effort, under a small fixed bound — instead of waiting
+	 * for the sweep. Anything short of a definite answer is left to the sweep, on
+	 * the sweep's own keys.
+	 */
+	describe("storefront/order/abandon withdraws the PaymentIntent at Stripe, bounded", () => {
+		async function abandonedOrder(
+			responder?: (fallback: ReturnType<typeof stripeLikeResponder>) => StripeResponder,
+		) {
+			const fallback = stripeLikeResponder();
+			stripe.respondWith(responder === undefined ? fallback : responder(fallback));
+			const cartId = await seedThreeLineCart();
+			const placed = await placeCart(cartId);
+			expect(placed["ok"]).toBe(true);
+			const orderId = placed["orderId"] as string;
+			const [intent] = await orderStore.listPaymentIntents(toOrderId(orderId));
+			const started = Date.now();
+			const res = resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }));
+			const tookMs = Date.now() - started;
+			expect(res).toEqual({ ok: true, cancelled: true });
+			const [after] = await orderStore.listPaymentIntents(toOrderId(orderId));
+			return { orderId, intentId: intent!.intentId, after: after!, tookMs };
+		}
+
+		test("a definite cancel is recorded at once, under the sweep's own first key", async () => {
+			const { intentId, after } = await abandonedOrder(
+				(fallback) => (req) =>
+					isCancel(req) ? { status: 200, body: { id: "x", status: "canceled" } } : fallback(req),
+			);
+			const cancels = stripe.requests.filter(isCancel);
+			expect(cancels.map((r) => r.path)).toEqual([`/v1/payment_intents/${intentId}/cancel`]);
+			expect(cancels[0]!.headers["idempotency-key"]).toBe(`cancel-intent:${intentId}`);
+			expect(after.cancelOutcome).toBe("cancelled");
+			expect(after.cancelDueAt).toBeNull();
+		});
+
+		test("a Stripe that does not answer in time does not hold the shopper — the intent is left due for the sweep", async () => {
+			const { after, tookMs } = await abandonedOrder(
+				(fallback) => (req) =>
+					isCancel(req) ? { status: 200, body: {}, delayMs: 6_000 } : fallback(req),
+			);
+			expect(stripe.requests.filter(isCancel)).toHaveLength(1);
+			expect(tookMs).toBeLessThan(4_500);
+			expect(after.cancelOutcome).toBeNull();
+			expect(after.cancelDueAt).not.toBeNull();
+		});
+
+		test("an intent that already SUCCEEDED is not_cancellable, and the payment then takes the late-payment refund", async () => {
+			const { orderId, intentId, after } = await abandonedOrder((fallback) => (req) => {
+				if (isCancel(req)) {
+					return {
+						status: 400,
+						body: {
+							error: { type: "invalid_request_error", code: "payment_intent_unexpected_state" },
+						},
+					};
+				}
+				if (req.method === "GET") {
+					return {
+						status: 200,
+						body: {
+							id: req.path.split("/")[3]?.split("?")[0],
+							status: "succeeded",
+							latest_charge: {
+								amount_refunded: 0,
+								amount_captured: SUBTOTAL_CENTS,
+								currency: "usd",
+							},
+						},
+					};
+				}
+				if (req.method === "POST" && req.path === "/v1/refunds") {
+					return {
+						status: 200,
+						body: { id: "re_abandon", amount: SUBTOTAL_CENTS, currency: "usd" },
+					};
+				}
+				return fallback(req);
+			});
+			expect(after.cancelOutcome).toBe("not_cancellable");
+
+			const signed = await signStripeWebhook(
+				{
+					eventId: `evt_abandon_${orderId}`,
+					type: "payment_intent.succeeded",
+					paymentIntentId: intentId,
+					orderId,
+					amountCents: SUBTOTAL_CENTS,
+					currency: "usd",
+				},
+				STRIPE_WEBHOOK_SECRET,
+			);
+			resultOf(
+				await stripeBoot.invokeRoute("webhooks/stripe/settle", {
+					rawBodyBase64: Buffer.from(signed.body).toString("base64"),
+					stripeSignature: signed.signatureHeader,
+					idempotencyKey: `wh-abandon-${orderId}`,
+				}),
+			);
+			expect((await storedOrder(orderId)).state).toBe("cancelled");
+			expect(stripe.requests.some((r) => r.method === "POST" && r.path === "/v1/refunds")).toBe(
+				true,
+			);
 		});
 	});
 
