@@ -364,6 +364,9 @@ export interface CheckoutLockedModel {
 	/** The way on for a locked, payable order: the page-owned resume path
 	 *  (QA U-2) — a link, never a form re-asking for the email the order keeps. */
 	resumeHref: string;
+	/** Place found this order already placed — by another tab — with another
+	 *  email: the sentence naming its (masked) address, or `null` (QA2 X2). */
+	otherEmailNotice: string | null;
 }
 
 export interface CheckoutModel {

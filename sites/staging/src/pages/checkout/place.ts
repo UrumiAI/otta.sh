@@ -60,6 +60,7 @@ import {
 	shapedDestination,
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
+import { ORDER_PLACED_OTHER_EMAIL } from "../../lib/checkout-review.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -435,10 +436,25 @@ async function place(context: APIContext): Promise<Response> {
 	//    its amount, never 500 an order whose stock is already held and whose
 	//    intent already exists.
 	const total = checkoutStashTotal(result.total);
+	/* The order's email, masked: the pay page states where the confirmation goes
+	   (QA2 X2), as the resume path's stash already did. */
+	const emailHint =
+		typeof result.buyerRefHint === "string" && result.buyerRefHint.length > 0
+			? result.buyerRefHint
+			: undefined;
 	setCheckoutCookie(context.cookies, {
 		orderId: result.orderId,
 		clientSecret: result.clientAction.clientSecret,
 		...(total !== undefined ? { total } : {}),
+		...(emailHint !== undefined ? { emailHint } : {}),
 	});
+	/* ANOTHER TAB placed this cart's order first, with another email (QA2 X2): the
+	   same-key place replayed that order, which keeps its own email. Never on to
+	   the pay page as if the typed email were used: back to the locked review,
+	   which names the order's (masked) address and offers to pay it or start a
+	   new cart. Stashed above like any place, so "Continue to payment" pays it. */
+	if (result.emailMatches === false) {
+		return seeOther(context, "/checkout", ORDER_PLACED_OTHER_EMAIL);
+	}
 	return seeOther(context, "/checkout/pay");
 }

@@ -75,6 +75,14 @@ const {
 {errorMessage !== null && <div class="checkout-notice-slot"><Notice>{errorMessage}</Notice></div>}
 
 {
+	locked?.otherEmailNotice != null && (
+		<div class="checkout-notice-slot">
+			<Notice lead="This order was already placed.">{locked.otherEmailNotice}</Notice>
+		</div>
+	)
+}
+
+{
 	locked !== null && (
 		<div class="checkout-notice-slot">
 			{ended ? (

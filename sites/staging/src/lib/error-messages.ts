@@ -128,6 +128,11 @@ const MESSAGES: Record<string, string> = {
 		"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
 	/* An explicit Apply of the code already applied: re-rendered, never placed. */
 	COUPON_ALREADY_APPLIED: "That code is already applied.",
+	/* QA2 X2: another tab already placed this cart's order, with another email.
+	   The locked review says WHICH (masked, `checkout-review.ts`); this is the
+	   sentence for a review that is no longer locked to it. */
+	ORDER_PLACED_OTHER_EMAIL:
+		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 	...SELECTION_MESSAGES,
