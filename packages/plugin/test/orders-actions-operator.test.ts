@@ -33,6 +33,10 @@ interface Calls {
 	cancel: unknown[];
 }
 
+function never(): never {
+	throw new Error("not called here");
+}
+
 function surface(
 	state: string,
 	transition: TransitionOrderResult = { ok: true, transitioned: true },
@@ -41,9 +45,6 @@ function surface(
 	const detail: OrderDetailResult = {
 		order: { id: ORDER_ID, state } as OrderDetailResult["order"],
 		allowedTransitions: [],
-	};
-	const never = (): never => {
-		throw new Error("not called here");
 	};
 	const client: AdminOrdersSurface = {
 		getOrder: () => Promise.resolve(detail),

@@ -329,8 +329,8 @@ export interface TimelineEntryWire {
 	trackingUrl?: string | null;
 	shippedAt?: string;
 	recordedBy?: string;
-	/** cancellation */
-	reason?: string;
+	/** cancellation (the closed reason); refund (the operator's free text, or null) */
+	reason?: string | null;
 	detail?: string | null;
 	cancelledBy?: string;
 	/** reconciliation_resolved */

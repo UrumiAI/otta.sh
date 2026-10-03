@@ -25,16 +25,8 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
-const {
-	ABSENT,
-	UNNAMED_REFUND_RECIPIENT,
-	fit,
-	formatAmount,
-	orderStateCell,
-	refundCapabilityText,
-	refundConfirmText,
-} = await import("@otta-sh/admin-presentation");
+const { OrderDetail } = await import("../src/orders/order-detail.js");
+const { formatAmount } = await import("@otta-sh/admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
 type Vocabulary = import("../src/console-api.js").Vocabulary;
@@ -87,30 +79,6 @@ const CAPTURED: RefundsSummary = {
 	refundable: true,
 };
 
-/** Captured, then refunded down to nothing. Its remainder is the same zero the
- *  never-captured order carries, and only one of the two has nothing to say —
- *  which is why the remainder can never be what withdraws the warning. */
-const FULLY_REFUNDED: RefundsSummary = {
-	...CAPTURED,
-	refunds: [refundRow(TOTAL_CENTS)],
-	refundedTotalCents: TOTAL_CENTS,
-	remainingCents: 0,
-};
-
-/** Payment never succeeded: nothing was captured, so the ceiling is zero and
- *  there is no refund to describe. `refundable` stays TRUE so a gate that read
- *  the gateway's capability instead of the ceiling cannot pass by accident. */
-const NEVER_CAPTURED: RefundsSummary = {
-	refunds: [],
-	currency: CUR,
-	capturedTotalCents: 0,
-	refundedTotalCents: 0,
-	ceilingCents: 0,
-	remainingCents: 0,
-	paymentMethod: "card",
-	refundable: true,
-};
-
 function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): DetailPayload {
 	return {
 		ok: true,
@@ -153,67 +121,6 @@ function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): De
 		refunds,
 		notes: [],
 		vocabulary: VOCABULARY,
-	};
-}
-
-/** `detailFor` with the buyer identity overridden — everything else about the
- *  fixture (money, lines, refunds) is irrelevant to the heading/confirm bug,
- *  so this reuses `detailFor`'s record rather than repeating it. */
-function withIdentity(
-	payload: DetailPayload,
-	buyerRef: string,
-	customerId: string | null,
-): DetailPayload {
-	return { ...payload, order: { ...payload.order, buyerRef, customerId } };
-}
-
-/** `detailFor` with a `CustomerContext` attached whose email is PROVEN —
- *  `linkage: "claimed"` AND a real `emailVerifiedAt`. This is the ONLY
- *  identity shape `resolveRefundRecipient` may skip its clamp for (review
- *  finding N2); {@link withUnverifiedEmail} covers every shape that must
- *  NOT qualify. */
-function withVerifiedEmail(payload: DetailPayload, email: string): DetailPayload {
-	return {
-		...payload,
-		customer: {
-			identity: {
-				email,
-				buyerRef: payload.order.buyerRef,
-				linkage: "claimed",
-				emailVerifiedAt: "2026-01-01T00:00:00.000Z",
-			},
-			orderCount: 1,
-		},
-	};
-}
-
-/**
- * `detailFor` with a `CustomerContext` whose email is PRESENT but NOT
- * proven — no `emailVerifiedAt`, or a `linkage` short of `"claimed"`. This is
- * the exact shape review finding N2 named as the vulnerability: on
- * `linkage: "unclaimed"` the account is resolved by looking up the
- * caller-supplied `buyerRef` itself (`domain/src/orders/customer-context.ts`),
- * so an email reached that way is the SAME untrusted value laundered through
- * a lookup, not a second, independent source — and `identity.email` being
- * merely present proves nothing on its own even when `linkage` says
- * `"claimed"`, if the account was never actually verified.
- */
-function withUnverifiedEmail(
-	payload: DetailPayload,
-	email: string,
-	linkage: "claimed" | "unclaimed" = "unclaimed",
-): DetailPayload {
-	return {
-		...payload,
-		customer: {
-			identity: {
-				email,
-				buyerRef: payload.order.buyerRef,
-				linkage,
-				emailVerifiedAt: null,
-			},
-			orderCount: 1,
-		},
 	};
 }
 
@@ -261,56 +168,12 @@ function tab(view: Mounted, name: string): HTMLButtonElement {
 	return one<HTMLButtonElement>(view, `[data-testid="tab-${name}"]`);
 }
 
-/** The value under ONE label of ONE field strip. The screen renders several
- *  strips; reading a label without naming its strip reads whichever came
- *  first. */
-function fieldValue(view: Mounted, testId: string, label: string): HTMLElement {
-	const strip = one(view, `[data-testid="${testId}"]`);
-	for (const entry of Array.from(strip.children)) {
-		if (entry.querySelector("dt")?.textContent === label) {
-			const value = entry.querySelector<HTMLElement>("dd");
-			if (value === null) throw new Error(`${testId}/${label} has no value`);
-			return value;
-		}
-	}
-	throw new Error(`no ${label} in ${testId}`);
-}
-
 function table(view: Mounted, testId: string): HTMLTableElement {
 	return one<HTMLTableElement>(view, `table[data-testid="${testId}"]`);
 }
 
 function bodyRows(node: HTMLTableElement): HTMLTableRowElement[] {
 	return [...node.querySelectorAll<HTMLTableRowElement>("tbody > tr")];
-}
-
-function cellIn(
-	node: HTMLTableElement,
-	rowIndex: number,
-	columnIndex: number,
-): HTMLTableCellElement {
-	const found = bodyRows(node).at(rowIndex)?.cells.item(columnIndex) ?? null;
-	if (found === null) throw new Error(`no cell ${String(rowIndex)}/${String(columnIndex)}`);
-	return found;
-}
-
-/**
- * A column's alignment, read from the header's own word and from every cell
- * under it.
- *
- * The header is measured through the span INSIDE it rather than through the
- * `th`: a column end-aligned by its cells alone leaves the word standing over
- * the wrong edge of the figures it names, which is the half of this that is
- * easiest to lose and impossible to see in a cells-only assertion.
- */
-function columnAlignment(node: HTMLTableElement, index: number): readonly string[] {
-	const header = node.querySelectorAll<HTMLTableCellElement>("th.otta-th").item(index);
-	if (header === null) throw new Error(`no header ${String(index)}`);
-	const word = header.querySelector("span");
-	return [
-		word === null ? "" : word.style.textAlign,
-		...bodyRows(node).map((row) => row.cells.item(index)?.style.textAlign ?? ""),
-	];
 }
 
 // ── History ──────────────────────────────────────────────────────────────────

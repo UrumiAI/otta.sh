@@ -7,7 +7,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { fire, mount, type Mounted } from "./dom.js";
+import { mount, type Mounted } from "./dom.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
 
