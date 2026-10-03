@@ -376,6 +376,11 @@ JavaScript, and the confirmation page still carries none.
   runs, and the inline handler refuses on the form's closed flag as well — it never re-enables
   Pay once closed. A payment already under way at the deadline is left alone. An unreadable
   deadline closes nothing: the server-side withdrawal and refund remain the backstop.
+  The notice's `role="alert"` region is in the DOM from first render with only its body
+  hidden, so closing is announced (WCAG 4.1.3), and focus moves to its "View your order"
+  link if it was in the payment form. A confirm Stripe refuses because the intent was
+  withdrawn (`payment_intent_unexpected_state`, or a canceled intent) closes the page the
+  same way instead of showing Stripe's own message.
 - **Decision 5 is widened by one more clause.** `redirect_status` is now read, in the page
   frontmatter only, for one further copy choice: on an `expired`, `cancelled` or `failed` order
   whose ledger does not yet show a late payment, a `succeeded` or `processing` return says "Your
@@ -383,5 +388,6 @@ JavaScript, and the confirmation page still carries none.
   5–10 days to appear", instead of "Nothing was charged". The page then runs the same bounded,
   same-URL poll as a just-paid pending order, until the refund is on the ledger (`latePayment:
   refunded`), and offers "Check again" when the poll ends first. A declined or abandoned return
-  keeps "Nothing was charged". The parameters are still never rendered or forwarded, and still
+  keeps "Nothing was charged"; a `processing` return promises the refund only if the payment
+  goes through. The parameters are still never rendered or forwarded, and still
   decide nothing about the order's state.

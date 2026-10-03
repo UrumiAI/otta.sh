@@ -2,6 +2,10 @@
 "@otta-sh/plugin": minor
 ---
 
+**BREAKING for out-of-tree `CommerceClient` implementations:** the port gains a required
+method, `abandonCartOrder(cartId)`. Any implementation outside this repo must add it (a
+no-op answering `{ ok: true, cancelled: false, orderId: null }` keeps today's behaviour).
+
 New public route `storefront/order/abandon` and `CommerceClient.abandonCartOrder` (QA2
 X4). "Start a new cart" said it cleared any payment still in progress, but only cleared
 cookies: the old order stayed pending, its stock held and its PaymentIntent payable from
