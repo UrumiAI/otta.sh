@@ -911,7 +911,7 @@ describe.each(CART_VIEWS)(
 			// the sentence says exactly that much — including what happens to a payment
 			// that went through anyway.
 			expect(CART_NEW_CART_CONSEQUENCE).toBe(
-				"This clears the cart and cancels its order if it is still awaiting payment. Any payment for that order that arrives after this will be refunded.",
+				"This clears the cart and cancels its order if it is still awaiting payment — we'll email you that it was cancelled. Any payment for that order that arrives after this will be refunded.",
 			);
 			const newCart = terminalMarkup.indexOf('action="/checkout/new-cart"');
 			expect(terminalMarkup.indexOf(">View your order<")).toBeLessThan(newCart);

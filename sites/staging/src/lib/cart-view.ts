@@ -150,13 +150,14 @@ export const CART_CHECKED_OUT_BODY =
 	"Its items are on an order now, so this cart can't be changed.";
 /** Said BESIDE the "Start a new cart" control, never after it: it cancels the
  *  cart's unpaid order too (`/checkout/new-cart` → `storefront/order/abandon`,
- *  QA2 X4), and a buyer must know that before they click. It promises no more
- *  than happens: the order's PaymentIntent is withdrawn by the sweep shortly
- *  after, not in this request, so a payment can still land in between — and is
- *  then refunded like any payment on a cancelled unpaid order. A PAID order is
- *  never touched. */
+ *  QA2 X4), and a buyer must know that before they click — including the
+ *  "cancelled" email the cancel sends ("at your request"). It promises no more
+ *  than happens: the order's PaymentIntent is withdrawn at Stripe in the same
+ *  request when Stripe answers in time, and otherwise by the sweep shortly
+ *  after — so a payment can still land in between, and is then refunded like
+ *  any payment on a cancelled unpaid order. A PAID order is never touched. */
 export const CART_NEW_CART_CONSEQUENCE =
-	"This clears the cart and cancels its order if it is still awaiting payment. Any payment for that order that arrives after this will be refunded.";
+	"This clears the cart and cancels its order if it is still awaiting payment — we'll email you that it was cancelled. Any payment for that order that arrives after this will be refunded.";
 /** The honest version of "we lost your order link", for the cart that carries
  *  no `orderId`: one checked out before `carts.order_id` existed, or a wire
  *  that stopped emitting the field. Uncommon since #132 — the cart names its

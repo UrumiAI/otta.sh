@@ -38,6 +38,9 @@ export interface OrderStampInput {
 	 * decides anything about the order; absent ⇒ `false`.
 	 */
 	returnedPaid?: boolean;
+	/** …and was that only `processing` — not yet settled? Then the refund is
+	 *  promised only IF the payment goes through. Absent ⇒ `false`. */
+	returnedProcessing?: boolean;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -70,8 +73,12 @@ function latePaymentSentence(
 function returnedLateSentence(
 	verb: "expired" | "was cancelled" | "failed",
 	polling: boolean,
+	processing: boolean,
 ): string {
-	return `Your payment arrived after this order ${verb}, so it will be refunded — once it is, it can take 5–10 days to appear. ${
+	const lead = processing
+		? `Your payment was still processing when this order ${verb}, so if it goes through, it will be refunded`
+		: `Your payment arrived after this order ${verb}, so it will be refunded`;
+	return `${lead} — once it is, it can take 5–10 days to appear. ${
 		polling ? "This page refreshes automatically." : "Check again in a minute."
 	}`;
 }
@@ -85,7 +92,8 @@ function deadOrderSentence(
 	const fromLedger = latePaymentSentence(verb, input.latePayment);
 	if (input.latePayment === "refunded") return fromLedger;
 	if (input.returnedFromStripe && input.returnedPaid === true) {
-		if (input.latePayment === "none") return returnedLateSentence(verb, input.polling);
+		if (input.latePayment === "none")
+			return returnedLateSentence(verb, input.polling, input.returnedProcessing === true);
 		// Recorded, refund not yet: the ledger's sentence, plus whether the page updates.
 		return `${fromLedger ?? ""} ${input.polling ? "This page refreshes automatically." : "Check again in a minute."}`.trim();
 	}

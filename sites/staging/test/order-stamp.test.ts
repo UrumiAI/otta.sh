@@ -153,6 +153,18 @@ describe("orderStamp — back from Stripe with a successful payment on an order 
 		expect(failed?.body).toContain("Your payment arrived after this order failed");
 	});
 
+	test("a PROCESSING return promises a refund only IF the payment goes through", () => {
+		const stamp = orderStamp({
+			...back,
+			state: "expired",
+			returnedProcessing: true,
+			polling: true,
+		});
+		expect(stamp?.body).toBe(
+			"Payment didn't complete in time, so the items went back on sale. Your payment was still processing when this order expired, so if it goes through, it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+		);
+	});
+
 	test("a return WITHOUT a successful status (declined, abandoned) keeps 'Nothing was charged'", () => {
 		const stamp = orderStamp({ ...base, returnedFromStripe: true, state: "expired" });
 		expect(stamp?.body).toContain("Nothing was charged.");

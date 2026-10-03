@@ -194,6 +194,8 @@ describe("the order page polls without piling up history", () => {
 		expect(poll).toMatch(/latePayment/);
 		const stamp = /orderStamp\(\{[\s\S]*?\}\)/.exec(frontmatter)?.[0] ?? "";
 		expect(stamp).toMatch(/returnedPaid/);
+		// …and whether it was only PROCESSING, which promises less.
+		expect(stamp).toMatch(/returnedProcessing/);
 		// The hop count runs for a dead order the buyer just paid, too.
 		expect(frontmatter).not.toMatch(/isPending && returnedFromStripe \? orderPollHop/);
 	});

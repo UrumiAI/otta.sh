@@ -127,6 +127,8 @@ const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
 const returnStatus = Astro.url.searchParams.get("redirect_status");
 const returnedPaid =
 	returnedFromStripe && (returnStatus === "succeeded" || returnStatus === "processing");
+/** Only processing — the refund is then promised only if it goes through. */
+const returnedProcessing = returnedPaid && returnStatus === "processing";
 
 const state = order?.state ?? null;
 const isPending = state === "pending";
@@ -186,6 +188,7 @@ const stamp = orderStamp({
 	holdLapsed,
 	polling: shouldPoll,
 	returnedPaid,
+	returnedProcessing,
 });
 
 /**
