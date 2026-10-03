@@ -168,13 +168,22 @@ function renderLoginLink(
 		text: `${intro}\n\n${action}: ${loginUrl}\n\n${ignore}`,
 		html: withLang(
 			paragraph(escapeHtml(intro)) +
-				paragraph(`<a href="${href}">${escapeHtml(action)}</a>`) +
+				paragraph(`<a href="${href}" style="${BUTTON_STYLE}">${escapeHtml(action)}</a>`) +
 				paragraph(`If the link doesn't work, copy this link into your browser:<br>${href}`) +
 				paragraph(escapeHtml(ignore)),
 			context.locale,
 		),
 	};
 }
+
+/**
+ * The sign-in link as a BUTTON (QA2 U-3): a padded, filled, bold link, so the one
+ * thing the email asks for is the one thing it shows. Inline styles only — mail
+ * clients drop `<style>` blocks — and the URL stays below it as the copy-paste
+ * fallback.
+ */
+const BUTTON_STYLE =
+	"display:inline-block;padding:12px 20px;background:#1a1a1a;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600";
 
 /** What a line with no usable title is called. */
 const UNTITLED_LINE = "Item";

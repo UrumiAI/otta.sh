@@ -59,7 +59,7 @@ import {
 	storefrontOriginOf,
 	storeNameFrom,
 } from "./email-render-context.js";
-import { isDeliverableFromAddress } from "./from-address.js";
+import { fromDisplayName, isDeliverableFromAddress } from "./from-address.js";
 
 /**
  * The from-address, in READABLE kv — the in-process equivalent of the service's
@@ -316,7 +316,10 @@ export async function makeEmailSender(
 		fetch: ctx.http.fetch,
 		apiUrl,
 		from,
-		storeName,
+		// "Store display name", else the From address's own display name (QA2
+		// U-3): an unset field left the sign-in email nameless though its From
+		// line named the store.
+		storeName: storeName ?? fromDisplayName(from),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
 		...(apiKey !== undefined ? { apiKey } : {}),
 		...(options.requestTimeoutMs !== undefined
