@@ -1456,6 +1456,34 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect((await storedOrder(orderId)).idempotencyKey).toBe(`checkout:${cartId}`);
 	});
 
+	test("storefront/order/abandon (QA2 X4): the cart cancels its own unpaid order — once — and a resume can no longer pay it", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+		const orderId = first["orderId"] as string;
+
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }))).toEqual({
+			ok: true,
+			cancelled: true,
+		});
+		expect((await storedOrder(orderId)).state).toBe("cancelled");
+		// A replay (a double click) cancels nothing more.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }))).toEqual({
+			ok: true,
+			cancelled: false,
+		});
+		// The cart's own way back to paying is closed: nothing asked of Stripe.
+		expect(
+			resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId, cartId })),
+		).toEqual({ ok: false, reason: "ORDER_NOT_PAYABLE" });
+		expect(stripe.requests).toHaveLength(1);
+		// No cart id, no call.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", {}))).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
+	});
+
 	test("storefront/order/resume refuses an unknown order without asking Stripe", async () => {
 		expect(
 			resultOf(

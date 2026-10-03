@@ -49,6 +49,7 @@
 import {
 	activateProductCommerce,
 	addLine,
+	cancelOrder,
 	cents,
 	checkoutOwner,
 	computeQuote,
@@ -108,6 +109,7 @@ import {
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
+	AbandonCartOrderResult,
 	AddressWire,
 	AccountOrderWire,
 	AuthedResult,
@@ -1180,6 +1182,36 @@ export class InProcessCommerceClient implements CommerceClient {
 			intent: serializeIntent(result.intent),
 			buyerRefHint: buyerRefHint(order.buyerRef),
 		};
+	}
+
+	/**
+	 * "Start a new cart" (QA2 X4) — see the port. The cart is the proof: its
+	 * order is read through the cart row's own `orderId`, never from the caller.
+	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
+	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 */
+	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
+		requireIdToken("cartId", cartId);
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null || cart.orderId === null) {
+			return { ok: true, cancelled: false, orderId: null };
+		}
+		const orderId = toOrderId(cart.orderId);
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order === null || order.state !== "pending") {
+			return { ok: true, cancelled: false, orderId: cart.orderId };
+		}
+		const res = await cancelOrder(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId,
+				reason: "customer_request",
+				detail: "Started a new cart",
+				cancelledBy: "shopper",
+				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
+			},
+		);
+		return { ok: true, cancelled: res.ok && res.cancelled, orderId: cart.orderId };
 	}
 
 	/**
