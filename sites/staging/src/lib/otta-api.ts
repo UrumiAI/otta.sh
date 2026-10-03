@@ -19,6 +19,7 @@ import {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_LIST_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
 	STOREFRONT_ORDER_RESUME_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type RenderBusy,
@@ -164,7 +165,12 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
  * same PaymentIntent. One cost, stated: a retried EMAIL attempt may take a second
  * slot of that order's guess window — over-refusal, bounded by the window.
  */
-const REPLAYING_ROUTES: ReadonlySet<string> = new Set([STOREFRONT_ORDER_RESUME_ROUTE]);
+const REPLAYING_ROUTES: ReadonlySet<string> = new Set([
+	STOREFRONT_ORDER_RESUME_ROUTE,
+	// QA2 X4: the cancel runs under a key derived from the order, and a cancelled
+	// order answers "nothing to cancel" — a repeat converges.
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+]);
 
 /**
  * May a BUSY answer to this call be retried automatically? An ALLOWLIST: a

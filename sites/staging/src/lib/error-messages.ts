@@ -85,6 +85,11 @@ const MESSAGES: Record<string, string> = {
 	// with the shopper's request and nothing was lost — the store is just
 	// momentarily busy, and trying again in a few seconds will work.
 	BUSY: "We're a little busy right now — please try again in a few seconds.",
+	// QA2 X4: "Start a new cart" could not confirm it cancelled the cart's unpaid
+	// order (busy, unreachable), so it cleared nothing — saying it had would be the
+	// lie the control used to tell.
+	NEW_CART_NOT_CLEARED:
+		"We couldn't start a new cart just now, so nothing was changed — please try again in a few seconds.",
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",

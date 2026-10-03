@@ -270,7 +270,13 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	test("the lock notice says the email, the coupon AND the delivery address can no longer be changed", () => {
 		// QA U-2 added the email: the locked review no longer offers an email field.
 		expect(VIEW).toMatch(
-			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart\./,
+			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart/,
+		);
+	});
+
+	test("QA2 X4: the lock notice says starting a new cart CANCELS this order — the button does that now", () => {
+		expect(VIEW).toMatch(
+			/start a\s+new cart\s+—\s+that cancels this order, and any payment for it that arrives\s+afterwards will be refunded\./,
 		);
 	});
 

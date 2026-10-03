@@ -30,6 +30,7 @@ import type { APIContext } from "astro";
 import {
 	ORDER_ADDRESS_MAX_LENGTHS,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
 	type CheckoutSummaryRouteResult,
 } from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
@@ -107,7 +108,10 @@ const PLACED = {
 	total: { amount: 4000, currency: "USD", formatted: "$40.00" },
 };
 
-function makeHandler(placeResult: unknown = PLACED): {
+function makeHandler(
+	placeResult: unknown = PLACED,
+	abandonResult: unknown = { ok: true, cancelled: true },
+): {
 	handler: unknown;
 	calls: HandlerCall[];
 } {
@@ -116,6 +120,9 @@ function makeHandler(placeResult: unknown = PLACED): {
 		const route = routePath.replace(/^\//, "");
 		calls.push({ route, body: (await request.json()) as Record<string, unknown> });
 		if (route === STOREFRONT_CHECKOUT_PLACE_ROUTE) return { success: true, data: placeResult };
+		if (route === STOREFRONT_ORDER_ABANDON_ROUTE) {
+			return abandonResult === null ? { success: false } : { success: true, data: abandonResult };
+		}
 		return { success: false };
 	};
 	return { handler, calls };
@@ -231,6 +238,63 @@ describe("6a — /checkout/new-cart clears BOTH cookies", () => {
 		expect(deleted).toContain("otta_cart");
 		expect(deleted).toContain(CHECKOUT_COOKIE_NAME);
 	});
+
+	test("QA2 X4: it first cancels the order the cart became, through the abandon route, with the cart cookie as the proof", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({}, handler, {
+			url: "/checkout/new-cart",
+			cartCookie: "cart-abc",
+		});
+
+		const response = await NEW_CART_POST(context);
+
+		expect(calls).toEqual([{ route: STOREFRONT_ORDER_ABANDON_ROUTE, body: { cartId: "cart-abc" } }]);
+		expect(response.headers.get("location")).toBe("/products");
+	});
+
+	test("nothing to cancel (no order, or it was paid) still clears the cart", async () => {
+		const { handler } = makeHandler(PLACED, { ok: true, cancelled: false });
+		const { context, cookieOps } = makeContext({}, handler, { url: "/checkout/new-cart" });
+
+		const response = await NEW_CART_POST(context);
+
+		expect(response.headers.get("location")).toBe("/products");
+		expect(cookieOps.filter((op) => op.op === "delete").map((op) => op.name)).toContain("otta_cart");
+	});
+
+	test("no cart cookie: nothing to cancel, no dispatch, and the stash still goes", async () => {
+		const { handler, calls } = makeHandler();
+		const { context, cookieOps } = makeContext({}, handler, {
+			url: "/checkout/new-cart",
+			cartCookie: undefined,
+		});
+
+		const response = await NEW_CART_POST(context);
+
+		expect(calls).toHaveLength(0);
+		expect(response.headers.get("location")).toBe("/products");
+		expect(cookieOps.filter((op) => op.op === "delete").map((op) => op.name)).toContain(
+			CHECKOUT_COOKIE_NAME,
+		);
+	});
+
+	test.each([
+		["the plugin is unreachable", null],
+		["the store is busy", { ok: false, error: "BUSY", retryable: true }],
+		["the render failed", { ok: false, error: "RENDER_FAILED" }],
+	])(
+		"when the cancel cannot be confirmed (%s) it clears NOTHING and says so on /cart — never claims the payment was stopped",
+		async (_label, abandonResult) => {
+			const { handler } = makeHandler(PLACED, abandonResult);
+			const { context, cookieOps } = makeContext({}, handler, { url: "/checkout/new-cart" });
+
+			const response = await NEW_CART_POST(context);
+
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toBe("/cart?error=NEW_CART_NOT_CLEARED");
+			expect(cookieOps).toHaveLength(0);
+		},
+	);
 });
 
 describe("6b — email validation happens on the SITE, before any dispatch", () => {

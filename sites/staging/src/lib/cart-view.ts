@@ -148,9 +148,15 @@ export const CART_CHECKED_OUT_TITLE = "This cart has been checked out.";
  */
 export const CART_CHECKED_OUT_BODY =
 	"Its items are on an order now, so this cart can't be changed.";
-/** Said BESIDE the "Start a new cart" control, never after it: it clears an
- *  in-flight payment too, and a buyer must know that before they click. */
-export const CART_NEW_CART_CONSEQUENCE = "This clears the cart and any payment still in progress.";
+/** Said BESIDE the "Start a new cart" control, never after it: it cancels the
+ *  cart's unpaid order too (`/checkout/new-cart` → `storefront/order/abandon`,
+ *  QA2 X4), and a buyer must know that before they click. It promises no more
+ *  than happens: the order's PaymentIntent is withdrawn by the sweep shortly
+ *  after, not in this request, so a payment can still land in between — and is
+ *  then refunded like any payment on a cancelled unpaid order. A PAID order is
+ *  never touched. */
+export const CART_NEW_CART_CONSEQUENCE =
+	"This clears the cart and cancels its order if it is still awaiting payment. Any payment for that order that arrives after this will be refunded.";
 /** The honest version of "we lost your order link", for the cart that carries
  *  no `orderId`: one checked out before `carts.order_id` existed, or a wire
  *  that stopped emitting the field. Uncommon since #132 — the cart names its
