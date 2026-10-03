@@ -165,9 +165,9 @@ describe.each(viewCases("accountOrders"))("the account orders view %s", (_label,
 	});
 });
 
-describe("the account order pages", () => {
-	const page = (file: string) => readFileSync(path.join(SRC, "pages/account/orders", file), "utf8");
+const page = (file: string) => readFileSync(path.join(SRC, "pages/account/orders", file), "utf8");
 
+describe("the account order pages", () => {
 	test("the order page builds the offers with accountOrderExtras and names the session's email", () => {
 		const source = page("[id].astro");
 		expect(source).toContain("...accountOrderExtras(order, now)");
