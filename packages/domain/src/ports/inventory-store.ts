@@ -84,6 +84,18 @@ export interface InventoryStore {
 	// loud lost-hold anomaly stays `commit`'s.
 	releaseAdopted(reservationId: string, orderId: string): Promise<void>;
 
+	// Additive (QA2 M2 — sweep budget): the BATCHED counterpart of
+	// `releaseAdopted`, for an order releasing every hold it adopted at once (the
+	// expiry and cancel paths). Per-id semantics are `releaseAdopted`'s,
+	// byte-for-byte: only a hold THIS order adopted is released and its units
+	// returned; an unknown id, another order's hold, a still cart-`held` hold or
+	// an already-terminal one is a silent no-op, never a throw. Duplicate ids are
+	// collapsed and an empty list is a no-op with no round trip. Grouped by SKU,
+	// one guarded write per SKU rather than per id; not atomic across SKUs, and
+	// every per-SKU write is idempotent, so a partial application is safe to
+	// re-run to completion.
+	releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void>;
+
 	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
 	// stock write, NOT part of the reserve/commit/release authority path.
 	// `INSERT … ON CONFLICT (sku) DO NOTHING` shape: seeding a new sku creates

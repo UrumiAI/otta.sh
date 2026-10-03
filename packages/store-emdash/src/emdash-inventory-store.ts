@@ -141,6 +141,32 @@ interface PruneEntry {
 	terminal: TerminalReservationState;
 }
 
+/** A not-yet-terminal id `releaseAdoptedMany` read, with the revision it read. */
+interface LiveRelease {
+	readonly id: string;
+	readonly index: ReservationIndexDoc;
+	readonly revision: string;
+}
+
+/**
+ * The prune as a pure document transform: the holds in `entries` removed, the
+ * released ones' units returned. `null` when nothing in `entries` is still there
+ * (an already-pruned hold is simply absent — what makes the prune idempotent).
+ */
+function withoutPruned(doc: InventoryDoc, entries: readonly PruneEntry[]): InventoryDoc | null {
+	const holds = { ...doc.holds };
+	let onHand = doc.onHand;
+	let changed = false;
+	for (const entry of entries) {
+		const hold = holds[entry.reserveKey];
+		if (hold === undefined || hold.reservationId !== entry.reservationId) continue;
+		delete holds[entry.reserveKey];
+		if (entry.terminal === "released") onHand += hold.qty;
+		changed = true;
+	}
+	return changed ? { ...doc, onHand, holds } : null;
+}
+
 /** The port's wording for a recorded stock movement, used in mismatch messages. */
 function describeMovement(
 	direction: StockDirection,
@@ -419,6 +445,111 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		const hold = await this.#liveHold(index, reservationId);
 		if (hold === undefined || hold.state !== "adopted" || hold.orderId !== orderId) return;
 		await this.#settle(index, reservationId, "released");
+	}
+
+	/**
+	 * `releaseAdopted` for every hold one order adopted, in as few round trips as the
+	 * settle's ordering allows (QA2 M2: the expiry sweep released an order's holds one
+	 * id at a time, seven calls each, on a 30-call Workers Free tick).
+	 *
+	 * The per-id RULE is `releaseAdopted`'s exactly — only a hold THIS order adopted,
+	 * anything else a silent no-op — and so is the per-id ORDER of writes (the reserve
+	 * key's answer, then the terminal state, then the prune; see `#settle`). What is
+	 * batched is the reading and the prune:
+	 *
+	 *  - each id's index document is read ONCE, versioned, so its terminal-state write
+	 *    needs no second read (it falls back to the re-reading write if a peer moved it);
+	 *  - each SKU's aggregate is read ONCE, and that one read decides which of its ids
+	 *    this order adopted (what `#liveHold` read per id);
+	 *  - each SKU is pruned in ONE compare-and-set against the revision already in hand
+	 *    (falling back to the re-reading `#prune` if a peer moved it).
+	 *
+	 * So one id on one SKU is five calls rather than seven, and N ids over S SKUs are
+	 * 3N + 2S rather than 7N. An id already terminal only has any hold residue pruned,
+	 * as in `releaseAdopted`. Not atomic across SKUs; every step is idempotent, so a
+	 * partial application is completed by any replayer.
+	 */
+	async releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void> {
+		const ids = [...new Set(reservationIds)];
+		if (ids.length === 0) return;
+		const rows = await Promise.all(ids.map((id) => this.#index.getVersioned(id)));
+		const live = new Map<string, LiveRelease[]>();
+		const residue = new Map<string, PruneEntry[]>();
+		for (const [i, id] of ids.entries()) {
+			const row = rows[i];
+			if (row === null || row === undefined) continue;
+			const index = row.value;
+			if (index.terminalState !== undefined) {
+				const entries = this.#pruneEntries(index, id);
+				if (entries.length > 0)
+					residue.set(index.sku, [...(residue.get(index.sku) ?? []), ...entries]);
+				continue;
+			}
+			live.set(index.sku, [...(live.get(index.sku) ?? []), { id, index, revision: row.revision }]);
+		}
+		for (const sku of new Set([...live.keys(), ...residue.keys()])) {
+			await this.#releaseAdoptedOnSku(sku, live.get(sku) ?? [], residue.get(sku) ?? [], orderId);
+		}
+	}
+
+	/** One SKU's share of {@link releaseAdoptedMany}: one read, the per-id terminal
+	 *  writes for the holds this order adopted, one prune. */
+	async #releaseAdoptedOnSku(
+		sku: string,
+		live: readonly LiveRelease[],
+		residue: readonly PruneEntry[],
+		orderId: string,
+	): Promise<void> {
+		const current = await this.#inventory.getVersioned(sku);
+		if (current === null) return;
+		const doc = normalizeInventoryDoc(current.value);
+		const entries: PruneEntry[] = [...residue];
+		for (const { id, index, revision } of live) {
+			const hold = doc.holds[index.idempotencyKey];
+			// `#liveHold` plus `releaseAdopted`'s scope check, on the one read.
+			if (hold === undefined || hold.reservationId !== id) continue;
+			if (hold.state !== "adopted" || hold.orderId !== orderId) continue;
+			await this.#markKeyTerminal(index.idempotencyKey, { ok: true, reservationId: id }, id);
+			const terminal = await this.#setTerminalStateAt(id, index, revision, "released");
+			entries.push({ reserveKey: index.idempotencyKey, reservationId: id, terminal });
+		}
+		if (entries.length === 0) return;
+		if (await this.#pruneAt(sku, current.revision, doc, entries)) return;
+		// A peer moved the aggregate since the read: the ordinary, re-reading prune.
+		await this.#prune(sku, entries, "releaseAdoptedMany");
+	}
+
+	/**
+	 * `#setTerminalState` against a revision already read, answering the terminal
+	 * state that WON — this call's, or a peer's that got there first (first wins, as
+	 * ever). Only a moved revision costs the re-reading path.
+	 */
+	async #setTerminalStateAt(
+		reservationId: string,
+		index: ReservationIndexDoc,
+		revision: string,
+		terminal: TerminalReservationState,
+	): Promise<TerminalReservationState> {
+		const written = await this.#index.compareAndSet(reservationId, revision, {
+			...index,
+			terminalState: terminal,
+		});
+		if (written.applied) return terminal;
+		await this.#setTerminalState(reservationId, terminal);
+		return (await this.#index.get(reservationId))?.terminalState ?? terminal;
+	}
+
+	/** `#prune`'s write against an aggregate already read. False when a peer moved it. */
+	async #pruneAt(
+		sku: string,
+		revision: string,
+		doc: InventoryDoc,
+		entries: readonly PruneEntry[],
+	): Promise<boolean> {
+		const next = withoutPruned(doc, entries);
+		if (next === null) return true;
+		const written = await this.#inventory.compareAndSet(sku, revision, next);
+		return written.applied;
 	}
 
 	/**
@@ -1196,23 +1327,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		await this.#cas<void>(operation, async () => {
 			const current = await this.#inventory.getVersioned(sku);
 			if (current === null) return casDone<void>(undefined);
-			const doc = normalizeInventoryDoc(current.value);
-			const holds = { ...doc.holds };
-			let onHand = doc.onHand;
-			let changed = false;
-			for (const entry of entries) {
-				const hold = holds[entry.reserveKey];
-				if (hold === undefined || hold.reservationId !== entry.reservationId) continue;
-				delete holds[entry.reserveKey];
-				if (entry.terminal === "released") onHand += hold.qty;
-				changed = true;
-			}
-			if (!changed) return casDone<void>(undefined);
-			const written = await this.#inventory.compareAndSet(sku, current.revision, {
-				...doc,
-				onHand,
-				holds,
-			});
+			const next = withoutPruned(normalizeInventoryDoc(current.value), entries);
+			if (next === null) return casDone<void>(undefined);
+			const written = await this.#inventory.compareAndSet(sku, current.revision, next);
 			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
 		});
 	}

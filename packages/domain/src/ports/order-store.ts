@@ -55,6 +55,21 @@ export interface OrderStore {
 	 * 0 rows ⇒ someone else won (paid/cancelled/expired, or not yet due) ⇒ false.
 	 */
 	expire(orderId: OrderId, now: string): Promise<boolean>;
+	/**
+	 * `expire`, for the sweep (QA2 M2): the SAME guarded flip, answering with what
+	 * the expiry use-case needs next so it never re-reads the order. `null` when
+	 * this call did not win the flip (exactly when `expire` would answer `false`);
+	 * otherwise the order as the flip left it, and whether the store has ALREADY
+	 * released the holds the order adopted.
+	 *
+	 * `holdsReleased: true` is a promise, not a hint: a store that records a release
+	 * intent with the flip and completes it in the same call (the document store)
+	 * says so, and the use-case then releases nothing itself. A store that cannot,
+	 * or whose completion failed this time (its intent stays outstanding for the
+	 * completer), says `false` and the use-case releases them through
+	 * `InventoryStore.releaseAdoptedMany`, which is order-scoped and idempotent.
+	 */
+	expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null>;
 	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
 	listExpirable(now: string, options?: ExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
@@ -1269,3 +1284,11 @@ export interface RecordRefundStoreResult {
 }
 
 export type { OrderState };
+
+/** What {@link OrderStore.expireWithOrder} answers for a WON expiry. */
+export interface ExpiredOrder {
+	/** The order as the flip left it: `state` is `expired`. */
+	readonly order: Order;
+	/** True when the store already released every hold the order adopted. */
+	readonly holdsReleased: boolean;
+}

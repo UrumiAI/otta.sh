@@ -819,6 +819,86 @@ export function inventoryStoreContract(
 			expect(res.lost).toEqual([released.reservationId]);
 		});
 
+		// -- QA2 M2: the batched ORDER-SCOPED release (releaseAdoptedMany) -------
+		//
+		// The expiry and cancel paths release every hold an order adopted at once.
+		// Per-id semantics are singular `releaseAdopted`'s; only the round trips
+		// change (grouped per SKU).
+
+		/** Hold `qty` on `sku` under `key` and adopt it for `order`. */
+		async function adoptedHold(
+			h: InventoryStoreHarness,
+			sku: string,
+			qty: number,
+			key: string,
+			order: string,
+		): Promise<string> {
+			if (!h.holdWithExpiry) throw new Error("harness has no holdWithExpiry");
+			const id = await h.holdWithExpiry(sku, qty, key, FUTURE);
+			const adopted = await h.store.adoptMany({
+				reservationIds: [id],
+				orderId: order,
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			if (adopted.adopted.length !== 1) throw new Error("seed adopt failed");
+			return id;
+		}
+
+		test("releaseAdoptedMany returns every hold the order adopted, across SKUs, exactly once", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			await h.seed("SKU-B", 10);
+			const a1 = await adoptedHold(h, "SKU-A", 2, "ka1", "ord-1");
+			const a2 = await adoptedHold(h, "SKU-A", 1, "ka2", "ord-1");
+			const b1 = await adoptedHold(h, "SKU-B", 3, "kb1", "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([7, 7]);
+
+			await h.store.releaseAdoptedMany([a1, b1, a2], "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([10, 10]);
+
+			// A replay (a second sweep, a completer) returns nothing twice.
+			await h.store.releaseAdoptedMany([a1, a2, b1], "ord-1");
+			await h.store.releaseAdopted(a1, "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([10, 10]);
+			// And the singular call agrees the holds are gone: a later commit is lost.
+			expect((await h.store.commitMany([a1, b1])).lost.toSorted()).toEqual([a1, b1].toSorted());
+		});
+
+		test("releaseAdoptedMany is ORDER-SCOPED: another order's hold, a cart's held hold, a committed hold and an unknown id are untouched", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			const mine = await adoptedHold(h, "SKU-A", 1, "k-mine", "ord-1");
+			const theirs = await adoptedHold(h, "SKU-A", 2, "k-theirs", "ord-2");
+			const cartHeld = await h.holdWithExpiry("SKU-A", 3, "k-cart", FUTURE);
+			const sold = await adoptedHold(h, "SKU-A", 1, "k-sold", "ord-1");
+			await h.store.commit(sold);
+			expect(await h.onHand("SKU-A")).toBe(3);
+
+			await h.store.releaseAdoptedMany(
+				[mine, theirs, cartHeld, sold, "no-such-reservation"],
+				"ord-1",
+			);
+			// Only `mine` came back: +1.
+			expect(await h.onHand("SKU-A")).toBe(4);
+			// The others are exactly as they were: theirs and the cart's hold still commit.
+			expect((await h.store.commitMany([theirs, cartHeld])).lost).toEqual([]);
+			expect(await h.onHand("SKU-A")).toBe(4);
+		});
+
+		test("releaseAdoptedMany collapses duplicate ids and is a no-op for an empty list", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			const id = await adoptedHold(h, "SKU-A", 2, "k-dup", "ord-1");
+			await h.store.releaseAdoptedMany([], "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(8);
+			await h.store.releaseAdoptedMany([id, id, id], "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(10);
+		});
+
 		test("commitMany with no ids is a no-op ({ lost: [] })", async () => {
 			const h = await makeStore();
 			expect(await h.store.commitMany([])).toEqual({ lost: [] });

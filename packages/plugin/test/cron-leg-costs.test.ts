@@ -24,6 +24,7 @@ import {
 	sku as toSku,
 	money,
 	escalateStaleLateRefunds,
+	expireOrdersBatch,
 	cancelDueIntents,
 	retryLatePaymentRefunds,
 	settleOrder,
@@ -100,20 +101,30 @@ async function cost(body: () => Promise<unknown>): Promise<number> {
 	return counter.calls;
 }
 
-/** A pending order over one adopted reservation. */
-async function placeOrder(suffix: string, holdExpiresAt: string) {
+/** A pending order over `lines` adopted reservations, one SKU each. */
+async function placeOrder(suffix: string, holdExpiresAt: string, lines = 1) {
 	const s = counted();
-	const sku = `COST-${suffix}`;
-	await s.inventory.seedOnHand(toSku(sku), 10);
-	const held = await s.inventory.reserve(toSku(sku), 1, idempotencyKey(`res-${suffix}`));
-	if (!held.ok) throw new Error(held.reason);
-	await s.inventory.stampHoldDeadline(
-		held.reservationId,
-		new Date(Date.now() + DAY_MS).toISOString(),
-	);
+	const skus: string[] = [];
+	const held: string[] = [];
+	for (let i = 0; i < lines; i++) {
+		const sku = lines === 1 ? `COST-${suffix}` : `COST-${suffix}-${String(i)}`;
+		await s.inventory.seedOnHand(toSku(sku), 10);
+		const reserved = await s.inventory.reserve(
+			toSku(sku),
+			1,
+			idempotencyKey(`res-${suffix}-${String(i)}`),
+		);
+		if (!reserved.ok) throw new Error(reserved.reason);
+		await s.inventory.stampHoldDeadline(
+			reserved.reservationId,
+			new Date(Date.now() + DAY_MS).toISOString(),
+		);
+		skus.push(sku);
+		held.push(reserved.reservationId);
+	}
 	const id = `order-${suffix}`;
 	await s.inventory.adoptMany({
-		reservationIds: [held.reservationId],
+		reservationIds: held,
 		orderId: toOrderId(id),
 		holdExpiresAt,
 		now: new Date(Date.now() - HOUR_MS).toISOString(),
@@ -126,21 +137,40 @@ async function placeOrder(suffix: string, holdExpiresAt: string) {
 		holdExpiresAt,
 		buyerRef: `buyer-${suffix}@example.test`,
 		paymentMethod: "stripe",
-		lines: [
-			{
-				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(sku),
-				title: "Cost Widget",
-				unitPrice: cents(1000),
-				currency: currency("USD"),
-				quantity: 1,
-				fulfillmentKind: "physical",
-				reservationId: toReservationId(held.reservationId),
-			},
-		],
-		totals: { subtotal: cents(1000), total: cents(1000), currency: currency("USD") },
+		lines: held.map((reservationId, i) => ({
+			productId: toProductId(`prod-${suffix}-${String(i)}`),
+			sku: toSku(skus[i] ?? ""),
+			title: "Cost Widget",
+			unitPrice: cents(1000),
+			currency: currency("USD"),
+			quantity: 1,
+			fulfillmentKind: "physical" as const,
+			reservationId: toReservationId(reservationId),
+		})),
+		totals: {
+			subtotal: cents(1000 * lines),
+			total: cents(1000 * lines),
+			currency: currency("USD"),
+		},
 	});
-	return { id, sku, reservationId: held.reservationId };
+	return { id, sku: skus[0] ?? "", skus, reservationId: held[0] ?? "" };
+}
+
+/** The calls the expiry use-case makes for the given (already listed) orders. */
+async function expiryUnitCost(ids: readonly string[]): Promise<number> {
+	const s = counted();
+	return await cost(() =>
+		expireOrdersBatch(
+			{
+				orderStore: s.orderStore,
+				inventoryStore: s.inventory,
+				couponStore: s.couponStore,
+				clock: s.clock,
+			},
+			new Date(),
+			{ due: ids.map((id) => toOrderId(id)) },
+		),
+	);
 }
 
 describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
@@ -166,22 +196,37 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["expire-holds"].unit);
 	});
 
-	test("expire-orders: one order's flip, read, hold release and coupon release", async () => {
+	test("expire-orders: one order's whole expiry unit (flip, email locator, rollup, hold release, intent stamp)", async () => {
 		const placed = await placeOrder("expire", new Date(Date.now() - 30 * MINUTE_MS).toISOString());
-		const s = counted();
-		const now = new Date().toISOString();
-		const used = await cost(async () => {
-			await s.orderStore.expire(toOrderId(placed.id), now);
-			const order = await s.orderStore.getById(toOrderId(placed.id));
-			for (const line of order?.lines ?? []) {
-				if (line.reservationId !== null) {
-					await s.inventory.releaseAdopted(line.reservationId, toOrderId(placed.id));
-				}
-			}
-			await s.couponStore.releaseByOrder(toOrderId(placed.id));
-		});
+		const used = await expiryUnitCost([placed.id]);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["expire-orders"].unit);
 	});
+
+	// QA2 M2: one order expiry was 22 calls on a 30-call Workers Free tick, so a
+	// backlog expired one order every three minutes. The use-case re-read the order
+	// the flip had written and released every line a second time after the store had
+	// released them one id at a time. These pin the cut, per order shape — measured
+	// the same way on the base before the change: 22 (one line) and 40 (three lines on
+	// three SKUs).
+	test.each([
+		{ lines: 1, before: 22, ceiling: 13 },
+		{ lines: 3, before: 40, ceiling: 23 },
+	])(
+		"expire-orders: a $lines-line order costs at most $ceiling calls (was $before)",
+		async ({ lines, ceiling }) => {
+			const placed = await placeOrder(
+				`expire-lines-${String(lines)}`,
+				new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+				lines,
+			);
+			const s = counted();
+			const used = await expiryUnitCost([placed.id]);
+			expect(used).toBeLessThanOrEqual(ceiling);
+			// And it did the whole job: every unit back, the order expired.
+			for (const sku of placed.skus) expect(await s.inventory.getOnHand(toSku(sku))).toBe(10);
+			expect((await s.orderStore.getById(toOrderId(placed.id)))?.state).toBe("expired");
+		},
+	);
 
 	test("order-emails: one claim, its reads, the send and the mark", async () => {
 		const placed = await placeOrder("email", new Date(Date.now() + DAY_MS).toISOString());
