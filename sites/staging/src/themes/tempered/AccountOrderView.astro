@@ -50,8 +50,6 @@ const { order, errorMessage, signedInAs } = Astro.props.model;
 						<time datetime={order.placed.iso}>{order.placed.text}</time>
 					</>
 				)}
-				{" · Ref "}
-				<span class="u-mono">{order.ref}</span>
 			</p>
 			{order.stateNote !== null && <p class="account-order-note">{order.stateNote}</p>}
 

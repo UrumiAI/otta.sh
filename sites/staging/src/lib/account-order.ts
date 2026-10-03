@@ -8,9 +8,8 @@
  * private; the public one never shows it), and a link to the order's own page.
  *
  * A2 — two orders of the same thing on the same day read alike in the list, so a
- * row also carries the time it was placed and a short reference: the start of the
- * order id, which is what the store's order search takes ("Search by start of
- * order ID"), so a shopper can quote it.
+ * row also carries the time it was placed, to the minute, beside its item summary.
+ * No part of the order id is ever shown to a shopper (the store owner's rule).
  *
  * Kept here rather than in the pages because `.astro` files have no render harness
  * in this package (issue #40).
@@ -101,10 +100,4 @@ export function orderPlacedAt(iso: string): { text: string; iso: string } | null
 	const instant = Date.parse(iso);
 	if (!Number.isFinite(instant)) return null;
 	return { text: `${PLACED_AT.format(instant)} UTC`, iso };
-}
-
-/** The order's short reference: the first 8 characters of its id, upper-cased —
- *  enough to tell orders apart and to find one in the store's order search. */
-export function orderShortRef(orderId: string): string {
-	return orderId.replaceAll("-", "").slice(0, 8).toUpperCase();
 }

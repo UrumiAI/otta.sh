@@ -159,11 +159,9 @@ QA round 2 (X1, A2–A7, U-3). Identity and ownership rules above are unchanged.
   account's order page shows both, links the order's public page, and offers "Complete payment"
   through the same page-owned resume path while the order can be paid (the session is the second
   factor the resume already accepts).
-- **A short reference is shown to the shopper.** List rows and the order page show the first 8
-  characters of the order id ("621A6C23"), with the time it was placed, so two orders of the same
-  thing can be told apart and quoted to the store, whose order search takes an id prefix. This
-  relaxes "a shopper never sees the order id" to "never the whole id"; the label is still the
-  products.
+- **Rows are told apart by time, never by id.** List rows and the order page state when the
+  order was placed to the minute ("Oct 2, 2026, 14:05 UTC"), beside the item summary
+  (`orderLabel`). No part of the order id is shown to a shopper — the store owner's rule stands.
 - **Pages name the signed-in email** (the account pages are private). Sign-out lands on
   `/?signed-out=1`, which says "You're signed out." only when no session cookie is left, and that
   render is private. Signed in, the sign-in page hides its form behind "Use a different email".

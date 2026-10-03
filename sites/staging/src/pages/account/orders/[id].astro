@@ -28,7 +28,7 @@ import {
 	orderRefundedNote,
 	signedInEmail,
 } from "../../../lib/account.js";
-import { accountOrderExtras, orderPlacedAt, orderShortRef } from "../../../lib/account-order.js";
+import { accountOrderExtras, orderPlacedAt } from "../../../lib/account-order.js";
 import { orderStamp } from "../../../lib/order-stamp.js";
 import { orderSumRows } from "../../../lib/order-view.js";
 import { isOrderPayable } from "../../../lib/pay-guard.js";
@@ -109,7 +109,6 @@ if (order !== null) {
 		/* Its own line, from the ledger only — never a relabelled total. */
 		refundedNote: orderRefundedNote(order.refundedCents, order.totals.currency),
 		excludesUncalculated: totals.totalExcludesUncalculated,
-		ref: orderShortRef(order.id),
 		/* What the public order page offers for this order (QA2 X1): Complete
 		   payment while it can be paid (the same resume path; this session
 		   proves ownership), the tracking, the address — this page is private,

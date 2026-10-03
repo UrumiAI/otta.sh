@@ -21,7 +21,7 @@ import {
 	orderMoney,
 	signedInEmail,
 } from "../../../lib/account.js";
-import { orderPlacedAt, orderShortRef } from "../../../lib/account-order.js";
+import { orderPlacedAt } from "../../../lib/account-order.js";
 import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
@@ -62,10 +62,9 @@ const rows =
 			label: orderLabel(order.lines),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
 			state: accountOrderStatus(order, now),
-			/* To the minute, and with a short reference: two orders of the same
-			   thing on one day must not read alike (QA2 A2). */
+			/* To the minute: two orders of the same thing on one day must not
+			   read alike (QA2 A2). Never any part of the id. */
 			placed: orderPlacedAt(order.createdAt),
-			ref: orderShortRef(order.id),
 			items: items === 1 ? "1 item" : `${items} items`,
 			total: orderMoney(order.totals.totalCents, order.totals.currency),
 		};

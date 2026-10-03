@@ -1029,7 +1029,7 @@
    was shorter drifted out of line with the rest (QA2 A3). */
 [data-theme-id] .account-orders-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 11.5rem 5.5rem 4.5rem 6.5rem;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 11.5rem 4.5rem 6.5rem;
 	gap: 1rem;
 	align-items: baseline;
 	padding: 0.875rem 0;
@@ -1046,13 +1046,10 @@
 
 [data-theme-id] .account-orders-state,
 [data-theme-id] .account-orders-date,
-[data-theme-id] .account-orders-ref,
 [data-theme-id] .account-orders-items {
 	color: var(--u-mute);
 }
-[data-theme-id] .account-orders-ref {
-	font-size: 0.75rem;
-}
+
 [data-theme-id] .account-orders-date {
 	white-space: nowrap;
 }

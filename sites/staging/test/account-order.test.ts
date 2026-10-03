@@ -2,20 +2,15 @@
  * The account's order page offers what the public order page offers for the same
  * order (QA2 X1) — Complete payment for a payable pending order, the tracking once
  * shipped, the delivery address, and the order's own page — and the list tells
- * two orders of the same thing apart (QA2 A2): the time it was placed and a short
- * reference the store can search by.
+ * two orders of the same thing apart (QA2 A2):  * the time (to the minute) beside the item summary. The order id — even a short
+ * piece of it — is never shown to a shopper (the store owner's rule).
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { templateOf } from "./astro-source.js";
 import { SRC, viewCases } from "./theme-views.js";
-import {
-	accountOrderExtras,
-	orderPlacedAt,
-	orderShortRef,
-	trackingHref,
-} from "../src/lib/account-order.js";
+import { accountOrderExtras, orderPlacedAt, trackingHref } from "../src/lib/account-order.js";
 
 const NOW = new Date("2026-10-03T12:00:00.000Z");
 const ID = "621a6c23-0d1e-4c55-9d7e-2f1a3b4c5d6e";
@@ -122,10 +117,6 @@ describe("the list tells two orders apart (QA2 A2)", () => {
 		});
 		expect(orderPlacedAt("garbage")).toBeNull();
 	});
-
-	test("a short reference — the start of the id, as the store's order search takes it", () => {
-		expect(orderShortRef(ID)).toBe("621A6C23");
-	});
 });
 
 describe.each(viewCases("accountOrder"))("the account order view %s", (_label, { source }) => {
@@ -146,14 +137,19 @@ describe.each(viewCases("accountOrder"))("the account order view %s", (_label, {
 	test("names the signed-in email", () => {
 		expect(template).toContain("Signed in as {signedInAs}");
 	});
+
+	test("shows no part of the order id", () => {
+		expect(template).not.toMatch(/order\.ref\b|Ref /);
+	});
 });
 
 describe.each(viewCases("accountOrders"))("the account orders view %s", (_label, { source }) => {
 	const template = templateOf(source);
 
-	test("each row carries the time and the short reference", () => {
+	test("each row carries the time and the item summary — never any part of the order id", () => {
 		expect(template).toContain("{row.placed.text}");
-		expect(template).toContain("{row.ref}");
+		expect(template).toContain("{row.label}");
+		expect(template).not.toMatch(/\.ref\b/);
 	});
 
 	test("names the signed-in email beside Sign out", () => {
@@ -174,10 +170,10 @@ describe("the account order pages", () => {
 		expect(source).toContain("signedInEmail(");
 	});
 
-	test("the list dates rows to the minute and gives each its reference", () => {
+	test("the list dates rows to the minute and shows no reference", () => {
 		const source = page("index.astro");
 		expect(source).toContain("orderPlacedAt(order.createdAt)");
-		expect(source).toContain("orderShortRef(order.id)");
+		expect(source).not.toContain("orderShortRef");
 		expect(source).toContain("signedInEmail(");
 	});
 });

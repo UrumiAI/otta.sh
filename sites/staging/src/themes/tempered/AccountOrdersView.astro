@@ -53,7 +53,6 @@ const { errorMessage, rows, signedInAs } = Astro.props.model;
 					<span class="account-orders-date">
 						{row.placed !== null && <time datetime={row.placed.iso}>{row.placed.text}</time>}
 					</span>
-					<span class="account-orders-ref u-mono">{row.ref}</span>
 					<span class="account-orders-items">{row.items}</span>
 					<span class="account-orders-total u-mono">{row.total}</span>
 				</li>
