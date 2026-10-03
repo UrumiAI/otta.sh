@@ -94,9 +94,11 @@ export interface CancelIntentInput {
 /**
  * The normalized result of a `cancelIntent` attempt.
  *  - `cancelled` — the provider withdrew the intent; it can no longer be paid.
- *  - `not_cancellable` — the intent is already final (succeeded, or cancelled
- *    earlier): nothing to do here. A SUCCEEDED intent is the buyer paying at the
- *    instant the order expired; its webhook takes the late-payment refund path.
+ *  - `not_cancellable` — the intent SUCCEEDED: the buyer paid at the instant it
+ *    was withdrawn. Its webhook settles a still-pending order normally (its stock
+ *    was still held) or takes the late-payment refund path on a dead one. An
+ *    adapter reports this only once it has seen the success — an intent that is
+ *    still payable must be `RETRYABLE`, never this (QA2 M1b).
  *  - `UNSUPPORTED` — the gateway has no standing intent or no credential: a
  *    capability statement, never retried and not worth an operator's attention.
  *  - `RETRYABLE` / `TERMINAL` — the provider could not be reached / refused. The

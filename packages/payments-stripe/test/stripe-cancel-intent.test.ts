@@ -148,26 +148,83 @@ describe("createStripeHttpTransport.cancelPaymentIntent (stub fetch — NO netwo
 		expect(url).toBe("https://api.example/v1/payment_intents/pi_1%2F..%2F..%2Frefunds/cancel");
 	});
 
-	test("Stripe's payment_intent_unexpected_state (already succeeded or cancelled) is not_cancellable — the late-payment refund owns that case", async () => {
+	// QA2 M1b. Stripe answers `payment_intent_unexpected_state` whenever the intent is
+	// not in a state it will cancel FROM at that moment — which is not only "already
+	// succeeded". Cancellable: requires_payment_method, requires_confirmation,
+	// requires_action, requires_capture and (rarely) processing
+	// (https://docs.stripe.com/api/payment_intents/cancel). Giving up on that code
+	// alone left a payable intent live, so the adapter now READS the intent and
+	// decides from its status.
+	function unexpectedStateThen(intent: Response | (() => Response)) {
+		const calls: { url: string; method: string }[] = [];
 		const transport = createStripeHttpTransport({
 			baseUrl: "https://api.example",
-			fetch: stubFetch(
-				() =>
-					new Response(
+			fetch: stubFetch((url, init) => {
+				calls.push({ url, method: init?.method ?? "GET" });
+				if (init?.method === "POST") {
+					return new Response(
 						JSON.stringify({
 							error: { type: "invalid_request_error", code: "payment_intent_unexpected_state" },
 						}),
 						{ status: 400 },
-					),
-			),
-		});
-		expect(
-			await transport.cancelPaymentIntent?.({
-				intentId: "pi_1",
-				idempotencyKey: "k",
-				secretKey: SK,
+					);
+				}
+				return typeof intent === "function" ? intent() : intent;
 			}),
-		).toEqual({ ok: true, outcome: "not_cancellable" });
+		});
+		return { transport, calls };
+	}
+	const cancel = (t: StripeTransport) =>
+		t.cancelPaymentIntent?.({ intentId: "pi_1", idempotencyKey: "k", secretKey: SK });
+	const intentWith = (status: string) =>
+		new Response(JSON.stringify({ id: "pi_1", object: "payment_intent", status }), {
+			status: 200,
+		});
+
+	test("payment_intent_unexpected_state + the intent SUCCEEDED ⇒ not_cancellable: the payment landed, settle owns it", async () => {
+		const { transport, calls } = unexpectedStateThen(intentWith("succeeded"));
+		expect(await cancel(transport)).toEqual({ ok: true, outcome: "not_cancellable" });
+		expect(calls).toEqual([
+			{ url: "https://api.example/v1/payment_intents/pi_1/cancel", method: "POST" },
+			{ url: "https://api.example/v1/payment_intents/pi_1", method: "GET" },
+		]);
+	});
+
+	test("payment_intent_unexpected_state + the intent already CANCELED ⇒ cancelled: it cannot be paid", async () => {
+		const { transport } = unexpectedStateThen(intentWith("canceled"));
+		expect(await cancel(transport)).toEqual({ ok: true, outcome: "cancelled" });
+	});
+
+	test("payment_intent_unexpected_state + an intent that is STILL payable or in flight ⇒ retryable — never abandoned", async () => {
+		for (const status of [
+			"requires_payment_method",
+			"requires_confirmation",
+			"requires_action",
+			"requires_capture",
+			"processing",
+		]) {
+			const { transport } = unexpectedStateThen(intentWith(status));
+			expect(await cancel(transport), status).toEqual({ ok: false, class: "retryable" });
+		}
+	});
+
+	test("payment_intent_unexpected_state + the read fails, times out or is unreadable ⇒ retryable, never not_cancellable", async () => {
+		for (const [label, res] of [
+			["5xx", () => new Response("{}", { status: 500 })],
+			["404", () => new Response("{}", { status: 404 })],
+			["no status", () => new Response(JSON.stringify({ id: "pi_1" }), { status: 200 })],
+			["unknown status", () => intentWith("requires_something_new")],
+			["not json", () => new Response("<html>", { status: 200 })],
+			[
+				"network",
+				() => {
+					throw new Error("ECONNRESET");
+				},
+			],
+		] as const) {
+			const { transport } = unexpectedStateThen(res);
+			expect(await cancel(transport), label).toEqual({ ok: false, class: "retryable" });
+		}
 	});
 
 	test("5xx, 429, 409 and a network failure are retryable (a cancel moves no money); any other 4xx is terminal", async () => {
@@ -207,6 +264,29 @@ describe("createStripeHttpTransport.cancelPaymentIntent (stub fetch — NO netwo
 describe("cancelPaymentIntent is SHORT-bounded — a cron leg must not wait 30 s on Stripe", () => {
 	test("the default cancel timeout is at most 3 s", () => {
 		expect(DEFAULT_CANCEL_TIMEOUT_MS).toBeLessThanOrEqual(3_000);
+	});
+
+	test("the read after a refused cancel shares the cancel's bound — a hung read is retryable in time", async () => {
+		const transport = createStripeHttpTransport({
+			baseUrl: "https://api.example",
+			cancelTimeoutMs: 50,
+			fetch: ((_target: Parameters<typeof fetch>[0], init?: RequestInit) =>
+				init?.method === "POST"
+					? Promise.resolve(
+							new Response(
+								JSON.stringify({ error: { code: "payment_intent_unexpected_state" } }),
+								{ status: 400 },
+							),
+						)
+					: new Promise<Response>((_resolve, reject) => {
+							init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+						})) as unknown as typeof fetch,
+		});
+		const started = Date.now();
+		expect(
+			await transport.cancelPaymentIntent?.({ intentId: "pi_1", idempotencyKey: "k", secretKey: SK }),
+		).toEqual({ ok: false, class: "retryable" });
+		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 
 	test("a hung cancel classifies retryable at its own (short) bound", async () => {
