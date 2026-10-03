@@ -274,7 +274,10 @@ a confirm in Money → Refunds and idempotent:
 
 Only an `unverified` row can be resolved (a reserved, recorded or voided one, or another order's
 key, is refused); a replay of the same answer changes nothing; the operator the host names is
-recorded on the row (`resolvedBy`). This closes the earlier follow-up "admin confirms a refund at
+recorded on the row (`resolvedBy`). A successful resolve compare-and-clears the order's "never
+finalized" flag for that refund (exact text, as cancel-with-refund clears its own) and never any
+other flag. A wrong "it didn't happen" cannot pay twice: a new refund's pre-check asks the
+provider first and issues nothing if it is already refunded. This closes the earlier follow-up "admin confirms a refund at
 the provider". When the refund path's own RESUME finds the provider already showing money on a
 reservation, the flag it writes now names the provider's figures and points to this action.
 

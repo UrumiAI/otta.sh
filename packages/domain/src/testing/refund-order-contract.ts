@@ -574,6 +574,56 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
 		});
 
+		// Final round: resolving clears the flag that sent the operator here (the
+		// resume arm's "never finalized" flag for THIS refund) — compare-and-clear on
+		// that exact flag; any other flag stays.
+		for (const outcome of ["confirmed", "voided"] as const) {
+			test(`resolve ${outcome.toUpperCase()} clears the unverified-refund flag it answers, and only that flag`, async () => {
+				const h = await makeHarness();
+				const id = await h.seedPaidOrder({ id: `ord-unv-flag-${outcome}`, totalCents: 1000 });
+				const key = idempotencyKey(`rf-unv-flag-${outcome}`);
+				await h.orderStore.reserveRefund({
+					orderId: id,
+					amount: cents(400),
+					currency: USD,
+					kind: "gateway",
+					gateway: "stripe",
+					refundRef: null,
+					reason: null,
+					refundedBy: "admin",
+					idempotencyKey: key,
+				});
+				const gw = new FakePaymentGateway({ id: "stripe" });
+				gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+				await refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(400),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: key,
+				});
+				expect((await h.orderStore.getById(id))?.reconciliationFlag).toContain(String(key));
+				await resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: id, refundKey: key, outcome, resolvedBy: "ops" },
+				);
+				const after = await h.orderStore.getById(id);
+				expect(after?.reconciliationFlag).toBeNull();
+				expect(after?.reconciliationResolution?.resolvedBy).toBe("ops");
+
+				// Any other flag is never cleared by a resolve.
+				const other = await unverifiedRefund(h, `ord-unv-flag-other-${outcome}`, 300);
+				await h.orderStore.flagReconciliation(other.id, "an unrelated anomaly");
+				await resolveUnverifiedRefund(
+					{ orderStore: h.orderStore },
+					{ orderId: other.id, refundKey: other.key, outcome, resolvedBy: "ops" },
+				);
+				expect((await h.orderStore.getById(other.id))?.reconciliationFlag).toBe(
+					"an unrelated anomaly",
+				);
+			});
+		}
+
 		test("resolve VOIDED: capacity is released, the order stays as it was, nothing is emailed; a replay changes nothing", async () => {
 			const h = await makeHarness();
 			const { id, key } = await unverifiedRefund(h, "ord-unv-void");

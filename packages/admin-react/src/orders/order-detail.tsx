@@ -1558,7 +1558,7 @@ export function OrderDetail({
 									text:
 										outcome === "confirmed"
 											? "Only if your payment provider shows this refund. It is recorded as refunded — the order closes as refunded if this completes it — and the buyer is emailed."
-											: "Only if your payment provider shows no such refund. It is recorded as never issued, and that amount can be refunded again. No money moves and the buyer is not emailed.",
+											: "Only if your payment provider shows no such refund. It is recorded as never issued, and that amount can be refunded again. If it was in fact refunded, a new refund will be stopped by the provider check and nothing more is paid.",
 									confirmLabel:
 										outcome === "confirmed" ? "Yes, it was refunded" : "Yes, it didn’t happen",
 									denyLabel: "Keep as is",

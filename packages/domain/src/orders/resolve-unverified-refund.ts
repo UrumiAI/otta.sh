@@ -1,5 +1,8 @@
+import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
-import type { OrderStore } from "../ports/order-store.js";
+import type { Order } from "./model.js";
+import type { OrderStore, RefundRecord } from "../ports/order-store.js";
+import { unverifiedRefundFlagPrefix } from "./refund-order.js";
 
 /**
  * A person resolves a refund whose outcome is UNKNOWN (review round 2, ADR-0026
@@ -90,6 +93,7 @@ async function attempt(
 		if (!voided) {
 			return retryOnRace ? attempt(deps, cmd, false) : { ok: false, reason: "NOT_UNVERIFIED" };
 		}
+		await clearItsFlag(deps, ledger.order, row, cmd, resolvedBy);
 		return { ok: true, outcome: "voided", changed: true, fullyRefunded: false, refundId: row.id };
 	}
 
@@ -105,6 +109,7 @@ async function attempt(
 	if (!finalized.found) {
 		return retryOnRace ? attempt(deps, cmd, false) : { ok: false, reason: "NOT_UNVERIFIED" };
 	}
+	await clearItsFlag(deps, finalized.order ?? ledger.order, row, cmd, resolvedBy);
 	return {
 		ok: true,
 		outcome: "confirmed",
@@ -112,4 +117,40 @@ async function attempt(
 		fullyRefunded: finalized.fullyRefunded,
 		refundId: row.id,
 	};
+}
+
+/**
+ * Clear the flag that sent the operator here — the refund path's "never
+ * finalized" flag for THIS refund — by compare-and-clear on its exact text (as
+ * cancel-with-refund clears its own). Any other flag is left for a person. Best
+ * effort: the refund is already resolved, and a flag that changed in between is
+ * simply not cleared.
+ */
+async function clearItsFlag(
+	deps: { orderStore: OrderStore },
+	order: Order,
+	row: RefundRecord,
+	cmd: ResolveUnverifiedRefundCommand,
+	resolvedBy: string,
+): Promise<void> {
+	const flag = order.reconciliationFlag;
+	if (flag === null) return;
+	if (!flag.startsWith(unverifiedRefundFlagPrefix(row.amount, row.currency, row.idempotencyKey))) {
+		return;
+	}
+	try {
+		await deps.orderStore.resolveReconciliation({
+			orderId: cmd.orderId,
+			expectedFlag: flag,
+			outcome: cmd.outcome === "confirmed" ? "refunded" : "written_off",
+			reason:
+				cmd.outcome === "confirmed"
+					? "The unverified refund was confirmed at the provider and recorded."
+					: "The unverified refund was confirmed as never issued and voided.",
+			resolvedBy,
+			idempotencyKey: toIdempotencyKey(`${cmd.refundKey}:resolve-unverified`),
+		});
+	} catch {
+		// Best effort: the refund itself is resolved either way.
+	}
 }

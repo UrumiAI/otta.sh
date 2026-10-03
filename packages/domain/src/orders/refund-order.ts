@@ -433,7 +433,7 @@ export async function refundOrder(
 							: ` The provider shows ${flagAmount(gwRes.provider.refunded, target.currency)} of ${flagAmount(gwRes.provider.captured, target.currency)} refunded.`;
 					await deps.orderStore.flagReconciliation(
 						cmd.orderId,
-						`refund ${String(target.amount)} ${target.currency} (key ${cmd.idempotencyKey}): the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
+						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)} — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
 					);
 				}
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
@@ -485,6 +485,14 @@ export async function refundOrder(
 		refund: finalized.refund,
 		order: finalized.order,
 	};
+}
+
+/** The start of the flag the RESUME arm writes when it holds a refund
+ *  `unverified` — exact for that refund (its amount, currency and key), so the
+ *  person who resolves it (`resolveUnverifiedRefund`) can compare-and-clear THIS
+ *  flag and never another. */
+export function unverifiedRefundFlagPrefix(amount: number, currency: string, key: string): string {
+	return `refund ${String(amount)} ${currency} (key ${key}): the provider already shows it refunded but the ledger never finalized it`;
 }
 
 /** Map a one-shot `recordRefund` result (the manual path) to the outcome. */

@@ -5,13 +5,18 @@
 "@otta-sh/admin-react": minor
 ---
 
+**BREAKING (out-of-tree stores):** `OrderStore.voidUnverifiedRefund` is a new REQUIRED port
+method. Both in-tree stores implement it; any other `OrderStore` must add it (guarded
+`unverified → voided`, recording `resolvedBy`).
+
 An `unverified` refund (its provider call timed out) can now be resolved by a person, so the
 order can be closed (review round 2). `resolveUnverifiedRefund` answers it either way:
 "Confirmed at the provider" finalizes it as the gateway's success would (recorded, the ceiling
 flip to `refunded`, the refund email once; the provider refund id is optional), "It didn't
 happen" voids it and releases its capacity (`OrderStore.voidUnverifiedRefund`, new; both stores).
 Only an unverified row can be resolved, a replay changes nothing, and the operator is recorded
-on the row (`RefundRecord.resolvedBy`). The console offers both answers on the row in Money →
+on the row (`RefundRecord.resolvedBy`). A successful resolve compare-and-clears the order's
+"never finalized" flag for that refund (exact text), never any other flag. The console offers both answers on the row in Money →
 Refunds, each behind a confirm (`orders:resolve-refund-confirmed` / `-voided`).
 
 Also: provider figures in reconciliation flags use the currency's real minor-unit exponent
