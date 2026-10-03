@@ -147,6 +147,9 @@ export interface HomeModel {
 	 * would omit; each home then renders its hero alone.
 	 */
 	cards: readonly ShopCard[];
+	/** A one-line notice the page decided on ("You're signed out." after sign-out,
+	 *  QA2 A5), or `null`. */
+	notice: string | null;
 }
 
 // ── Shop ──────────────────────────────────────────────────────────────────
@@ -525,9 +528,12 @@ export interface OrderModel {
 }
 
 export interface AccountLoginModel {
-	/** Signed in already: who, and where their orders are — shown above the form
-	 *  (which still works, to switch address). `null` ⇔ signed out. */
-	signedIn: { email: string; ordersHref: string } | null;
+	/** Signed in already: who, where their orders are, and the way to sign in as
+	 *  another address (`switchHref`). `null` ⇔ signed out. */
+	signedIn: { email: string; ordersHref: string; switchHref: string } | null;
+	/** Show the sign-in form: signed out, or signed in and asking to use a
+	 *  different email (QA2 A6) — never a bare form under "You're signed in". */
+	showForm: boolean;
 	/** `?sent=1` or `?sent=many`: a link was asked for. */
 	sent: boolean;
 	/** The notice's copy, the page's call: the generic sentence, the same for

@@ -39,3 +39,40 @@ describe("the header's cart count reaches /checkout and /orders/<id> (QA2 U-14)"
 		}
 	});
 });
+
+describe("signing out says so (QA2 A5)", () => {
+	const home = readFileSync(path.join(SRC, "pages/index.astro"), "utf8");
+
+	test("the home page shows the notice only for ?signed-out=1 with no session left, and keeps that render private", () => {
+		expect(home).toMatch(/searchParams\.get\("signed-out"\) === "1"/);
+		expect(home).toContain("currentSessionToken(Astro.cookies) === undefined");
+		expect(home).toMatch(
+			/if \(Astro\.url\.searchParams\.has\("signed-out"\)\) keepPrivate\(Astro\);/,
+		);
+		expect(home).toContain(`"You're signed out."`);
+	});
+
+	test("Tempered's home prints the page's notice", () => {
+		const view = readFileSync(path.join(SRC, "themes/tempered/HomeView.astro"), "utf8");
+		expect(templateOf(view)).toMatch(/model\.notice !== null &&/);
+	});
+});
+
+describe("a signed-in shopper's sign-in page (QA2 A6)", () => {
+	const page = readFileSync(path.join(SRC, "pages/account/login/index.astro"), "utf8");
+
+	test("the form is hidden while signed in, unless the shopper asked to use a different email", () => {
+		expect(page).toMatch(/showForm: email === null \|\| switching/);
+		expect(page).toMatch(/searchParams\.get\("switch"\) === "1"/);
+	});
+
+	test.each(viewCases("accountLogin"))(
+		"%s offers 'Use a different email' instead of the form",
+		(_l, { source }) => {
+			const template = templateOf(source);
+			expect(template).toMatch(/showForm && \(/);
+			expect(template).toContain("Use a different email");
+			expect(template).toContain("href={signedIn.switchHref}");
+		},
+	);
+});

@@ -15,7 +15,7 @@ interface Props {
 	model: AccountLoginModel;
 }
 
-const { signedIn, sent, sentCopy, errorMessage } = Astro.props.model;
+const { signedIn, showForm, sent, sentCopy, errorMessage } = Astro.props.model;
 ---
 
 <h1 class="account-login-title">Sign in or create an account</h1>
@@ -28,6 +28,7 @@ const { signedIn, sent, sentCopy, errorMessage } = Astro.props.model;
 			</p>
 			<div class="account-login-signed-in-actions">
 				<a href={signedIn.ordersHref}>View your orders</a>
+				{!showForm && <a href={signedIn.switchHref}>Use a different email</a>}
 				{/* A POST, as everywhere sign-out lives: a GET would be fired by
 				    link prefetching. Same-origin page, so the guard passes it. */}
 				<form method="POST" action="/account/logout" class="account-login-signout">
@@ -37,11 +38,15 @@ const { signedIn, sent, sentCopy, errorMessage } = Astro.props.model;
 		</div>
 	)
 }
-<p class="account-login-lede">
-	We'll email you a link that signs you in — no password. New here? The same link creates your
-	account. Orders you placed as a guest with the same address appear in your account once you sign
-	in.
-</p>
+{
+	showForm && (
+		<p class="account-login-lede">
+			We'll email you a link that signs you in — no password. New here? The same link creates
+			your account. Orders you placed as a guest with the same address appear in your account
+			once you sign in.
+		</p>
+	)
+}
 
 {
 	sent && (
@@ -58,13 +63,17 @@ const { signedIn, sent, sentCopy, errorMessage } = Astro.props.model;
 	)
 }
 
-<form method="POST" action="/account/login/request" class="account-login-form">
-	<div class="account-login-field">
-		<label class="u-label" for="email">Email</label>
-		<input type="email" id="email" name="email" required autocomplete="email" />
-	</div>
-	<div>
-		<button type="submit" class="u-btn">Email me a sign-in link</button>
-	</div>
-</form>
+{
+	showForm && (
+		<form method="POST" action="/account/login/request" class="account-login-form">
+			<div class="account-login-field">
+				<label class="u-label" for="email">Email</label>
+				<input type="email" id="email" name="email" required autocomplete="email" />
+			</div>
+			<div>
+				<button type="submit" class="u-btn">Email me a sign-in link</button>
+			</div>
+		</form>
+	)
+}
 
