@@ -166,6 +166,7 @@ export type {
 	CreateOrderResult,
 	CreateOrderTotalsInput,
 	ExpiredOrder,
+	OrderExpiryListOptions,
 	OrderCustomerKey,
 	OrderEvent,
 	OrderEventKind,

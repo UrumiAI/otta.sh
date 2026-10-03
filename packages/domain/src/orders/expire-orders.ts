@@ -44,6 +44,15 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * (paid, cancelled, expired since) is a clean no-op.
 	 */
 	readonly due?: readonly OrderId[];
+	/**
+	 * QA3 N1: leave out (via the port's `listExpirable`) every order whose payment
+	 * intent is due for withdrawal and not yet withdrawn, so no order expires while
+	 * the buyer can still pay it. The scheduled sweep sets it, and withdraws those
+	 * intents first (`cancelDueIntents`). Default false: the use-case on its own stays
+	 * the pure state-and-stock transition ADR-0022 decision 2 describes, and a caller
+	 * that does not withdraw intents would otherwise never expire such an order.
+	 */
+	readonly excludeIntentDue?: boolean;
 }
 
 /**
@@ -68,7 +77,12 @@ export async function expireOrdersBatch(
 	options: ExpireOrdersBatchOptions = {},
 ): Promise<SweepBatchResult> {
 	const now = (at ?? deps.clock.now()).toISOString();
-	const ids = options.due ?? (await deps.orderStore.listExpirable(now, listLimitFor(options)));
+	const ids =
+		options.due ??
+		(await deps.orderStore.listExpirable(now, {
+			...listLimitFor(options),
+			...(options.excludeIntentDue === true ? { excludeIntentDue: true } : {}),
+		}));
 	let expired = 0;
 	let attempted = 0;
 	for (const id of ids) {

@@ -198,6 +198,67 @@ export function orderExpiryContract(
 			expect(await stateOf(h, order.id)).toBe("expired");
 		});
 
+		test("QA3 N1: an order whose payment intent is due and not yet withdrawn is not listed, nor expired, until it is withdrawn", async () => {
+			const h = await makeHarness();
+			const store = h.expireDeps.orderStore;
+			const plain = await seedOrder(h, "intent-none", [{ sku: "SKU-EXP-I", qty: 1 }]);
+			const payable = await seedOrder(h, "intent-due", [{ sku: "SKU-EXP-I", qty: 1 }]);
+			await store.recordPaymentIntent({
+				orderId: payable.order.id,
+				gateway: "stripe",
+				intentId: "pi_due",
+			});
+			const due = new Date(
+				Math.max(plain.holdExpiresAt.getTime(), payable.holdExpiresAt.getTime()) + 60_000,
+			);
+			const at = due.toISOString();
+
+			// Asked to, the list leaves the payable order out; by default it lists both.
+			expect(await store.listExpirable(at, { excludeIntentDue: true })).toEqual([plain.order.id]);
+			expect((await store.listExpirable(at)).toSorted()).toEqual(
+				[plain.order.id, payable.order.id].toSorted(),
+			);
+			// The use-case, asked to (as the sweep asks): only the order with nothing
+			// payable expires.
+			expect(await expireOrdersBatch(h.expireDeps, due, { excludeIntentDue: true })).toEqual({
+				count: 1,
+				drained: true,
+			});
+			expect(await stateOf(h, payable.order.id)).toBe("pending");
+
+			// Withdrawn (the cancel leg's resolution): now it expires.
+			await store.updatePaymentIntentCancel(payable.order.id, "pi_due", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			expect(await store.listExpirable(at, { excludeIntentDue: true })).toEqual([payable.order.id]);
+			expect((await expireOrdersBatch(h.expireDeps, due, { excludeIntentDue: true })).count).toBe(
+				1,
+			);
+			expect(await stateOf(h, payable.order.id)).toBe("expired");
+		});
+
+		test("a cancel that failed and was rescheduled does not hold the order: it is not due until its retry", async () => {
+			const h = await makeHarness();
+			const store = h.expireDeps.orderStore;
+			const placed = await seedOrder(h, "intent-retry", [{ sku: "SKU-EXP-R", qty: 1 }]);
+			await store.recordPaymentIntent({
+				orderId: placed.order.id,
+				gateway: "stripe",
+				intentId: "pi_retry",
+			});
+			const due = new Date(placed.holdExpiresAt.getTime() + 60_000);
+			await store.updatePaymentIntentCancel(placed.order.id, "pi_retry", {
+				cancelDueAt: new Date(due.getTime() + 5 * 60_000).toISOString(),
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			expect(await store.listExpirable(due.toISOString(), { excludeIntentDue: true })).toEqual([
+				placed.order.id,
+			]);
+		});
+
 		test("a pre-listed `due` set is expired without listing again, and the bite still bounds it", async () => {
 			const h = await makeHarness();
 			const a = await seedOrder(h, "due-a", [{ sku: "SKU-EXP-D", qty: 1 }]);
