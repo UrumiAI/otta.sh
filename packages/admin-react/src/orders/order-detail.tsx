@@ -58,7 +58,8 @@ import {
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_AMOUNT_INVALID,
-	REFUND_BY_REQUIRED,
+	REFUND_AMOUNT_PRECISION,
+	hasExcessDecimals,
 	REFUND_PARTIAL_GROUP_LABEL,
 	RESOLVE_RECONCILIATION_NOTE,
 	SHIPPING_ADDRESS_ABSENT,
@@ -145,7 +146,9 @@ export type RefundCheck =
 	| { readonly ok: false; readonly refusal: RefundRefusal };
 
 /**
- * The refund form's three refusals, in the order the operator meets them.
+ * The refund form's refusals, in the order the operator meets them: an amount that
+ * does not parse (with its own sentence for too many decimal places), then one over
+ * the remainder. A blank `Refunded by` is not one of them (QA round 2).
  *
  * Parsed with the SHARED input parser — exact integer string math, never
  * `parseFloat(...) * 100`. The refusal copy is the write handler's own, restated
@@ -154,17 +157,23 @@ export type RefundCheck =
  */
 export function checkRefundInput(
 	amountInput: string,
-	refundedBy: string,
+	/** Not checked any more: a blank `Refunded by` is the signed-in operator, whom
+	 *  the server records (QA round 2). Kept so callers pass what the form holds. */
+	_refundedBy: string,
 	remainingCents: number,
 	currency: string,
 ): RefundCheck {
 	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
 	if (parsed === null) {
-		return { ok: false, refusal: { message: REFUND_AMOUNT_INVALID, field: "amount" } };
+		return {
+			ok: false,
+			refusal: {
+				message: hasExcessDecimals(amountInput) ? REFUND_AMOUNT_PRECISION : REFUND_AMOUNT_INVALID,
+				field: "amount",
+			},
+		};
 	}
-	if (refundedBy.trim().length === 0) {
-		return { ok: false, refusal: { message: REFUND_BY_REQUIRED, field: "refundedBy" } };
-	}
+
 	if (parsed > remainingCents) {
 		return {
 			ok: false,
@@ -264,31 +273,96 @@ function timelineWhat(entry: TimelineEntry): string {
 			return "Cancelled";
 		case "reconciliation_resolved":
 			return "Reconciliation resolved";
+		case "refund":
+			return refundWhat(entry);
 		default:
 			return entry.kind;
 	}
 }
 
+/** A refund row in History (QA round 2): what kind of money went back, and
+ *  whether it has gone back yet. */
+function refundWhat(entry: TimelineEntry): string {
+	const what =
+		entry.purpose === "cancellation"
+			? "Refund (cancellation)"
+			: entry.purpose === "late-payment"
+				? "Refund (late payment)"
+				: "Refund";
+	if (entry.status === "reserved") return `${what} — in progress`;
+	if (entry.status === "unverified") return `${what} — outcome unknown`;
+	return what;
+}
+
 function timelineWho(entry: TimelineEntry): string {
 	return (
-		entry.actor ?? entry.author ?? entry.recordedBy ?? entry.cancelledBy ?? entry.resolvedBy ?? "—"
+		entry.actor ??
+		entry.author ??
+		entry.recordedBy ??
+		entry.cancelledBy ??
+		entry.resolvedBy ??
+		entry.refundedBy ??
+		"—"
 	);
 }
 
-function timelineDetail(entry: TimelineEntry): string {
+/** A cancel reason as the operator chose it ("Customer requested it"), never the
+ *  wire value (`customer_request`) — QA round 2. An unknown value reads as words. */
+function cancelReasonText(reason: string, labels: ReadonlyMap<string, string>): string {
+	return labels.get(reason) ?? reason.replaceAll("_", " ");
+}
+
+function timelineDetail(entry: TimelineEntry, reasonLabels: ReadonlyMap<string, string>): string {
 	if (entry.kind === "note") return entry.body ?? "—";
 	if (entry.kind === "fulfillment") {
 		const parts = [entry.carrier, entry.trackingNumber].filter((p) => p != null && p.length > 0);
 		return parts.length > 0 ? parts.join(" ") : "—";
 	}
 	if (entry.kind === "cancellation") {
-		const reason = entry.reason ?? "";
+		const reason =
+			entry.reason != null && entry.reason.length > 0
+				? cancelReasonText(entry.reason, reasonLabels)
+				: "";
 		const detail = entry.detail ?? "";
-		if (reason.length > 0 && detail.length > 0) return `${reason}: ${detail}`;
-		return reason.length > 0 ? reason : detail.length > 0 ? detail : "—";
+		const parts = [
+			reason.length > 0 && detail.length > 0 ? `${reason}: ${detail}` : reason || detail,
+			entry.refund != null
+				? `refunded ${formatAmount(entry.refund.amount, entry.refund.currency)}`
+				: "",
+			entry.restocked === true ? "items returned to stock" : "",
+		].filter((part) => part.length > 0);
+		return parts.length > 0 ? parts.join(" · ") : "—";
+	}
+	if (entry.kind === "refund") {
+		const amount =
+			entry.amount != null && entry.currency != null
+				? formatAmount(entry.amount, entry.currency)
+				: "";
+		const parts = [amount, entry.reason ?? ""].filter((part) => part.length > 0);
+		return parts.length > 0 ? parts.join(" · ") : "—";
 	}
 	if (entry.kind === "reconciliation_resolved") return entry.outcome ?? "—";
 	return "—";
+}
+
+/** A tracking URL as a link — http(s) only, so a stored `javascript:` value can
+ *  never become a clickable script. */
+function trackingLink(url: string | null | undefined): React.ReactNode {
+	if (url == null || url.length === 0) return "—";
+	let safe = false;
+	try {
+		const protocol = new URL(url).protocol;
+		safe = protocol === "https:" || protocol === "http:";
+	} catch {
+		safe = false;
+	}
+	return safe ? (
+		<a className="otta-focusable" href={url} target="_blank" rel="noopener noreferrer">
+			{url}
+		</a>
+	) : (
+		url
+	);
 }
 
 /** A secondary surface that could not be loaded. E-1: it degrades to one line
@@ -604,7 +678,7 @@ export function RefundsPanel({
 										onChange={(event) => setRefundReason(event.target.value)}
 									/>
 								</Field>
-								<Field label="Refunded by">
+								<Field label="Refunded by (optional — you, if left blank)">
 									<input
 										className="otta-focusable"
 										data-testid="refund-by"
@@ -833,9 +907,20 @@ export function OrderDetail({
 	const restockValue: Record<string, string> =
 		order.state === "pending" ? {} : { restock: restock ? "true" : "false" };
 
+	// The cancel reasons as the operator reads them, for History (QA round 2).
+	const reasonLabels: ReadonlyMap<string, string> = new Map(
+		detail.vocabulary.cancellationReasons.map((r) => [r.value, r.label]),
+	);
 	const ladder: ReadonlyArray<readonly [string, number]> = [
 		["Subtotal", order.totals.subtotalCents],
-		["Discount", order.totals.discountCents],
+		// The coupon the order was priced with, as the merchant stored it (QA round
+		// 2: the detail showed "Discount $3.00" with no code).
+		[
+			order.totals.appliedCouponCode != null && order.totals.appliedCouponCode.length > 0
+				? `Discount · ${order.totals.appliedCouponCode}`
+				: "Discount",
+			order.totals.discountCents,
+		],
 		["Shipping", order.totals.shippingCents],
 		["Tax", order.totals.taxCents],
 		["Total", order.totals.totalCents],
@@ -1160,6 +1245,9 @@ export function OrderDetail({
 									entries={[
 										["Carrier", order.fulfillment.carrier ?? "—"],
 										["Tracking number", order.fulfillment.trackingNumber ?? "—"],
+										// The tracking link the buyer was emailed (QA round 2) — a
+										// link only for http(s); anything else is shown as text.
+										["Tracking URL", trackingLink(order.fulfillment.trackingUrl)],
 										[
 											"Shipped",
 											order.fulfillment.shippedAt != null
@@ -1405,7 +1493,7 @@ export function OrderDetail({
 										<td className="otta-td otta-num">{formatTimestamp(entry.at)}</td>
 										<td className="otta-td">{timelineWhat(entry)}</td>
 										<td className="otta-td">{timelineWho(entry)}</td>
-										<td className="otta-td">{timelineDetail(entry)}</td>
+										<td className="otta-td">{timelineDetail(entry, reasonLabels)}</td>
 									</tr>
 								))}
 							</Table>

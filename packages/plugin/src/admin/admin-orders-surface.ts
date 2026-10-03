@@ -309,7 +309,9 @@ export interface OrderNoteWire {
  * wire. A discriminated union keyed by `kind`; every entry carries `at`, and the
  * kind-specific fields are OPTIONAL here (the plugin reads only what a given
  * `kind` populates), so an unknown/future kind degrades to a bare `at` row rather
- * than throwing. Money-free — the timeline is an audit surface, not a totals one.
+ * than throwing. Its only money is what an audit needs (QA round 2): each refund
+ * on the ledger, and what a cancellation refunded — integer minor units with
+ * their currency, never a total.
  */
 export interface TimelineEntryWire {
 	kind: string;
@@ -334,6 +336,15 @@ export interface TimelineEntryWire {
 	/** reconciliation_resolved */
 	outcome?: string;
 	resolvedBy?: string;
+	/** cancellation: what it refunded (minor units), and whether it restocked */
+	refund?: { amount: number; currency: string } | null;
+	restocked?: boolean;
+	/** refund: one ledger row that moved, or is moving, money */
+	amount?: number;
+	currency?: string;
+	status?: string;
+	purpose?: string;
+	refundedBy?: string;
 }
 
 /** The order timeline payload (admin-UX Increment 1, timeline slice) — read-only.
