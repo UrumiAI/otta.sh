@@ -78,7 +78,7 @@ function returnedLateSentence(
 	const lead = processing
 		? `Your payment was still processing when this order ${verb}, so if it goes through, it will be refunded`
 		: `Your payment arrived after this order ${verb}, so it will be refunded`;
-	return `${lead} — once it is, it can take 5–10 days to appear. ${
+	return `${lead} — once it is, it can take 5–10 business days to appear. ${
 		polling ? "This page refreshes automatically." : "Check again in a minute."
 	}`;
 }
