@@ -14,12 +14,18 @@
  * theme needs to vary on a one-field form, and the page owns the path it posts
  * to. Zero client JS.
  */
-import { BUYER_REF_MAX } from "@otta-sh/plugin";
+import { BUYER_REF_MAX, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Notice from "../../../components/Notice.astro";
 import Storefront from "../../../layouts/Storefront.astro";
-import { orderPathFor, RESUME_EMAIL_ERRORS } from "../../../lib/checkout-resume.js";
+import {
+	orderPathFor,
+	RESUME_EMAIL_ERRORS,
+	resumeEmailGate,
+} from "../../../lib/checkout-resume.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { keepPrivate } from "../../../lib/no-store.js";
+import { dispatchOttaRoute } from "../../../lib/otta-api.js";
 
 /* One buyer's order, and a form for their email: never stored by a shared cache.
    Called FIRST, so no branch goes out without it. */
@@ -35,10 +41,32 @@ if (orderId.length === 0) return Astro.redirect("/cart", 303);
 const error = Astro.url.searchParams.get("error");
 const errorMessage = error !== null && RESUME_EMAIL_ERRORS.has(error) ? cartErrorMessage(error) : null;
 const orderPath = orderPathFor(orderId);
+
+/* The order this page would resume, read as the order page reads it (QA2 N7): an
+   id that names no order is the order page's 404 — the same sentence, and no
+   form — and one that cannot be paid now goes to its own page, which says why. */
+const read = await dispatchOttaRoute<OrderRouteResult>(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	STOREFRONT_ORDER_ROUTE,
+	{ orderId },
+	Astro.url,
+);
+const gate = resumeEmailGate(read, new Date());
+if (gate === "order_page") return Astro.redirect(orderPath, 303);
+const notFound = gate === "not_found";
+if (notFound) Astro.response.status = 404;
+const notFoundMessage = cartErrorMessage("ORDER_NOT_FOUND");
 ---
 
-<Storefront title="Confirm your email">
+<Storefront title={notFound ? "Order" : "Confirm your email"}>
 	<meta name="referrer" content="same-origin" slot="head" />
+	{notFound ? (
+		<div class="resume">
+			<h1 class="resume-title">Order</h1>
+			<Notice>{notFoundMessage}</Notice>
+			<p class="resume-back"><a href="/products">Browse products</a></p>
+		</div>
+	) : (
 	<div class="resume">
 		<h1 class="resume-title">Confirm your email</h1>
 		<p class="resume-copy">
@@ -68,6 +96,7 @@ const orderPath = orderPathFor(orderId);
 		</form>
 		<p class="resume-back"><a href={orderPath}>Back to your order</a></p>
 	</div>
+	)}
 </Storefront>
 
 <style>
