@@ -25,7 +25,7 @@ import {
 } from "../../../lib/checkout-resume.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { keepPrivate } from "../../../lib/no-store.js";
-import { dispatchOttaRoute } from "../../../lib/otta-api.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
 
 /* One buyer's order, and a form for their email: never stored by a shared cache.
    Called FIRST, so no branch goes out without it. */
@@ -45,13 +45,16 @@ const orderPath = orderPathFor(orderId);
 /* The order this page would resume, read as the order page reads it (QA2 N7): an
    id that names no order is the order page's 404 — the same sentence, and no
    form — and one that cannot be paid now goes to its own page, which says why. */
-const read = await dispatchOttaRoute<OrderRouteResult>(
+const result = await dispatchOttaRoute<OrderRouteResult>(
 	getPublicPluginApiRouteHandler(Astro.locals),
 	STOREFRONT_ORDER_ROUTE,
 	{ orderId },
 	Astro.url,
 );
-const gate = resumeEmailGate(read, new Date());
+/* BUSY (already retried once): the form still renders — the resume re-checks —
+   but as the 503 + Retry-After every page answers a busy read with. */
+if (isBusyResult(result)) markBusy(Astro.response);
+const gate = resumeEmailGate(result, new Date());
 if (gate === "order_page") return Astro.redirect(orderPath, 303);
 const notFound = gate === "not_found";
 if (notFound) Astro.response.status = 404;
