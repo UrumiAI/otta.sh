@@ -510,6 +510,10 @@ export interface OrderModel {
 	sumRows: SumRow[];
 	/** "Paid" once the money was captured (refunded included), else "Total". */
 	totalLabel: string;
+	/** "Refunded $20.00" — what the order's refunds ledger shows returned, as its
+	 *  own line under the total (QA2 X3); `null` when the ledger shows none (a
+	 *  refund made outside Otta included: the status alone says it). */
+	refundedNote: string | null;
 	/** The sign-in page. The page owns the path; a theme only links to it. For a
 	 *  shopper who is not signed in as this order's owner: the sign-in link joins
 	 *  the order to the list of the email it was placed with. */

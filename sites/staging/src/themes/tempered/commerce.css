@@ -784,6 +784,15 @@
 	color: var(--u-ink);
 }
 
+/* The ledger's refunded figure under the total (QA2 X3): the account page's
+   `.account-order-refunded`, on the confirmation. */
+[data-theme-id] .order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+
 [data-theme-id] .order-ship {
 	margin: 0;
 	font-size: 0.8125rem;

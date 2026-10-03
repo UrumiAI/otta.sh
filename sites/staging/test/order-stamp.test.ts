@@ -29,7 +29,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		const stamp = orderStamp({ ...base, state: "expired", latePayment: "refunded" });
 		expect(stamp?.headline).toBe("This order expired.");
 		expect(stamp?.body).toContain(
-			"A payment arrived after this order expired, so we've refunded it — it can take 5–10 days to appear.",
+			"A payment arrived after this order expired, so we've refunded it — it can take 5–10 business days to appear.",
 		);
 		expect(stamp?.body).not.toContain("Nothing was charged");
 	});
@@ -43,7 +43,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		// refusal) — so the page promises THAT it will be refunded, never how fast or
 		// by whom.
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired. It will be refunded — once it is, it can take 5–10 days to appear.",
+			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired. It will be refunded — once it is, it can take 5–10 business days to appear.",
 		);
 	});
 
@@ -54,7 +54,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		});
 		const refunded = orderStamp({ ...base, state: "cancelled", latePayment: "refunded" });
 		expect(refunded?.body).toBe(
-			"A payment arrived after this order was cancelled, so we've refunded it — it can take 5–10 days to appear.",
+			"A payment arrived after this order was cancelled, so we've refunded it — it can take 5–10 business days to appear.",
 		);
 	});
 });
