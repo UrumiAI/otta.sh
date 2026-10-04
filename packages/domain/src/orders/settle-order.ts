@@ -7,6 +7,7 @@ import type { OrderStore } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway, RawConfirmation } from "../ports/payment-gateway.js";
 import type { SettleFailure } from "./errors.js";
+import { isUnpaidTerminalState, refundLatePayment } from "./late-payment.js";
 import type { Order } from "./model.js";
 
 export interface SettleDeps {
@@ -59,7 +60,18 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    settle between load and flip) is exactly as LOUD as finding the order
  *    already terminal: `PAID_FLIP_LOST` anomaly + manual-reconciliation flag —
  *    money was captured while stock was released; never a silent no-op.
- *
+ * 6. **A late payment is refunded automatically** (`refundLatePayment`). On a
+ *    dead order (`expired`/`cancelled`/`failed`) the capture is ALWAYS recorded on
+ *    the payments ledger, so nothing downstream can claim "nothing was charged".
+ *    When the order provably left `pending` unpaid (for `cancelled`, its audit
+ *    holds the `pending → cancelled` flip) and the gateway can refund, the payment
+ *    is refunded once under a key derived from it, the flag resolved and the buyer
+ *    notified — instead of sitting in the reconciliation queue while the buyer is
+ *    out of pocket. A gateway that cannot refund (x402, Stripe with no secret key),
+ *    or an order with no such evidence, keeps the manual flag above. A TRANSIENT
+ *    refund failure answers `LATE_PAYMENT_REFUND_RETRYABLE` so the provider
+ *    redelivers, and schedules a sweep retry (`retryLatePaymentRefunds`) for when
+ *    it stops. *
  * A verified `failed` event (`payment_intent.payment_failed`) is INFORMATIONAL
  * (ADR-0022): it is recorded by step 2 — deduped, bound to its order, auditable —
  * and changes nothing else. The order stays `pending` with its stock held and its
@@ -144,13 +156,27 @@ export async function settleOrder(
 		return { ok: true, order: fresh, noop: true };
 	}
 
-	// Terminal non-paid + a verified success: money moved but cannot settle →
-	// anomaly + manual reconciliation (no auto-refund, v1). Gated on the flag so
-	// a gateway's retry storm records the incident once, not once per delivery.
+	// Terminal non-paid + a verified success: money moved but cannot settle.
 	// Also ahead of the amount check (G6): SETTLE_ON_NON_PENDING is the right
 	// signal for a terminal order, whatever amount the stray event carries.
 	if (order.state !== "pending") {
-		if (order.reconciliationFlag === null) {
+		// 6. A LATE payment on a never-paid dead order is refunded automatically
+		// (see the function doc). Everything else it declines keeps the manual path.
+		const late = await refundLatePayment(
+			deps,
+			gateway,
+			conf,
+			order,
+			{
+				kind: "SETTLE_ON_NON_PENDING",
+				detail: `verified success on order in state=${order.state}`,
+			},
+			now,
+		);
+		if (late === "retryable") return { ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" };
+		// Anomaly + manual reconciliation. Gated on the flag so a gateway's retry
+		// storm records the incident once, not once per delivery.
+		if (late === "ineligible" && order.reconciliationFlag === null) {
 			await deps.paymentEventStore.recordAnomaly({
 				orderId: order.id,
 				gateway: conf.gateway,
@@ -192,12 +218,30 @@ export async function settleOrder(
 		// expiry/cancellation — the customer was charged while the stock was released.
 		// Exactly as loud as the already-terminal-at-load case above.
 		const lostTo = fresh?.state ?? "missing";
+		const detail = `verified success lost the pending→paid flip; order is now state=${lostTo}`;
+		// 6. The order the flip was lost to is, almost always, an expiry — a late
+		// payment by any other name. Refund it the same way, under the loud
+		// PAID_FLIP_LOST anomaly rather than a quieter one.
+		if (fresh !== null && isUnpaidTerminalState(fresh.state)) {
+			const late = await refundLatePayment(
+				deps,
+				gateway,
+				conf,
+				fresh,
+				{ kind: "PAID_FLIP_LOST", detail },
+				now,
+			);
+			if (late === "retryable") return { ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" };
+			if (late !== "ineligible") {
+				return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
+			}
+		}
 		if (fresh === null || fresh.reconciliationFlag === null) {
 			await deps.paymentEventStore.recordAnomaly({
 				orderId: order.id,
 				gateway: conf.gateway,
 				kind: "PAID_FLIP_LOST",
-				detail: `verified success lost the pending→paid flip; order is now state=${lostTo}`,
+				detail,
 				now,
 			});
 			await deps.orderStore.flagReconciliation(

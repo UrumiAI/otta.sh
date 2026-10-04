@@ -76,7 +76,10 @@ paid plan:
   image service (the config deliberately does not set `imageService: "cloudflare"` — that is
   the paid resizing product).
 
-The site's single `* * * * *` cron touches only D1, within free limits (§5).
+The site's single `* * * * *` cron touches only D1, within free limits — the commerce sweep
+budgets itself to fit Workers Free's 50 D1 queries per invocation by default. On Workers Paid,
+switch Settings → Checkout & holds → "Background work per minute" to the Paid preset, or
+expired holds and queued emails drain at the Free pace (§5).
 
 ### 2.1 The site Worker
 
@@ -252,7 +255,8 @@ order of appearance in a deployment's life:
   live payment but never verify its confirmation (or the reverse) would leave orders holding
   stock against a payment nothing can settle. Independently, until the webhook signing secret
   is set, the settle route answers `NOT_CONFIGURED`; it verifies deliveries with the
-  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`). The pay
+  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`), and uses the
+  secret key, when set, only to refund a late payment (below). The pay
   page also needs the build-time publishable key, `STRIPE_PUBLIC_KEY` — see
   [`sites/staging/README.md`](./sites/staging/README.md).
 
@@ -266,6 +270,44 @@ order of appearance in a deployment's life:
   order is kept deliberately — retrying with the same `Idempotency-Key` re-issues the *same*
   PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing stock
   and any coupon use) if it never gets paid.
+
+  **Late payments** ([ADR-0022](./adr/0022-declined-payment-keeps-order-pending.md), amended
+  2026-10-02). A buyer can still pay after their order's hold lapsed and the order expired (a
+  pay tab left open). Such a payment is now **refunded automatically** by the settle route,
+  once, through `POST /v1/refunds` (key `late-payment-refund:<pi_…>`, each Stripe call bounded
+  at 3 s): the order stays `expired`, its reconciliation flag is resolved with outcome
+  `refunded` by `otta:auto-refund`, the buyer gets a "Payment refunded" email naming the
+  refunded amount, and the order page says the payment was refunded. This needs the **secret
+  key** on the settle path; without it the order is flagged for a manual refund as before, and
+  the order page still shows the payment as captured rather than "nothing was charged". A
+  transient Stripe error answers the webhook 503 (with `Retry-After`) so Stripe retries, and the
+  cron's `late-refunds` leg keeps resuming it after Stripe stops (backing off 5 min → 15 min →
+  hourly; best-effort — see §5); the flag reads `… automatic refund retrying` meanwhile. A
+  retry that finds no Stripe gateway (a secret missing or unreadable) is treated the same way.
+  After ~3 days of this it gives up — on every plan, Workers Free included — and flags the
+  order `… needs checking (gave up retrying …) — verify in Stripe`, keeping the refund
+  reservation as `unverified`. A cancelled order is refunded automatically only if its audit
+  shows it was cancelled while unpaid.
+
+  **Known gap — refunding by hand after a give-up.** Once a late refund is `unverified` (a
+  give-up, or an ambiguous create), the order page keeps saying the payment "will be
+  refunded" even after someone refunds it in the Stripe dashboard: nothing tells Otta the
+  money went back. Resolve the reconciliation flag in the admin console so the order leaves
+  the queue; the page copy follows the refunds ledger, and an admin "confirm refunded in the
+  provider" action to finalize such a row is a planned follow-up.
+
+  The window is also narrowed at the source. Checkout records the order's PaymentIntent, and
+  from the order's hold deadline the cron's `cancel-intents` leg (right behind the outbox and
+  the expiry legs) withdraws it once the order has expired or been cancelled unpaid:
+  `POST /v1/payment_intents/{id}/cancel` over `ctx.http.fetch`, inside the tick's budget (see
+  §5), each call given a fixed 1.5 s and started only with that much left (a tick running out
+  never costs an attempt). The expiry itself never calls Stripe. A transient failure is retried
+  by that leg on later ticks with backoff (5 attempts),
+  then given up with one `[domain] gave up cancelling payment intent …` log line — harmless,
+  since a payment on it is refunded as above. `/checkout/pay` also refuses (303 to the order
+  page) an order that is no longer `pending` or whose hold has passed (the sweep expires such an
+  order within about a minute). Orders placed before this change have no recorded intent and
+  are not cancelled.
 
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
@@ -289,6 +331,13 @@ order of appearance in a deployment's life:
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
   rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  With a sender, a settled payment's **order confirmation goes out inline** from the settle
+  route, and an admin's status move, fulfilment, cancel or refund sends its email inline from
+  the console write (best-effort, a few seconds at most); the `order-emails` leg is the backstop
+  that delivers anything those attempts missed, on its next run
+  ([ADR-0005](./adr/0005-transactional-email-transport.md), 2026-10-02;
+  [ADR-0026](./adr/0026-admin-order-actions-never-claim-money-that-did-not-move.md)). With no
+  sender the console says so on every such write instead of claiming the buyer was emailed.
   Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
   API key is a write-only Settings credential, and the from-address ("Order email
   from-address", `settings:emailFrom`) is a readable Settings field. Unset, it falls back to
@@ -365,27 +414,129 @@ editing a text field should not be able to move it.
 
 ## 5. Operations & scaling
 
-**Cron.** Two cadences, and they do different jobs. The **site's** Cron Trigger is
-`* * * * *` — that drives the host's cron *executor*, which claims due rows from its own
-task table. The **plugin** registers one task, `commerce-sweeps`, due every `*/15`; the
-executor fires the plugin's `cron` hook when it comes due. One task drives all nine sweep
-legs: they share a store composition and a clock, and splitting them would only put nine
-rows in contention on the same documents.
+**Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
+*executor*, which claims due rows from its own task table. The **plugin** registers one task,
+`commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
+hook when it comes due. One task drives all eleven sweep legs: they share a store composition
+and a clock, and splitting them would only put eleven rows in contention on the same documents. The
+four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) run at
+most every fifteen minutes inside that task, because each reads a page budget of a collection
+per run; the outbox, the two expiry legs, the challenge prune and the hold-intent completer run
+every tick, so a fifteen-minute hold expires within about a minute of its deadline and a queued
+email goes out within about a minute.
+
+**Each tick is budgeted — in time and in D1 queries.** The `cron` hook declares a 15 s timeout
+(the host stops waiting for a hook after it; raised from EmDash's 5 s default so a slow email
+provider's send fits). The tick's budget starts at hook entry: 9.5 s of wall time — waiting on
+D1 and the provider, not CPU, so Workers Free's CPU limit is unaffected — and, by default, 30 storage/kv/egress calls (each one D1 query or one
+subrequest — see "Background work per minute" below), checked before each leg and before each
+unit of work inside one (each hold or order flip, each outbox claim, each scanned page or row,
+each reporting day). The expiry legs' candidate lists are bounded by a count and stopped by the
+budget too, and never offer a lapsed hold that can no longer be expired (so a few such holds
+cannot block the live ones behind them). The three customer-facing legs — the outbox and the
+two expiry legs — run first and take turns leading, one minute in three each. A leg the budget
+did not reach is logged as `[otta] cron sweep deferred to the next tick: …` and runs on the
+next tick — that is not a failure, and a backlog (say, hundreds of expired holds after an
+outage) drains over several ticks. Five deferrals in a row of the same leg log a warning.
+
+**Order emails: a timeout is retried later, and only counts once it keeps happening.** Each send
+gets at most 5 s, or what is left of the outbox's share of the tick, whichever is sooner — and
+that limit covers the whole send, including the host resolving the provider's address; 5 s is
+long enough for a slow-but-working provider to deliver. Just before sending, the sweep checks the
+time again (the claim and the order reads take time of their own); with too little left it hands
+the email back untried, due again in 30 s (so a short tick cannot keep one email at the head of
+the queue). A send the tick had to give **less** than the full 5 s and that then times out is
+the sweep's doing, not the provider's: it is handed back due at once, uncounted, with nothing
+recorded against it. A send that **times out with the full 5 s** is handed back **without
+counting an attempt** and backed off — retried after 1 minute, then 2, 4, 8, up to 15 — so it moves
+behind other queued emails instead of holding the head of the queue; if the provider did deliver
+after all, the retry carries the same `Idempotency-Key` and the provider dedupes it. After **ten**
+timeouts on one email the sweep logs `[otta] cron sweep order-emails: the email provider has
+timed out N times …` with `console.error` (alert on it), and from then on each timeout counts as
+a failed attempt, so the email is eventually parked `failed` with the reason "provider kept
+timing out". A genuine provider failure (a non-2xx answer or a network error) always counts, and
+an email is parked `failed` after five attempts. There is
+no admin action to re-queue a parked email yet (a follow-up); until there is, a parked
+email is a provider or configuration problem to fix at the provider, and the customer will not
+receive that message.
+
+**The plan this assumes.** Cloudflare caps one Worker invocation at **50 D1 queries and 50
+subrequests on Workers Free** (1000 queries and 10,000 subrequests on Workers Paid; see
+Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) and
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/)). The scheduled event
+that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
+so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
+call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
+four scans come due adds about 17–20 more; one email is about **8**, one hold expired about
+**14**, one order expired about **22** (plus its list read), one order whose hold bookkeeping
+needs completing about 14. So **on Workers Free, with backlogs everywhere, a tick advances about
+one unit of whichever customer-facing leg leads it — roughly one email, one hold or one order a
+minute, each leg leading one minute in three** — enough for a small store. The four scans, and
+`coupon-orphans` especially (it runs last, and only in a tick whose order expiry finished), may
+run much less often than every fifteen minutes while Free is working through a backlog. A store
+that abandons more checkouts than that per minute has outgrown Workers Free. Right behind the
+three critical legs runs `cancel-intents` (withdrawing an expired or unpaid-cancelled order's
+Stripe PaymentIntent): best-effort, about 5 calls per order (one of them the Stripe cancel)
+plus up to 5 secret reads to build the gateway, at most 20% of the time and 30% of the queries,
+1–10 orders a tick scaled from the budget, each cancel given a fixed 1.5 s and started only with
+that much left. On Workers Free it runs when the critical legs leave room and is deferred
+otherwise — a cancel it does not reach is covered by the late-payment refund. The last leg,
+`late-refunds` (resuming a late payment's automatic refund after a transient Stripe failure),
+is **best-effort**: a tick with nothing due pays one query for it and logs nothing. One resume
+is about 20 calls (two of them Stripe subrequests, the rest mostly the refund's finalize and its
+reporting write) plus up to 5 secret reads to build the gateway; a unit is started only with
+3.5 s left (a pre-flight, a whole 2.5 s create — a create that times out is ambiguous, so it is
+never started with less — and the writes after it). It runs last; only where it cannot fit
+there — **Workers Free** — does it, while refunds are pending, **lead one tick per fifteen
+minutes**, resuming one refund: that lead tick takes most of that minute's budget, so the
+critical legs go second in it (at most once per fifteen minutes, and only while late refunds
+are pending). In the other minutes a cheap give-up step — no Stripe call, its own list of the
+oldest retries, about 9 calls — runs at the head of the tick, so a refund past the ~3-day limit
+is handed to a human within a tick on every plan. On Paid it never leads and resumes up to five
+a tick, within 40% of the query budget.
+
+**Background work per minute (Settings → Checkout & holds).** The query budget is an
+operational setting, beside the cart hold TTL, with two presets: **Workers Free (30)**, the
+default, and **Workers Paid (600)** — set it to the plan the store actually runs on. The sweep
+reads it once per tick (that read counts against the budget) and sizes its per-tick bites from
+it and the measured costs: Free takes 2 holds, 2 orders and 1 email a tick at most; Paid up to 18,
+18 and 22, which clears a backlog of the size QA saw (14–18 due in one tick) in about one tick.
+The 9.5 s time budget applies on both plans, so on Paid it — not the query count — is usually
+what ends a busy tick. **30 is also the minimum**: below it the costliest critical unit (an order
+expiry, about 23 calls with its list, plus the tick's own reads and reserve) could never start,
+and order expiry would stop silently. Any whole number from 30 to 900 is accepted on save
+(anything else is refused with a message, never clamped); a stored value outside those bounds is
+ignored for the Free preset. **Choosing Paid on Workers Free is a mistake the platform
+punishes**: ticks then fail with D1's "too many API requests by single Worker invocation" once
+there is a backlog. Against D1's *daily* Free limits the cadence is small: about 12,000 queries a
+day from the sweep when idle (8 a minute, plus the scans every fifteen), each reading a handful
+of rows and writing almost none — well under the 5 million rows read and 100,000 rows written a
+day. The host's own share of each scheduled event was not measured; on Free, 20 queries is the
+allowance left for it, and on Paid the 600 preset leaves 400 of the 1000.
+
+Two kinds of `wrangler tail` lines mean something beyond a slow tick:
+`[cron] Hook failed for otta:commerce-sweeps: Error: Hook timeout` (a single storage call or
+email request hanging past every guard — the email send is the usual suspect, so check the
+provider), and D1's "too many API requests by single Worker invocation" (the host's own work in
+that event used more of the 50 than the 20 the sweep leaves it).
 
 Nothing needs to register that task by hand. The site lists the plugin in its `plugins`
 array, so the host never fires `plugin:activate` for it; instead the plugin wraps its four
 content-sync hooks and the two public catalog routes (product list and product page) in
 `withSweepBootstrap` (`packages/plugin/src/cron/index.ts`), which ensures the task exists
-once per isolate on the first such request and retries on the next if that write fails.
+once per isolate on the first such request (the tick does the same, for a cron-only isolate)
+and retries on the next if that fails. It reads the task row first and writes only when the
+schedule differs.
 
 Every leg is **idempotent** and runs in its own try/catch with its own label, so a leg that
-throws cannot starve the eight beside it; a tick always returns a summary, and each leg logs
-one line on success and one `console.error` on failure (visible in `wrangler tail`). Per
+throws cannot starve the others beside it; a tick always returns a summary. A leg logs one line
+when it did work or has more left, nothing when idle, and one `console.error` on failure
+(visible in `wrangler tail`). Per
 [ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md), these sweepers are not
 an optimization — a coupling that spans two aggregates is made idempotently completable
-rather than transactional, so **a missing sweeper is a correctness bug**. The site's cron
-may be relaxed (e.g. `*/5 * * * *`) if cron noise ever matters more than publish latency,
-but relaxing it past the task's own `*/15` delays every sweep.
+rather than transactional, so **a missing sweeper is a correctness bug**. Do not relax the
+site's cron: the task is due every minute, so a slower trigger directly lengthens how long an
+expired hold keeps stock off sale and how long a queued email waits.
 
 **Scaling.** Commerce truth is one document per aggregate in the site's D1 database, written
 by compare-and-set; every command carries an idempotency key the store enforces once-only,
@@ -418,5 +569,8 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
+| An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
+| An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
+| An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

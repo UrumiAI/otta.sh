@@ -68,9 +68,12 @@
 		"enabled": true,
 	},
 	// Drives scheduled publishing, plugin cron, and maintenance (src/worker.ts).
-	// Every-minute matches EmDash's minute-granular scheduled publishing and is
-	// free (D1 free limits unaffected); may be relaxed (e.g. "*/5 * * * *") if
-	// cron noise ever matters more than publish latency.
+	// Every-minute matches EmDash's minute-granular scheduled publishing AND the
+	// commerce sweep's own cadence (due every minute: hold expiry and the order
+	// email outbox), and stays within D1's free limits (the sweep budgets itself to
+	// Workers Free's 50 queries per invocation — DEPLOYMENT.md §5). Do not relax it:
+	// a slower trigger directly lengthens how long an expired hold keeps stock off
+	// sale and how long a queued order email waits.
 	"triggers": {
 		"crons": ["* * * * *"],
 	},

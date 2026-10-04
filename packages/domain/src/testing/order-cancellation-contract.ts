@@ -173,6 +173,40 @@ export function orderCancellationContract(
 			});
 		});
 
+		test("the cancel write records the refund and restock it was given, on the envelope", async () => {
+			// Port-level: `cancelOrderWithRefund` hands the store what it refunded and
+			// whether it restocked, so the cancelled email can say a refund is on its way
+			// and the console can show what happened.
+			const h = await makeHarness();
+			const id = await seedPaid(h);
+			const res = await h.store.cancelOrder({
+				orderId: id,
+				fromState: "paid",
+				reason: "customer_request",
+				detail: null,
+				cancelledBy: "admin@shop",
+				idempotencyKey: idempotencyKey(`cw:${id}`),
+				enqueueEmail: true,
+				refund: { amount: cents(1500), currency: USD },
+				restocked: true,
+			});
+			expect(res.cancelled).toBe(true);
+			expect((await h.store.getById(id))?.cancellation).toMatchObject({
+				reason: "customer_request",
+				refund: { amount: 1500, currency: "USD" },
+				restocked: true,
+			});
+		});
+
+		test("a cancel given no refund records none and no restock", async () => {
+			const h = await makeHarness();
+			const id = await seedPending(h);
+			await cancel(h, id);
+			const cancellation = (await h.store.getById(id))?.cancellation;
+			expect(cancellation?.refund ?? null).toBeNull();
+			expect(cancellation?.restocked ?? false).toBe(false);
+		});
+
 		test("an absent/blank detail normalizes to null", async () => {
 			const h = await makeHarness();
 			const id = await seedPending(h);

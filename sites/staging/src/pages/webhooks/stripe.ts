@@ -76,12 +76,15 @@ function toBase64(bytes: Uint8Array): string {
 
 function respond(result: StripeWebhookSettleResult): Response {
 	const headers: Record<string, string> = { "Content-Type": "application/json" };
-	// BUSY is storage contention: nothing was committed by the step that gave up
-	// and the plugin's settle is replay-safe (the domain dedupes on the Stripe
-	// event id). Stripe schedules its own retries and does not promise to honour
-	// Retry-After, so this is advisory — and the site does NOT retry here itself:
-	// Stripe's redelivery is the retry, and doubling it only adds load.
-	if (!result.ok && result.reason === "BUSY") {
+	// A `retryable` refusal says "this same delivery will work later": BUSY
+	// (storage contention — nothing was committed by the step that gave up) and
+	// LATE_PAYMENT_REFUND_RETRYABLE (a late payment's refund hit a transient
+	// provider error; its reservation is kept). The plugin's settle is replay-safe
+	// either way (the domain dedupes on the Stripe event id and resumes the refund
+	// under the same key). Stripe schedules its own retries and does not promise to
+	// honour Retry-After, so this is advisory — and the site does NOT retry here
+	// itself: Stripe's redelivery is the retry, and doubling it only adds load.
+	if (!result.ok && "retryable" in result && result.retryable) {
 		headers["Retry-After"] = String(BUSY_RETRY_AFTER_SECONDS);
 	}
 	return new Response(JSON.stringify(result), { status: result.status, headers });

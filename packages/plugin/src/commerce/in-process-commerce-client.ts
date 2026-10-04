@@ -82,6 +82,7 @@ import {
 	updateProductVariantFields,
 	upsertProductCommerce,
 	upsertProductVariant,
+	readOrderWithLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
@@ -90,6 +91,7 @@ import {
 	type CartLine,
 	type CreateOrderDeps,
 	type FulfillmentKind,
+	type LatePaymentStatus,
 	type Money,
 	type Order,
 	type PaymentGateway,
@@ -1006,7 +1008,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return {
 			ok: true,
-			order: serializePublicOrder(result.order),
+			// A checkout's reply describes the order it just placed (or replayed);
+			// whatever `latePayment` would say, the place route projects only id and
+			// state out of it, so it is not worth three reads on the hot path.
+			order: serializePublicOrder(result.order, "none"),
 			intent: serializeIntent(result.intent),
 		};
 	}
@@ -1041,9 +1046,13 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  the public whitelist and never the operator's view. */
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		return { ok: true, order: serializePublicOrder(order) };
+		// ONE read of the order aggregate — the order and the ledgers its
+		// `latePayment` status is derived from (`readOrderWithLatePayment`). On a
+		// live order (every poll of a pending confirmation page, the pay page's
+		// guard) the derivation is pure and short-circuits; nothing is read twice.
+		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
+		if (read === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return { ok: true, order: serializePublicOrder(read.order, read.latePayment) };
 	}
 
 	/**
@@ -1245,7 +1254,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
  * guest may legitimately read — carrier and tracking, the cancellation reason —
  * never the staff identity, the audit witness or the free-text detail.
  */
-function serializePublicOrder(order: Order): PublicOrderWire {
+function serializePublicOrder(order: Order, latePayment: LatePaymentStatus): PublicOrderWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1278,6 +1287,7 @@ function serializePublicOrder(order: Order): PublicOrderWire {
 			order.cancellation === null
 				? null
 				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
+		latePayment,
 	};
 }
 

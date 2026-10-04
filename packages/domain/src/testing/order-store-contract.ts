@@ -26,6 +26,11 @@ export interface OrderStoreContractOptions {
 
 const USD = currency("USD");
 
+/** One refund-retry schedule entry for the per-refund retry case. */
+function retry(at: string, attempts = 1) {
+	return { at, attempts, since: "2026-07-10T00:00:00.000Z" };
+}
+
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function summaryRow(overrides: Partial<SeedOrderSummaryRow> & { id: string }): SeedOrderSummaryRow {
 	return {
@@ -441,6 +446,271 @@ export function orderStoreContract(
 			await store.markPaid(orderId("ord-1")); // paid ⇒ never expirable
 			const ids = await store.listExpirable("2026-07-10T00:30:00.000Z");
 			expect(ids).toEqual([orderId("ord-2")]);
+		});
+
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpirable honours a limit, returning at most that many due orders", async () => {
+			const { store } = await makeHarness();
+			for (const n of [1, 2, 3]) {
+				await store.createFromCart(
+					physicalInput({
+						orderId: orderId(`ord-${String(n)}`),
+						idempotencyKey: idempotencyKey(`key-${String(n)}`),
+						holdExpiresAt: "2026-07-10T00:20:00.000Z",
+					}),
+				);
+			}
+			const now = "2026-07-10T00:30:00.000Z";
+			const limited = await store.listExpirable(now, { limit: 2 });
+			expect(limited).toHaveLength(2);
+			expect(await store.listExpirable(now)).toHaveLength(3);
+			expect(await store.listExpirable(now, { limit: 10 })).toHaveLength(3);
+			await expect(store.listExpirable(now, { limit: 0 })).rejects.toThrow(RangeError);
+		});
+
+		// The cron sweep claims an outbox row and only then learns whether there is
+		// time left to send it. Handing the row back must not cost one of its
+		// attempts — an attempt that never reached the provider is not an attempt.
+		test("releaseEmailClaim returns a claimed row to the queue, due now, WITHOUT counting the attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1")); // enqueues the confirmation
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.attempts).toBe(1);
+			// While claimed, it is leased: not claimable again.
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+
+			await store.releaseEmailClaim(first!.id);
+
+			// Claimable again AT ONCE (no backoff), and the attempt was not counted.
+			const again = await store.claimNextEmail(now, lease);
+			expect(again?.id).toBe(first!.id);
+			expect(again?.attempts).toBe(1);
+		});
+
+		// A TIMED-OUT row is handed back with a FORWARD due time and its timeout
+		// counted, so it moves behind every other due row instead of being claimed
+		// first on every run — still without spending an attempt.
+		test("releaseEmailClaim with a retryAt backs the row off and counts a timeout, not an attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1"));
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.timeouts).toBe(0);
+			await store.releaseEmailClaim(first!.id, {
+				retryAt: "2026-07-10T00:02:00.000Z",
+				timedOut: true,
+			});
+			// Not due before its retry time…
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+			// …due after it, attempt uncounted and the timeout recorded.
+			const later = await store.claimNextEmail(
+				"2026-07-10T00:02:00.000Z",
+				"2026-07-10T00:07:00.000Z",
+			);
+			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
+		});
+
+		// -- Payment intents (late-payment prevention) ----------------------------
+
+		test("recordPaymentIntent is idempotent per (order, intent), due at the hold, listed in recording order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.listPaymentIntents(orderId("ord-1"))).toEqual([]);
+			const record = (intentId: string) =>
+				store.recordPaymentIntent({ orderId: orderId("ord-1"), gateway: "stripe", intentId });
+			await record("pi_a");
+			await record("pi_a"); // a checkout replay re-issuing the SAME intent
+			await record("pi_b"); // a second intent (Stripe's ~24 h key expiry)
+
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => [i.gateway, i.intentId, i.cancelDueAt, i.cancelOutcome])).toEqual([
+				["stripe", "pi_a", "2026-07-10T00:15:00.000Z", null],
+				["stripe", "pi_b", "2026-07-10T00:15:00.000Z", null],
+			]);
+			expect(intents[0]?.cancelAttempts).toBe(0);
+			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
+		});
+
+		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					holdExpiresAt: "2026-07-10T00:05:00.000Z",
+				}),
+			);
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-2"),
+				gateway: "stripe",
+				intentId: "pi_2",
+			});
+
+			expect(await store.listIntentCancelsDue("2026-07-10T00:01:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+
+			await store.updatePaymentIntentCancel(orderId("ord-2"), "pi_2", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			await store.updatePaymentIntentCancel(orderId("ord-1"), "pi_1", {
+				cancelDueAt: "2026-07-10T02:00:00.000Z",
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T03:00:00.000Z", 10)).toEqual([
+				orderId("ord-1"),
+			]);
+			const [pi2] = await store.listPaymentIntents(orderId("ord-2"));
+			expect([pi2?.cancelOutcome, pi2?.cancelAttempts, pi2?.cancelDueAt]).toEqual([
+				"cancelled",
+				1,
+				null,
+			]);
+		});
+
+		test("the pending → paid flip resolves the order's unresolved intents as not_needed — a paid order owes no cancel", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			expect(await store.markPaid(orderId("ord-1"))).toBe(true);
+
+			const [intent] = await store.listPaymentIntents(orderId("ord-1"));
+			expect([intent?.cancelOutcome, intent?.cancelDueAt]).toEqual(["not_needed", null]);
+			expect(await store.listIntentCancelsDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+		});
+
+		// -- Notices: non-transition emails on the outbox --------------------------
+
+		test("enqueueNotice is first-wins per (order, notice kind), carries its own payload, and is claimed beside the state rows", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const notice = { kind: "late-payment-refunded" as const, amount: cents(1200), currency: USD };
+
+			expect(await store.enqueueNotice(orderId("ord-1"), notice)).toBe(true);
+			// A second late payment on the same order is not a second email.
+			expect(await store.enqueueNotice(orderId("ord-1"), { ...notice, amount: cents(300) })).toBe(
+				false,
+			);
+			expect(await store.enqueueNotice(orderId("ord-missing"), notice)).toBe(false);
+
+			const claimed: { toState: string; notice: unknown }[] = [];
+			for (let i = 0; i < 10; i++) {
+				const row = await store.claimNextEmail(
+					"2026-07-10T01:00:00.000Z",
+					"2026-07-10T01:05:00.000Z",
+				);
+				if (row === null) break;
+				claimed.push({ toState: row.toState, notice: row.notice });
+				await store.markEmailSent(row.id, "2026-07-10T01:00:00.000Z");
+			}
+			// The expiry's own state email is untouched by the notice (a notice never
+			// occupies a state's slot), and the notice row carries the FIRST payload.
+			expect(claimed).toHaveLength(2);
+			expect(claimed).toContainEqual({ toState: "expired", notice: null });
+			expect(claimed).toContainEqual({ toState: "expired", notice });
+		});
+
+		// -- Late-payment support: the one-read ledger and the refund-retry schedule
+
+		test("readOrderLedger returns the order with its events, payments and refunds; null for an unknown order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			await store.recordPayment({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				providerRef: "pi_ledger",
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(ledger?.order.state).toBe("expired");
+			expect(ledger?.events.map((e) => [e.fromState, e.toState])).toEqual([["pending", "expired"]]);
+			expect(ledger?.payments.map((p) => p.providerRef)).toEqual(["pi_ledger"]);
+			expect(ledger?.refunds).toEqual([]);
+			expect(await store.readOrderLedger(orderId("ord-missing"))).toBeNull();
+		});
+
+		test("scheduleRefundRetry is PER REFUND: due orders list earliest-first and bounded; clearing one refund keeps the order due while another still needs it", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const kA = idempotencyKey("late-payment-refund:pi_a");
+			const kB = idempotencyKey("late-payment-refund:pi_b");
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, retry("2026-07-10T00:30:00.000Z"));
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, retry("2026-07-10T00:40:00.000Z", 2));
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, retry("2026-07-10T00:10:00.000Z"));
+			await store.scheduleRefundRetry(
+				orderId("ord-missing"),
+				kA,
+				retry("2026-07-10T00:00:00.000Z"),
+			);
+
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(
+				ledger?.refundRetries.map((r) => [r.idempotencyKey, r.at, r.attempts, r.since]),
+			).toEqual([
+				[kA, "2026-07-10T00:30:00.000Z", 1, "2026-07-10T00:00:00.000Z"],
+				[kB, "2026-07-10T00:40:00.000Z", 2, "2026-07-10T00:00:00.000Z"],
+			]);
+
+			// Clearing ONE refund's retry leaves the order due for the other.
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, null);
+			expect(await store.listRefundRetriesDue("2026-07-10T00:35:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			// The STALE list ranks by the OLDEST first failure (`since`), whatever is due:
+			// both orders' retries began at 00:00, and a cutoff before that finds none.
+			expect(
+				(await store.listRefundRetriesStale("2026-07-10T00:00:00.000Z", 10)).toSorted(),
+			).toEqual([orderId("ord-1"), orderId("ord-2")].toSorted());
+			expect(await store.listRefundRetriesStale("2026-07-09T23:59:59.000Z", 10)).toEqual([]);
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, null);
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, null);
+			expect(await store.listRefundRetriesStale("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listRefundRetriesDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+			expect((await store.readOrderLedger(orderId("ord-1")))?.refundRetries).toEqual([]);
 		});
 
 		// -- Admin Orders console: view-only keyset list --------------------------

@@ -53,7 +53,59 @@ export interface PaymentGateway {
 	 * records a manual, out-of-band refund instead.
 	 */
 	refund(input: RefundInput): Promise<RefundResult>;
+	/**
+	 * Withdraw a payment the buyer has NOT completed, so it can no longer be paid
+	 * — the mirror of `createIntent`, called by the intent-cancel sweep
+	 * (`cancelDueIntents`) once an unpaid order has left `pending`.
+	 *
+	 * WHY THIS EXISTS. An expired order's PaymentIntent used to stay live: a buyer
+	 * who kept the pay page (or its cookie) open past the hold could still pay it,
+	 * and the money landed on an order whose stock had already gone back on sale.
+	 * Cancelling the intent at the provider closes that window at the source.
+	 *
+	 * BEST-EFFORT BY CONTRACT. It never runs inside the expiry or the cancel
+	 * itself — the sweep drains due intents in its own bounded leg — and a failure
+	 * only reschedules it. A cancel that loses the race to a buyer paying at that
+	 * instant is not an error either: the provider reports the intent
+	 * `not_cancellable`, the payment succeeds, and `settleOrder`'s late-payment
+	 * path refunds it. Prevention narrows the window; the refund is what makes the
+	 * window safe.
+	 *
+	 * Stripe calls `POST /v1/payment_intents/{id}/cancel` with our
+	 * `idempotencyKey` as its native `Idempotency-Key`, under a short timeout. A
+	 * gateway that holds no standing intent to withdraw (x402's stateless
+	 * page-gate challenge), or no credential to call the provider with, answers
+	 * `UNSUPPORTED`.
+	 */
+	cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult>;
 }
+
+/** Withdraw one payment intent the order minted (see `cancelIntent`). */
+export interface CancelIntentInput {
+	orderId: OrderId;
+	/** The provider's intent id, as `createIntent` returned it and
+	 *  `OrderStore.recordPaymentIntent` recorded it (`pi_…` for Stripe). */
+	intentId: string;
+	/** Every command carries one (CLAUDE.md); passed to the provider as its
+	 *  native idempotency key so a re-swept cancel re-calls nothing. */
+	idempotencyKey: IdempotencyKey;
+}
+
+/**
+ * The normalized result of a `cancelIntent` attempt.
+ *  - `cancelled` — the provider withdrew the intent; it can no longer be paid.
+ *  - `not_cancellable` — the intent is already final (succeeded, or cancelled
+ *    earlier): nothing to do here. A SUCCEEDED intent is the buyer paying at the
+ *    instant the order expired; its webhook takes the late-payment refund path.
+ *  - `UNSUPPORTED` — the gateway has no standing intent or no credential: a
+ *    capability statement, never retried and not worth an operator's attention.
+ *  - `RETRYABLE` / `TERMINAL` — the provider could not be reached / refused. The
+ *    sweep retries a RETRYABLE one a bounded number of times and gives up on a
+ *    TERMINAL one; either way the late-payment refund is the backstop.
+ */
+export type CancelIntentResult =
+	| { ok: true; outcome: "cancelled" | "not_cancellable" }
+	| { ok: false; reason: "UNSUPPORTED" | "RETRYABLE" | "TERMINAL" };
 
 export interface RefundInput {
 	orderId: OrderId;
@@ -98,6 +150,10 @@ export type RefundResult =
 export type RefundFailureReason =
 	| "UNSUPPORTED"
 	| "PROVIDER_ALREADY_REFUNDED"
+	/** The CALLER's own guard declined to start the issuing call (it had no time
+	 *  for a whole one): nothing was issued, and it is not the provider's failure —
+	 *  retry under the same key, and do not count it as an attempt. */
+	| "NOT_STARTED"
 	| "RETRYABLE"
 	| "TERMINAL"
 	| "UNVERIFIED";

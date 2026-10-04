@@ -12,6 +12,7 @@ import {
 	settleOrder,
 	sku as brandSku,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
@@ -318,6 +319,15 @@ describe("settleOrder", () => {
 			expire: (id, at) => h.orderStore.expire(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
+			recordPaymentIntent: (i) => h.orderStore.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.orderStore.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.orderStore.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.orderStore.updatePaymentIntentCancel(id, intent, u),
+			readOrderLedger: (id) => h.orderStore.readOrderLedger(id),
+			scheduleRefundRetry: (id, key, retry) => h.orderStore.scheduleRefundRetry(id, key, retry),
+			listRefundRetriesDue: (now, limit) => h.orderStore.listRefundRetriesDue(now, limit),
+			listRefundRetriesStale: (cutoff, limit) => h.orderStore.listRefundRetriesStale(cutoff, limit),
 			getCapturedPayments: (id) => h.orderStore.getCapturedPayments(id),
 			listRefunds: (id) => h.orderStore.listRefunds(id),
 			getRefundByIdempotencyKey: (k) => h.orderStore.getRefundByIdempotencyKey(k),
@@ -337,8 +347,12 @@ describe("settleOrder", () => {
 			countOrders: (f) => h.orderStore.countOrders(f),
 			linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
+			enqueueNotice: (id, notice) => h.orderStore.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.orderStore.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),
 			rescheduleEmail: (id, at) => h.orderStore.rescheduleEmail(id, at),
+			releaseEmailClaim: (id) => h.orderStore.releaseEmailClaim(id),
 		};
 	}
 
@@ -348,9 +362,14 @@ describe("settleOrder", () => {
 		// Past the checkout TTL, but the sweep has not run yet: settle loads the
 		// order still `pending`, then the sweep wins between load and flip.
 		h.clock.advance(16 * 60 * 1000);
+		// A gateway that CANNOT refund (x402, or Stripe with no secret key): the
+		// late payment cannot be returned automatically, so the flag must stand for
+		// a human. The refundable case — refunded, flag resolved — is pinned in
+		// `late-payment.test.ts` and the shared `latePaymentContract`.
+		const cannotRefund = new FakePaymentGateway({ id: "stripe", refundable: false });
 		const res = await settleOrder(
 			{ ...h.settleDeps, orderStore: raceExpiryIntoMarkPaid() },
-			h.stripeGw,
+			cannotRefund,
 			evt(order),
 		);
 		expect(res.ok).toBe(true);

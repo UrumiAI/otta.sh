@@ -36,6 +36,28 @@ export type FulfillmentKind = "physical" | "digital";
 export type PaymentMethod = "stripe" | "x402";
 
 /**
+ * A customer email about an order that is NOT a state transition. The outbox was
+ * built keyed on `(orderId, toState)` because every order email used to announce a
+ * state change; a late payment refunded on an already-`expired` order changes no
+ * state, yet the buyer must hear about money that left their card and came back.
+ * A notice rides the same outbox (durable retry, lease, at-least-once delivery) and
+ * is first-wins per `(orderId, notice)` exactly as a state email is per
+ * `(orderId, toState)`.
+ *
+ * - `late-payment-refunded` — a payment succeeded after the order had expired or
+ *   been cancelled, and it was refunded automatically (`settleOrder`).
+ * - `refund-issued` — an admin refund that left money captured (a partial refund),
+ *   announced by the write that finalized it; or a cancellation's refund whose order
+ *   shipped before the cancel landed, so no cancelled email will carry it
+ *   (ADR-0026). One per refund.
+ *
+ * A notice is first-wins per `(orderId, kind, refundId)` — `refundId` absent
+ * reads as none — so each refund announces itself once, however often the step
+ * that enqueued it is replayed.
+ */
+export type OrderNotice = "late-payment-refunded" | "refund-issued";
+
+/**
  * The admin's disposition when clearing a reconciliation flag (admin-UX
  * Increment 1). A resolution is a RECORD of the decision, never itself a money
  * movement: `refunded` means the refund was carried out through the ordinary
@@ -99,6 +121,24 @@ export interface OrderCancellation {
 	/** Server-assigned ISO-8601 UTC timestamp the cancellation was recorded (from
 	 *  the store's clock) — the presence witness that a reason is on file. */
 	cancelledAt: string;
+	/**
+	 * The money the cancellation returned to the buyer (QA T1-4): the refund
+	 * `cancelOrderWithRefund` issued BEFORE the flip, so the cancelled email can say
+	 * a refund is on its way and for how much. `null` when nothing was refunded — an
+	 * unpaid order, or a paid one with nothing captured. ABSENT on a cancellation
+	 * recorded before the field existed, which reads the same as `null`.
+	 */
+	refund?: CancellationRefund | null;
+	/** Whether the cancellation returned the order's physical units to stock. ABSENT
+	 *  (an older cancellation) reads as `false`. A pending order's held stock is
+	 *  released by the cancel itself either way; this is about SOLD units. */
+	restocked?: boolean;
+}
+
+/** The refund a cancellation issued — integer minor units in the order's currency. */
+export interface CancellationRefund {
+	amount: Cents;
+	currency: Currency;
 }
 
 /**

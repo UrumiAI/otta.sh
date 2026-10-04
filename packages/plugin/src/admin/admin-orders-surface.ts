@@ -93,6 +93,13 @@ export interface OrderCancellationWire {
 	detail: string | null;
 	cancelledBy: string;
 	cancelledAt: string;
+	/** The refund the cancellation issued (integer minor units), or null when it
+	 *  refunded nothing. ABSENT on a cancellation recorded before the field
+	 *  existed — read it as null. */
+	refund?: { amount: number; currency: string } | null;
+	/** Whether the cancellation returned the order's units to stock. ABSENT on an
+	 *  older cancellation — read it as false. */
+	restocked?: boolean;
 }
 
 export interface OrderDetailWire {
@@ -260,6 +267,16 @@ export interface RefundsSummaryWire {
 	refundable: boolean;
 }
 
+/**
+ * What became of the buyer's email an admin write enqueued (QA T1-6). The write
+ * sends it inline (`sendOrderEmailsNow`), so the console can say what is TRUE:
+ *  - `sent`         — it went out;
+ *  - `queued`       — it did not go yet (the provider failed or was slow); the
+ *                     cron retries it automatically;
+ *  - `unconfigured` — the store has no email provider, so it will not be sent.
+ */
+export type InlineEmailStatus = "sent" | "queued" | "unconfigured";
+
 /** POST refund returns a discriminated result (like `transitionOrder`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.
  *  `recorded:false` on a 2xx ⇒ an idempotent replay (`duplicate`). On a failure,
@@ -267,7 +284,15 @@ export interface RefundsSummaryWire {
  *  `REFUND_EXCEEDS_TOTAL`, `PROVIDER_ALREADY_REFUNDED`, `GATEWAY_UNVERIFIED`); the
  *  caller renders GENERIC copy keyed off it, never the raw status/URL. */
 export type RefundOrderResult =
-	| { ok: true; recorded: boolean; duplicate: boolean; fullyRefunded: boolean }
+	| {
+			ok: true;
+			recorded: boolean;
+			duplicate: boolean;
+			fullyRefunded: boolean;
+			/** What became of the refund email this write enqueued — see
+			 *  {@link InlineEmailStatus}. Absent on a replay. */
+			email?: InlineEmailStatus;
+	  }
 	| { ok: false; status: number; reason?: string };
 
 /** An append-only order note (admin-UX Increment 0) on the wire. */
@@ -326,11 +351,31 @@ export type AddNoteResult =
 	| { ok: true; appended: boolean; note: OrderNoteWire }
 	| { ok: false; status: number };
 
+/** Why the admin transition was refused — the domain's `TransitionOrderAsAdminFailure`,
+ *  restated here as a closed union (this module imports no domain type, MOD-4), so a
+ *  caller comparing against it is checked by the compiler and the in-process client
+ *  cannot return a reason missing from it. */
+export type TransitionRefusal =
+	| "ORDER_NOT_FOUND"
+	| "INVALID_TRANSITION"
+	| "MANUAL_PAYMENT_NOT_ALLOWED"
+	| "USE_CANCEL";
+
 /** POST transition returns a discriminated result (like `updateSettings`) so a
- *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
+ *  failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  On a failure, `reason` carries the domain's typed reason when one applies —
+ *  `MANUAL_PAYMENT_NOT_ALLOWED` (a manual mark-paid — only the payment provider
+ *  settles an order today) and `USE_CANCEL` (any bare cancel — Cancel order is the
+ *  one way) get their own copy. */
 export type TransitionOrderResult =
-	| { ok: true; transitioned: boolean }
-	| { ok: false; status: number };
+	| {
+			ok: true;
+			transitioned: boolean;
+			/** What became of the email this move enqueued. Absent when it enqueued none
+			 *  — a no-op, or a Mark refunded (bookkeeping, emails nobody). */
+			email?: InlineEmailStatus;
+	  }
+	| { ok: false; status: number; reason?: TransitionRefusal };
 
 /** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
  *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.
@@ -352,7 +397,7 @@ export type ResolveReconciliationResult =
  *  `processing`); the caller renders GENERIC copy keyed off it, never the raw
  *  status/URL. */
 export type RecordFulfillmentResult =
-	| { ok: true; recorded: boolean }
+	| { ok: true; recorded: boolean; email?: InlineEmailStatus }
 	| { ok: false; status: number; reason?: string };
 
 /** POST cancel returns a discriminated result (like `transitionOrder`) so a
@@ -363,8 +408,41 @@ export type RecordFulfillmentResult =
  *  (e.g. `NOT_CANCELLABLE` — the order can no longer be cancelled); the caller
  *  renders GENERIC copy keyed off it, never the raw status/URL. */
 export type CancelOrderResult =
-	| { ok: true; cancelled: boolean }
-	| { ok: false; status: number; reason?: string };
+	| {
+			ok: true;
+			cancelled: boolean;
+			/** The money the cancellation returned (QA T1-4), or null when none. On a
+			 *  replay, what the cancellation on file returned. */
+			refund?: { amountCents: number; currency: string } | null;
+			/** Units THIS call returned to stock (0 on a replay or when declined). */
+			restockedUnits?: number;
+			/** Lines the restock could not return, and why (`UNKNOWN_SKU`,
+			 *  `HOLD_RELEASED`, `HOLD_UNKNOWN`) — reported so the console can say so. */
+			restockSkipped?: { sku: string; quantity: number; reason: string }[];
+			/** What became of the cancelled email. Absent on a replay. */
+			email?: InlineEmailStatus;
+	  }
+	| {
+			ok: false;
+			status: number;
+			reason?: string;
+			/** With `reason: "REFUND_FAILED"`: the refund leg's own typed reason
+			 *  (`GATEWAY_RETRYABLE`, `GATEWAY_TERMINAL`, `GATEWAY_UNVERIFIED`, …). */
+			refundFailure?: string;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"` or
+			 *  `"CANCEL_INCOMPLETE_AFTER_REFUND"`: what DID move — the refund, and (lost)
+			 *  the units restocked. */
+			refund?: { amountCents: number; currency: string } | null;
+			restockedUnits?: number;
+			/** With `reason: "CANCEL_INCOMPLETE_AFTER_REFUND"`: the failure was a busy
+			 *  store, so the copy says so. */
+			retryable?: boolean;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: the state the order moved to. */
+			movedTo?: string | null;
+			/** With `reason: "CANCEL_LOST_AFTER_REFUND"`: what became of the refund's own
+			 *  email (its `refund-issued` notice, sent inline). Absent when no refund. */
+			email?: InlineEmailStatus;
+	  };
 
 /**
  * THE ADMIN ORDERS SURFACE, structurally — what a caller may do, with no claim
@@ -472,12 +550,21 @@ export interface AdminOrdersSurface {
 		opts: { idempotencyKey: string },
 	): Promise<RecordFulfillmentResult>;
 
-	/** Cancel an order WITH a structured reason (admin-UX Increment 1). Returns a
-	 *  discriminated result; forwards a typed `reason` (e.g. `NOT_CANCELLABLE`) so
-	 *  the console can pick the right GENERIC copy. */
+	/** Cancel an order WITH a structured reason (admin-UX Increment 1). A paid
+	 *  order is refunded what is still refundable and — unless `restock` is false —
+	 *  its units are returned to stock BEFORE it is cancelled (QA T1-4,
+	 *  `cancelOrderWithRefund`); a failed refund cancels nothing. Returns a
+	 *  discriminated result; forwards a typed `reason` (e.g. `NOT_CANCELLABLE`,
+	 *  `REFUND_FAILED` with its `refundFailure`) so the console can pick the right
+	 *  GENERIC copy. `restock` defaults to true. */
 	cancelOrder(
 		orderId: string,
-		cancellation: { reason: string; detail?: string | null; cancelledBy: string },
+		cancellation: {
+			reason: string;
+			detail?: string | null;
+			cancelledBy: string;
+			restock?: boolean;
+		},
 		opts: { idempotencyKey: string },
 	): Promise<CancelOrderResult>;
 

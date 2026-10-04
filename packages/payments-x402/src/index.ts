@@ -1,4 +1,6 @@
 import {
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -183,6 +185,19 @@ export class X402PaymentGateway implements PaymentGateway {
 	 * this on the happy path; it is here only to satisfy the port completely.
 	 */
 	async refund(_input: RefundInput): Promise<RefundResult> {
+		return { ok: false, reason: "UNSUPPORTED" };
+	}
+
+	/**
+	 * Nothing to withdraw: an x402 "intent" is a stateless page-gate challenge,
+	 * not a provider-side object that stays payable — a payment only exists once
+	 * the buyer brings back a settled receipt. When an x402 order expires, the
+	 * receipt path is what guards it (`settleOrder` refuses a dead order, and x402
+	 * is not refundable, so a late receipt is flagged for a manual refund). The
+	 * capability statement `UNSUPPORTED`, never a throw, so the expiry sweep moves
+	 * on without logging it.
+	 */
+	async cancelIntent(_input: CancelIntentInput): Promise<CancelIntentResult> {
 		return { ok: false, reason: "UNSUPPORTED" };
 	}
 }

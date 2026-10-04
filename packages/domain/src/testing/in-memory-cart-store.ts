@@ -1,3 +1,5 @@
+import type { ExpiryListOptions } from "../ports/cart-store.js";
+import { assertSweepLimit } from "../sweep/batch.js";
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import {
@@ -226,9 +228,19 @@ export class InMemoryCartStore implements CartStore {
 		if (row.reservationId !== null) this.#holds.delete(row.reservationId);
 	}
 
-	async listExpired(now: string, _cutoff: string): Promise<ExpiredHold[]> {
+	async listExpired(
+		now: string,
+		_cutoff: string,
+		options: ExpiryListOptions = {},
+	): Promise<ExpiredHold[]> {
+		assertSweepLimit(options.limit);
+		// No derived candidate index to heal (cf. the document store's
+		// `holdExpiresAt`): a hold that is no longer `held` is filtered out right here,
+		// on every call, so a dead hold never occupies a listing slot.
 		const out: ExpiredHold[] = [];
 		for (const hold of this.#holds.values()) {
+			if (options.limit !== undefined && out.length >= options.limit) break;
+			if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 			if (this.#reservationState(hold.reservationId) === "held" && hold.expiresAt <= now) {
 				out.push({ reservationId: hold.reservationId });
 			}

@@ -101,6 +101,7 @@ async function withSettingsReadFailing<T>(body: () => Promise<T>): Promise<T> {
 const ALL_SUBMIT_IDS = [
 	"save-display",
 	"save-operational",
+	"save-background-work",
 	"save-stripe-secret-key",
 	"save-stripe-webhook-secret",
 	"save-email-api-key",
@@ -937,5 +938,73 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// its block_id is the FORBIDDEN programmatic close (§1.2) — it would
 		// discard whatever the operator had typed into the other two groups.
 		expect([...groupLabels(after).keys()]).toEqual([...groupLabels(before).keys()]);
+	});
+});
+
+/**
+ * "Background work per minute" — the commerce sweep's per-tick query budget, an
+ * operational choice because it depends on the Cloudflare plan: Workers Free
+ * allows 50 D1 queries per invocation, Workers Paid 1000. A store on Paid that
+ * kept the Free budget would drain an expiry backlog a couple of holds a minute.
+ */
+describe("Background work per minute (the sweep's query budget)", () => {
+	async function settingsPage(): Promise<LooseBlock[]> {
+		if (sandbox === undefined) throw new Error("no sandbox loaded");
+		return blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }));
+	}
+
+	test("defaults to the Workers Free preset, with Workers Paid offered beside it", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const radio = field(
+			formFor(await settingsPage(), "save-background-work"),
+			"backgroundWorkPerMinute",
+		);
+		expect(radio?.type).toBe("radio");
+		expect(radio?.initial_value).toBe("30");
+		expect(radio?.options).toEqual([
+			{ value: "30", label: "Workers Free (30)" },
+			{ value: "600", label: "Workers Paid (600)" },
+		]);
+	});
+
+	test("choosing Workers Paid persists it, and the next page load agrees", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-background-work",
+			values: { backgroundWorkPerMinute: "600" },
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		expectAllRealFormsPresent(blocks);
+		expect(toastOf(outcome)).toEqual({ message: "Background work saved", type: "success" });
+		expect(
+			field(formFor(await settingsPage(), "save-background-work"), "backgroundWorkPerMinute")
+				?.initial_value,
+		).toBe("600");
+	});
+
+	test("a value outside 30–900 is refused with a clear message, and nothing changes", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		// 29 and below would leave a critical leg unable to start (see the floor
+		// pinned in cron-sweep-budget.test.ts).
+		for (const bad of ["5", "29", "901", "abc", ""]) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-background-work",
+				values: { backgroundWorkPerMinute: bad },
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			expect(String(banner?.description)).toContain(
+				"Background work per minute must be a whole number from 30 to 900",
+			);
+			expect(toastOf(outcome)).toEqual({ message: "Background work not saved", type: "error" });
+		}
+		expect(
+			field(formFor(await settingsPage(), "save-background-work"), "backgroundWorkPerMinute")
+				?.initial_value,
+		).toBe("30");
 	});
 });

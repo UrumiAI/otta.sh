@@ -326,6 +326,7 @@ describe("buildOrderTotal", () => {
 			lines: [],
 			fulfillment: null,
 			cancellation: null,
+			latePayment: "none",
 		}) as PublicOrderWire;
 
 	test("is the order's totalCents, through the one money→string boundary", () => {
@@ -378,6 +379,7 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		lines: [],
 		fulfillment: null,
 		cancellation: null,
+		latePayment: "none",
 		...extra,
 	});
 
@@ -414,6 +416,14 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(view.totals.shipping.label).toBe("$5.99");
 		expect(view.totals.tax.label).toBe("$4.00");
 		expect(view.totals.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("the late-payment status rides through untouched — the page picks its 'was anything charged?' copy from it", () => {
+		for (const latePayment of ["none", "refunded", "refund_pending"] as const) {
+			expect(buildOrderView(order({}, { state: "expired", latePayment }), LOCALE).latePayment).toBe(
+				latePayment,
+			);
+		}
 	});
 });
 

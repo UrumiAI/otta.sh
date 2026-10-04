@@ -157,7 +157,20 @@ interface RouteInvocationBody {
  * export below (the production entry) is `createSandboxWorker(plugin)`,
  * byte-identical in behavior to the pre-refactor inline version.
  */
-export function createSandboxWorker(pluginDef: SandboxedPlugin) {
+/** Options a TEST fixture entry may pass; the production entry passes none. */
+export interface SandboxWorkerOptions {
+	/**
+	 * Enable the test-only windows (today: deleting a `cron:sweep:` kv key). Off in
+	 * the production `./sandbox-entry` export; on only in a fixture entry under
+	 * `src/**\/testing/` that a suite boots through the harness's `entry` option.
+	 */
+	readonly testHooks?: boolean;
+}
+
+export function createSandboxWorker(
+	pluginDef: SandboxedPlugin,
+	options: SandboxWorkerOptions = {},
+) {
 	// Module-boot-scoped (not per-request) so a value written by one route
 	// invocation is readable by the next within the same worker — matching the
 	// host's persistence contract.
@@ -223,6 +236,26 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 				// else, so it cannot mask a missing registration.
 				if (request.method === "GET" && url.pathname === "/cron/tasks") {
 					return jsonResponse({ result: (await ctx.cron?.list()) ?? [] }, 200);
+				}
+
+				// The one WRITE window — TEST HOOKS ONLY, never in the production entry —
+				// and as narrow as it can be: it deletes a key under
+				// the cron sweep's own `cron:sweep:` prefix and nothing else. The sweep keeps
+				// its fifteen-minute cadence stamps in kv, so after the isolate's first tick
+				// every scan leg is `notDue` for a quarter of an hour; a suite that drives a
+				// scan through the real hook must be able to forget that stamp, and there is
+				// no host-shaped invocation that does. It cannot mask a sweep defect: it only
+				// makes a leg due, which the first tick of any isolate already is.
+				if (
+					options.testHooks === true &&
+					request.method === "DELETE" &&
+					url.pathname.startsWith("/kv/")
+				) {
+					const key = decodeURIComponent(url.pathname.slice("/kv/".length));
+					if (!key.startsWith("cron:sweep:")) {
+						return jsonResponse({ error: "only cron:sweep: keys may be deleted" }, 403);
+					}
+					return jsonResponse({ result: await ctx.kv.delete(key) }, 200);
 				}
 
 				return jsonResponse({ error: "not found" }, 404);

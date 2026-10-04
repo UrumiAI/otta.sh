@@ -167,21 +167,40 @@ export type {
 	OrderSummary,
 	OrderTransitionInput,
 	OrderTransitionResult,
+	OrderLedger,
+	RefundRetry,
+	RefundRetrySchedule,
+	OrderNoticeInput,
 	OutboxEmail,
+	ReleaseEmailClaimOptions,
+	PaymentIntentCancelOutcome,
+	PaymentIntentCancelUpdate,
+	PaymentIntentRecord,
+	ClaimEmailForOrderOptions,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordPaymentIntentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
 	FinalizeRefundInput,
 	FinalizeRefundStoreResult,
 	RefundKind,
+	RefundPurpose,
 	RefundRecord,
 	RefundStatus,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
-export type { EmailSender, EmailTemplate, SendEmailInput } from "./ports/email-sender.js";
+export {
+	EmailSendTimeoutError,
+	type EmailSendTimeoutLike,
+	isCutShortEmailTimeout,
+	isEmailSendTimeoutError,
+	type EmailSender,
+	type EmailTemplate,
+	type SendEmailInput,
+} from "./ports/email-sender.js";
 export type {
 	CreateCustomerInput,
 	CustomerStore,
@@ -201,10 +220,12 @@ export type {
 export type { Address, AddressKind, Customer } from "./customers/model.js";
 export { DuplicateCustomerEmailError, type LoginFailure } from "./customers/errors.js";
 export {
+	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
 	legalNextStates,
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
+	ORDER_NOTICE_EMAIL_TEMPLATE,
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
 // Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
@@ -226,8 +247,21 @@ export {
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
+	dispatchOrderEmailsForOrder,
+	MAX_UNCOUNTED_TIMEOUTS,
+	TIMEOUT_BACKOFF_BASE_MS,
+	TIMEOUT_BACKOFF_MAX_MS,
+	TIMEOUT_FAILURE_REASON,
+	timeoutBackoffMs,
+	UNTRIED_RETRY_MS,
+	adminNextStates,
+	manualPaymentAllowed,
 	transitionOrder,
+	transitionOrderAsAdmin,
+	type TransitionOrderAsAdminFailure,
+	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
+	type DispatchOrderEmailsForOrderOptions,
 	type DispatchOrderEmailsOptions,
 	type TransitionOrderCommand,
 	type TransitionOrderDeps,
@@ -262,6 +296,8 @@ export type {
 } from "./ports/payment-event-store.js";
 export {
 	PaymentIntentError,
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -278,12 +314,14 @@ export {
 } from "./ports/payment-gateway.js";
 export type {
 	CancellationReason,
+	CancellationRefund,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
 	OrderCancellation,
 	OrderFulfillment,
 	OrderLine,
+	OrderNotice,
 	OrderTotals,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -345,6 +383,12 @@ export {
 } from "./orders/record-fulfillment.js";
 export {
 	cancelOrder,
+	cancelOrderWithRefund,
+	type RestockSkip,
+	type CancelOrderWithRefundCommand,
+	type CancelOrderWithRefundDeps,
+	type CancelOrderWithRefundFailure,
+	type CancelOrderWithRefundOutcome,
 	type CancelOrderCommand,
 	type CancelOrderDeps,
 	type CancelOrderFailure,
@@ -364,7 +408,36 @@ export {
 	type OrderTimelineDeps,
 	type OrderTimelineEntry,
 } from "./orders/order-timeline.js";
-export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export {
+	cancelDueIntents,
+	DEFAULT_INTENT_CANCEL_BATCH,
+	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
+	type CancelDueIntentsDeps,
+	type CancelDueIntentsOptions,
+} from "./orders/cancel-due-intents.js";
+export {
+	classifyLatePayment,
+	escalateStaleLateRefunds,
+	isUnpaidTerminalState,
+	LATE_REFUND_GIVE_UP_MS,
+	lateRefundRetryDelayMs,
+	LATE_PAYMENT_REFUNDED_BY,
+	latePaymentRefundKey,
+	leftPendingUnpaid,
+	providerRefOfLateRefundKey,
+	readOrderWithLatePayment,
+	refundLatePayment,
+	retryLatePaymentRefunds,
+	type LateCapture,
+	type LatePaymentAnomaly,
+	type LatePaymentDeps,
+	type LatePaymentOutcome,
+	type LatePaymentStatus,
+	type LazyGateways,
+	type RetryLatePaymentRefundsOptions,
+} from "./orders/late-payment.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
@@ -425,6 +498,7 @@ export {
 	type ClaimMutationInput,
 	type ClaimMutationResult,
 	type ExpiredHold,
+	type ExpiryListOptions,
 	type RecordedCartMutation,
 	type ReservationLifecycle,
 	type UpsertLineInput,
@@ -434,6 +508,7 @@ export {
 	createCart,
 	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
+	expireHoldsBatch,
 	getCart,
 	removeLine,
 	replaceSpentCart,

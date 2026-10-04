@@ -5,6 +5,8 @@ import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
 import { refundOrder, sumRefunds } from "../orders/refund-order.js";
 import type { OrderStore } from "../ports/order-store.js";
+import { dispatchOrderEmails } from "../orders/transition.js";
+import { FakeEmailSender } from "./fake-email-sender.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
 
 const USD = toCurrency("USD");
@@ -30,6 +32,14 @@ export interface RefundOrderHarness {
 
 export interface RefundOrderContractOptions {
 	dialect: string;
+}
+
+/** Far past any due time a case can stamp — the dispatcher's "now" for a drain. */
+const DRAIN_CLOCK = { now: () => new Date("2099-01-01T00:00:00.000Z") };
+
+/** Drain every due outbox row through the real dispatcher into `sender`. */
+function drain(h: RefundOrderHarness, sender: FakeEmailSender): Promise<number> {
+	return dispatchOrderEmails({ orderStore: h.orderStore, emailSender: sender, clock: DRAIN_CLOCK });
 }
 
 /** Build a `seedPaidOrder` over any `OrderStore` — adapter-agnostic (createFromCart
@@ -667,6 +677,203 @@ export function refundOrderContract(
 			if (!res.ok) expect(res.reason).toBe("NO_CAPTURED_PAYMENT");
 			expect(await h.orderStore.listRefunds(oid)).toHaveLength(0);
 			expect(gw.refundCalls).toHaveLength(0);
+		});
+
+		// -- the buyer's refund emails (QA T1-6) ----------------------------------
+		//
+		// One outbox mechanism carries every non-state email (ADR-0026): a partial
+		// refund is a `refund-issued` NOTICE row, first-wins per (order, kind,
+		// refundId), stating its own amount through the notice render path.
+
+		test("a partial refund emails the buyer ONCE, stating the amount refunded — its replay sends nothing more", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-mail-partial", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const sent = new FakeEmailSender();
+			await drain(h, sent); // the seed's own payment confirmation
+			sent.reset();
+			const cmd = {
+				orderId: id,
+				amount: cents(300),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-mail-partial"),
+			};
+			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(await drain(h, sent)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
+			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(300);
+			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(await drain(h, sent)).toBe(0);
+		});
+
+		test("each partial refund gets its own email; the one that completes the refund sends the refunded email with the total refunded", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-mail-two", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const sent = new FakeEmailSender();
+			await drain(h, sent);
+			sent.reset();
+			for (const [amount, key] of [
+				[300, "rf-mail-two-a"],
+				[200, "rf-mail-two-b"],
+				[500, "rf-mail-two-c"],
+			] as const) {
+				await refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(amount),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(key),
+				});
+			}
+			expect(await drain(h, sent)).toBe(3);
+			const partials = sent.sends.filter((m) => m.template === "order-refund-issued");
+			expect(partials.map((m) => m.data["noticeAmountCents"])).toEqual([300, 200]);
+			const full = sent.sends.filter((m) => m.template === "order-refunded");
+			expect(full).toHaveLength(1);
+			expect(full[0]?.data["noticeAmountCents"]).toBe(1000);
+		});
+
+		test("a refund still held (RETRYABLE) emails nobody until it is finalized", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-mail-held", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const sent = new FakeEmailSender();
+			await drain(h, sent);
+			sent.reset();
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			const cmd = {
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-mail-held"),
+			};
+			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(await drain(h, sent)).toBe(0);
+			gw.setRefundResult({ ok: true, refundRef: "re_held", amount: cents(400), currency: USD });
+			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(await drain(h, sent)).toBe(1);
+			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(400);
+		});
+
+		test("a MANUAL partial refund (x402) emails the buyer the amount too", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-mail-man", totalCents: 800, gateway: "x402" });
+			const gw = new FakePaymentGateway({ id: "x402", refundable: false });
+			const sent = new FakeEmailSender();
+			await drain(h, sent);
+			sent.reset();
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(250),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-mail-man"),
+			});
+			expect(await drain(h, sent)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
+		});
+
+		test("a cancellation's or a late payment's refund sends no admin refund email of its own", async () => {
+			const h = await makeHarness();
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const sent = new FakeEmailSender();
+			for (const purpose of ["cancellation", "late-payment"] as const) {
+				const id = await h.seedPaidOrder({ id: `ord-mail-${purpose}`, totalCents: 1000 });
+				await drain(h, sent);
+				sent.reset();
+				await refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(400),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(`rf-mail-${purpose}`),
+					purpose,
+				});
+				expect(await drain(h, sent), purpose).toBe(0);
+			}
+		});
+
+		// -- a refund made AS PART OF a cancellation (QA T1-4) ---------------------
+
+		test("a cancellation's gateway refund of the whole ceiling is recorded but does NOT flip the order to refunded", async () => {
+			// The cancellation closes the order (→ cancelled), so the refund that rides it
+			// must not drive → refunded first — that would make the cancel illegal and send
+			// a second, refunded email.
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-cxl-gw", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw"),
+				purpose: "cancellation",
+			});
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.recorded).toBe(true);
+			expect(res.fullyRefunded).toBe(false);
+			expect(res.order.state).toBe("paid");
+			expect(res.refund).toMatchObject({ status: "recorded", purpose: "cancellation" });
+			expect(gw.refundCalls).toHaveLength(1);
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger).toHaveLength(1);
+			expect(ledger[0]).toMatchObject({ amount: 1000, purpose: "cancellation" });
+			// Its replay is the ordinary benign duplicate: no second provider call.
+			const replay = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw"),
+				purpose: "cancellation",
+			});
+			expect(replay).toMatchObject({ ok: true, duplicate: true });
+			expect(gw.refundCalls).toHaveLength(1);
+			// The ceiling still binds: the cancellation's refund consumed it.
+			const more = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-gw-more"),
+			});
+			expect(more).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
+		});
+
+		test("a cancellation's MANUAL refund of the whole ceiling does not flip the order either", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-cxl-man", totalCents: 800, gateway: "x402" });
+			const gw = new FakePaymentGateway({ id: "x402", refundable: false });
+			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(800),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-cxl-man"),
+				purpose: "cancellation",
+			});
+			expect(res).toMatchObject({ ok: true, recorded: true, fullyRefunded: false });
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			expect((await h.orderStore.listRefunds(id))[0]?.purpose).toBe("cancellation");
+		});
+
+		test("an ordinary refund is recorded with purpose refund", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-purpose", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(100),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-purpose"),
+			});
+			expect((await h.orderStore.listRefunds(id))[0]?.purpose).toBe("refund");
 		});
 
 		test("a currency mismatch and an empty refundedBy are rejected", async () => {
