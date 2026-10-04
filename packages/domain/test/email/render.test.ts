@@ -291,7 +291,14 @@ describe("renderEmail customer-login-link", () => {
 	test("the HTML carries the link as an escaped <a href>", () => {
 		const rendered = renderEmail("customer-login-link", { loginUrl });
 		const escaped = "https://shop.example/account/verify?challenge=c1&amp;token=a&quot;b&lt;c&gt;";
-		expect(rendered.html).toContain(`<a href="${escaped}">Sign in</a>`);
+		// A BUTTON (QA2 U-3): a bold, padded, filled link — a bare blue line of
+		// text under the intro read like a footnote. Inline styles only: mail
+		// clients drop <style> blocks.
+		expect(rendered.html).toMatch(
+			new RegExp(
+				`<a href="${escaped.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" style="[^"]*display:inline-block[^"]*background[^"]*">Sign in</a>`,
+			),
+		);
 		// The copy-paste fallback is escaped the same way.
 		expect(rendered.html).toContain(`into your browser:<br>${escaped}`);
 		// Nothing from the URL survives unescaped into the markup.

@@ -268,6 +268,72 @@ export function orderTimelineContract(
 			expect(entries[3]).toMatchObject({ kind: "state_change", toState: "shipped" });
 		});
 
+		// QA2 (admin History): refunds and restocks were missing from the trail an
+		// operator reads in a dispute. Every refund that moved (or is moving) money is
+		// an entry; a voided attempt moved none and is not.
+		test("the timeline carries each refund on the ledger, and a cancellation's refund and restock", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-tl-refunds");
+			await h.orderStore.createFromCart(pendingInput("ord-tl-refunds", "key-tl-refunds"));
+			h.tick(1000);
+			await drive(h, id, "paid");
+			await h.orderStore.recordPayment({
+				orderId: id,
+				gateway: "stripe",
+				providerRef: `pi_${id}`,
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+			const refund = (key: string, amount: number) => ({
+				orderId: id,
+				amount: cents(amount),
+				currency: USD,
+				kind: "gateway" as const,
+				gateway: "stripe" as const,
+				refundRef: `re_${key}`,
+				reason: null,
+				refundedBy: "ops@shop",
+				idempotencyKey: idempotencyKey(key),
+			});
+			h.tick(1000);
+			await h.orderStore.recordRefund(refund("tl-r1", 400));
+			h.tick(1000);
+			await h.orderStore.reserveRefund(refund("tl-r2", 100));
+			await h.orderStore.voidRefund(idempotencyKey("tl-r2"));
+			h.tick(1000);
+			await h.orderStore.cancelOrder({
+				orderId: id,
+				fromState: "paid",
+				reason: "customer_request",
+				detail: null,
+				cancelledBy: "ops@shop",
+				idempotencyKey: idempotencyKey(`c:${id}`),
+				enqueueEmail: false,
+				refund: { amount: cents(1100), currency: USD },
+				restocked: true,
+			});
+
+			const timeline = await getOrderTimeline(
+				{ orderStore: h.orderStore, orderNotesStore: h.orderNotesStore },
+				id,
+			);
+			const refunds = (timeline?.entries ?? []).filter((e) => e.kind === "refund");
+			expect(refunds).toEqual([
+				expect.objectContaining({
+					kind: "refund",
+					amount: 400,
+					currency: "USD",
+					status: "recorded",
+					refundedBy: "ops@shop",
+				}),
+			]);
+			expect(timeline?.entries.find((e) => e.kind === "cancellation")).toMatchObject({
+				refund: { amount: 1100, currency: "USD" },
+				restocked: true,
+			});
+		});
+
 		test("a historical order (no events) still yields a partial timeline and degrades gracefully", async () => {
 			const h = await makeHarness();
 			const id = orderId("ord-hist");

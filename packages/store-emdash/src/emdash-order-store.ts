@@ -567,6 +567,8 @@ export class EmdashOrderStore implements OrderStore {
 			fromState: input.fromState,
 			toState: input.toState,
 			enqueueEmail: input.enqueueEmail,
+			// The admin's move carries who made it, onto the flip's audit event.
+			...(input.actor !== undefined ? { actor: input.actor } : {}),
 			// `markPaid`/`expire` route through this same primitive, so a bare
 			// transition into those states records the same intent they would.
 			...(input.toState === "paid"
@@ -1043,6 +1045,7 @@ export class EmdashOrderStore implements OrderStore {
 					...entry,
 					status: "recorded",
 					refundRef: input.refundRef,
+					...(input.resolvedBy !== undefined ? { resolvedBy: input.resolvedBy } : {}),
 				};
 				const refunds = doc.refunds.map((row) =>
 					row.idempotencyKey === input.idempotencyKey ? finalized : row,
@@ -1098,6 +1101,18 @@ export class EmdashOrderStore implements OrderStore {
 		// the row RELEASES its ceiling capacity (it leaves the active sum) and stays
 		// as an audit record of the attempt.
 		return this.#flipRefundStatus(idempotencyKey, "voided");
+	}
+
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person checked the provider and the refund
+		// never happened. The capacity is released; who said so is kept on the row.
+		return this.#flipRefundStatus(input.idempotencyKey, "voided", {
+			from: "unverified",
+			resolvedBy: input.resolvedBy,
+		});
 	}
 
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
@@ -1875,7 +1890,9 @@ export class EmdashOrderStore implements OrderStore {
 	async #flipRefundStatus(
 		key: IdempotencyKey,
 		to: Extract<RefundStatus, "voided" | "unverified">,
+		resolution: { from: "unverified"; resolvedBy: string } | null = null,
 	): Promise<boolean> {
+		const from: RefundStatus = resolution?.from ?? "reserved";
 		const claim = await this.#refundKeys.get(key);
 		if (claim === null) return false;
 		const orderId = claim.orderId;
@@ -1886,12 +1903,18 @@ export class EmdashOrderStore implements OrderStore {
 			const entry = findRefund(doc, key);
 			// The guard the SQL's `WHERE status = 'reserved'` was: capacity is released
 			// or held deliberately, never by accident.
-			if (entry === undefined || entry.status !== "reserved") return casDone(false);
+			if (entry === undefined || entry.status !== from) return casDone(false);
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				refunds: doc.refunds.map((row) =>
-					row.idempotencyKey === key ? { ...row, status: to } : row,
+					row.idempotencyKey === key
+						? {
+								...row,
+								status: to,
+								...(resolution !== null ? { resolvedBy: resolution.resolvedBy } : {}),
+							}
+						: row,
 				),
 				updatedAt: now,
 			});
@@ -2629,6 +2652,7 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		createdAt: refund.createdAt,
 		purpose: refund.purpose ?? "refund",
 		...(refund.restock !== undefined ? { restock: refund.restock } : {}),
+		...(refund.resolvedBy !== undefined ? { resolvedBy: refund.resolvedBy } : {}),
 	};
 }
 

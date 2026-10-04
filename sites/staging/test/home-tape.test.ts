@@ -39,6 +39,7 @@ const home = (rows: TapeRow[]): Promise<string> => {
 		rows,
 		count: rows.length,
 		cards: [],
+		notice: null,
 	};
 	return container.renderToString(HomeView, { props: { model } });
 };

@@ -84,7 +84,6 @@ import {
 	updateProductVariantFields,
 	upsertProductCommerce,
 	upsertProductVariant,
-	readOrderWithLatePayment,
 	recordedRefundTotal,
 	classifyLatePayment,
 	verifyLogin,
@@ -112,6 +111,7 @@ import {
 import type {
 	AbandonCartOrderResult,
 	AddressWire,
+	AccountOrderAddressWire,
 	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
@@ -878,6 +878,10 @@ export class InProcessCommerceClient implements CommerceClient {
 					refunds: ledger.refunds,
 				}),
 				refundedCents: recordedRefundTotal(ledger.refunds),
+				// The owner's own page (QA2 X1): the tracking as the public read trims
+				// it, and the ship-to — which the public read never carries.
+				fulfillment: publicFulfillment(ledger.order),
+				shippingAddress: accountOrderAddress(ledger.order),
 			},
 		};
 	}
@@ -1089,8 +1093,12 @@ export class InProcessCommerceClient implements CommerceClient {
 			// A checkout's reply describes the order it just placed (or replayed);
 			// whatever `latePayment` would say, the place route projects only id and
 			// state out of it, so it is not worth three reads on the hot path.
-			order: serializePublicOrder(result.order, "none"),
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
+			// A same-key replay is the order ANOTHER tab placed, with the email it
+			// was placed with (QA2 X2): masked, and whether it is this request's.
+			buyerRefHint: buyerRefHint(result.order.buyerRef),
+			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
 	}
 
@@ -1125,12 +1133,25 @@ export class InProcessCommerceClient implements CommerceClient {
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
 		requireIdToken("orderId", orderId);
 		// ONE read of the order aggregate — the order and the ledgers its
-		// `latePayment` status is derived from (`readOrderWithLatePayment`). On a
-		// live order (every poll of a pending confirmation page, the pay page's
-		// guard) the derivation is pure and short-circuits; nothing is read twice.
-		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
-		if (read === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		return { ok: true, order: serializePublicOrder(read.order, read.latePayment) };
+		// `latePayment` status and its recorded refunds (QA2 X3) are derived from,
+		// as the account's order read makes. On a live order (every poll of a
+		// pending confirmation page, the pay page's guard) the derivation is pure;
+		// nothing is read twice.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			order: serializePublicOrder(
+				ledger.order,
+				classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				recordedRefundTotal(ledger.refunds),
+			),
+		};
 	}
 
 	/**
@@ -1198,7 +1219,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		}
 		return {
 			ok: true,
-			order: serializePublicOrder(result.order, "none"),
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
 			buyerRefHint: buyerRefHint(order.buyerRef),
 		};
@@ -1470,7 +1491,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
  * guest may legitimately read — carrier and tracking, the cancellation reason —
  * never the staff identity, the audit witness or the free-text detail.
  */
-function serializePublicOrder(order: Order, latePayment: LatePaymentStatus): PublicOrderWire {
+function serializePublicOrder(
+	order: Order,
+	latePayment: LatePaymentStatus,
+	refundedCents: number,
+): PublicOrderWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1490,21 +1515,48 @@ function serializePublicOrder(order: Order, latePayment: LatePaymentStatus): Pub
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
-		fulfillment:
-			order.fulfillment === null
-				? null
-				: {
-						carrier: order.fulfillment.carrier,
-						trackingNumber: order.fulfillment.trackingNumber,
-						trackingUrl: order.fulfillment.trackingUrl,
-						shippedAt: order.fulfillment.shippedAt,
-					},
+		fulfillment: publicFulfillment(order),
 		cancellation:
 			order.cancellation === null
 				? null
 				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
 		latePayment,
+		refundedCents,
 	};
+}
+
+/** The fulfilment trimmed to what a buyer may read: carrier and tracking, never
+ *  who recorded it. */
+function publicFulfillment(order: Order): PublicOrderWire["fulfillment"] {
+	return order.fulfillment === null
+		? null
+		: {
+				carrier: order.fulfillment.carrier,
+				trackingNumber: order.fulfillment.trackingNumber,
+				trackingUrl: order.fulfillment.trackingUrl,
+				shippedAt: order.fulfillment.shippedAt,
+			};
+}
+
+/** The ship-to for its OWNER's page: where it goes, without the contact fields
+ *  (email, phone) captured beside it. */
+function accountOrderAddress(order: Order): AccountOrderAddressWire | null {
+	const address = order.shippingAddress;
+	if (address === null) return null;
+	return {
+		name: address.name,
+		line1: address.line1,
+		line2: address.line2,
+		city: address.city,
+		region: address.region,
+		postalCode: address.postalCode,
+		country: address.country,
+	};
+}
+
+/** The same mailbox, as the resume proof compares one: trimmed, case-folded. */
+function sameBuyerRef(stored: string, typed: string): boolean {
+	return stored.trim().toLowerCase() === typed.trim().toLowerCase();
 }
 
 /** The chosen shipping zone, read off the totals' method snapshot (an opaque value

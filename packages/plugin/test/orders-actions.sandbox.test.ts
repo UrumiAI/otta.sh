@@ -285,10 +285,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The combination that used to blank a console: a control rendered for an id
 		// the dispatcher does not know. The set is read straight off the dispatch
 		// table, and this drives every member to prove it.
-		// 5 named + one per order state + one per ONE-CLICK cancellation reason.
-		// `other` has no one-click control, so it derives no id (and the deleted
-		// `-review` pair derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(5 + 10 + 4);
+		// 7 named (incl. the two answers to an unverified refund, review round 2) +
+		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
+		// one-click control, so it derives no id (and the deleted `-review` pair
+		// derives none either).
+		expect(ORDERS_ACTION_IDS.size).toBe(7 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-other")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-review")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:refund-review")).toBe(false);
@@ -793,10 +796,10 @@ describe("the Orders write path (workerd sandbox)", () => {
 			refundedBy: "carol",
 		});
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
-		expect(result.notice?.description).toContain("someone else refunded this order");
+		expect(result.notice?.description).toContain("in another tab or by someone else");
 		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
 		// states an effect and leaves the operator to guess whether they hit a bug.
-		expect(result.notice?.description).toContain("$5.00 was staged");
+		expect(result.notice?.description).toContain("$5.00 was not refunded");
 		expect(result.notice?.description).toContain("$6.00 now remains refundable");
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
@@ -1035,7 +1038,9 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 
 		// THE DOUBLE-SUBMIT: the same confirm clicked again. Its watermark is now
 		// stale, so the console refuses it before the write — and, what matters
-		// here, Stripe is asked for nothing more.
+		// here, Stripe is asked for nothing more. It is THIS refund, already on the
+		// ledger, so the notice says so rather than "someone else refunded" (QA
+		// round 2).
 		const again = await actOn(stripeBoot, "orders:refund", {
 			orderId: id,
 			amountCents: "500",
@@ -1044,7 +1049,7 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 			reason: "damaged",
 			refundedBy: "carol",
 		});
-		expect(again.notice?.title).toBe("The refund ledger changed — nothing was refunded");
+		expect(again.notice?.title).toBe("Already refunded");
 		expect(refundPosts()).toHaveLength(1);
 		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
 	});

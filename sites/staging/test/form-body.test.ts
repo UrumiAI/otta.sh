@@ -121,7 +121,7 @@ describe("a body that is not a form is a 400 — never a 500, never a dispatch",
 			const response = await LOGOUT_POST(context);
 
 			expect(response.status).toBe(303);
-			expect(response.headers.get("location")).toBe("/");
+			expect(response.headers.get("location")).toBe("/?signed-out=1");
 		},
 	);
 });

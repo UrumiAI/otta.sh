@@ -232,6 +232,18 @@ export interface OrderStore {
 	 * retried or released. False ⇒ no reserved row under the key.
 	 */
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean>;
+
+	/**
+	 * A person's answer to an UNVERIFIED refund, "it didn't happen" (review round
+	 * 2): guarded `unverified → voided`, releasing the row's ceiling capacity and
+	 * recording `resolvedBy` on it. False ⇒ no unverified row under the key. The
+	 * other answer, "confirmed at the provider", is {@link finalizeRefund} with
+	 * `resolvedBy`.
+	 */
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean>;
 	/**
 	 * Read the order AND its ledgers — state-change audit, captured payments,
 	 * refunds — in ONE read of the aggregate, or `null` when there is no such order.
@@ -645,6 +657,8 @@ export interface OrderTransitionInput {
 	/** Enqueue an outbox row for `toState` in the same transaction. False for a
 	 *  state with no template (`failed`) so no undeliverable row is ever written. */
 	enqueueEmail: boolean;
+	/** Who made the move — recorded on the flip's audit event. Absent ⇒ `null`. */
+	actor?: string;
 }
 
 export interface OrderTransitionResult {
@@ -1169,6 +1183,9 @@ export interface RefundRecord {
 	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
+	/** Who resolved this row by hand when its outcome was unknown (`unverified`
+	 *  → recorded or voided, review round 2). Absent otherwise. */
+	resolvedBy?: string;
 }
 
 export type RefundKind = "gateway" | "manual";
@@ -1213,6 +1230,9 @@ export type RefundStatus = "recorded" | "reserved" | "unverified" | "voided";
 export interface FinalizeRefundInput {
 	idempotencyKey: IdempotencyKey;
 	refundRef: string;
+	/** A person confirmed an UNVERIFIED refund at the provider: who, recorded on
+	 *  the row. Absent on the gateway's own finalize. */
+	resolvedBy?: string;
 }
 
 /** `found:false` ⇒ no reserved/unverified row under the key AND no benign

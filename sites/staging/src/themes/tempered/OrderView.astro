@@ -47,6 +47,7 @@ const {
 	ledgerRows,
 	sumRows,
 	totalLabel,
+	refundedNote,
 	accountSignInHref,
 	accountOrdersHref,
 } = Astro.props.model;
@@ -170,6 +171,9 @@ const {
 						totalLabel={totalLabel}
 						excludesUncalculated={order.totals.totalExcludesUncalculated}
 					/>
+					{/* What the refunds ledger shows returned (QA2 X3) — its own line,
+					    never a relabelled total. */}
+					{refundedNote !== null && <p class="order-refunded u-mono">{refundedNote}</p>}
 				</section>
 			</div>
 		</>

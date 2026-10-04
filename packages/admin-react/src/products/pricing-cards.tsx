@@ -123,6 +123,11 @@ type Status = { readonly tone: "ok" | "fail" | "muted"; readonly text: string } 
 
 type StockActionId = "products:restock" | "products:remove-stock";
 
+/** An add above this many units asks first (QA round 2). */
+export const LARGE_STOCK_ADD = 10_000;
+
+const STOCK_COUNT = new Intl.NumberFormat("en-US");
+
 /**
  * A STOCK MOVE WHOSE ANSWER WAS LOST (no response, a 5xx, or an unreadable 2xx:
  * `Failure.indeterminate`), held for an explicit Retry — the same design as
@@ -303,11 +308,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	const [qty, setQty] = React.useState("1");
 	const [moving, setMoving] = React.useState(false);
 	const [stockMsg, setStockMsg] = React.useState<Status>(null);
-	/** The removal awaiting confirmation, with the count the dialog showed: that
-	 *  count is what the merchant approved, and it is the watermark sent. */
+	/** The move awaiting confirmation — every removal, and an add over
+	 *  {@link LARGE_STOCK_ADD} (QA round 2) — with the count the dialog showed:
+	 *  that count is what the merchant approved, and it is the watermark sent. */
 	const [confirmRemove, setConfirmRemove] = React.useState<{
 		readonly n: number;
 		readonly onHand: number;
+		readonly direction: "add" | "remove";
 	} | null>(null);
 	const [held, setHeld] = React.useState<HeldMove | null>(null);
 	/** Set synchronously on dispatch, so a second click in the same task — before
@@ -800,6 +807,12 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			return;
 		}
 		if (direction === "add") {
+			// A very large add asks first (QA round 2: 100,000,000 applied in one
+			// click while Remove always confirms) — the count is a typo away.
+			if (qtyValue > LARGE_STOCK_ADD) {
+				setConfirmRemove({ n: qtyValue, onHand, direction: "add" });
+				return;
+			}
 			move("products:restock", qtyValue, onHand);
 			return;
 		}
@@ -807,7 +820,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			setStockMsg({ tone: "fail", text: `You only have ${String(onHand)} in stock` });
 			return;
 		}
-		setConfirmRemove({ n: qtyValue, onHand });
+		setConfirmRemove({ n: qtyValue, onHand, direction: "remove" });
 	};
 
 	const kindLabel = d.productKind === "digital" ? "Digital — nothing to ship" : "Physical product";
@@ -1253,10 +1266,18 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 			<ConfirmDialog
 				open={confirmRemove !== null}
-				title={`Remove ${String(confirmRemove?.n ?? 0)} from stock?`}
-				text={`You'll have ${String((confirmRemove?.onHand ?? 0) - (confirmRemove?.n ?? 0))} left. To undo this, you'd add them back by hand.`}
+				title={
+					confirmRemove?.direction === "add"
+						? `Add ${STOCK_COUNT.format(confirmRemove.n)} to stock?`
+						: `Remove ${String(confirmRemove?.n ?? 0)} from stock?`
+				}
+				text={
+					confirmRemove?.direction === "add"
+						? `That's far more than a usual delivery. You'll have ${STOCK_COUNT.format(confirmRemove.onHand + confirmRemove.n)} in stock — check the number before adding.`
+						: `You'll have ${String((confirmRemove?.onHand ?? 0) - (confirmRemove?.n ?? 0))} left. To undo this, you'd add them back by hand.`
+				}
 				status={moving ? "Another stock change is still running — wait for it to finish." : ""}
-				confirmLabel="Remove"
+				confirmLabel={confirmRemove?.direction === "add" ? "Add" : "Remove"}
 				denyLabel="Cancel"
 				// A confirm pressed while a move is in flight would be dropped by the
 				// in-flight guard; it waits instead, and says why.
@@ -1265,7 +1286,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					const pending = confirmRemove;
 					if (pending === null || movingNow.current) return;
 					setConfirmRemove(null);
-					move("products:remove-stock", pending.n, pending.onHand);
+					move(
+						pending.direction === "add" ? "products:restock" : "products:remove-stock",
+						pending.n,
+						pending.onHand,
+					);
 				}}
 				onDeny={() => {
 					setConfirmRemove(null);

@@ -298,7 +298,7 @@ export class EmdashCouponStore implements CouponStore {
 	async create(input: CreateCouponInput): Promise<CouponRecord> {
 		const now = this.#clock.now().toISOString();
 		const codeKey = foldCouponCode(input.code);
-		await this.#claimCode(codeKey, input.code, input.id, now);
+		const claimedHere = await this.#claimCode(codeKey, input.code, input.id, now);
 		const doc: CouponDoc = {
 			couponId: input.id,
 			code: input.code,
@@ -321,8 +321,11 @@ export class EmdashCouponStore implements CouponStore {
 		if (!written.applied) {
 			// The code claim was taken for a coupon this call is NOT going to create. Give
 			// it back, or the code is stranded pointing at a coupon that carries a
-			// different one — an alias no reader could ever resolve correctly.
-			await this.#releaseCode(doc);
+			// different one — an alias no reader could ever resolve correctly. ONLY a
+			// claim THIS call wrote: a create that found the claim already held by this
+			// very id (a double-submitted create of an existing coupon) must not release
+			// the existing coupon's code — checkout would stop finding it (QA round 2).
+			if (claimedHere) await this.#releaseCode(doc);
 			throw new CouponIdCollisionError(input.id);
 		}
 		return toCouponRecord(doc);
@@ -560,22 +563,24 @@ export class EmdashCouponStore implements CouponStore {
 	 * coupon and releasing its code would strand that code permanently, and a
 	 * uniqueness rule that can be broken by a crash is not one.
 	 */
-	async #claimCode(codeKey: string, code: string, couponId: string, now: string): Promise<void> {
+	/** `true` iff THIS call wrote the claim (fresh, or taken over from a stale
+	 *  owner); `false` when the claim was already this coupon id's. */
+	async #claimCode(codeKey: string, code: string, couponId: string, now: string): Promise<boolean> {
 		const mine: CouponCodeDoc = { codeKey, code, couponId, claimedAt: now };
-		return this.#cas<void>("createCoupon", async () => {
+		return this.#cas<boolean>("createCoupon", async () => {
 			const current = await this.#codes.getVersioned(codeKey);
 			if (current === null) {
 				const written = await this.#codes.compareAndSet(codeKey, null, mine);
-				return written.applied ? casDone(undefined) : CAS_RETRY;
+				return written.applied ? casDone(true) : CAS_RETRY;
 			}
 			const held = current.value;
-			if (held.couponId === couponId) return casDone(undefined);
+			if (held.couponId === couponId) return casDone(false);
 			const owner = await this.#coupons.get(held.couponId);
 			if (owner !== null && owner.codeKey === codeKey) {
 				throw new CouponCodeConflictError(code, held.couponId);
 			}
 			const written = await this.#codes.compareAndSet(codeKey, current.revision, mine);
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(true) : CAS_RETRY;
 		});
 	}
 

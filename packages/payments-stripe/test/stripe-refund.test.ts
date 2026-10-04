@@ -113,7 +113,13 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(0) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		// The provider's own figures ride along (review round 1), so the domain can
+		// tell a FULL refund outside Otta from a partial one.
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 500, captured: 1000 },
+		});
 		expect(transport.creates, "nothing issued").toHaveLength(0);
 	});
 
@@ -126,7 +132,11 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(800) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 800, captured: 1000 },
+		});
 		expect(transport.creates).toHaveLength(0);
 	});
 

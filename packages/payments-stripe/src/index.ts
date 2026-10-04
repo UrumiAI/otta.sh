@@ -529,7 +529,13 @@ export class StripePaymentGateway implements PaymentGateway {
 		}
 		const { amountRefunded, amountCaptured } = pre.view;
 		if (amountRefunded > input.priorRefunded || amountRefunded + input.amount > amountCaptured) {
-			return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+			// The figures go back with the refusal: they are what tells the domain a
+			// payment refunded IN FULL in the dashboard from a partial one.
+			return {
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: amountRefunded, captured: amountCaptured },
+			};
 		}
 		// Out of time for a WHOLE create: issue nothing, and say it was NOT STARTED —
 		// the caller's choice, not a provider failure, so it costs no attempt.

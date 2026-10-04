@@ -647,6 +647,14 @@ export interface PublicOrderWire {
 	 * amount, a provider ref or the reconciliation detail behind it.
 	 */
 	latePayment: "none" | "refunded" | "refund_pending";
+	/**
+	 * Money the order's refunds LEDGER shows returned — RECORDED refunds only, in
+	 * the order's minor units; `0` when none (QA2 X3). The confirmation page says
+	 * "Refunded $X" from it. A refund made outside Otta ("Mark refunded",
+	 * ADR-0026) has no ledger row and is not counted: the page then states the
+	 * status and invents no amount. Read off the same ledger read as `latePayment`.
+	 */
+	refundedCents: number;
 }
 
 /** `CreateOrderFailure` verbatim (`@otta-sh/domain`'s orders/errors.ts). */
@@ -692,7 +700,19 @@ export type CheckoutFailureReason =
  * the whitelist.
  */
 export type CheckoutResult =
-	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire }
+	| {
+			ok: true;
+			order: PublicOrderWire;
+			intent: PaymentIntentWire;
+			/** The ORDER's email, masked (`j•••@g•••.com`) — never the address. A
+			 *  same-key replay (a second checkout tab) answers with the order the
+			 *  first tab placed, which keeps the email IT was placed with (QA2 X2). */
+			buyerRefHint: string;
+			/** Whether that email is the one this request carried (trimmed,
+			 *  case-folded). `false` only on a replay placed with another email:
+			 *  the site must say so rather than send the shopper on to pay. */
+			buyerRefMatches: boolean;
+	  }
 	| { ok: false; reason: CheckoutFailureReason };
 
 export type PublicOrderResult =
@@ -782,10 +802,27 @@ export interface OrderSummaryWire {
  */
 export interface AccountOrderWire extends OrderSummaryWire {
 	latePayment: PublicOrderWire["latePayment"];
+	/** The tracking, as the public order read trims it (QA2 X1). */
+	fulfillment: PublicOrderWire["fulfillment"];
+	/** Where the order is going — the ship-to snapshot without its contact
+	 *  fields, or `null` when none was taken (QA2 X1). The OWNER's read only: the
+	 *  public order read never carries it. */
+	shippingAddress: AccountOrderAddressWire | null;
 	/** Money the order's ledger shows refunded (RECORDED refunds only), in the
 	 *  order's minor units — `0` when none. A refund made outside Otta ("Mark
 	 *  refunded", ADR-0026) is not on the ledger and is not counted. */
 	refundedCents: number;
+}
+
+/** An order's ship-to as its owner's account page shows it. */
+export interface AccountOrderAddressWire {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
 }
 
 export interface AddressWire {

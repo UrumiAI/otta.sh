@@ -32,5 +32,6 @@ export const POST: APIRoute = async (context) => {
 		}
 	}
 	clearSessionCookie(context.cookies);
-	return context.redirect("/", 303);
+	// Home, which says "You're signed out" for this flag (QA2 A5).
+	return context.redirect("/?signed-out=1", 303);
 };

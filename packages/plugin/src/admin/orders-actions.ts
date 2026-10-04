@@ -93,6 +93,9 @@ const ACTION_CANCEL = ORDERS_ACTIONS.custom("cancel");
 /** Both the DA-2b full-remaining refund and the partial refund the surface
  *  confirms for itself. */
 const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
+/** A person's answer to a refund whose provider outcome is unknown (review round 2). */
+const ACTION_RESOLVE_REFUND_CONFIRMED = ORDERS_ACTIONS.custom("resolve-refund-confirmed");
+const ACTION_RESOLVE_REFUND_VOIDED = ORDERS_ACTIONS.custom("resolve-refund-voided");
 
 /** `transition-<state>` — one DISTINCT verb per state, derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
@@ -169,9 +172,13 @@ export interface OrdersActionResult {
  *  exactly as a Block Kit `button.value` or a decoded carrier was. */
 export type OrdersActionPayload = Readonly<Record<string, string>>;
 
+/** `operator`: the signed-in admin the host named on the route (`routeCtx.user`,
+ *  via `operatorName`) — who a write records as having made it when the form named
+ *  nobody. Absent when the host named nobody. */
 type OrdersAction = (
 	client: AdminOrdersSurface,
 	payload: OrdersActionPayload,
+	operator?: string,
 ) => Promise<OrdersActionResult>;
 
 /**
@@ -286,6 +293,29 @@ function useCancelOrder(observedState: string): Notice {
 	};
 }
 
+/**
+ * Mark refunded on an order whose captured money the ledger has not returned (QA2
+ * M4, ADR-0026 amended 2026-10-03). Marking it would close the order and tell the
+ * buyer's page "refunded" while the shop still held the money. The way is Money →
+ * Refunds; a refund already made in the provider's dashboard is found there too —
+ * its check against the provider then lets Mark refunded close the order.
+ */
+const REFUND_THROUGH_MONEY: Notice = {
+	variant: "error",
+	title: "Refund it in Money → Refunds",
+	description:
+		"Nothing was changed. This order still has captured money that Otta hasn’t refunded, so marking it refunded would tell the buyer it was. Refund it in Money → Refunds — that returns the money and emails the buyer. If you already refunded it in your payment provider’s dashboard, start the refund in Money → Refunds anyway: Otta checks with the provider first, issues nothing, and then lets you mark the order refunded.",
+};
+
+/** Mark refunded while a refund is reserved or unverified (review round 1): its
+ *  outcome decides whether money is still held — the cancel path's rule. */
+const REFUND_IN_FLIGHT: Notice = {
+	variant: "error",
+	title: "Not marked refunded — a refund is unresolved",
+	description:
+		"Nothing was changed. A refund on this order is still unresolved — check Money → Refunds first, and your payment provider, before marking the order refunded.",
+};
+
 /** The generic refusal: the move is not in the state machine, or the order vanished. */
 const STATUS_CHANGE_FAILED: Notice = {
 	variant: "error",
@@ -312,6 +342,10 @@ function transitionRefusalNotice(
 			return PAID_BY_PROVIDER_ONLY; // T1-3
 		case "USE_CANCEL":
 			return useCancelOrder(observedState); // T1-4
+		case "REFUND_THROUGH_MONEY":
+			return REFUND_THROUGH_MONEY; // QA2 M4
+		case "REFUND_IN_FLIGHT":
+			return REFUND_IN_FLIGHT;
 		case "ORDER_NOT_FOUND":
 		case "INVALID_TRANSITION":
 			return STATUS_CHANGE_FAILED;
@@ -350,7 +384,7 @@ const MARKED_REFUNDED: Notice = {
  * is nothing to hand back.
  */
 function transitionAction(toState: string): OrdersAction {
-	return async (client, payload) => {
+	return async (client, payload, operator) => {
 		const orderId = readString(payload["orderId"]);
 		if (orderId === undefined) return applied(UNREADABLE);
 		const observedState = readWatermark(payload["state"]);
@@ -372,7 +406,12 @@ function transitionAction(toState: string): OrdersAction {
 			});
 		}
 		const key = `admin-transition:${orderId}:${toState}`;
-		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
+		// Who made the move — the signed-in operator the host named — for History,
+		// which showed "—" for every hand-made status move (QA2).
+		const result = await client.transitionOrder(orderId, toState, {
+			idempotencyKey: key,
+			...(operator !== undefined ? { actor: operator } : {}),
+		});
 		if (!result.ok) return applied(transitionRefusalNotice(result.reason, observedState));
 		if (!result.transitioned) {
 			// The guarded flip matched 0 rows — already in that state, or a lost race.
@@ -580,7 +619,7 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
  * (see {@link OrdersActionResult}). What each refusal owes them is a notice that
  * names WHAT happened and WHY, which is what every branch below returns.
  */
-const cancelOrderAction: OrdersAction = async (client, payload) => {
+const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const reason = readString(payload["reason"]) ?? "";
@@ -622,7 +661,9 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 		{
 			reason,
 			...(detail.length > 0 ? { detail } : {}),
-			cancelledBy: cancelledBy.length > 0 ? cancelledBy : "admin",
+			// The typed name, else the signed-in operator (QA2: a cancel's refund was
+			// recorded BY "admin"), else "admin".
+			cancelledBy: cancelledBy.length > 0 ? cancelledBy : (operator ?? "admin"),
 			restock,
 		},
 		{ idempotencyKey: key },
@@ -851,7 +892,7 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
 				variant: "error",
 				title: "Not cancelled — already refunded at the provider",
 				description:
-					"Nothing was changed. Your payment provider shows this payment already refunded (possibly from its dashboard). Reconcile it, then use Mark refunded to close the order.",
+					"Nothing was changed. Your payment provider shows this payment already refunded, in full or in part (possibly from its dashboard) — the order's reconciliation flag says which — unless it already had an open flag, which is kept; resolve that one and try the refund again. If refunded in full, Mark refunded is offered — use it before resolving the flag.",
 			};
 		case "GATEWAY_TERMINAL":
 		case "REFUND_NOT_SUPPORTED":
@@ -884,6 +925,15 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
  * the causal clause is the fact, it is what stops them retrying identically, and at
  * 76 characters it is nowhere near the 240 budget — so this was never length-driven.
  */
+/** This refund was already recorded — a double-click, a retry or a resubmitted
+ *  page after it went through. Nothing more was refunded. */
+const ALREADY_REFUNDED: Notice = {
+	variant: "default",
+	title: "Already refunded",
+	description:
+		"This refund was already recorded (a duplicate submission); nothing more was refunded, and the ledger above shows it.",
+};
+
 function staleLedgerNotice(
 	submittedAmountCents: number,
 	live: RefundsSummaryWire,
@@ -893,7 +943,7 @@ function staleLedgerNotice(
 		variant: "error",
 		title: "The refund ledger changed — nothing was refunded",
 		description: fit(
-			`${formatTotal(submittedAmountCents, cur)} was staged and was not recorded — someone else refunded this order since you started. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
+			`${formatTotal(submittedAmountCents, cur)} was not refunded: a refund was recorded since this page loaded — in another tab or by someone else. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
 			BANNER_BUDGET,
 		),
 	};
@@ -942,12 +992,11 @@ function staleLedgerNotice(
  * is refused by the SERVICE as `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`
  * and rendered by {@link refundFailureNotice}. See ADR-0015's amendment.
  *
- * NOR IS THERE A `Refunded by` GUARD, for the same reason: the `REFUND_BY_REQUIRED`
- * refusal also lived only on that step. A blank one is recorded as `admin` below.
- * Attribution is therefore enforced by the surface alone — recorded, with its known
- * gap, in the same amendment.
+ * NOR IS THERE A `Refunded by` GUARD: a blank one is recorded as the signed-in
+ * operator the host named (`routeCtx.user`, QA2), and only as `admin` when the
+ * host named nobody.
  */
-const refundOrderAction: OrdersAction = async (client, payload) => {
+const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const amountCents = parseCents(payload["amountCents"]);
@@ -975,14 +1024,24 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		});
 	}
 	const liveCur = live.currency.length > 0 ? live.currency : currency;
+	// The observed watermark is the third key component (F-2a) — NOT a nonce.
+	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
 	if (live.finalizedTotalCents !== observedSoFar) {
+		// THIS submission already recorded (a retry or a resubmitted page after it
+		// went through): the ledger moved because of it. Saying "someone else
+		// refunded this order" blamed a stranger for the operator's own refund (QA
+		// round 2).
+		const ownRecorded = live.refunds.some(
+			(r) =>
+				r.status === "recorded" &&
+				(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
+		);
+		if (ownRecorded) return applied(ALREADY_REFUNDED);
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
 		// drawn and this click. This is the ONLY window now checked server-side, and
 		// the surface's own pre-dialog validation cannot see it.
 		return applied(staleLedgerNotice(amountCents, live, liveCur));
 	}
-	// The observed watermark is the third key component (F-2a) — NOT a nonce.
-	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
 	const voidedAttempts = live.refunds.filter(
 		(r) =>
 			r.status === "voided" &&
@@ -995,7 +1054,9 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 			amountCents,
 			currency,
 			...(reason.length > 0 ? { reason } : {}),
-			refundedBy: refundedBy.length > 0 ? refundedBy : "admin",
+			// The typed name, else the signed-in operator — "full remaining" carries no
+			// name, and "a different amount" no longer requires one (QA2) — else "admin".
+			refundedBy: refundedBy.length > 0 ? refundedBy : (operator ?? "admin"),
 		},
 		{ idempotencyKey: key },
 	);
@@ -1006,12 +1067,7 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 	if (result.duplicate) {
 		// A benign replay: the SAME amount against the SAME watermark, i.e. a
 		// double-click. A different amount would have produced a different key.
-		return applied({
-			variant: "default",
-			title: "Already refunded",
-			description:
-				"This refund was already recorded (a duplicate submission); the ledger above is unchanged.",
-		});
+		return applied(ALREADY_REFUNDED);
 	}
 	if (result.fullyRefunded) {
 		return applied({
@@ -1029,6 +1085,60 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		),
 	});
 };
+
+/**
+ * Resolve a refund whose provider outcome is UNKNOWN (review round 2): the
+ * operator checked the provider. `confirmed` records it as refunded (the provider
+ * refund id is optional), `voided` releases it. The surface confirms first; the
+ * domain refuses any row that is not `unverified`, and a replay changes nothing.
+ * The operator the host named is recorded on the row.
+ */
+function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersAction {
+	return async (client, payload, operator) => {
+		const orderId = readString(payload["orderId"]);
+		const refundKey = (readString(payload["refundKey"]) ?? "").trim();
+		if (orderId === undefined || refundKey.length === 0) return applied(UNREADABLE);
+		const refundRef = (readString(payload["refundRef"]) ?? "").trim();
+		const result = await client.resolveUnverifiedRefund(orderId, {
+			refundKey,
+			outcome,
+			...(outcome === "confirmed" && refundRef.length > 0 ? { refundRef } : {}),
+			resolvedBy: operator ?? "admin",
+		});
+		if (!result.ok) {
+			return applied({
+				variant: "error",
+				title: "Refund not resolved",
+				description:
+					result.reason === "NOT_UNVERIFIED"
+						? "Nothing was changed — this refund is no longer waiting on a check. Reload Money → Refunds to see its status."
+						: "Nothing was changed — that refund could not be found on this order. Reload and try again.",
+			});
+		}
+		if (!result.changed) {
+			return applied({
+				variant: "default",
+				title: "Already resolved",
+				description: "This refund was already resolved that way; nothing changed.",
+			});
+		}
+		if (outcome === "voided") {
+			return applied({
+				variant: "default",
+				title: "Marked as not refunded",
+				description:
+					"The refund is recorded as never issued, and that amount can be refunded again from Money → Refunds. No money moved and the buyer was not emailed.",
+			});
+		}
+		return applied({
+			variant: "default",
+			title: "Refund confirmed",
+			description: `The refund is recorded as issued by your payment provider${
+				result.fullyRefunded ? ", and the order is now fully refunded" : ""
+			}.${emailSentence(result.email)}`,
+		});
+	};
+}
 
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's
  *  typed reason, NEVER the raw status/URL. The ambiguous-timeout case is explicit:
@@ -1052,7 +1162,7 @@ function refundFailureNotice(reason: string | undefined): Notice {
 				variant: "error",
 				title: "Provider already refunded",
 				description:
-					"Your payment provider shows this order already refunded (possibly from its dashboard). Nothing was issued — reconcile the provider before trying again.",
+					"Your payment provider shows this order already refunded, or this amount would refund more than it still holds (possibly after a dashboard refund). Nothing was issued — the order's reconciliation flag says which — unless it already had an open flag, which is kept; resolve that one and try the refund again. If refunded in full, Mark refunded is offered — use it before resolving the flag.",
 			};
 		case "GATEWAY_RETRYABLE":
 			return {
@@ -1115,6 +1225,8 @@ const ORDERS_ACTIONS_BY_ID: Readonly<Record<string, OrdersAction>> = {
 	[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction,
 	[ACTION_CANCEL]: cancelOrderAction,
 	[ACTION_REFUND]: refundOrderAction,
+	[ACTION_RESOLVE_REFUND_CONFIRMED]: resolveUnverifiedRefundAction("confirmed"),
+	[ACTION_RESOLVE_REFUND_VOIDED]: resolveUnverifiedRefundAction("voided"),
 	// One handler per state, keyed by the SAME derived id the control uses.
 	...Object.fromEntries(
 		ORDER_STATES.map((state) => [
@@ -1150,8 +1262,9 @@ export async function dispatchOrdersAction(
 	actionId: string,
 	payload: OrdersActionPayload,
 	client: AdminOrdersSurface,
+	operator?: string,
 ): Promise<OrdersActionResult | undefined> {
 	const action = ORDERS_ACTIONS_BY_ID[actionId];
 	if (action === undefined) return undefined;
-	return await action(client, payload);
+	return await action(client, payload, operator);
 }

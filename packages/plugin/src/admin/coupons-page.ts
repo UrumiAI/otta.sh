@@ -1051,6 +1051,9 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 	// Not offered on a coupon that has already ended: there is nothing to retire,
 	// and an expired coupon is reopened through the edit form's expiry instead.
 	if (status !== "expired") blocks.push(retireCouponActions(detail));
+	// Delete sits beside Retire on the coupon's own panel (QA round 2: it was only
+	// reachable under Redemptions), offered on the same rule — never redeemed.
+	if (detail.usesCount === 0) blocks.push(deleteCouponActions(detail));
 	return blocks;
 }
 
@@ -1386,10 +1389,10 @@ function redemptionsPanel(detail: CouponSummaryWire): Block[] {
 		// 163 chars ≤ 200.
 		text: "Orders already placed keep their snapshotted discount regardless of edits here. Lowering max uses to at or below the current count exhausts the coupon immediately.",
 	});
-	// Delete lives HERE, beside the count that gates it (DA-2, forbid-if-redeemed).
-	if (detail.usesCount === 0) {
-		blocks.push(deleteCouponActions(detail));
-	} else {
+	// Delete itself is on the Coupon panel, beside Retire (QA round 2). The count
+	// that gates it is here, so a redeemed coupon says HERE why it cannot be
+	// deleted (DA-2, forbid-if-redeemed).
+	if (detail.usesCount > 0) {
 		blocks.push({
 			type: "context",
 			text: withheldDeleteContext(detail.usesCount),
@@ -1855,10 +1858,17 @@ function createCouponAction() {
 			});
 			// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
 			// editing one field); success drops it, which is what returns the
-			// operator to the list.
+			// operator to the list. A collision says WHICH of the two was taken: the
+			// code is looked up (QA round 2 — the copy blamed the code for a taken ID).
+			const collision =
+				!result.ok && result.status === 409 ? await couponCollision(client, id, code) : undefined;
+			const clash = collision === undefined ? undefined : { kind: collision, id };
 			return result.ok
 				? showList(undefined, createCouponNotice(result, code))
-				: showList(undefined, createCouponNotice(result, code), { kind: "new-coupon", draft });
+				: showList(undefined, createCouponNotice(result, code, clash), {
+						kind: "new-coupon",
+						draft,
+					});
 		},
 	);
 }
@@ -1877,7 +1887,28 @@ function couponDraft(values: Record<string, unknown>): CouponDraft {
 	};
 }
 
-function createCouponNotice(result: RulesCreateResult<unknown>, code: string): Notice {
+/** Which half of a create collided (409): the code (another coupon has it,
+ *  whatever its case), the ID (no coupon has the code, so the ID was taken), or
+ *  both — this coupon already exists, typically a retried create. `undefined`
+ *  when the lookup could not answer. */
+type CouponCollision = "code" | "id" | "same";
+
+async function couponCollision(
+	client: AdminRulesSurface,
+	id: string,
+	code: string,
+): Promise<CouponCollision | undefined> {
+	const byCode = await client.getCoupon(code).catch(() => undefined);
+	if (byCode === undefined) return undefined;
+	if (byCode === null) return "id";
+	return byCode.id === id ? "same" : "code";
+}
+
+function createCouponNotice(
+	result: RulesCreateResult<unknown>,
+	code: string,
+	clash?: { kind: CouponCollision; id: string },
+): Notice {
 	if (result.ok) {
 		return {
 			variant: "default",
@@ -1889,11 +1920,18 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 		variant: "error",
 		title: "Coupon not created",
 		description:
-			// 409 is the store's collision, refused before anything was written. It
-			// cannot say WHICH of the two was taken, so the copy names both.
-			result.status === 409
-				? `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`
-				: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
+			// 409 is the store's collision, refused before anything was written. The
+			// store does not say which of the two was taken; the code lookup above
+			// does, and the copy names that one. Unknown or both ⇒ the copy names
+			// both, with the retry hint (a double-submitted create collides with
+			// itself).
+			result.status !== 409
+				? `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`
+				: clash?.kind === "id"
+					? `The coupon ID "${clash.id}" is already used by another coupon. Choose another ID — the code "${code}" is free.`
+					: clash?.kind === "code"
+						? `The code "${code}" is already used by another coupon (codes match whatever their case). Choose another code.`
+						: `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`,
 	};
 }
 

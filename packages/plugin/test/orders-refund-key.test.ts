@@ -129,6 +129,7 @@ function recorder(): Recorder {
 		getTimeline: refuse("getTimeline"),
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
+		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
 	};
 	return {
 		client,

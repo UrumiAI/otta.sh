@@ -15,14 +15,17 @@ interface Props {
 	model: AccountOrdersModel;
 }
 
-const { errorMessage, rows } = Astro.props.model;
+const { errorMessage, rows, signedInAs } = Astro.props.model;
 ---
 
 <div class="account-orders-head-row">
 	<h1 class="account-orders-title">Your orders</h1>
-	<form method="POST" action="/account/logout">
-		<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
-	</form>
+	<div class="account-orders-session">
+		{signedInAs !== null && <span class="account-orders-who">Signed in as {signedInAs}</span>}
+		<form method="POST" action="/account/logout">
+			<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+		</form>
+	</div>
 </div>
 
 {
@@ -33,7 +36,7 @@ const { errorMessage, rows } = Astro.props.model;
 	) : rows.length === 0 ? (
 		<p class="account-orders-empty">
 			No orders yet. Orders you place with this email address — including as a guest — appear
-			here. <a href="/products">Browse products</a>
+			here. <a class="account-orders-empty-link" href="/products">Browse products</a>
 		</p>
 	) : (
 		<ul class="account-orders-list">
