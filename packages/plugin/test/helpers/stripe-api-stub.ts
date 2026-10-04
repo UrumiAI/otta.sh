@@ -10,7 +10,13 @@ export interface StripeRecordedRequest {
 	form: URLSearchParams;
 }
 
-export type StripeResponder = (req: StripeRecordedRequest) => { status: number; body: unknown };
+/** A reply; `delayMs` holds it back that long first — a slow or hung Stripe, for
+ *  a caller whose own time bound is under test. */
+export type StripeResponder = (req: StripeRecordedRequest) => {
+	status: number;
+	body: unknown;
+	delayMs?: number;
+};
 
 export interface StripeApiStub {
 	/** `host:port` — what {@link SandboxOptions.globalOutbound} takes. */
@@ -158,8 +164,13 @@ export async function startStripeApiStub(options: {
 				};
 				requests.push(recorded);
 				const reply = responder(recorded);
-				res.writeHead(reply.status, { "content-type": "application/json" });
-				res.end(JSON.stringify(reply.body));
+				const send = () => {
+					if (res.destroyed) return; // the caller gave up on it
+					res.writeHead(reply.status, { "content-type": "application/json" });
+					res.end(JSON.stringify(reply.body));
+				};
+				if (reply.delayMs !== undefined && reply.delayMs > 0) setTimeout(send, reply.delayMs);
+				else send();
 				return;
 			}
 

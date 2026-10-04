@@ -9,7 +9,7 @@ import {
 	orderId as toOrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { ReleaseEmailClaimOptions } from "../ports/order-store.js";
+import type { ExpiredOrder, ReleaseEmailClaimOptions } from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
@@ -229,6 +229,14 @@ export class InMemoryOrderStore implements OrderStore {
 		this.#appendEvent(orderId, "pending", "expired", null);
 		this.#enqueue(orderId, "expired");
 		return true;
+	}
+
+	/** The fake's flip records no release intent, so the caller releases the holds. */
+	async expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null> {
+		if (!(await this.expire(orderId, now))) return null;
+		const stored = this.#orders.get(orderId);
+		if (stored === undefined) return null;
+		return { order: this.#clone(stored.order), holdsReleased: false };
 	}
 
 	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {

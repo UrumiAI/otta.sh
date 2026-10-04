@@ -24,7 +24,9 @@ import {
 	sku as toSku,
 	money,
 	escalateStaleLateRefunds,
+	expireOrdersBatch,
 	cancelDueIntents,
+	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
 	retryLatePaymentRefunds,
 	settleOrder,
 	type PaymentGateway,
@@ -46,7 +48,15 @@ import {
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
-import { LATE_REFUND_ESCALATION_UNIT, LEG_QUERY_COSTS } from "../src/cron/sweeps.js";
+import {
+	LATE_REFUND_ESCALATION_UNIT,
+	LEG_QUERY_COSTS,
+	legReserveQueries,
+	legStartCalls,
+	MAINTENANCE_LEGS,
+	SWEEP_LEGS,
+	TICK_OVERHEAD_QUERIES,
+} from "../src/cron/sweeps.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../src/types.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
@@ -100,20 +110,30 @@ async function cost(body: () => Promise<unknown>): Promise<number> {
 	return counter.calls;
 }
 
-/** A pending order over one adopted reservation. */
-async function placeOrder(suffix: string, holdExpiresAt: string) {
+/** A pending order over `lines` adopted reservations, one SKU each. */
+async function placeOrder(suffix: string, holdExpiresAt: string, lines = 1) {
 	const s = counted();
-	const sku = `COST-${suffix}`;
-	await s.inventory.seedOnHand(toSku(sku), 10);
-	const held = await s.inventory.reserve(toSku(sku), 1, idempotencyKey(`res-${suffix}`));
-	if (!held.ok) throw new Error(held.reason);
-	await s.inventory.stampHoldDeadline(
-		held.reservationId,
-		new Date(Date.now() + DAY_MS).toISOString(),
-	);
+	const skus: string[] = [];
+	const held: string[] = [];
+	for (let i = 0; i < lines; i++) {
+		const sku = lines === 1 ? `COST-${suffix}` : `COST-${suffix}-${String(i)}`;
+		await s.inventory.seedOnHand(toSku(sku), 10);
+		const reserved = await s.inventory.reserve(
+			toSku(sku),
+			1,
+			idempotencyKey(`res-${suffix}-${String(i)}`),
+		);
+		if (!reserved.ok) throw new Error(reserved.reason);
+		await s.inventory.stampHoldDeadline(
+			reserved.reservationId,
+			new Date(Date.now() + DAY_MS).toISOString(),
+		);
+		skus.push(sku);
+		held.push(reserved.reservationId);
+	}
 	const id = `order-${suffix}`;
 	await s.inventory.adoptMany({
-		reservationIds: [held.reservationId],
+		reservationIds: held,
 		orderId: toOrderId(id),
 		holdExpiresAt,
 		now: new Date(Date.now() - HOUR_MS).toISOString(),
@@ -126,21 +146,40 @@ async function placeOrder(suffix: string, holdExpiresAt: string) {
 		holdExpiresAt,
 		buyerRef: `buyer-${suffix}@example.test`,
 		paymentMethod: "stripe",
-		lines: [
-			{
-				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(sku),
-				title: "Cost Widget",
-				unitPrice: cents(1000),
-				currency: currency("USD"),
-				quantity: 1,
-				fulfillmentKind: "physical",
-				reservationId: toReservationId(held.reservationId),
-			},
-		],
-		totals: { subtotal: cents(1000), total: cents(1000), currency: currency("USD") },
+		lines: held.map((reservationId, i) => ({
+			productId: toProductId(`prod-${suffix}-${String(i)}`),
+			sku: toSku(skus[i] ?? ""),
+			title: "Cost Widget",
+			unitPrice: cents(1000),
+			currency: currency("USD"),
+			quantity: 1,
+			fulfillmentKind: "physical" as const,
+			reservationId: toReservationId(reservationId),
+		})),
+		totals: {
+			subtotal: cents(1000 * lines),
+			total: cents(1000 * lines),
+			currency: currency("USD"),
+		},
 	});
-	return { id, sku, reservationId: held.reservationId };
+	return { id, sku: skus[0] ?? "", skus, reservationId: held[0] ?? "" };
+}
+
+/** The calls the expiry use-case makes for the given (already listed) orders. */
+async function expiryUnitCost(ids: readonly string[]): Promise<number> {
+	const s = counted();
+	return await cost(() =>
+		expireOrdersBatch(
+			{
+				orderStore: s.orderStore,
+				inventoryStore: s.inventory,
+				couponStore: s.couponStore,
+				clock: s.clock,
+			},
+			new Date(),
+			{ due: ids.map((id) => toOrderId(id)) },
+		),
+	);
 }
 
 describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
@@ -166,22 +205,37 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["expire-holds"].unit);
 	});
 
-	test("expire-orders: one order's flip, read, hold release and coupon release", async () => {
+	test("expire-orders: one order's whole expiry unit (flip, email locator, rollup, hold release, intent stamp)", async () => {
 		const placed = await placeOrder("expire", new Date(Date.now() - 30 * MINUTE_MS).toISOString());
-		const s = counted();
-		const now = new Date().toISOString();
-		const used = await cost(async () => {
-			await s.orderStore.expire(toOrderId(placed.id), now);
-			const order = await s.orderStore.getById(toOrderId(placed.id));
-			for (const line of order?.lines ?? []) {
-				if (line.reservationId !== null) {
-					await s.inventory.releaseAdopted(line.reservationId, toOrderId(placed.id));
-				}
-			}
-			await s.couponStore.releaseByOrder(toOrderId(placed.id));
-		});
+		const used = await expiryUnitCost([placed.id]);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["expire-orders"].unit);
 	});
+
+	// QA2 M2: one order expiry was 22 calls on a 30-call Workers Free tick, so a
+	// backlog expired one order every three minutes. The use-case re-read the order
+	// the flip had written and released every line a second time after the store had
+	// released them one id at a time. These pin the cut, per order shape — measured
+	// the same way on the base before the change: 22 (one line) and 40 (three lines on
+	// three SKUs).
+	test.each([
+		{ lines: 1, before: 22, ceiling: 13 },
+		{ lines: 3, before: 40, ceiling: 23 },
+	])(
+		"expire-orders: a $lines-line order costs at most $ceiling calls (was $before)",
+		async ({ lines, ceiling }) => {
+			const placed = await placeOrder(
+				`expire-lines-${String(lines)}`,
+				new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+				lines,
+			);
+			const s = counted();
+			const used = await expiryUnitCost([placed.id]);
+			expect(used).toBeLessThanOrEqual(ceiling);
+			// And it did the whole job: every unit back, the order expired.
+			for (const sku of placed.skus) expect(await s.inventory.getOnHand(toSku(sku))).toBe(10);
+			expect((await s.orderStore.getById(toOrderId(placed.id)))?.state).toBe("expired");
+		},
+	);
 
 	test("order-emails: one claim, its reads, the send and the mark", async () => {
 		const placed = await placeOrder("email", new Date(Date.now() + DAY_MS).toISOString());
@@ -462,6 +516,63 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		);
 	});
 
+	// The WORST cancel unit: Stripe refuses the cancel (payment_intent_unexpected_state),
+	// the transport reads the intent back (a second subrequest) and finds it still
+	// payable, and this is the last attempt — so the intent is given up and the order
+	// flagged. Measured with fix/late-charge-window merged (which adds the read-back
+	// and the give-up flag): 7 — the ledger 1, the cancel POST and intent GET 2, the
+	// give-up write 2, the flag 2. Without that branch the same case is 5 (no flag).
+	test("cancel-intents worst unit: a refused cancel read back as payable, on its last attempt, given up and flagged", async () => {
+		const placed = await placeOrder(
+			"cancel-intent-worst",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+		);
+		const s = counted();
+		const id = toOrderId(placed.id);
+		await s.orderStore.recordPaymentIntent({
+			orderId: id,
+			gateway: "stripe",
+			intentId: "pi_cost_worst",
+		});
+		await s.orderStore.expire(id, new Date().toISOString());
+		await s.orderStore.updatePaymentIntentCancel(id, "pi_cost_worst", {
+			cancelDueAt: new Date(Date.now() - MINUTE_MS).toISOString(),
+			cancelAttempts: DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS - 1,
+			cancelOutcome: null,
+		});
+		const fake = new FakePaymentGateway({ id: "stripe" });
+		const stripe: PaymentGateway = {
+			id: "stripe",
+			refundable: true,
+			createIntent: (i) => fake.createIntent(i),
+			verifyConfirmation: (raw) => fake.verifyConfirmation(raw),
+			refund: (i) => fake.refund(i),
+			async cancelIntent() {
+				counter.calls += 2;
+				return { ok: false, reason: "RETRYABLE" };
+			},
+		};
+		const due = await s.orderStore.listIntentCancelsDue(new Date().toISOString(), 1);
+		expect(due).toEqual([id]);
+		const used = await cost(() =>
+			cancelDueIntents(
+				{
+					orderStore: s.orderStore,
+					clock: { now: () => new Date() },
+					gateways: () => ({ stripe }),
+				},
+				{ limit: 1, due },
+			),
+		);
+		const [intent] = await s.orderStore.listPaymentIntents(id);
+		expect(intent?.cancelOutcome).toBe("failed");
+		expect(used, `measured ${String(used)}`).toBeLessThanOrEqual(
+			LEG_QUERY_COSTS["cancel-intents"].unit,
+		);
+		// The measured worst case, pinned: lowering the estimate below it is a regression.
+		expect(LEG_QUERY_COSTS["cancel-intents"].unit).toBeGreaterThanOrEqual(7);
+	});
+
 	test("cancel-intents entry: resolving the deployment's gateways (their secret reads)", async () => {
 		const ctx = {
 			http: { fetch: () => Promise.reject(new Error("no egress")) },
@@ -498,6 +609,55 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			s.reportingStore.reconcile({ from: `${day}T00:00:00.000Z`, to: `${day}T23:59:59.999Z` }),
 		);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["reporting-heal"].unit);
+	});
+});
+
+describe("the cost table against the Workers Free preset (review of QA2 M2)", () => {
+	// `cancel-intents` runs first in every tick. A leg whose ONE unit cannot fit behind
+	// one intent cancel and the tick's fixed reads would wait for as long as cancels
+	// keep coming — unless the starvation guard gives it the head of a tick. This pins
+	// which legs rely on the guard, from the estimates the tick actually admits on, so
+	// a cost-table change that adds one is a deliberate decision, not an accident.
+	const FREE = 30;
+	/** An ordinary cancel unit, measured above: ledger, cancel, bookkeeping write. */
+	const ORDINARY_CANCEL_UNIT = 5;
+	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
+		// The setting and cadence-state reads, then late-refunds' due check at the head.
+		const fixed = TICK_OVERHEAD_QUERIES + 1;
+		const cancel =
+			1 + LEG_QUERY_COSTS["cancel-intents"].entry + LEG_QUERY_COSTS["cancel-intents"].unit;
+		const needsHead: string[] = [];
+		for (const leg of SWEEP_LEGS) {
+			// The late-refund lead has its own rule (it leads ahead of the cancel).
+			if (leg === "cancel-intents" || leg === "late-refunds") continue;
+			const own =
+				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
+				legStartCalls(leg, FREE) +
+				legReserveQueries(leg);
+			if (fixed + cancel + own <= FREE) continue;
+			needsHead.push(leg);
+			expect(fixed + own, `${leg} alone at the head`).toBeLessThanOrEqual(FREE);
+		}
+		// Measured: a hold expiry with its list (~20) and a stock-commit completion (~15)
+		// never fit behind a cancel. An order expiry (14 with its due check) and a stranded
+		// sku carry (12 with its cursor) do not fit behind the WORST cancel (a refused,
+		// read-back, given-up and flagged one: 7)...
+		expect(needsHead.toSorted()).toEqual([
+			"expire-holds",
+			"expire-orders",
+			"hold-intents",
+			"sku-transfers",
+		]);
+		// ...but they fit behind an ordinary one (5), which is every cancel but an
+		// intent's last failing attempt — for them the guard is a backstop, not the pace.
+		const ordinaryCancel = 1 + LEG_QUERY_COSTS["cancel-intents"].entry + ORDINARY_CANCEL_UNIT;
+		for (const leg of ["expire-orders", "sku-transfers"] as const) {
+			const own =
+				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
+				legStartCalls(leg, FREE) +
+				legReserveQueries(leg);
+			expect(fixed + ordinaryCancel + own, leg).toBeLessThanOrEqual(FREE);
+		}
 	});
 });
 

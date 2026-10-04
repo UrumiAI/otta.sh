@@ -78,11 +78,27 @@ export function recordOrderPollHop(cookies: CookieWriter, key: string, hop: numb
 	});
 }
 
-/** Poll only a `pending` order the buyer has just paid for, and only so often. */
+/** Poll only while a change is expected — a `pending` order the buyer has just
+ *  paid for, or a dead one their payment reached late (until its refund is
+ *  recorded) — and only so often. */
 export function shouldPollOrder(input: {
 	state: string | null;
 	returnedFromStripe: boolean;
 	hop: number;
+	/** Stripe's return said the payment succeeded or is processing (QA2 M3). */
+	returnedPaid?: boolean;
+	/** The order's derived late-payment status, from its ledgers. */
+	latePayment?: string;
 }): boolean {
-	return input.state === "pending" && input.returnedFromStripe && input.hop <= MAX_ORDER_POLLS;
+	if (!input.returnedFromStripe || input.hop > MAX_ORDER_POLLS) return false;
+	if (input.state === "pending") return true;
+	// QA2 M3: a payment made on an order that had already died. The webhook will
+	// record it and the refund follows — poll (bounded, the same hops) until the
+	// refund is on the ledger, so the page ends on the truth instead of "Nothing
+	// was charged".
+	return (
+		input.returnedPaid === true &&
+		(input.state === "expired" || input.state === "cancelled" || input.state === "failed") &&
+		input.latePayment !== "refunded"
+	);
 }

@@ -461,6 +461,25 @@ export interface CommerceClient {
 	 * to whoever holds the link.
 	 */
 	resumeOrderPayment(orderId: string, proof?: ResumeProof): Promise<ResumeOrderPaymentResult>;
+	/**
+	 * "Start a new cart" (QA2 X4): cancel the order this cart became, if that
+	 * order is still UNPAID — so a payment still open for it in another tab can no
+	 * longer go through, and its stock goes back on sale now rather than at the
+	 * hold deadline. The cart id is the proof (the cookie, the same possession
+	 * factor {@link resumeOrderPayment} accepts); nothing else is read from the
+	 * caller.
+	 *
+	 * The plain cancel (`cancelOrder`, reason `customer_request`, by `shopper`):
+	 * it releases the held stock and makes the order's PaymentIntent due for
+	 * withdrawal at once. A payment that still lands is refunded at settle, like
+	 * any payment on a cancelled unpaid order. Idempotent under a key derived from
+	 * the order.
+	 *
+	 * A cart with no order, an unknown cart, or an order that is no longer
+	 * `pending` (paid, expired, already cancelled) is a no-op success:
+	 * `cancelled: false` — there is nothing in progress to clear.
+	 */
+	abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult>;
 	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
 
@@ -690,6 +709,10 @@ export interface ResumeProof {
 	/** The order's email, typed again. */
 	email?: string;
 }
+
+/** {@link CommerceClient.abandonCartOrder}'s reply: did THIS call cancel the
+ *  cart's order (and which order the cart names, if any). */
+export type AbandonCartOrderResult = { ok: true; cancelled: boolean; orderId: string | null };
 
 /** {@link CommerceClient.resumeOrderPayment}'s reply. */
 export type ResumeOrderPaymentResult =

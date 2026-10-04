@@ -46,6 +46,7 @@ import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { PAY_CLOSED_LEAD } from "../../lib/pay-deadline.js";
 import { payButtonLabel } from "../../lib/totals.js";
 import type { PayModel } from "../../themes/contract.js";
 import { keepPrivate } from "../../lib/no-store.js";
@@ -84,6 +85,16 @@ if (refuseTo !== null) return Astro.redirect(refuseTo, 303);
  *  at place-time and the label rule lives in `totals.ts`. */
 const payLabel = payButtonLabel(stash.total?.formatted);
 
+/** The page's own deadline, for its script (QA2 M1c): the hold deadline AND the
+ *  server's now, so the browser only measures the time elapsed since load and a
+ *  wrong browser clock cannot move it. From the read the guard just made; an
+ *  unanswerable read states none, and the script then closes nothing. */
+const payDeadline =
+	orderRead !== null && !isBusyResult(orderRead) && orderRead.ok
+		? orderRead.order.holdExpiresAt
+		: undefined;
+const renderedAt = new Date().toISOString();
+
 /** The frame around the card fields — see the `payment` slot below. */
 const model: PayModel = {
 	paymentConfigured: STRIPE_PUBLISHABLE_KEY !== undefined,
@@ -120,9 +131,30 @@ const model: PayModel = {
 							data-client-secret={stash.clientSecret}
 							data-publishable-key={STRIPE_PUBLISHABLE_KEY}
 							data-return-url={orderUrl}
+							data-pay-deadline={payDeadline}
+							data-pay-server-now={renderedAt}
 						/>
 					</div>
 					<p id="payment-error" class="pay-error" role="alert" hidden />
+					{/* QA2 M1c: shown when the time to pay runs out while this page is
+					    open — by the deadline script, or by the inline script when
+					    Stripe says the intent was withdrawn. Rendered by the page,
+					    never built by a script, so its words and its link are the
+					    page's. The ALERT region is in the DOM from first render and
+					    only its body is hidden, so the change is announced (WCAG
+					    4.1.3): a live region that appears with its content is not
+					    reliably read. What it promises matches ADR-0022's 2026-10-03
+					    amendment: a payment that arrived in time is kept, a late one
+					    is refunded — the order page says which. */}
+					<div id="payment-closed" role="alert">
+						<div id="payment-closed-body" hidden>
+							<Notice lead={PAY_CLOSED_LEAD}>
+								This order can't be paid any more. If you paid just before, your order page shows
+								whether the payment arrived in time — a payment that arrived too late is refunded.{" "}
+								<a id="payment-closed-link" href={orderPath}>View your order</a>.
+							</Notice>
+						</div>
+					</div>
 					<button id="payment-submit" type="submit" class="u-btn">
 						{payLabel}
 					</button>
@@ -156,6 +188,59 @@ const model: PayModel = {
 							errorBox.textContent = message;
 							errorBox.hidden = false;
 							submit.disabled = true;
+						}
+
+						/** Set by the deadline script (below) when the hold runs out
+						 *  while this page is open (QA2 M1c). */
+						function payClosed() {
+							return form.dataset.payClosed === "true";
+						}
+
+						/** Pay comes back after a failed attempt — unless the time to
+						 *  pay ran out meanwhile. */
+						function reenable() {
+							submit.disabled = payClosed();
+						}
+
+						/**
+						 * Close the page the way the deadline script does (it may not
+						 * have run): mark the form, disable Pay, hide the hold sentence,
+						 * show the closed notice in its alert region, and move focus to
+						 * its order link if it was in the form.
+						 */
+						function closePayment() {
+							var hadFocus = form.contains(document.activeElement);
+							form.dataset.payClosed = "true";
+							submit.disabled = true;
+							errorBox.hidden = true;
+							var body = document.getElementById("payment-closed-body");
+							if (body) body.hidden = false;
+							var notes = document.querySelectorAll("[data-pay-hold]");
+							for (var i = 0; i < notes.length; i++) notes[i].hidden = true;
+							var link = document.getElementById("payment-closed-link");
+							if (hadFocus && link) link.focus();
+						}
+
+						/**
+						 * What a Stripe refusal says about the INTENT, read from its own
+						 * status (review round 2): `payment_intent_unexpected_state` is
+						 * Stripe's answer both for an intent withdrawn at the deadline
+						 * (QA2 M1) and for one that already succeeded — paid in another
+						 * tab. So:
+						 *  - succeeded / processing → "landed": the money moved or is
+						 *    moving; the order page says how it ended.
+						 *  - canceled, or unexpected_state with no readable status →
+						 *    "withdrawn": the time to pay has run out.
+						 *  - anything else → null: an ordinary decline, Stripe's words.
+						 */
+						function refusalOf(error) {
+							if (!error) return null;
+							var intent = error.payment_intent;
+							var status = intent ? intent.status : undefined;
+							if (status === "succeeded" || status === "processing") return "landed";
+							if (status === "canceled") return "withdrawn";
+							if (error.code === "payment_intent_unexpected_state") return "withdrawn";
+							return null;
 						}
 
 						if (typeof Stripe !== "function") {
@@ -429,6 +514,9 @@ const model: PayModel = {
 						// no error.
 						form.addEventListener("submit", function (event) {
 							event.preventDefault();
+							// The deadline script stops a late submit before it gets here;
+							// this is the belt for a browser where that script did not run.
+							if (payClosed()) return;
 							errorBox.hidden = true;
 							submit.disabled = true;
 							stripe
@@ -441,11 +529,22 @@ const model: PayModel = {
 									// away to the return_url. Nothing on this page ever
 									// decides that an order is paid — the webhook does.
 									if (result && result.error) {
+										var refusal = refusalOf(result.error);
+										if (refusal === "landed") {
+											// Paid already (another tab, or a retry): the order page,
+											// which reads the order's own state, not this one.
+											window.location.assign(returnUrl);
+											return;
+										}
+										if (refusal === "withdrawn") {
+											closePayment();
+											return;
+										}
 										fail(
 											result.error.message ||
 												"That payment could not be completed. No charge has been made.",
 										);
-										submit.disabled = false;
+										reenable();
 										// `retheme` stands down while the submit is disabled, so a
 										// palette that changed during the confirm was skipped.
 										// Re-enabling the button is the moment it can catch up.
@@ -454,7 +553,7 @@ const model: PayModel = {
 								})
 								.catch(function () {
 									fail("That payment could not be completed. No charge has been made.");
-									submit.disabled = false;
+									reenable();
 									retheme();
 								});
 						});
@@ -499,6 +598,64 @@ const model: PayModel = {
 						}
 					})();
 				</script>
+
+				{/* THE DEADLINE (QA2 M1c) — a bundled module, so it imports the
+				    deciding (`lib/pay-deadline.ts`, tested with a fake clock) rather
+				    than restating it. Still this page's own script: ADR-0012 lets
+				    exactly this page carry client JS. At the deadline it disables
+				    Pay, hides the hold sentence, shows the closed notice and marks
+				    the form, which the inline handler above refuses on. */}
+				<script>
+					import { payCloseAt, startPayDeadline } from "../../lib/pay-deadline.js";
+
+					const loadedAt = Date.now();
+					const mount = document.getElementById("payment-element");
+					const form = document.getElementById("payment-form");
+					const submit = document.getElementById("payment-submit");
+					const closedBody = document.getElementById("payment-closed-body");
+					const closedLink = document.getElementById("payment-closed-link");
+					if (mount && form && submit && closedBody) {
+						const deadline = startPayDeadline(
+							payCloseAt(mount.dataset.payDeadline, mount.dataset.payServerNow, loadedAt),
+							{
+								close() {
+									// Read BEFORE Pay is disabled: a disabled button drops focus.
+									const hadFocus = form.contains(document.activeElement);
+									form.dataset.payClosed = "true";
+									(submit as HTMLButtonElement).disabled = true;
+									// The alert region (#payment-closed) is already in the DOM;
+									// its body appearing is what is announced.
+									closedBody.hidden = false;
+									for (const note of document.querySelectorAll<HTMLElement>("[data-pay-hold]")) {
+										note.hidden = true;
+									}
+									if (hadFocus && closedLink) closedLink.focus();
+								},
+							},
+							{
+								now: () => Date.now(),
+								setTimer: (fn, ms) => window.setTimeout(fn, ms),
+								clearTimer: (handle) => window.clearTimeout(handle as number),
+							},
+						);
+						// A throttled or sleeping tab: re-check the moment it is looked at.
+						const wake = (): void => void deadline.check();
+						document.addEventListener("visibilitychange", wake);
+						window.addEventListener("focus", wake);
+						window.addEventListener("pageshow", wake);
+						// CAPTURE on the document runs before the form's own handler, so
+						// a submit after the deadline never reaches Stripe.
+						document.addEventListener(
+							"submit",
+							(event) => {
+								if (event.target !== form || deadline.allowSubmit()) return;
+								event.preventDefault();
+								event.stopImmediatePropagation();
+							},
+							true,
+						);
+					}
+				</script>
 			</Fragment>
 		)
 	}
@@ -513,6 +670,16 @@ const model: PayModel = {
 		flex-direction: column;
 		gap: 1.25rem;
 		align-items: flex-start;
+	}
+
+	/* The closed notice's alert region stays in the DOM (it must, to be
+	   announced) but is empty-looking until the page closes: cancel the form's
+	   flex gap it would otherwise add while its body is hidden. */
+	#payment-closed {
+		width: 100%;
+	}
+	#payment-closed:has(> [hidden]) {
+		margin-top: -1.25rem;
 	}
 
 	/* The box Stripe's own fields sit in. The theme owns this hairline; the

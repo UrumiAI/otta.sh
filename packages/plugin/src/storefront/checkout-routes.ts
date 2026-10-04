@@ -92,6 +92,9 @@ export const STOREFRONT_ORDER_ROUTE = "storefront/order";
  *  from the order id plus a second factor (cart, owning session or email); the
  *  id alone is `PROOF_REQUIRED`. */
 export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
+/** "Start a new cart" (QA2 X4): cancel the order a cart became, if it is still
+ *  unpaid — from the cart id alone (the cookie is the possession proof). */
+export const STOREFRONT_ORDER_ABANDON_ROUTE = "storefront/order/abandon";
 
 /** The one payment method this slice offers. x402's `x402_challenge` client
  *  action is a second flow, out of scope (plan §7.2). */
@@ -144,6 +147,17 @@ export interface OrderResumeRouteInput extends OrderRouteInput {
 	sessionToken?: unknown;
 	email?: unknown;
 }
+
+export interface OrderAbandonRouteInput {
+	cartId?: unknown;
+}
+
+/** Whether THIS call cancelled the cart's unpaid order. Never the order id: the
+ *  caller holds the cart, and the cart page already links its order. */
+export type OrderAbandonRouteResult =
+	| { ok: true; cancelled: boolean }
+	| { ok: false; error: "INVALID_INPUT" }
+	| RenderGuardFailure;
 
 /** What the totals were computed WITH — the form echoes it, so the place
  *  prices exactly what the buyer reviewed. `null` ⇒ not applied. */
@@ -778,5 +792,27 @@ export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteIn
 				...(total !== undefined ? { total } : {}),
 				buyerRefHint: result.buyerRefHint,
 			};
+		});
+}
+
+/**
+ * "Start a new cart" (QA2 X4) — cancel the order this cart became, if that order
+ * is still unpaid, so a payment still open for it elsewhere can no longer go
+ * through and its stock goes back on sale now. The cart id is the whole input
+ * and the whole proof (the cart cookie — the same possession factor the resume
+ * route accepts); see `CommerceClient.abandonCartOrder`. A storage failure is the
+ * render guard's BUSY / RENDER_FAILED, never a success: the site must not tell
+ * the shopper a payment was stopped when it was not.
+ */
+export function createOrderAbandonRouteHandler(): RouteHandler<OrderAbandonRouteInput> {
+	return (routeCtx, ctx): Promise<OrderAbandonRouteResult> =>
+		renderGuard(STOREFRONT_ORDER_ABANDON_ROUTE, async () => {
+			const cartId = routeCtx.input.cartId;
+			if (typeof cartId !== "string" || !isIdToken(cartId)) {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			const client = await makeCommerceClient(ctx);
+			const result = await client.abandonCartOrder(cartId);
+			return { ok: true as const, cancelled: result.cancelled };
 		});
 }

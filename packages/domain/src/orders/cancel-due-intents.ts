@@ -14,8 +14,6 @@ export const DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS = 5;
 /** Orders the sweep examines per run — small: each may be a provider call inside
  *  someone's cron tick. */
 export const DEFAULT_INTENT_CANCEL_BATCH = 3;
-/** How long a pending-but-lapsed order's intent waits for the expiry to catch up. */
-const LAPSED_RECHECK_MS = 5 * 60 * 1000;
 /** Backoff after the n-th transient failure: 1, 2, 4, 8 … minutes, capped at an hour. */
 function backoffMs(attempts: number): number {
 	return Math.min(60, 2 ** Math.max(0, attempts - 1)) * 60 * 1000;
@@ -52,6 +50,16 @@ export interface CancelDueIntentsOptions {
 /**
  * The intent-cancel sweep — late-payment PREVENTION, drained in its own leg.
  *
+ * WITHDRAWN AT THE DEADLINE, NOT AT THE EXPIRY (QA2 M1a). Past its hold an order
+ * can no longer be paid — the pay page and resume refuse it — so its intent is
+ * withdrawn as soon as it is due, whether or not the expiry has reached the order
+ * yet. Waiting for the expiry (as this leg once did) left the intent payable for as
+ * long as the expiry lagged, so a tab left open could pay an order that had just
+ * expired. An order still `pending` past its hold keeps its stock until the expiry
+ * runs; a payment that was already under way when the withdrawal reached the
+ * provider (`not_cancellable`) settles it normally — the stock was still held, so
+ * that is a sale, not an oversell (ADR-0022, 2026-10-03 amendment).
+ *
  * WHY A LEG AND NOT THE EXPIRY. Cancelling at the provider is a network call per
  * order. Inside `expireOrders` it would put a provider's latency (and outage) on
  * the path that releases stock — one slow Stripe and a whole tick's expiries
@@ -62,14 +70,15 @@ export interface CancelDueIntentsOptions {
  *  - never, for an order that was paid (the paid flip resolves its intents).
  *
  * Per due intent, by the order's current state:
- *  - left `pending` unpaid (`expired`/`cancelled`/`failed`) ⇒ `cancelIntent`, once,
- *    under a key derived from the intent. `cancelled` / `not_cancellable` /
+ *  - left `pending` unpaid (`expired`/`cancelled`/`failed`), or still `pending`
+ *    past its hold ⇒ `cancelIntent`, once per attempt, under a key derived from the
+ *    intent AND the attempt (a provider replays a saved failure for a reused key). `cancelled` / `not_cancellable` /
  *    `UNSUPPORTED` resolve it; `TERMINAL` gives up (`failed`); `RETRYABLE` or a
  *    throw reschedules with backoff until `maxAttempts`, then gives up. A
  *    RETRYABLE cancel is retried ONLY here — nothing else re-asks the provider.
- *  - still `pending` (past its hold, but the expiry has not reached it) ⇒
- *    rescheduled shortly; the sweep never cancels an order's intent while that
- *    order could still settle cleanly.
+ *  - still `pending` and BEFORE its hold (only reachable if a due date were ever
+ *    set early) ⇒ rescheduled to the hold; a payable order's intent is never
+ *    withdrawn.
  *  - paid / anything else / vanished ⇒ resolved `not_needed`.
  *
  * Giving up is safe by construction: a payment on an intent this never cancelled
@@ -105,8 +114,7 @@ export async function cancelDueIntents(
 		const order = ledger?.order ?? null;
 		// Only an order that left `pending` unpaid makes provider calls; resolve the
 		// gateways (bounded by the caller's time left) only then.
-		const gateways =
-			order !== null && isUnpaidTerminalState(order.state) ? await deps.gateways() : {};
+		const gateways = order !== null && isWithdrawable(order, now) ? await deps.gateways() : {};
 		for (const intent of dueIntents) {
 			const settled = await settleIntent(
 				deps,
@@ -122,6 +130,29 @@ export async function cancelDueIntents(
 		}
 	}
 	return examined;
+}
+
+/**
+ * Whether an order's intents may be withdrawn now: it left `pending` unpaid, or it
+ * is still `pending` but its hold has passed (the expiry simply has not reached it
+ * yet — it can no longer be paid either way).
+ */
+function isWithdrawable(order: Order, now: Date): boolean {
+	if (isUnpaidTerminalState(order.state)) return true;
+	return order.state === "pending" && Date.parse(order.holdExpiresAt) <= now.getTime();
+}
+
+/**
+ * The provider idempotency key for ONE cancel attempt. Stripe saves the first
+ * result for a key — failures included — and replays it, so retrying under the
+ * same key could never get past a transient 500 or a stale refusal. A repeated
+ * cancel is harmless (a withdrawn intent stays withdrawn), so attempt n > 1 gets
+ * its own key; the first keeps the plain intent-derived form.
+ */
+function cancelKey(intentId: string, attempt: number) {
+	return idempotencyKey(
+		attempt <= 1 ? `cancel-intent:${intentId}` : `cancel-intent:${intentId}:${String(attempt)}`,
+	);
 }
 
 async function settleIntent(
@@ -151,10 +182,10 @@ async function settleIntent(
 		await resolve("not_needed");
 		return;
 	}
-	if (order.state === "pending") {
-		// Past its hold (it is due) but not yet expired: never withdraw the intent of
-		// an order that could still settle cleanly. Look again after the expiry.
-		await reschedule(now.getTime() + LAPSED_RECHECK_MS);
+	if (!isWithdrawable(order, now)) {
+		// Pending and still inside its hold: the buyer may pay it. Never withdraw it
+		// early — look again at the deadline.
+		await reschedule(Date.parse(order.holdExpiresAt));
 		return;
 	}
 	if (gateway === undefined) {
@@ -171,7 +202,7 @@ async function settleIntent(
 		res = await gateway.cancelIntent({
 			orderId,
 			intentId: intent.intentId,
-			idempotencyKey: idempotencyKey(`cancel-intent:${intent.intentId}`),
+			idempotencyKey: cancelKey(intent.intentId, attempts),
 		});
 	} catch (err) {
 		console.error(
@@ -194,9 +225,17 @@ async function settleIntent(
 		return;
 	}
 	// TERMINAL, or retries exhausted. Logged once; the late-payment refund is the
-	// backstop for any payment that still lands on this intent.
+	// backstop for any payment that still lands on this intent. And FLAGGED, so an
+	// admin sees it on the orders console: the intent may still be payable. Never
+	// over a flag already there — that one is somebody else's anomaly to resolve.
 	console.error(
 		`[domain] gave up cancelling payment intent ${intent.intentId} of order ${orderId} (${res.reason}, ${String(attempts)} attempt(s)); a late payment on it will be refunded at settle`,
 	);
 	await resolve("failed", attempts);
+	if (order.reconciliationFlag === null) {
+		await deps.orderStore.flagReconciliation(
+			orderId,
+			`Could not withdraw payment intent ${intent.intentId} at the provider (${res.reason}, ${String(attempts)} attempt(s)). It may still be payable: a payment on it is kept while the order is still held, and refunded automatically once the order has expired or been cancelled.`,
+		);
+	}
 }

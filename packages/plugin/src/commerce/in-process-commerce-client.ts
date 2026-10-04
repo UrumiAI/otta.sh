@@ -49,6 +49,8 @@
 import {
 	activateProductCommerce,
 	addLine,
+	cancelDueIntents,
+	cancelOrder,
 	cents,
 	checkoutOwner,
 	computeQuote,
@@ -108,6 +110,7 @@ import {
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
+	AbandonCartOrderResult,
 	AddressWire,
 	AccountOrderWire,
 	AuthedResult,
@@ -201,7 +204,22 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * success, and the client logs that once.
 	 */
 	resolveEmailSender?: () => Promise<EmailSender | undefined>;
+	/**
+	 * The gateways "Start a new cart" withdraws an abandoned order's intent through
+	 * (QA2 X4), resolved LAZILY — only when an order was actually cancelled — and
+	 * built for a SHORT, fixed provider bound ({@link ABANDON_CANCEL_CALL_MS}), not
+	 * checkout's. Absent ⇒ no in-request withdrawal; the sweep does it.
+	 */
+	resolveWithdrawGateways?: () => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>;
 }
+
+/** The provider bound for the in-request intent withdrawal: fixed, never
+ *  clipped — a cancel gets all of it or is not started (the sweep's rule). */
+export const ABANDON_CANCEL_CALL_MS = 1_500;
+/** The whole in-request withdrawal's budget, measured from the start of the
+ *  abandon: the cancel is started only while a whole {@link ABANDON_CANCEL_CALL_MS}
+ *  still fits, so the shopper's redirect waits at most this long for it. */
+export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
 
 /**
  * Server-side notices that are logged ONCE per isolate rather than once per
@@ -222,6 +240,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
 	readonly #resolveEmailSender: (() => Promise<EmailSender | undefined>) | undefined;
+	readonly #resolveWithdrawGateways:
+		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
+		| undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -236,6 +257,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#resolveEmailSender = options.resolveEmailSender;
+		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -1180,6 +1202,67 @@ export class InProcessCommerceClient implements CommerceClient {
 			intent: serializeIntent(result.intent),
 			buyerRefHint: buyerRefHint(order.buyerRef),
 		};
+	}
+
+	/**
+	 * "Start a new cart" (QA2 X4) — see the port. The cart is the proof: its
+	 * order is read through the cart row's own `orderId`, never from the caller.
+	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
+	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 */
+	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
+		requireIdToken("cartId", cartId);
+		const startedAt = Date.now();
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null || cart.orderId === null) {
+			return { ok: true, cancelled: false, orderId: null };
+		}
+		const orderId = toOrderId(cart.orderId);
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order === null || order.state !== "pending") {
+			return { ok: true, cancelled: false, orderId: cart.orderId };
+		}
+		const res = await cancelOrder(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId,
+				reason: "customer_request",
+				detail: "Started a new cart",
+				cancelledBy: "shopper",
+				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
+			},
+		);
+		const cancelled = res.ok && res.cancelled;
+		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
+		return { ok: true, cancelled, orderId: cart.orderId };
+	}
+
+	/**
+	 * Withdraw a just-cancelled order's PaymentIntent at the provider IN the
+	 * request, so a tab still open on it stops being payable now rather than on
+	 * the sweep's next tick. BEST-EFFORT and BOUNDED: the cancel made it due at
+	 * once, and this is the sweep's own drain (`cancelDueIntents`) run for that one
+	 * order — same keys, same bookkeeping — so a definite answer is recorded and
+	 * the sweep never asks again, a RETRYABLE one is rescheduled for the sweep
+	 * exactly as there, and a cancel that would not fit whole in
+	 * {@link ABANDON_WITHDRAW_BUDGET_MS} is not started at all (still due,
+	 * uncounted). Never throws: the cancellation already stands.
+	 */
+	async #withdrawIntentsNow(orderId: ReturnType<typeof toOrderId>, startedAt: number) {
+		const resolve = this.#resolveWithdrawGateways;
+		if (resolve === undefined) return;
+		const remainingMs = () => ABANDON_WITHDRAW_BUDGET_MS - (Date.now() - startedAt);
+		try {
+			await cancelDueIntents(
+				{ orderStore: this.#stores.orderStore, clock: this.#stores.clock, gateways: resolve },
+				{ due: [orderId], limit: 1, canStartCancel: () => remainingMs() >= ABANDON_CANCEL_CALL_MS },
+			);
+		} catch (err) {
+			console.error(
+				`[otta] withdrawing the payment intent of abandoned order ${orderId} failed; the sweep will`,
+				{ error: err instanceof Error ? err.message : String(err) },
+			);
+		}
 	}
 
 	/**

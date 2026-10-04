@@ -299,10 +299,13 @@ export interface StripeTransport {
 }
 
 /**
- * A `cancelPaymentIntent` result. `not_cancellable` is Stripe's
- * `payment_intent_unexpected_state`: the intent already succeeded (the buyer paid
- * at the instant the order expired — the settle path refunds it) or was cancelled
- * before — a no-op, not an error. Failures are only `retryable` / `terminal`:
+ * A `cancelPaymentIntent` result. `not_cancellable` means the intent SUCCEEDED —
+ * the buyer paid at the instant it was withdrawn; the settle path accepts it while
+ * the order is still pending, or refunds it on a dead order. It is reported only
+ * after reading the intent: Stripe's `payment_intent_unexpected_state` alone does not
+ * say which state the intent is in, so the transport reads it — an intent already
+ * cancelled is `cancelled`, one still payable or in flight is `retryable`. Failures
+ * are only `retryable` / `terminal`:
  * cancelling moves no money and the native key dedupes a replay, so there is no
  * ambiguous class.
  */
@@ -951,6 +954,51 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 	const cancelCapMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
 	const cancelTimeoutOf = (): number => Math.min(cancelCapMs, timeoutOf());
 
+	/**
+	 * After Stripe refused a cancel with `payment_intent_unexpected_state`: read the
+	 * intent (`GET /v1/payment_intents/{id}`, inside what is left of the cancel's own
+	 * deadline) and map its status. Stripe cancels from `requires_payment_method`,
+	 * `requires_confirmation`, `requires_action`, `requires_capture` and, rarely,
+	 * `processing` (https://docs.stripe.com/api/payment_intents/cancel):
+	 *  - `succeeded` ⇒ `not_cancellable` — the buyer paid; the webhook settles it
+	 *    (or refunds it, if the order is already dead).
+	 *  - `canceled` ⇒ `cancelled` — it can no longer be paid, whoever withdrew it.
+	 *  - any cancellable or in-flight status ⇒ `retryable` — still payable (or about
+	 *    to settle), so the sweep must ask again, under a fresh key: Stripe replays a
+	 *    saved result for a reused one.
+	 *  - a failed, late or unreadable read ⇒ `retryable` — unknown is never "done".
+	 */
+	const classifyUncancellable = async (
+		intentId: string,
+		secretKey: string,
+		deadline: number,
+	): Promise<StripeCancelPaymentIntentResult> => {
+		const left = deadline - Date.now();
+		if (left <= 0) return { ok: false, class: "retryable" };
+		let status: unknown;
+		try {
+			const res = await doFetch(`${base}/v1/payment_intents/${encodeURIComponent(intentId)}`, {
+				method: "GET",
+				headers: stripeHeaders(secretKey),
+				signal: AbortSignal.timeout(left),
+			});
+			if (!res.ok) return { ok: false, class: "retryable" };
+			const body: unknown = await res.json();
+			status =
+				typeof body === "object" && body !== null
+					? (body as { status?: unknown }).status
+					: undefined;
+		} catch {
+			return { ok: false, class: "retryable" };
+		}
+		if (status === "succeeded") return { ok: true, outcome: "not_cancellable" };
+		if (status === "canceled") return { ok: true, outcome: "cancelled" };
+		console.warn(
+			`[otta] Stripe refused to cancel payment intent ${intentId} while it was ${typeof status === "string" ? status : "unreadable"}; the sweep will try again`,
+		);
+		return { ok: false, class: "retryable" };
+	};
+
 	return {
 		async createPaymentIntent({
 			orderId,
@@ -1126,6 +1174,10 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			idempotencyKey,
 			secretKey,
 		}): Promise<StripeCancelPaymentIntentResult> {
+			// ONE deadline for the whole call — the cancel and, when Stripe refuses it,
+			// the read that decides what the refusal means — so the cron leg's bound
+			// holds however many requests it takes.
+			const deadline = Date.now() + cancelTimeoutOf();
 			const form = new URLSearchParams();
 			// `abandoned` is Stripe's own reason for "the buyer never completed it" —
 			// what an expired checkout is — and it is what the merchant's dashboard shows.
@@ -1159,10 +1211,15 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			if (res.status >= 500 || res.status === 429 || res.status === 409) {
 				return { ok: false, class: "retryable" };
 			}
-			// A succeeded (or already-cancelled) intent cannot be cancelled. That is the
-			// race prevention is allowed to lose — not a failure to report.
+			// `payment_intent_unexpected_state` says only that the intent is not in a
+			// state Stripe will cancel FROM right now. That covers an intent that
+			// already succeeded (the race prevention may lose — the payment landed and
+			// settle owns it) or was already cancelled, but QA2 M1b saw it on intents
+			// that were still payable — and giving up on the code alone left them
+			// payable. So READ the intent and decide from its status; never report
+			// "nothing to cancel" without having seen a final state.
 			if ((await stripeErrorCode(res)) === "payment_intent_unexpected_state") {
-				return { ok: true, outcome: "not_cancellable" };
+				return await classifyUncancellable(intentId, secretKey, deadline);
 			}
 			return { ok: false, class: "terminal" };
 		},

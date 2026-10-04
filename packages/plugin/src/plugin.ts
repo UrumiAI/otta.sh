@@ -18,10 +18,12 @@ import {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderAbandonRouteHandler,
 	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
 	STOREFRONT_ORDER_RESUME_ROUTE,
 } from "./storefront/checkout-routes.js";
 // ── end Phase 4 checkout routes ────────────────────────────────────────────
@@ -180,6 +182,12 @@ const plugin: SandboxedPlugin = {
 		// OWN intent. The id alone is PROOF_REQUIRED.
 		[STOREFRONT_ORDER_RESUME_ROUTE]: {
 			handler: createOrderResumeRouteHandler() as never,
+			public: true,
+		},
+		// QA2 X4: "Start a new cart" cancels the cart's unpaid order, from the cart
+		// id alone (the cookie is the proof).
+		[STOREFRONT_ORDER_ABANDON_ROUTE]: {
+			handler: createOrderAbandonRouteHandler() as never,
 			public: true,
 		},
 		// ── end Phase 4 checkout ────────────────────────────────────────────
