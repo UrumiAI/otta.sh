@@ -171,8 +171,8 @@ Build these in `src/components/`. Each renders one view-model field group and no
 | `StockRule` | A short 2px rule + mono caps. Solid when in stock, dashed when sold out. **Not** a coloured badge. **Words, not a figure** — see below |
 | `HoldRibbon` | §6 — the signature |
 | `HoldClock` | §6's countdown SCRIPT, split from `HoldRibbon` (which is markup only) so a theme's cart view can draw the ribbon while `/cart` renders the one script (ADR-0012's single pair) |
-| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
-| `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring |
+| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop. Shown only while the page polls: a pending order the buyer has just paid for (back from Stripe), at most 8 hops, each reloading the SAME URL so no history entry is added |
+| `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring. `halted`: the journey stopped at the current step (an expired or failed order, at Payment) — an open ring and a muted label (`--u-mute`), and ", not completed" in words; never the straw "in progress" |
 | `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. Both ledgers pass it whenever the store can name the line: `/orders/<id>`, where the block is a **receipt** and the title is the purchase-time snapshot the order froze, and `/checkout`, where it is the title the order *will* snapshot (`CheckoutLineView.title`). The review used to omit it — "the shopper picked the thing a moment ago" — and QA read the result, `OTTA-STICKERS 1 $6.00`, as the last summary before paying naming nothing a shopper recognises. Only a line the store cannot name shows the SKU alone. The review's name is the order's copy of the title; `/cart` reads the CMS title itself, so just after a rename the two pages can briefly differ — the review shows what the order will record |
 | `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline; optionally an `Order` row naming the order by its products (`orderLabel`), never its id |
 | `Notice` | Degraded/error. Dashed bronze rules top and bottom, a dashed mark, **no filled background** |
@@ -279,10 +279,10 @@ Compare each against the matching frame in the mockup.
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
 | `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
-| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right. The email field takes its initial value from `model.emailValue` (the signed-in account's address, else empty) and its hint from `model.emailNote` — the page's copy, which for a signed-in shopper says an order placed with a different email won't appear in their account. No client JS, so the note is stated up front, never on typing |
+| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right. The email field takes its initial value from `model.emailValue` (the signed-in account's address, else empty) and its hint from `model.emailNote` — the page's copy, which for a signed-in shopper says an order placed with a different email won't appear in their account. No client JS, so the note is stated up front, never on typing. After a refused place the fields are filled from `model.emailValue` / `model.addressValues` (the page's draft, never the URL) and `model.fieldErrors` names the fields to fix — print each beside its field. The coupon's field and Apply / Remove buttons, and the delivery block's fields (`deliveryCountry`, `deliveryRegion`, `deliveryMethod`, `fromCountry`, `fromRegion`) and Update button, belong to the place form (`form="checkout-place"`, `name="intent"`, `formnovalidate`). The visually hidden `intent=enter` button (`u-sr-only`, `tabindex="-1"`, `aria-hidden="true"`) must stay the place form's FIRST submit button, before Apply: Enter in a details field goes through it, and an explicit Apply never places. Echo a refused code as the hidden `refusedCoupon` (`model.refusedCouponCode`). A LOCKED review renders no place form: its way on is `model.locked.resumeHref` |
 | `account/login/index.astro` | Heading, lede, then the email form. Signed in (`model.signedIn`), a hairline-ruled block ABOVE the form says "You're signed in as <email>" with a quiet "View your orders" link (`signedIn.ordersHref`) and a Sign out POST to `/account/logout`; the form stays, to switch address |
-| `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line links straight to Your orders (`model.accountOrdersHref`) when the shopper is signed in as the order's owner, else to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
+| `checkout/pay.astro` | Narrow single column. Trust line, then the hold line (`model.holdNote`: `lead`, and `until` in a `<time datetime={iso}>`) and, on a resumed payment, the order's email as read-only text (`model.emailHint`), then the Stripe mount and `Pay $X`. See §9 |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line links straight to Your orders (`model.accountOrdersHref`) when the shopper is signed in as the order's owner, else to sign-in (`model.accountSignInHref`), where the order joins the shopper's list. "Complete payment" links to `model.resumeHref` (the page's resume path, which works on any device) and never to a path the view invents; `model.resumeError` is a notice when the last resume failed |
 | `404.astro` | Same empty-state language as the others |
 
 **An order is named by its products, never its id.** The stamp's `Order` row, the account
@@ -290,6 +290,39 @@ list's links and the account order heading all print `orderLabel` ("Otta Tee and
 the id stays in URLs only. This changed the theme contract (`src/themes/contract.ts`), which
 breaks a theme written against the old one: `AccountOrderRow` and `AccountOrderModel.order`
 lost `id` (now `label`), and `OrderModel` gained `orderLabel`.
+
+**The order pages tell one story (QA U-5, U-13).** `/orders/<id>` and the account's own order
+page share `lib/order-view.ts`: the totals rows (`orderSumRows`, so shipping and tax the order
+was never priced for read "Not calculated" on both, never $0.00, through the same `Sum`), and
+the total's label (the domain's `orderTotalLabel`, shared with the order emails: "Paid" for
+every state the money was captured in — paid, processing, shipped, delivered, completed and
+refunded, since it was paid — else "Total"). A refund is never said by relabelling the total:
+the stamp and the account status say "refunded", and the account order page adds the ledger's
+refunded figure as its own line ("Refunded $Y", `order.refundedNote`) when there is one. The
+confirmation's step track follows the order (`OrderModel.progress`, `orderProgress`): at Order
+with Payment done only once paid; at Payment while pending; halted at Payment when expired or
+failed; no track for a cancelled order, which may or may not have been paid first.
+
+**Your orders** (`account/orders/index.astro`): a row per order, newest first — the order's
+products as the link, its status in words (`row.state`, `accountOrderStatus`: "Awaiting
+payment" only while the order can still be paid; "Payment not completed — time ran out",
+"Payment not completed — expired", "Payment didn't go through"), the date it was placed
+(`row.placed`, in a `<time>`, UTC), the item count and the total. **One order**
+(`account/orders/[id].astro`): heading, the status and placed date on one quiet line, then the
+order page's own sentence for that state (`order.stateNote` — e.g. whether anything was
+charged), then items and the `Sum` (`order.sumRows`, `order.total`, `order.totalLabel`), with
+`order.refundedNote` in muted mono under it when the ledger shows a refund.
+
+**The header shows the shopper's state** (`chrome.shopperState`, which Tempered opts into): the
+cart link carries the unit count on every storefront page off the checkout flow — and on no
+page for an empty cart, `/cart` included — and the
+theme's Account link reads "Your account" when the request carries a live session. The page
+owns both facts (the shell reads them only for a request carrying the matching cookie, and the
+middleware keeps such pages private); the header never prints the email. The badge counts the
+cart AS STORED (`CartStore.units`, one read, no hold expiry), so a line whose hold has lapsed
+still counts until something touches the cart — `/cart`, which expires lapsed holds as it reads,
+may then show fewer. A visitor with no
+cart and no session sees the neutral "Cart" and "Account".
 
 **The PDP's hold note departs from the mockup on purpose.** The mockup reads "Adding this holds
 one in stock for 15 minutes." under a quantity field the shopper can set to 3, and the hold covers

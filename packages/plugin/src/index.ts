@@ -370,9 +370,11 @@ export {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	type CheckoutPlaceRouteInput,
 	type CheckoutLockedOrderView,
 	type CheckoutPlaceRouteResult,
@@ -384,6 +386,8 @@ export {
 	type CheckoutSummaryView,
 	type OrderRouteInput,
 	type OrderRouteResult,
+	type OrderResumeRouteInput,
+	type OrderResumeRouteResult,
 } from "./storefront/checkout-routes.js";
 // ── Phase 5: storefront customer account (ADR-0004, issue #306) ─────────────
 export {
@@ -409,6 +413,7 @@ export {
 export {
 	ACCOUNT_VERIFY_PATH,
 	isValidLoginLinkUrl,
+	LOGIN_LINK_TTL_MS,
 	LOGIN_LINK_URL_KEY,
 } from "./storefront/login-link.js";
 export {
@@ -419,6 +424,7 @@ export {
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	orderTotalsFlags,
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
@@ -443,6 +449,22 @@ export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
 export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
+// order emails.
+export { orderTotalLabel } from "@otta-sh/domain";
+// The sign-in link's per-address cap and lifetime, as the in-process verifier
+// enforces them (its defaults — `createInProcessCommerceStores` passes no
+// override), so a storefront's copy about them cannot drift from the truth.
+//
+// Declared HERE as plugin constants rather than re-exported from
+// `@otta-sh/store-emdash`: a re-export makes the emitted declarations reach into
+// that package's types, and through them the host's toolchain (vite, postcss,
+// typescript), which the declaration bundler cannot bundle — the plugin build
+// fails. Same values; the store's defaults stay the one source.
+// The lifetime is `storefront/login-link.ts`'s LOGIN_LINK_TTL_MS (exported
+// above), the one value the verifier is built with and the sign-in email states.
+import { DEFAULT_MAX_ACTIVE_CHALLENGES as STORE_MAX_ACTIVE_CHALLENGES } from "@otta-sh/store-emdash";
+export const LOGIN_LINK_MAX_ACTIVE: number = STORE_MAX_ACTIVE_CHALLENGES;
 // The ship-to's per-field length bounds the domain enforces, for a site that
 // bounds its address inputs and refuses an over-long field as the address
 // error it is rather than a generic one.
@@ -454,11 +476,20 @@ export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 // site's email field.
 export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+	type ShopperStateInput,
+	type ShopperStateResult,
+} from "./storefront/shopper-state-route.js";
+export {
+	type AccountOrderWire,
 	type CheckoutFailureReason,
 	type CheckoutResult,
 	type ClientActionWire,
 	type PaymentIntentWire,
 	type PublicOrderResult,
+	type ResumeOrderPaymentResult,
+	type ResumeProof,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
 	type QuoteDestinationWire,

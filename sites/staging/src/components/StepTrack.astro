@@ -12,7 +12,9 @@
  * meaning, and `aria-current="step"` is how a screen reader gets it. The
  * completed steps say so in words as well as in ink — colour and fill are the
  * whole visual difference between done and not-yet, and neither survives being
- * read aloud.
+ * read aloud. A journey that STOPPED (`halted`: an order that expired or failed
+ * at Payment) marks that step as stopped — an open ring, and ", not completed"
+ * in words — rather than as the step in progress.
  */
 import type { HTMLAttributes } from "astro/types";
 import { restProps } from "../lib/rest-props.js";
@@ -28,9 +30,16 @@ export type CheckoutStep = (typeof CHECKOUT_STEPS)[number]["id"];
 
 interface Props extends HTMLAttributes<"ol"> {
 	current: CheckoutStep;
+	/**
+	 * The journey STOPPED at `current` — an expired or failed order stopped at
+	 * Payment (QA U-13). The step is then drawn as halted, not as the step in
+	 * progress, and says ", not completed" in words. Omitted ⇒ in progress.
+	 */
+	halted?: boolean;
 }
 
-const { current, class: className, ...rest } = Astro.props;
+const { current, halted = false, class: className, ...rest } = Astro.props;
+const currentState = halted ? "halted" : "now";
 const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 ---
 
@@ -41,12 +50,15 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 	{
 		CHECKOUT_STEPS.map((step, index) => (
 			<li
-				data-state={index < currentIndex ? "done" : index === currentIndex ? "now" : undefined}
+				data-state={
+					index < currentIndex ? "done" : index === currentIndex ? currentState : undefined
+				}
 				aria-current={index === currentIndex ? "step" : undefined}
 			>
 				<span class="dot" aria-hidden="true" />
 				<span class="u-label label">{step.label}</span>
 				{index < currentIndex && <span class="u-sr-only">, completed</span>}
+				{halted && index === currentIndex && <span class="u-sr-only">, not completed</span>}
 			</li>
 		))
 	}
@@ -106,6 +118,17 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 	}
 	.steps li[data-state="now"] .label {
 		color: var(--u-ink);
+	}
+
+	/* Stopped here: an open ring and a muted label, not the straw fill of a step
+	   in progress — nothing is happening at this step any more. The words
+	   (", not completed") say so too. */
+	.steps li[data-state="halted"] .dot {
+		background: transparent;
+		box-shadow: inset 0 0 0 1.5px var(--u-mute);
+	}
+	.steps li[data-state="halted"] .label {
+		color: var(--u-mute);
 	}
 
 	/* At 390px the four labels plus their connectors stop fitting. The labels

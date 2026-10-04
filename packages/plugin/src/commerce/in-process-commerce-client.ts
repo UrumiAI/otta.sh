@@ -83,6 +83,8 @@ import {
 	upsertProductCommerce,
 	upsertProductVariant,
 	readOrderWithLatePayment,
+	recordedRefundTotal,
+	classifyLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
@@ -107,6 +109,7 @@ import {
 } from "@otta-sh/domain";
 import type {
 	AddressWire,
+	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
 	CartResult,
@@ -128,7 +131,10 @@ import type {
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
+	ShopperStateWire,
 	QuoteResult,
+	ResumeOrderPaymentResult,
+	ResumeProof,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
@@ -137,10 +143,13 @@ import type {
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
 import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
+import { buyerRefHint } from "./buyer-ref-hint.js";
+import { emailMatchesBuyer, resumeThrottleKey } from "./resume-proof.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
 	COUPON_CODE_MAX,
+	isIdToken,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
@@ -542,6 +551,33 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
+	 * The header's facts in at most two document reads (see the port). Deliberately
+	 * NOT `getCart`: that expires lapsed holds (writes) and the route around it
+	 * joins live prices, and its store read looks up every line's reservation — the
+	 * header needs none of it, and pays for this on every uncached page. Lines whose
+	 * hold lapsed are still lines of the cart until something touches it, so the
+	 * count is the cart as stored (`CartStore.units`).
+	 */
+	async getShopperState(input: {
+		cartId?: string;
+		sessionToken?: string;
+	}): Promise<ShopperStateWire> {
+		const { cartId, sessionToken } = input;
+		const [cart, customerId] = await Promise.all([
+			cartId !== undefined && cartId.length > 0 && isIdToken(cartId)
+				? this.#stores.cartStore.units(cartId)
+				: Promise.resolve(null),
+			sessionToken !== undefined && sessionToken.length > 0
+				? this.#stores.sessionStore.validate(sessionToken)
+				: Promise.resolve(null),
+		]);
+		return {
+			cart: cart === null ? null : { state: cart.state, count: cart.units },
+			signedIn: customerId !== null,
+		};
+	}
+
+	/**
 	 * The add, with the SKU GUARD in front of it — the one piece of this surface
 	 * that is not a bare use-case call, and a security check rather than framing,
 	 * so it lives wherever the add lives.
@@ -796,16 +832,32 @@ export class InProcessCommerceClient implements CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null || order.customerId !== customerId) {
+		// ONE ledger read, as the public order read makes: the late-payment status
+		// (so the account's order page says what the public page says about money on
+		// a dead order) and the recorded refunds (its refunded figure) both come
+		// off it.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null || ledger.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
-		return { ok: true, order: serializeOrderSummary(order) };
+		return {
+			ok: true,
+			order: {
+				...serializeOrderSummary(ledger.order),
+				latePayment: classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				refundedCents: recordedRefundTotal(ledger.refunds),
+			},
+		};
 	}
 
 	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
@@ -1060,6 +1112,77 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
+	 * Resume a pending order's payment from its id plus a second factor (cart,
+	 * owning session or email; the id alone is PROOF_REQUIRED) — see the port. The
+	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
+	 * short-circuit: its cart, its key, its buyer, its method. That path returns
+	 * the original order, re-snapshots nothing, and asks the gateway for the
+	 * intent under the SAME key with the SAME body (`intentInputFor`), which is
+	 * what makes Stripe hand back the same PaymentIntent rather than a second one.
+	 *
+	 * The caller must hold a second factor beside the id (`proof`): the order's
+	 * cart, a session owning it, or its email — see the port.
+	 *
+	 * Payability is decided BEFORE the replay, on the order as stored, by the pay
+	 * page's own rule (`pending`, strictly before `holdExpiresAt`), so a lapsed or
+	 * settled order never reaches the provider. The replay's own answer is checked
+	 * again: an order that left pending in between comes back with no client
+	 * action, and that is not payable either.
+	 */
+	async resumeOrderPayment(
+		orderId: string,
+		proof: ResumeProof = {},
+	): Promise<ResumeOrderPaymentResult> {
+		requireIdToken("orderId", orderId);
+		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
+		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		const deadline = Date.parse(order.holdExpiresAt);
+		if (
+			order.state !== "pending" ||
+			!Number.isFinite(deadline) ||
+			deadline <= this.#stores.clock.now().getTime() ||
+			order.cartId === null ||
+			order.paymentMethod === null
+		) {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
+		// possession proofs and cost no throttle slot; an email is a guess, so
+		// every one takes a slot of this order's window BEFORE it is compared.
+		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
+		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
+			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
+			proven = customerId !== null && customerId === order.customerId;
+		}
+		if (!proven && proof.email !== undefined) {
+			if (!(await this.#stores.resumeThrottle.admit(resumeThrottleKey(order.id)))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {
+				return { ok: false, reason: "EMAIL_MISMATCH" };
+			}
+			proven = true;
+		}
+		if (!proven) return { ok: false, reason: "PROOF_REQUIRED" };
+		const result = await createOrderFromCart(this.#createOrderDeps, {
+			cartId: order.cartId,
+			idempotencyKey: order.idempotencyKey,
+			buyerRef: order.buyerRef,
+			paymentMethod: order.paymentMethod,
+		});
+		if (!result.ok) return { ok: false, reason: result.reason };
+		if (result.order.state !== "pending" || result.intent.clientAction.kind === "none") {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		return {
+			ok: true,
+			order: serializePublicOrder(result.order, "none"),
+			intent: serializeIntent(result.intent),
+			buyerRefHint: buyerRefHint(order.buyerRef),
+		};
+	}
+
+	/**
 	 * Resolve a submitted sku to ONE live sellable unit of ONE named product.
 	 *
 	 * "Live sellable unit" is the port's own definition and spans both tables: a
@@ -1237,6 +1360,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -1244,6 +1368,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			// The same evidence the public wire carries (`serializePublicOrder`), so
+			// the account pages apply the order page's "Not calculated" rule.
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 	};

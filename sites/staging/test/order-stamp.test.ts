@@ -9,7 +9,12 @@
 import { describe, expect, test } from "vitest";
 import { orderStamp } from "../src/lib/order-stamp.js";
 
-const base = { returnedFromStripe: false, holdLapsed: false, latePayment: "none" } as const;
+const base = {
+	returnedFromStripe: false,
+	holdLapsed: false,
+	latePayment: "none",
+	polling: false,
+} as const;
 
 describe("orderStamp — expired and cancelled orders", () => {
 	test("expired with nothing captured keeps 'Nothing was charged'", () => {
@@ -70,8 +75,11 @@ describe("orderStamp — a pending order past its hold", () => {
 		const stamp = orderStamp({ ...base, state: "pending", holdLapsed: true });
 		expect(stamp).toEqual({
 			headline: "The time to pay has run out.",
-			body: "If you already paid, this page will update — if the order has already expired by then, it will be refunded.",
+			// No poll runs here any more (QA U-13: polling only while a change is
+			// expected), so the page must not promise to update itself.
+			body: "If you already paid, check again in a minute — if the order has expired by then, your payment will be refunded.",
 		});
+		expect(stamp?.body).not.toMatch(/will update|refreshes/i);
 		expect(stamp?.body).not.toMatch(/nothing was charged|back on sale/i);
 	});
 
@@ -88,5 +96,21 @@ describe("orderStamp — the rest", () => {
 		expect(orderStamp({ ...base, state: null })).toBeNull();
 		expect(orderStamp({ ...base, state: "paid" })?.headline).toBe("Order confirmed.");
 		expect(orderStamp({ ...base, state: "shipped" })?.headline).toBe("Order status: shipped.");
+	});
+});
+
+describe("orderStamp — the confirming copy says whether the page is still checking (QA U-13)", () => {
+	const confirming = { ...base, state: "pending", returnedFromStripe: true } as const;
+
+	test("while the poll runs, the page says it refreshes itself", () => {
+		expect(orderStamp({ ...confirming, polling: true })?.body).toMatch(
+			/This page refreshes automatically\.$/,
+		);
+	});
+
+	test("once the poll has stopped, it says to check again — never that it refreshes", () => {
+		const body = orderStamp({ ...confirming, polling: false })?.body ?? "";
+		expect(body).not.toMatch(/refreshes automatically/);
+		expect(body).toMatch(/check again/i);
 	});
 });

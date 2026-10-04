@@ -256,9 +256,12 @@ export interface PublicOrderView {
  *
  * Backward-compatible: a snapshot is only ever written together with a method,
  * so every older order that carries a zone also carries a method.
+ *
+ * Exported for the account's order page (QA U-5), whose wire carries the same two
+ * ids, so "Not calculated" is decided by ONE rule wherever an order is shown.
  */
 export function orderTotalsFlags(
-	totals: PublicOrderWire["totals"],
+	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId">,
 ): Pick<CheckoutTotalsOptions, "shippingSelected" | "taxZoneSelected"> {
 	return {
 		shippingSelected: totals.shippingMethodId !== null,

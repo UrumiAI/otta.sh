@@ -27,6 +27,8 @@ import {
 	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
+	LOGIN_LINK_MAX_ACTIVE,
+	LOGIN_LINK_TTL_MS,
 	SESSION_COOKIE_NAME,
 } from "@otta-sh/plugin";
 import type { APIContext } from "astro";
@@ -34,9 +36,15 @@ import { describe, expect, test } from "vitest";
 import {
 	ACCOUNT_HOME_PATH,
 	checkoutEmailNote,
+	LOGIN_LINK_CAP,
+	LOGIN_LINK_MANY_COPY,
+	LOGIN_LINK_WINDOW_MS,
 	LOGIN_LINK_SENT_COPY,
+	LOGIN_REQUESTS_COOKIE_NAME,
+	accountOrderStatus,
 	orderMoney,
-	orderStateLabel,
+	orderPlacedOn,
+	orderRefundedNote,
 	sessionOwnsOrder,
 	signedInEmail,
 	verifyFailureToken,
@@ -81,7 +89,7 @@ function makeContext(
 	urlPath: string,
 	form: Record<string, string>,
 	handler: unknown,
-	opts: { origin?: string | null; session?: string } = {},
+	opts: { origin?: string | null; session?: string; cookies?: Map<string, string> } = {},
 ): { context: APIContext; cookieOps: CookieOp[] } {
 	const url = new URL(urlPath, SITE);
 	const headers: Record<string, string> = {
@@ -94,7 +102,8 @@ function makeContext(
 		headers,
 		body: new URLSearchParams(form).toString(),
 	});
-	const jar = new Map<string, string>();
+	// A caller-supplied jar persists across requests — one browser, several POSTs.
+	const jar = opts.cookies ?? new Map<string, string>();
 	if (opts.session !== undefined) jar.set(SESSION_COOKIE_NAME, opts.session);
 	const cookieOps: CookieOp[] = [];
 	const context = {
@@ -154,6 +163,80 @@ describe("POST /account/login/request", () => {
 		const response = await LOGIN_REQUEST_POST(context);
 		expect(location(response)).toBe("/account/login?error=INVALID_EMAIL");
 		expect(calls).toHaveLength(0);
+	});
+
+	/* QA U-12: past the per-address cap the plugin sends nothing and answers exactly
+	   as it does for a sent link (ADR-0004 — the throttle must not be an oracle), so
+	   the page said "on its way" for a link that never left. The page cannot ask the
+	   plugin, and must not: it counts THIS BROWSER's own requests instead, which says
+	   nothing about any address or account. */
+	test("past the cap, this browser's request lands on the honest 'many' notice — whatever the address", async () => {
+		const { handler, calls } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const browser = new Map<string, string>();
+		const ask = async (email: string): Promise<string | null> => {
+			const { context } = makeContext("/account/login/request", { email }, handler, {
+				cookies: browser,
+			});
+			return location(await LOGIN_REQUEST_POST(context));
+		};
+		for (let n = 0; n < LOGIN_LINK_CAP; n++) {
+			expect(await ask("a@example.com")).toBe("/account/login?sent=1");
+		}
+		// A different address changes nothing: the count is the browser's, not the
+		// address's, so the notice cannot tell anyone which addresses are throttled.
+		expect(await ask("b@example.com")).toBe("/account/login?sent=many");
+		expect(await ask("a@example.com")).toBe("/account/login?sent=many");
+		// Every request still reaches the plugin, which alone decides what is sent.
+		expect(calls).toHaveLength(LOGIN_LINK_CAP + 2);
+	});
+
+	test("the count is a short-lived, HttpOnly cookie on the sign-in path, holding only timestamps", async () => {
+		const { handler } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const { context, cookieOps } = makeContext(
+			"/account/login/request",
+			{ email: "a@example.com" },
+			handler,
+		);
+		await LOGIN_REQUEST_POST(context);
+		expect(cookieOps).toHaveLength(1);
+		expect(cookieOps[0]).toMatchObject({
+			op: "set",
+			name: LOGIN_REQUESTS_COOKIE_NAME,
+			options: {
+				httpOnly: true,
+				secure: true,
+				sameSite: "lax",
+				path: "/account/login",
+				maxAge: 15 * 60,
+			},
+		});
+		expect(cookieOps[0]?.value).toMatch(/^\d+$/);
+		expect(cookieOps[0]?.value).not.toContain("example.com");
+	});
+
+	test("requests older than the window no longer count", async () => {
+		const { handler } = makeHandler({ [ACCOUNT_LOGIN_REQUEST_ROUTE]: { ok: true } });
+		const stale = String(Date.now() - 16 * 60 * 1000);
+		const browser = new Map([[LOGIN_REQUESTS_COOKIE_NAME, [stale, stale, stale].join(".")]]);
+		const { context } = makeContext("/account/login/request", { email: "a@example.com" }, handler, {
+			cookies: browser,
+		});
+		expect(location(await LOGIN_REQUEST_POST(context))).toBe("/account/login?sent=1");
+	});
+
+	test("an outage or a refused form is not counted", async () => {
+		const browser = new Map<string, string>();
+		const { handler } = makeHandler({});
+		for (let n = 0; n < LOGIN_LINK_CAP + 1; n++) {
+			const { context } = makeContext(
+				"/account/login/request",
+				{ email: n % 2 === 0 ? "a@example.com" : "nope" },
+				handler,
+				{ cookies: browser },
+			);
+			await LOGIN_REQUEST_POST(context);
+		}
+		expect(browser.has(LOGIN_REQUESTS_COOKIE_NAME)).toBe(false);
 	});
 
 	test("an unreachable plugin is an honest outage, not a fake 'sent'", async () => {
@@ -374,6 +457,26 @@ describe("account copy and formatting", () => {
 		}
 	});
 
+	test("the cap and window the copy names ARE the store's (no drift)", () => {
+		expect(LOGIN_LINK_CAP).toBe(LOGIN_LINK_MAX_ACTIVE);
+		expect(LOGIN_LINK_WINDOW_MS).toBe(LOGIN_LINK_TTL_MS);
+		const minutes = `${String(LOGIN_LINK_TTL_MS / 60_000)} minutes`;
+		for (const copy of [LOGIN_LINK_SENT_COPY, LOGIN_LINK_MANY_COPY]) {
+			expect(copy).toContain(`at most ${String(LOGIN_LINK_MAX_ACTIVE)} links`);
+			expect(copy).toContain(minutes);
+		}
+	});
+
+	test("the 'many' notice is honest about the cap and, like the sent notice, about nothing else", () => {
+		expect(LOGIN_LINK_MANY_COPY).toMatch(/at most 3 links/);
+		expect(LOGIN_LINK_MANY_COPY).toMatch(/may not have sent a new one/);
+		expect(LOGIN_LINK_MANY_COPY).not.toMatch(/^check your inbox/i);
+		expect(LOGIN_LINK_MANY_COPY).not.toMatch(/account exists|if an account|no account/i);
+		// The ordinary notice states the cap too: it is true for every address, and
+		// it is the only honest thing to say to a shopper whose link never arrives.
+		expect(LOGIN_LINK_SENT_COPY).toMatch(/at most 3 links/);
+	});
+
 	test("the sent notice never says whether the account exists", () => {
 		// One constant for every address, and no hedge on existence: a new address
 		// is sent a link too, and the sign-in page says so.
@@ -391,9 +494,75 @@ describe("account copy and formatting", () => {
 	});
 
 	test("an order state reads as words, and an unknown one is still readable", () => {
-		expect(orderStateLabel("paid")).toBe("Paid");
-		expect(orderStateLabel("pending")).toBe("Awaiting payment");
-		expect(orderStateLabel("something_new")).toBe("something new");
+		expect(accountOrderStatus({ state: "paid", holdExpiresAt: HELD }, NOW)).toBe("Paid");
+		expect(accountOrderStatus({ state: "shipped", holdExpiresAt: HELD }, NOW)).toBe("Shipped");
+		expect(accountOrderStatus({ state: "something_new", holdExpiresAt: HELD }, NOW)).toBe(
+			"something new",
+		);
+	});
+});
+
+/* QA U-5: an unpaid, a declined and an expired order all read "Awaiting payment".
+   Each now says what the order page says about it, in a list-sized phrase. */
+const NOW = new Date("2026-10-02T12:00:00.000Z");
+const HELD = "2026-10-02T12:10:00.000Z";
+const LAPSED = "2026-10-02T11:50:00.000Z";
+
+describe("accountOrderStatus — the list says what the order page says", () => {
+	test("a pending order that can still be paid is awaiting payment (a declined card leaves it so — ADR-0022)", () => {
+		expect(accountOrderStatus({ state: "pending", holdExpiresAt: HELD }, NOW)).toBe(
+			"Awaiting payment",
+		);
+	});
+
+	test("a pending order past its hold is NOT awaiting payment: the pay page refuses it", () => {
+		expect(accountOrderStatus({ state: "pending", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment not completed — time ran out",
+		);
+	});
+
+	test("expired and failed orders say the payment did not complete, and how", () => {
+		expect(accountOrderStatus({ state: "expired", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment not completed — expired",
+		);
+		expect(accountOrderStatus({ state: "failed", holdExpiresAt: LAPSED }, NOW)).toBe(
+			"Payment didn't go through",
+		);
+	});
+
+	test("no two of the unpaid outcomes read alike", () => {
+		const labels = [
+			accountOrderStatus({ state: "pending", holdExpiresAt: HELD }, NOW),
+			accountOrderStatus({ state: "pending", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "expired", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "failed", holdExpiresAt: LAPSED }, NOW),
+			accountOrderStatus({ state: "cancelled", holdExpiresAt: LAPSED }, NOW),
+		];
+		expect(new Set(labels).size).toBe(labels.length);
+	});
+});
+
+describe("orderRefundedNote — a refunded figure only where the ledger shows one", () => {
+	test("recorded refunds read as their own figure beside the paid total", () => {
+		expect(orderRefundedNote(500, "USD")).toBe("Refunded $5.00");
+	});
+
+	test("nothing on the ledger (or a refund made outside Otta) shows no figure", () => {
+		expect(orderRefundedNote(0, "USD")).toBeNull();
+	});
+});
+
+describe("orderPlacedOn — the list dates each order", () => {
+	test("a calendar date in words, named in UTC like every other server-rendered time, with the instant for <time>", () => {
+		expect(orderPlacedOn("2026-10-02T16:49:45.000Z")).toEqual({
+			text: "Oct 2, 2026",
+			iso: "2026-10-02T16:49:45.000Z",
+		});
+	});
+
+	test("an unreadable date renders nothing rather than a wrong one", () => {
+		expect(orderPlacedOn("not a date")).toBeNull();
+		expect(orderPlacedOn("")).toBeNull();
 	});
 });
 

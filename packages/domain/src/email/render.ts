@@ -1,4 +1,5 @@
 import { orderLabel, type OrderLabelLine } from "../orders/order-label.js";
+import { orderTotalLabel } from "../orders/order-total-label.js";
 import type { EmailTemplate } from "../ports/email-sender.js";
 
 export interface RenderedEmail {
@@ -250,8 +251,10 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
  *    `orderTotalsFlags`) is not set — whatever the amount, as on the page. (An
  *    amount without a flag cannot be created: shipping is only priced with a
  *    method, tax only with a zone.) A calculated zero is money.
- *  - the total is "Paid" on a paid order and "Total" otherwise (the page's
- *    `TOTAL_LABEL`). ONE DELIBERATE DIVERGENCE: an email that leads with a
+ *  - the total is labelled by `orderTotalLabel`, the rule the order pages use:
+ *    "Paid" for every state an order reaches only after its payment was
+ *    captured (refunded included — the refund is said separately), "Total"
+ *    otherwise. ONE DELIBERATE DIVERGENCE: an email that leads with a
  *    "Refunded: X" figure labels it "Order total", so the order's total can
  *    never be read as the money coming back.
  * A row whose amount cannot be formatted is left out rather than shown wrong.
@@ -273,7 +276,7 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 	}
 	push("Shipping", calculated(data["shippingCents"], data["shippingCalculated"], currency, money));
 	push("Tax", calculated(data["taxCents"], data["taxCalculated"], currency, money));
-	const totalLabel = isRefund ? "Order total" : data["state"] === "paid" ? "Paid" : "Total";
+	const totalLabel = isRefund ? "Order total" : orderTotalLabel(str(data["state"]) ?? "");
 	push(totalLabel, money(data["totalCents"], currency));
 	if (rows.length === 0) return null;
 	return {
