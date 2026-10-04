@@ -154,6 +154,12 @@ export interface ShopCard {
 	price: string | null;
 	/** What stands where a price would; `undefined` takes the component default. */
 	priceNote: string | undefined;
+	/**
+	 * The compare-at ("was") price, pre-formatted — present only when the
+	 * product is on sale (the plugin's `compareAtPrice`, already decided to be
+	 * above the price) AND `price` is present. A view strikes it beside `price`.
+	 */
+	was: string | null;
 	availability: AvailabilityToken | null;
 }
 
@@ -192,6 +198,10 @@ export interface AddToCartModel {
 export interface ProductPurchase {
 	/** Pre-formatted, off `price.formatted`. */
 	priceFormatted: string;
+	/** The compare-at ("was") price, pre-formatted, when the product is on sale
+	 *  — off the view model's `compareAtPrice`, which is null unless it is above
+	 *  the price. A view strikes it beside `priceFormatted`. */
+	compareAtFormatted: string | null;
 	/** Strike the price: not in stock (degraded is never "purchasable"). */
 	priceStruck: boolean;
 	availability: AvailabilityToken | null;
@@ -251,7 +261,11 @@ export type ProductModel =
 export interface LedgerLine {
 	sku: string;
 	qty: number;
-	/** The purchase-time title, on a receipt. Absent on the review, which has none. */
+	/** The line's name: the purchase-time snapshot on a receipt, the title the
+	 *  order will snapshot on the review (`CheckoutLineView.title`, the commerce
+	 *  row's copy). `/cart` names lines from its own CMS read instead, so right
+	 *  after a rename the two pages can briefly disagree — the review shows what
+	 *  the order will record. Absent when the store cannot name it. */
 	title?: string;
 	/** `lineTotal.formatted`, or the honest prose — never assembled. */
 	money: string;
@@ -289,8 +303,6 @@ export interface LedgerLine {
 export interface CartLineModel {
 	/** The wire line's own fields a view may print or post. */
 	line: { lineId: string; sku: string; qty: number; expiresAt: string | null };
-	/** Grid position — the coil's tint cycles on it. */
-	index: number;
 	/** The display name, or `null` when this store cannot name the line. */
 	title: string | null;
 	/** What a screen reader calls the line — the title, else the SKU. Never null. */

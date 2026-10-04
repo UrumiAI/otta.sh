@@ -42,9 +42,13 @@ export const HOLD_WINDOW_SECONDS = 900;
  * minutes" — a sentence a shopper can plan around, or none.
  */
 export function holdNote(minutes: number | undefined): string {
-	const lead = "Adding this holds one in stock";
+	/* Quantity-agnostic on purpose. It read "Adding this holds one in stock",
+	   printed beside a quantity field the shopper can set to 3 — and the hold
+	   covers whatever quantity is added. So the note names the window, never a
+	   count of units. */
+	const lead = "We'll hold what you add";
 	if (minutes === undefined || !Number.isInteger(minutes) || minutes <= 0) {
-		return `${lead} for you while you check out.`;
+		return `${lead} while you check out.`;
 	}
 	if (minutes % 60 === 0) {
 		const hours = minutes / 60;

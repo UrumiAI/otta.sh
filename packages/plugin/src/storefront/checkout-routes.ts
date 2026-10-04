@@ -335,8 +335,11 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			// the whole checkout into RENDER_FAILED — the quote below is the
 			// authority on what the buyer pays, and it is a separate call.
 			let pricing: CartPricingWire;
+			// Hoisted out of the try: the same batch names the lines (each row's
+			// title cache, the string the order will snapshot). A failed lookup
+			// leaves it empty, so the lines go nameless rather than the page down.
+			let commerceById = new Map<string, CatalogProductCommerce | null>();
 			try {
-				let commerceById = new Map<string, CatalogProductCommerce | null>();
 				if (productIds.length > 0) {
 					const loader = await createCommerceLoader(ctx);
 					commerceById = await loader.loadMany(productIds);
@@ -443,7 +446,11 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
-				lines: buildCheckoutLines(cart.lines, pricing),
+				lines: buildCheckoutLines(
+					cart.lines,
+					pricing,
+					new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+				),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
 					// Shipping was calculated iff a method was priced (a free-threshold

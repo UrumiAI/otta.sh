@@ -12,6 +12,7 @@
  * theme translates tokens through its own i18n layer, so no English string
  * is baked into the plugin's output.
  */
+import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type { JoinedProduct } from "../catalog/join-product.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { STOREFRONT_CART_LINE_ADD_ROUTE } from "./cart-routes.js";
@@ -102,6 +103,16 @@ export interface ProductViewModel {
 	sku: string | null;
 	/** null when not purchasable: no price, no formatted-money string (§4.5). */
 	price: ProductPriceViewModel | null;
+	/**
+	 * The compare-at ("was") price the admin stores, for a theme to strike
+	 * beside `price`. Whether it is a sale is decided HERE, once:
+	 * present only when the product is for sale (`price` is non-null) and the
+	 * stored was-price is in the same currency and STRICTLY above the price.
+	 * The store keeps a was-price at or below the price as legitimate data (a
+	 * price rise), and striking it would claim a discount the store is not
+	 * giving, so that is `null`. Display-only: `price` is what is charged.
+	 */
+	compareAtPrice: ProductPriceViewModel | null;
 	/** Semantic token (theme localizes); null when not purchasable. Coarse,
 	 *  display-only (plan §8 risk 5) — never the purchase authority. */
 	availability: AvailabilityToken | null;
@@ -115,6 +126,24 @@ export interface ProductViewModel {
 	 * seam being filled, not repurposed.
 	 */
 	slots: { addToCart: AddToCartSlot | null };
+}
+
+/** The was-price worth striking, or null — see `ProductViewModel.compareAtPrice`. */
+function saleWasPrice(
+	commerce: CatalogProductCommerce,
+	locale: string,
+): ProductPriceViewModel | null {
+	const was = commerce.compareAtPrice;
+	if (was === null) return null;
+	// Never compared across currencies: the write side forbids a mismatch, and
+	// this read does not trust that to hold for every row ever written.
+	if (was.currency !== commerce.price.currency) return null;
+	if (was.amount <= commerce.price.amount) return null;
+	return {
+		amount: was.amount,
+		currency: was.currency,
+		formatted: formatMoney(was.amount, was.currency, locale),
+	};
 }
 
 export function buildProductViewModel(joined: JoinedProduct, locale: string): ProductViewModel {
@@ -136,6 +165,7 @@ export function buildProductViewModel(joined: JoinedProduct, locale: string): Pr
 						currency: sellable.price.currency,
 						formatted: formatMoney(sellable.price.amount, sellable.price.currency, locale),
 					},
+		compareAtPrice: sellable === null ? null : saleWasPrice(sellable, locale),
 		availability: sellable === null ? null : sellable.inStock ? "in_stock" : "out_of_stock",
 		// The affordance needs a sku to submit; gating on `sellable` (not just
 		// `purchasable`) means an inconsistent purchasable-but-no-sku state
