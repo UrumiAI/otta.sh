@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	isSavableLoginLinkUrl,
 	isValidLoginLinkUrl,
 	LOGIN_LINK_URL_KEY,
 	loginLinkUrl,
@@ -57,6 +58,34 @@ describe("isValidLoginLinkUrl", () => {
 		["empty", ""],
 	])("refuses %s", (_what, url) => {
 		expect(isValidLoginLinkUrl(url)).toBe(false);
+	});
+});
+
+/**
+ * U-8: what the Settings SAVE accepts. The link carries a sign-in token, so
+ * clear text is refused unless the page is on this machine — the same rule the
+ * order emails apply to the storefront origin they take from this setting.
+ */
+describe("isSavableLoginLinkUrl", () => {
+	test.each([
+		"https://shop.example/account/verify",
+		"http://localhost:4321/account/verify",
+		"http://127.0.0.1:4700/account/verify",
+		"http://[::1]:4700/account/verify",
+		"http://LOCALHOST:4321/account/verify",
+	])("accepts %s", (url) => {
+		expect(isSavableLoginLinkUrl(url)).toBe(true);
+	});
+
+	test.each([
+		["clear text off this machine", "http://shop.example/account/verify"],
+		["clear text to a LAN address", "http://192.168.1.20/account/verify"],
+		["clear text to a lookalike host", "http://localhost.shop.example/account/verify"],
+		["a username and password", "https://user:pw@shop.example/verify"],
+		["a relative path", "/account/verify"],
+		["a non-http scheme", "ftp://files.example/verify"],
+	])("refuses %s", (_what, url) => {
+		expect(isSavableLoginLinkUrl(url)).toBe(false);
 	});
 });
 

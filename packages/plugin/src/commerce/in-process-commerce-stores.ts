@@ -70,6 +70,7 @@ import {
 } from "@otta-sh/store-emdash";
 import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
 import type { PluginContext, StorageAccess as PluginStorageAccess } from "../types.js";
+import { LOGIN_LINK_TTL_MS } from "../storefront/login-link.js";
 
 /** Test-facing overrides. A deploy passes none of them. */
 export interface InProcessCommerceStoresOptions {
@@ -181,6 +182,8 @@ export function createInProcessCommerceStores(
 			customerStore,
 			idGen,
 			clock,
+			// The lifetime the sign-in email states (`LOGIN_LINK_TTL_MS`).
+			ttlMs: LOGIN_LINK_TTL_MS,
 		}),
 		reportingStore,
 		settingsStore: new EmdashSettingsStore({ storage, clock }),

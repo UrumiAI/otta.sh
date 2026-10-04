@@ -298,6 +298,10 @@ export interface ActPayload {
 	/** The plugin's `ProductsActionResult.recordMoved`, mirrored: someone else
 	 *  saved first, so the form shows the latest values. */
 	readonly recordMoved?: true;
+	/** The plugin's `ProductsActionResult.replayed`, mirrored: a stock move the
+	 *  ledger answered — an earlier send with the same nonce moved the units, and
+	 *  this one moved nothing. */
+	readonly replayed?: true;
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────

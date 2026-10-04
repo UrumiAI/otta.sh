@@ -49,7 +49,16 @@ import {
 	type SendEmailInput,
 } from "@otta-sh/domain";
 import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import { resolveLoginLinkUrl } from "../storefront/login-link.js";
+import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { PluginContext } from "../types.js";
+import {
+	orderPageUrl,
+	STORE_DISPLAY_NAME_KEY,
+	storefrontEmailMoney,
+	storefrontOriginOf,
+	storeNameFrom,
+} from "./email-render-context.js";
 import { isDeliverableFromAddress } from "./from-address.js";
 
 /**
@@ -80,6 +89,11 @@ export interface CtxHttpEmailSenderOptions {
 	 *  sweep passes one, so each request is aborted at what is left of the tick when
 	 *  that send starts rather than at a figure fixed long before it. */
 	requestTimeoutMs?: number | (() => number) | undefined;
+	/** The store's name ("Store display name"), for the sign-in email. */
+	storeName?: string | undefined;
+	/** The storefront's public origin (`storefrontOriginOf`), for the order page
+	 *  link in order emails. Absent ⇒ order emails carry no link. */
+	storefrontOrigin?: string | undefined;
 }
 
 /**
@@ -109,6 +123,8 @@ export class CtxHttpEmailSender implements EmailSender {
 	readonly #from: string;
 	readonly #apiKey: string | undefined;
 	readonly #timeoutMs: number | (() => number);
+	readonly #storeName: string | undefined;
+	readonly #storefrontOrigin: string | undefined;
 
 	constructor(options: CtxHttpEmailSenderOptions) {
 		this.#fetch = options.fetch;
@@ -116,10 +132,26 @@ export class CtxHttpEmailSender implements EmailSender {
 		this.#from = options.from;
 		this.#apiKey = options.apiKey;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
+		this.#storeName = options.storeName;
+		this.#storefrontOrigin = options.storefrontOrigin;
 	}
 
 	async send(input: SendEmailInput): Promise<void> {
-		const rendered = renderEmail(input.template, input.data);
+		// Money as the storefront formats it, the store's name, and — for an order
+		// email — the order's page (QA U-3). See `email-render-context.ts`.
+		const orderId = input.data["orderId"];
+		const rendered = renderEmail(input.template, input.data, {
+			formatMoney: storefrontEmailMoney,
+			locale: STOREFRONT_LOCALE,
+			storeName: this.#storeName,
+			orderPageUrl:
+				input.template !== "customer-login-link" &&
+				typeof orderId === "string" &&
+				orderId.length > 0 &&
+				this.#storefrontOrigin !== undefined
+					? orderPageUrl(this.#storefrontOrigin, orderId)
+					: undefined,
+		});
 		const headers: Record<string, string> = {
 			"content-type": "application/json",
 			// The outbox row id. See this module's head comment — removing this line
@@ -260,10 +292,11 @@ export interface EmailSenderEgress {
  * which is what makes the cron sweep's `order-emails` leg report `skipped`
  * instead of draining the outbox into nowhere.
  *
- * Both kv reads are fail-soft (`readWriteOnlySecret` already swallows a rejection
- * to `undefined`): a kv outage must degrade to an
- * unauthenticated send against the documented default from-address, never take
- * down the tick that was about to drain the outbox.
+ * Every kv read is fail-soft (`readWriteOnlySecret` and `resolveLoginLinkUrl`
+ * already swallow a rejection to `undefined`): a kv outage must degrade to an
+ * unauthenticated send against the documented default from-address — with no
+ * store name and no order link — never take down the tick that was about to
+ * drain the outbox.
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
@@ -272,14 +305,19 @@ export async function makeEmailSender(
 ): Promise<EmailSender | undefined> {
 	const apiUrl = egress.apiUrl;
 	if (apiUrl === undefined || !emailSenderConfigured(egress)) return undefined;
-	const [apiKey, from] = await Promise.all([
+	const [apiKey, from, storeName, signInPageUrl] = await Promise.all([
 		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
 		readEmailFrom(ctx),
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
+		// Already fail-soft: unset, invalid or unreadable ⇒ undefined ⇒ no link.
+		resolveLoginLinkUrl(ctx),
 	]);
 	return new CtxHttpEmailSender({
 		fetch: ctx.http.fetch,
 		apiUrl,
 		from,
+		storeName,
+		storefrontOrigin: storefrontOriginOf(signInPageUrl),
 		...(apiKey !== undefined ? { apiKey } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }

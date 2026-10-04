@@ -243,7 +243,13 @@ export {
 // plugin's `CtxHttpEmailSender` over `ctx.http` (INC-C5). It is a PURE function
 // of a template + explicit data — no IO, no store reach-back — so it does not
 // widen the domain's purity contract by one byte.
-export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from "./email/render.js";
+export {
+	customerSafeCancellationCopy,
+	EMAIL_NOT_CALCULATED_LABEL,
+	renderEmail,
+	type EmailRenderContext,
+	type RenderedEmail,
+} from "./email/render.js";
 // The shopper-facing name of an order (its products, never its id) — one pure
 // function shared by the order emails and, through `@otta-sh/plugin`, the
 // storefront, so the two cannot spell the same order differently.

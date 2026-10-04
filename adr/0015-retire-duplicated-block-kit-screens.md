@@ -581,7 +581,12 @@ submits are one decision.
   nonce per click, and re-send one only as an explicit retry of a move whose answer was lost.
   On main that is the React product detail (`mintMovementNonce`, and `HeldRetry` in
   `product-detail.tsx`) and the staging demo seed (a fresh nonce per seeded product). The Pricing & stock
-  cards on `feat/products-pricing-panel` must add it before they merge.
+  cards in the product editor (`pricing-cards.tsx`, the only live stock UI once ADR-0014's
+  2026-10-01 amendment retired the Products page) do the same: a fresh nonce per Add/Remove
+  click, `HeldMove` for the explicit Retry, with the same ten-minute hold from the original
+  loss. They compose their own receipt ("Added 2 — now 9 in stock"), so the plugin's action
+  result also carries `replayed: true` on a ledger answer, and the cards read "Already applied —
+  now N in stock" from it rather than from the notice's sentence.
 - **For the domain port:** `removeStock` takes an optional `{ expectedOnHand }` and its result
   gains `STALE_ON_HAND`, so an exhaustive switch over it needs a new case. Both results'
   success member gains an optional `replayed: true`, which is never stored. `restock`'s
