@@ -106,6 +106,7 @@
  * (`X-EmDash-Request: 1`); bearer tokens are exempt from it. The script sends it
  * unconditionally on writes, which is correct for both.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -247,11 +248,18 @@ export function priceBody(row: DemoRow, expectedUpdatedAt: string): Record<strin
 	};
 }
 
-/** The `products:restock` payload. `onHand` is the WATERMARK — the count this
- *  script just observed — not the target; the route refuses the write if the
- *  live count has moved since. `qty` is how many to ADD. */
-export function restockBody(row: DemoRow, onHand: number): Record<string, string> {
-	return { productId: row.id, onHand: String(onHand), qty: String(row.initialOnHand) };
+/** The `products:restock` payload. `onHand` is the count this script just
+ *  observed — not the target, and not a precondition: a restock is not pinned to
+ *  it (an add is commutative), and the route requires it only as the legacy
+ *  key's component. `qty` is how many to ADD. `nonce` is the movement's
+ *  idempotency key, one per decision: the route's content-derived fallback for a
+ *  caller that sends none is going away. */
+export function restockBody(
+	row: DemoRow,
+	onHand: number,
+	nonce: string = randomUUID(),
+): Record<string, string> {
+	return { productId: row.id, onHand: String(onHand), qty: String(row.initialOnHand), nonce };
 }
 
 /** The commerce row as the console detail read reports it — `null` when the

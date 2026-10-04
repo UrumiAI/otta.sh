@@ -1,6 +1,6 @@
 import { addLine, createCart, removeLine, updateLine } from "@otta-sh/domain";
 import { currency, idempotencyKey, sku } from "@otta-sh/domain";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
 
 const USD = currency("USD");
@@ -26,6 +26,47 @@ describe("cart use-cases (fake)", () => {
 		const cartId = await createCart(h.deps, USD);
 		const res = await removeLine(h.deps, cartId, "no-such-line", idempotencyKey("k1"));
 		expect(res).toEqual({ ok: true });
+	});
+
+	test("an add DECIDED out of stock retires its own claim — and only that one (QA U-16)", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 1);
+		const cartId = await createCart(h.deps, USD);
+		const retired: Array<[string, string]> = [];
+		const original = h.cartStore.abandonClaim.bind(h.cartStore);
+		h.cartStore.abandonClaim = async (cart, key) => {
+			retired.push([cart, key]);
+			return original(cart, key);
+		};
+
+		const oos = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k-oos"));
+		const ok = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k-ok"));
+
+		expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+		expect(ok.ok).toBe(true);
+		expect(retired).toEqual([[cartId, "k-oos"]]);
+	});
+
+	test("retiring the claim is BEST-EFFORT: if it throws, the add still answers OUT_OF_STOCK", async () => {
+		// The refusal is already decided; the retirement only spares the sweep a
+		// read. A contended or failed write must not turn a clean "not enough
+		// stock" into a 500 or a BUSY.
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 1);
+		const cartId = await createCart(h.deps, USD);
+		h.cartStore.abandonClaim = async () => {
+			throw new Error("storage contended");
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const oos = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]?.join(" "))).toContain("storage contended");
+			expect(await h.onHand("SKU-1")).toBe(1);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("a line snapshots no price and carries its live reservation state", async () => {

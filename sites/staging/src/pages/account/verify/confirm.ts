@@ -31,6 +31,8 @@ import {
 	dispatchOttaRoute,
 	formString,
 	isBusyResult,
+	notAFormResponse,
+	readFormBody,
 } from "../../../lib/otta-api.js";
 
 const LOGIN_PATH = "/account/login";
@@ -49,7 +51,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const challengeId = formString(form.get("challenge"));
 	const token = formString(form.get("token"));
 	if (challengeId === undefined || token === undefined) {

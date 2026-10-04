@@ -67,6 +67,7 @@ import {
 	ReservationNotFoundError,
 	ReservationNotHeldError,
 	StockMovementMismatchError,
+	assertStockMovementOptions,
 	type AdoptInput,
 	type AdoptManyInput,
 	type AdoptManyResult,
@@ -75,6 +76,7 @@ import {
 	type InventoryStore,
 	type ReserveResult,
 	type RestockResult,
+	type StockMovementOptions,
 	type StockRemovalResult,
 } from "@otta-sh/domain";
 import {
@@ -140,15 +142,28 @@ interface PruneEntry {
 }
 
 /** The port's wording for a recorded stock movement, used in mismatch messages. */
-function describeMovement(direction: StockDirection, qty: number, sku: string): string {
-	return `${direction} ${String(qty)}×${sku}`;
+function describeMovement(
+	direction: StockDirection,
+	qty: number,
+	sku: string,
+	expectedOnHand?: number,
+): string {
+	const base = `${direction} ${String(qty)}×${sku}`;
+	return expectedOnHand === undefined ? base : `${base} at on-hand ${String(expectedOnHand)}`;
 }
 
 /** How a movement claim of the other kind is described in a mismatch message. */
 function describeOtherKind(claim: MovementClaimDoc): string {
 	return claim.kind === "stock"
-		? describeMovement(claim.direction, claim.qty, claim.sku)
+		? describeMovement(claim.direction, claim.qty, claim.sku, claim.expectedOnHand)
 		: `an adjust of reservation ${claim.reservationId}`;
+}
+
+/** A recorded answer handed back by the ledger: a success says it was replayed
+ *  (the port's `replayed`), a refusal reads as the refusal it was. The flag is
+ *  never STORED — a recorded result is always the fresh one. */
+function replayedAnswer(result: StockRemovalResult): StockRemovalResult {
+	return result.ok ? { ok: true, onHand: result.onHand, replayed: true } : { ...result };
 }
 
 function assertPositiveInt(value: number, method: string, field: string): void {
@@ -863,23 +878,31 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 
 	/**
 	 * Merchant restock: an unconditional, oversell-safe increment. Adding units can
-	 * never invalidate a concurrent reservation, so there is no guard to fail —
-	 * only the claim discipline that makes a double-clicked restock add once.
+	 * never invalidate a concurrent reservation, so there is no guard to fail and
+	 * no watermark to judge (the port doc says why a restock takes none) — only the
+	 * claim discipline that makes a double-clicked restock add once.
 	 */
 	async restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult> {
 		assertPositiveInt(qty, "restock", "qty");
-		const result = await this.#moveStock(sku, qty, key, "restock");
+		const result = await this.#moveStock(sku, qty, key, "restock", undefined);
 		return result.ok ? result : { ok: false, reason: "UNKNOWN_SKU" };
 	}
 
 	/**
 	 * Merchant stock removal: the oversell-critical guarded decrement, the same
 	 * `onHand >= qty` guard `reserve` uses and competing for the same units. It can
-	 * never drive the count below zero.
+	 * never drive the count below zero. `options.expectedOnHand`, when given, is
+	 * judged on the same read the decrement's compare-and-set is conditioned on.
 	 */
-	async removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult> {
+	async removeStock(
+		sku: string,
+		qty: number,
+		key: IdempotencyKey,
+		options?: StockMovementOptions,
+	): Promise<StockRemovalResult> {
 		assertPositiveInt(qty, "removeStock", "qty");
-		return this.#moveStock(sku, qty, key, "removal");
+		assertStockMovementOptions("removeStock", options);
+		return this.#moveStock(sku, qty, key, "removal", options?.expectedOnHand);
 	}
 
 	/**
@@ -889,19 +912,23 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * typed rejection rather than an `ok` echoing the wrong one — and is updated to
 	 * `applied` with the recorded result once the units moved. An `UNKNOWN_SKU`
 	 * rejection precedes the claim, so it does not consume the key; an
-	 * `INSUFFICIENT_STOCK` on a known sku is a terminal outcome that does.
+	 * `INSUFFICIENT_STOCK` or `STALE_ON_HAND` on a known sku is a terminal outcome
+	 * that does. The watermark rides IN the claim and is judged inside the
+	 * aggregate's compare-and-set, so it can never be checked against a count
+	 * that moved between the check and the write.
 	 */
 	async #moveStock(
 		sku: string,
 		qty: number,
 		key: string,
 		direction: StockDirection,
+		expectedOnHand: number | undefined,
 	): Promise<StockRemovalResult> {
 		const claimId = stockClaimId(key);
 		const existing = await this.#movements.get(claimId);
 		if (existing !== null) {
-			const claim = this.#asStockClaim(key, existing, sku, direction, qty);
-			if (claim.applied !== undefined) return { ...claim.applied.result };
+			const claim = this.#asStockClaim(key, existing, sku, direction, qty, expectedOnHand);
+			if (claim.applied !== undefined) return replayedAnswer(claim.applied.result);
 			return this.#applyStockClaim(key, claimId, claim);
 		}
 
@@ -914,14 +941,15 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 			sku,
 			direction,
 			qty,
+			...(expectedOnHand === undefined ? {} : { expectedOnHand }),
 			createdAt: this.#clock.now().toISOString(),
 		};
 		const written = await this.#movements.compareAndSet(claimId, null, intent);
 		if (!written.applied) {
 			const peer = await this.#movements.get(claimId);
 			if (peer !== null) {
-				const claim = this.#asStockClaim(key, peer, sku, direction, qty);
-				if (claim.applied !== undefined) return { ...claim.applied.result };
+				const claim = this.#asStockClaim(key, peer, sku, direction, qty, expectedOnHand);
+				if (claim.applied !== undefined) return replayedAnswer(claim.applied.result);
 				return this.#applyStockClaim(key, claimId, claim);
 			}
 		}
@@ -935,17 +963,24 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		sku: string,
 		direction: StockDirection,
 		qty: number,
+		expectedOnHand: number | undefined,
 	): StockMovementClaim {
 		if (
 			claim.kind !== "stock" ||
 			claim.sku !== sku ||
 			claim.direction !== direction ||
-			claim.qty !== qty
+			claim.qty !== qty ||
+			// A claim recorded BEFORE watermarks existed carries none, and is
+			// honoured whatever the caller now sends: it was written by a release
+			// whose keys already embedded the watermark they were taken against.
+			// The RECORDED intent wins — an applied one echoes its answer, and a
+			// pending one completes as recorded, which is unconditionally.
+			(claim.expectedOnHand !== undefined && claim.expectedOnHand !== expectedOnHand)
 		) {
 			throw new StockMovementMismatchError(
 				key,
 				describeOtherKind(claim),
-				describeMovement(direction, qty, sku),
+				describeMovement(direction, qty, sku, expectedOnHand),
 			);
 		}
 		return claim;
@@ -957,6 +992,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		claimId: string,
 		claim: StockMovementClaim,
 	): Promise<StockRemovalResult> {
+		// Whether THIS call found the movement already on the aggregate (its
+		// witness in the applied-movement ring) rather than applying it.
+		let replayed = false;
 		const result = await this.#cas<StockRemovalResult>(
 			claim.direction === "restock" ? "restock" : "removeStock",
 			async () => {
@@ -967,12 +1005,17 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 				const doc = normalizeInventoryDoc(current.value);
 				const remembered = findAppliedMovement(doc.appliedMovements, key);
 				if (remembered?.kind === "stock") {
+					replayed = true;
 					return casDone<StockRemovalResult>({ ...remembered.result });
 				}
 
 				let moved: StockRemovalResult;
 				let onHand = doc.onHand;
-				if (claim.direction === "restock") {
+				if (claim.expectedOnHand !== undefined && doc.onHand !== claim.expectedOnHand) {
+					// Judged on the SAME read the compare-and-set below is conditioned
+					// on, so the count cannot move between this check and the write.
+					moved = { ok: false, reason: "STALE_ON_HAND", onHand: doc.onHand };
+				} else if (claim.direction === "restock") {
 					onHand = doc.onHand + claim.qty;
 					moved = { ok: true, onHand };
 				} else if (doc.onHand < claim.qty) {
@@ -1004,10 +1047,11 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		// Read the answer back out of the durable record, so a same-key pair cannot
 		// disagree: whoever marked the claim first owns the recorded result.
 		const settled = await this.#movements.get(claimId);
-		if (settled !== null && settled.kind === "stock" && settled.applied !== undefined) {
-			return { ...settled.applied.result };
-		}
-		return result;
+		const answer =
+			settled !== null && settled.kind === "stock" && settled.applied !== undefined
+				? settled.applied.result
+				: result;
+		return replayed ? replayedAnswer(answer) : { ...answer };
 	}
 
 	/** Record a movement claim's terminal answer. First writer wins; idempotent. */

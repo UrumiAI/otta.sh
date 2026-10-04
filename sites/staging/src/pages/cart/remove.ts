@@ -14,7 +14,14 @@ import {
 	seeOther,
 } from "../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
-import { busyResponse, dispatchOttaRoute, formString, isBusyResult } from "../../lib/otta-api.js";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formString,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
@@ -22,7 +29,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const lineId = formString(form.get("lineId"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
 

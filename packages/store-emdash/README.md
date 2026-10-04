@@ -428,8 +428,13 @@ is **never** pruned at any age: it is what tells a replayer to resume and what m
 a dangling hold listable, so dropping one would orphan real stock. `completed`
 records keep the last `CART_MUTATION_LEDGER_SIZE = 64`, oldest evicted. `abandoned`
 records — the audit trail of a reaped crash, whose units are already back and whose
-claim is retired — keep the last `CART_ABANDONED_LEDGER_SIZE = 16`, so the second
-thing that could grow without limit on a long-lived cart does not. The accepted
+claim is retired, or of an add refused `OUT_OF_STOCK`, which never had a hold and
+is retired by the domain as it decides (`abandonClaim`) — keep the last
+`CART_ABANDONED_LEDGER_SIZE = 16`, so the second thing that could grow without
+limit on a long-lived cart does not. Evicting a refused add's record has one
+residual: a very late replay of its key runs as a fresh add, which on a cart that
+has since gained a line for that sku is an increment of that line (current truth,
+as for an evicted completed record). The accepted
 residual is
 narrow and stated in the source: a replay of a key whose completed record was
 evicted no longer short-circuits, so it answers with current truth instead of the

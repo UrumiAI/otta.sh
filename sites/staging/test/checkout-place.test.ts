@@ -27,7 +27,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@otta-sh/plugin";
+import {
+	ORDER_ADDRESS_MAX_LENGTHS,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	type CheckoutSummaryRouteResult,
+} from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
 	CHECKOUT_COOKIE_MAX_AGE_SECONDS,
@@ -313,7 +317,75 @@ describe("no publishable key ⇒ NO ORDER (§1.7)", () => {
 	});
 });
 
-describe("6b — the idempotency key comes from the FORM, never invented", () => {
+describe("6b — the idempotency key is the COOKIE cart's, checked against the form", () => {
+	// QA T1-10: the key used to be forwarded verbatim from the hidden field, so
+	// any form could post `checkout:<another cart's id>` and bind that key to
+	// ITS OWN cart — locking the other cart out with IDEMPOTENCY_KEY_REUSED for
+	// good. The key is now checked against the cart the COOKIE names: the
+	// form's key is the page's statement of which cart was reviewed, and a page
+	// reviewed for a different cart is stale, never placed.
+	test("a key naming ANOTHER cart is refused as a stale page and NEVER dispatches", async () => {
+		const { handler, calls } = makeHandler();
+		const { context, cookieOps } = makeContext(
+			{ ...VALID_FORM, idempotencyKey: "checkout:someone-elses-cart" },
+			handler,
+		);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toContain("error=CHECKOUT_STALE");
+		expect(calls).toHaveLength(0);
+		expect(cookieOps).toHaveLength(0);
+	});
+
+	test("a key that is not a checkout key at all is refused the same way", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext({ ...VALID_FORM, idempotencyKey: "cart-existing" }, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.headers.get("location")).toContain("error=CHECKOUT_STALE");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("the PLUGIN's own CHECKOUT_STALE refusal reads as the same stale-page copy", async () => {
+		// The place route enforces the key too (it is public); if it ever refuses,
+		// the shopper lands back on /checkout with the same "out of date" notice.
+		const { handler } = makeHandler({ ok: false, reason: "CHECKOUT_STALE" });
+		const { context } = makeContext(VALID_FORM, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toContain("error=CHECKOUT_STALE");
+	});
+
+	test("a payment intent still in flight (the plugin's BUSY) is the busy 503, never PAYMENT_INTENT_FAILED", async () => {
+		const { handler } = makeHandler({ ok: false, error: "BUSY", retryable: true });
+		const { context } = makeContext(VALID_FORM, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).not.toBeNull();
+	});
+
+	test("the dispatched key is DERIVED from the cookie's cart — checkout:<cartId>", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{ ...VALID_FORM, idempotencyKey: "checkout:cart-777" },
+			handler,
+			{ cartCookie: "cart-777" },
+		);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body["idempotencyKey"]).toBe("checkout:cart-777");
+		expect(calls[0]!.body["cartId"]).toBe("cart-777");
+	});
+
 	test("a missing idempotencyKey is a 400 and never dispatches", async () => {
 		const { handler, calls } = makeHandler();
 		const { context } = makeContext({ email: "a@b.co" }, handler);
@@ -324,7 +396,7 @@ describe("6b — the idempotency key comes from the FORM, never invented", () =>
 		expect(calls).toHaveLength(0);
 	});
 
-	test("the form's key is forwarded VERBATIM", async () => {
+	test("a form key matching the cookie's cart dispatches unchanged", async () => {
 		const { handler, calls } = makeHandler();
 		const { context } = makeContext(
 			{ ...VALID_FORM, idempotencyKey: "checkout:cart-existing" },
@@ -985,6 +1057,59 @@ describe("the delivery address at place (ADR-0021)", () => {
 
 		for (const value of Object.values(TYPED))
 			expect(location).not.toContain(encodeURIComponent(value));
+	});
+});
+
+describe("an address field over the domain's length bound (QA U-6)", () => {
+	const FULL = {
+		...VALID_FORM,
+		name: "A Buyer",
+		line1: "1 Road",
+		city: "Town",
+		postalCode: "12345",
+		country: "GB",
+	};
+
+	test.each(
+		Object.entries(ORDER_ADDRESS_MAX_LENGTHS).filter(
+			([f]) => f !== "country" && f !== "email" && f !== "region",
+		),
+	)(
+		"%s over %i characters is INVALID_SHIPPING_ADDRESS, refused HERE — never dispatched",
+		async (field, max) => {
+			const { handler, calls } = makeHandler();
+			const { context } = makeContext({ ...FULL, [field]: "x".repeat(max + 1) }, handler);
+
+			const response = await PLACE_POST(context);
+
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toContain("error=INVALID_SHIPPING_ADDRESS");
+			expect(calls).toHaveLength(0);
+		},
+	);
+
+	test("a field exactly AT its bound is fine", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{ ...FULL, line1: "x".repeat(ORDER_ADDRESS_MAX_LENGTHS.line1) },
+			handler,
+		);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
+	});
+
+	test("the bound is measured AFTER trimming, as the domain measures it", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(
+			{ ...FULL, city: `  ${"x".repeat(ORDER_ADDRESS_MAX_LENGTHS.city)}  ` },
+			handler,
+		);
+
+		await PLACE_POST(context);
+
+		expect(calls).toHaveLength(1);
 	});
 });
 

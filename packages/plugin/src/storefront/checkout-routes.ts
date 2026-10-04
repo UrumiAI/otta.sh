@@ -24,6 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
+import { isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -46,6 +47,7 @@ import {
 	type CartPricingWire,
 } from "./cart-pricing.js";
 import {
+	exceedsAddressBounds,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -247,6 +249,12 @@ export type CheckoutPlaceRouteResult =
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
+	/**
+	 * The idempotency key is not this cart's `checkout:<cartId>` — a page reviewed
+	 * for some other cart, or a caller trying to bind another cart's key to this
+	 * one. Nothing was minted, adopted or asked of the payment provider.
+	 */
+	| { ok: false; reason: "CHECKOUT_STALE" }
 	| RenderGuardFailure;
 
 export type OrderRouteResult =
@@ -538,7 +546,29 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 	return (routeCtx, ctx): Promise<CheckoutPlaceRouteResult> =>
 		renderGuard(STOREFRONT_CHECKOUT_PLACE_ROUTE, async () => {
 			const input = parseCheckoutPlaceInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null) {
+				// Everything else is well-formed and only the ship-to has a field over
+				// the domain's bound: that is the buyer's address being too long, the
+				// typed INVALID_SHIPPING_ADDRESS the domain would give — not a malformed
+				// call (QA U-6).
+				const { shippingAddress, ...rest } = routeCtx.input;
+				if (exceedsAddressBounds(shippingAddress) && parseCheckoutPlaceInput(rest) !== null) {
+					return { ok: false as const, reason: "INVALID_SHIPPING_ADDRESS" as const };
+				}
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			// The key is `checkout:<cartId>` BY CONSTRUCTION (the summary derives it),
+			// and this route — public, reachable directly — now enforces that rather
+			// than trusting its caller (QA T1-10). Taken as given, a caller could
+			// place its own cart under `checkout:<another cart>`; that key would then
+			// name the wrong order, and the other cart's real checkout would fail
+			// IDEMPOTENCY_KEY_REUSED for good. Refused, not rewritten: the key is also
+			// the review page's statement of which cart it priced, so a mismatch is a
+			// stale page, and placing this cart against it would charge totals the
+			// buyer never saw.
+			if (input.idempotencyKey !== checkoutIdempotencyKey(input.cartId)) {
+				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.createOrder(
@@ -554,7 +584,17 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				input.idempotencyKey,
 				input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
 			);
-			if (!result.ok) return { ok: false as const, reason: result.reason };
+			if (!result.ok) {
+				// A same-key PaymentIntent request still in flight (a double-submitted
+				// checkout) is not a failure: the first request is about to land, and
+				// a retry with this same key returns its intent. So it is answered as
+				// the storefront's retryable BUSY — "try again in a few seconds" — not
+				// as PAYMENT_INTENT_FAILED's "we couldn't start a payment" (QA T1-9).
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
 
 			// CONTAINED, deliberately. `buildOrderTotal` runs `cents()`/`currency()`,
 			// which THROW, over a reply this client has only envelope-checked — and
@@ -595,8 +635,19 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 	return (routeCtx, ctx): Promise<OrderRouteResult> =>
 		renderGuard(STOREFRONT_ORDER_ROUTE, async () => {
+			// Not a string at all is a malformed CALL (no URL produces one):
+			// INVALID_INPUT. Any string that cannot be an order id — blank,
+			// over-long, carrying whitespace or a control character — names no order:
+			// ORDER_NOT_FOUND, which the page renders as "not found". Before, such ids
+			// were INVALID_INPUT or threw out of the client as RENDER_FAILED, both
+			// "Something went wrong" on the page (QA U-6).
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
 			const input = parseOrderRouteInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.getPublicOrder(input.orderId);

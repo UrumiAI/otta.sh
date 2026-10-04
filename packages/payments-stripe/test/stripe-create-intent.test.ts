@@ -9,6 +9,7 @@ import {
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
+	IN_FLIGHT_BUDGET_MS,
 	STRIPE_UNSUPPORTED_CURRENCIES,
 	StripePaymentGateway,
 	type StripeCreatePaymentIntentInput,
@@ -223,6 +224,165 @@ describe("StripePaymentGateway.createIntent — the LIVE path (mock transport)",
 			expect(transport.intents[0]?.amountCents).toBe(amount);
 		}
 	});
+});
+
+/** Plays a SCRIPTED sequence of results, one per call (the last repeats). */
+class ScriptedTransport extends MockTransport {
+	readonly script: StripeCreatePaymentIntentResult[];
+	constructor(script: StripeCreatePaymentIntentResult[]) {
+		super();
+		this.script = script;
+	}
+	override async createPaymentIntent(
+		input: StripeCreatePaymentIntentInput,
+	): Promise<StripeCreatePaymentIntentResult> {
+		this.intents.push(input);
+		const next = this.script[Math.min(this.intents.length - 1, this.script.length - 1)];
+		if (next === undefined) throw new Error("empty script");
+		return next;
+	}
+}
+
+const IN_FLIGHT: StripeCreatePaymentIntentResult = {
+	ok: false,
+	class: "retryable",
+	status: 409,
+	code: "idempotency_key_in_use",
+};
+
+describe("StripePaymentGateway.createIntent — a same-key request still IN FLIGHT (409 idempotency_key_in_use)", () => {
+	// QA T1-9: a double-click on "Continue to payment" sends the second place
+	// while the first is still creating its intent. Stripe answers the second
+	// 409 `idempotency_key_in_use` — not a failure of the payment, just "the
+	// first request with this key has not finished yet". Waiting and replaying
+	// the SAME key returns the SAME intent, so the buyer never sees
+	// PAYMENT_INTENT_FAILED for clicking twice.
+
+	test("waits and replays the same key until the first request lands, then returns ITS intent", async () => {
+		const transport = new ScriptedTransport([
+			IN_FLIGHT,
+			IN_FLIGHT,
+			{ ok: true, intentId: "pi_first", clientSecret: "pi_first_secret" },
+		]);
+		const waits: number[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport,
+			sleep: async (ms) => {
+				waits.push(ms);
+			},
+		});
+
+		const handle = await gw.createIntent(intentInput());
+
+		expect(handle.intentId).toBe("pi_first");
+		expect(transport.intents).toHaveLength(3);
+		// Every replay is byte-identical to the first call — Stripe rejects a
+		// same-key request whose parameters differ.
+		expect(transport.intents[1]).toEqual(transport.intents[0]);
+		expect(transport.intents[2]).toEqual(transport.intents[0]);
+		expect(waits).toHaveLength(2);
+		expect(waits.every((ms) => ms > 0)).toBe(true);
+	});
+
+	test("the wait is BOUNDED: still in flight after ~3 s of waiting ⇒ a retryable, IN-FLIGHT PaymentIntentError", async () => {
+		const transport = new ScriptedTransport([IN_FLIGHT]);
+		const waits: number[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport,
+			sleep: async (ms) => {
+				waits.push(ms);
+			},
+		});
+
+		const err = (await gw
+			.createIntent(intentInput())
+			.catch((e: unknown) => e)) as PaymentIntentError;
+
+		expect(err).toBeInstanceOf(PaymentIntentError);
+		expect(err.retryable).toBe(true);
+		// The domain turns this into PAYMENT_INTENT_IN_FLIGHT — "busy, try again"
+		// — rather than "we couldn't start a payment": nothing failed.
+		expect(err.inFlight).toBe(true);
+		expect(err.providerStatus).toBe(409);
+		expect(err.providerCode).toBe("idempotency_key_in_use");
+		expect(transport.intents).toHaveLength(1 + waits.length);
+		expect(waits.length).toBeGreaterThanOrEqual(3);
+		const total = waits.reduce((a, b) => a + b, 0);
+		expect(total).toBeGreaterThanOrEqual(2500);
+		expect(total).toBeLessThanOrEqual(3000);
+	});
+
+	test("the bound is on ELAPSED time, not just the sleeps: slow replies stop the replays early", async () => {
+		// Each Stripe round trip here takes 1.2 s of (fake) clock time. Sleeps
+		// alone would allow every replay; the elapsed cap must not.
+		let nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+		const clock = { now: () => new Date(nowMs) };
+		const transport = new ScriptedTransport([IN_FLIGHT]);
+		const original = transport.createPaymentIntent.bind(transport);
+		transport.createPaymentIntent = async (input) => {
+			nowMs += 1200;
+			return original(input);
+		};
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport,
+			clock,
+			sleep: async (ms) => {
+				nowMs += ms;
+			},
+		});
+		const startedAt = nowMs;
+
+		const err = (await gw
+			.createIntent(intentInput())
+			.catch((e: unknown) => e)) as PaymentIntentError;
+
+		expect(err.inFlight).toBe(true);
+		// No replay is STARTED once the budget is spent; the last one may finish
+		// past it by at most one round trip.
+		expect(transport.intents.length).toBeLessThan(5);
+		expect(nowMs - startedAt).toBeLessThanOrEqual(IN_FLIGHT_BUDGET_MS + 1200);
+	});
+
+	test.each([
+		[
+			"a 409 with any other code",
+			{ ok: false, class: "retryable", status: 409, code: "some_other_conflict" },
+		],
+		[
+			"a 429 lock_timeout (a locked object — Stripe's 429, not a 409)",
+			{ ok: false, class: "retryable", status: 429, code: "lock_timeout" },
+		],
+		["a 503", { ok: false, class: "retryable", status: 503 }],
+		["a terminal 400", { ok: false, class: "terminal", status: 400, code: "parameter_invalid" }],
+	] as const)(
+		"%s is NOT replayed here — one call, and the error is NOT in-flight",
+		async (_label, result) => {
+			const transport = new ScriptedTransport([result]);
+			let slept = 0;
+			const gw = new StripePaymentGateway({
+				webhookSecret: WEBHOOK,
+				secretKey: SK,
+				transport,
+				sleep: async () => {
+					slept += 1;
+				},
+			});
+
+			const err = (await gw
+				.createIntent(intentInput())
+				.catch((e: unknown) => e)) as PaymentIntentError;
+			expect(err).toBeInstanceOf(PaymentIntentError);
+			expect(err.inFlight).toBe(false);
+			expect(transport.intents).toHaveLength(1);
+			expect(slept).toBe(0);
+		},
+	);
 });
 
 function stubFetch(handler: (url: string, init?: RequestInit) => Response): typeof fetch {

@@ -156,8 +156,9 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
 /**
  * Add `{sku, qty}` to a cart. Ledger-first: a completed replay returns the
  * recorded line; otherwise claim the key, reserve via the atomic inventory port,
- * then complete the line. `OUT_OF_STOCK` writes **no** line (the claim stays
- * incomplete; a replay resumes and re-reads reserve's recorded `failed` state).
+ * then complete the line. `OUT_OF_STOCK` writes **no** line and RETIRES the
+ * claim (`abandonClaim`): it stays incomplete, so a replay resumes and re-reads
+ * reserve's recorded `failed` state, but it is no longer the sweep's work.
  * The pre-reserve claim marks the hold cart-originated so a crash between
  * reserve and the line write leaves a hold the sweep can identify and reap.
  *
@@ -214,7 +215,24 @@ export async function addLine(
 	}
 
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
-	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
+	if (!reserved.ok) {
+		// Decided: no hold exists under this key, and none ever will (the reserve
+		// key is once-only). Retire the claim so it is not swept forever (QA U-16);
+		// a same-key replay still resumes here and answers OUT_OF_STOCK again.
+		// BEST-EFFORT: the answer is already decided and the retirement only spares
+		// the sweep a read, so a failed write (contention, a fault) is logged and
+		// the shopper still gets OUT_OF_STOCK — never a 500 or a BUSY for it. An
+		// unretired claim is exactly the pre-fix state, which the sweep tolerates.
+		try {
+			await deps.cartStore.abandonClaim(cartId, key);
+		} catch (err) {
+			console.warn(
+				"[domain] addLine: could not retire an out-of-stock claim:",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		return { ok: false, reason: "OUT_OF_STOCK" };
+	}
 
 	try {
 		const line = await deps.cartStore.upsertLine({

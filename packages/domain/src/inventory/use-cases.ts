@@ -1,9 +1,11 @@
 import type { IdempotencyKey, Sku } from "../money/ids.js";
-import type {
-	InventoryStore,
-	ReserveResult,
-	RestockResult,
-	StockRemovalResult,
+import {
+	assertStockMovementOptions,
+	type InventoryStore,
+	type ReserveResult,
+	type RestockResult,
+	type StockMovementOptions,
+	type StockRemovalResult,
 } from "../ports/inventory-store.js";
 
 /**
@@ -57,16 +59,20 @@ export async function restock(
  * existing sku's on-hand (damaged/shrinkage). The oversell-critical counterpart
  * of {@link restock}: the store applies a single GUARDED decrement that can
  * never drive on-hand below 0 or race a reservation into oversell (see the port
- * doc). Bounds enforced here and in the store.
+ * doc). Bounds enforced here and in the store. `options.expectedOnHand` pins the
+ * on-hand the removal was decided against, judged by the store in the same write
+ * (the port doc says why the store, and why only a removal).
  */
 export async function removeStock(
 	store: InventoryStore,
 	sku: Sku,
 	qty: number,
 	key: IdempotencyKey,
+	options?: StockMovementOptions,
 ): Promise<StockRemovalResult> {
 	if (!Number.isSafeInteger(qty) || qty <= 0) {
 		throw new RangeError(`removeStock requires a positive integer qty, got ${String(qty)}`);
 	}
-	return store.removeStock(sku, qty, key);
+	assertStockMovementOptions("removeStock", options);
+	return store.removeStock(sku, qty, key, options);
 }

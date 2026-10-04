@@ -101,6 +101,30 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		expect(field).toContain(`autocomplete="${complete}"`);
 	});
 
+	/** The typed ship-to fields that carry a domain length bound, and the key of
+	 *  `ORDER_ADDRESS_MAX_LENGTHS` each one reads. (The region has its own,
+	 *  tighter code-shaped maxlength, asserted below.) */
+	const BOUNDED: ReadonlyArray<string> = ["name", "line1", "line2", "city", "postalCode", "phone"];
+
+	test.each(BOUNDED)(
+		"the ship-to field %s is bounded by the domain's own limit — maxlength from ORDER_ADDRESS_MAX_LENGTHS",
+		(name) => {
+			// QA U-6: an over-long field used to submit, fail the plugin's bound and
+			// come back as the generic INVALID_INPUT. The browser now stops it at the
+			// field, with the very number the domain enforces.
+			const field =
+				[...VIEW.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, "g"))]
+					.map((m) => m[0])
+					.find((tag) => !tag.includes('type="hidden"')) ?? "";
+			expect(field).toContain(`maxlength={ORDER_ADDRESS_MAX_LENGTHS.${name}}`);
+		},
+	);
+
+	test("the email is bounded by the place route's own buyerRef limit (BUYER_REF_MAX)", () => {
+		const field = /<input[\s\S]{0,260}?name="email"[\s\S]{0,260}?\/>/.exec(VIEW)?.[0] ?? "";
+		expect(field).toContain("maxlength={BUYER_REF_MAX}");
+	});
+
 	test("the country is a SELECT of ISO codes with an empty placeholder — never free text (ADR-0021)", () => {
 		expect(VIEW).not.toMatch(/<input[^>]*name="country"[^>]*autocomplete="country-name"/);
 		const selects = [...VIEW.matchAll(/<select[^>]*name="country"[^>]*>[\s\S]*?<\/select>/g)].map(

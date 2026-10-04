@@ -13,8 +13,10 @@
  * the plugin re-assembles the `form_submit` carrier those handlers read and
  * forwards it. So `expectedUpdatedAt` still rides with a save and is still
  * enforced by the service's optimistic concurrency, the `onHand` watermark
- * still rides with a stock movement and is still re-read against live truth,
- * the idempotency keys are still content-derived and not nonces, and every
+ * still rides with a stock removal and is judged by the store against live
+ * truth, a save's idempotency key is still content-derived — a stock
+ * movement's is a per-click nonce this screen mints (ADR-0015, amended
+ * 2026-10-02; see `movement-nonce.ts`) — and every
  * refusal message an operator can see here was authored, budgeted and
  * suite-covered for the Block Kit screen. This file decides nothing about stock
  * and nothing about money.
@@ -139,6 +141,7 @@ import {
 	panelStyle,
 } from "../ui.js";
 import { UNTITLED, toned } from "./products-list.js";
+import { mintMovementNonce } from "./movement-nonce.js";
 
 const TAB_LABELS = PRODUCT_TAB_LABELS;
 
@@ -163,7 +166,49 @@ interface PendingAction {
 	 *  save replaces the before — so the sentence cannot be composed on arrival.
 	 *  Everything else keeps the receipt the handler served. */
 	readonly receipt?: Receipt;
+	/** Set on the two STOCK writes: an indeterminate failure of one is held for
+	 *  an explicit Retry (see {@link HeldRetry}). */
+	readonly stockMove?: true;
 }
+
+/**
+ * A STOCK MOVE WHOSE ANSWER WAS LOST, held for an explicit Retry — and nothing
+ * else. Its nonce (the move's idempotency key) is in `action.value`.
+ *
+ * WHY RETRY IS EXPLICIT. The write may have landed and only its response been
+ * lost, so a re-send must carry the SAME nonce for the ledger to answer it once.
+ * But inferring "a later click that looks like this one is its retry" drops
+ * genuine new moves: an operator who reloads, sees the count, and later adds the
+ * same amount again on purpose would be answered from the ledger and see
+ * nothing happen. So every Add/Remove click mints a fresh nonce, and the ONLY
+ * re-send is the Retry this notice offers.
+ *
+ * WHEN IT IS DROPPED: it lives inside the notice that offers it, so it goes
+ * when that notice goes — on a Retry click (each click sends it once), when a
+ * NEW stock move is DISPATCHED for this product (opening a confirm and pressing
+ * Deny is looking, not deciding, and keeps it), on any other outcome replacing
+ * the notice, on leaving the screen or reloading (it is never persisted: a
+ * duplicated tab copies session storage, and must not inherit a move to
+ * re-send), and after {@link HELD_RETRY_TTL_MS} — counted from the ORIGINAL
+ * loss: a Retry that is lost again is held again under the first `heldAt`, so
+ * retrying never restarts the clock.
+ */
+interface HeldRetry {
+	readonly action: PendingAction;
+	/** `Date.now()` when the move's answer was FIRST lost — carried across
+	 *  Retries, never reset by one. */
+	readonly heldAt: number;
+}
+
+/** How long a lost move stays retryable. Past this, the operator has had time to
+ *  act on the count (or someone else has), so a re-send is no longer "the same
+ *  decision" in any useful sense: they are told to check the count instead. */
+const HELD_RETRY_TTL_MS = 10 * 60_000;
+
+/** The copy for a stock move whose answer was lost (an `indeterminate`
+ *  failure). It must not say nothing happened: the write may have landed. */
+const STOCK_MOVE_INDETERMINATE =
+	"The change may have been applied — check the count before trying again.";
 
 /**
  * A group that reports its own outcome, in place.
@@ -346,6 +391,9 @@ export interface ScreenNotice {
 	readonly title: string;
 	readonly description: string;
 	readonly field: "sku" | null;
+	/** A lost stock move this notice offers to Retry (see `HeldRetry`). The hold
+	 *  lives exactly as long as the notice does. */
+	readonly retry?: HeldRetry;
 }
 
 /**
@@ -609,7 +657,14 @@ export function ProductDetail({
 		};
 	}, [productId, generation]);
 
-	const dispatch = React.useCallback((action: PendingAction) => {
+	/** `heldSince` is set only by a Retry: the original loss time, so a Retry lost
+	 *  again is held under it (see `HeldRetry`). */
+	const dispatch = React.useCallback((action: PendingAction, heldSince?: number) => {
+		// DISPATCHING a new stock move supersedes any lost move still offered for
+		// Retry (a Retry's own dispatch has already cleared its notice).
+		if (action.stockMove === true) {
+			setNotice((current) => (current?.retry === undefined ? current : null));
+		}
 		setPending(null);
 		setWritePhase((phase) =>
 			nextWritePhase(phase, { type: "dispatched", actionId: action.actionId }),
@@ -626,6 +681,19 @@ export function ProductDetail({
 				setWritePhase((phase) =>
 					nextWritePhase(phase, { type: "refused", actionId: action.actionId }),
 				);
+				// A STOCK MOVE WHOSE OUTCOME IS UNKNOWN is held for an explicit Retry
+				// (see `HeldRetry`); every other failure is a definitive no and holds
+				// nothing.
+				if (result.indeterminate === true && action.stockMove === true) {
+					setNotice({
+						variant: "error",
+						title: result.title,
+						description: STOCK_MOVE_INDETERMINATE,
+						field: null,
+						retry: { action, heldAt: heldSince ?? Date.now() },
+					});
+					return;
+				}
 				setNotice({
 					variant: "error",
 					title: result.title,
@@ -681,6 +749,29 @@ export function ProductDetail({
 			setGeneration((n) => n + 1);
 		});
 	}, []);
+
+	/**
+	 * THE ONLY RE-SEND of a stock move's nonce. Each Retry click sends the held
+	 * move once: the notice carrying it is cleared first, and whatever comes back
+	 * replaces it (a lost answer again is held again, under the ORIGINAL
+	 * `heldAt`). Past the TTL nothing is sent — the operator is told to check the
+	 * count instead.
+	 */
+	const retryHeld = (held: HeldRetry | undefined): void => {
+		if (held === undefined) return;
+		if (Date.now() - held.heldAt > HELD_RETRY_TTL_MS) {
+			setNotice({
+				variant: "error",
+				title: "Not retried",
+				description:
+					"This change is too old to retry safely — check the count before trying again.",
+				field: null,
+			});
+			return;
+		}
+		setNotice(null);
+		dispatch(held.action, held.heldAt);
+	};
 
 	if (failure !== null) {
 		return (
@@ -758,6 +849,15 @@ export function ProductDetail({
 					variant={notice.variant}
 					title={notice.title}
 					description={notice.description}
+					{...(notice.retry === undefined
+						? {}
+						: {
+								action: {
+									label: "Retry this change",
+									onClick: () => retryHeld(notice.retry),
+									disabled: busy,
+								},
+							})}
 					testId="detail-notice"
 				/>
 			)}
@@ -868,10 +968,16 @@ export function ProductDetail({
 							const confirm = addStockConfirm(qty, sku, onHand);
 							setPending({
 								actionId: "products:restock",
+								stockMove: true,
 								value: {
 									productId: p.productId,
 									onHand: String(onHand),
 									qty: String(qty),
+									// ONE CLICK, ONE KEY: always fresh — the only re-send of a
+									// nonce is the explicit Retry (see `HeldRetry`). A restock is
+									// not pinned to this count; `onHand` rides only for the
+									// server's legacy key.
+									nonce: mintMovementNonce(),
 								},
 								title: confirm.title,
 								text: confirm.text,
@@ -880,18 +986,21 @@ export function ProductDetail({
 								slot: "stock-add",
 							});
 						}}
-						onRemove={(qty) => {
+						onRemove={(qty, onHand) => {
 							const confirm = removeStockConfirm(qty);
 							setPending({
 								actionId: "products:remove-stock",
+								stockMove: true,
 								value: {
 									productId: p.productId,
 									qty: String(qty),
 									// THE WATERMARK AS THE OPERATOR SAW IT — the on-hand this
-									// render was built from. The handler re-reads live stock and
-									// refuses on a mismatch, and this is the third component of
-									// the idempotency key (F-2a).
-									onHand: String(p.onHand ?? 0),
+									// render was built from, carried by the click (never a `0`
+									// stood in for "no record": the form does not render then).
+									// The store refuses the removal if live stock no longer
+									// matches it.
+									onHand: String(onHand),
+									nonce: mintMovementNonce(),
 								},
 								title: confirm.title,
 								text: confirm.text,
@@ -1771,7 +1880,7 @@ function StockPanel({
 	 *  renders it only once both exist. The caller therefore has no absent case
 	 *  to default or to swallow. */
 	onRestock: (qty: number, sku: string, onHand: number) => void;
-	onRemove: (qty: number) => void;
+	onRemove: (qty: number, onHand: number) => void;
 }): React.ReactElement {
 	const sku = p.sku;
 	const onHand = p.onHand;
@@ -1852,7 +1961,7 @@ function StockPanel({
 									invalid={REMOVE_STOCK_INVALID_QTY}
 									danger
 									busy={busy}
-									onSubmit={onRemove}
+									onSubmit={(qty) => onRemove(qty, onHand)}
 								/>
 								{removeReceipt !== null && (
 									<Notice

@@ -10,14 +10,29 @@
  * it here also means the order (which reserves stock for 15 minutes) is created
  * only after the buyer has committed contact details, not on page view.
  *
- * The `idempotencyKey` arrives FROM THE FORM — `checkout:<cartId>`, derived by
- * the plugin's summary route — and is forwarded verbatim; this endpoint never
- * invents one. Unlike the cart forms' fresh-per-render keys it is STABLE per
- * cart, so a double-click, a reload or a back-then-forward replays into the
- * same order and the same PaymentIntent instead of minting a second order the
- * `CART_CHECKED_OUT` fence would then reject.
+ * The `idempotencyKey` is `checkout:<cartId>` — STABLE per cart, unlike the
+ * cart forms' fresh-per-render keys, so a double-click, a reload or a
+ * back-then-forward replays into the same order and the same PaymentIntent
+ * instead of minting a second order the `CART_CHECKED_OUT` fence would reject.
+ *
+ * The form still carries it (the plugin's summary route derives it for the
+ * review page), but it is no longer TRUSTED: the key dispatched is derived here
+ * from the cart the COOKIE names, and a form whose key names any other cart is
+ * refused as a stale page (QA T1-10). Forwarded verbatim, a crafted
+ * `checkout:<another cart>` bound that key to the poster's own cart, and the
+ * other cart's real checkout then failed IDEMPOTENCY_KEY_REUSED for good. The
+ * form's key is kept as a CHECK rather than ignored because it is the page's
+ * statement of which cart was reviewed: a tab left open on cart A, posted after
+ * the cookie moved to cart B, must not place B's order against A's totals.
+ * The plugin's place route enforces the same rule (it is public, so it cannot
+ * rely on this page); checking here as well answers the stale page before any
+ * dispatch, and the plugin's own CHECKOUT_STALE reads as the same notice.
  */
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
+import {
+	checkoutIdempotencyKey,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	type CheckoutPlaceRouteResult,
+} from "@otta-sh/plugin";
 import type { APIContext, APIRoute } from "astro";
 import { currentSessionToken } from "../../lib/account.js";
 import {
@@ -38,14 +53,24 @@ import {
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { busyResponse, dispatchOttaRoute, formString, isBusyResult } from "../../lib/otta-api.js";
-import { isCodeShapedRegion } from "@otta-sh/plugin";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formString,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../lib/otta-api.js";
+import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
 const INVALID_EMAIL = "INVALID_EMAIL";
 const INVALID_SHIPPING_ADDRESS = "INVALID_SHIPPING_ADDRESS";
 const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
+/** The site's own token for a review page placed for a cart the cookie no
+ *  longer names (see the module doc). */
+const CHECKOUT_STALE = "CHECKOUT_STALE";
 
 const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
 
@@ -101,6 +126,18 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	if (region !== undefined && !isCodeShapedRegion(region)) {
 		return { ok: false, error: SHIPPING_REGION_CODE_REQUIRED, partial: false };
 	}
+	// Over the domain's own per-field bound (measured after trimming, as the
+	// domain measures it) is the ADDRESS error it is, refused here. Dispatched,
+	// it failed the plugin's bound as the generic INVALID_INPUT — "Something
+	// went wrong" for a buyer whose street name was simply too long (QA U-6).
+	// The inputs carry the same numbers as `maxlength`; this is for whatever
+	// gets past them.
+	for (const field of [...TYPED_ADDRESS_FIELDS, ...OPTIONAL_ADDRESS_FIELDS]) {
+		const value = formString(form.get(field));
+		if (value !== undefined && value.length > ORDER_ADDRESS_MAX_LENGTHS[field]) {
+			return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false };
+		}
+	}
 
 	const address: Record<string, string> = {};
 	for (const [field, value] of typed) address[field] = value!;
@@ -126,7 +163,8 @@ async function place(context: APIContext): Promise<Response> {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
 	// every redirect below can carry it back: it is not personal data. Trimmed,
@@ -188,10 +226,15 @@ async function place(context: APIContext): Promise<Response> {
 		return context.redirect(placeFailurePath(INVALID_EMAIL, selection), 303);
 	}
 
-	// From the form, forwarded verbatim — never invented here (see module doc).
-	const idempotencyKey = formString(form.get("idempotencyKey"));
-	if (idempotencyKey === undefined) {
+	// Derived from the COOKIE's cart; the form's copy is only checked against it
+	// (see module doc). Never taken from the form as-is.
+	const formKey = formString(form.get("idempotencyKey"));
+	if (formKey === undefined) {
 		return new Response("Bad request: idempotencyKey is required", { status: 400 });
+	}
+	const idempotencyKey = checkoutIdempotencyKey(cartId);
+	if (formKey !== idempotencyKey) {
+		return context.redirect(placeFailurePath(CHECKOUT_STALE, selection), 303);
 	}
 
 	const shipping = readShippingAddress(form, zoned);

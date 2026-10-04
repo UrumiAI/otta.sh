@@ -266,6 +266,9 @@ export interface StockMovementClaim {
 	sku: string;
 	direction: StockDirection;
 	qty: number;
+	/** The on-hand the movement was decided against, when the caller pinned one
+	 *  (the port's `expectedOnHand`). Absent on claims written before it existed. */
+	expectedOnHand?: number;
 	createdAt: string;
 	/** Set once the aggregate write landed. Its presence IS "this key is done". */
 	applied?: { result: StockRemovalResult; appliedAt: string };
