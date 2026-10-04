@@ -9,6 +9,14 @@ export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	foldCouponCode,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+} from "./pricing/coupon-code.js";
+export {
+	parseCouponInstant,
 	validateCoupon,
 	type CouponValidationContext,
 	type CouponValidationFailure,
@@ -24,6 +32,7 @@ export {
 } from "./pricing/quote.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
+export { CURRENCY_CODES, isIsoCurrencyCode } from "./pricing/iso-4217.js";
 export {
 	isCodeShapedRegion,
 	normalizeCountryCode,

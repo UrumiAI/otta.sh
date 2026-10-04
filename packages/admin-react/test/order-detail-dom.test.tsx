@@ -824,7 +824,7 @@ test("a voided attempt is not listed as a refund, and an in-flight one is labell
 	);
 });
 
-test("the ledger shows the provider's refund id from the wire's refundRef, and the idempotency key to match it by", async () => {
+test("the ledger shows the provider's refund id from the wire's refundRef, and an UNKNOWN-outcome row's idempotency key to match it by", async () => {
 	const wired: RefundsSummary = {
 		...CAPTURED,
 		refunds: [
@@ -858,11 +858,39 @@ test("the ledger shows the provider's refund id from the wire's refundRef, and t
 	expect(refColumn).toBeGreaterThan(-1);
 	expect(keyColumn).toBeGreaterThan(-1);
 	expect(cellIn(ledger, 0, refColumn).textContent).toBe("re_3PwireRef");
-	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("admin-refund:7e4ce728:500000:0");
+	// A settled refund is matched by its provider id; its key is plumbing (QA:
+	// "the refunds table shows idempotency keys") and is not printed.
+	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("—");
 	// An unknown-outcome row has no provider id — its KEY is how it is found in the
 	// provider's request log.
 	expect(cellIn(ledger, 1, refColumn).textContent).toBe("—");
 	expect(cellIn(ledger, 1, keyColumn).textContent).toBe("admin-refund:7e4ce728:200000:500000");
+});
+
+test("a ledger of SETTLED refunds carries no idempotency-key column at all", async () => {
+	// The key exists for one job — finding an unknown-outcome refund in the
+	// provider's request log (the unverified note says so). With nothing unknown,
+	// a column of `admin-refund:7e4ce728:500000:0` strings is noise in a money table.
+	const settled: RefundsSummary = {
+		...CAPTURED,
+		refunds: [
+			{
+				amountCents: REFUNDED_CENTS,
+				currency: CUR,
+				refundRef: "re_3PwireRef",
+				idempotencyKey: "admin-refund:7e4ce728:500000:0",
+				refundedBy: "ops@example.test",
+				createdAt: "2026-03-04T11:00:00.000Z",
+				status: "recorded",
+			},
+		],
+	};
+	const view = await show(detailFor("paid", settled));
+	await fire(tab(view, "money"), "click");
+	const ledger = table(view, "detail-refund-ledger");
+	const headers = [...ledger.querySelectorAll("thead th")].map((th) => th.textContent);
+	expect(headers).not.toContain("Idempotency key");
+	expect(ledger.textContent).not.toContain("admin-refund:");
 });
 
 test("the refund confirm sends the FINALIZED total as its watermark", async () => {
@@ -1012,5 +1040,36 @@ test("the Cancel group is offered only on an order that can still be cancelled",
 		const view = await show({ ...detailFor(state), vocabulary: CANCEL_VOCABULARY });
 		await fire(tab(view, "fulfilment"), "click");
 		expect(view.container.querySelector('[data-testid="detail-cancel"]'), state).not.toBeNull();
+	}
+});
+
+test("an invalid refund amount marks its input without a shorthand/longhand style collision", async () => {
+	// QA's console: "Removing a style property during rerender (borderColor) when a
+	// conflicting property is set (border)". The invalid style spread `inputStyle`
+	// (shorthand `border`) and then set the longhand `borderColor`; clearing the
+	// error removed the longhand under a live shorthand, which React warns can
+	// leave the wrong border painted. The invalid state now sets the SAME
+	// shorthand, so nothing is ever removed from under it.
+	const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const view = await show(detailFor("paid", CAPTURED));
+		await fire(tab(view, "money"), "click");
+		await fire(one<HTMLButtonElement>(view, '[data-testid="refund-partial-submit"]'), "click");
+		const input = one<HTMLInputElement>(view, '[data-testid="refund-amount"]');
+		expect(input.getAttribute("aria-invalid")).toBe("true");
+		expect(input.style.border).toContain("solid");
+
+		await React.act(async () => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "12");
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(input.getAttribute("aria-invalid")).toBeNull();
+
+		const collisions = errors.mock.calls.filter((call) =>
+			call.some((arg) => /style property during rerender/.test(String(arg))),
+		);
+		expect(collisions).toEqual([]);
+	} finally {
+		errors.mockRestore();
 	}
 });

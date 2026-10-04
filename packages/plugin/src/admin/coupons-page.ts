@@ -1,3 +1,4 @@
+import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -25,6 +26,9 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { isIdToken } from "../commerce/commerce-input.js";
+import { idInputProblem } from "./id-input.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -124,6 +128,9 @@ const COUPON_ACTIONS: ScreenActions = screenActions("coupons");
 const ACTION_CREATE = COUPON_ACTIONS.custom("create");
 const ACTION_SAVE = COUPON_ACTIONS.custom("save");
 const ACTION_DELETE = COUPON_ACTIONS.custom("delete");
+/** Ends a coupon NOW by setting its expiry to the current instant — see
+ *  {@link retireCouponAction}. */
+const ACTION_RETIRE = COUPON_ACTIONS.custom("retire");
 /** Fired by the "New coupon" button — the promoted one above the table, and
  *  the empty state's own (E-2). Both render the create screen. Not a DA-3
  *  verb; see the module doc. */
@@ -141,6 +148,7 @@ export const COUPONS_ACTION_IDS: ReadonlySet<string> = COUPON_ACTIONS.actionIds(
 	"create",
 	"save",
 	"delete",
+	"retire",
 	"new",
 	"cancel-new",
 );
@@ -231,6 +239,7 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 			[ACTION_CREATE]: createCouponAction(),
 			[ACTION_SAVE]: saveCouponAction(),
 			[ACTION_DELETE]: deleteCouponAction(),
+			[ACTION_RETIRE]: retireCouponAction(),
 			[ACTION_NEW]: newCouponAction(),
 			[ACTION_CANCEL_NEW]: cancelNewCouponAction(),
 		},
@@ -312,15 +321,19 @@ export function couponUsesSummary(usesCount: number, maxUses: number | null): st
  *  coupon's own window and use bound — never stored, never a form field
  *  (G2/F-2b: a value the domain derives is displayed, never given an input,
  *  because an input would be a second, disagreeing home for it). */
-export type CouponStatus = "active" | "scheduled" | "expired" | "used up";
+/** `invalid`: a window bound that cannot be read as one zoned instant — checkout
+ *  refuses the code (it FAILS CLOSED), so the console must not call it live. */
+export type CouponStatus = "active" | "scheduled" | "expired" | "used up" | "invalid";
 
 /**
  * The coupon's lifecycle state, decided the way the DOMAIN decides it and in
  * the domain's own order — window first (`[startsAt, expiresAt)`), then the
  * use bound — mirroring `validateCoupon`
  * (`packages/domain/src/pricing/validate-coupon.ts`, the `startsAt`/
- * `expiresAt`/`maxUses` checks) check for check, including its LEXICOGRAPHIC
- * comparison of ISO-UTC instants. Two consequences worth stating:
+ * `expiresAt`/`maxUses` checks) check for check, comparing the bounds as
+ * INSTANTS through the domain's own `parseCouponInstant` and failing closed the
+ * same way: a bound it cannot read makes the coupon `invalid` (checkout answers
+ * `COUPON_NOT_ACTIVE`). Two further consequences worth stating:
  *
  * - The end bound is EXCLUSIVE, so a coupon whose `expiresAt` is exactly
  *   `now` is already `expired` — the same instant at which checkout starts
@@ -339,8 +352,15 @@ export function couponStatus(
 	c: Pick<CouponSummaryWire, "startsAt" | "expiresAt" | "maxUses" | "usesCount">,
 	now: string,
 ): CouponStatus {
-	if (c.startsAt !== null && now < c.startsAt) return "scheduled";
-	if (c.expiresAt !== null && now >= c.expiresAt) return "expired";
+	// INSTANTS, read by the same function `validateCoupon` uses — string order is
+	// wrong for a bound stored without milliseconds or with an offset — and
+	// FAILING CLOSED like it: an unreadable bound (or `now`) is never shown as live.
+	const at = parseCouponInstant(now);
+	const starts = c.startsAt === null ? undefined : parseCouponInstant(c.startsAt);
+	const expires = c.expiresAt === null ? undefined : parseCouponInstant(c.expiresAt);
+	if (at === null || starts === null || expires === null) return "invalid";
+	if (starts !== undefined && at < starts) return "scheduled";
+	if (expires !== undefined && at >= expires) return "expired";
 	if (c.maxUses !== null && c.usesCount >= c.maxUses) return "used up";
 	return "active";
 }
@@ -732,14 +752,41 @@ function openCouponForm(
  * (X-23), which also decides which economics branch `condition` reveals, so a
  * refused percentage coupon comes back as a percentage coupon.
  */
+/**
+ * THE TYPE SELECT'S VALUES ARE WORDS. A `select` trigger renders the option
+ * VALUE, never its label (R-17a), so the create form's trigger read
+ * `fixed_amount` — the spec's own "worst live instance" of F-6c, which QA flagged.
+ * The value is now the word the label always said; the action maps it back to the
+ * enum ({@link couponTypeFromInput}) before anything reaches the client, and the
+ * `condition`s compare against the same words. A legacy enum value is still
+ * accepted on input.
+ */
+type CouponType = "fixed_amount" | "percentage";
+const FIXED_AMOUNT_VALUE = "Fixed amount off";
+const PERCENTAGE_VALUE = "Percentage off";
+const COUPON_TYPE_CHOICES: ReadonlyArray<{ type: CouponType; value: string }> = [
+	{ type: "fixed_amount", value: FIXED_AMOUNT_VALUE },
+	{ type: "percentage", value: PERCENTAGE_VALUE },
+];
+
+/** A submitted type (the word, or the legacy enum) → the enum, or `undefined`. */
+function couponTypeFromInput(raw: string): CouponType | undefined {
+	return COUPON_TYPE_CHOICES.find((c) => c.value === raw || c.type === raw)?.type;
+}
+
+/** The enum → its word (the select value, and the detail's `Type` reading). */
+function couponTypeInputValue(type: string): string {
+	return COUPON_TYPE_CHOICES.find((c) => c.type === type)?.value ?? type;
+}
+
 function createCouponForm(draft?: CouponDraft): FormBlock {
-	const typeOptions: SelectOption[] = [
-		{ value: "fixed_amount", label: "Fixed amount off" },
-		{ value: "percentage", label: "Percentage off" },
-	];
-	const type = typeOptions.some((o) => o.value === draft?.type)
-		? (draft?.type ?? "fixed_amount")
-		: "fixed_amount";
+	const typeOptions: SelectOption[] = COUPON_TYPE_CHOICES.map(({ value }) => ({
+		value,
+		label: value,
+	}));
+	// Resolved against the options (X-23): the draft holds what was SUBMITTED,
+	// the word or a legacy enum, and either renders as its word.
+	const type = couponTypeInputValue(couponTypeFromInput(draft?.type ?? "") ?? "fixed_amount");
 	return carriedForm({
 		namespace: "coupons:create",
 		// No hidden context to carry — `id`/`code` are this form's own VISIBLE
@@ -778,7 +825,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "amount",
 					label: "Amount off",
 					placeholder: "5.00",
-					condition: { field: "type", eq: "fixed_amount" },
+					condition: { field: "type", eq: FIXED_AMOUNT_VALUE },
 					...prefill(draft?.amount),
 				},
 				{
@@ -786,7 +833,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "currency",
 					label: "Currency (ISO-4217)",
 					placeholder: "USD",
-					condition: { field: "type", eq: "fixed_amount" },
+					condition: { field: "type", eq: FIXED_AMOUNT_VALUE },
 					...prefill(draft?.currency),
 				},
 				{
@@ -794,7 +841,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "ratePercent",
 					label: "Rate (%)",
 					placeholder: "7.25",
-					condition: { field: "type", eq: "percentage" },
+					condition: { field: "type", eq: PERCENTAGE_VALUE },
 					...prefill(draft?.ratePercent),
 				},
 				{
@@ -802,7 +849,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					action_id: "cap",
 					label: "Discount cap (optional)",
 					placeholder: "20.00",
-					condition: { field: "type", eq: "percentage" },
+					condition: { field: "type", eq: PERCENTAGE_VALUE },
 					...prefill(draft?.cap),
 				},
 			],
@@ -924,7 +971,7 @@ function detailBlocks(
 			// one, and stays even in `fields`' row-major 2-column grid.
 			["Status", status],
 			["Discount", couponDiscountSummary(detail)],
-			["Type", detail.type],
+			["Type", couponTypeInputValue(detail.type)],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
 			["Currency", detail.currency ?? "— (currency-agnostic)"],
 			// THE LAST RAW WIRE TIMESTAMP IN THE CONSOLE, and the reason INC-13's
@@ -936,7 +983,7 @@ function detailBlocks(
 		]),
 	);
 	const panels: TabPanel[] = [
-		{ label: "Coupon", blocks: couponPanel(detail) },
+		{ label: "Coupon", blocks: couponPanel(detail, status) },
 		{ label: "Redemptions", blocks: redemptionsPanel(detail) },
 	];
 	blocks.push({
@@ -968,11 +1015,13 @@ function detailBlocks(
 function statusBanner(status: CouponStatus): BannerBlock | undefined {
 	if (status === "active") return undefined;
 	const description =
-		status === "scheduled"
-			? "Checkout refuses this code until its start date."
-			: status === "expired"
-				? "Checkout refuses this code — its expiry date has passed."
-				: "Checkout refuses this code — it has reached its maximum number of uses.";
+		status === "invalid"
+			? "Checkout refuses this code — its start or expiry date can't be read. Set the dates again in Edit."
+			: status === "scheduled"
+				? "Checkout refuses this code until its start date."
+				: status === "expired"
+					? "Checkout refuses this code — its expiry date has passed."
+					: "Checkout refuses this code — it has reached its maximum number of uses.";
 	return {
 		type: "banner",
 		variant: "alert",
@@ -983,8 +1032,8 @@ function statusBanner(status: CouponStatus): BannerBlock | undefined {
 
 // -- panel "Coupon" -------------------------------------------------------------
 
-function couponPanel(detail: CouponSummaryWire): Block[] {
-	return [
+function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
+	const blocks: Block[] = [
 		// D-2a: the would-be `History` panel holds only Created (already in the
 		// identity strip), so these two round out the first panel's own `fields`
 		// instead of getting a panel of their own.
@@ -999,6 +1048,44 @@ function couponPanel(detail: CouponSummaryWire): Block[] {
 		]),
 		editGroup(detail),
 	];
+	// Not offered on a coupon that has already ended: there is nothing to retire,
+	// and an expired coupon is reopened through the edit form's expiry instead.
+	if (status !== "expired") blocks.push(retireCouponActions(detail));
+	return blocks;
+}
+
+/**
+ * RETIRE — end a coupon NOW, whether or not it has been redeemed.
+ *
+ * WHY THIS, AND NOT A DELETE OR AN `active` FLAG. Delete is forbidden once a
+ * coupon is redeemed (the redemptions are the audit trail an order's discount
+ * points at), and QA found the copy telling operators to "retire this coupon"
+ * with no control that did. An expiry of NOW is the domain's own lifecycle — the
+ * validity window `[startsAt, expiresAt)` checkout already enforces — so this
+ * needs no new state on the port: checkout refuses the code from this instant,
+ * the list and detail read `expired` through the same `couponStatus`, the uses
+ * and redemptions are untouched, and setting a later expiry in the edit form
+ * reopens it. A separate `retired` flag would be a second way to say "checkout
+ * refuses this code" that every reader of the window would have to learn.
+ */
+function retireCouponActions(detail: CouponSummaryWire): ActionsBlock {
+	const button: ButtonElement = {
+		type: "button",
+		action_id: ACTION_RETIRE,
+		label: "Retire coupon", // generic verb (M-7) — the code is in the confirm title
+		style: "danger",
+		value: { couponId: detail.id, code: detail.code },
+		confirm: {
+			title: fitLabel(`Retire ${detail.code}?`),
+			// ≤ 200 (X-11). "Mid-checkout": a shopper who already applied the code
+			// is refused on their next quote (COUPON_NOT_ACTIVE).
+			text: "Checkout stops accepting this code now, even for a shopper mid-checkout. Placed orders keep their discount; a later expiry in Edit reopens it.",
+			confirm: "Yes, retire",
+			deny: "Keep it",
+			style: "danger",
+		},
+	};
+	return { type: "actions", block_id: "coupons:retire-action", elements: [button] };
 }
 
 /**
@@ -1258,9 +1345,10 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
  * get the same treatment rather than being trusted for looking date-shaped: a
  * carrier round-trips through the operator's browser (`carrier.ts`: "treat
  * every decoded value as untrusted input"), the service only length-checks
- * these columns, and the domain compares them LEXICOGRAPHICALLY — so a value
- * that is merely parseable rather than canonical would sort wrong forever and
- * silently mis-decide `validateCoupon`.
+ * these columns, and canonical `toISOString()` text is the one form every reader
+ * (the domain's `parseCouponInstant`, the window check below, the list's sort)
+ * agrees on — a value that is merely parseable rather than canonical is exactly
+ * the kind `validateCoupon` now refuses as unreadable.
  *
  * The test is a ROUND TRIP, not a parse: `Date.parse` accepts `2026-02-30` and
  * rolls it into March, so "it parsed" proves nothing about what would be
@@ -1352,7 +1440,7 @@ function deleteCouponActions(detail: CouponSummaryWire): ActionsBlock {
 /** DA-7's normative blockquote, parametrized. No "deliberately"/"there is
  *  no"/"we do not" (X-41); names the alternative (DA-7a). */
 function withheldDeleteContext(usesCount: number): string {
-	return `This coupon has been redeemed ${usesCount} time${usesCount === 1 ? "" : "s"} — deletion is blocked to keep the redemption audit trail. To retire it, set its expiry to a past date.`;
+	return `This coupon has been redeemed ${usesCount} time${usesCount === 1 ? "" : "s"} — deletion is blocked to keep the redemption audit trail. To stop it at checkout, use Retire coupon.`;
 }
 
 // -- form parsing (exact integer math; NO floats — CLAUDE.md) -------------------
@@ -1487,7 +1575,7 @@ function parseEconomics(
 		if (rateRaw.length > 0 || capRaw.length > 0) {
 			return {
 				ok: false,
-				message: "Leave the percentage-only fields (rate, cap) blank for a fixed_amount coupon.",
+				message: "Leave the percentage-only fields (rate, cap) blank for a fixed-amount coupon.",
 			};
 		}
 		const amountCents = parseMinorUnitsInput(amountRaw, { allowZero: false });
@@ -1495,13 +1583,19 @@ function parseEconomics(
 			return {
 				ok: false,
 				message:
-					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed_amount coupon cannot leave it unset.",
+					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed-amount coupon cannot leave it unset.",
 			};
 		}
 		let currency: string | null = null;
 		if (mode === "create") {
 			if (!/^[A-Z]{3}$/.test(currencyRaw)) {
 				return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
+			}
+			if (!isIsoCurrencyCode(currencyRaw)) {
+				return {
+					ok: false,
+					message: `${currencyRaw} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+				};
 			}
 			currency = currencyRaw;
 		}
@@ -1575,7 +1669,14 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 	if (expiresAt.ok === false) {
 		return { ok: false, message: `Expires at ${DATE_HINT}` };
 	}
-	if (startsAt.value !== null && expiresAt.value !== null && startsAt.value >= expiresAt.value) {
+	// Compared as INSTANTS. Both sides are canonical `toISOString()` text by
+	// construction (`resolveBound` round-trips), where string order would agree —
+	// parsed anyway, so the rule does not hang on that invariant.
+	if (
+		startsAt.value !== null &&
+		expiresAt.value !== null &&
+		Date.parse(startsAt.value) >= Date.parse(expiresAt.value)
+	) {
 		return { ok: false, message: "Expires at must be on or after starts at." };
 	}
 	const maxUses = parseCountInput(submittedOr(values, "maxUses", current.maxUses, disclosed));
@@ -1640,8 +1741,9 @@ const DATE_HINT = "must be a date like 2026-08-01.";
  * from the data loss it would be if the heuristic were ever wrong.
  *
  * A full ISO datetime still parses and is still NORMALIZED to ISO-8601 UTC:
- * the wire is untrusted, older records hold one, and `validateCoupon` compares
- * these strings LEXICOGRAPHICALLY, so a non-ISO shape would mis-order silently.
+ * the wire is untrusted, older records hold one, and `validateCoupon` reads
+ * bounds with `parseCouponInstant` and FAILS CLOSED on anything else, so a
+ * non-ISO shape stored here would switch the coupon off.
  */
 function resolveBound(
 	values: Record<string, unknown>,
@@ -1711,11 +1813,26 @@ function createCouponAction() {
 				);
 			const id = (readString(values.id) ?? "").trim();
 			const code = (readString(values.code) ?? "").trim();
-			const type = readString(values.type) ?? "";
+			const type = couponTypeFromInput(readString(values.type) ?? "");
 			if (id.length === 0 || code.length === 0) {
 				return err("Enter both a coupon ID and a code.");
 			}
-			if (type !== "fixed_amount" && type !== "percentage") {
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) return err(idProblem);
+			// The client refuses this too; answering here keeps the draft (DA-3a-i).
+			if (/\s/.test(code)) {
+				return err(
+					`A coupon code can't contain spaces — shoppers type it at checkout. Try "${code.replace(/\s+/g, "-")}".`,
+				);
+			}
+			// Printable ASCII, as the client requires (ADR-0025: case folding is exact
+			// only there).
+			if (!isIdToken(code)) {
+				return err(
+					"A coupon code can only use plain letters, digits and punctuation — no accented letters or symbols.",
+				);
+			}
+			if (type === undefined) {
 				return err("Choose a valid coupon type.");
 			}
 			const econ = parseEconomics(type, values, "create", NO_CURRENT);
@@ -1771,7 +1888,12 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 	return {
 		variant: "error",
 		title: "Coupon not created",
-		description: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
+		description:
+			// 409 is the store's collision, refused before anything was written. It
+			// cannot say WHICH of the two was taken, so the copy names both.
+			result.status === 409
+				? `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`
+				: `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`,
 	};
 }
 
@@ -1884,13 +2006,54 @@ function deleteCouponOutcome(
 			variant: "error",
 			title: "Coupon not deleted",
 			description:
-				"This coupon has been redeemed — deletion is blocked to preserve the redemption audit trail. To retire it, set its expiry to a past date instead.",
+				"This coupon has been redeemed — deletion is blocked to preserve the redemption audit trail. To stop it at checkout, use Retire coupon instead.",
 		});
 	}
 	return showLeaf([code], {
 		variant: "error",
 		title: "Coupon not deleted",
 		description: "The coupon could not be deleted — retry in a moment.",
+	});
+}
+
+// -- custom action: retire a coupon (expiry := now) ------------------------------
+
+/**
+ * The console half of RETIRE: the client owns the read-then-write, the clock and
+ * the window rules (`InProcessAdminRulesClient.retireCoupon`); this renders the
+ * outcome, naming the window that was replaced.
+ */
+function retireCouponAction() {
+	return customAction<AdminRulesSurface>(async ({ input, client, showLeaf, showList }) => {
+		const payload = asRecord(input.value);
+		const couponId = readString(payload?.couponId);
+		const code = readString(payload?.code);
+		if (couponId === undefined || code === undefined) return showList();
+		// The CLIENT stamps the instant, on the stores' clock — the one checkout
+		// validates against — and re-reads before its write (see `retireCoupon`).
+		const result = await client.retireCoupon(couponId);
+		if (result.ok) {
+			const { previous, coupon } = result.value;
+			return showLeaf([coupon.code], {
+				variant: "default",
+				title: "Coupon retired",
+				// The replaced window, so reopening it is a copy job rather than a
+				// memory test.
+				description: `Checkout no longer accepts "${coupon.code}". Was valid ${couponWindowSummary(previous.startsAt, previous.expiresAt)} — set that back in Edit to reopen it. Placed orders keep their discount.`,
+			});
+		}
+		if (result.reason === "already_ended") {
+			return showLeaf([code], {
+				variant: "default",
+				title: "Already ended",
+				description: "This coupon's expiry had already passed — nothing was changed.",
+			});
+		}
+		return showList(undefined, {
+			variant: "error",
+			title: "Coupon not found",
+			description: "This coupon no longer exists — it may have been deleted.",
+		});
 	});
 }
 

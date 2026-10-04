@@ -653,11 +653,17 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		await boot(state);
 		const fields = formFields(await openNewCouponScreen(), "coupons:create");
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
-		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
-		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
-		expect(byId.get("ratePercent")?.condition).toEqual({ field: "type", eq: "percentage" });
-		expect(byId.get("cap")?.condition).toEqual({ field: "type", eq: "percentage" });
-		expect(byId.get("type")?.initial_value).toBe("fixed_amount"); // R-12b
+		// The type select's VALUES are words, because a `select` trigger renders the
+		// value (R-17a) — QA saw `fixed_amount` there. `condition` compares against
+		// the same words.
+		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
+		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
+		expect(byId.get("ratePercent")?.condition).toEqual({ field: "type", eq: "Percentage off" });
+		expect(byId.get("cap")?.condition).toEqual({ field: "type", eq: "Percentage off" });
+		expect(byId.get("type")?.initial_value).toBe("Fixed amount off"); // R-12b
+		expect(
+			((byId.get("type")?.options ?? []) as Array<{ value: string }>).map((o) => o.value),
+		).toEqual(["Fixed amount off", "Percentage off"]);
 		// The 5 shared axes have no field on the create form at all (§12.2) —
 		// each already has a home in the edit form.
 		for (const removed of [
@@ -815,6 +821,11 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		});
 		expect(await stored("c-x"), "nothing is written").toBeNull();
 		expect(bannerOf(blocksOf(fixedWithRate))?.variant).toBe("error");
+		// Operator copy names the type in words, never the `fixed_amount` enum.
+		expect(String(bannerOf(blocksOf(fixedWithRate))?.description)).toContain(
+			"a fixed-amount coupon",
+		);
+		expect(String(bannerOf(blocksOf(fixedWithRate))?.description)).not.toContain("fixed_amount");
 
 		const pctWithAmount = await sandbox!.invokeRoute("admin", {
 			type: "form_submit",
@@ -833,25 +844,130 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(bannerOf(blocksOf(pctWithAmount))?.variant).toBe("error");
 	});
 
-	test("creating a coupon with a duplicate id/code fails with a GENERIC error notice (no raw status)", async () => {
+	test("creating a coupon with a duplicate id/code says it is taken, keeps the typing, and writes nothing", async () => {
 		const state = makeCouponsState();
 		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "coupons:create",
-			values: {
-				id: "c-five",
-				code: "FIVEOFF",
-				type: "fixed_amount",
-				amount: "5.00",
-				currency: "USD",
-			},
-		});
-		const banner = bannerOf(blocksOf(outcome));
+		const values = {
+			id: "c-five",
+			code: "FIVEOFF",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		};
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values,
+			}),
+		);
+		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Coupon not created");
+		expect(String(banner?.description)).toMatch(/already used by another coupon/i);
+		// A double-submitted create collides with ITSELF: the first one landed. The
+		// copy says so rather than sending the operator to invent a new code.
+		expect(String(banner?.description)).toMatch(/if you just retried.*check the list/i);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
+		// The create screen comes back with what was typed (DA-3a-i) — a duplicate
+		// is one field away from a success.
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({
+			id: "c-five",
+			code: "FIVEOFF",
+		});
 		expect((await stored("c-five"))?.code, "the original survives").toBe("FIVEOFF");
 		expect(await couponCount(), "and nothing was added").toBe(2);
+	});
+
+	test("a coupon ID with a space is refused ON the create screen, in words, with the typing kept", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa c1",
+					code: "QAC1",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.title)).toBe("Coupon not created");
+		expect(String(bannerOf(outcome)?.description)).toMatch(/ID can't contain spaces/i);
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(await stored("qa c1")).toBeNull();
+	});
+
+	test("a coupon CODE with a space is refused on the create screen — a shopper could never type it back reliably", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-c2",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.title)).toBe("Coupon not created");
+		expect(String(bannerOf(outcome)?.description)).toMatch(/code can't contain spaces.*QA-ADMIN/i);
+		expect(formInitialValues(outcome, "coupons:create")).toMatchObject({ code: "QA ADMIN" });
+		expect(await stored("qa-c2")).toBeNull();
+	});
+
+	test("a coupon CODE with an accented letter is refused on the create screen", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-ete",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/plain letters, digits and punctuation/);
+		expect(await stored("qa-ete")).toBeNull();
+	});
+
+	test("a coupon currency that is not an ISO-4217 currency (XYZ) is refused on the create screen", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-xyz",
+					code: "QAXYZ",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "XYZ",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(await stored("qa-xyz")).toBeNull();
+	});
+
+	test("a bare enum coupon type (a form rendered before the word values) still creates", async () => {
+		await boot(makeCouponsState());
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:create",
+			values: { id: "legacy-pct", code: "LEGACYPCT", type: "percentage", ratePercent: "10" },
+		});
+		expect((await stored("legacy-pct"))?.type).toBe("percentage");
 	});
 
 	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
@@ -911,7 +1027,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(formFor(screen, "coupons:apply-filter")).toBeUndefined();
 		expect(formFor(screen, "coupons:create")).toBeDefined();
 		// Nothing is pre-typed on a fresh create (only `type`, R-12b).
-		expect(formInitialValues(screen, "coupons:create")).toEqual({ type: "fixed_amount" });
+		expect(formInitialValues(screen, "coupons:create")).toEqual({ type: "Fixed amount off" });
 
 		const back = buttons(screen).find((b) => b.action_id === "coupons:cancel-new");
 		expect(String(back?.label)).toMatch(/back to coupons/i);
@@ -951,7 +1067,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(formInitialValues(refused, "coupons:create")).toEqual({
 			id: "summer26",
 			code: "SUMMER26",
-			type: "percentage", // the SELECT survives too, so `condition` still reveals the rate fields
+			type: "Percentage off", // the SELECT survives too, so `condition` still reveals the rate fields
 			ratePercent: "ten percent", // VERBATIM — never re-derived from a parse that failed
 			cap: "20.00",
 		});
@@ -966,18 +1082,6 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(headerTexts(created)).toEqual(["Coupons"]);
 		expect(formFor(created, "coupons:create")).toBeUndefined();
 	});
-
-	// DELETED (INC-D3a): "a SERVICE refusal (duplicate id/code) keeps the typed
-	// values too". There is no service to refuse anything any more, and the
-	// in-process store does not answer a collision with a typed refusal — it
-	// THROWS (`CouponIdCollisionError`). A throw inside a custom action is caught
-	// by the engine and rendered as the generic ACTION_OUTCOME_UNKNOWN banner on
-	// the ROOT LIST, which by construction carries no draft, so there is no
-	// create screen left to put the typed values back into. The DA-3a-i
-	// guarantee itself is untouched and still pinned by the test above: a refusal
-	// the PLUGIN raises (the unparseable rate) re-renders the create screen with
-	// every typed value verbatim. What the duplicate case still guarantees — a
-	// generic notice and an unchanged registry — is asserted at line ~815.
 });
 
 // ---------------------------------------------------------------------------
@@ -1214,6 +1318,27 @@ describe("couponStatus — boundaries and precedence (mirrors the domain's valid
 	const at = (over: Partial<Parameters<typeof couponStatus>[0]>) =>
 		couponStatus({ startsAt: null, expiresAt: null, maxUses: null, usesCount: 0, ...over }, NOW);
 
+	test("bounds are compared as INSTANTS, like the domain: a millisecond-less bound is judged right", () => {
+		const half = "2026-07-31T12:00:00.500Z";
+		const status = (over: Partial<Parameters<typeof couponStatus>[0]>) =>
+			couponStatus({ startsAt: null, expiresAt: null, maxUses: null, usesCount: 0, ...over }, half);
+		expect(status({ startsAt: "2026-07-31T12:00:00Z" })).toBe("active");
+		expect(status({ expiresAt: "2026-07-31T12:00:00Z" })).toBe("expired");
+	});
+
+	test("an offset-bearing bound is the instant it denotes — expiry ended, start not yet arrived", () => {
+		// NOW is 12:00:00.000Z.
+		expect(at({ expiresAt: "2026-07-31T13:00:00+01:00" })).toBe("expired");
+		expect(at({ startsAt: "2026-07-31T07:00:01-05:00" })).toBe("scheduled");
+	});
+
+	test("an UNREADABLE bound reads `invalid` — checkout refuses it, and it is never shown as live", () => {
+		for (const bad of ["2026-13-01", "2026-07-31T12:00:00", "garbage"]) {
+			expect(at({ startsAt: bad }), `start ${bad}`).toBe("invalid");
+			expect(at({ expiresAt: bad }), `expiry ${bad}`).toBe("invalid");
+		}
+	});
+
 	test("the end bound is EXCLUSIVE: expiring exactly now is already expired, a millisecond later is still active", () => {
 		expect(at({ expiresAt: NOW })).toBe("expired");
 		expect(at({ expiresAt: "2026-07-31T12:00:00.001Z" })).toBe("active");
@@ -1282,7 +1407,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		// duplicate is what pays for the `Status` entry that now leads it.
 		expect(fields.has("Code")).toBe(false);
 		expect(fields.get("Status")).toBe("active");
-		expect(fields.get("Type")).toBe("fixed_amount");
+		expect(fields.get("Type")).toBe("Fixed amount off");
 		expect(fields.get("Discount")).toBe("$5.00 off");
 		expect(fields.get("Uses")).toBe("0 uses");
 		expect(fields.get("Currency")).toBe("USD");
@@ -1628,7 +1753,100 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(String(blockedNote?.text)).toContain("redeemed 3 times");
 		// DA-7a: names the alternative, no "deliberately"/"there is no"/"we do not".
 		expect(String(blockedNote?.text)).not.toMatch(/deliberately|there is no|we do not/i);
-		expect(String(blockedNote?.text)).toMatch(/expiry to a past date/i);
+		expect(String(blockedNote?.text)).toMatch(/Retire coupon/);
+	});
+
+	test("Retire ends a LIVE coupon now — redeemed or not — keeping its economics and its uses, and the detail says checkout refuses it", async () => {
+		// QA: the copy said "retire this coupon" and there was no control that did
+		// it; a redeemed coupon could not be deleted either. Retiring is setting the
+		// expiry to NOW — the window the domain already enforces (`[startsAt,
+		// expiresAt)`), so checkout refuses the code at once, nothing about the
+		// redemptions moves, and extending the expiry later reopens it.
+		const live = {
+			coupons: [
+				{
+					id: "c-live",
+					code: "LIVE10",
+					type: "fixed_amount",
+					amountCents: 1000,
+					rateBps: null,
+					capCents: null,
+					currency: "USD",
+					minSubtotalCents: 2000,
+					startsAt: "2026-01-01T00:00:00.000Z",
+					expiresAt: null,
+					maxUses: 50,
+					maxUsesPerCustomer: 2,
+					usesCount: 2,
+					createdAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+		};
+		await boot(live);
+		const detail = await openCoupon("LIVE10");
+		const retire = actionButtons(detail).find((e) => e.action_id === "coupons:retire");
+		expect(retire, "a live coupon offers Retire").toBeDefined();
+		expect(retire!.label).toBe("Retire coupon"); // generic — M-7
+		const confirm = confirmOf(retire);
+		expect(confirm.title).toBe("Retire LIVE10?");
+		expect(String(confirm.text).length).toBeLessThanOrEqual(200);
+		// A shopper mid-checkout with the code applied is refused on their next
+		// quote; the confirm says so before the click.
+		expect(String(confirm.text)).toMatch(/mid-checkout/i);
+
+		const before = Date.now();
+		const after = await click(retire);
+		const record = await stored("c-live");
+		expect(record?.expiresAt).not.toBeNull();
+		const endedAt = Date.parse(String(record?.expiresAt));
+		expect(endedAt).toBeGreaterThanOrEqual(before - 1000);
+		expect(endedAt).toBeLessThanOrEqual(Date.now());
+		// Everything else is exactly as it was — retiring is not an edit.
+		expect(record).toMatchObject({
+			amountCents: 1000,
+			minSubtotalCents: 2000,
+			startsAt: "2026-01-01T00:00:00.000Z",
+			maxUses: 50,
+			maxUsesPerCustomer: 2,
+			usesCount: 2,
+		});
+		expect(topLevelBanners(after).map((b) => b.title)).toEqual([
+			"Coupon retired",
+			"This coupon is expired",
+		]);
+		// The window it replaced is in the notice, so reopening it is a copy job.
+		expect(String(topLevelBanners(after)[0]?.description)).toMatch(/Was valid from 1 Jan 2026/);
+		// And it is not offered again on a coupon that has already ended.
+		expect(actionButtons(after).some((e) => e.action_id === "coupons:retire")).toBe(false);
+	});
+
+	test("a SCHEDULED coupon retired before it starts ends now too — its future start is dropped so the window is not left inverted", async () => {
+		const scheduled = {
+			coupons: [
+				{
+					id: "c-later",
+					code: "LATER5",
+					type: "fixed_amount",
+					amountCents: 500,
+					rateBps: null,
+					capCents: null,
+					currency: "USD",
+					minSubtotalCents: null,
+					startsAt: "2099-01-01T00:00:00.000Z",
+					expiresAt: null,
+					maxUses: null,
+					maxUsesPerCustomer: null,
+					usesCount: 0,
+					createdAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+		};
+		await boot(scheduled);
+		const detail = await openCoupon("LATER5");
+		await click(actionButtons(detail).find((e) => e.action_id === "coupons:retire"));
+		const record = await stored("c-later");
+		expect(record?.startsAt).toBeNull();
+		expect(Date.parse(String(record?.expiresAt))).toBeLessThanOrEqual(Date.now());
 	});
 
 	test("deleting an unredeemed coupon removes it, returns to the list with a 'deleted' notice; a repeat delete is an idempotent no-op", async () => {

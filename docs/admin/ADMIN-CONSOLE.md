@@ -1191,6 +1191,27 @@ response, or a handler that throws, replaces the entire block tree with
 - B-5's "an open group stays open across a round trip" holds **only for a failed submit that still
   returns 200**.
 
+**E-6a — a failed custom action is a REFUSAL or an UNKNOWN OUTCOME, and the scaffold decides
+which structurally.** *(Added 2026-10-02, after QA met "Action outcome unknown — the action may
+already have been applied" on a zone id with a space in it.)* Three tiers, in this order:
+
+1. **The screen refuses first.** A create/save action validates what it can (blank fields, the
+   boundary's own `isIdToken`, money/percent parses, ISO codes) and re-renders its own level with
+   the draft put back (DA-3a-i). This is the normal path and the only one that keeps typing.
+2. **A known refusal from the client is answered, not thrown.** The rules client returns a store
+   collision as the create's `{ok:false, status: 409}` (a missing parent as `404`) — both raised
+   before anything is written — and the screen's own copy names the conflict.
+3. **The scaffold's net.** A custom action that throws is caught in `list-detail.ts`. It renders
+   **"Not saved — check what you entered … Nothing was changed."** only when BOTH hold: the error
+   is a `CommerceInputError` (matched by `code === "INVALID_INPUT"`, whose contract is "refused
+   before any write"), AND no write is counted — the scaffold hands the action a watching proxy
+   of its client, and every non-read call (a read is `get|list|count|find|read|load|search|has|is`
+   followed by a capital or nothing) counts as a write from the moment it is CALLED, cleared only
+   if that same call is refused with `CommerceInputError`. A write still in flight therefore
+   counts too. "Nothing was changed" is a fact the engine checked, not a convention each action
+   must keep. Every other failure — a transport error, contention, any throw after or beside a
+   write — keeps **"Action outcome unknown"**.
+
 **E-7 — a fail-closed banner must not assert a cause it does not know.** E-6 makes the fail-closed
 path swallow *everything* — an unreachable service, a 401, a malformed response, and **a bug in the
 console's own code**. A banner reading *"Could not reach the commerce service"* is therefore false
@@ -1497,7 +1518,7 @@ differs by control, and revisions 1–3 got this wrong:
 
 | Control | The trigger reads | Verified instances |
 |---|---|---|
-| `select` | the raw **value** (R-17a) | the coupon create form's type reads `fixed_amount` (`coupons-page.ts:731-736`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
+| `select` | the raw **value** (R-17a) | the coupon create form's type reads `Fixed amount off` and the shipping method type `Flat rate` — their values ARE the words since 2026-10-02 (`COUPON_TYPE_CHOICES`, `METHOD_TYPE_CHOICES`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
 | `combobox` | the option **label** (R-17b) | the Coupons picker reads `Choose a coupon…` closed, and `SUMMER25 · 20% off · 3 uses` selected (`coupons-page.ts:689-700`) |
 
 So a screenshot criterion asking for a "resolved label" is **unsatisfiable on a `select`** and must
@@ -1516,8 +1537,12 @@ shows. So sentinels are words (`any`, `none`), never `""` or `0`.
 is a `combobox` or it is not a dropdown at all: the row-action drill-in would be preferable, but
 it is unreachable on Block Kit (§14 item 2).
 
-The worst *live* instance is now the coupon type `select`, whose trigger reads `fixed_amount`. That is
-inside F-6c's tolerance — a word, readable, unambiguous — which is the whole point of the constraint.
+The worst *live* instance used to be the coupon type `select`, whose trigger read `fixed_amount` —
+inside F-6c's tolerance, but QA (2026-10-02) still read it as a raw enum, as it did the shipping
+method type's `flat_rate`. **Amended:** a closed-set `select` whose enum is not itself the word an
+operator reads takes the WORD as its option value, and the action maps it back to the enum before
+the client call (accepting the bare enum too, for a form rendered before the change). The wire,
+the store and every carrier still spell the enum.
 **Revisions 1–3 named the Orders picker's "raw UUID" here; it was never real** (§0.2 E-a), and the
 picker it referred to has since left Block Kit anyway.
 
@@ -1537,6 +1562,22 @@ the same accordion, ≤200 chars, describing only what the operator cannot infer
 paragraph is deleted, not relocated.
 
 ---
+
+### 7.x Value rules on the rules screens *(added 2026-10-02, QA)*
+
+Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
+in-process rules client, so no caller of the surface can store the value:
+
+- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
+  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
+  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
+  is never refused on read or edit.
+- **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
+  (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
+  discount to the subtotal.
+- **Free-shipping threshold only on a `free_shipping` method.** `shippingCost` never reads it for a
+  flat rate, so a non-blank threshold on a flat-rate method's rate is refused with that reason.
 
 ## 8. Destructive actions
 
@@ -2187,11 +2228,15 @@ item 2 in the same function. Each withheld move gets a DA-7 line, written per DA
 an action, render **no control** plus one `context` line stating the reason and the alternative.
 Never a "disabled" button (R-11 — and after the foundation, a compile error).
 
-The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it.**
-The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
+The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it**
+(`withheldDeleteContext` in `coupons-page.ts`, which pluralises the count — `1 time` / `3 times`):
 
 > `This coupon has been redeemed 3 times — deletion is blocked to keep the redemption audit
-> trail. To retire it, set its expiry to a past date.`
+> trail. To stop it at checkout, use Retire coupon.`
+
+*(Amended 2026-10-02: the alternative used to read "set its expiry to a past date", an
+instruction with no control of its own; the coupon detail now has a `Retire coupon` action that
+does exactly that — see §12.2.)*
 
 Applies to: coupon delete when redeemed; tax class / zone / method delete when referenced; edit and
 stock forms on a soft-deleted product; refund action when nothing remains refundable; cancel when the
@@ -2720,6 +2765,25 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                  ── every editable field on `coupons-page.ts:1096-1175` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
+│  actions    (cond status ≠ expired) block_id coupons:retire-action
+│             [ "Retire coupon" style danger  value {couponId, code}
+│                 confirm{ title "Retire SUMMER25?", text "Checkout stops accepting this
+│                   code now, even for a shopper mid-checkout. Placed orders keep their
+│                   discount; a later expiry in Edit reopens it.",
+│                   confirm "Yes, retire", deny "Keep it" } ]
+│             ← RETIRE = expiresAt := now on the STORES' clock (`retireCoupon` on the rules
+│               surface; a future startsAt is dropped; instants compared parsed, never as
+│               strings). The domain's own window, so no `retired` state exists on the
+│               port; works on a REDEEMED coupon, which delete cannot touch. A shopper who
+│               already applied the code is refused on the next quote with the ordinary
+│               COUPON_NOT_ACTIVE ("isn't active right now — it may have expired").
+│               The success notice names the replaced window, so reopening is a copy job.
+│               Re-reads before its LWW full-replace write; an edit landing in the
+│               read-to-write gap is lost (documented on `CouponStore.update`, pinned by
+│               `coupon-retire.test.ts`).
+│             ← FOLLOW-UP: reporting cannot tell a RETIRED coupon from one that expired on
+│               schedule — both are just a past `expiresAt`. A `retiredAt` stamp would be
+│               the port change that buys it.                    ← ADDED (QA 2026-10-02)
 │
 └─ panel "Redemptions"
      fields     block_id coupons:uses     Redemptions | Max uses ·
@@ -2861,6 +2925,14 @@ header      "Shipping zones"
 context     "A zone groups the shipping methods you offer for a set of destinations." (≤140)
 actions     [ button "New shipping zone" style primary → the create SCREEN ]       (L-8)
 banner      (cond) notice        ── no filter (0 fields) ──
+banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only ships to addresses
+            your zones list" + the covered codes (ADR-0021 §4). Steps down to a `context`
+            line when the notice and the region warnings already fill X-31's two banners.
+            The FIRST zone's create screen adds banner ship:first-zone and a required
+            toggle `ackFirstZone` (a form submit has no `confirm`). Deleting the LAST zone
+            says, in its confirm, that checkout ships anywhere again. Both are CONSOLE
+            guards: the rules client and stores accept the write unprompted.
+                                                                   ← ADDED (QA 2026-10-02)
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to

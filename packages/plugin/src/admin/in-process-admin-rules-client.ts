@@ -54,16 +54,28 @@
  * `X-Internal-Token` / `X-Service-Token` are transport concerns and stay on the
  * transport, and its auth-rejection cases stay in its own file.
  *
- * HOW A REFUSED INPUT SURFACES, and the ONE arm this tier deliberately leaves
- * unreachable. The request schemas that used to stand in front of every call are
+ * HOW A REFUSED INPUT SURFACES. The request schemas that used to stand in front of every call are
  * mirrored below through `commerce-input.ts`, and a refused input REJECTS — it
  * never resolves to a synthesized status. That is a departure from the orders
  * client, and it is forced by the shape of `RulesCreateResult`: its only failure
  * arm is `{ ok: false, status }`, with no typed reason at all, so "fill it in
  * in-process" would mean inventing a wire status for a wire that does not exist.
- * The arm is therefore HTTP-ONLY and genuinely untested on this tier, said out
- * loud rather than faked. For symmetry the update/delete results' `reason:
- * "error"` arms are left to the transport too, with ONE exception that is a
+ * A malformed input therefore still REJECTS here.
+ *
+ * A COLLISION IS THE EXCEPTION, and it answers the create's `{ ok: false,
+ * status }` arm after all (`409`; a missing parent zone/method is `404`). The
+ * stores raise a duplicate id or code as a thrown, structurally-coded error
+ * BEFORE anything is written (`rules-errors.ts`, `coupon-errors.ts`), so it is
+ * the one create failure that is known to have changed nothing — and a
+ * rejection reaching the console's custom-action net can only be described as
+ * "Action outcome unknown — the action may already have been applied", which
+ * QA found on every duplicate zone, tax rate and coupon id an operator typed.
+ * The status is a code the screens key their own "that ID is already in use"
+ * copy off, never rendered raw. Anything else a store throws still rejects:
+ * only a failure known to have written nothing may be answered as a refusal.
+ *
+ * The update/delete results' `reason: "error"` arms are left to the transport,
+ * with ONE exception that is a
  * ported ROUTE behaviour rather than a boundary shape check: the coupon-economics
  * refusal above answers `{ ok: false, reason: "error" }` on both tiers, so the
  * rule that closed #75 is provable by a SHARED contract case instead of by prose.
@@ -75,6 +87,10 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+	isIsoCurrencyCode,
+	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
 	type CouponListFilter,
@@ -90,11 +106,21 @@ import {
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
+	isIdToken,
 	requireBoundedText,
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
 } from "../commerce/commerce-input.js";
+import {
+	isShippingMethodIdCollisionError,
+	isShippingMethodNotFoundError,
+	isShippingRateExistsError,
+	isShippingZoneIdCollisionError,
+	isShippingZoneNotFoundError,
+	isTaxClassIdCollisionError,
+	isTaxRateIdCollisionError,
+} from "@otta-sh/store-emdash";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -105,6 +131,7 @@ import type {
 	AdminRulesSurface,
 	CouponEdit,
 	CouponInput,
+	CouponRetireResult,
 	CouponSummaryWire,
 	CouponsListFilter,
 	CouponsListResult,
@@ -140,6 +167,17 @@ const DEFAULT_LIMIT = 25;
  *  .max(100_000)`). Deliberately the WIRE bound, not the port's 0–10000 doc
  *  comment: refusing more than the other transport refuses is still a divergence. */
 const MAX_BPS = 100_000;
+
+/**
+ * A TAX rate's ceiling: 100%, the port's own documented range (`TaxRate.rateBps`,
+ * "0–10000 (0%–100%)"). The wire-parity argument for `MAX_BPS` above was about a
+ * second transport refusing the same inputs, and that transport is gone; what
+ * remained was a console that saved a 150% sales tax when QA typed one. No sales
+ * tax, VAT or GST is levied above the price it is levied on, so the domain's
+ * range is enforced here for tax rates. Coupons keep `MAX_BPS`: a percentage
+ * discount is already clamped to the subtotal by the pricing math.
+ */
+const MAX_TAX_RATE_BPS = 10_000;
 
 /** `z.string().min(1).max(200)` — the name/label bound every rules body shares. */
 const NAME_MAX = 200;
@@ -178,12 +216,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createZone(input: ShippingZoneInput): Promise<RulesCreateResult<ShippingZoneWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
-		const zone = await this.#stores.shippingRules.createZone({
-			id: input.id,
-			name: input.name,
-			regions: requireZoneRegions(input.regions ?? null),
-		});
-		return { ok: true, value: toZoneWire(zone) };
+		const regions = requireZoneRegions(input.regions ?? null);
+		return createOrRefuse(async () =>
+			toZoneWire(
+				await this.#stores.shippingRules.createZone({ id: input.id, name: input.name, regions }),
+			),
+		);
 	}
 
 	/** LWW rename + full-replace of the match list. `regions` is REQUIRED (see the
@@ -225,14 +263,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(input.type);
-		const method = await this.#stores.shippingRules.createMethod({
-			id: input.id,
-			// The ZONE IS THE PATH, never the body — a method's parent is identity.
-			zoneId,
-			name: input.name,
-			type,
-		});
-		return { ok: true, value: toMethodWire(method) };
+		return createOrRefuse(async () =>
+			toMethodWire(
+				await this.#stores.shippingRules.createMethod({
+					id: input.id,
+					// The ZONE IS THE PATH, never the body — a method's parent is identity.
+					zoneId,
+					name: input.name,
+					type,
+				}),
+			),
+		);
 	}
 
 	/** LWW edit. `zoneId` is immutable identity and is not editable here. */
@@ -275,18 +316,24 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		input: ShippingRateInput,
 	): Promise<RulesCreateResult<ShippingRateWire>> {
 		requireIdToken("methodId", methodId);
-		requireCurrencyCode("currency", input.currency);
+		requireAuthoredCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
-		if (min !== undefined && min !== null) requireNonNegativeInteger("minSubtotalCents", min);
-		const rate = await this.#stores.shippingRules.createRate({
-			methodId,
-			currency: toCurrency(input.currency),
-			amountCents: toCents(input.amountCents),
-			// Money stays an integer minor unit, branded at this boundary.
-			minSubtotalCents: min === undefined || min === null ? null : toCents(min),
-		});
-		return { ok: true, value: toRateWire(rate) };
+		if (min !== undefined && min !== null) {
+			requireNonNegativeInteger("minSubtotalCents", min);
+			await this.#refuseFlatRateThreshold(methodId);
+		}
+		return createOrRefuse(async () =>
+			toRateWire(
+				await this.#stores.shippingRules.createRate({
+					methodId,
+					currency: toCurrency(input.currency),
+					amountCents: toCents(input.amountCents),
+					// Money stays an integer minor unit, branded at this boundary.
+					minSubtotalCents: min === undefined || min === null ? null : toCents(min),
+				}),
+			),
+		);
 	}
 
 	/**
@@ -307,6 +354,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireFullReplaceKey("minSubtotalCents", edit);
 		if (edit.minSubtotalCents !== null) {
 			requireNonNegativeInteger("minSubtotalCents", edit.minSubtotalCents);
+			await this.#refuseFlatRateThreshold(methodId);
 		}
 		const res = await this.#stores.shippingRules.updateRate(
 			methodId,
@@ -320,6 +368,24 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (res.ok) return { ok: true, value: toRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
 		return { ok: false, reason: "stale", current: toRateWire(res.current) };
+	}
+
+	/**
+	 * A free-shipping threshold only means something on a `free_shipping` method:
+	 * the domain's `shippingCost` charges a flat rate's amount whatever the
+	 * subtotal. Storing one on a flat-rate method's rate is a promise of free
+	 * shipping checkout never keeps, so it is refused — the console says why
+	 * first. One method read, and only when a threshold was actually sent; a
+	 * missing method is left to the store's own `not_found`/404 answer.
+	 */
+	async #refuseFlatRateThreshold(methodId: string): Promise<void> {
+		const method = await this.#stores.shippingRules.getMethod(methodId);
+		if (method?.type === "flat_rate") {
+			throw new CommerceInputError(
+				"minSubtotalCents",
+				"only applies to a free_shipping method (a flat rate always charges its amount)",
+			);
+		}
 	}
 
 	/** A LEAF delete: idempotent, and it NEVER answers `in_use` — nothing
@@ -342,8 +408,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createTaxClass(input: TaxClassInput): Promise<RulesCreateResult<TaxClassWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
-		const cls = await this.#stores.taxRules.createClass({ id: input.id, name: input.name });
-		return { ok: true, value: toTaxClassWire(cls) };
+		return createOrRefuse(async () =>
+			toTaxClassWire(await this.#stores.taxRules.createClass({ id: input.id, name: input.name })),
+		);
 	}
 
 	/** LWW rename. A class id is the referent rates and products point at, so a
@@ -400,17 +467,20 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
-		requireBps("rateBps", input.rateBps);
-		const rate = await this.#stores.taxRules.createRate({
-			id: input.id,
-			taxClassId: input.taxClassId,
-			zoneId: input.zoneId,
-			rateBps: input.rateBps,
-			// The CREATE's optional-default-false is deliberate and unlike the edit's
-			// required key: there is no prior value to clobber at creation.
-			appliesToShipping: input.appliesToShipping ?? false,
-		});
-		return { ok: true, value: toTaxRateWire(rate) };
+		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
+		return createOrRefuse(async () =>
+			toTaxRateWire(
+				await this.#stores.taxRules.createRate({
+					id: input.id,
+					taxClassId: input.taxClassId,
+					zoneId: input.zoneId,
+					rateBps: input.rateBps,
+					// The CREATE's optional-default-false is deliberate and unlike the edit's
+					// required key: there is no prior value to clobber at creation.
+					appliesToShipping: input.appliesToShipping ?? false,
+				}),
+			),
+		);
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
@@ -420,7 +490,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		edit: TaxRateEdit,
 	): Promise<RulesCasUpdateResult<TaxRateWire>> {
 		requireIdToken("rateId", rateId);
-		requireBps("rateBps", edit.rateBps);
+		requireBps("rateBps", edit.rateBps, MAX_TAX_RATE_BPS);
 		requireBps("expectedRateBps", edit.expectedRateBps);
 		requireFullReplaceKey("appliesToShipping", edit);
 		if (typeof edit.appliesToShipping !== "boolean") {
@@ -511,6 +581,22 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async createCoupon(input: CouponInput): Promise<RulesCreateResult<CouponWire>> {
 		requireIdToken("id", input.id);
 		requireBoundedText("code", input.code, 1, NAME_MAX);
+		// A CODE IS SOMETHING A SHOPPER TYPES. Whitespace inside one is invisible on
+		// a receipt or a poster, the storefront trims only its ends, and nothing
+		// downstream could tell `QA ADMIN` from `QA  ADMIN`. Refused at CREATE only:
+		// a code is immutable, so an existing coupon minted before this rule keeps
+		// being readable and redeemable exactly as it was issued.
+		//
+		// AND PRINTABLE ASCII ONLY — the ID charset (`isIdToken`). Codes match
+		// case-insensitively (ADR-0025) and `toLowerCase` is an exact fold only on
+		// ASCII; on other scripts "the same code" would hinge on Unicode
+		// normalisation that a shopper's keyboard need not share with the merchant's.
+		if (/\s/.test(input.code)) {
+			throw new CommerceInputError("code", "must not contain spaces");
+		}
+		if (!isIdToken(input.code)) {
+			throw new CommerceInputError("code", "must be printable ASCII");
+		}
 		const type = requireCouponType(input.type);
 		const amountCents = optionalNonNegative("amountCents", input.amountCents);
 		const rateBps = optionalBps("rateBps", input.rateBps);
@@ -521,24 +607,28 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const startsAt = optionalInstantText("startsAt", input.startsAt);
 		const expiresAt = optionalInstantText("expiresAt", input.expiresAt);
 		if (input.currency !== undefined && input.currency !== null) {
-			requireCurrencyCode("currency", input.currency);
+			requireAuthoredCurrency("currency", input.currency);
 		}
-		const coupon = await this.#stores.couponStore.create({
-			id: input.id,
-			code: input.code,
-			type,
-			amountCents: amountCents === null ? null : toCents(amountCents),
-			rateBps,
-			capCents: capCents === null ? null : toCents(capCents),
-			currency:
-				input.currency === undefined || input.currency === null ? null : toCurrency(input.currency),
-			minSubtotalCents: minSubtotalCents === null ? null : toCents(minSubtotalCents),
-			startsAt,
-			expiresAt,
-			maxUses,
-			maxUsesPerCustomer,
+		return createOrRefuse(async () => {
+			const coupon = await this.#stores.couponStore.create({
+				id: input.id,
+				code: input.code,
+				type,
+				amountCents: amountCents === null ? null : toCents(amountCents),
+				rateBps,
+				capCents: capCents === null ? null : toCents(capCents),
+				currency:
+					input.currency === undefined || input.currency === null
+						? null
+						: toCurrency(input.currency),
+				minSubtotalCents: minSubtotalCents === null ? null : toCents(minSubtotalCents),
+				startsAt,
+				expiresAt,
+				maxUses,
+				maxUsesPerCustomer,
+			});
+			return toCouponWire(coupon);
 		});
-		return { ok: true, value: toCouponWire(coupon) };
 	}
 
 	/**
@@ -589,6 +679,59 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		return res.ok
 			? { ok: true, value: toCouponWire(res.coupon) }
 			: { ok: false, reason: "not_found" };
+	}
+
+	/**
+	 * End a coupon NOW — `expiresAt` := the stores' own clock (the one checkout's
+	 * `validateCoupon` is handed), never the caller's wall time.
+	 *
+	 * Instants are compared PARSED (`Date.parse`), never as strings: the window
+	 * fields are free text up to 64 chars, and `…12:00:00Z` sorts after
+	 * `…12:00:00.500Z` as a string while being the earlier instant.
+	 *
+	 * A start still in the future is DROPPED — `[future, now)` is an inverted window
+	 * that would read `scheduled` for a coupon the operator just ended. Every other
+	 * field is written back as READ, because the port's edit is a last-writer-wins
+	 * full replace: the read narrows the window in which a concurrent edit is lost
+	 * to the read-to-write gap, and does not close it (`CouponStore.update`'s doc;
+	 * pinned by `coupon-retire.test.ts`).
+	 */
+	async retireCoupon(couponId: string): Promise<CouponRetireResult> {
+		requireIdToken("couponId", couponId);
+		const current = await this.#stores.couponStore.findById(couponId);
+		if (current === null) return { ok: false, reason: "not_found" };
+		const now = this.#stores.clock.now();
+		const at = now.getTime();
+		if (current.expiresAt !== null && Date.parse(current.expiresAt) <= at) {
+			return { ok: false, reason: "already_ended" };
+		}
+		// NaN IS HANDLED BY DESIGN, not by accident. The window fields are free text
+		// (≤64 chars, never instant-parsed on write), so a stored bound may not parse.
+		// `NaN <= at` and `NaN > at` are both false: an unparseable EXPIRY reads as
+		// not-yet-ended, so retire replaces it with a real instant (which is what the
+		// operator asked for); an unparseable START is not "in the future", so it is
+		// kept as stored — retire changes only the bound it must.
+		const futureStart = current.startsAt !== null && Date.parse(current.startsAt) > at;
+		const retiredAt = now.toISOString();
+		const res = await this.#stores.couponStore.update(couponId, {
+			amountCents: current.amountCents,
+			rateBps: current.rateBps,
+			capCents: current.capCents,
+			minSubtotalCents: current.minSubtotalCents,
+			startsAt: futureStart ? null : current.startsAt,
+			expiresAt: retiredAt,
+			maxUses: current.maxUses,
+			maxUsesPerCustomer: current.maxUsesPerCustomer,
+		});
+		if (!res.ok) return { ok: false, reason: "not_found" };
+		return {
+			ok: true,
+			value: {
+				coupon: toCouponWire(res.coupon),
+				retiredAt,
+				previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
+			},
+		};
 	}
 
 	/** Idempotent delete, guarded by live redemptions (`in_use_by_redemptions`) —
@@ -687,6 +830,45 @@ function toDeleteResult(res: { ok: true } | { ok: false; reason: string }): Rule
 		: { ok: false, reason: "in_use" };
 }
 
+// ── a create's KNOWN-NOTHING-WRITTEN refusals ──────────────────────────────
+
+/** The HTTP status a refused create answers with — a code the screens key copy
+ *  off, never rendered. */
+const CREATE_CONFLICT = 409;
+const CREATE_PARENT_MISSING = 404;
+
+/**
+ * Run one create and answer its store's KNOWN refusals as the create result's
+ * own `{ ok: false, status }` arm (see the class doc's "A COLLISION IS THE
+ * EXCEPTION"). Matched STRUCTURALLY, by the error's `code`, so the mapping
+ * survives a bundle boundary. The coupon refusals are the PORT's
+ * (`@otta-sh/domain`, ADR-0025) and hold for every adapter; the shipping/tax
+ * collisions are still the document store's own, since their ports declare none. Every one of these is raised before the store
+ * writes anything (or after it has given its claim back), which is the whole
+ * licence for answering rather than rejecting; any other throw propagates.
+ */
+async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
+	try {
+		return { ok: true, value: await write() };
+	} catch (err) {
+		if (
+			isShippingZoneIdCollisionError(err) ||
+			isShippingMethodIdCollisionError(err) ||
+			isShippingRateExistsError(err) ||
+			isTaxClassIdCollisionError(err) ||
+			isTaxRateIdCollisionError(err) ||
+			isCouponIdCollisionError(err) ||
+			isCouponCodeConflictError(err)
+		) {
+			return { ok: false, status: CREATE_CONFLICT };
+		}
+		if (isShippingZoneNotFoundError(err) || isShippingMethodNotFoundError(err)) {
+			return { ok: false, status: CREATE_PARENT_MISSING };
+		}
+		throw err;
+	}
+}
+
 // ── the input bounds the request schemas used to hold ─────────────────────
 
 /**
@@ -704,6 +886,19 @@ function requireFullReplaceKey(field: string, edit: object): void {
 	}
 }
 
+/**
+ * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
+ * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
+ * only — reads and edits name a currency that already exists, and refusing a
+ * stored code on read would strand a row written before this rule.
+ */
+function requireAuthoredCurrency(field: string, value: string): void {
+	requireCurrencyCode(field, value);
+	if (!isIsoCurrencyCode(value)) {
+		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
+	}
+}
+
 function requireShippingMethodType(value: string): ShippingMethodType {
 	if (!SHIPPING_METHOD_TYPES.includes(value as ShippingMethodType)) {
 		throw new CommerceInputError("type", "must be flat_rate or free_shipping");
@@ -718,10 +913,10 @@ function requireCouponType(value: string): CouponType {
 	return value as CouponType;
 }
 
-/** Integer basis points within the WIRE bound. */
-function requireBps(field: string, value: number): number {
-	if (!Number.isSafeInteger(value) || value < 0 || value > MAX_BPS) {
-		throw new CommerceInputError(field, `must be an integer between 0 and ${String(MAX_BPS)}`);
+/** Integer basis points within `max` (the WIRE bound unless a caller narrows it). */
+function requireBps(field: string, value: number, max: number = MAX_BPS): number {
+	if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+		throw new CommerceInputError(field, `must be an integer between 0 and ${String(max)}`);
 	}
 	return value;
 }
@@ -738,12 +933,27 @@ function optionalBps(field: string, value: number | null | undefined): number | 
 	return requireBps(field, value);
 }
 
-/** `z.string().min(1).max(64).nullable().optional()` — the coupon window bounds.
- *  Deliberately NOT an instant parse: the wire never parsed one either, and
- *  refusing more than the other transport refuses is still a divergence. */
+/**
+ * A coupon window bound: the wire's `min(1).max(64)`, AND a zoned ISO-8601
+ * instant (`parseCouponInstant`, the domain's one reader). This used to be
+ * length-only, for parity with a wire that never parsed one — but checkout now
+ * FAILS CLOSED on a bound it cannot read, so an unreadable value stored here
+ * would be a coupon that silently can never be redeemed. Refusing it at the
+ * write is the honest end of the same rule. What is stored is the CANONICAL
+ * `toISOString()` form of the instant, not the text as sent.
+ */
 function optionalInstantText(field: string, value: string | null | undefined): string | null {
 	if (value === undefined || value === null) return null;
-	return requireBoundedText(field, value, 1, INSTANT_TEXT_MAX);
+	requireBoundedText(field, value, 1, INSTANT_TEXT_MAX);
+	const instant = parseCouponInstant(value);
+	if (instant === null) {
+		throw new CommerceInputError(field, "must be an ISO-8601 instant with Z or an offset");
+	}
+	// STORED CANONICAL (`toISOString()`): the console's edit form round-trips the
+	// stored bound, so a stored `+01:00` or `24:00` spelling would be re-rendered
+	// and re-saved in another form — the canonical text is the one an untouched
+	// save cannot move.
+	return new Date(instant).toISOString();
 }
 
 /** The page size the caller asked for, bounded as the query schema bounded it.
