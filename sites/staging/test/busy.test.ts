@@ -37,9 +37,11 @@ import {
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
 	ACCOUNT_LOGOUT_ROUTE,
 	SESSION_COOKIE_NAME,
+	type OrderRouteResult,
 } from "@otta-sh/plugin";
 import { seeOther } from "../src/lib/cart-actions.js";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
+import { payPageRedirect } from "../src/lib/pay-guard.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	BUSY,
@@ -522,6 +524,14 @@ describe("every SSR page that dispatches a plugin route maps BUSY to 503 + Retry
 	/** `/checkout` is the one documented exception: a BUSY summary 303s to /cart
 	 *  (see `checkoutEntryRedirect` and the note in `checkout/index.astro`). */
 	const REDIRECTS_INSTEAD = new Set(["checkout/index.astro"]);
+	/** `/checkout/pay` FAILS OPEN on purpose: its one dispatch is a defence-in-depth
+	 *  read of the stashed order (`lib/pay-guard.ts`, ADR-0012's 2026-10-02
+	 *  amendment), and an UNKNOWN answer — BUSY included — renders the card form
+	 *  rather than a 503. The server holds the line on its own: expiry withdraws the
+	 *  PaymentIntent at Stripe and a payment that lands on a dead order is refunded
+	 *  automatically, so a storage hiccup must not become a checkout outage. The
+	 *  positive pins below keep the exemption from hiding a regression. */
+	const FAILS_OPEN = new Set(["checkout/pay.astro"]);
 	const pages = (readdirSync(PAGES, { recursive: true }) as string[])
 		.filter((file) => file.endsWith(".astro"))
 		.map((file) => file.split(nodePath.sep).join("/"))
@@ -533,10 +543,46 @@ describe("every SSR page that dispatches a plugin route maps BUSY to 503 + Retry
 		expect(pages).toEqual(expect.arrayContaining(["index.astro", "products/index.astro"]));
 	});
 
-	test.each(pages.filter((file) => !REDIRECTS_INSTEAD.has(file)))("%s calls markBusy", (file) => {
-		const source = readFileSync(nodePath.join(PAGES, file), "utf8");
-		expect(source).toMatch(/isBusyResult\(result\)/);
-		expect(source).toMatch(/markBusy\(Astro\.response\)/);
+	test.each(pages.filter((file) => !REDIRECTS_INSTEAD.has(file) && !FAILS_OPEN.has(file)))(
+		"%s calls markBusy",
+		(file) => {
+			const source = readFileSync(nodePath.join(PAGES, file), "utf8");
+			expect(source).toMatch(/isBusyResult\(result\)/);
+			expect(source).toMatch(/markBusy\(Astro\.response\)/);
+		},
+	);
+
+	test("checkout/pay.astro is the fail-open exemption: still a dispatching page, and it 303s a known non-payable answer", () => {
+		expect(pages).toContain("checkout/pay.astro");
+		const source = readFileSync(nodePath.join(PAGES, "checkout/pay.astro"), "utf8");
+		// Its one read goes through the guard, and the guard's verdict is a 303.
+		expect(source).toMatch(/payPageRedirect\(orderPath, orderRead, new Date\(\)\)/);
+		expect(source).toMatch(/return Astro\.redirect\(refuseTo, 303\)/);
+		// Failing open never means failing cacheable: the page renders a client
+		// secret, so it is private (fix/private-pages-no-store) BEFORE its order read.
+		const keep = source.indexOf("keepPrivate(Astro)");
+		expect(keep, "pay.astro calls keepPrivate(Astro)").toBeGreaterThan(-1);
+		expect(keep, "keepPrivate precedes the order read").toBeLessThan(
+			source.indexOf("dispatchOttaRoute<OrderRouteResult>("),
+		);
+	});
+
+	test("the pay guard renders on BUSY and refuses a known non-payable order", () => {
+		const orderPath = "/orders/ord-1";
+		const now = new Date("2026-10-02T12:00:00.000Z");
+		// BUSY is an unknown answer: the form renders (null), never a 503 or a refusal.
+		expect(payPageRedirect(orderPath, BUSY_RESULT as unknown as OrderRouteResult, now)).toBeNull();
+		// A definitive answer that cannot take the money goes to the order page.
+		const expired = {
+			ok: true,
+			order: { state: "expired", holdExpiresAt: "2026-10-02T12:15:00.000Z" },
+		} as unknown as OrderRouteResult;
+		expect(payPageRedirect(orderPath, expired, now)).toBe(orderPath);
+		const lapsed = {
+			ok: true,
+			order: { state: "pending", holdExpiresAt: "2026-10-02T11:59:59.000Z" },
+		} as unknown as OrderRouteResult;
+		expect(payPageRedirect(orderPath, lapsed, now)).toBe(orderPath);
 	});
 
 	test("checkout/index.astro documents its BUSY redirect as intentional", () => {
