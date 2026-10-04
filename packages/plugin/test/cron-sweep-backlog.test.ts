@@ -272,6 +272,20 @@ interface LegTrace {
 	wait: number;
 }
 
+/** The seeded lapsed orders that carry an intent and are expired while that intent
+ *  is still unresolved (payable at the provider). */
+async function expiredWithPayableIntent(): Promise<string[]> {
+	const s = adapters(storage);
+	const found: string[] = [];
+	for (let i = 0; i < 10; i++) {
+		const id = toOrderId(`order-lapsed-${String(i)}`);
+		if ((await s.orderStore.getById(id))?.state !== "expired") continue;
+		const intents = await s.orderStore.listPaymentIntents(id);
+		if (intents.some((intent) => intent.cancelOutcome === null)) found.push(id);
+	}
+	return found;
+}
+
 /** Everything the seed put in every leg, read back from the documents. */
 async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<string, boolean>> {
 	const s = adapters(storage);
@@ -346,8 +360,18 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 					trace.wait = 0;
 				}
 			}
+			// cancel-intents runs first — except in the one tick per interval a Free
+			// late-refund resume leads; the expiry waits with it (N1 below).
 			const cancel = summary.legs.find((entry) => entry.leg === "cancel-intents");
-			expect(cancel?.deferred, `cancel-intents deferred at tick ${String(tick)}`).toBeUndefined();
+			const lead = summary.legs.find((entry) => entry.leg === "late-refunds");
+			if (cancel?.deferred === true) {
+				expect(
+					lead?.queries ?? 0,
+					`cancel-intents deferred at tick ${String(tick)}`,
+				).toBeGreaterThanOrEqual(15);
+			}
+			// QA3 N1: at no tick boundary is an expired order still payable.
+			expect(await expiredWithPayableIntent(), `after tick ${String(tick)}`).toEqual([]);
 
 			expired += summary.legs.find((entry) => entry.leg === "expire-orders")?.count ?? 0;
 			if (expired >= LAPSED_ORDERS && expiredBy === null) expiredBy = tick + 1;

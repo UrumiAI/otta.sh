@@ -300,6 +300,10 @@ ADR-0019's amendment of this date reorders the sweep's tick. Two points concern 
    withdrawal may wait about one more minute; if the starving leg is `expire-orders`, an order may
    expire before its intent is withdrawn. A payment in that minute is kept while the order is still
    held, and refunded automatically once it has expired — the late-payment path of the first block.
+   **Superseded by QA round 3 (ADR-0019's QA-round-3 amendment):** the expiry no longer flips an
+   order whose intent is due and not yet withdrawn, so in a guard tick the withdrawal and the
+   expiry wait together. The intents this tick's expiry bite would flip are no longer left for a
+   run after the flip either: `cancel-intents` withdraws every due intent it lists.
 
 The decision of this record is unchanged.
 

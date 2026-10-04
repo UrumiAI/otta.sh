@@ -8,7 +8,10 @@
 import { describe, expect, test } from "vitest";
 import {
 	isPayClosed,
+	PAY_CANCELLED_LEAD,
 	payCloseAt,
+	WITHDRAWN_EARLY_MARGIN_MS,
+	withdrawnBecause,
 	startPayDeadline,
 	type PayDeadlineEnv,
 } from "../src/lib/pay-deadline.js";
@@ -148,5 +151,26 @@ describe("startPayDeadline", () => {
 		expect(port.closes).toBe(0);
 		env.advance(far - 2_147_483_647);
 		expect(port.closes).toBe(1);
+	});
+});
+
+describe("an intent withdrawn BEFORE the deadline means the order was cancelled (QA3 N4)", () => {
+	// After "Start a new cart" the old pay tab said "The time to pay has run out" —
+	// but nothing ran out: the order was cancelled, and its intent withdrawn with it.
+	const closeAt = 1_000_000;
+
+	test("well before the page's own deadline, a withdrawn intent reads as a cancelled order", () => {
+		expect(withdrawnBecause(closeAt, closeAt - 10 * 60_000)).toBe("cancelled");
+		expect(PAY_CANCELLED_LEAD).toBe("This order was cancelled.");
+	});
+
+	test("at or near the deadline it is the time running out — the server withdraws at the deadline, and the page closes a little late", () => {
+		expect(withdrawnBecause(closeAt, closeAt)).toBe("closed");
+		expect(withdrawnBecause(closeAt, closeAt - WITHDRAWN_EARLY_MARGIN_MS + 1)).toBe("closed");
+		expect(withdrawnBecause(closeAt, closeAt + 5_000)).toBe("closed");
+	});
+
+	test("with no readable deadline it says nothing it cannot know: the closed notice", () => {
+		expect(withdrawnBecause(null, 0)).toBe("closed");
 	});
 });

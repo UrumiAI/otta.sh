@@ -46,7 +46,11 @@ import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { PAY_CLOSED_LEAD } from "../../lib/pay-deadline.js";
+import {
+	PAY_CANCELLED_LEAD,
+	PAY_CLOSED_LEAD,
+	WITHDRAWN_EARLY_MARGIN_MS,
+} from "../../lib/pay-deadline.js";
 import { payButtonLabel } from "../../lib/totals.js";
 import type { PayModel } from "../../themes/contract.js";
 import { keepPrivate } from "../../lib/no-store.js";
@@ -124,7 +128,7 @@ const model: PayModel = {
 	{
 		model.paymentConfigured && (
 			<Fragment slot="payment">
-				<form id="payment-form">
+				<form id="payment-form" data-withdrawn-margin-ms={WITHDRAWN_EARLY_MARGIN_MS}>
 					<div class="mount">
 						<div
 							id="payment-element"
@@ -152,6 +156,16 @@ const model: PayModel = {
 								This order can't be paid any more. If you paid just before, your order page shows
 								whether the payment arrived in time — a payment that arrived too late is refunded.{" "}
 								<a id="payment-closed-link" href={orderPath}>View your order</a>.
+							</Notice>
+						</div>
+						{/* QA3 N4: the intent was withdrawn well before the deadline — the
+						    order was cancelled ("Start a new cart", or by the shop), and
+						    nothing ran out. */}
+						<div id="payment-cancelled-body" hidden>
+							<Notice lead={PAY_CANCELLED_LEAD}>
+								It can't be paid any more. If you paid just before, your order page shows what
+								happened to the payment.{" "}
+								<a id="payment-cancelled-link" href={orderPath}>View your order</a>.
 							</Notice>
 						</div>
 					</div>
@@ -208,16 +222,22 @@ const model: PayModel = {
 						 * show the closed notice in its alert region, and move focus to
 						 * its order link if it was in the form.
 						 */
-						function closePayment() {
+						function closePayment(reason) {
 							var hadFocus = form.contains(document.activeElement);
 							form.dataset.payClosed = "true";
 							submit.disabled = true;
 							errorBox.hidden = true;
-							var body = document.getElementById("payment-closed-body");
+							// QA3 N4: a cancelled order says so; anything else is the deadline.
+							var cancelled = reason === "cancelled";
+							var body = document.getElementById(
+								cancelled ? "payment-cancelled-body" : "payment-closed-body",
+							);
 							if (body) body.hidden = false;
 							var notes = document.querySelectorAll("[data-pay-hold]");
 							for (var i = 0; i < notes.length; i++) notes[i].hidden = true;
-							var link = document.getElementById("payment-closed-link");
+							var link = document.getElementById(
+								cancelled ? "payment-cancelled-link" : "payment-closed-link",
+							);
 							if (hadFocus && link) link.focus();
 						}
 
@@ -229,8 +249,11 @@ const model: PayModel = {
 						 * tab. So:
 						 *  - succeeded / processing → "landed": the money moved or is
 						 *    moving; the order page says how it ended.
-						 *  - canceled, or unexpected_state with no readable status →
-						 *    "withdrawn": the time to pay has run out.
+						 *  - canceled → "withdrawn": the time ran out, or (well before
+						 *    the deadline) the order was cancelled.
+						 *  - unexpected_state with no readable status → "closed": the
+						 *    deadline's copy — it cannot be paid, and nothing says it was
+						 *    cancelled (review of QA3 N4).
 						 *  - anything else → null: an ordinary decline, Stripe's words.
 						 */
 						function refusalOf(error) {
@@ -239,7 +262,7 @@ const model: PayModel = {
 							var status = intent ? intent.status : undefined;
 							if (status === "succeeded" || status === "processing") return "landed";
 							if (status === "canceled") return "withdrawn";
-							if (error.code === "payment_intent_unexpected_state") return "withdrawn";
+							if (error.code === "payment_intent_unexpected_state") return "closed";
 							return null;
 						}
 
@@ -537,7 +560,22 @@ const model: PayModel = {
 											return;
 										}
 										if (refusal === "withdrawn") {
-											closePayment();
+											// Withdrawn well before this page's own deadline (set by the
+											// deadline module as form.dataset.payCloseAt): the order was
+											// cancelled, not timed out — `withdrawnBecause` in
+											// lib/pay-deadline.ts, restated for this inline script.
+											var closeAt = Number(form.dataset.payCloseAt);
+											var margin = Number(form.dataset.withdrawnMarginMs);
+											var cancelled =
+												form.dataset.payCloseAt !== undefined &&
+												isFinite(closeAt) &&
+												isFinite(margin) &&
+												Date.now() < closeAt - margin;
+											closePayment(cancelled ? "cancelled" : "closed");
+											return;
+										}
+										if (refusal === "closed") {
+											closePayment("closed");
 											return;
 										}
 										fail(
@@ -615,8 +653,16 @@ const model: PayModel = {
 					const closedBody = document.getElementById("payment-closed-body");
 					const closedLink = document.getElementById("payment-closed-link");
 					if (mount && form && submit && closedBody) {
+						const closeAt = payCloseAt(
+							mount.dataset.payDeadline,
+							mount.dataset.payServerNow,
+							loadedAt,
+						);
+						// Handed to the inline script, which reads it on a withdrawn intent
+						// to tell a cancelled order from the deadline (QA3 N4).
+						if (closeAt !== null) form.dataset.payCloseAt = String(closeAt);
 						const deadline = startPayDeadline(
-							payCloseAt(mount.dataset.payDeadline, mount.dataset.payServerNow, loadedAt),
+							closeAt,
 							{
 								close() {
 									// Read BEFORE Pay is disabled: a disabled button drops focus.

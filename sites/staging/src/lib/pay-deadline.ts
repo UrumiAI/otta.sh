@@ -32,6 +32,28 @@
 /** The notice's lead, on the page and here (the page renders it hidden). */
 export const PAY_CLOSED_LEAD = "The time to pay has run out.";
 
+/** The lead when the intent was withdrawn because the order was CANCELLED (QA3 N4). */
+export const PAY_CANCELLED_LEAD = "This order was cancelled.";
+
+/**
+ * How long before the page's own deadline a withdrawn intent still counts as the
+ * deadline's doing. The server withdraws at the hold deadline and the page closes
+ * slightly late (network latency), so a refusal in the last minute is the time
+ * running out; one earlier than that can only be a cancellation — "Start a new
+ * cart", or an admin cancelling the order.
+ */
+export const WITHDRAWN_EARLY_MARGIN_MS = 60_000;
+
+/**
+ * Why Stripe said this page's intent was withdrawn (QA3 N4): `"cancelled"` when it
+ * happened well before the page's deadline, `"closed"` otherwise — and when there
+ * is no readable deadline, since the page then cannot know.
+ */
+export function withdrawnBecause(closeAt: number | null, nowMs: number): "cancelled" | "closed" {
+	if (closeAt === null || !Number.isFinite(closeAt)) return "closed";
+	return nowMs < closeAt - WITHDRAWN_EARLY_MARGIN_MS ? "cancelled" : "closed";
+}
+
 /** What the page does when it closes. Called at most once. */
 export interface PayDeadlinePort {
 	close(): void;
