@@ -65,19 +65,68 @@ function jsoncToJson(text: string): string {
 	return out.replace(/,(\s*[}\]])/g, "$1");
 }
 
-/** The config's `compatibility_flags` — parsed, so the flag's name in a comment
- *  never counts. No key ⇒ no flags. */
-export function wranglerCompatibilityFlags(wranglerText: string): string[] {
-	const config = JSON.parse(jsoncToJson(wranglerText)) as { compatibility_flags?: unknown };
-	const flags = config.compatibility_flags;
+/** The string entries of a `compatibility_flags` value; anything else ⇒ none. */
+function stringFlags(flags: unknown): string[] {
 	return Array.isArray(flags)
 		? flags.filter((flag): flag is string => typeof flag === "string")
 		: [];
 }
 
+interface WranglerShape {
+	compatibility_flags?: unknown;
+	env?: unknown;
+}
+
+/** Parse the config's text — a leading UTF-8 BOM stripped (editors on Windows
+ *  write one; JSON.parse rejects it) — wrapping any parse error so it names the
+ *  file instead of a bare "Unexpected token". */
+function parseWrangler(wranglerText: string, fileName: string): WranglerShape {
+	const text = wranglerText.startsWith("\uFEFF") ? wranglerText.slice(1) : wranglerText;
+	try {
+		const parsed: unknown = JSON.parse(jsoncToJson(text));
+		return typeof parsed === "object" && parsed !== null ? (parsed as WranglerShape) : {};
+	} catch (error) {
+		throw new Error(
+			`${fileName} could not be parsed as JSONC while checking its compatibility_flags ` +
+				`(${error instanceof Error ? error.message : String(error)}).`,
+			{ cause: error },
+		);
+	}
+}
+
+/** The TOP-LEVEL `compatibility_flags` — parsed, so the flag's name in a comment
+ *  never counts. No key ⇒ no flags. */
+export function wranglerCompatibilityFlags(
+	wranglerText: string,
+	fileName = "wrangler config",
+): string[] {
+	return stringFlags(parseWrangler(wranglerText, fileName).compatibility_flags);
+}
+
 /**
- * Throw if the wrangler config the build uses carries the flag while D1 sessions
- * are on.
+ * Every place the config sets flags: the top level, and each `env.<name>` block —
+ * wrangler applies an env's own `compatibility_flags` when deployed with
+ * `--env <name>`, so a flag hiding in one is as live as one at the top.
+ */
+function flagScopes(wranglerText: string, fileName: string): { scope: string; flags: string[] }[] {
+	const config = parseWrangler(wranglerText, fileName);
+	const scopes = [{ scope: "", flags: stringFlags(config.compatibility_flags) }];
+	if (typeof config.env === "object" && config.env !== null) {
+		for (const [name, block] of Object.entries(config.env as Record<string, unknown>)) {
+			const flags =
+				typeof block === "object" && block !== null
+					? stringFlags((block as WranglerShape).compatibility_flags)
+					: [];
+			scopes.push({ scope: `env.${name}`, flags });
+		}
+	}
+	return scopes;
+}
+
+/**
+ * Throw if the wrangler config the build uses carries the flag — at the top level
+ * or in any `env.<name>` block — while D1 sessions are on. A file that does not
+ * parse throws too, naming the file.
  *
  * @param wranglerText the selected config file's contents
  * @param fileName its name, for the message (`wrangler.local.jsonc` or the template)
@@ -89,13 +138,19 @@ export function assertWranglerSessionPairing(
 	d1Config: { session?: unknown } | undefined,
 ): void {
 	const session = d1Config?.session;
-	if (!violatesPairing(wranglerCompatibilityFlags(wranglerText), session)) return;
+	const offending = flagScopes(wranglerText, fileName).find(({ flags }) =>
+		violatesPairing(flags, session),
+	);
+	if (offending === undefined) return;
+	const where = offending.scope === "" ? fileName : `${fileName} (${offending.scope})`;
+	const list =
+		offending.scope === "" ? "compatibility_flags" : `${offending.scope}.compatibility_flags`;
 	throw new Error(
-		`${fileName} sets the "${STRICTLY_PUBLIC_FLAG}" compatibility flag, but D1 sessions are on ` +
+		`${where} sets the "${STRICTLY_PUBLIC_FLAG}" compatibility flag, but D1 sessions are on ` +
 			`(session: ${JSON.stringify(session)}, sites/staging/src/emdash-options.ts). The flag ` +
 			`blocks the D1 Sessions API (emdash issue #1273): every new isolate would stall ~5 s on ` +
 			`its first query and could reject an in-flight write. The flag is no longer needed ` +
-			`(issue #375). Delete "${STRICTLY_PUBLIC_FLAG}" from compatibility_flags in ${fileName}, ` +
+			`(issue #375). Delete "${STRICTLY_PUBLIC_FLAG}" from ${list} in ${fileName}, ` +
 			`then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").`,
 	);
 }

@@ -93,3 +93,52 @@ describe("assertWranglerSessionPairing", () => {
 		).not.toThrow();
 	});
 });
+
+describe("env blocks, BOM and parse errors (review round 2)", () => {
+	/** A config whose TOP level is clean but whose `env.staging` still has the
+	 *  flag — wrangler applies an env's own compatibility_flags when deployed
+	 *  with `--env staging`. */
+	const FLAG_IN_ENV = `{
+	"compatibility_flags": ["nodejs_compat"],
+	"env": {
+		"production": { "compatibility_flags": ["nodejs_compat"] },
+		"staging": { "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"] },
+	},
+}`;
+	const SESSION = { session: "primary-first" };
+
+	test("the flag only in env.staging: throws, naming the env", () => {
+		expect(() =>
+			assertWranglerSessionPairing(FLAG_IN_ENV, "wrangler.local.jsonc", SESSION),
+		).toThrow(/wrangler\.local\.jsonc \(env\.staging\) sets the "global_fetch_strictly_public"/);
+	});
+
+	test("an env block without the flag (and a clean top level): ok", () => {
+		const clean = FLAG_IN_ENV.replace(', "global_fetch_strictly_public"', "");
+		expect(() =>
+			assertWranglerSessionPairing(clean, "wrangler.local.jsonc", SESSION),
+		).not.toThrow();
+	});
+
+	test("the flag only in an env block, sessions off: ok", () => {
+		expect(() =>
+			assertWranglerSessionPairing(FLAG_IN_ENV, "wrangler.local.jsonc", {}),
+		).not.toThrow();
+	});
+
+	test("a leading UTF-8 BOM is stripped before parsing", () => {
+		expect(wranglerCompatibilityFlags(`\uFEFF${OLD_LOCAL}`, "wrangler.local.jsonc")).toEqual([
+			"nodejs_compat",
+			"global_fetch_strictly_public",
+		]);
+		expect(() =>
+			assertWranglerSessionPairing(`\uFEFF${OLD_LOCAL}`, "wrangler.local.jsonc", SESSION),
+		).toThrow(/Delete "global_fetch_strictly_public"/);
+	});
+
+	test("a config that does not parse: the error names the file", () => {
+		expect(() =>
+			assertWranglerSessionPairing(`{ "name": "x" `, "wrangler.local.jsonc", SESSION),
+		).toThrow(/wrangler\.local\.jsonc could not be parsed as JSONC/);
+	});
+});
