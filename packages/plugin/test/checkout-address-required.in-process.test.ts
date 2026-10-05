@@ -27,7 +27,7 @@ beforeEach(async () => {
 	if (harness === undefined) {
 		gateway = new FakePaymentGateway({ id: "stripe" });
 		harness = await makeInProcessCommerce({
-			gateways: { stripe: gateway },
+			gateways: { stripe: gateway, x402: new FakePaymentGateway({ id: "x402" }) },
 			resolveAddressRequired: async () => {
 				resolverCalls += 1;
 				if (required instanceof Error) throw required;
@@ -143,6 +143,19 @@ describe("the payment account requires the buyer's address (India)", () => {
 		expect(replay.ok && replay.order.id).toBe(placed.order.id);
 		const resumed = await harness.client.resumeOrderPayment(placed.order.id, { cartId });
 		expect(resumed.ok).toBe(true);
+	});
+});
+
+describe("x402 is not a Stripe checkout — the Stripe account's rule does not bind it", () => {
+	test("an India Stripe account, an x402 checkout of a digital cart with no address: placed, never asked", async () => {
+		required = true;
+		const cartId = await cartOf("digital");
+		const placed = await harness.client.createOrder(
+			{ cartId, paymentMethod: "x402", buyerRef: "asha@example.test" },
+			`checkout:${cartId}`,
+		);
+		expect(placed.ok).toBe(true);
+		expect(resolverCalls).toBe(0);
 	});
 });
 

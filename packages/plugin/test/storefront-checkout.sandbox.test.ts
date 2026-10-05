@@ -2509,6 +2509,18 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				"POST /v1/payment_intents",
 			]);
 			expect(stripe.requests[0]!.form.has("shipping[name]")).toBe(false);
+			expect(stripe.requests[0]!.form.has("customer")).toBe(false);
+		});
+
+		test("a US account: a physical-style address on the order still makes NO Customer call", async () => {
+			const placed = await placeCart(await p2Cart("digital"), {
+				shippingAddress: { ...IN_ADDRESS, country: "US", postalCode: "94107" },
+			});
+			expect(placed).toMatchObject({ ok: true });
+			expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+				"POST /v1/payment_intents",
+			]);
+			expect(stripe.requests[0]!.form.has("customer")).toBe(false);
 		});
 
 		describe("an India account", () => {
@@ -2549,18 +2561,69 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				await expectRefusedAtPlace(await p2Cart("digital"), {}, "MISSING_SHIPPING_ADDRESS");
 			});
 
-			test("a digital cart placed with a complete address: the PaymentIntent carries the name and address", async () => {
-				const placed = await placeCart(await p2Cart("digital"), { shippingAddress: IN_ADDRESS });
+			test("a digital cart placed with a complete address: a Customer with the name and billing address, then a PaymentIntent naming it — and a replay reuses both", async () => {
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
 				expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true, state: "pending" });
-				expect(stripe.requests).toHaveLength(1);
-				const form = stripe.requests[0]!.form;
-				expect(stripe.requests[0]!.path).toBe("/v1/payment_intents");
-				expect(form.get("shipping[name]")).toBe("Asha Rao");
-				expect(form.get("shipping[address][line1]")).toBe("12 Park Street");
-				expect(form.get("shipping[address][city]")).toBe("Kolkata");
-				expect(form.get("shipping[address][postal_code]")).toBe("700016");
-				expect(form.get("shipping[address][country]")).toBe("IN");
-				expect(form.get("description")).toBe("2 × Bamboo Water Bottle");
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+					"POST /v1/customers",
+					"POST /v1/payment_intents",
+				]);
+				const [customer, intent] = stripe.requests as [
+					StripeRecordedRequest,
+					StripeRecordedRequest,
+				];
+				expect(customer.headers["idempotency-key"]).toBe(`otta-cus-${String(placed["orderId"])}`);
+				expect(customer.headers.authorization).toBe(`Bearer ${STRIPE_SECRET_KEY}`);
+				expect([...customer.form.entries()]).toEqual([
+					["name", "Asha Rao"],
+					["address[line1]", "12 Park Street"],
+					["address[city]", "Kolkata"],
+					["address[postal_code]", "700016"],
+					["address[country]", "IN"],
+				]);
+				expect(intent.form.get("customer")).toBe("cus_stub_1");
+				expect(intent.form.get("description")).toBe("2 × Bamboo Water Bottle");
+				expect(intent.form.get("shipping[name]")).toBe("Asha Rao");
+				expect(intent.form.get("shipping[address][line1]")).toBe("12 Park Street");
+				expect(intent.form.get("shipping[address][city]")).toBe("Kolkata");
+				expect(intent.form.get("shipping[address][postal_code]")).toBe("700016");
+				expect(intent.form.get("shipping[address][country]")).toBe("IN");
+
+				// The locked review's retry: same key, no address. Same Customer, and a
+				// byte-identical intent body (Stripe would refuse a drifted one).
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests).toHaveLength(4);
+				expect(stripe.requests[2]!.form.toString()).toBe(customer.form.toString());
+				expect(stripe.requests[2]!.headers["idempotency-key"]).toBe(
+					customer.headers["idempotency-key"],
+				);
+				expect(stripe.requests[3]!.form.toString()).toBe(intent.form.toString());
+			});
+
+			test("the Customer create failing is a typed PAYMENT_INTENT_FAILED; the order stays payable, and a retry completes it", async () => {
+				const cartId = await p2Cart("digital");
+				const stripeLike = stripeLikeResponder();
+				stripe.respondWith((req) =>
+					req.path === "/v1/customers"
+						? { status: 500, body: { error: { type: "api_error" } } }
+						: stripeLike(req),
+				);
+				const failed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(failed).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/customers"]);
+				const order = await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`));
+				expect(order?.state).toBe("pending");
+
+				stripe.respondWith(stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried).toMatchObject({ ok: true, orderId: order!.id, state: "pending" });
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/customers",
+					"/v1/payment_intents",
+				]);
 			});
 		});
 

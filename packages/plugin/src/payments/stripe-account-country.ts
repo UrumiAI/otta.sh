@@ -11,18 +11,24 @@
  * Nothing in the store's own configuration says where its Stripe account is;
  * Stripe does: `GET /v1/account` → `country`.
  *
- * CACHED, NEVER ASKED PER CHECKOUT. The answer lives in plugin kv
+ * CACHED, AND NEVER ASKED FROM CHECKOUT. The answer lives in plugin kv
  * ({@link STRIPE_ACCOUNT_COUNTRY_KEY}) beside a digest of the key it was asked
- * with, so a checkout reads kv and reaches Stripe only when nothing usable is
- * cached:
+ * with. Checkout — the summary, the place, the Stripe gateway — only READS it
+ * ({@link checkoutRequiresBuyerAddress}, over {@link peekStripeAccountCountry});
+ * Stripe is asked only from admin Settings:
+ *  - the save of the secret key asks at once ({@link refreshStripeAccountCountry});
+ *  - the Settings page load asks when nothing usable is cached
+ *    ({@link readStripeAccountCountry}): no answer for the stored key yet (a
+ *    key saved before this existed, or another key), or an UNKNOWN answer whose
+ *    back-off ({@link RETRY_AFTER_MS}) has run out. That is how a save-time blip
+ *    heals: the merchant is looking at the line that says it is unknown.
  *  - a KNOWN country is kept for as long as the key is unchanged — an account
  *    cannot change country, and a new key (possibly another account) does not
- *    match the digest, so it is asked afresh;
- *  - the Settings save of the secret key asks at once ({@link
- *    refreshStripeAccountCountry}), so a newly provisioned store normally never
- *    asks from a checkout at all;
- *  - an UNKNOWN answer is retried, lazily, after a back-off sized to how likely
- *    a retry is to help ({@link RETRY_AFTER_MS}).
+ *    match the digest.
+ * Why not lazily from checkout as well: a cold cache would put a Stripe round
+ * trip into a buyer's request, and concurrent renders would each make it — a
+ * shared in-flight promise is no fix on Workers, where a promise created in one
+ * request's context must not be awaited from another's.
  *
  * UNKNOWN MEANS "NOT REQUIRED", deliberately, and is logged. The country can be
  * unknown because no key is set (no card checkout at all), because Stripe could
@@ -66,8 +72,8 @@ const RETRY_AFTER_MS: Record<UnknownReason, number> = {
 	unavailable: 5 * 60 * 1000,
 };
 
-/** The bound on the account read when it runs inside a checkout render. */
-const CHECKOUT_READ_TIMEOUT_MS = 2_500;
+/** The bound on the account read when the Settings page load makes it. */
+const ADMIN_READ_TIMEOUT_MS = 2_500;
 
 export type StripeAccountCountryStatus =
 	/** No Stripe secret key is stored. */
@@ -166,7 +172,8 @@ interface ReadOptions {
 
 /**
  * The account's country, from the cache when it holds a fresh answer for the
- * stored key, else from Stripe (then cached). Never throws.
+ * stored key, else from Stripe (then cached) — the Settings page load. Never
+ * on a buyer's request. Never throws.
  */
 export async function readStripeAccountCountry(
 	ctx: PluginContext,
@@ -180,7 +187,7 @@ export async function readStripeAccountCountry(
 	if (cached !== null && cached.keyDigest === keyDigest && isFresh(cached, now)) {
 		return statusOf(cached);
 	}
-	return askStripe(ctx, secretKey, keyDigest, now, options.timeoutMs ?? CHECKOUT_READ_TIMEOUT_MS);
+	return askStripe(ctx, secretKey, keyDigest, now, options.timeoutMs ?? ADMIN_READ_TIMEOUT_MS);
 }
 
 /**
@@ -199,14 +206,14 @@ export async function refreshStripeAccountCountry(
 		secretKey,
 		await digestOf(secretKey),
 		now,
-		options.timeoutMs ?? CHECKOUT_READ_TIMEOUT_MS,
+		options.timeoutMs ?? ADMIN_READ_TIMEOUT_MS,
 	);
 }
 
 /**
- * What the cache holds for the stored key, WITHOUT asking Stripe — for the
- * Settings screen, whose page load must not wait on a provider. Stale unknown
- * answers are reported as they stand. Never throws.
+ * What the cache holds for the stored key, WITHOUT asking Stripe — what
+ * checkout reads (a buyer's request never waits on the account read). Stale
+ * unknown answers are reported as they stand. Never throws.
  */
 export async function peekStripeAccountCountry(
 	ctx: PluginContext,
@@ -223,27 +230,30 @@ export async function peekStripeAccountCountry(
 /** Once per isolate per reason: a fact about the deployment, not the request. */
 const warned = new Set<string>();
 
-const UNKNOWN_WARNING: Record<UnknownReason, string> = {
+const UNKNOWN_WARNING: Record<UnknownReason | "not_checked", string> = {
+	not_checked:
+		"it has not been read for the stored key yet; opening Settings, or saving the key again, reads it",
 	permission_denied:
-		"the restricted key cannot read account details (Stripe answered 403). If the Stripe account is in India, give the key read access to Account, or use the secret key",
+		"the restricted key cannot read account details (Stripe answered 403). If the Stripe account is in India, give the key read access to account details and write access to customers, or use the secret key",
 	authentication_failed: "Stripe refused the secret key (401)",
 	unavailable: "Stripe could not be reached; it is asked again in a few minutes",
 };
 
 /**
- * THE question checkout asks: must every buyer give their name and address?
- * Only when the account is KNOWN to be in India — see the module doc for why an
- * unknown country is not required. Never throws: a failure is unknown.
+ * THE question checkout asks: must every buyer give their name and address —
+ * and must the payment carry a Stripe Customer with them? Only when the account
+ * is KNOWN to be in India — see the module doc for why an unknown country is not
+ * required. A kv read only; never asks Stripe. Never throws: a failure is unknown.
  */
 export async function checkoutRequiresBuyerAddress(ctx: PluginContext): Promise<boolean> {
 	let found: StripeAccountCountryStatus;
 	try {
-		found = await readStripeAccountCountry(ctx);
+		found = await peekStripeAccountCountry(ctx);
 	} catch {
-		found = { status: "unavailable", checkedAt: new Date().toISOString() };
+		found = { status: "not_checked" };
 	}
 	if (found.status === "known") return ADDRESS_REQUIRED_COUNTRIES.has(found.country);
-	if (found.status !== "not_configured" && found.status !== "not_checked") {
+	if (found.status !== "not_configured") {
 		if (!warned.has(found.status)) {
 			warned.add(found.status);
 			console.warn(

@@ -1,9 +1,11 @@
 /**
  * Issue #382 — the Stripe account's country, CACHED in plugin kv. Checkout asks
- * it on every render and every place, so it must cost a kv read there and reach
- * Stripe only when nothing usable is cached: once per key for a known country,
- * and again only after a back-off for the ways it can be unknown. No network:
- * `ctx.http` is a scripted, counting stand-in for `api.stripe.com`.
+ * it on every render, every place and every intent create, so there it is a kv
+ * read and NEVER a Stripe call. Stripe is asked from admin Settings only — the
+ * key's save, and a page load that finds nothing usable cached: once per key for
+ * a known country, and again only after a back-off for the ways it can be
+ * unknown. No network: `ctx.http` is a scripted, counting stand-in for
+ * `api.stripe.com`.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -63,7 +65,30 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("the account country is fetched once and cached", () => {
+describe("checkout never asks Stripe", () => {
+	test("with nothing cached, checkout does not fetch — not required until Settings has read it", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const h = harness();
+		h.answer({ status: 200, body: { country: "IN" } });
+		for (let i = 0; i < 3; i += 1) expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(false);
+		expect(h.calls).toHaveLength(0);
+		await refreshStripeAccountCountry(h.ctx);
+		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(true);
+		expect(h.calls).toHaveLength(1);
+	});
+
+	test("an unknown answer past its back-off is NOT re-asked by checkout", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const h = harness();
+		h.answer("network-error");
+		await refreshStripeAccountCountry(h.ctx, { now: Date.now() - 24 * HOUR });
+		h.answer({ status: 200, body: { country: "IN" } });
+		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(false);
+		expect(h.calls).toHaveLength(1);
+	});
+});
+
+describe("the account country is fetched once and cached (the Settings read)", () => {
 	test("first read asks GET /v1/account with the key; every later read is kv only", async () => {
 		const h = harness();
 		h.answer({ status: 200, body: { id: "acct_1", country: "IN" } });
@@ -97,9 +122,14 @@ describe("the account country is fetched once and cached", () => {
 	test("a different key is a different account: the cache does not carry over", async () => {
 		const h = harness();
 		h.answer({ status: 200, body: { country: "US" } });
+		await readStripeAccountCountry(h.ctx);
 		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(false);
 		h.kv.set(STRIPE_SECRET_KEY_KEY, ["sk_live_", "51OtherAccountFixture0000"].join(""));
+		// The old answer is not the new key's: checkout sees "not checked".
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(await peekStripeAccountCountry(h.ctx)).toEqual({ status: "not_checked" });
 		h.answer({ status: 200, body: { country: "IN" } });
+		await readStripeAccountCountry(h.ctx);
 		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(true);
 		expect(h.calls).toHaveLength(2);
 	});
@@ -129,6 +159,7 @@ describe("only an India account requires the buyer's address", () => {
 		for (const country of ["US", "GB", "DE"]) {
 			const h = harness();
 			h.answer({ status: 200, body: { country } });
+			await refreshStripeAccountCountry(h.ctx);
 			expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(false);
 		}
 	});
@@ -136,6 +167,7 @@ describe("only an India account requires the buyer's address", () => {
 	test("IN: required", async () => {
 		const h = harness();
 		h.answer({ status: 200, body: { country: "IN" } });
+		await refreshStripeAccountCountry(h.ctx);
 		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(true);
 	});
 });
@@ -158,6 +190,7 @@ describe("when the country is unknown, checkout does NOT require the address —
 		});
 		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(false);
 		expect(warn.mock.calls.flat().join(" ")).toMatch(/restricted key/i);
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/write access to customers/i);
 		// Not re-asked on every checkout — retrying soon cannot help.
 		await readStripeAccountCountry(h.ctx, { now: now + 23 * HOUR });
 		expect(h.calls).toHaveLength(1);
@@ -211,6 +244,7 @@ describe("when the country is unknown, checkout does NOT require the address —
 		const h = harness();
 		h.kv.set(STRIPE_ACCOUNT_COUNTRY_KEY, { status: "known", country: 42 });
 		h.answer({ status: 200, body: { country: "IN" } });
+		expect(await readStripeAccountCountry(h.ctx)).toMatchObject({ status: "known", country: "IN" });
 		expect(await checkoutRequiresBuyerAddress(h.ctx)).toBe(true);
 		expect(h.calls).toHaveLength(1);
 	});

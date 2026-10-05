@@ -585,7 +585,7 @@ describe("Settings: the Stripe account's country", () => {
 		const saved = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_TEST);
 		expect(urls).toEqual(["https://api.stripe.com/v1/account"]);
 		expect(countryLine(saved.blocks)).toBe(
-			"Stripe account country: India (IN). Checkout asks every buyer for their name and address — Stripe accounts in India need them.",
+			"Stripe account country: India (IN). Checkout asks every buyer for their name and address — Stripe accounts in India need them. A restricted key needs write access to customers.",
 		);
 		// The page load shows the cached answer and asks Stripe nothing.
 		const page = await invoke(ctx, { type: "page_load", page: "/settings" });
@@ -604,7 +604,7 @@ describe("Settings: the Stripe account's country", () => {
 		const { ctx } = withStripe({ status: 403, body: { error: { type: "invalid_request_error" } } });
 		const saved = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", RK_TEST);
 		expect(countryLine(saved.blocks)).toBe(
-			"Stripe account country: unknown — this restricted key can't read account details. If your Stripe account is in India, give the key read access to Account (or use your secret key) and save it again, so checkout asks every buyer for their name and address.",
+			"Stripe account country: unknown — this restricted key can't read account details. If your account is in India, give it read access to account details and write access to customers, then save it again.",
 		);
 	});
 
@@ -614,7 +614,7 @@ describe("Settings: the Stripe account's country", () => {
 		expect(kv.get("settings:stripeSecretKey")).toBe(SK_TEST);
 		expect(saved.toast?.type).toBe("success");
 		expect(countryLine(saved.blocks)).toBe(
-			"Stripe account country: not checked yet — Stripe couldn't be reached. Checkout checks again by itself; saving the key again checks now.",
+			"Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.",
 		);
 	});
 
@@ -623,6 +623,17 @@ describe("Settings: the Stripe account's country", () => {
 		const page = await invoke(ctx, { type: "page_load", page: "/settings" });
 		expect(countryLine(page.blocks)).toBeUndefined();
 		expect(urls).toHaveLength(0);
+	});
+
+	test("a key saved before the country was read: the Settings page load reads it, once", async () => {
+		const { ctx, urls } = withStripe(
+			{ status: 200, body: { country: "IN" } },
+			{ "settings:stripeSecretKey": SK_TEST },
+		);
+		const page = await invoke(ctx, { type: "page_load", page: "/settings" });
+		expect(countryLine(page.blocks)).toContain("India (IN)");
+		await invoke(ctx, { type: "page_load", page: "/settings" });
+		expect(urls).toEqual(["https://api.stripe.com/v1/account"]);
 	});
 
 	test("saving any OTHER key asks Stripe nothing", async () => {

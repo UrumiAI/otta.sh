@@ -12,7 +12,7 @@ import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
 	countryRequiresBuyerAddress,
-	peekStripeAccountCountry,
+	readStripeAccountCountry,
 	refreshStripeAccountCountry,
 	type StripeAccountCountryStatus,
 } from "../payments/stripe-account-country.js";
@@ -393,8 +393,8 @@ interface SettingsPageState {
 	/** The commerce sweep's per-tick query budget ("Background work per minute"),
 	 *  as the sweep would read it — the default when unset or unusable. */
 	backgroundWork: number;
-	/** Issue #382: the Stripe account's country as last learned — the CACHE,
-	 *  never a live read (a page load must not wait on Stripe). */
+	/** Issue #382: the Stripe account's country — the cache, read afresh from
+	 *  Stripe only when it holds nothing usable for the stored key. */
 	stripeAccount: StripeAccountCountryStatus;
 }
 
@@ -435,8 +435,10 @@ async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
 			// sweep makes, so the form shows the budget the next tick will use.
 			readBackgroundWork(ctx),
-			// Fail-soft inside (never throws; a kv blip reads as "not checked").
-			peekStripeAccountCountry(ctx),
+			// Never throws. The ONE place besides the key's save that may ask
+			// Stripe: only when nothing usable is cached for the stored key (never
+			// cached, or an unknown answer past its back-off), so checkout never has to.
+			readStripeAccountCountry(ctx),
 		]);
 	return {
 		backgroundWork,
@@ -1397,17 +1399,17 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 		case "known": {
 			const named = `Stripe account country: ${countryName(found.country)} (${found.country}).`;
 			return countryRequiresBuyerAddress(found.country)
-				? `${named} Checkout asks every buyer for their name and address — Stripe accounts in India need them.`
+				? `${named} Checkout asks every buyer for their name and address — Stripe accounts in India need them. A restricted key needs write access to customers.`
 				: named;
 		}
 		case "permission_denied":
-			return "Stripe account country: unknown — this restricted key can't read account details. If your Stripe account is in India, give the key read access to Account (or use your secret key) and save it again, so checkout asks every buyer for their name and address.";
+			return "Stripe account country: unknown — this restricted key can't read account details. If your account is in India, give it read access to account details and write access to customers, then save it again.";
 		case "authentication_failed":
 			return "Stripe account country: unknown — Stripe refused this key. Check the key and save it again.";
 		case "unavailable":
-			return "Stripe account country: not checked yet — Stripe couldn't be reached. Checkout checks again by itself; saving the key again checks now.";
+			return "Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.";
 		case "not_checked":
-			return "Stripe account country: not checked yet. Checkout checks it by itself; saving the key again checks now.";
+			return "Stripe account country: not checked yet. Saving the key again checks now.";
 	}
 }
 

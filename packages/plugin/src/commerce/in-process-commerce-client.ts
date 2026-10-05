@@ -1089,7 +1089,11 @@ export class InProcessCommerceClient implements CommerceClient {
 						},
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
-		const addressRequired = await this.#addressRequired();
+		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
+		// checkout only — x402 has no such rule. A kv read, made before the
+		// domain's same-key short-circuit (which lives inside the use-case); a
+		// replay short-circuits before the domain looks at it.
+		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
