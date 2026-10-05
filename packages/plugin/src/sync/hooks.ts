@@ -437,8 +437,9 @@ export function createAfterSaveHandler(
  * never fail the CMS delete — so a soft delete that fails here is completed by the
  * cron's `product-orphans` leg (`cron/sweeps.ts`): it walks the live commerce rows,
  * asks `ctx.content` whether each one's document still exists, and soft-deletes the
- * row under THIS hook's idempotency key only once the CMS — able to list products at
- * all — has answered "not found" on two runs a cadence apart.
+ * row under THIS hook's idempotency key only once the CMS — able to list products,
+ * and to read some other product in the same run — has answered "not found" three
+ * times in a row on each of three runs a cadence apart.
  * Without it, a product deleted and re-created (a new CMS id) left the old row live
  * for good, holding the sku the new one needs.
  */
@@ -450,7 +451,7 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 			await (await makeCommerceClient(ctx)).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
 			console.error(
-				`[otta] content:afterDelete sync failed for product_id=${event.id} — the cron's product-orphans sweep soft-deletes the row once the CMS confirms, twice, that the document is gone:`,
+				`[otta] content:afterDelete sync failed for product_id=${event.id} — the cron's product-orphans sweep soft-deletes the row once the CMS has confirmed, on three separate runs, that the document is gone:`,
 				err,
 			);
 		}

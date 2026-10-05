@@ -485,12 +485,27 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds", "expire-orders"];
 
 /**
- * What ONE `ctx.content` call (`get` or `list`) is charged against the tick's query
- * budget: EmDash's read is the row(s), then — when there is a document — whether the
- * collection has SEO enabled and, when it does, the SEO row(s). Three D1 queries at
- * most; a miss is one, and the budget is charged the worst case.
+ * What ONE `ctx.content.get` costs, in D1 queries, on either EmDash path: the row
+ * read, then — only when there IS a document — whether the collection has SEO
+ * enabled and, when it does, the document's SEO row. So a miss is exactly ONE query
+ * (trusted `findById` returns before the SEO reads; the sandbox bridge makes one
+ * query, full stop) and a hit is at most THREE.
+ *
+ * The counting context charges it that way: `CONTENT_MISS_QUERIES` before the call
+ * (so the ceiling refuses it whole) and the rest after a document comes back. The
+ * leg always checks `CONTENT_READ_QUERIES` are left before a read, so the second
+ * half always fits. A confirming re-read of a missing row therefore costs one query.
  */
 export const CONTENT_READ_QUERIES = 3;
+export const CONTENT_MISS_QUERIES = 1;
+
+/**
+ * What ONE `ctx.content.list` is charged. EmDash's trusted `findMany` runs the page
+ * query AND an unbounded `COUNT(*)` (in parallel — two queries), then, with any
+ * item, whether the collection has SEO enabled and the page's SEO rows: four. The
+ * sandbox bridge's `contentList` is one query; the worst case is charged.
+ */
+export const CONTENT_LIST_QUERIES = 4;
 
 /**
  * The calls one orphan's soft delete makes, MEASURED at 4 (`cron-leg-costs.test.ts`):
@@ -512,11 +527,31 @@ export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
 export const PRODUCT_ORPHAN_GRACE_MS = 15 * 60 * 1000;
 
 /**
- * STRIKE TWO's distance: a row read missing is tombstoned only by a run at least
- * this long after the run that first read it missing — one maintenance interval, so
- * the two looks are separate runs on separate ticks, never two reads of one outage.
+ * The distance between STRIKES: a strike counts only from a run at least this long
+ * after the row's previous strike — one maintenance interval, so the looks are
+ * separate runs on separate ticks, never repeated reads of one outage.
  */
 export const ORPHAN_CONFIRM_AFTER_MS = 15 * 60 * 1000;
+
+/**
+ * Strikes before a tombstone. THREE, each from a separate run a cadence apart, each
+ * a QUALIFYING run (one that read some OTHER document successfully, so the CMS was
+ * demonstrably answering), each made of `ORPHAN_READS_PER_STRIKE` consecutive misses
+ * — and any document found for the row in between wipes them all. Under the failure
+ * that motivates this (EmDash's sandbox bridge answering `null` for a D1 error that
+ * strikes reads at random with probability p), a live row is tombstoned only by
+ * about p^(reads × strikes) = p^9 per window of three passes: for p = 0.3, 2e-5. The
+ * seeded simulation in `cron-product-orphans.test.ts` pins the counts.
+ */
+export const ORPHAN_STRIKES = 3;
+
+/**
+ * Reads of a missing row in ONE run before that run counts as a strike: the first
+ * read and two immediate re-reads, every one of them `null`. A re-read of a missing
+ * row costs one query (`CONTENT_MISS_QUERIES`), so this is cheap exactly where it is
+ * needed — and a transient `null` is overwhelmingly likely to be contradicted.
+ */
+export const ORPHAN_READS_PER_STRIKE = 3;
 
 /**
  * The mass-disappearance breaker's floor: a page is abandoned when at least this
@@ -559,6 +594,11 @@ export const ORPHAN_SUSPECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const UNPROMOTED_LEGS: readonly SweepLeg[] = ["product-orphans"];
 
+/** The most one row's reads can cost: `ORPHAN_READS_PER_STRIKE - 1` misses, then a
+ *  document found. */
+const ORPHAN_ROW_READ_QUERIES =
+	(ORPHAN_READS_PER_STRIKE - 1) * CONTENT_MISS_QUERIES + CONTENT_READ_QUERIES;
+
 /**
  * What a leg's calls cost before its first checked unit (`entry`) and per unit
  * (`unit`), in storage/kv/egress calls. MEASURED — `cron-leg-costs.test.ts` runs
@@ -599,11 +639,12 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"reporting-heal": { entry: 1, unit: 8 },
 		"coupon-orphans": { entry: 2, unit: 7 },
 		// entry: the state read, the one page of rows, and the circuit breaker's CMS list
-		// (`CONTENT_READ_QUERIES`). unit: the CMS read and, for a confirmed orphan, the
-		// soft delete — the row's guarded flip and its sku claim's release.
+		// (`CONTENT_LIST_QUERIES`). unit: one row's reads at worst — two misses and then a
+		// document found (`ORPHAN_ROW_READ_QUERIES`) — then, for a confirmed orphan in a
+		// run with no other document found, the canary read, and the soft delete.
 		"product-orphans": {
-			entry: 2 + CONTENT_READ_QUERIES,
-			unit: CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
+			entry: 2 + CONTENT_LIST_QUERIES,
+			unit: ORPHAN_ROW_READ_QUERIES + CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
 		},
 		// entry: resolving the gateways (their secret kv reads: 2 for Stripe, up to 3
 		// more with x402 configured) — once, and only when a unit needs them. The due
@@ -1914,22 +1955,26 @@ function countingContext(ctx: PluginContext, budget: TickBudget): PluginContext 
 			: Object.fromEntries(
 					Object.entries(ctx.storage).map(([name, collection]) => [name, counted(collection)]),
 				);
-	// A CMS read is several host queries, not one (`CONTENT_READ_QUERIES`), and is
-	// charged as such — before it is made, so the ceiling refuses it whole.
+	// A CMS call is several host queries, not one, and is charged as such: a `list`
+	// at its worst before it is made, a `get` as a miss before it is made and the rest
+	// of a hit after a document comes back (`CONTENT_READ_QUERIES`) — so a confirming
+	// re-read of a missing row costs what it really costs.
 	const reader = ctx.content;
-	const charge = (): void => {
-		for (let i = 0; i < CONTENT_READ_QUERIES; i++) budget.countQuery();
+	const charge = (queries: number): void => {
+		for (let i = 0; i < queries; i++) budget.countQuery();
 	};
 	const content: ContentReadAccess | undefined =
 		reader === undefined
 			? undefined
 			: {
-					get(collection, id) {
-						charge();
-						return reader.get(collection, id);
+					async get(collection, id) {
+						charge(CONTENT_MISS_QUERIES);
+						const doc = await reader.get(collection, id);
+						if (doc !== null) charge(CONTENT_READ_QUERIES - CONTENT_MISS_QUERIES);
+						return doc;
 					},
 					list(collection, listOptions) {
-						charge();
+						charge(CONTENT_LIST_QUERIES);
 						return reader.list(collection, listOptions);
 					},
 				};
@@ -2953,28 +2998,34 @@ async function releaseOrphanedRedemptions(
  * trusted read rejects on a database error, but its SANDBOX bridge
  * (`@emdash-cms/cloudflare`, `contentGet`/`contentList`) catches every D1 error and
  * answers `null` / an empty page — a lost binding, an overloaded database or a
- * renamed collection reads exactly like a deleted catalog. ADR-0006: a change that
- * only works trusted is still broken. So a row is tombstoned only past FIVE gates:
+ * renamed collection reads exactly like a deleted catalog, and a database failing
+ * some reads at random reads like a few deleted products. ADR-0006: a change that
+ * only works trusted is still broken. So a row is tombstoned only past every gate:
  *
- *  1. THE CIRCUIT BREAKER, once per run before any row is judged: the CMS must
+ *  1. THE CIRCUIT BREAKER, once per run before any row is read: the CMS must
  *     positively LIST at least one product (`content.list(products, limit 1)`).
- *     A rejection or an empty page means the CMS cannot be seen; the run judges
- *     nothing, marks nothing, keeps its cursor, and logs an anomaly. (So a store
- *     whose every CMS product is gone while live commerce rows remain is never
- *     swept — the safe direction, and a state the delete hook makes rare.)
  *  2. THE MASS-DISAPPEARANCE BREAKER, per page: when at least
- *     `ORPHAN_MASS_MIN_NULLS` reads, and more than half of the page's reads, come
- *     back `null`, it is far likelier an outage than real deletions — rows the hook
- *     DID tombstone are not live and never reach this page, so the page holds only
- *     the rare lost deliveries. The page is abandoned: nothing marked, cursor kept.
- *  3. TWO STRIKES, a cadence apart. A first `null` only marks the row SUSPECT
- *     (`firstNullAt`); the row is tombstoned only when a run at least
- *     `ORPHAN_CONFIRM_AFTER_MS` later reads `null` AGAIN. Any document found clears
- *     the suspicion. A transient blip therefore never tombstones anything.
- *  4. A CAP of `ORPHAN_TOMBSTONES_PER_TICK` tombstones per tick (its second pass
- *     included), logged when hit — the
- *     last line of defence against a failure shape none of the above foresaw.
- *  5. The GRACE window: a row younger than `PRODUCT_ORPHAN_GRACE_MS` is not read.
+ *     `ORPHAN_MASS_MIN_NULLS` rows, and more than half of the page's rows, read
+ *     missing, it is far likelier an outage than real deletions — rows the hook DID
+ *     tombstone are not live and never reach this page. It needs three rows read, so
+ *     on the Workers Free preset's first pass (pages of one or two rows) it fires only
+ *     on a second pass; the other gates are what cover Free.
+ *  3. THE CANARY: a missing row counts only in a QUALIFYING run — one that read some
+ *     OTHER document successfully. When nothing on the page was found, the run reads
+ *     the document the circuit breaker listed; a `null` there is the CMS lying.
+ *  4. THREE STRIKES (`ORPHAN_STRIKES`), from qualifying runs at least a cadence apart,
+ *     each strike `ORPHAN_READS_PER_STRIKE` consecutive misses in one run. Any read
+ *     that finds the document wipes the row's strikes.
+ *  5. A CAP of `ORPHAN_TOMBSTONES_PER_TICK` tombstones per tick (its second pass
+ *     included), logged when hit.
+ *  6. The GRACE window: a row younger than `PRODUCT_ORPHAN_GRACE_MS` is not read.
+ *
+ * A breaker that trips (1, 2, or a canary read `null`) is direct evidence the CMS is
+ * not answering truthfully, so EVERY suspect's strikes are wiped with it: strikes
+ * gathered while it was failing are not trusted. The run then judges nothing, keeps
+ * its cursor, and logs an anomaly. (So a store whose every CMS product is gone while
+ * live commerce rows remain is never swept — the safe direction, and a state the
+ * delete hook makes rare.)
  *
  * WHAT COUNTS AS GONE, when the CMS can be seen: EmDash reads `WHERE id = ? AND
  * deleted_at IS NULL`, so a draft, scheduled, published or unpublished document is
@@ -2998,11 +3049,15 @@ async function releaseOrphanedRedemptions(
  * of such rows follows the host's own page cursor. Rows sharing a `createdAt` are
  * therefore never stepped over at a page or tick boundary.
  *
- * ONE PAGE A RUN, sized to what the leg can pay for: a CMS read per row is the cost.
- * The state — the cursor, the suspects and the read-failure streaks — is ONE `ctx.kv`
- * document, read once and written once per run, and BOUNDED: at most
- * `ORPHAN_MAX_SUSPECTS` suspects (a null beyond that is simply not marked this pass),
- * and a suspect not re-confirmed within `ORPHAN_SUSPECT_TTL_MS` is forgotten.
+ * NO LIVELOCK ON A TIGHT BUDGET: the row at the cursor is always finishable by the
+ * run that reads it — its reads, a canary and a delete stay in hand until it is
+ * known not to need them — so every run either moves the cursor or tombstones.
+ *
+ * ONE PAGE A RUN, sized to what the leg can pay for. The state — the cursor, the
+ * suspects and the read-failure streaks — is ONE `ctx.kv` document, read once and
+ * written once per run, and BOUNDED: at most `ORPHAN_MAX_SUSPECTS` entries in each
+ * map (a strike beyond that is not recorded — the safe direction), each forgotten
+ * when not renewed within `ORPHAN_SUSPECT_TTL_MS`.
  */
 async function softDeleteOrphanedProducts(
 	storage: AdapterStorageAccess,
@@ -3016,6 +3071,7 @@ async function softDeleteOrphanedProducts(
 ): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
 	const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
 	const nowMs = now.getTime();
+	const nowIso = now.toISOString();
 	const cutoff = new Date(nowMs - PRODUCT_ORPHAN_GRACE_MS).toISOString();
 	const raw = await cursors.read(PRODUCT_ORPHAN_CURSOR);
 	const state = parseOrphanState(raw, nowMs);
@@ -3024,11 +3080,21 @@ async function softDeleteOrphanedProducts(
 		if (next !== raw) await cursors.write(PRODUCT_ORPHAN_CURSOR, next);
 	};
 	const anomalies: string[] = [];
+	/** A breaker tripped: wipe every strike, keep the cursor, judge nothing. */
+	const outage = async (line: string): Promise<{ count: number; anomalies: string[] }> => {
+		const wiped = Object.keys(state.suspects).length;
+		state.suspects = {};
+		const said = wiped > 0 ? `${line}; ${String(wiped)} suspect(s) cleared` : line;
+		console.error(`[otta] cron sweep product-orphans: ${said}`);
+		anomalies.push(said);
+		await save();
+		return { count: 0, anomalies };
+	};
 
 	// The page: as many rows as the leg can read the CMS for after this query and the
 	// circuit breaker's list, at least one, at most a host page.
 	const affordable = Math.floor(
-		(budget.remainingQueries() - 1 - CONTENT_READ_QUERIES) / CONTENT_READ_QUERIES,
+		(budget.remainingQueries() - 1 - CONTENT_LIST_QUERIES) / CONTENT_READ_QUERIES,
 	);
 	const limit = Math.max(1, Math.min(options.pageSize ?? DEFAULT_PAGE_SIZE, affordable));
 	const where = {
@@ -3044,7 +3110,7 @@ async function softDeleteOrphanedProducts(
 	// A page made only of rows the cursor already passed (a run of equal `createdAt`
 	// longer than a page): follow the host's own cursor, while the budget allows.
 	while (rows.length === 0 && page.hasMore && page.cursor !== undefined) {
-		if (budget.remainingQueries() < 1 + CONTENT_READ_QUERIES * 2) {
+		if (budget.remainingQueries() < 1 + CONTENT_LIST_QUERIES + CONTENT_READ_QUERIES) {
 			budget.stopped = true;
 			return legResult(0, true);
 		}
@@ -3065,59 +3131,47 @@ async function softDeleteOrphanedProducts(
 	}
 
 	// GATE 1 — can the CMS see any product at all?
-	let visible: boolean;
+	let listed: string[] = [];
 	try {
-		const listed = await content.list(PRODUCTS_COLLECTION, { limit: 1 });
-		visible = listed.items.length > 0;
+		const page1 = await content.list(PRODUCTS_COLLECTION, { limit: 1 });
+		listed = page1.items
+			.map((item) => item["id"])
+			.filter((id): id is string => typeof id === "string" && id.length > 0);
 	} catch (err) {
 		if (isSweepQueryCeilingError(err)) throw err;
-		visible = false;
 	}
-	if (!visible) {
-		const line =
+	if (listed.length === 0) {
+		const r = await outage(
 			"the CMS lists no products while live commerce rows exist — it cannot be seen, so" +
-			" nothing was judged (a broken content binding or an outage, never proof of deletion)";
-		console.error(`[otta] cron sweep product-orphans: ${line}`);
-		anomalies.push(line);
-		return legResult(0, false, anomalies);
+				" nothing was judged (a broken content binding or an outage, never proof of deletion)",
+		);
+		return legResult(r.count, false, r.anomalies);
 	}
 
-	// Read the page's documents first: GATE 2 is decided on the page as a whole,
+	// Read the page's documents first: GATES 2 and 3 are decided on the run as a whole,
 	// before anything is marked or deleted.
-	type Read = {
-		item: { data: ProductCommerceDoc };
-		found: boolean | null;
-		steppedPast?: boolean;
-	};
+	type Read = { item: { data: ProductCommerceDoc }; found: boolean; steppedPast?: boolean };
 	const reads: Read[] = [];
-	/** Whether a read with this answer would be strike two (a tombstone). */
-	const owesDelete = (id: string, found: boolean | null): boolean => {
-		const firstNullAt = state.suspects[id];
-		return (
-			found === false &&
-			firstNullAt !== undefined &&
-			nowMs - Date.parse(firstNullAt) >= ORPHAN_CONFIRM_AFTER_MS
-		);
-	};
 	const gate = budget.gate(0, CONTENT_READ_QUERIES);
+	/** What the run must still be able to afford for the row at the cursor, until it
+	 *  is known to be found: a canary read and a delete. */
+	const headReserve = (): number =>
+		reads[0] === undefined || (reads[0].found === false && reads[0].steppedPast !== true)
+			? CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS
+			: 0;
 	let pendingError: unknown;
 	for (const item of rows) {
-		// The row at the cursor must always be finishable by the run that reads it, so
-		// every run either moves the cursor or tombstones — a tight budget can never
-		// re-read the same confirmed orphan run after run. So a delete's worth stays
-		// behind every read until the FIRST row is known not to need one. A later row
-		// whose delete no longer fits stays ahead of the cursor, first in the next run.
-		const first = reads[0];
-		const behind =
-			first === undefined || owesDelete(first.item.data.productId, first.found)
-				? PRODUCT_ORPHAN_DELETE_CALLS
-				: 0;
-		if (!gate() || budget.remainingQueries() - CONTENT_READ_QUERIES < behind) break;
+		if (!gate() || budget.remainingQueries() < ORPHAN_ROW_READ_QUERIES + headReserve()) break;
 		const id = item.data.productId;
 		try {
-			const doc = await content.get(PRODUCTS_COLLECTION, id);
+			// A miss is re-read, at a query each, before it counts: a transient `null`
+			// almost never survives three looks in a row.
+			let found = false;
+			for (let look = 0; look < ORPHAN_READS_PER_STRIKE && !found; look++) {
+				found = (await content.get(PRODUCTS_COLLECTION, id)) !== null;
+			}
 			delete state.failures[id];
-			reads.push({ item, found: doc !== null });
+			reads.push({ item, found });
 		} catch (err) {
 			// The tick's own ceiling is not the CMS failing: stop, and let the runner
 			// report it once what was read is recorded.
@@ -3125,7 +3179,7 @@ async function softDeleteOrphanedProducts(
 				pendingError = err;
 				break;
 			}
-			const streak = (state.failures[id] ?? 0) + 1;
+			const streak = (state.failures[id]?.n ?? 0) + 1;
 			if (streak >= ORPHAN_MAX_READ_FAILURES) {
 				// One corrupt row must not stop the walk forever. Stepped past — LEFT LIVE
 				// — and the streak starts over on the next rotation.
@@ -3133,10 +3187,15 @@ async function softDeleteOrphanedProducts(
 				const line = `the CMS read of product ${id} failed on ${String(streak)} runs in a row; its row is left live and stepped past`;
 				console.error(`[otta] cron sweep product-orphans: ${line}:`, err);
 				anomalies.push(line);
-				reads.push({ item, found: null, steppedPast: true });
+				reads.push({ item, found: false, steppedPast: true });
 				continue;
 			}
-			state.failures[id] = streak;
+			if (
+				state.failures[id] !== undefined ||
+				Object.keys(state.failures).length < ORPHAN_MAX_SUSPECTS
+			) {
+				state.failures[id] = { n: streak, at: nowIso };
+			}
 			pendingError = new Error(
 				`product-orphans: the CMS read of product ${id} failed, so its commerce row is` +
 					" left live (a failed read is never taken for a deleted document); the scan" +
@@ -3147,19 +3206,45 @@ async function softDeleteOrphanedProducts(
 			break;
 		}
 	}
+	const judged = reads.filter((read) => read.steppedPast !== true);
+	// A row the circuit breaker's own list just returned exists, whatever its reads said.
+	for (const read of judged) {
+		if (!read.found && listed.includes(read.item.data.productId)) read.found = true;
+	}
 
 	// GATE 2 — a mass disappearance is an outage until proven otherwise.
-	const nulls = reads.filter((read) => read.found === false).length;
-	if (nulls >= ORPHAN_MASS_MIN_NULLS && nulls * 2 > reads.length) {
-		const line =
-			`${String(nulls)} of ${String(reads.length)} products read on this page are missing from` +
-			" the CMS — far likelier an outage than real deletions, so the page was abandoned:" +
-			" nothing marked, nothing deleted";
-		console.error(`[otta] cron sweep product-orphans: ${line}`);
-		anomalies.push(line);
-		await save();
+	const nulls = judged.filter((read) => !read.found).length;
+	if (nulls >= ORPHAN_MASS_MIN_NULLS && nulls * 2 > judged.length) {
+		const r = await outage(
+			`${String(nulls)} of ${String(judged.length)} products read on this page are missing from` +
+				" the CMS — far likelier an outage than real deletions, so the page was abandoned:" +
+				" nothing marked, nothing deleted",
+		);
 		if (pendingError !== undefined) throw pendingError;
-		return legResult(0, false, anomalies);
+		return legResult(0, false, r.anomalies);
+	}
+
+	// GATE 3 — the canary. A miss counts only in a run that found some other document.
+	let qualifies = judged.some((read) => read.found);
+	if (!qualifies && nulls > 0 && budget.remainingQueries() >= CONTENT_READ_QUERIES) {
+		const canaryId = listed[0] as string;
+		let canary: boolean | undefined;
+		try {
+			canary = (await content.get(PRODUCTS_COLLECTION, canaryId)) !== null;
+		} catch (err) {
+			if (isSweepQueryCeilingError(err)) throw err;
+			// A canary that cannot be read proves nothing either way: this run judges no
+			// miss, and no strike is wiped for it.
+		}
+		if (canary === false) {
+			const r = await outage(
+				`the CMS listed product ${canaryId} and then read it as missing — its reads cannot be` +
+					" trusted, so nothing was judged",
+			);
+			if (pendingError !== undefined) throw pendingError;
+			return legResult(0, false, r.anomalies);
+		}
+		qualifies = canary === true;
 	}
 
 	let deleted = 0;
@@ -3175,26 +3260,34 @@ async function softDeleteOrphanedProducts(
 				advance(read.item);
 				continue;
 			}
-			if (read.found === true) {
+			if (read.found) {
+				// Found: every strike against it is wiped.
 				delete state.suspects[id];
 				advance(read.item);
 				continue;
 			}
-			const firstNullAt = state.suspects[id];
-			if (firstNullAt === undefined) {
-				// STRIKE ONE: suspect only.
-				if (Object.keys(state.suspects).length < ORPHAN_MAX_SUSPECTS) {
-					state.suspects[id] = now.toISOString();
+			if (!qualifies) {
+				// No other document was read this run: the miss proves nothing, and the row
+				// stays ahead of the cursor — first in the next run, which holds a canary
+				// for it in hand.
+				stopped = true;
+				break;
+			}
+			const suspect = state.suspects[id];
+			if (suspect !== undefined && nowMs - Date.parse(suspect.at) < ORPHAN_CONFIRM_AFTER_MS) {
+				// Struck already this cadence: not a separate look.
+				advance(read.item);
+				continue;
+			}
+			const strikes = (suspect?.n ?? 0) + 1;
+			if (strikes < ORPHAN_STRIKES) {
+				if (suspect !== undefined || Object.keys(state.suspects).length < ORPHAN_MAX_SUSPECTS) {
+					state.suspects[id] = { n: strikes, at: nowIso };
 				}
 				advance(read.item);
 				continue;
 			}
-			if (nowMs - Date.parse(firstNullAt) < ORPHAN_CONFIRM_AFTER_MS) {
-				// Seen missing earlier this cadence: not yet a second, independent look.
-				advance(read.item);
-				continue;
-			}
-			// STRIKE TWO, a cadence later.
+			// The last strike.
 			if (tombstones.count >= ORPHAN_TOMBSTONES_PER_TICK) {
 				const line = `reached the cap of ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones in one tick; the rest wait for the next tick`;
 				console.error(`[otta] cron sweep product-orphans: ${line}`);
@@ -3222,7 +3315,7 @@ async function softDeleteOrphanedProducts(
 		throw err;
 	}
 
-	const reachedEnd = !stopped && reads.length === rows.length && !page.hasMore;
+	const reachedEnd = !stopped && !page.hasMore;
 	if (reachedEnd) {
 		state.at = null;
 		state.id = null;
@@ -3234,18 +3327,25 @@ async function softDeleteOrphanedProducts(
 	return legResult(deleted, !reachedEnd, anomalies);
 }
 
-/** `product-orphans`' one kv document: the compound cursor, the suspects (product
- *  id → when it was first read missing) and the read-failure streaks. */
+/** One row's record in `product-orphans`' state: how many times, and when last. */
+interface OrphanMark {
+	n: number;
+	at: string;
+}
+
+/** `product-orphans`' one kv document: the compound cursor, the suspects (strikes
+ *  per product id) and the read-failure streaks. */
 interface OrphanState {
 	at: string | null;
 	id: string | null;
-	suspects: Record<string, string>;
-	failures: Record<string, number>;
+	suspects: Record<string, OrphanMark>;
+	failures: Record<string, OrphanMark>;
 }
 
 /** A lost or garbled state costs a re-read and restarts every strike — the safe
- *  direction: nothing is tombstoned on the strength of a lost record. Suspects past
- *  `ORPHAN_SUSPECT_TTL_MS` are dropped here, which is what keeps the set bounded. */
+ *  direction: nothing is tombstoned on the strength of a lost record. Entries past
+ *  `ORPHAN_SUSPECT_TTL_MS`, and any beyond `ORPHAN_MAX_SUSPECTS` per map, are dropped
+ *  here, which is what keeps the document bounded. */
 function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 	const state: OrphanState = { at: null, id: null, suspects: {}, failures: {} };
 	if (raw === null || raw === "") return state;
@@ -3257,17 +3357,25 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 			state.at = value.at;
 			state.id = value.id;
 		}
-		for (const [id, at] of Object.entries((value.suspects ?? {}) as Record<string, unknown>)) {
-			const ms = typeof at === "string" ? Date.parse(at) : Number.NaN;
-			if (Number.isNaN(ms) || ms > nowMs || nowMs - ms > ORPHAN_SUSPECT_TTL_MS) continue;
-			if (Object.keys(state.suspects).length >= ORPHAN_MAX_SUSPECTS) break;
-			state.suspects[id] = at as string;
-		}
-		for (const [id, n] of Object.entries((value.failures ?? {}) as Record<string, unknown>)) {
-			if (typeof n === "number" && Number.isInteger(n) && n > 0) state.failures[id] = n;
-		}
+		state.suspects = parseMarks(value.suspects, nowMs);
+		state.failures = parseMarks(value.failures, nowMs);
 		return state;
 	} catch {
 		return state;
 	}
+}
+
+function parseMarks(raw: unknown, nowMs: number): Record<string, OrphanMark> {
+	const marks: Record<string, OrphanMark> = {};
+	if (typeof raw !== "object" || raw === null) return marks;
+	for (const [id, mark] of Object.entries(raw as Record<string, unknown>)) {
+		if (Object.keys(marks).length >= ORPHAN_MAX_SUSPECTS) break;
+		if (typeof mark !== "object" || mark === null) continue;
+		const { n, at } = mark as { n?: unknown; at?: unknown };
+		if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || typeof at !== "string") continue;
+		const ms = Date.parse(at);
+		if (Number.isNaN(ms) || ms > nowMs || nowMs - ms > ORPHAN_SUSPECT_TTL_MS) continue;
+		marks[id] = { n, at };
+	}
+	return marks;
 }

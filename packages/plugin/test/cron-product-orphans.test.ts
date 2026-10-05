@@ -13,13 +13,16 @@
  * SANDBOX bridge a failed CMS read answers `null` — exactly like a deletion. So this
  * suite pins, against a real SQLite document store and the host's `ctx.content` as
  * EmDash answers it on both paths (`fakeCms`, `trusted` and `bridge`):
- *  - two strikes a cadence apart: a first `null` only marks a suspect, a found
- *    document clears it, and only a second `null` a cadence later tombstones;
- *  - a CMS that cannot be seen (an empty or failed list), and a page that is mostly
- *    missing, mark and delete nothing;
+ *  - three strikes a cadence apart, each three misses in a row, each from a run
+ *    that found some OTHER document (the page's, or a canary's): a found document
+ *    wipes the strikes, and only the third strike tombstones;
+ *  - a CMS that cannot be seen (an empty or failed list, a canary read `null`), and
+ *    a page that is mostly missing, mark and delete nothing — and wipe every strike;
+ *  - a seeded simulation of INTERMITTENT `null`s (the bridge swallowing sporadic D1
+ *    errors) tombstones no live product at p ≤ 0.3 over 360 ticks;
  *  - a read that rejects never counts as gone, and one row rejecting run after run
  *    is stepped past (left live) rather than stopping the walk forever;
- *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a run;
+ *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick;
  *  - the soft delete is the hook's own: a replay is a no-op, holds, stock and
  *    orders are untouched, and the delete-and-recreate shape frees the sku;
  *  - the walk pages behind a compound `(createdAt, id)` cursor across ticks on the
@@ -59,6 +62,7 @@ import {
 import {
 	AGING_TICKS,
 	ORPHAN_MAX_READ_FAILURES,
+	ORPHAN_STRIKES,
 	ORPHAN_TOMBSTONES_PER_TICK,
 	PRODUCT_ORPHAN_GRACE_MS,
 	STARVING_TICKS,
@@ -72,6 +76,7 @@ import {
 	memoryCursors,
 	MINUTE_MS,
 	placeOrder,
+	seededRandom,
 	sweepContext,
 	type CallCounter,
 	type FakeCms,
@@ -81,8 +86,10 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 /** Comfortably outside the grace window. */
 const CREATED = new Date(NOW.getTime() - 2 * HOUR_MS);
-/** Far enough on for the next run to be a second, independent look. */
+/** Far enough on for the next run to be a separate, independent look. */
 const CADENCE = 16 * MINUTE_MS;
+/** The offsets of the runs that strike a row out: 0, one cadence, two. */
+const STRIKE_RUNS = Array.from({ length: ORPHAN_STRIKES }, (_, i) => i * CADENCE);
 const FREE = 30;
 const PAID = 600;
 
@@ -146,19 +153,38 @@ function orphanLeg(summary: CommerceSweepSummary) {
 	return found;
 }
 
-/** The leg's kv document: cursor, suspects, failure streaks. */
+/** The leg's kv document: cursor, suspects (strikes), failure streaks. */
 async function orphanState(cursors: SweepCursorStore): Promise<{
-	suspects: Record<string, string>;
-	failures: Record<string, number>;
+	suspects: Record<string, { n: number; at: string }>;
+	failures: Record<string, { n: number; at: string }>;
 }> {
 	const raw = await cursors.read("product-orphans");
 	return raw === null || raw === ""
 		? { suspects: {}, failures: {} }
-		: (JSON.parse(raw) as { suspects: Record<string, string>; failures: Record<string, number> });
+		: (JSON.parse(raw) as {
+				suspects: Record<string, { n: number; at: string }>;
+				failures: Record<string, { n: number; at: string }>;
+			});
 }
 
-describe("two strikes, a cadence apart", () => {
-	test("a missing document is only SUSPECT on the first run, and tombstoned by a run a cadence later; published, draft and scheduled documents keep their rows", async () => {
+function strikesOf(state: Awaited<ReturnType<typeof orphanState>>): Record<string, number> {
+	return Object.fromEntries(Object.entries(state.suspects).map(([id, mark]) => [id, mark.n]));
+}
+
+/** The product ids read, in order, without the canary and without re-reads. */
+function rowsRead(cms: FakeCms): string[] {
+	return cms.reads.filter((id, i) => id !== "listed" && cms.reads[i - 1] !== id);
+}
+
+/** Run the strike-out runs, `offset` on from NOW. Returns the summed tombstones. */
+async function strikeOut(cms: FakeCms, cursors: SweepCursorStore, offset = 0): Promise<number> {
+	let count = 0;
+	for (const at of STRIKE_RUNS) count += orphanLeg(await tick(cms, cursors, offset + at)).count;
+	return count;
+}
+
+describe("three strikes, a cadence apart", () => {
+	test("a missing document is struck once a run — three misses in a row each time — and tombstoned on the third strike; published, draft and scheduled documents keep their rows", async () => {
 		for (const id of ["p-gone", "p-published", "p-draft", "p-scheduled"]) await product(id);
 		const cms = fakeCms({
 			gone: ["p-gone"],
@@ -168,11 +194,18 @@ describe("two strikes, a cadence apart", () => {
 
 		const first = await tick(cms, cursors);
 		expect(orphanLeg(first)).toMatchObject({ ok: true, count: 0 });
-		expect(await lifecycleOf("p-gone")).toBe("live");
-		expect(Object.keys((await orphanState(cursors)).suspects)).toEqual(["p-gone"]);
+		// Three looks at the missing row, one at each found one.
+		expect(cms.reads.filter((id) => id === "p-gone")).toHaveLength(3);
+		expect(cms.reads.filter((id) => id === "p-published")).toHaveLength(1);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-gone": 1 });
 
 		const second = await tick(cms, cursors, CADENCE);
-		expect(orphanLeg(second)).toMatchObject({ ok: true, count: 1 });
+		expect(orphanLeg(second).count).toBe(0);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-gone": 2 });
+		expect(await lifecycleOf("p-gone")).toBe("live");
+
+		const third = await tick(cms, cursors, 2 * CADENCE);
+		expect(orphanLeg(third)).toMatchObject({ ok: true, count: 1 });
 		const gone = await row("p-gone");
 		expect(gone).toMatchObject({ lifecycle: "deleted", active: false });
 		expect(gone?.deletedAt).not.toBeNull();
@@ -181,43 +214,71 @@ describe("two strikes, a cadence apart", () => {
 		for (const id of ["p-published", "p-draft", "p-scheduled"]) {
 			expect(await row(id), id).toMatchObject({ lifecycle: "live", deletedAt: null });
 		}
-		// Confirmed suspects leave the set.
 		expect((await orphanState(cursors)).suspects).toEqual({});
 	});
 
-	test("a transient null and then a found document: never tombstoned — the suspicion is cleared, and a later null starts over", async () => {
+	test("a transient null and then a found document: never tombstoned — the strikes are wiped, and a later miss starts over at one", async () => {
 		await product("p-blip");
 		const cms = fakeCms({ gone: ["p-blip"] });
 		const cursors = memoryCursors();
-
 		await tick(cms, cursors);
-		expect((await orphanState(cursors)).suspects).toHaveProperty("p-blip");
+		await tick(cms, cursors, CADENCE);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-blip": 2 });
 
 		cms.gone.clear();
-		await tick(cms, cursors, CADENCE);
+		await tick(cms, cursors, 2 * CADENCE);
 		expect((await orphanState(cursors)).suspects).toEqual({});
 
-		// Missing again: strike ONE again, not two.
 		cms.gone.add("p-blip");
-		const third = await tick(cms, cursors, 2 * CADENCE);
-		expect(orphanLeg(third).count).toBe(0);
+		const again = await tick(cms, cursors, 3 * CADENCE);
+		expect(orphanLeg(again).count).toBe(0);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-blip": 1 });
 		expect(await lifecycleOf("p-blip")).toBe("live");
 	});
 
-	test("two nulls inside one cadence are one look, not two: the second run, minutes later, does not tombstone", async () => {
+	test("one miss among a strike's three reads is no strike: a re-read that finds the document clears it", async () => {
+		await product("p-flicker");
+		const cms = fakeCms();
+		let looks = 0;
+		cms.beforeGet = (id) => {
+			if (id !== "p-flicker") return;
+			looks++;
+			// Missing on the first look of each run only.
+			if (looks % 2 === 1) cms.gone.add(id);
+			else cms.gone.delete(id);
+		};
+		const cursors = memoryCursors();
+		for (const at of [...STRIKE_RUNS, 3 * CADENCE]) await tick(cms, cursors, at);
+		expect(await lifecycleOf("p-flicker")).toBe("live");
+		expect((await orphanState(cursors)).suspects).toEqual({});
+	});
+
+	test("runs inside one cadence are one look, not several: only runs a cadence apart strike", async () => {
 		await product("p-soon");
 		const cms = fakeCms({ gone: ["p-soon"] });
 		const cursors = memoryCursors();
-		await tick(cms, cursors);
-		// Forget the cadence stamp so the scan runs again ten minutes on.
-		await cursors.write("state", "{}");
-		const early = await tick(cms, cursors, 10 * MINUTE_MS);
-		expect(orphanLeg(early).count).toBe(0);
+		for (const at of [0, 5, 10].map((m) => m * MINUTE_MS)) {
+			// Forget the cadence stamp so the scan runs again minutes on.
+			await cursors.write("state", "{}");
+			await tick(cms, cursors, at);
+		}
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-soon": 1 });
 		expect(await lifecycleOf("p-soon")).toBe("live");
 
-		const later = await tick(cms, cursors, 10 * MINUTE_MS + CADENCE);
-		expect(orphanLeg(later).count).toBe(1);
+		await strikeOut(cms, cursors, CADENCE);
 		expect(await lifecycleOf("p-soon")).toBe("deleted");
+	});
+
+	test("a page of nothing but a missing row counts only after the canary: the listed document read successfully is the other document found", async () => {
+		await product("p-alone");
+		const cms = fakeCms({ gone: ["p-alone"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(cms.reads).toContain("listed");
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-alone": 1 });
+		await tick(cms, cursors, CADENCE);
+		await tick(cms, cursors, 2 * CADENCE);
+		expect(await lifecycleOf("p-alone")).toBe("deleted");
 	});
 
 	test("a row younger than the grace window is not read, and is judged once it is older", async () => {
@@ -226,23 +287,21 @@ describe("two strikes, a cadence apart", () => {
 		const cursors = memoryCursors();
 
 		await tick(cms, cursors);
-		expect(cms.reads).toEqual([]);
-		await tick(cms, cursors, CADENCE);
-		await tick(cms, cursors, 2 * CADENCE);
+		expect(rowsRead(cms)).toEqual([]);
+		await strikeOut(cms, cursors, CADENCE);
 		expect(await lifecycleOf("p-young")).toBe("deleted");
 	});
 });
 
-describe("a CMS that cannot be seen judges nothing", () => {
+describe("a CMS that cannot be seen judges nothing, and wipes every strike", () => {
 	for (const mode of ["bridge", "trusted"] as const) {
 		test(`a total CMS outage (${mode} path) marks and deletes nothing, run after run`, async () => {
 			for (const id of ["p-a", "p-b", "p-c", "p-d"]) await product(id);
 			const cms = fakeCms({ mode });
 			cms.outage = true;
 			const cursors = memoryCursors();
-			for (let run = 0; run < 3; run++) {
-				const summary = await tick(cms, cursors, run * CADENCE);
-				const leg = orphanLeg(summary);
+			for (let run = 0; run < 4; run++) {
+				const leg = orphanLeg(await tick(cms, cursors, run * CADENCE));
 				expect(leg).toMatchObject({ ok: true, count: 0 });
 				expect(leg.anomalies?.join("\n")).toMatch(/lists no products/);
 			}
@@ -254,33 +313,74 @@ describe("a CMS that cannot be seen judges nothing", () => {
 		});
 	}
 
+	test("the circuit breaker tripping wipes the strikes gathered before it", async () => {
+		await product("p-struck");
+		await product("p-ok", new Date(CREATED.getTime() + 1000));
+		const cms = fakeCms({ mode: "bridge", gone: ["p-struck"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		await tick(cms, cursors, CADENCE);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-struck": 2 });
+
+		cms.listEmpty = true;
+		const tripped = orphanLeg(await tick(cms, cursors, 2 * CADENCE));
+		expect(tripped.anomalies?.join("\n")).toMatch(/1 suspect\(s\) cleared/);
+		expect((await orphanState(cursors)).suspects).toEqual({});
+
+		// Back to one: three more qualifying strikes are needed.
+		cms.listEmpty = false;
+		await tick(cms, cursors, 3 * CADENCE);
+		expect(await lifecycleOf("p-struck")).toBe("live");
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-struck": 1 });
+	});
+
+	test("a canary read missing — the CMS listed a product and then could not read it — trips the breaker: nothing judged, strikes wiped", async () => {
+		await product("p-only");
+		const cms = fakeCms({ mode: "bridge", gone: ["p-only"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-only": 1 });
+
+		cms.gone.add("listed");
+		const tripped = orphanLeg(await tick(cms, cursors, CADENCE));
+		expect(tripped).toMatchObject({ ok: true, count: 0 });
+		expect(tripped.anomalies?.join("\n")).toMatch(
+			/listed product listed and then read it as missing/,
+		);
+		expect((await orphanState(cursors)).suspects).toEqual({});
+		expect(await lifecycleOf("p-only")).toBe("live");
+	});
+
 	test("a renamed or emptied collection — the bridge's empty list while every get says null — marks nothing", async () => {
 		await product("p-x");
 		const cms = fakeCms({ mode: "bridge", gone: ["p-x"] });
 		cms.listEmpty = true;
 		const cursors = memoryCursors();
-		await tick(cms, cursors);
-		await tick(cms, cursors, CADENCE);
+		for (const at of [...STRIKE_RUNS, 3 * CADENCE]) await tick(cms, cursors, at);
 		expect(await lifecycleOf("p-x")).toBe("live");
 		expect((await orphanState(cursors)).suspects).toEqual({});
 	});
 
-	test("the mass-disappearance breaker: a page mostly missing is abandoned — nothing marked — while a couple missing is not", async () => {
+	test("the mass-disappearance breaker: a page mostly missing is abandoned — nothing marked, strikes wiped — while a couple missing is not", async () => {
 		const ids = ["p-m0", "p-m1", "p-m2", "p-m3"];
 		for (const [i, id] of ids.entries()) await product(id, new Date(CREATED.getTime() + i * 1000));
-		const cms = fakeCms({ mode: "bridge", gone: ["p-m0", "p-m1", "p-m2"] });
+		const cms = fakeCms({ mode: "bridge", gone: ["p-m0"] });
 		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-m0": 1 });
 
-		const abandoned = await tick(cms, cursors);
-		expect(orphanLeg(abandoned).anomalies?.join("\n")).toMatch(/3 of 4 products/);
+		cms.gone.add("p-m1");
+		cms.gone.add("p-m2");
+		const abandoned = orphanLeg(await tick(cms, cursors, CADENCE));
+		expect(abandoned.anomalies?.join("\n")).toMatch(/3 of 4 products/);
 		expect((await orphanState(cursors)).suspects).toEqual({});
-		await tick(cms, cursors, CADENCE);
+		for (const at of [2, 3].map((n) => n * CADENCE)) await tick(cms, cursors, at);
 		for (const id of ids) expect(await lifecycleOf(id), id).toBe("live");
 
-		// Two of four missing: below the floor, so both are marked as usual.
+		// Two of four missing: below the floor, so both are struck as usual.
 		cms.gone.delete("p-m2");
-		await tick(cms, cursors, 2 * CADENCE);
-		expect(Object.keys((await orphanState(cursors)).suspects).toSorted()).toEqual(["p-m0", "p-m1"]);
+		await tick(cms, cursors, 4 * CADENCE);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-m0": 1, "p-m1": 1 });
 	});
 });
 
@@ -297,14 +397,16 @@ describe("a read that fails never counts as gone", () => {
 		expect(orphanLeg(failed).error).toMatch(/p-flaky/);
 		expect(errors.some((line) => line.includes("product-orphans FAILED"))).toBe(true);
 		const state = await orphanState(cursors);
-		expect(Object.keys(state.suspects)).toEqual(["p-before"]);
-		expect(state.failures).toEqual({ "p-flaky": 1 });
+		expect(strikesOf(state)).toEqual({ "p-before": 1 });
+		expect(Object.fromEntries(Object.entries(state.failures).map(([id, m]) => [id, m.n]))).toEqual({
+			"p-flaky": 1,
+		});
 
 		cms.failing.clear();
 		cms.reads.length = 0;
 		await tick(cms, cursors, CADENCE);
 		// Resumed at the row it stopped on — not from the top.
-		expect(cms.reads.slice(0, 2)).toEqual(["p-flaky", "p-after"]);
+		expect(rowsRead(cms).slice(0, 2)).toEqual(["p-flaky", "p-after"]);
 		expect((await orphanState(cursors)).failures).toEqual({});
 	});
 
@@ -324,10 +426,26 @@ describe("a read that fails never counts as gone", () => {
 		expect(orphanLeg(stepped).anomalies?.join("\n")).toMatch(/p-corrupt.*stepped past/);
 		expect(errors.some((line) => line.includes("stepped past"))).toBe(true);
 		expect(await lifecycleOf("p-corrupt")).toBe("live");
-		// The row after it was reached and judged (strike one).
+		// The row after it was reached and judged (strike one, via the canary).
 		const state = await orphanState(cursors);
-		expect(Object.keys(state.suspects)).toEqual(["p-next"]);
+		expect(strikesOf(state)).toEqual({ "p-next": 1 });
 		expect(state.failures).toEqual({});
+	});
+
+	test("read-failure streaks expire like strikes do: a stale one is forgotten", async () => {
+		await product("p-once");
+		const cms = fakeCms({ failing: ["p-once"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(Object.keys((await orphanState(cursors)).failures)).toEqual(["p-once"]);
+		cms.failing.clear();
+		// Eight days on, with the row now readable elsewhere in the walk — the streak
+		// is dropped on read, never carried.
+		await product("p-later", new Date(NOW.getTime() + 7 * DAY_MS));
+		cms.failing.add("p-once");
+		await tick(cms, cursors, 8 * DAY_MS);
+		const failures = (await orphanState(cursors)).failures;
+		expect(failures["p-once"]?.n).toBe(1);
 	});
 });
 
@@ -338,15 +456,14 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		const cms = fakeCms({ gone: ["p-replay"] });
 		const cursors = memoryCursors();
 
-		await tick(cms, cursors);
-		await tick(cms, cursors, CADENCE);
+		expect(await strikeOut(cms, cursors)).toBe(1);
 		const tombstone = await row("p-replay");
 		expect(tombstone?.lifecycle).toBe("deleted");
 
 		cms.reads.length = 0;
-		const third = await tick(cms, cursors, 2 * CADENCE);
-		expect(orphanLeg(third)).toMatchObject({ ok: true, count: 0 });
-		expect(cms.reads).toEqual(["p-kept"]);
+		const later = await tick(cms, cursors, 3 * CADENCE);
+		expect(orphanLeg(later)).toMatchObject({ ok: true, count: 0 });
+		expect(rowsRead(cms)).toEqual(["p-kept"]);
 		expect(await row("p-replay")).toEqual(tombstone);
 
 		// The hook's own delivery, arriving late, is the same no-op: the sweep wrote
@@ -374,11 +491,8 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 			clock: new FixedClock(NOW),
 		});
 		const onHandBefore = await inventory.getOnHand(toSku(placed.sku));
-		const cms = fakeCms({ gone: ["prod-orphan-hold"] });
-		const cursors = memoryCursors();
 
-		await tick(cms, cursors);
-		await tick(cms, cursors, CADENCE);
+		await strikeOut(fakeCms({ gone: ["prod-orphan-hold"] }), memoryCursors());
 
 		expect(await lifecycleOf("prod-orphan-hold")).toBe("deleted");
 		expect(await inventory.getOnHand(toSku(placed.sku))).toBe(onHandBefore);
@@ -405,11 +519,8 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 				idempotencyKey("price-1"),
 			),
 		).rejects.toMatchObject({ name: "SkuConflictError" });
-		const cms = fakeCms({ gone: ["p-mug-old"] });
-		const cursors = memoryCursors();
 
-		await tick(cms, cursors);
-		await tick(cms, cursors, CADENCE);
+		await strikeOut(fakeCms({ gone: ["p-mug-old"] }), memoryCursors());
 
 		expect(await row("p-mug-old")).toMatchObject({ lifecycle: "deleted", sku: "SKU-MUG" });
 		expect(await row("p-mug-new")).toMatchObject({ lifecycle: "live", deletedAt: null });
@@ -420,7 +531,7 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		expect(priced.sku).toBe("SKU-MUG");
 	});
 
-	test(`at most ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones a tick — second pass included — logged when the cap is hit; the rest go on the next run`, async () => {
+	test(`at most ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones a tick — second pass included — logged when the cap is hit; the rest go on the next tick`, async () => {
 		const gone = Array.from({ length: 7 }, (_, i) => `p-cap-g${String(i)}`);
 		const kept = Array.from({ length: 8 }, (_, i) => `p-cap-k${String(i)}`);
 		for (const [i, id] of [...gone, ...kept].entries()) {
@@ -429,12 +540,13 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		const cms = fakeCms({ gone });
 		const cursors = memoryCursors();
 		await tick(cms, cursors);
-		const capped = await tick(cms, cursors, CADENCE);
+		await tick(cms, cursors, CADENCE);
+		const capped = await tick(cms, cursors, 2 * CADENCE);
 		expect(orphanLeg(capped).count).toBe(ORPHAN_TOMBSTONES_PER_TICK);
 		expect(orphanLeg(capped).incomplete).toBe(true);
 		expect(errors.some((line) => line.includes("cap of 5 tombstones"))).toBe(true);
 
-		const rest = await tick(cms, cursors, CADENCE + MINUTE_MS);
+		const rest = await tick(cms, cursors, 2 * CADENCE + MINUTE_MS);
 		expect(orphanLeg(rest).count).toBe(gone.length - ORPHAN_TOMBSTONES_PER_TICK);
 		for (const id of gone) expect(await lifecycleOf(id), id).toBe("deleted");
 		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
@@ -449,6 +561,7 @@ describe("the cursor keeps its place", () => {
 		const cms = fakeCms({ gone: ["p-t0", "p-t1", "p-t2"].slice(0, 2) });
 		const cursors = memoryCursors();
 		await tick(cms, cursors);
+		await tick(cms, cursors, CADENCE);
 		// A store whose write of p-t1 fails, for this run only.
 		const broken: StorageAccess = { ...storage };
 		const collection = storage[PRODUCT_COMMERCE_COLLECTION]!;
@@ -464,15 +577,15 @@ describe("the cursor keeps its place", () => {
 				};
 			},
 		});
-		const failed = await tick(cms, cursors, CADENCE, { store: broken });
+		const failed = await tick(cms, cursors, 2 * CADENCE, { store: broken });
 		expect(orphanLeg(failed)).toMatchObject({ ok: false });
 		expect(orphanLeg(failed).error).toMatch(/write failed/);
 		expect(await lifecycleOf("p-t0")).toBe("deleted");
 		expect(await lifecycleOf("p-t1")).toBe("live");
 
 		cms.reads.length = 0;
-		const resumed = await tick(cms, cursors, 2 * CADENCE);
-		expect(cms.reads[0]).toBe("p-t1");
+		const resumed = await tick(cms, cursors, 3 * CADENCE);
+		expect(rowsRead(cms)[0]).toBe("p-t1");
 		expect(orphanLeg(resumed).count).toBe(1);
 		expect(await lifecycleOf("p-t1")).toBe("deleted");
 	});
@@ -515,7 +628,7 @@ describe("the cursor keeps its place", () => {
 });
 
 describe("the walk fits the budget and pages across ticks", () => {
-	test("on the Workers Free budget, a 40-product catalog: every orphan is reached on the second pass, nothing live is touched, and each pass ends", async () => {
+	test("on the Workers Free budget, a 40-product catalog: no tick over budget, every orphan struck out over three passes, nothing live touched", async () => {
 		const ids = Array.from({ length: 40 }, (_, i) => `p-cat-${String(i).padStart(2, "0")}`);
 		for (const [i, id] of ids.entries()) {
 			await product(id, new Date(CREATED.getTime() + i * 1000));
@@ -525,8 +638,8 @@ describe("the walk fits the budget and pages across ticks", () => {
 		const cursors = memoryCursors();
 		const counter: CallCounter = { calls: 0 };
 		let firstPass: number | null = null;
-		let t = 0;
-		for (; t < 60; t++) {
+		let doneAt: number | null = null;
+		for (let t = 0; t < 180 && doneAt === null; t++) {
 			counter.calls = 0;
 			const summary = await tick(cms, cursors, t * MINUTE_MS, { counter, queryBudget: FREE });
 			// Never over the budget, counted from outside the sweep.
@@ -535,19 +648,75 @@ describe("the walk fits the budget and pages across ticks", () => {
 			expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
 			if (leg.notDue === true && firstPass === null) firstPass = t;
 			const done = await Promise.all(gone.map(async (id) => (await lifecycleOf(id)) === "deleted"));
-			if (done.every(Boolean)) break;
+			if (done.every(Boolean)) doneAt = t;
 		}
 		for (const id of ids) {
 			expect(await lifecycleOf(id), id).toBe(gone.includes(id) ? "deleted" : "live");
 		}
-		// Measured: the first pass ends within 12 ticks — three to four rows a tick on
-		// an idle Free tick (its share, then the second pass on what is left, each run
-		// paying the circuit breaker's list first). A 1000-product catalog measured one
-		// pass in 280 ticks — under five hours — and 7 ticks on the Paid preset. An
-		// orphan is confirmed, and tombstoned, on the pass after the one that found it.
+		// Measured: the first pass ends in 18 ticks; the orphans go on the third
+		// pass, each pass a maintenance interval after the last finished. A
+		// 1000-product catalog measured one pass in 280 ticks on Workers Free (under
+		// five hours; about seven on Paid), so there an orphan goes within about three
+		// rotations — some fifteen hours.
 		expect(firstPass, "the first pass never ended").not.toBeNull();
-		expect(firstPass!).toBeLessThanOrEqual(12);
+		expect(firstPass!).toBeLessThanOrEqual(20);
+		expect(doneAt, "the orphans were never struck out").not.toBeNull();
+		expect(doneAt!).toBeLessThanOrEqual(90);
 	});
+});
+
+/**
+ * THE INTERMITTENT-FAILURE SIMULATION (review round 2). The sandbox bridge answers
+ * `null` for any D1 error, so a database failing some reads at random looks like
+ * products disappearing at random. Forty live products and one real orphan, the
+ * circuit breaker's list answering, and EVERY `get` (the canary's too) failing to
+ * `null` independently with probability p, for 360 one-minute ticks on each preset,
+ * from a fixed seed so the run is the same every time. Two strikes alone tombstoned
+ * 5 (p = 0.15) and 20-26 (p = 0.3) live products here.
+ */
+describe("intermittent CMS failures never tombstone a live product (seeded)", () => {
+	// Measured with seed 374 — the false tombstones each run produced, and whether the
+	// real orphan was tombstoned within the 360 ticks.
+	const EXPECTED: Record<string, { falseTombstones: number; orphanCaught: boolean }> = {
+		"30@0.05": { falseTombstones: 0, orphanCaught: true },
+		"30@0.15": { falseTombstones: 0, orphanCaught: true },
+		// Safe, not live: on Free, the sustained failures keep the orphan from three
+		// clean strikes inside six hours.
+		"30@0.3": { falseTombstones: 0, orphanCaught: false },
+		"30@0.5": { falseTombstones: 0, orphanCaught: false },
+		"600@0.05": { falseTombstones: 0, orphanCaught: true },
+		"600@0.15": { falseTombstones: 0, orphanCaught: true },
+		"600@0.3": { falseTombstones: 0, orphanCaught: true },
+		// THE RESIDUAL, outside the target (p ≤ 0.3): half of all reads failing for six
+		// hours straight, on Paid, struck out 2 of 40 live products. See DEPLOYMENT.md §5.
+		"600@0.5": { falseTombstones: 2, orphanCaught: true },
+	};
+	const cases = [FREE, PAID].flatMap((budget) =>
+		[0.05, 0.15, 0.3, 0.5].map((p) => ({ budget, p })),
+	);
+	test.each(cases)(
+		"budget $budget, each read null with p = $p, 360 ticks",
+		async ({ budget, p }) => {
+			const live = Array.from({ length: 40 }, (_, i) => `p-sim-${String(i).padStart(2, "0")}`);
+			for (const [i, id] of live.entries()) {
+				await product(id, new Date(CREATED.getTime() + i * 1000));
+			}
+			await product("p-sim-orphan", new Date(CREATED.getTime() + 20_500));
+			const cms = fakeCms({ mode: "bridge", gone: ["p-sim-orphan"] });
+			cms.nullRate = p;
+			cms.random = seededRandom(374);
+			const cursors = memoryCursors();
+			for (let t = 0; t < 360; t++) {
+				const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget }));
+				expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
+			}
+			let falseTombstones = 0;
+			for (const id of live) if ((await lifecycleOf(id)) === "deleted") falseTombstones++;
+			const orphanCaught = (await lifecycleOf("p-sim-orphan")) === "deleted";
+			expect({ falseTombstones, orphanCaught }).toEqual(EXPECTED[`${String(budget)}@${String(p)}`]);
+		},
+		120_000,
+	);
 });
 
 describe("scheduling and logging", () => {

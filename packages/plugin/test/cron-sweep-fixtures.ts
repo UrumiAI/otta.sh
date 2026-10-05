@@ -27,7 +27,11 @@ import {
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
 import type { SweepCursorStore } from "../src/cron/index.js";
-import { CONTENT_READ_QUERIES } from "../src/cron/sweeps.js";
+import {
+	CONTENT_LIST_QUERIES,
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
+} from "../src/cron/sweeps.js";
 import type { ContentReadAccess, PluginContext } from "../src/types.js";
 
 export const MINUTE_MS = 60_000;
@@ -132,13 +136,29 @@ export interface FakeCms {
 	readonly reads: string[];
 	/** Called before each `get`, so a case can throw from inside the read. */
 	beforeGet?: (id: string) => void;
+	/** INTERMITTENT failure: each `get` independently answers `null` with this
+	 *  probability, drawn from `random` — the bridge swallowing a sporadic D1 error. */
+	nullRate: number;
+	random: () => number;
 	access(count?: () => void): ContentReadAccess;
 }
 
-/** The sweep charges a CMS call as CONTENT_READ_QUERIES calls (the host's row read
- *  plus its SEO lookups), so the outside count does too. */
-function chargeCmsCall(count?: () => void): void {
-	for (let i = 0; i < CONTENT_READ_QUERIES; i++) count?.();
+/** The sweep charges a CMS call by what it costs the host (a miss one query, a hit
+ *  up to three, a list four), so the outside count does too. */
+function chargeCmsCall(queries: number, count?: () => void): void {
+	for (let i = 0; i < queries; i++) count?.();
+}
+
+/** A deterministic PRNG (mulberry32), for the seeded failure simulation. */
+export function seededRandom(seed: number): () => number {
+	let a = seed >>> 0;
+	return () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
 }
 
 export function fakeCms(
@@ -155,12 +175,14 @@ export function fakeCms(
 		failing: new Set(spec.failing ?? []),
 		outage: false,
 		listEmpty: false,
+		nullRate: 0,
+		random: Math.random,
 		status: new Map(Object.entries(spec.status ?? {})),
 		reads: [],
 		access(count) {
 			return {
 				async get(collection, id) {
-					chargeCmsCall(count);
+					chargeCmsCall(CONTENT_MISS_QUERIES, count);
 					cms.beforeGet?.(id);
 					cms.reads.push(id);
 					if (collection !== "products") throw new Error(`no such collection: ${collection}`);
@@ -169,7 +191,9 @@ export function fakeCms(
 						if (cms.mode === "bridge") return null;
 						throw new Error(`D1_ERROR: read of ${id} timed out`);
 					}
+					if (cms.nullRate > 0 && cms.random() < cms.nullRate) return null;
 					if (cms.gone.has(id)) return null;
+					chargeCmsCall(CONTENT_READ_QUERIES - CONTENT_MISS_QUERIES, count);
 					return {
 						id,
 						type: collection,
@@ -179,7 +203,7 @@ export function fakeCms(
 					};
 				},
 				async list(collection) {
-					chargeCmsCall(count);
+					chargeCmsCall(CONTENT_LIST_QUERIES, count);
 					if (collection !== "products") throw new Error(`no such collection: ${collection}`);
 					if (cms.outage) {
 						if (cms.mode === "bridge") return { items: [], hasMore: false };

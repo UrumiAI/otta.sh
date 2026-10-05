@@ -444,15 +444,26 @@ commerce row whose CMS product is gone (deleted or in the trash) when the delete
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
 sandboxed path EmDash's bridge answers `null` for any D1 error. So a run first checks that the
-CMS lists at least one product, and judges nothing otherwise; a page on which at least three, and
-more than half, of the products read are missing is abandoned as an outage; a missing document
-only marks its row suspect, and the row is tombstoned only when a run at least fifteen minutes
-later finds it missing again; at most five tombstones a minute; a failed read never counts; and
-rows younger than fifteen minutes are not read. Each of those stops logs a
+CMS lists at least one product, and judges nothing otherwise. A page on which at least three, and
+more than half, of the products read are missing is abandoned as an outage. That breaker needs
+three rows read, so on the Workers Free preset's first pass (pages of one or two rows) it fires
+only on a second pass; there the other gates do the work. A missing document is re-read twice on
+the spot, and counts as a strike only in a run that read some other document successfully (if
+nothing on the page was found, the run reads the product the list returned; a `null` there is
+treated as an outage). The row is tombstoned on the third strike, each from a run at least
+fifteen minutes after the last, and any read that finds the document wipes its strikes. Every
+breaker trip wipes all strikes. On top of that: at most five tombstones a minute, a failed read
+never counts, and rows younger than fifteen minutes are not read. Each of those stops logs a
 `cron sweep product-orphans` error line. A pass over a 1000-product catalog takes about 280
-ticks (under five hours) on the Workers Free preset when the store is otherwise idle, and about 7 on Paid; an
-orphan is tombstoned on the pass after the one that first finds it. The leg has no deadline, so
-it is never promoted ahead of other legs by aging. The outbox, the two expiry legs, the
+ticks (under five hours) on the Workers Free preset when the store is otherwise idle, and about 7
+on Paid; an orphan is tombstoned on the third pass that finds it, so up to about three rotations
+on Free. The leg has no deadline, so it is never promoted ahead of other legs by aging. **The
+residual risk on a sandboxed host:** a CMS database failing reads at random is
+indistinguishable from deletions. A seeded simulation (40 live products, 360 one-minute ticks,
+every read independently failing to `null`) tombstones none at failure rates up to 30%. At a
+sustained 50% for six hours, on the Paid preset, it struck out 2 of 40. The tombstone is
+final, so a live product struck out that way sells again only once it is duplicated in the CMS
+(a new id, and its pricing re-entered). The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.

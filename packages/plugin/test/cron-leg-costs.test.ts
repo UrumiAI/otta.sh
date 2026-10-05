@@ -49,6 +49,7 @@ import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
 import {
+	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
@@ -58,6 +59,7 @@ import {
 	PRODUCT_ORPHAN_DELETE_CALLS,
 	SWEEP_LEGS,
 	TICK_OVERHEAD_QUERIES,
+	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../src/types.js";
@@ -615,9 +617,13 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			s.productCommerce.softDelete(pid, idempotencyKey("products:prod-cost-orphan:deleted")),
 		);
 		expect(used).toBeLessThanOrEqual(PRODUCT_ORPHAN_DELETE_CALLS);
-		// The judging read is charged on top, as the worst case of EmDash's `get`.
+		// On top: one row's reads at worst (two misses at one query each, then a hit at
+		// three), the canary read, and this delete.
 		expect(LEG_QUERY_COSTS["product-orphans"].unit).toBe(
-			CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
+			2 * CONTENT_MISS_QUERIES +
+				CONTENT_READ_QUERIES +
+				CONTENT_READ_QUERIES +
+				PRODUCT_ORPHAN_DELETE_CALLS,
 		);
 	});
 
@@ -640,6 +646,8 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 	const FREE = 30;
 	/** An ordinary cancel unit, measured above: ledger, cancel, bookkeeping write. */
 	const ORDINARY_CANCEL_UNIT = 5;
+	/** An idle Free tick's own spend (DEPLOYMENT.md §5: "an idle tick is 8 queries"). */
+	const IDLE_FREE_TICK = 8;
 	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
 		// The setting and cadence-state reads, then late-refunds' due check at the head.
 		const fixed = TICK_OVERHEAD_QUERIES + 1;
@@ -649,6 +657,15 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 		for (const leg of SWEEP_LEGS) {
 			// The late-refund lead has its own rule (it leads ahead of the cancel).
 			if (leg === "cancel-intents" || leg === "late-refunds") continue;
+			// A leg with no deadline is never given the head (`UNPROMOTED_LEGS`): it must
+			// fit ALONE in an idle Free tick, and otherwise waits for one.
+			if (UNPROMOTED_LEGS.includes(leg)) {
+				expect(
+					IDLE_FREE_TICK + legStartCalls(leg, FREE) + legReserveQueries(leg),
+					leg,
+				).toBeLessThanOrEqual(FREE);
+				continue;
+			}
 			const own =
 				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
 				legStartCalls(leg, FREE) +

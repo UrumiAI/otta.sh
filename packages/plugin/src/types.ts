@@ -333,7 +333,8 @@ export interface PluginContext {
  *    reads exactly like a deleted document.
  *
  * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
- * CMS to LIST a product first and confirms every `null` twice, a cadence apart.
+ * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
+ * read some other document, and needs three such runs a cadence apart.
  */
 export interface ContentReadAccess {
 	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
