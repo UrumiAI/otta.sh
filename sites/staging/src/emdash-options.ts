@@ -16,9 +16,12 @@
  *    needs a shopper-side bookmark first. EmDash-authenticated GETs resume from
  *    their `__em_d1_bookmark` cookie (read-your-own-writes); that cookie is never
  *    set on an anonymous response. The old pairing invariant with wrangler's
- *    `global_fetch_strictly_public` is moot now the flag is gone — it silently
- *    hangs every session query (emdash #1273), so it must never return
- *    alongside a session mode; site-config.test.ts pins both.
+ *    `global_fetch_strictly_public` is moot now the flag is gone, but the rule
+ *    stands: the flag hangs every SESSION query (emdash #1273); EmDash 0.38's
+ *    guard gives up after ~5 s, turns sessions off for that isolate, and may
+ *    reject the write that was in flight. So the flag must never return beside
+ *    a session mode: site-config.test.ts pins the template, and astro.config.ts
+ *    refuses to build from a config that has it (src/lib/wrangler-pairing.ts).
  *  - R2 (`MEDIA`) — zero-config media storage.
  *  - The Otta plugin registered TRUSTED via a hand-written descriptor
  *    (ADR-0006). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the

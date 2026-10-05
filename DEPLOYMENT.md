@@ -209,16 +209,33 @@ cannot be retried in place:
 > EmDash authenticates and starts every other request on any replica, so a lagging replica
 > would show a just-placed order as not found or bounce a just-signed-in buyer to the login
 > page. `"auto"` needs a shopper-side bookmark first. EmDash-authenticated requests resume
-> from their `__em_d1_bookmark` cookie; that cookie is never set on an anonymous storefront
-> response. Read replication itself is switched on separately, on the D1 database
+> from their `__em_d1_bookmark` cookie. That cookie is never set on an **anonymous**
+> storefront response, so shopper pages stay cacheable as before; an admin browsing the
+> storefront while signed in does get one, which is harmless. Read replication itself is switched on separately, on the D1 database
 > (dashboard or REST API); until it is, every query goes to the primary anyway.
 >
-> **The old pairing invariant is moot, but its rule stands:** the flag silently breaks the
-> D1 Sessions API (**every SSR request hangs with nothing in the logs** — emdash issue
-> #1273; EmDash's hang guard falls back after 5 s per isolate), so it must never come back
+> **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
+> D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 0.38 the symptom
+> is a **~5 s stall on the first session query of every new isolate**; EmDash's hang guard
+> then turns sessions off for that isolate, silently, and a **write caught in flight**
+> (placing an order, a cart change, the Stripe webhook settle) **may be rejected** with a
+> 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
 > while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
 > absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
-> never flag + session together).
+> never flag + session together), and enforced at **build** time on the config the build
+> actually uses (`sites/staging/src/lib/wrangler-pairing.ts`, called from `astro.config.ts`).
+>
+> **Upgrading an existing deployment.** If you made `wrangler.local.jsonc` by copying the
+> template before this change (§2.1 step 2), it still lists the flag. Before building this
+> version, delete `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving
+> `["nodejs_compat"]`. If you don't, the build stops with:
+>
+> ```text
+> Error: wrangler.local.jsonc sets the "global_fetch_strictly_public" compatibility flag, but
+> D1 sessions are on (session: "primary-first", sites/staging/src/emdash-options.ts). …
+> Delete "global_fetch_strictly_public" from compatibility_flags in wrangler.local.jsonc,
+> then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").
+> ```
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -674,7 +691,7 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 
 | Symptom | Cause → fix |
 |---|---|
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); remove the flag |
+| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |

@@ -50,6 +50,7 @@ import { describe, expect, test } from "vitest";
 // plain data with no imports at all.
 import { MIGRATED_SCREENS } from "../e2e/registry.js";
 import { buildEmdashOptions } from "../src/emdash-options.js";
+import { violatesPairing, wranglerCompatibilityFlags } from "../src/lib/wrangler-pairing.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 import { readFile } from "node:fs/promises";
@@ -330,23 +331,6 @@ describe("payment/email secrets never leave kv for the site's build surface", ()
 	});
 });
 
-/** The pairing rule as a predicate: the flag silently breaks the D1 Sessions
- *  API (every SSR request hangs, nothing logged — emdash issue #1273), so a
- *  session mode and the flag must never ship together. */
-function violatesPairing(flags: readonly string[], session: unknown): boolean {
-	const sessionOn = session !== undefined && session !== "disabled";
-	return sessionOn && flags.includes("global_fetch_strictly_public");
-}
-
-/** The wrangler template's `compatibility_flags` ARRAY — parsed, not a
- *  substring search, so the flag's name in a comment cannot count. */
-function wranglerFlags(): string[] {
-	const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-	const array = /^\s*"compatibility_flags"\s*:\s*(\[[^\]]*\])/m.exec(wrangler)?.[1];
-	if (array === undefined) throw new Error("wrangler.jsonc has no compatibility_flags array");
-	return JSON.parse(array.replace(/,(\s*\])/, "$1")) as string[];
-}
-
 describe("buildEmdashOptions", () => {
 	const options = buildEmdashOptions();
 
@@ -378,24 +362,29 @@ describe("buildEmdashOptions", () => {
 		expect(d1Config?.session).toBe("primary-first");
 	});
 
-	test("PAIRING INVARIANT: the predicate refuses the flag + a session, and only that", () => {
-		// Proves the guard below is not vacuous while the flag is absent: put the
-		// flag back AND turn sessions on, and it fails.
-		const flag = ["nodejs_compat", "global_fetch_strictly_public"];
-		expect(violatesPairing(flag, "auto")).toBe(true);
-		expect(violatesPairing(flag, "primary-first")).toBe(true);
-		expect(violatesPairing(flag, undefined)).toBe(false);
-		expect(violatesPairing(flag, "disabled")).toBe(false);
-		expect(violatesPairing(["nodejs_compat"], "auto")).toBe(false);
-	});
-
-	test("PAIRING INVARIANT: global_fetch_strictly_public (wrangler) ⇒ D1 session OFF", () => {
-		// Sessions are ON ("primary-first"), so this is no longer vacuous: it fails
-		// the moment the flag comes back. Bring the flag back only with sessions off.
-		const flags = wranglerFlags();
+	test("PAIRING INVARIANT: the template never has global_fetch_strictly_public on together with a D1 session", () => {
+		// Sessions are ON ("primary-first"), so this is not vacuous: it fails the
+		// moment the flag comes back. The predicate is the build guard's own
+		// (src/lib/wrangler-pairing.ts, unit-tested in wrangler-pairing.test.ts).
+		const flags = wranglerCompatibilityFlags(
+			readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+		);
 		expect(flags).toContain("nodejs_compat");
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
 		expect(violatesPairing(flags, d1Config?.session)).toBe(false);
+	});
+
+	test("astro.config.ts runs the pairing guard on the wrangler config the build SELECTS", async () => {
+		// The template is pinned above; a deployment builds from its own
+		// gitignored wrangler.local.jsonc, which a pre-#375 copy fills with the
+		// flag. Only the build sees that file, so the build must check it.
+		const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+		expect(source).toMatch(
+			/const selectedWranglerConfig = localWranglerConfig \?\? "wrangler\.jsonc";/,
+		);
+		expect(source).toMatch(
+			/assertWranglerSessionPairing\(\s*readFileSync\(new URL\(selectedWranglerConfig, import\.meta\.url\), "utf8"\),\s*selectedWranglerConfig,/,
+		);
 	});
 
 	test("storage is R2 binding MEDIA", () => {

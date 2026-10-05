@@ -46,8 +46,11 @@
 	// back through Cloudflare's front door — so do not point either egress URL at
 	// this site's zone. Do not bring the flag back: D1 sessions are ON
 	// (`session: "primary-first"` in src/emdash-options.ts), and the flag
-	// silently hangs every D1 Sessions API query (emdash issue #1273) —
-	// DEPLOYMENT.md §2.4; pinned by test/site-config.test.ts.
+	// hangs D1 session queries (emdash issue #1273: a ~5 s stall per new
+	// isolate, then sessions off, and an in-flight write may be rejected) —
+	// DEPLOYMENT.md §2.4. Pinned by test/site-config.test.ts, and astro.config.ts
+	// refuses to build from a copy of this file (wrangler.local.jsonc) that
+	// still lists it.
 	"compatibility_flags": ["nodejs_compat"],
 	"d1_databases": [
 		{

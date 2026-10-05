@@ -13,9 +13,9 @@
  *    call are gone (ADR-0020, #288), and no remaining egress targets
  *    workers.dev or this Worker's own zone. It must not come back: D1
  *    sessions are on (`"primary-first"`), and the flag hangs every session
- *    query, silently (emdash issue #1273) — the pairing guard in
- *    site-config.test.ts fails on the pair;
- * *  - a cron trigger (scheduled publishing needs it on Workers);
+ *    query (emdash issue #1273) — the pairing guard in site-config.test.ts
+ *    fails on the pair, and astro.config.ts refuses it at build time;
+ *  - a cron trigger (scheduled publishing needs it on Workers);
  *  - no secret-shaped keys under `vars` (secrets go via `wrangler secret`).
  */
 import { readFileSync } from "node:fs";
