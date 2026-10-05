@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -344,11 +344,17 @@ export function intentCancelContract(
 					return gateway.cancelIntent(input);
 				},
 			});
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 			await sweep(h, racing, at(s, MINUTE));
 			expect((await intentOf(h, s.order.id)).cancelOutcome).toBe("failed");
 			expect((await store.getById(s.order.id))?.reconciliationFlag).toBe(
 				"an anomaly raised meanwhile",
 			);
+			// The refused write is not dropped silently: it is logged, naming the order.
+			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
+				true,
+			);
+			warn.mockRestore();
 		});
 
 		test("a cancel the caller has no time for is NOT started and NOT counted — the intent stays due, its attempts unchanged", async () => {

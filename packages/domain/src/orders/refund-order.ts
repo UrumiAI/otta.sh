@@ -409,7 +409,16 @@ export async function refundOrder(
 					const flag = providerRefundedFlag(gwRes.provider, order.totals.currency);
 					const seen = order.reconciliationFlag;
 					if (flag !== null && (seen === null || isProviderRefundFlag(seen))) {
-						await deps.orderStore.flagReconciliation(cmd.orderId, flag, { expectedFlag: seen });
+						const written = await deps.orderStore.flagReconciliation(cmd.orderId, flag, {
+							expectedFlag: seen,
+						});
+						if (!written) {
+							// Another flag landed during the provider call and is kept for a
+							// person; the provider's answer is logged rather than dropped.
+							console.warn(
+								`[domain] order ${cmd.orderId}: provider-refund flag not written — another reconciliation flag was raised meanwhile. Provider answer: ${flag}`,
+							);
+						}
 					}
 					return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
 				}

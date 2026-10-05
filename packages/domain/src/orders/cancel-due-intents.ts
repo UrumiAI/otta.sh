@@ -235,10 +235,15 @@ async function settleIntent(
 	);
 	await resolve("failed", attempts);
 	if (order.reconciliationFlag === null) {
-		await deps.orderStore.flagReconciliation(
+		const written = await deps.orderStore.flagReconciliation(
 			orderId,
 			`Could not withdraw payment intent ${intent.intentId} at the provider (${res.reason}, ${String(attempts)} attempt(s)). It may still be payable: a payment on it is kept while the order is still held, and refunded automatically once the order has expired or been cancelled.`,
 			{ expectedFlag: null },
 		);
+		if (!written) {
+			console.warn(
+				`[domain] order ${orderId}: intent-withdrawal flag not written for ${intent.intentId} — another reconciliation flag was raised meanwhile and is kept`,
+			);
+		}
 	}
 }

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -756,6 +756,7 @@ export function refundOrderContract(
 					return gw.refund(input);
 				},
 			});
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 			const res = await refundOrder({ orderStore: h.orderStore }, racing, {
 				orderId: id,
 				amount: cents(500),
@@ -767,6 +768,11 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
 				"an anomaly raised meanwhile",
 			);
+			// The refused write is not dropped silently: it is logged, naming the order.
+			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
+				true,
+			);
+			warn.mockRestore();
 		});
 
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {
