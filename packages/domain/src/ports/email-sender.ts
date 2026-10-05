@@ -54,9 +54,12 @@ export interface EmailSender {
  * there says nothing about the row (the provider was never given the time to
  * answer), so `dispatchOrderEmails` hands the row back WITHOUT counting the
  * attempt rather than spending one of the row's `maxAttempts` on it; a row that
- * only ever timed out is therefore never parked `failed`. If the provider did
- * deliver after all, the next try carries the same `Idempotency-Key` (the
- * outbox row id), so the provider dedupes it.
+ * only ever timed out is therefore never parked `failed` for that alone. If the
+ * provider did deliver after all, the next try carries the same idempotency key
+ * (the outbox row id), and a provider that HONOURS one (Resend) dedupes it. A
+ * provider without an idempotency key cannot: its adapter must not let a timeout
+ * pass as uncounted, or a slow-but-accepting provider is sent the same email on
+ * every retry (the plugin's SMTP2GO path re-throws it as a counted failure).
  */
 export class EmailSendTimeoutError extends Error {
 	readonly timeoutMs: number;
