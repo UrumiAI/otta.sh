@@ -9,19 +9,28 @@ product deleted in the CMS — and typically re-created under a new id — left 
 holding the sku the new product needs.
 
 - **A twelfth sweep leg, `product-orphans`**, on the fifteen-minute maintenance cadence. It walks
-  the live commerce rows behind a rotating cursor, one page a run sized to its budget, and asks
-  the CMS through `ctx.content.get` — the `content:read` capability the plugin already declares,
-  so no manifest change — whether each row's document still exists.
-- **Only a positive "not found" counts.** A draft, scheduled, published or unpublished document
-  keeps its row. A document in the trash reads as not found, exactly as the delete hook already
-  treats a trash. A read that fails or times out is never taken for absence: the leg stops at that
-  row, keeps its place, and fails loudly; it resumes there at its next run. Rows younger than
-  fifteen minutes are not judged.
+  the live commerce rows behind a rotating `(createdAt, id)` cursor, one page a run sized to its
+  budget, and asks the CMS through `ctx.content` — the `content:read` capability the plugin
+  already declares, so no manifest change — whether each row's document still exists.
+- **A `null` is evidence, not proof.** On the sandboxed path EmDash's bridge answers `null` (and
+  an empty list) for ANY database error, so a broken binding reads like a deleted catalog. The
+  tombstone is final and releases the sku, so it takes all of:
+  - the CMS lists at least one product in that run (otherwise the run judges nothing);
+  - the page is not mostly missing (at least three, and more than half, missing abandons it);
+  - the document is missing on two runs at least fifteen minutes apart (a found document clears
+    the suspicion);
+  - fewer than five tombstones this minute;
+  - the row is older than fifteen minutes.
+  A read that rejects never counts; a row whose read rejects on three runs in a row is stepped
+  past, left live. Every stop logs a `cron sweep product-orphans` error line.
 - **The soft delete is the hook's own** — the same use-case under the same idempotency key, so the
   sweep and a late hook delivery converge on one tombstone and a replay is a no-op. It keeps the
   row's commercial data, releases its sku claim, and touches no order, stock or hold.
-- **Budgeted like every leg.** A CMS read is charged as three queries. On the Workers Free preset
-  an otherwise idle store judges about six rows a minute — a 1000-product catalog in about two and
-  a half hours — and on Paid the same catalog in about seven ticks. Where the host hands over no
-  `ctx.content`, the leg reports itself skipped.
-- `PluginContext` gains an optional, read-only `content` (`ContentReadAccess`).
+- **Budgeted like every leg, and never promoted.** A CMS call is charged as three queries. On the
+  Workers Free preset an otherwise idle store walks a 1000-product catalog in about 280 ticks
+  (under five hours), on Paid in about seven; an orphan is tombstoned on the pass after the one
+  that first finds it. The leg has no deadline, so aging and the starvation guard never move it
+  ahead of other legs. Where the host hands over no `ctx.content`, it reports itself skipped.
+- `PluginContext` gains an optional, read-only `content` (`ContentReadAccess`: `get` and `list`).
+- Each unwired sweep leg now logs its "skipped — not wired" line once per isolate, instead of the
+  first such leg silencing the rest.

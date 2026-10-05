@@ -441,11 +441,18 @@ five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-or
 task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
 the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
-soft delete was lost: it reads each live row's document through `ctx.content` (the
-`content:read` capability already declared), acts only on a positive "not found" — never on a
-failed read — and leaves rows younger than fifteen minutes alone. A pass over a 1000-product
-catalog takes about 150 ticks on the Workers Free preset when the store is otherwise idle, and
-about 7 on Paid. The outbox, the two expiry legs, the
+soft delete was lost. It reads each live row's document through `ctx.content` (the
+`content:read` capability already declared) and is built for a CMS read that LIES: on the
+sandboxed path EmDash's bridge answers `null` for any D1 error. So a run first checks that the
+CMS lists at least one product, and judges nothing otherwise; a page on which at least three, and
+more than half, of the products read are missing is abandoned as an outage; a missing document
+only marks its row suspect, and the row is tombstoned only when a run at least fifteen minutes
+later finds it missing again; at most five tombstones a minute; a failed read never counts; and
+rows younger than fifteen minutes are not read. Each of those stops logs a
+`cron sweep product-orphans` error line. A pass over a 1000-product catalog takes about 280
+ticks (under five hours) on the Workers Free preset when the store is otherwise idle, and about 7 on Paid; an
+orphan is tombstoned on the pass after the one that first finds it. The leg has no deadline, so
+it is never promoted ahead of other legs by aging. The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.

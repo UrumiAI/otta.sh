@@ -83,6 +83,7 @@ import {
 import { CRITICAL_LEGS, minimumQueryBudget } from "../src/cron/sweeps.js";
 import plugin from "../src/plugin.js";
 import type { PluginContext } from "../src/types.js";
+import { fakeCms } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const MINUTE_MS = 60_000;
@@ -876,6 +877,9 @@ function context(
 			},
 		},
 		storage: store,
+		// A CMS in which every product exists, so `product-orphans` runs (and is
+		// budgeted) like any scan here rather than reporting itself unwired.
+		content: fakeCms().access(),
 	} as unknown as PluginContext;
 }
 

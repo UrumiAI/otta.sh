@@ -59,7 +59,7 @@ import {
  *  Splitting would NOT buy isolation from a slow leg either, which is the obvious
  *  reason to want it: EmDash 0.38's executor claims due rows and invokes their hooks
  *  ONE AFTER ANOTHER in a single scheduled event, each under its own timeout, and a
- *  timed-out hook is only raced, never cancelled — it keeps running unobserved. Eleven
+ *  timed-out hook is only raced, never cancelled — it keeps running unobserved. Twelve
  *  tasks could therefore hold the event for twelve timeouts back to back. One task
  *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";

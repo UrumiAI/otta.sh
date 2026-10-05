@@ -99,27 +99,46 @@ export function sweepContext(
 }
 
 /**
- * The CMS half of a sweep context: the host's `ctx.content` read, as EmDash 0.38
- * answers it — `get` is `ContentRepository.findById`, which reads `WHERE id = ? AND
- * deleted_at IS NULL`, so a TRASHED document and a permanently deleted one both come
- * back `null`, and a document in any status (draft, scheduled, published) comes
- * back as itself. A read the database fails throws.
+ * The CMS half of a sweep context: the host's `ctx.content`, answering as EmDash 0.38
+ * does on either path (`mode`):
+ *  - `trusted` (in-process `createContentAccess`): `get` is `findById` — `WHERE id = ?
+ *    AND deleted_at IS NULL` — so a TRASHED and a permanently deleted document both
+ *    come back `null`, a document in any status comes back as itself, and a failed
+ *    read REJECTS; `list` likewise;
+ *  - `bridge` (the sandbox bridge, `@emdash-cms/cloudflare` `contentGet` /
+ *    `contentList`): the same reads, but every database error is CAUGHT and answered
+ *    `null` / an empty page — indistinguishable from a deletion.
+ * `outage` fails every read (rejecting, or swallowed to null/empty on the bridge).
  *
  * Not a mock of a database this repo owns: the commerce documents stay real SQLite.
- * This stands in for the HOST, the same way the in-memory kv above does. Every
- * product id not named here EXISTS (published), so rows other cases left behind are
- * never mistaken for orphans.
+ * This stands in for the HOST, the way the in-memory kv above does. Every product id
+ * not named here EXISTS (published), so rows other cases left behind are never
+ * mistaken for orphans, and `list` answers one product unless the CMS cannot be read
+ * or `listEmpty` says the collection is empty.
  */
 export interface FakeCms {
+	mode: "trusted" | "bridge";
 	/** Ids the CMS no longer has — deleted, or in the trash. */
 	readonly gone: Set<string>;
 	/** Ids whose read fails (a D1 error, a timeout). */
 	readonly failing: Set<string>;
+	/** Every read fails. */
+	outage: boolean;
+	/** The collection lists nothing (every product deleted, or a renamed collection). */
+	listEmpty: boolean;
 	/** Status per id, for a case that cares (default `published`). */
 	readonly status: Map<string, string>;
 	/** Every id read, in order. */
 	readonly reads: string[];
+	/** Called before each `get`, so a case can throw from inside the read. */
+	beforeGet?: (id: string) => void;
 	access(count?: () => void): ContentReadAccess;
+}
+
+/** The sweep charges a CMS call as CONTENT_READ_QUERIES calls (the host's row read
+ *  plus its SEO lookups), so the outside count does too. */
+function chargeCmsCall(count?: () => void): void {
+	for (let i = 0; i < CONTENT_READ_QUERIES; i++) count?.();
 }
 
 export function fakeCms(
@@ -127,22 +146,29 @@ export function fakeCms(
 		gone?: Iterable<string>;
 		failing?: Iterable<string>;
 		status?: Record<string, string>;
+		mode?: "trusted" | "bridge";
 	} = {},
 ): FakeCms {
 	const cms: FakeCms = {
+		mode: spec.mode ?? "trusted",
 		gone: new Set(spec.gone ?? []),
 		failing: new Set(spec.failing ?? []),
+		outage: false,
+		listEmpty: false,
 		status: new Map(Object.entries(spec.status ?? {})),
 		reads: [],
 		access(count) {
 			return {
 				async get(collection, id) {
-					// The sweep charges a read as CONTENT_READ_QUERIES calls (the host's
-					// row read plus its SEO lookups), so the outside count does too.
-					for (let i = 0; i < CONTENT_READ_QUERIES; i++) count?.();
+					chargeCmsCall(count);
+					cms.beforeGet?.(id);
 					cms.reads.push(id);
 					if (collection !== "products") throw new Error(`no such collection: ${collection}`);
-					if (cms.failing.has(id)) throw new Error(`D1_ERROR: read of ${id} timed out`);
+					if (cms.outage || cms.failing.has(id)) {
+						// The bridge's `try { … } catch { return null; }`.
+						if (cms.mode === "bridge") return null;
+						throw new Error(`D1_ERROR: read of ${id} timed out`);
+					}
 					if (cms.gone.has(id)) return null;
 					return {
 						id,
@@ -150,6 +176,19 @@ export function fakeCms(
 						slug: id,
 						status: cms.status.get(id) ?? "published",
 						data: { title: `CMS ${id}` },
+					};
+				},
+				async list(collection) {
+					chargeCmsCall(count);
+					if (collection !== "products") throw new Error(`no such collection: ${collection}`);
+					if (cms.outage) {
+						if (cms.mode === "bridge") return { items: [], hasMore: false };
+						throw new Error("D1_ERROR: list timed out");
+					}
+					if (cms.listEmpty) return { items: [], hasMore: false };
+					return {
+						items: [{ id: "listed", type: collection, status: "published", data: {} }],
+						hasMore: true,
 					};
 				},
 			};

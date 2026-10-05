@@ -320,18 +320,27 @@ export interface PluginContext {
 }
 
 /**
- * The slice of EmDash's `ContentAccess` this plugin reads — `get` only.
+ * The slice of EmDash's `ContentAccess` this plugin reads — `get` and `list`.
  *
- * Semantics this plugin relies on, verified against EmDash 0.38
- * (`ContentRepository.findById`: `WHERE id = ? AND deleted_at IS NULL`):
- *  - a document in ANY status — draft, scheduled, published, unpublished — comes
- *    back as itself;
- *  - a document in the TRASH and one permanently deleted both come back `null` (the
- *    plugin API has no "including trashed" read);
- *  - a read the database fails REJECTS. It never resolves `null`.
+ * What an answer PROVES depends on the host path, verified against EmDash 0.38:
+ *  - trusted (in-process, `createContentAccess`): `get` is `findById` — `WHERE id =
+ *    ? AND deleted_at IS NULL` — so a draft, scheduled, published or unpublished
+ *    document comes back as itself, a TRASHED or permanently deleted one comes back
+ *    `null`, and a database failure REJECTS;
+ *  - sandboxed (`@emdash-cms/cloudflare`'s bridge, `contentGet` / `contentList`):
+ *    the same query, but every database error is CAUGHT and answered as `null` /
+ *    an empty page. A lost binding, an overload or a missing `ec_products` table
+ *    reads exactly like a deleted document.
+ *
+ * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
+ * CMS to LIST a product first and confirms every `null` twice, a cadence apart.
  */
 export interface ContentReadAccess {
 	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
+	list(
+		collection: string,
+		options?: { limit?: number; cursor?: string },
+	): Promise<{ items: readonly Record<string, unknown>[]; cursor?: string; hasMore: boolean }>;
 }
 
 // -- routes -------------------------------------------------------------------
