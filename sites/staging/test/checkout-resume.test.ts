@@ -28,6 +28,8 @@ import { CHECKOUT_COOKIE_NAME, readCheckoutStash } from "../src/lib/checkout-coo
 import {
 	RESUME_EMAIL_PATH,
 	RESUME_PATH,
+	ensureResumeClientKey,
+	RESUME_CLIENT_COOKIE_NAME,
 	resumeEmailPath,
 	resumeHref,
 	resumeOutcome,
@@ -284,6 +286,48 @@ describe("GET /checkout/resume — any device", () => {
 
 describe("POST /checkout/resume — the order's email as the proof", () => {
 	const RESUME_POST_URL = "/checkout/resume";
+
+	test("this browser's resume key rides along as `clientKey`, the per-device guess window's key (issue #364)", async () => {
+		const { context, calls } = makeContext(RESUME_POST_URL, RESUMED, {
+			form: { order: ORDER_ID, email: "buyer@example.com" },
+			cookies: { [RESUME_CLIENT_COOKIE_NAME]: "3f0c9a1e-6b1d-4f52-9a0e-1c2d3e4f5a6b" },
+		});
+		await RESUME_POST(context);
+		expect(calls[0]!.body["clientKey"]).toBe("3f0c9a1e-6b1d-4f52-9a0e-1c2d3e4f5a6b");
+		// A value this site did not write is not forwarded.
+		const forged = makeContext(RESUME_POST_URL, RESUMED, {
+			form: { order: ORDER_ID, email: "buyer@example.com" },
+			cookies: { [RESUME_CLIENT_COOKIE_NAME]: "not a key" },
+		});
+		await RESUME_POST(forged.context);
+		expect(forged.calls[0]!.body).not.toHaveProperty("clientKey");
+	});
+
+	test("the email page's resume key is minted once per browser and then kept", () => {
+		const jar = new Map<string, string>();
+		const options: unknown[] = [];
+		const cookies = {
+			get: (name: string) => {
+				const value = jar.get(name);
+				return value === undefined ? undefined : { value };
+			},
+			set: (name: string, value: string, opts: unknown) => {
+				jar.set(name, value);
+				options.push(opts);
+			},
+		};
+		const first = ensureResumeClientKey(cookies);
+		expect(first).toMatch(/^[0-9a-f-]{36}$/);
+		expect(ensureResumeClientKey(cookies)).toBe(first);
+		expect(options).toEqual([
+			expect.objectContaining({
+				httpOnly: true,
+				secure: true,
+				sameSite: "strict",
+				path: "/checkout",
+			}),
+		]);
+	});
 
 	test("the email (and the order) go to the plugin; a match stashes and goes to pay", async () => {
 		const { context, calls, jar } = makeContext(RESUME_POST_URL, RESUMED, {

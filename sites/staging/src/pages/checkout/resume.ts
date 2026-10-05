@@ -28,6 +28,7 @@ import { setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
 	isCrossSiteNavigation,
 	orderPathFor,
+	readResumeClientKey,
 	resumeEmailPath,
 	resumeOutcome,
 } from "../../lib/checkout-resume.js";
@@ -97,16 +98,19 @@ async function resumeWithEmail(context: APIContext): Promise<Response> {
 		return context.redirect(resumeEmailPath(orderId, "EMAIL_MISMATCH"), 303);
 	}
 	const raw = form.get("email");
+	// This browser's resume key: the per-device guess window's key (issue #364).
+	const clientKey = readResumeClientKey(context.cookies);
 	return dispatchResume(context, orderId, {
 		...cookieProof(context),
 		email: typeof raw === "string" ? raw : email,
+		...(clientKey !== undefined ? { clientKey } : {}),
 	});
 }
 
 async function dispatchResume(
 	context: APIContext,
 	orderId: string,
-	proof: { cartId?: string; sessionToken?: string; email?: string },
+	proof: { cartId?: string; sessionToken?: string; email?: string; clientKey?: string },
 ): Promise<Response> {
 	const result = await dispatchOttaRoute<OrderResumeRouteResult>(
 		routeDispatcher(context),

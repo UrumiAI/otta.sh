@@ -48,7 +48,7 @@ import {
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
-import { checkoutEmailNote, currentSessionToken, signedInEmail } from "../../lib/account.js";
+import { checkoutEmailNote, signedInEmail } from "../../lib/account.js";
 import { keepPrivate } from "../../lib/no-store.js";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { resumeHref } from "../../lib/checkout-resume.js";
@@ -209,8 +209,8 @@ const notReadyCopy = summary.shipping.noOptions
 
 /** The signed-in shopper's own address, prefilled into the email field — the
  *  order is filed under their account only when placed with it (the plugin's
- *  rule; place.ts forwards the session). `null` when signed out. */
-if (currentSessionToken(Astro.cookies) !== undefined) keepPrivate(Astro);
+ *  rule; place.ts forwards the session). `null` when signed out. The render is
+ *  private already (keepPrivate, above, for every request). */
 const accountEmail = await signedInEmail(
 	getPublicPluginApiRouteHandler(Astro.locals),
 	Astro.cookies,

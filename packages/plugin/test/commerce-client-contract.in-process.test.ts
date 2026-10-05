@@ -152,6 +152,11 @@ function inProcessTier(): CommerceClientTier {
 				clock.advance(ms);
 			},
 		},
+		throttleDocuments: async () => {
+			const docs = harnessOrThrow().ctx.storage?.["login_challenge_claims"];
+			if (docs === undefined) throw new Error("login_challenge_claims is not declared");
+			return docs.count();
+		},
 		payments: {
 			method: "stripe",
 			manualRefundMethod: "x402",

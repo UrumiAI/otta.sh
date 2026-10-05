@@ -785,14 +785,15 @@ describe("signed-in surfaces — source-level guarantees", () => {
 	// A page that renders for ONE signed-in shopper must never be stored and replayed
 	// to another: an account's email in a prefilled field, or "your orders" for an
 	// order someone else then opens. Whenever the request carries a session, the
-	// response is private and out of the route cache.
+	// response is private and out of the route cache. Both pages are private for
+	// EVERY request, set once at the top — so a signed-in render is too, and a
+	// second, session-gated call would change nothing (issue #364 removed it).
 	test.each(["orders/[orderId].astro", "checkout/index.astro"])(
-		"%s keeps a signed-in render private",
+		"%s keeps every render private, a signed-in one included — set once, unconditionally",
 		(relative) => {
 			const { frontmatter } = splitAstro(page(relative));
-			expect(frontmatter).toMatch(
-				/if \(currentSessionToken\(Astro\.cookies\) !== undefined\) keepPrivate\(Astro\);/,
-			);
+			expect(frontmatter).toMatch(/^keepPrivate\(Astro\);$/m);
+			expect(frontmatter.match(/keepPrivate\(/g)).toHaveLength(1);
 		},
 	);
 

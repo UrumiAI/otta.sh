@@ -454,7 +454,8 @@ export interface CommerceClient {
 	 * SECOND FACTOR (`proof`, see `commerce/resume-proof.ts`): the id alone is
 	 * `PROOF_REQUIRED`. The cart the order was made from, a session whose customer
 	 * owns it, or the order's email (trimmed, case-folded; a wrong one is
-	 * `EMAIL_MISMATCH`, and guesses are `THROTTLED` per order) unlocks it.
+	 * `EMAIL_MISMATCH`, and guesses are `THROTTLED` per device of the order —
+	 * `proof.clientKey` — and, at a higher cap, per order) unlocks it.
 	 *
 	 * The reply carries `buyerRefHint` (`j•••@g•••.com`), never the buyer
 	 * reference: the order's email shown read-only, without handing the address
@@ -728,6 +729,13 @@ export interface ResumeProof {
 	sessionToken?: string;
 	/** The order's email, typed again. */
 	email?: string;
+	/**
+	 * Not a proof: the opaque per-browser id the site keeps for resuming (its
+	 * resume cookie), so email guesses are throttled per device of an order as
+	 * well as per order (issue #364). Absent, the request shares the order's
+	 * window for requests that name no device.
+	 */
+	clientKey?: string;
 }
 
 /** {@link CommerceClient.abandonCartOrder}'s reply: did THIS call cancel the
