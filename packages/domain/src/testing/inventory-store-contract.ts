@@ -899,6 +899,155 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-A")).toBe(10);
 		});
 
+		// -- review G2: the singular ORDER-SCOPED release (releaseAdopted) --------
+		//
+		// The per-id rule the batch above inherits, pinned on its own because
+		// `createOrderFromCart` calls it directly: a lost-hold abandonment and an
+		// order observed expired/cancelled/failed underneath a checkout both release
+		// that order's holds one id at a time, and may run more than once for the
+		// same order. The port's contract: only a hold THIS order adopted flips to
+		// `released` and returns its units; every other id is a silent no-op.
+		//
+		// The harness reads only `on_hand` (the AVAILABLE count — a hold's units
+		// leave it at reserve), so a reservation's STATE is read through the port's
+		// own classifiers, each picked for what only that state answers:
+		//  - adopted for order X: an `adoptMany` replay for X folds it into `adopted`
+		//    (and changes nothing); for any other order it is `lost`.
+		//  - committed: `commitMany` treats it as benign (`lost: []`), yet it is no
+		//    longer adoptable, even for its own order.
+		//  - released: `commitMany` reports it `lost`.
+		//  - cart-`held` (live deadline): a FRESH order can adopt it, which no other
+		//    state allows — so that probe goes last, since it mutates.
+
+		/** `adoptMany` for one id, answering which bucket it classified the id in. */
+		async function adoptOne(
+			h: InventoryStoreHarness,
+			id: string,
+			order: string,
+		): Promise<"adopted" | "lost"> {
+			const res = await h.store.adoptMany({
+				reservationIds: [id],
+				orderId: order,
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(res.adopted.length + res.lost.length, "one id, one bucket").toBe(1);
+			return res.adopted.includes(id) ? "adopted" : "lost";
+		}
+
+		test("releaseAdopted releases the order's adopted hold and returns its units exactly once; a replay is a no-op", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			await h.seed("SKU-B", 10);
+			const mine = await adoptedHold(h, "SKU-A", 3, "k-mine", "ord-1");
+			// A sibling on the same SKU the call must not touch, adopted by the same order.
+			const sibling = await adoptedHold(h, "SKU-A", 2, "k-sibling", "ord-1");
+			// A bystander SKU, so a release that credited the wrong row would show.
+			const other = await adoptedHold(h, "SKU-B", 4, "k-other", "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([5, 6]);
+			expect(await adoptOne(h, mine, "ord-1"), "adopted before").toBe("adopted");
+
+			await expect(h.store.releaseAdopted(mine, "ord-1")).resolves.toBeUndefined();
+			// Exactly `mine`'s 3 units came back, to its own SKU only.
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([8, 6]);
+
+			// Replays — the same order re-observed by a second call, or a crashed
+			// abandonment re-driven — return nothing twice.
+			await expect(h.store.releaseAdopted(mine, "ord-1")).resolves.toBeUndefined();
+			await expect(h.store.releaseAdopted(mine, "ord-1")).resolves.toBeUndefined();
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([8, 6]);
+
+			// `mine` is now `released`: no longer adoptable, and a commit calls it lost.
+			expect(await adoptOne(h, mine, "ord-1"), "released, not adopted").toBe("lost");
+			expect((await h.store.commitMany([mine])).lost).toEqual([mine]);
+			// The siblings it did not name are still adopted for ord-1, units still out.
+			expect(await adoptOne(h, sibling, "ord-1")).toBe("adopted");
+			expect(await adoptOne(h, other, "ord-1")).toBe("adopted");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([8, 6]);
+		});
+
+		test("releaseAdopted is not deadline-scoped: an order past its hold deadline still releases what it adopted", async () => {
+			// The callers release an order that has EXPIRED — by definition past the
+			// deadline its holds were re-pointed to. A release that also required
+			// `expires_at > now` would strand those units forever (the cart sweep only
+			// reaps `held`). Before every harness clock, so the hold is expired however
+			// the adapter reads "now".
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			const LAPSED = "2026-07-09T00:00:00.000Z";
+			await h.seed("SKU-A", 10);
+			const id = await h.holdWithExpiry("SKU-A", 4, "k-lapsed", FUTURE);
+			const adopted = await h.store.adoptMany({
+				reservationIds: [id],
+				orderId: "ord-1",
+				holdExpiresAt: LAPSED,
+				now: NOW,
+			});
+			expect(adopted).toEqual({ adopted: [id], lost: [] });
+			expect(await h.onHand("SKU-A")).toBe(6);
+
+			await h.store.releaseAdopted(id, "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(10);
+			await h.store.releaseAdopted(id, "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(10);
+			expect((await h.store.commitMany([id])).lost).toEqual([id]);
+		});
+
+		test("releaseAdopted is ORDER-SCOPED: another order's adopted hold is skipped, and stays its owner's to release", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			const theirs = await adoptedHold(h, "SKU-A", 2, "k-theirs", "ord-2");
+			expect(await h.onHand("SKU-A")).toBe(8);
+
+			// A stale ord-1 naming ord-2's hold: silent, and nothing moves.
+			await expect(h.store.releaseAdopted(theirs, "ord-1")).resolves.toBeUndefined();
+			await expect(h.store.releaseAdopted(theirs, "ord-1")).resolves.toBeUndefined();
+			expect(await h.onHand("SKU-A")).toBe(8);
+			// Still adopted, and still ord-2's: its replay adopts, ord-1's is lost.
+			expect(await adoptOne(h, theirs, "ord-2")).toBe("adopted");
+			expect(await adoptOne(h, theirs, "ord-1")).toBe("lost");
+
+			// Its owner can still release it — once.
+			await h.store.releaseAdopted(theirs, "ord-2");
+			expect(await h.onHand("SKU-A")).toBe(10);
+			await h.store.releaseAdopted(theirs, "ord-2");
+			expect(await h.onHand("SKU-A")).toBe(10);
+		});
+
+		test("releaseAdopted leaves a committed hold, a cart-held hold and an unknown id alone: no throw, no stock moved, states unchanged", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			// Committed by the order that adopted it: the spent units must never return.
+			const sold = await adoptedHold(h, "SKU-A", 1, "k-sold", "ord-1");
+			await h.store.commit(sold);
+			// Still a cart's live hold: never adopted, so no order may release it.
+			const cartHeld = await h.holdWithExpiry("SKU-A", 3, "k-cart", FUTURE);
+			expect(await h.onHand("SKU-A")).toBe(6);
+
+			for (let pass = 0; pass < 2; pass++) {
+				await expect(h.store.releaseAdopted(sold, "ord-1")).resolves.toBeUndefined();
+				await expect(h.store.releaseAdopted(cartHeld, "ord-1")).resolves.toBeUndefined();
+				await expect(
+					h.store.releaseAdopted("no-such-reservation", "ord-1"),
+				).resolves.toBeUndefined();
+				expect(await h.onHand("SKU-A"), `pass ${pass}`).toBe(6);
+			}
+
+			// `sold` is still committed: a commit replay is benign, yet even its own
+			// order can no longer adopt it.
+			expect((await h.store.commitMany([sold])).lost).toEqual([]);
+			expect(await adoptOne(h, sold, "ord-1")).toBe("lost");
+			// `cartHeld` is still a live cart hold: a fresh order can adopt it, which
+			// no released/committed/adopted row allows — and once adopted, that order
+			// releases its 3 units normally.
+			expect(await adoptOne(h, cartHeld, "ord-3")).toBe("adopted");
+			await h.store.releaseAdopted(cartHeld, "ord-3");
+			expect(await h.onHand("SKU-A")).toBe(9);
+		});
+
 		test("commitMany with no ids is a no-op ({ lost: [] })", async () => {
 			const h = await makeStore();
 			expect(await h.store.commitMany([])).toEqual({ lost: [] });
