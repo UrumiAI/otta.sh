@@ -404,6 +404,9 @@ export interface CommerceClientTier {
 	 *  names. The in-process tier declares it (it composes a fake Stripe gateway),
 	 *  so the checkout-replay, lapsed-hold and refund cases run there. */
 	readonly payments?: CommerceClientTierPayments;
+	/** How many attempt-throttle documents the tier's store holds — so a case can
+	 *  show a refused guess wrote nothing. Optional: the cases that need it skip. */
+	readonly throttleDocuments?: () => Promise<number>;
 	arrange: CommerceClientTierArrange;
 }
 
@@ -2617,6 +2620,29 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				// The cart and the owning session are possession proofs, never throttled.
 				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
 				expect(byCart.ok).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined || tier.throttleDocuments === undefined)(
+			"once the order's cap is spent, a guess under a NEW device key is refused and writes nothing — device windows stay bounded per order (SKIPPED where the tier cannot count throttle documents)",
+			async () => {
+				const placed = await placeResumable("throttle4", "t4@example.test");
+				for (let i = 0; i < RESUME_EMAIL_ORDER_MAX_ATTEMPTS; i++) {
+					await client.resumeOrderPayment(placed.orderId, {
+						email: `guess${i}@example.test`,
+						clientKey: `spent-${i}`,
+					});
+				}
+				const before = await tier.throttleDocuments!();
+				for (let i = 0; i < 5; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: "t4@example.test",
+							clientKey: `fresh-${i}`,
+						}),
+					).toEqual({ ok: false, reason: "THROTTLED" });
+				}
+				expect(await tier.throttleDocuments!()).toBe(before);
 			},
 		);
 

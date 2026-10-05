@@ -12,5 +12,7 @@ ignored) and `ResumeProof` gains `clientKey`. It is not a proof: it only names t
 guesses these are. A request without one shares a single no-device window per order. The
 reference site sends a random per-browser key from an `otta_resume_client` cookie (httpOnly,
 `SameSite=Strict`, `Path=/checkout`), set by the email page. A custom site that sends no
-`clientKey` keeps a per-order limit of 5 for all its callers together, as before. ADR-0012
-records the decision.
+`clientKey` keeps a per-order limit of 5 for all its callers together, as before. The order's
+window is taken first, so a guess it refuses writes no per-device record. Keys are free, so
+anyone holding the order link can still close the email route for 15 minutes with 20 requests.
+ADR-0012 records the decision.

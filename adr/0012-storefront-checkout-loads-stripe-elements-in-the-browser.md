@@ -439,8 +439,16 @@ both 15 minutes, counting every email attempt (a right one too):
   these are. A request without one (cookies blocked or cleared, or a caller skipping the page)
   shares a single no-device window per order.
 - **Per order, across devices — 20.** So guessing from many browsers, or clearing the cookie
-  between tries, is still stopped. The device window is checked first, so a device past its
-  own cap spends nothing of the order's.
+  between tries, is still stopped.
+
+**The order window is taken first** (review, 2026-10-05). `clientKey` is free: the plugin's
+route is public and takes any id token, and the site's email page mints a new key for every
+GET that arrives without the cookie. Taking the device window first would have written a new
+throttle document for every fresh key, even after the order's cap was spent — unbounded
+storage from one order link. Order first, a refused order window writes nothing, so device
+documents are bounded by the order's cap (at most 20 per order per window, and an order takes
+guesses only until its hold deadline: a lapsed one is refused before any throttle). The cost: every
+guess spends an order slot, including one from a device already past its own cap.
 
 **Why a cookie, not the IP.** The site reaches the plugin in-process from SSR, so the plugin's
 route sees no client address, and the cookies it already gets (the cart, the session) are not
@@ -448,10 +456,11 @@ held by a buyer on a new device — the case the email route exists for. A per-b
 site mints is the only identity both sides have without new plumbing, and it keeps no personal
 data in the throttle's keys.
 
-**What remains, stated.** Someone holding the order link who also rotates the cookie can still
-spend the order's 20 tries and close the email route for 15 minutes; that takes four times the
-effort it did, and the cart and owning-session routes still work through it, as before. A wrong
-guess still gets the one generic sentence.
+**What remains, stated.** Because keys are free, anyone holding the order link can still close
+the email route for 15 minutes with 20 requests, each under a new key. What changed is that a
+handful of wrong guesses from one browser — a typo, a stranger trying a few addresses — no
+longer locks out the buyer's own browser. The cart and owning-session routes still work through
+a lockout, as before, and a wrong guess still gets the one generic sentence.
 
-`commerceClientContract` pins both windows; the route test pins that `clientKey` is forwarded
+`commerceClientContract` pins both windows and that a refused order window writes no document; the route test pins that `clientKey` is forwarded
 only as an id token; the site tests pin the cookie and that it rides the POST.

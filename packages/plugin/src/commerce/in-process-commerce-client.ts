@@ -1191,20 +1191,22 @@ export class InProcessCommerceClient implements CommerceClient {
 		}
 		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
 		// possession proofs and cost no throttle slot; an email is a guess, so
-		// every one takes a slot BEFORE it is compared: first of this device's
-		// window on the order (a device past its own cap spends nothing of the
-		// order's), then of the order's window across devices.
+		// every one takes a slot BEFORE it is compared: first of the ORDER's window
+		// across devices, then of this device's window on the order. Order first,
+		// because `clientKey` is the caller's choice: a refused order window writes
+		// no device document, so device windows stay bounded by the order's cap
+		// (issue #364 review). A device past its own cap still spends an order slot.
 		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
 		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
 			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
 			proven = customerId !== null && customerId === order.customerId;
 		}
 		if (!proven && proof.email !== undefined) {
-			const deviceKey = resumeDeviceThrottleKey(order.id, proof.clientKey);
-			if (!(await this.#stores.resumeThrottle.admit(deviceKey))) {
+			if (!(await this.#stores.resumeOrderThrottle.admit(resumeThrottleKey(order.id)))) {
 				return { ok: false, reason: "THROTTLED" };
 			}
-			if (!(await this.#stores.resumeOrderThrottle.admit(resumeThrottleKey(order.id)))) {
+			const deviceKey = resumeDeviceThrottleKey(order.id, proof.clientKey);
+			if (!(await this.#stores.resumeThrottle.admit(deviceKey))) {
 				return { ok: false, reason: "THROTTLED" };
 			}
 			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {

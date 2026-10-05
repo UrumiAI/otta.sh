@@ -19,6 +19,14 @@
  *    buyer out; requests naming no device share one window per order;
  *  - per ORDER — `RESUME_EMAIL_ORDER_MAX_ATTEMPTS` per window from any devices,
  *    so guessing from many browsers (or with cookies cleared) is still stopped.
+ * The ORDER window is taken first: `clientKey` is free on the public route, so a
+ * refused order window must write no device document, which bounds the device
+ * documents to the order's cap per window. Every guess, even from a device past
+ * its own cap, spends an order slot. Keys cost nothing (any caller of the public
+ * route can name a new one, and the site's email page mints one for every GET
+ * that arrives without the cookie), so anyone holding the order link can still
+ * close the email route for a window with `RESUME_EMAIL_ORDER_MAX_ATTEMPTS`
+ * requests.
  */
 export type { ResumeProof } from "../product-commerce/commerce-client.js";
 
