@@ -78,8 +78,9 @@ const DELIVERABLE_ORDER_STATES: Readonly<Record<OrderState, boolean>> = {
  * Entitlement-gated digital download (issue #376; ADR-0011). The plugin decides
  * WHO may download and WHICH file; the site streams the bytes from its private
  * `DOWNLOADS` bucket, because a plugin route can neither return a byte stream
- * nor read R2 (design note §2). This route reads only `ctx.storage` and makes no
- * request.
+ * nor read R2 (design note §2). This route touches only `ctx.storage` and makes no
+ * request. It is idempotent: it changes nothing a caller can observe, though
+ * the entitlement check may repair its own lookup pointer on the way.
  *
  * THE GATE. `{authorized: true, sku, asset}` only when ALL of these hold, read
  * fresh on every call (no token is minted, nothing is cached):
@@ -153,8 +154,9 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 			return await authorize(routeCtx.input, ctx);
 		} catch (err) {
 			// Storage pressure is not NOT_FOUND — that would tell a paying buyer they
-			// do not own what they bought. Every read here is idempotent, so a retry
-			// is trivially safe. Anything else propagates.
+			// do not own what they bought. Every step here is idempotent (the only
+			// write is the entitlement check repairing its own lookup pointer), so a
+			// retry is trivially safe. Anything else propagates.
 			if (isRetryableStorageBusy(err)) {
 				console.warn(`[otta] ${ENTITLEMENT_DOWNLOAD_ROUTE} busy (retryable):`, err);
 				return { authorized: false, reason: "BUSY", retryable: true };
@@ -185,8 +187,8 @@ async function authorize(
 	const orderId = toOrderId(rawOrderId);
 	const sku = toSku(rawSku);
 
-	// Read-only: built over the stores directly, as the settle routes are, so no
-	// payment gateway or mail sender is resolved for a check that needs neither.
+	// Built over the stores directly, as the settle routes are, so no payment
+	// gateway or mail sender is resolved for a check that needs neither.
 	const stores = createInProcessCommerceStores(ctx);
 
 	// 1. An active grant for exactly this order and sku.

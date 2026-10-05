@@ -138,7 +138,7 @@ export function downloadRouteContract(tier: DownloadRouteTier): void {
 		}
 
 		/** A one-line digital order for `f.sku` under `f.buyer`, still `pending`. */
-		async function seedOrder(f: Ids): Promise<void> {
+		async function seedOrder(f: Ids, kind: "digital" | "physical" = "digital"): Promise<void> {
 			await orders.createFromCart({
 				orderId: toOrderId(f.orderId),
 				cartId: null,
@@ -155,7 +155,7 @@ export function downloadRouteContract(tier: DownloadRouteTier): void {
 						unitPrice: cents(900),
 						currency: currency("USD"),
 						quantity: 1,
-						fulfillmentKind: "digital",
+						fulfillmentKind: kind,
 						reservationId: null,
 					},
 				],
@@ -316,13 +316,47 @@ export function downloadRouteContract(tier: DownloadRouteTier): void {
 				// The session's owner IS entitled to this sku — through their own order.
 				const mine = await seedPaid("borrow-mine");
 				const session = await tier.loginSession(mine.buyer);
-				// Someone else's order for the same product: never paid, so no grant.
+				// Someone else's order for the same product, PAID but with no grant yet —
+				// the crash window between the paid flip and the grant. Every gate but
+				// the grant passes on it, so only a session fallback (the session's own
+				// entitlement standing in for this order's) could authorize it.
 				const theirs = { ...ids("borrow-theirs"), productId: mine.productId, sku: mine.sku };
 				await seedOrder(theirs);
+				await orders.markPaid(toOrderId(theirs.orderId));
 
 				expect(
 					await tier.invoke({ orderId: theirs.orderId, sku: mine.sku, sessionToken: session }),
 				).toEqual(NOT_FOUND);
+			});
+		});
+
+		describe("which product's file", () => {
+			test("a variant line (its sku differs from the product's) resolves to the parent product's file", async () => {
+				const parent = ids("variant");
+				await seedProduct(parent);
+				// The line and the grant carry the VARIANT's sku; the product row keeps
+				// its own. The file is per product, shared by every variant.
+				const line = { ...parent, orderId: `order-${tier.ns}-variant-l`, sku: `${parent.sku}-L` };
+				await seedOrder(line);
+				await orders.markPaid(toOrderId(line.orderId));
+				await grant(line);
+
+				expect(await tier.invoke({ orderId: line.orderId, sku: line.sku })).toEqual({
+					authorized: true,
+					sku: line.sku,
+					asset: parent.asset,
+				});
+			});
+
+			test("a PHYSICAL line for the sku never delivers, even with a (forced) grant and a digital product", async () => {
+				const f = ids("physical-line");
+				await seedProduct(f);
+				await seedOrder(f, "physical");
+				await orders.markPaid(toOrderId(f.orderId));
+				// Settle never grants on a physical line; this one is forced.
+				await grant(f);
+
+				expect(await tier.invoke({ orderId: f.orderId, sku: f.sku })).toEqual(NOT_FOUND);
 			});
 		});
 
