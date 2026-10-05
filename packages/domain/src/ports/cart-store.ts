@@ -93,6 +93,12 @@ export interface CartStore {
 	 * instead of resurrecting a visible line over dead stock ("visible line ⟺
 	 * live hold"). Idempotent: an already-completed entry returns the line
 	 * without re-applying.
+	 *
+	 * `productId`: a null one keeps the line's stored productId; a non-null one
+	 * replaces it (issue #373). Two first adds of the same sku can race here, and
+	 * the one sent without a productId must not clear the other's — checkout
+	 * refuses a line that has none. On a compare-and-set store the rule holds on
+	 * every retry, against the line as re-read.
 	 */
 	upsertLine(input: UpsertLineInput): Promise<CartLine>;
 	/**
@@ -276,6 +282,7 @@ export interface ExpiredHold {
 export interface UpsertLineInput {
 	cartId: string;
 	sku: string;
+	/** Null keeps the line's stored productId; non-null replaces it (see `upsertLine`). */
 	productId: string | null;
 	qty: number;
 	/** Null for a **digital** line (Phase 4 §6): it reserves nothing, so there is

@@ -371,7 +371,13 @@ export class EmdashCartStore implements CartStore {
 				// `ON CONFLICT (cart_id, sku) DO UPDATE`.
 				lineId: previous?.lineId ?? this.#idGen.newId(),
 				sku: input.sku,
-				productId: input.productId,
+				// A null productId never clears a stored one (issue #373). Two first
+				// adds of the same sku can race past the use-case's "already in the
+				// cart" check and both land here; the productId is optional on the wire,
+				// so the second may carry none, and checkout refuses a line without one.
+				// `previous` is re-read on every compare-and-set attempt, so a write that
+				// loses the race and retries keeps the winner's productId too.
+				productId: input.productId ?? previous?.productId ?? null,
 				qty: input.qty,
 				reservationId: input.reservationId,
 				reserveKey: attach?.reserveKey ?? null,
