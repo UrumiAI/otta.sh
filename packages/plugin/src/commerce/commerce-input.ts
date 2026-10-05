@@ -297,14 +297,17 @@ export function isDocumentIdempotencyKey(value: string): boolean {
 /**
  * The key of a write that makes it (part of) a DOCUMENT ID: {@link
  * requireIdempotencyKey}'s rule plus the {@link IDEMPOTENCY_KEY_MAX} ceiling.
- * Which writes those are, checked against the store adapters:
+ * The writes on THIS client whose key becomes a document id:
  *  - the cart mutations (add, adjust, remove): `cart_mutation_index/{key}`,
  *    `reservation_keys/{key}`, and `adjust:{key}` in the movement collection;
  *  - the order create: `order_keys/{key}`, and `{couponId}:{key}` when a coupon
  *    is redeemed;
  *  - the settings update: `settings_mutations/{key}`.
  * Past the ceiling the store threw on the id length (or, for a megabyte-sized
- * key, on the 1 MiB value cap) instead of refusing.
+ * key, on the 1 MiB value cap) instead of refusing. Other stores also build
+ * document ids from a key — refunds (`refund_keys/{key}`), restock/remove-stock
+ * (`stock:{key}`) and the sku-rename ledger — but those keys are built by the
+ * admin tier from bounded parts and do not pass through this function.
  */
 export function requireDocumentIdempotencyKey(value: string): string {
 	const problem = documentIdempotencyKeyProblem(value);

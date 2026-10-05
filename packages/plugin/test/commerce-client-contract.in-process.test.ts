@@ -457,6 +457,22 @@ describe("in-process commerce refuses malformed shopper input before any store c
 		await expectRefusal(client.removeCartLine(cartId, "line-1", long), "idempotencyKey");
 	});
 
+	// The other two writes whose key becomes a document id (`order_keys/{key}`,
+	// `settings_mutations/{key}`) take the same ceiling.
+	test("an order create's and a settings update's idempotency key over the ceiling is refused", async () => {
+		const long = "k".repeat(IDEMPOTENCY_KEY_MAX + 1);
+		const { cartId } = await client.createCart("USD");
+		await expectRefusal(
+			client.createOrder({ cartId, paymentMethod: "stripe", buyerRef: "buyer@example.test" }, long),
+			"idempotencyKey",
+		);
+		const reporting = new InProcessReportingSettingsClient(harness.ctx, { clock: harness.clock });
+		await expectRefusal(
+			reporting.updateSettings({ lowStockThreshold: 5 }, { idempotencyKey: long }),
+			"idempotencyKey",
+		);
+	});
+
 	// The ceiling is for keys that become a document id. A product-row write keeps
 	// its key as a FIELD, and variant sync derives keys longer than the ceiling
 	// from opaque CMS text — so those writes take any storable length.
