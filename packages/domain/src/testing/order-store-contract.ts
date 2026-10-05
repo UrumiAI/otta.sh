@@ -1269,6 +1269,55 @@ export function orderStoreContract(
 			).toBe(1);
 		});
 
+		// -- flagReconciliation: unguarded, or compare-and-set (issue #364) -------
+
+		test("flagReconciliation with no guard always records the flag (an anomaly must be recordable)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-flag", state: "paid", reconciliationFlag: "old" }));
+			expect(await h.store.flagReconciliation(orderId("ord-flag"), "new anomaly")).toBe(true);
+			expect((await h.store.getById(orderId("ord-flag")))?.reconciliationFlag).toBe("new anomaly");
+			expect(await h.store.flagReconciliation(orderId("ord-missing"), "x")).toBe(false);
+		});
+
+		test("flagReconciliation guarded on NO flag writes only on an unflagged order: a flag written in between survives", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-a", state: "paid" }));
+			await h.seedOrder(
+				summaryRow({ id: "ord-cas-b", state: "paid", reconciliationFlag: "written meanwhile" }),
+			);
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-a"), "mine", { expectedFlag: null }),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-a")))?.reconciliationFlag).toBe("mine");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-b"), "mine", { expectedFlag: null }),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-b")))?.reconciliationFlag).toBe(
+				"written meanwhile",
+			);
+		});
+
+		test("flagReconciliation guarded on a flag replaces exactly that flag, and nothing else", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-c", state: "paid", reconciliationFlag: "seen" }));
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "other", {
+					expectedFlag: "not what is there",
+				}),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("seen");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "replacement", {
+					expectedFlag: "seen",
+				}),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("replacement");
+			// A guarded write on an unknown order writes nothing.
+			expect(
+				await h.store.flagReconciliation(orderId("ord-missing"), "x", { expectedFlag: null }),
+			).toBe(false);
+		});
+
 		// -- resolveReconciliation: equality-guarded compare-and-clear ------------
 
 		test("resolveReconciliation clears the flag and records the disposition; state/lines untouched", async () => {

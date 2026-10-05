@@ -298,8 +298,23 @@ export interface OrderStore {
 	 * one from being handed to a human.
 	 */
 	listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]>;
-	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
-	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
+	/**
+	 * Flag an order for manual reconciliation (§5 loud anomaly); idempotent.
+	 * Answers whether the flag was written (`false` for an unknown order).
+	 *
+	 * With no `guard` it is last-writer-wins on the field (ADR-0019 §7.13): an
+	 * anomaly must always be recordable. With `guard` it is a COMPARE-AND-SET on
+	 * the flag itself — written only while the order's live flag still equals
+	 * `guard.expectedFlag` (`null` = only while unflagged), atomically with the
+	 * check — for a caller that decided to write from a flag it read EARLIER: a
+	 * flag written in between is never overwritten, and the call answers `false`
+	 * (issue #364).
+	 */
+	flagReconciliation(
+		orderId: OrderId,
+		detail: string,
+		guard?: ReconciliationFlagGuard,
+	): Promise<boolean>;
 	/**
 	 * Resolve an open reconciliation flag (admin-UX Increment 1). A **guarded
 	 * flip**, following `transition`'s fromState-EQUALITY precedent: `UPDATE
@@ -552,6 +567,12 @@ export interface OrderStore {
 	 * queue.
 	 */
 	releaseEmailClaim(id: string, options?: ReleaseEmailClaimOptions): Promise<void>;
+}
+
+/** The compare-and-set guard of {@link OrderStore.flagReconciliation}: the flag
+ *  the caller read, which must still be the live one for the write to apply. */
+export interface ReconciliationFlagGuard {
+	expectedFlag: string | null;
 }
 
 /** The store-level resolve command. `outcome`/`reason`/`resolvedBy` are already

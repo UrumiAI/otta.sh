@@ -739,6 +739,36 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe("an earlier anomaly");
 		});
 
+		test("a PROVIDER_ALREADY_REFUNDED never overwrites a flag written WHILE the provider was being asked (issue #364)", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-race", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			// The order was unflagged when the refund read it; an anomaly lands on it
+			// during the provider round trip.
+			const racing = Object.assign(Object.create(gw) as FakePaymentGateway, {
+				async refund(input: Parameters<FakePaymentGateway["refund"]>[0]) {
+					await h.orderStore.flagReconciliation(id, "an anomaly raised meanwhile");
+					return gw.refund(input);
+				},
+			});
+			const res = await refundOrder({ orderStore: h.orderStore }, racing, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-race"),
+			});
+			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
+				"an anomaly raised meanwhile",
+			);
+		});
+
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight", totalCents: 1000 });

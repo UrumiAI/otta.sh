@@ -169,6 +169,7 @@ import {
 	type RecordRefundInput,
 	type RecordRefundStoreResult,
 	type RefundRecord,
+	type ReconciliationFlagGuard,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 } from "@otta-sh/domain";
@@ -843,21 +844,30 @@ export class EmdashOrderStore implements OrderStore {
 		return ids;
 	}
 
-	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
-		// Deliberately last-writer-wins on the FIELD (ADR-0019 §7.13): an anomaly
-		// must always be recordable, so there is no expected-value guard here. The
-		// document write is still a compare-and-set, because every write here is.
-		await this.#casOrder<void>("flagReconciliation", async () => {
+	async flagReconciliation(
+		orderId: OrderId,
+		detail: string,
+		guard?: ReconciliationFlagGuard,
+	): Promise<boolean> {
+		// Unguarded, deliberately last-writer-wins on the FIELD (ADR-0019 §7.13): an
+		// anomaly must always be recordable. Guarded, the expected flag is checked
+		// against the SAME revision the write is conditioned on, so a flag written in
+		// between either fails the check here or fails the document CAS and is
+		// re-read (issue #364). The document write is a compare-and-set either way.
+		return this.#casOrder<boolean>("flagReconciliation", async () => {
 			const current = await this.#orders.getVersioned(orderId);
-			if (current === null) return casDone(undefined);
+			if (current === null) return casDone(false);
 			const doc = normalizeOrderDoc(current.value);
+			if (guard !== undefined && (doc.reconciliationFlag ?? null) !== guard.expectedFlag) {
+				return casDone(false);
+			}
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				reconciliationFlag: detail,
 				updatedAt: now,
 			});
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(true) : CAS_RETRY;
 		});
 	}
 

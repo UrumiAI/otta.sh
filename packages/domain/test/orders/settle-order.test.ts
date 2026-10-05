@@ -261,6 +261,27 @@ describe("settleOrder", () => {
 		expect(h.paymentEventStore.anomalies().some((a) => a.kind === "COMMIT_LOST")).toBe(true);
 	});
 
+	test("a lost commit never overwrites a flag written on the order DURING the commit (issue #364)", async () => {
+		const order = await pendingPhysical();
+		await h.inventory.release(order.lines[0]!.reservationId!);
+		const inventoryStore = h.settleDeps.inventoryStore;
+		const racing = Object.assign(Object.create(inventoryStore) as typeof inventoryStore, {
+			async commitMany(ids: Parameters<typeof inventoryStore.commitMany>[0]) {
+				await h.orderStore.flagReconciliation(order.id, "an anomaly raised meanwhile");
+				return inventoryStore.commitMany(ids);
+			},
+		});
+		const res = await settleOrder(
+			{ ...h.settleDeps, inventoryStore: racing },
+			h.stripeGw,
+			evt(order),
+		);
+		expect(res.ok).toBe(true);
+		expect((await h.orderStore.getById(order.id))?.reconciliationFlag).toBe(
+			"an anomaly raised meanwhile",
+		);
+	});
+
 	test("a paid order with TWO physical lines both concurrently lost records EXACTLY 2 COMMIT_LOST anomalies + flags reconciliation (batched commitMany must not collapse N→1)", async () => {
 		// PR B fidelity: commitMany returns BOTH lost ids, and settle records one
 		// anomaly + one flag write per lost line off the SAME stale null flag — a
@@ -338,7 +359,7 @@ describe("settleOrder", () => {
 			voidRefund: (k) => h.orderStore.voidRefund(k),
 			markRefundUnverified: (k) => h.orderStore.markRefundUnverified(k),
 			voidUnverifiedRefund: (i) => h.orderStore.voidUnverifiedRefund(i),
-			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+			flagReconciliation: (id, d, g) => h.orderStore.flagReconciliation(id, d, g),
 			resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 			recordFulfillment: (i) => h.orderStore.recordFulfillment(i),
 			cancelOrder: (i) => h.orderStore.cancelOrder(i),

@@ -46,6 +46,7 @@ import type {
 	RecordRefundStoreResult,
 	RefundRecord,
 	RefundStatus,
+	ReconciliationFlagGuard,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "../ports/order-store.js";
@@ -645,11 +646,21 @@ export class InMemoryOrderStore implements OrderStore {
 		return true;
 	}
 
-	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
+	async flagReconciliation(
+		orderId: OrderId,
+		detail: string,
+		guard?: ReconciliationFlagGuard,
+	): Promise<boolean> {
 		const stored = this.#orders.get(orderId);
-		if (stored === undefined) return;
+		if (stored === undefined) return false;
+		// The guard is checked and the write applied in one synchronous step — the
+		// fake's stand-in for the adapters' compare-and-set.
+		if (guard !== undefined && stored.order.reconciliationFlag !== guard.expectedFlag) {
+			return false;
+		}
 		stored.order.reconciliationFlag = detail;
 		stored.order.updatedAt = this.#clock.now().toISOString();
+		return true;
 	}
 
 	async resolveReconciliation(

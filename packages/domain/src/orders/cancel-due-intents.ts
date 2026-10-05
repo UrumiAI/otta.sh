@@ -227,7 +227,9 @@ async function settleIntent(
 	// TERMINAL, or retries exhausted. Logged once; the late-payment refund is the
 	// backstop for any payment that still lands on this intent. And FLAGGED, so an
 	// admin sees it on the orders console: the intent may still be payable. Never
-	// over a flag already there — that one is somebody else's anomaly to resolve.
+	// over a flag already there — that one is somebody else's anomaly to resolve —
+	// including one written during the cancel call: `order` was read before it, so
+	// the write is a compare-and-set on "still unflagged" (issue #364).
 	console.error(
 		`[domain] gave up cancelling payment intent ${intent.intentId} of order ${orderId} (${res.reason}, ${String(attempts)} attempt(s)); a late payment on it will be refunded at settle`,
 	);
@@ -236,6 +238,7 @@ async function settleIntent(
 		await deps.orderStore.flagReconciliation(
 			orderId,
 			`Could not withdraw payment intent ${intent.intentId} at the provider (${res.reason}, ${String(attempts)} attempt(s)). It may still be payable: a payment on it is kept while the order is still held, and refunded automatically once the order has expired or been cancelled.`,
+			{ expectedFlag: null },
 		);
 	}
 }

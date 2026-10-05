@@ -184,7 +184,10 @@ export async function settleOrder(
 				detail: `verified success on order in state=${order.state}`,
 				now,
 			});
-			await deps.orderStore.flagReconciliation(order.id, `settle on ${order.state}`);
+			// `order` was read at the start: never over a flag written since (#364).
+			await deps.orderStore.flagReconciliation(order.id, `settle on ${order.state}`, {
+				expectedFlag: null,
+			});
 		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
@@ -247,6 +250,7 @@ export async function settleOrder(
 			await deps.orderStore.flagReconciliation(
 				order.id,
 				`lost pending→paid flip to state=${lostTo}`,
+				{ expectedFlag: null },
 			);
 		}
 		return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
@@ -301,9 +305,12 @@ async function applyPaidSideEffects(
 				detail: `commit matched 0 rows for reservation ${reservationId}`,
 				now,
 			});
+			// Compare-and-set on "still unflagged": `order` was read before the
+			// commit, and a flag written since is never overwritten (issue #364).
 			await deps.orderStore.flagReconciliation(
 				order.id,
 				`commit lost for reservation ${reservationId}`,
+				{ expectedFlag: null },
 			);
 		}
 	}

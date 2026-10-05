@@ -329,6 +329,28 @@ export function intentCancelContract(
 			);
 		});
 
+		test("giving up never overwrites a flag written WHILE the provider was being asked (issue #364)", async () => {
+			const h = await makeHarness();
+			const store = h.settleDeps.orderStore;
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			gateway.setCancelResult({ ok: false, reason: "TERMINAL" });
+			const s = await seedPendingOrder(h, "9c");
+			await expireOrders(h.expireDeps, at(s, MINUTE));
+			// The order was unflagged when the sweep read it; an anomaly lands on it
+			// during the cancel call.
+			const racing = Object.assign(Object.create(gateway) as FakePaymentGateway, {
+				async cancelIntent(input: Parameters<FakePaymentGateway["cancelIntent"]>[0]) {
+					await store.flagReconciliation(s.order.id, "an anomaly raised meanwhile");
+					return gateway.cancelIntent(input);
+				},
+			});
+			await sweep(h, racing, at(s, MINUTE));
+			expect((await intentOf(h, s.order.id)).cancelOutcome).toBe("failed");
+			expect((await store.getById(s.order.id))?.reconciliationFlag).toBe(
+				"an anomaly raised meanwhile",
+			);
+		});
+
 		test("a cancel the caller has no time for is NOT started and NOT counted — the intent stays due, its attempts unchanged", async () => {
 			const h = await makeHarness();
 			const gateway = new FakePaymentGateway({ id: "stripe" });
