@@ -119,3 +119,73 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:d1
+
+  # The Playwright e2e suite (issue #378): the React admin console and the
+  # storefront journeys, in a real browser, against a dev server the config
+  # boots itself (`OTTA_E2E_START_STACK=1`). Everything is local: a fresh
+  # `.wrangler` state, the miniflare D1, and the plugin's DEV-ONLY offline Stripe
+  # gateway (`OTTA_E2E_STRIPE_OFFLINE=1`, set by playwright.config.ts on the
+  # server it boots). No Stripe account, secret or network service is involved.
+  #
+  # `OTTA_E2E_SEED=1` has the global setup seed the fresh stack once (content,
+  # priced catalog, paid orders), and `OTTA_E2E_REQUIRE_SITE=1` turns every
+  # "no site / no rows" skip into a failure, so the job cannot go green by
+  # asserting nothing.
+  #
+  # Same trigger as `d1`, and for the same reason: it is a release gate, not a
+  # per-increment one. It runs on any PR into `main`, on the `main` push that
+  # merge produces, and on demand. Like `d1`, a job skipped by its `if:` reports
+  # success, so it can be made a required check without blocking the
+  # per-increment PRs.
+  e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'push'
+      || (github.event_name == 'pull_request' && github.base_ref == 'main')
+    runs-on: ubuntu-latest
+    # A cold dev server compiles the admin graph on first load; the suite runs
+    # in minutes after that. Anything near this ceiling is a hang.
+    timeout-minutes: 45
+    env:
+      OTTA_E2E_START_STACK: "1"
+      OTTA_E2E_REQUIRE_SITE: "1"
+      OTTA_E2E_SEED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The browser cache is keyed on the INSTALLED Playwright version, so a
+      # lockfile bump downloads the matching browser instead of reusing a stale one.
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+      # The cache holds the browser, not its system libraries.
+      - name: Install Chromium's system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+      - run: pnpm test:e2e
+      # Traces and screenshots are kept for failing specs only
+      # (`trace: "retain-on-failure"`), plus the JUnit report.
+      - name: Upload the e2e report and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-and-traces
+          path: |
+            node_modules/.playwright-artifacts
+            node_modules/.playwright-report
+          retention-days: 14
+          if-no-files-found: ignore

@@ -112,7 +112,12 @@ export default defineConfig({
 	// not add one.
 	outputDir: "node_modules/.playwright-artifacts",
 	preserveOutput: "failures-only",
-	reporter: [["list"]],
+	// Under CI a JUnit report rides along for the failure upload (ci.yml's e2e
+	// job). Still no HTML reporter: nothing here serves or opens one.
+	reporter:
+		process.env["CI"] !== undefined
+			? [["list"], ["junit", { outputFile: "node_modules/.playwright-report/junit.xml" }]]
+			: [["list"]],
 	fullyParallel: false,
 	workers: 1,
 	retries: 0,
