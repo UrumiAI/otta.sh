@@ -13,6 +13,7 @@ import type {
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
+import { validateDownloadAsset } from "./download-asset.js";
 import { InvalidProductFieldError } from "./errors.js";
 
 export interface ProductCommerceDeps {
@@ -116,6 +117,11 @@ export async function listProductCommerceByIds(
  *    A cleared field (`null`) carries no currency and is exempt.
  *  - `weightGrams` / `lengthMm` / `widthMm` / `heightMm`, when provided
  *    non-null, must be non-negative safe integers.
+ *  - `downloadAsset`, when provided non-null, passes `validateDownloadAsset`
+ *    (`download-asset.ts`: the key minted for THIS product, a bounded filename,
+ *    a safe content type, a byte size, an optional digest — refused, never
+ *    rewritten), and is not paired with `productKind: "physical"` in the same
+ *    edit. The store refuses it against a STORED physical kind.
  * NOT re-checked here: stored-currency integrity + existence + staleness are the
  * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
  * already closes); SKU live-uniqueness stays the store's partial-index guard.
@@ -205,7 +211,24 @@ export async function updateProductCommerceFields(
 			throw new InvalidProductFieldError(field, `${field} must be a non-negative integer`);
 		}
 	}
-	const result = await deps.productCommerce.updateCommerceFields(input, key, expectedUpdatedAt);
+	// The download file (issue #376): every value rule here, as a pure check; the
+	// rule that needs the STORED row — no file on a physical product — is the
+	// store's, inside its compare-and-set. The one half of it that needs no row is
+	// answered here, so a self-contradicting edit is a 400 before any read.
+	let checked = input;
+	if (input.downloadAsset !== undefined && input.downloadAsset !== null) {
+		if (input.productKind === "physical") {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a physical product cannot carry a download file",
+			);
+		}
+		checked = {
+			...input,
+			downloadAsset: validateDownloadAsset(input.productId, input.downloadAsset),
+		};
+	}
+	const result = await deps.productCommerce.updateCommerceFields(checked, key, expectedUpdatedAt);
 	// Only an applied (or replayed) edit seeds: a not_found / stale /
 	// currency_mismatch wrote nothing, so there is no sku it may claim.
 	if (result.ok && result.product.sku !== null) {

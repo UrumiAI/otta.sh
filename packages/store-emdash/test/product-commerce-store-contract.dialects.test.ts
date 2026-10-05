@@ -9,7 +9,9 @@
  * over both stock refusals, and the embedded variants' currency resolution all
  * have to give the same answers they gave inside a transaction.
  */
+import { cents, currency, idempotencyKey, money, productId, sku } from "@otta-sh/domain";
 import { productCommerceStoreContract } from "@otta-sh/domain/testing";
+import { expect, test } from "vitest";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { PRODUCT_COMMERCE_LAYOUT } from "./product-commerce-collections.js";
 import { makeProductCommerceHarness } from "./product-commerce-harness.js";
@@ -18,5 +20,47 @@ describeEachDialect("EmdashProductCommerceStore", (ctx) => {
 	const bound = ctx.useStorage(PRODUCT_COMMERCE_LAYOUT);
 	productCommerceStoreContract(async () => makeProductCommerceHarness(bound.storage), {
 		dialect: ctx.dialect,
+	});
+});
+
+// A product document written before `downloadAsset` existed has no such key at all.
+// It must read as "no file" (`null`, not `undefined`), and an edit must still be able
+// to attach one to it — the field is additive, with no migration (issue #376).
+describeEachDialect("EmdashProductCommerceStore downloadAsset on an older document", (ctx) => {
+	const bound = ctx.useStorage(PRODUCT_COMMERCE_LAYOUT);
+
+	test("a document without the field reads null, and an edit attaches a file to it", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		const pid = productId("legacy-dl");
+		await h.store.upsert(
+			{
+				productId: pid,
+				sku: sku("SKU-LEGACY"),
+				price: money(cents(900), currency("USD")),
+				productKind: "digital",
+			},
+			idempotencyKey("seed"),
+		);
+		const stored = await h.products.getVersioned(pid);
+		if (stored === null) throw new Error("seed wrote no document");
+		const { downloadAsset: _dropped, ...older } = stored.value;
+		await h.products.compareAndSet(pid, stored.revision, older);
+		expect("downloadAsset" in ((await h.products.get(pid)) ?? {})).toBe(false);
+
+		const read = await h.store.getByProductId(pid);
+		expect(read?.downloadAsset).toBeNull();
+
+		const asset = {
+			key: `dl/${pid}/01J9ZQ3V8K4M2N6P7R8S9T0VWX`,
+			filename: "guide.pdf",
+			contentType: "application/pdf",
+			size: 10,
+		};
+		const res = await h.store.updateCommerceFields(
+			{ productId: pid, downloadAsset: asset },
+			idempotencyKey("attach"),
+			read?.updatedAt.toISOString() ?? "",
+		);
+		expect(res.ok && res.product.downloadAsset).toEqual(asset);
 	});
 });

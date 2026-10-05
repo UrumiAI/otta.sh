@@ -497,6 +497,7 @@ export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
 export type {
+	DownloadAsset,
 	InventoryPolicy,
 	ProductCommerce,
 	ProductCommerceStore,
@@ -542,6 +543,11 @@ export {
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
 export { isProductLive } from "./product-commerce/sellable.js";
+export {
+	isDownloadAssetKeyFor,
+	MAX_DOWNLOAD_FILENAME_LENGTH,
+	validateDownloadAsset,
+} from "./product-commerce/download-asset.js";
 export {
 	HoldExpiredError,
 	type AdjustLineInput,

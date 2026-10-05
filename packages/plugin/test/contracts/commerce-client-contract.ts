@@ -3076,6 +3076,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			price?: CommerceMoney;
 			title?: string;
 			onHand?: number;
+			productKind?: "physical" | "digital";
 		}): Promise<string> {
 			await tier.arrange.product({ ...spec, idempotencyKey: `seed-${spec.productId}` });
 			const read = await client.getProduct(spec.productId);
@@ -4112,6 +4113,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				widthMm: null,
 				heightMm: null,
 				productKind: expect.any(String) as unknown as string,
+				downloadAsset: null,
 				active: expect.any(Boolean) as unknown as boolean,
 				deletedAt: null,
 				onHand: 7,
@@ -4342,6 +4344,135 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				unitCostCurrency: "USD",
 				weightGrams: 250,
 			});
+		});
+
+		// ── the download file (issue #376) ─────────────────────────────────
+		//
+		// The descriptor rides the ordinary edit. Its SHAPE (an object of the five
+		// known keys, with the right types) is this boundary's to refuse, as the
+		// edit's strict body schema refuses any unknown key — a refusal with no
+		// field. Its VALUE rules are the domain's, which name the sub-field.
+
+		const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
+
+		test("an edit attaches a download file to a digital product, the detail carries it, and null detaches it", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-ok",
+				sku: "ADM-DL-OK",
+				price: { amount: 900, currency: "USD" },
+				productKind: "digital",
+			});
+			const asset = {
+				key: `dl/adm-dl-ok/${DL_ULID}`,
+				filename: "Field Guide.pdf",
+				contentType: "application/pdf",
+				size: 2048,
+				sha256: "ab".repeat(32),
+			};
+			const applied = await client.updateProduct(
+				"adm-dl-ok",
+				{ expectedUpdatedAt: watermark, downloadAsset: asset },
+				"adm-dl-ok-1",
+			);
+			expect(applied.ok).toBe(true);
+			const read = await client.getProduct("adm-dl-ok");
+			expect(read?.downloadAsset).toEqual(asset);
+
+			const detached = await client.updateProduct(
+				"adm-dl-ok",
+				{ expectedUpdatedAt: read?.updatedAt ?? "", downloadAsset: null },
+				"adm-dl-ok-2",
+			);
+			expect(detached.ok).toBe(true);
+			expect((await client.getProduct("adm-dl-ok"))?.downloadAsset).toBeNull();
+		});
+
+		test("a download file on a physical product is refused, naming the field", async () => {
+			const watermark = await seed({ productId: "adm-dl-phys", sku: "ADM-DL-PHYS" });
+			const result = await client.updateProduct(
+				"adm-dl-phys",
+				{
+					expectedUpdatedAt: watermark,
+					downloadAsset: {
+						key: `dl/adm-dl-phys/${DL_ULID}`,
+						filename: "guide.pdf",
+						contentType: "application/pdf",
+						size: 1,
+					},
+				},
+				"adm-dl-phys-1",
+			);
+			expect(result).toEqual({ ok: false, reason: "invalid", field: "downloadAsset" });
+			expect((await client.getProduct("adm-dl-phys"))?.downloadAsset).toBeNull();
+		});
+
+		test("a download file that breaks a value rule is refused, naming the sub-field", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-rule",
+				sku: "ADM-DL-RULE",
+				productKind: "digital",
+			});
+			const good = {
+				key: `dl/adm-dl-rule/${DL_ULID}`,
+				filename: "guide.pdf",
+				contentType: "application/pdf",
+				size: 1,
+			};
+			const cases = [
+				[{ ...good, key: `dl/another-product/${DL_ULID}` }, "downloadAsset.key"],
+				[{ ...good, filename: 'guide.pdf"\r\nSet-Cookie: a=b' }, "downloadAsset.filename"],
+				[{ ...good, contentType: "text/html" }, "downloadAsset.contentType"],
+				[{ ...good, contentType: "image/svg+xml" }, "downloadAsset.contentType"],
+				[{ ...good, size: -1 }, "downloadAsset.size"],
+				[{ ...good, sha256: "XYZ" }, "downloadAsset.sha256"],
+			] as const;
+			for (const [downloadAsset, field] of cases) {
+				expect(
+					await client.updateProduct(
+						"adm-dl-rule",
+						{ expectedUpdatedAt: watermark, downloadAsset },
+						`adm-dl-rule-${field}-${downloadAsset.contentType}`,
+					),
+					field,
+				).toEqual({ ok: false, reason: "invalid", field });
+			}
+			expect((await client.getProduct("adm-dl-rule"))?.downloadAsset).toBeNull();
+		});
+
+		test("a download file of the wrong SHAPE is refused at the boundary, with no field", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-shape",
+				sku: "ADM-DL-SHAPE",
+				productKind: "digital",
+			});
+			const good = {
+				key: `dl/adm-dl-shape/${DL_ULID}`,
+				filename: "guide.pdf",
+				contentType: "application/pdf",
+				size: 1,
+			};
+			// Only an UNTYPED caller can send these; the wire type stops a typed one.
+			const shapes: unknown[] = [
+				"dl/adm-dl-shape/x",
+				[good],
+				{ ...good, url: "https://elsewhere.example/file" },
+				{ ...good, size: "1" },
+				{ key: good.key, filename: good.filename, size: 1 },
+				{ ...good, sha256: null },
+			];
+			for (const [i, downloadAsset] of shapes.entries()) {
+				expect(
+					await client.updateProduct(
+						"adm-dl-shape",
+						{ expectedUpdatedAt: watermark, downloadAsset } as unknown as Parameters<
+							typeof client.updateProduct
+						>[1],
+						`adm-dl-shape-${String(i)}`,
+					),
+					`shape ${String(i)}`,
+				).toEqual({ ok: false, reason: "invalid", field: null });
+			}
+			expect((await client.getProduct("adm-dl-shape"))?.downloadAsset).toBeNull();
 		});
 
 		test("a stale watermark is refused and hands back the current one", async () => {
