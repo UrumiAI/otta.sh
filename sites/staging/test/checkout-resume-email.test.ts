@@ -51,4 +51,9 @@ describe("the page", () => {
 		expect(frontmatter).toContain("Astro.response.status = 404");
 		expect(frontmatter).toContain('cartErrorMessage("ORDER_NOT_FOUND")');
 	});
+
+	test("gives this browser its resume key before it shows the form (issue #364)", () => {
+		const { frontmatter } = splitAstro(source);
+		expect(frontmatter).toContain("ensureResumeClientKey(Astro.cookies)");
+	});
 });
