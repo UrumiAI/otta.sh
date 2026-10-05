@@ -285,10 +285,10 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		// script tag — i.e. exactly "the secret becomes a JS literal". Forbidden:
 		// the script reads what it needs from the DOM instead, where Astro's own
 		// attribute escaping applies.
-		expect(source).not.toMatch(/<script[^>]*define:vars/);
+		expect(source).not.toMatch(/<script[^>]*define:vars/i);
 
 		const { body } = splitAstro(source);
-		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map(
+		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)].map(
 			(m) => m[1] ?? "",
 		);
 		expect(scriptBlocks.length).toBeGreaterThan(0);
