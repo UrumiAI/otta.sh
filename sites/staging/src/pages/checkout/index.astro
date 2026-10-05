@@ -186,10 +186,12 @@ const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
-/** The address block: an unlocked cart that ships. On a store with NO zones
- *  it also asks for the country; otherwise the country/region are the hidden
- *  destination above. */
-const showAddress = locked === null && summary.requiresShipping;
+/** The address block: an unlocked cart that ships, or ANY unlocked cart whose
+ *  address is required — an India-based Stripe account needs every buyer's
+ *  name and address, digital carts too (issue #382). Without the delivery
+ *  block it also asks for the country; otherwise the country/region are the
+ *  hidden destination above. */
+const showAddress = locked === null && (summary.requiresShipping || summary.addressRequired);
 /** Named in the same language the summary formatted the money in. */
 const countries = countryOptions(SITE_LOCALE);
 const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
@@ -251,10 +253,20 @@ const sumRows = [
  * token-to-sentence mapping (§10) is the page's, so no theme can print a raw
  * token or phrase one differently.
  */
+/** Issue #382: a cart that ships nothing was refused its missing address for
+ *  the PAYMENT ACCOUNT's sake (India), not for a delivery — and says so. */
+const shownErrorToken =
+	shownError === "MISSING_SHIPPING_ADDRESS" &&
+	summary.paymentAccountNeedsAddress &&
+	!summary.requiresShipping
+		? "BUYER_ADDRESS_REQUIRED"
+		: shownError;
 const model: CheckoutModel = {
 	summary,
 	errorMessage:
-		shownError !== null && placeCouponError === null ? cartErrorMessage(shownError) : null,
+		shownErrorToken !== null && placeCouponError === null
+			? cartErrorMessage(shownErrorToken)
+			: null,
 	checkedOut,
 	locked:
 		locked === null

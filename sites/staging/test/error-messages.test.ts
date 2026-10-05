@@ -111,6 +111,13 @@ describe("cartErrorMessage", () => {
 		expect(cartErrorMessage("CHECKOUT_STALE")).toMatch(/out of date/i);
 	});
 
+	test("BUYER_ADDRESS_REQUIRED (issue #382) asks for the name and address and says why — not delivery", () => {
+		const message = cartErrorMessage("BUYER_ADDRESS_REQUIRED");
+		expect(message).toMatch(/name and address/i);
+		expect(message).toMatch(/Stripe accounts in India/);
+		expect(message).not.toMatch(/deliver/i);
+	});
+
 	test("INVALID_EMAIL is specific enough to act on", () => {
 		const message = cartErrorMessage("INVALID_EMAIL");
 		expect(message).toMatch(/email/i);

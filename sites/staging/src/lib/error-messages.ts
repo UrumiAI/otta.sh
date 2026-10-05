@@ -126,6 +126,11 @@ const MESSAGES: Record<string, string> = {
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
 	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
+	/* The site's own (issue #382): MISSING_SHIPPING_ADDRESS as /checkout shows
+	   it for a cart that ships nothing, when the store's Stripe account is in
+	   India — the address is for the payment, not for a delivery. */
+	BUYER_ADDRESS_REQUIRED:
+		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	/* Resuming a payment with the order's email (QA U-2): one generic sentence

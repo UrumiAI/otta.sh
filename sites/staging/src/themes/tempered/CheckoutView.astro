@@ -412,12 +412,16 @@ const {
 						<span class="checkout-note" id="email-note">{emailNote}</span>
 					</div>
 
-					{/* A digital-only cart ships nothing. (A LOCKED order's ship-to is
-					    fixed, and a locked review renders no place form at all.) */}
+					{/* A digital-only cart ships nothing — unless the store's Stripe
+					    account is in India, which needs every buyer's name and address
+					    (issue #382). (A LOCKED order's ship-to is fixed, and a locked
+					    review renders no place form at all.) */}
 					{
 						showAddress && (
 							<fieldset class="checkout-group">
-								<legend class="u-label checkout-head-label">Delivery address</legend>
+								<legend class="u-label checkout-head-label">
+									{summary.requiresShipping ? "Delivery address" : "Billing address"}
+								</legend>
 								{showDelivery ? (
 									<>
 										{/* The destination the review priced, as hidden fields: place.ts
@@ -437,6 +441,10 @@ const {
 											</>
 										)}
 									</>
+								) : summary.paymentAccountNeedsAddress ? (
+									<p class="checkout-note checkout-group-note">
+										Required — Stripe accounts in India need the buyer's name and address.
+									</p>
 								) : (
 									<p class="checkout-note checkout-group-note">
 										Optional — fill it in completely, or leave it entirely blank.
@@ -547,7 +555,7 @@ const {
 										<>
 											<div class="checkout-field">
 												<label class="u-label" for="address-country">
-													Country
+													Country{summary.addressRequired && <span class="checkout-req">required</span>}
 												</label>
 												<select
 													id="address-country"
