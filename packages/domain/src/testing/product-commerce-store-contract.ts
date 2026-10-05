@@ -1733,6 +1733,43 @@ export function productCommerceStoreContract(
 			expect(tombstone?.deletedAt).not.toBeNull();
 		});
 
+		// Issue #374 — the delete-and-recreate shape the plugin's `product-orphans`
+		// sweep completes when the CMS delete hook was lost. The sweep calls nothing
+		// but `softDelete`, so what makes that safe is pinned here, on every adapter.
+		test("DELETE-AND-RECREATE: softDelete leaves the sku's stock and its live hold alone, a replay changes nothing, and the product re-created under a NEW id takes the sku with its stock", async () => {
+			const h = await makeStore();
+			const old = productId("prod-374-old");
+			const recreated = productId("prod-374-new");
+			await h.seedStock("SKU-374", 6);
+			await h.store.upsert(
+				{ productId: old, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-old"),
+			);
+			// A buyer's hold on the sku, taken while the old product was on sale.
+			await h.seedHold("SKU-374", 2);
+
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			const tombstone = await h.store.getByProductId(old);
+			expect(tombstone).toMatchObject({ active: false, sku: "SKU-374" });
+			expect(tombstone?.deletedAt).not.toBeNull();
+
+			// The replay — the sweep and a late hook delivery share one key — is a no-op.
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			expect(await h.store.getByProductId(old)).toEqual(tombstone);
+
+			// The CMS minted a new id for "the same" product. Its first sku is the old
+			// one's: the claim was released, and the stock the delete never touched is
+			// adopted whole — the live hold neither blocks the claim nor moved a unit.
+			const priced = await h.store.upsert(
+				{ productId: recreated, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-new"),
+			);
+			expect(priced).toMatchObject({ sku: "SKU-374", deletedAt: null });
+			expect(await onHandOf(h, "prod-374-new")).toBe(6);
+			// And the tombstone still names the sku it sold under, for order history.
+			expect((await h.store.getByProductId(old))?.sku).toBe("SKU-374");
+		});
+
 		// -- Phase 2: listCommerceByIds (batch catalog read, plan §6) -----------
 
 		test("listCommerceByIds returns records for existing ids and omits missing ids", async () => {
