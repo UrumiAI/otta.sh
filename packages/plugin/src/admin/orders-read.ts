@@ -163,8 +163,10 @@ export function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult
 		// and ships atomically.
 		if (o.state === "processing" && t === "shipped") return false;
 		// A bare `cancelled` would cancel with no reason on file — steered to the
-		// Cancel group, which records one. (The SERVICE still accepts both bare
-		// transitions for other callers; this is UI steering only.)
+		// Cancel group, which records one. The domain already withholds it
+		// (`adminNextStates`) and refuses it (`USE_CANCEL`); this filter stays as a
+		// second guard. A bare `shipped` is UI steering only — the domain still
+		// accepts it.
 		if (t === "cancelled") return false;
 		return true;
 	});

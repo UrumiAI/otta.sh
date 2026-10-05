@@ -80,11 +80,15 @@ import type {
 	OrderCancellation,
 	OrderEventKind,
 	OrderFulfillment,
+	OrderNoticeInput,
+	RefundRetrySchedule,
+	PaymentIntentCancelOutcome,
 	OrderState,
 	PaymentMethod,
 	ProductId,
 	ReconciliationResolution,
 	RefundKind,
+	RefundPurpose,
 	RefundStatus,
 	ReservationId,
 	Sku,
@@ -197,6 +201,12 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"emailDueAt",
 			"holdExpiresAt",
 			"holdsPendingAt",
+			// The late-payment refund-retry sweep's due scan (`listRefundRetriesDue`).
+			"refundRetryAt",
+			// The late-refund give-up escalation's age scan (`listRefundRetriesStale`).
+			"refundRetrySince",
+			// The intent-cancel sweep's due scan (`listIntentCancelsDue`).
+			"intentCancelDueAt",
 			["state", "createdAt"],
 		],
 	},
@@ -290,6 +300,39 @@ export interface OutboxEntryDoc {
 	 * is `max(dueAt, leaseUntil)`.
 	 */
 	dueAt?: string;
+	/** Sends the dispatcher cut off for time (not attempts). ABSENT means 0, so
+	 *  entries written before the field existed read correctly. */
+	timeouts?: number;
+	/** Why a `failed` entry was parked, when the dispatcher said (e.g. "provider
+	 *  kept timing out"). Absent for an ordinary failure. */
+	failureReason?: string;
+	/**
+	 * Set on a NOTICE entry (`enqueueNotice`): an email about the order that is not
+	 * a state transition — `late-payment-refunded` or `refund-issued`. ABSENT on every
+	 * state entry, which is what keeps a document written before notices existed
+	 * exactly what it was. A notice entry is first-wins per `(notice.kind,
+	 * notice.refundId)`, never per
+	 * `toState`: its `toState` is only the state the order was in when it was
+	 * enqueued, so it must never occupy (or be found as) that state's slot — see
+	 * {@link findOutboxEntry}.
+	 */
+	notice?: OrderNoticeInput;
+}
+
+/**
+ * One payment intent the order's checkout minted (`recordPaymentIntent`), kept so
+ * the intent-cancel sweep can withdraw it at the gateway. Keyed within the array by
+ * `intentId`: a checkout replay that re-issues the same intent appends nothing. The
+ * cancel bookkeeping rides the entry; {@link OrderDoc.intentCancelDueAt} indexes it.
+ */
+export interface PaymentIntentEntryDoc {
+	gateway: PaymentMethod;
+	intentId: string;
+	recordedAt: string;
+	/** When the sweep should next look; `null` once resolved. */
+	cancelDueAt: string | null;
+	cancelAttempts: number;
+	cancelOutcome: PaymentIntentCancelOutcome | null;
 }
 
 /**
@@ -328,6 +371,20 @@ export interface RefundEntryDoc {
 	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
+	/**
+	 * `cancellation` for the money a cancellation returned — such a row consumes
+	 * capacity like any other but never drives `→ refunded`, on the one-shot record
+	 * or on a later finalize (the row is what a finalize reads, so it must carry it).
+	 * ABSENT on a row written before the field existed, which reads as `refund`.
+	 */
+	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
+	/** Who resolved the row by hand when its outcome was unknown (`unverified` →
+	 *  recorded or voided). Absent otherwise. */
+	resolvedBy?: string;
 }
 
 /**
@@ -459,6 +516,41 @@ export interface OrderDoc {
 	emailOutbox: OutboxEntryDoc[];
 	/** Settled payments, keyed by `providerRef`. */
 	payments: PaymentEntryDoc[];
+	/**
+	 * Scheduled retries of the order's AUTOMATIC late-payment refunds, keyed by each
+	 * refund's idempotency key (`scheduleRefundRetry`) — PER REFUND, so finishing one
+	 * late capture never drops the retry another still needs. Optional on the stored
+	 * shape: every document written before late-payment refunds lacks it.
+	 */
+	refundRetries?: Record<string, RefundRetrySchedule>;
+	/**
+	 * DECLARED INDEX. The earliest `at` over {@link refundRetries}, or `null`/absent
+	 * when none is owed — the sweep's due scan, since the filter algebra cannot reach
+	 * into a map. DERIVED on every write that touches the map, never incremented.
+	 */
+	refundRetryAt?: string | null;
+	/**
+	 * DECLARED INDEX. The earliest `since` (first failure) over {@link refundRetries},
+	 * or `null`/absent — the give-up escalation's own scan (`listRefundRetriesStale`),
+	 * ranked by AGE so due-but-young retries never block a stale one. Derived like
+	 * {@link refundRetryAt}.
+	 */
+	refundRetrySince?: string | null;
+	/**
+	 * Payment intents the checkout minted, keyed by `intentId` — what the
+	 * intent-cancel sweep withdraws. OPTIONAL on the stored shape because every
+	 * document written before late-payment prevention lacks it; read as empty (that
+	 * order's intent is simply not cancelled, and a late payment on it is refunded
+	 * at settle instead).
+	 */
+	paymentIntents?: PaymentIntentEntryDoc[];
+	/**
+	 * DECLARED INDEX. The earliest `cancelDueAt` over the UNRESOLVED intents, or
+	 * `null` when none is owed — the sweep's due scan (`listIntentCancelsDue`), since
+	 * the filter algebra cannot reach into `paymentIntents[]`. DERIVED on every write
+	 * that touches the array ({@link computeIntentCancelDueAt}), never incremented.
+	 */
+	intentCancelDueAt?: string | null;
 	/** The refunds ledger; the ceiling is arbitrated against it in place. */
 	refunds: RefundEntryDoc[];
 	/**
@@ -619,13 +711,39 @@ export function normalizeOrderDoc(doc: OrderDoc): OrderDoc {
 		events: doc.events ?? [],
 		emailOutbox: doc.emailOutbox ?? [],
 		payments: doc.payments ?? [],
+		refundRetries: doc.refundRetries ?? {},
+		refundRetryAt: doc.refundRetryAt ?? null,
+		refundRetrySince: doc.refundRetrySince ?? null,
+		paymentIntents: doc.paymentIntents ?? [],
+		intentCancelDueAt: doc.intentCancelDueAt ?? null,
 		refunds: doc.refunds ?? [],
 	};
 }
 
-/** The outbox entry for `toState`, if one was ever enqueued. */
+/** The STATE outbox entry for `toState`, if one was ever enqueued. A notice entry
+ *  is never it, whatever state it was enqueued in — otherwise a late-payment notice
+ *  enqueued on an `expired` order would read as that order's expiry email. */
 export function findOutboxEntry(doc: OrderDoc, toState: OrderState): OutboxEntryDoc | undefined {
-	return doc.emailOutbox.find((entry) => entry.toState === toState);
+	return doc.emailOutbox.find((entry) => entry.notice === undefined && entry.toState === toState);
+}
+
+/** The NOTICE outbox entry for this notice's dedupe key — `(kind, refundId)`, an
+ *  absent `refundId` reading as none — if one was ever enqueued. */
+export function findNoticeEntry(
+	doc: OrderDoc,
+	notice: Pick<OrderNoticeInput, "kind" | "refundId">,
+): OutboxEntryDoc | undefined {
+	return doc.emailOutbox.find(
+		(entry) =>
+			entry.notice?.kind === notice.kind &&
+			// A legacy entry (no refundId — written before refund ids existed) stands for
+			// any refund of its kind, so a late-payment replay after deploy does not send
+			// its notice a second time.
+			// The cost, accepted: a SECOND, distinct late-payment refund on an order that
+			// holds a legacy entry is not announced — exactly the old first-wins-per-kind
+			// behaviour, so no order is worse off than before refund ids existed.
+			(entry.notice.refundId === undefined || entry.notice.refundId === notice.refundId),
+	);
 }
 
 /**
@@ -815,4 +933,51 @@ export function computeEmailDueAt(doc: Pick<OrderDoc, "emailOutbox">): string | 
 		if (earliest === null || due < earliest) earliest = due;
 	}
 	return earliest;
+}
+
+/** Recompute {@link OrderDoc.refundRetryAt}: the earliest scheduled retry, else `null`. */
+export function computeRefundRetryAt(
+	retries: Readonly<Record<string, RefundRetrySchedule>> | undefined,
+): string | null {
+	let earliest: string | null = null;
+	for (const retry of Object.values(retries ?? {})) {
+		if (earliest === null || retry.at < earliest) earliest = retry.at;
+	}
+	return earliest;
+}
+
+/** Recompute {@link OrderDoc.refundRetrySince}: the oldest first failure, else `null`. */
+export function computeRefundRetrySince(
+	retries: Readonly<Record<string, RefundRetrySchedule>> | undefined,
+): string | null {
+	let oldest: string | null = null;
+	for (const retry of Object.values(retries ?? {})) {
+		if (oldest === null || retry.since < oldest) oldest = retry.since;
+	}
+	return oldest;
+}
+
+/** Recompute {@link OrderDoc.intentCancelDueAt}: the earliest `cancelDueAt` over the
+ *  unresolved intents, else `null`. */
+export function computeIntentCancelDueAt(
+	intents: readonly PaymentIntentEntryDoc[] | undefined,
+): string | null {
+	let earliest: string | null = null;
+	for (const intent of intents ?? []) {
+		if (intent.cancelOutcome !== null || intent.cancelDueAt === null) continue;
+		if (earliest === null || intent.cancelDueAt < earliest) earliest = intent.cancelDueAt;
+	}
+	return earliest;
+}
+
+/** A paid order owes no intent cancels: every unresolved intent resolves
+ *  `not_needed`. Pure; the paid flip applies it in its own write. */
+export function resolveIntentsOnPaid(
+	intents: readonly PaymentIntentEntryDoc[] | undefined,
+): PaymentIntentEntryDoc[] {
+	return (intents ?? []).map((intent) =>
+		intent.cancelOutcome !== null
+			? intent
+			: { ...intent, cancelDueAt: null, cancelOutcome: "not_needed" as const },
+	);
 }

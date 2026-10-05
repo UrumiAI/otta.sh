@@ -35,6 +35,7 @@ import {
 	currency,
 	idempotencyKey,
 	refundOrder,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -110,6 +111,10 @@ class LatencyRefundGateway implements PaymentGateway {
 	}
 	async verifyConfirmation(_raw: RawConfirmation): Promise<ConfirmationResult> {
 		return { ok: false, reason: "MALFORMED" };
+	}
+	// Unused — the race never cancels an unpaid order's intent.
+	async cancelIntent(): Promise<CancelIntentResult> {
+		return { ok: false, reason: "UNSUPPORTED" };
 	}
 }
 
@@ -447,6 +452,9 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 				},
 				async verifyConfirmation(): Promise<ConfirmationResult> {
 					return { ok: false, reason: "MALFORMED" };
+				},
+				async cancelIntent(): Promise<CancelIntentResult> {
+					return { ok: false, reason: "UNSUPPORTED" };
 				},
 			};
 			const id = await h.seedPaidOrder({ id: `ord-gw-void-${String(loop)}`, totalCents: 1000 });

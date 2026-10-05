@@ -31,69 +31,23 @@ export class CouponNotFoundError extends Error {
 }
 
 /**
- * `create` was handed a code another LIVE coupon already holds.
- *
- * `coupons.code` was UNIQUE in SQL. Here the claim document `coupon_codes/{folded}`
- * is the enforcement, and a claim whose owning coupon no longer exists is taken
- * over rather than treated as a conflict — so a crash between deleting a coupon and
- * releasing its code does not strand the code forever.
- *
- * Codes are unique after CASE FOLDING here, where SQL's unique index was
- * case-sensitive. That is the narrower rule, and it is the one the admin list's
- * case-insensitive exact search already implies.
+ * `create`'s two refusals — a code another LIVE coupon holds (compared folded:
+ * the claim document `coupon_codes/{folded}` is the enforcement, and a claim whose
+ * owning coupon no longer exists is taken over, so a crash between deleting a
+ * coupon and releasing its code does not strand the code), and an id that already
+ * has a document — are PORT behaviour and live in `@otta-sh/domain` (ADR-0025).
+ * Re-exported here under their old names so existing imports keep working.
  */
-export class CouponCodeConflictError extends Error {
-	override readonly name = "CouponCodeConflictError";
-	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
-	readonly code = "COUPON_CODE_CONFLICT";
-	readonly couponCode: string;
-	readonly heldBy: string;
-
-	constructor(couponCode: string, heldBy: string) {
-		super(
-			`coupon code ${couponCode} is already claimed by coupon ${heldBy} — ` +
-				"a code identifies one promotion, and an issued one is never re-defined",
-		);
-		this.couponCode = couponCode;
-		this.heldBy = heldBy;
-	}
-}
-
-/**
- * `create` was handed a coupon id that already has a document.
- *
- * The primary key on `coupons.id` raised this in SQL. Returning the existing
- * coupon instead would silently hand this caller somebody else's promotion, with
- * somebody else's economics and counter, so it is an error rather than an adoption.
- */
-export class CouponIdCollisionError extends Error {
-	override readonly name = "CouponIdCollisionError";
-	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
-	readonly code = "COUPON_ID_COLLISION";
-	readonly couponId: string;
-
-	constructor(couponId: string) {
-		super(
-			`coupon ${couponId} already exists — the existing coupon was NOT adopted, ` +
-				"because its economics and its use counter are not this caller's",
-		);
-		this.couponId = couponId;
-	}
-}
+export {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+} from "@otta-sh/domain";
 
 /** Structural test for {@link CouponNotFoundError}. */
 export function isCouponNotFoundError(err: unknown): err is CouponNotFoundError {
 	return isCoded(err, "COUPON_NOT_FOUND");
-}
-
-/** Structural test for {@link CouponCodeConflictError}. */
-export function isCouponCodeConflictError(err: unknown): err is CouponCodeConflictError {
-	return isCoded(err, "COUPON_CODE_CONFLICT");
-}
-
-/** Structural test for {@link CouponIdCollisionError}. */
-export function isCouponIdCollisionError(err: unknown): err is CouponIdCollisionError {
-	return isCoded(err, "COUPON_ID_COLLISION");
 }
 
 function isCoded(err: unknown, code: string): boolean {

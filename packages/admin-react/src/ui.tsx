@@ -826,6 +826,8 @@ export function ConfirmDialog({
 	confirmLabel,
 	denyLabel,
 	confirmTone = "danger",
+	confirmDisabled,
+	status,
 	onConfirm,
 	onDeny,
 }: {
@@ -844,6 +846,13 @@ export function ConfirmDialog({
 	 * operator to read past the styling on the confirms that are not.
 	 */
 	confirmTone?: "danger" | "neutral";
+	/** Hold the confirm while the caller cannot act on it yet (its text should
+	 *  say why); Deny stays available. */
+	confirmDisabled?: boolean;
+	/** A passing state the dialog should announce (why the confirm is held,
+	 *  say). Rendered in a polite live region that is always present, so a
+	 *  change is read out. */
+	status?: string;
 	onConfirm: () => void;
 	onDeny: () => void;
 }): React.ReactElement | null {
@@ -883,12 +892,22 @@ export function ConfirmDialog({
 			>
 				{text}
 			</p>
+			{status !== undefined && (
+				<p
+					style={{ fontSize: 13, margin: status === "" ? 0 : "0 0 16px", lineHeight: 1.5 }}
+					aria-live="polite"
+					data-testid="otta-confirm-status"
+				>
+					{status}
+				</p>
+			)}
 			<div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
 				<Button label={denyLabel} onClick={onDeny} testId="otta-confirm-deny" />
 				<Button
 					label={confirmLabel}
 					onClick={onConfirm}
 					danger={confirmTone === "danger"}
+					disabled={confirmDisabled}
 					testId="otta-confirm-yes"
 				/>
 			</div>

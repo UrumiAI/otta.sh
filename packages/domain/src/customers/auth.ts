@@ -23,7 +23,7 @@ export type RequestLoginResult = IssueChallengeResult;
  * Begin a magic-link login (Phase 5 §7). Issues a challenge for a never-seen
  * email too (first login creates the account on verify), so there is **no
  * account-existence oracle** (§9 Risk 4): the route returns an identical
- * "if an account exists, we've sent a link" response regardless — including
+ * "check your inbox" response regardless — including
  * when the request is rate-limited (`THROTTLED` must not be observable either).
  */
 export async function requestLogin(

@@ -76,7 +76,10 @@ paid plan:
   image service (the config deliberately does not set `imageService: "cloudflare"` — that is
   the paid resizing product).
 
-The site's single `* * * * *` cron touches only D1, within free limits (§5).
+The site's single `* * * * *` cron touches only D1, within free limits — the commerce sweep
+budgets itself to fit Workers Free's 50 D1 queries per invocation by default. On Workers Paid,
+switch Settings → Checkout & holds → "Background work per minute" to the Paid preset, or
+expired holds and queued emails drain at the Free pace (§5).
 
 ### 2.1 The site Worker
 
@@ -139,12 +142,12 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
-   it in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
+   it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
-   price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
-   against the SITE. It drives the site's own admin API — the route the Pricing &
-   inventory page uses — so it needs only the site URL and a token that can read the CMS
+   price them in each product's Pricing & stock cards or run `sites/staging/scripts/seed-demo-commerce.ts`
+   against the SITE. It drives the site's own admin API — the route the Pricing & stock
+   cards use — so it needs only the site URL and a token that can read the CMS
    and call that route:
 
    ```bash
@@ -154,7 +157,23 @@ The site's single `* * * * *` cron touches only D1, within free limits (§5).
    ```
 
    The script is safe to re-run: it reads each product first and skips any that already
-   has a SKU, so it never overwrites a price set in Pricing & inventory.
+   has a SKU, so it never overwrites a price set in the Pricing & stock cards.
+
+   **A store created before 2026-10-01** has no `pricing` field on its products collection, and
+   the Pricing & stock cards draw on that field. Add it once with the script below — **not** in
+   Admin › Content Types, which in EmDash 0.38 cannot attach the cards to a field: a JSON field
+   added there shows EmDash's raw JSON box instead, where commerce data must never be typed.
+   The script places the field after Images, re-binds a hand-made one, and is safe to re-run:
+
+   ```bash
+   SITE_URL=https://<your-site-worker>.workers.dev \
+   EMDASH_TOKEN=<an admin API token> \
+     pnpm dlx tsx@4 sites/staging/scripts/add-pricing-field.ts
+   ```
+
+   The field holds no data; new stores get it from the seed. If a product editor ever shows a
+   raw JSON box labelled "Pricing & stock" instead of the cards, the console's admin module did
+   not load (or the field lost its widget): leave the box empty and re-run the script.
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 
@@ -236,7 +255,8 @@ order of appearance in a deployment's life:
   live payment but never verify its confirmation (or the reverse) would leave orders holding
   stock against a payment nothing can settle. Independently, until the webhook signing secret
   is set, the settle route answers `NOT_CONFIGURED`; it verifies deliveries with the
-  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`). The pay
+  **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`), and uses the
+  secret key, when set, only to refund a late payment (below). The pay
   page also needs the build-time publishable key, `STRIPE_PUBLIC_KEY` — see
   [`sites/staging/README.md`](./sites/staging/README.md).
 
@@ -250,6 +270,44 @@ order of appearance in a deployment's life:
   order is kept deliberately — retrying with the same `Idempotency-Key` re-issues the *same*
   PaymentIntent, and the order-expiry sweep reaps it at the checkout TTL (releasing stock
   and any coupon use) if it never gets paid.
+
+  **Late payments** ([ADR-0022](./adr/0022-declined-payment-keeps-order-pending.md), amended
+  2026-10-02). A buyer can still pay after their order's hold lapsed and the order expired (a
+  pay tab left open). Such a payment is now **refunded automatically** by the settle route,
+  once, through `POST /v1/refunds` (key `late-payment-refund:<pi_…>`, each Stripe call bounded
+  at 3 s): the order stays `expired`, its reconciliation flag is resolved with outcome
+  `refunded` by `otta:auto-refund`, the buyer gets a "Payment refunded" email naming the
+  refunded amount, and the order page says the payment was refunded. This needs the **secret
+  key** on the settle path; without it the order is flagged for a manual refund as before, and
+  the order page still shows the payment as captured rather than "nothing was charged". A
+  transient Stripe error answers the webhook 503 (with `Retry-After`) so Stripe retries, and the
+  cron's `late-refunds` leg keeps resuming it after Stripe stops (backing off 5 min → 15 min →
+  hourly; best-effort — see §5); the flag reads `… automatic refund retrying` meanwhile. A
+  retry that finds no Stripe gateway (a secret missing or unreadable) is treated the same way.
+  After ~3 days of this it gives up — on every plan, Workers Free included — and flags the
+  order `… needs checking (gave up retrying …) — verify in Stripe`, keeping the refund
+  reservation as `unverified`. A cancelled order is refunded automatically only if its audit
+  shows it was cancelled while unpaid.
+
+  **Known gap — refunding by hand after a give-up.** Once a late refund is `unverified` (a
+  give-up, or an ambiguous create), the order page keeps saying the payment "will be
+  refunded" even after someone refunds it in the Stripe dashboard: nothing tells Otta the
+  money went back. Resolve the reconciliation flag in the admin console so the order leaves
+  the queue; the page copy follows the refunds ledger, and an admin "confirm refunded in the
+  provider" action to finalize such a row is a planned follow-up.
+
+  The window is also narrowed at the source. Checkout records the order's PaymentIntent, and
+  from the order's hold deadline the cron's `cancel-intents` leg (right behind the outbox and
+  the expiry legs) withdraws it once the order has expired or been cancelled unpaid:
+  `POST /v1/payment_intents/{id}/cancel` over `ctx.http.fetch`, inside the tick's budget (see
+  §5), each call given a fixed 1.5 s and started only with that much left (a tick running out
+  never costs an attempt). The expiry itself never calls Stripe. A transient failure is retried
+  by that leg on later ticks with backoff (5 attempts),
+  then given up with one `[domain] gave up cancelling payment intent …` log line — harmless,
+  since a payment on it is refunded as above. `/checkout/pay` also refuses (303 to the order
+  page) an order that is no longer `pending` or whose hold has passed (the sweep expires such an
+  order within about a minute). Orders placed before this change have no recorded intent and
+  are not cancelled.
 
 > **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
@@ -273,15 +331,75 @@ order of appearance in a deployment's life:
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
   rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  With a sender, a settled payment's **order confirmation goes out inline** from the settle
+  route, and an admin's status move, fulfilment, cancel or refund sends its email inline from
+  the console write (best-effort, a few seconds at most); the `order-emails` leg is the backstop
+  that delivers anything those attempts missed, on its next run
+  ([ADR-0005](./adr/0005-transactional-email-transport.md), 2026-10-02;
+  [ADR-0026](./adr/0026-admin-order-actions-never-claim-money-that-did-not-move.md)). With no
+  sender the console says so on every such write instead of claiming the buyer was emailed.
   Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
   API key is a write-only Settings credential, and the from-address ("Order email
-  from-address", `settings:emailFrom`, default `no-reply@otta.local`) is a readable Settings
-  field. **Magic-link login mail** goes out through the same sender, and only once Settings
-  → "Sign-in link page" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
+  from-address", `settings:emailFrom`) is a readable Settings field. Unset, it falls back to
+  `no-reply@otta.local` — a dev-only default that a local mail catcher accepts and no real
+  provider will send from. The Settings save refuses a from-address that is malformed,
+  carries a control character, has an IP-literal or single-label domain, or sits under a
+  reserved name: `.local`, `.localhost`, `.test`, `.example`, `.invalid`, `.internal`,
+  `.onion`, `.alt`, `example.com` / `.net` / `.org` or `home.arpa`. An internationalized
+  domain is entered in its `xn--` form. A from-address saved before this release that the
+  check refuses (e.g. a reserved domain, an unquoted comma in the name, an IP literal or a
+  Unicode domain) still sends, and is logged once per isolate (`settings:emailFrom is not a
+  deliverable address`); it must be fixed or cleared before the payment settings form will
+  save again. **Magic-link login mail** goes out through the same sender, and only once Settings
+  → "Sign-in page address" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
   `/account/verify` page — the emailed link points there and never at the request's origin.
+  The save requires `https://` (plain `http://` only for `localhost`, `127.0.0.1` or `[::1]`),
+  because the link carries a sign-in token.
   With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
   success, issues nothing, and logs once server-side. For the reference site, set it to
-  `https://<your-site>/account/verify`.
+  `https://<your-site>/account/verify`. **Order emails link to the order page** through the
+  same setting: its origin plus `/orders/<order id>`, the page a shopper is sent to after
+  checkout (a bearer link — anyone holding it sees the order's public view, which carries no
+  address or email). Two assumptions: the storefront is served from the **root** of that
+  origin (a path on the sign-in page URL, such as `/shop/account/verify`, is dropped — the
+  site's own links are root-absolute), and the URL is **https**. An `http:` URL is used only
+  for `localhost`, `127.0.0.1` or `[::1]` (local development); any other http URL gives no
+  order link, because a bearer link must not travel in clear text. Unset or invalid, order
+  emails go out with no link; it is never taken from a request's `Host`. The sign-in email (and the sign-off of every order email) names the
+  store from Settings → "Store display name" (`settings:storeDisplayName`); unset, it is
+  left out. The sign-in email states the link's real lifetime (15 minutes). Order
+  emails list the order's own line snapshot, totals and ship-to, with money formatted as the
+  storefront formats it.
+
+> **Email provider: Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
+> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag), so
+> Resend is the supported provider. To reach real inboxes:
+>
+> 1. Build with `EMAIL_API_URL=https://api.resend.com/emails` (§4 — this also grants
+>    `api.resend.com` in `allowedHosts`).
+> 2. Add and verify your sending domain in Resend (its SPF and DKIM DNS records); a DMARC
+>    record with `p=none` is recommended to start. Without a verified domain Resend only sends
+>    from `onboarding@resend.dev`, and only to the Resend account owner's own address.
+> 3. In admin Settings, save the Resend API key (it starts `re_`; with Resend configured the
+>    save refuses any other shape) and a from-address on that verified domain —
+>    `orders@yourdomain.com` or `Your Shop <orders@yourdomain.com>`.
+> 4. Set "Sign-in page address" to the public `https://<your-site>/account/verify` URL — a
+>    localhost or http URL in a customer's inbox is a dead link. Order emails link to
+>    `https://<your-site>/orders/<id>` from the same setting, and set "Store display name"
+>    so the sign-in email names your store.
+>
+> Resend's free tier is 3,000 emails/month and 100/day. A refused send throws with Resend's
+> own error name and message (never the request). **Only the login route logs it today**:
+> a refused order email is retried and eventually parked `failed` in the outbox with no log
+> line, so check Resend's dashboard when order mail goes missing. Resend's testing-mode
+> refusal quotes the account owner's address, which can therefore appear in that log.
+>
+> Resend dedupes on `Idempotency-Key` for 24 hours, and answers **409** when a retry reuses
+> a key with a *different* body — for example after the from-address was changed while a row
+> was waiting to be retried. Such a row is refused on every retry and parks as `failed`.
+>
+> Another provider needs its own adapter behind the `EmailSender` port; pointing
+> `EMAIL_API_URL` at a non-Resend API is not supported.
 
 ## 4. Egress and `allowedHosts`
 
@@ -313,27 +431,195 @@ editing a text field should not be able to move it.
 
 ## 5. Operations & scaling
 
-**Cron.** Two cadences, and they do different jobs. The **site's** Cron Trigger is
-`* * * * *` — that drives the host's cron *executor*, which claims due rows from its own
-task table. The **plugin** registers one task, `commerce-sweeps`, due every `*/15`; the
-executor fires the plugin's `cron` hook when it comes due. One task drives all nine sweep
-legs: they share a store composition and a clock, and splitting them would only put nine
-rows in contention on the same documents.
+**Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
+*executor*, which claims due rows from its own task table. The **plugin** registers one task,
+`commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
+hook when it comes due. One task drives all eleven sweep legs: they share a store composition
+and a clock, and splitting them would only put eleven rows in contention on the same documents. The
+four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
+sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
+scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
+fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
+within about a minute.
+
+**Each tick is budgeted — in time and in D1 queries.** The `cron` hook declares a 15 s timeout
+(the host stops waiting for a hook after it; raised from EmDash's 5 s default so a slow email
+provider's send fits). The tick's budget starts at hook entry: 9.5 s of wall time — waiting on
+D1 and the provider, not CPU, so Workers Free's CPU limit is unaffected — and, by default, 30 storage/kv/egress calls (each one D1 query or one
+subrequest — see "Background work per minute" below), checked before each leg and before each
+unit of work inside one (each hold or order flip, each outbox claim, each scanned page or row,
+each reporting day, each pruned challenge). The expiry legs' candidate lists are bounded by a
+count and stopped by the budget too, and never offer a lapsed hold that can no longer be expired
+(so a few such holds cannot block the live ones behind them). **The budget is a hard ceiling**:
+the counter refuses any call past it (the leg it stops is logged by name as `stopped at the
+tick's query ceiling` and resumes next tick), so no tick can use more than the setting — on the
+Free preset, never more than 30 of Workers Free's 50.
+
+**Which leg runs first.** `cancel-intents` first (a due PaymentIntent is withdrawn before
+anything else spends the tick), then `expire-orders`, the outbox, `hold-intents` (a paid order's
+stock commit) and `expire-holds`, then `late-refunds`, and housekeeping last. Each leg may use
+only a share of the tick, never less than one unit of its own work; a leg its share stopped
+gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
+three ticks in a row with work goes to the head of the next tick (right behind
+`cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
+expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
+line naming what each leg spent:
+
+```
+[otta] cron sweep used 27 of 30 queries (180ms of 9500ms): cancel-intents 2, expire-orders 14,
+  order-emails 8, overhead 3; deferred to the next tick: hold-intents, expire-holds
+```
+
+The expiry never flips an order whose payment intent is due and not yet withdrawn: the
+withdrawal comes first, in the same tick or the one before. And a provider call is always
+recorded. An email is sent, or an intent withdrawn, only with room left for its record, and
+the record is never refused once the call has been made. Above the Free preset the record's
+window (at most 4 calls) is kept out of the ceiling the legs plan against, so a tick never
+uses more than its configured budget. On the Free preset (30) it is not: reserving it cost a
+quarter of the Free expiry pace. There, if an estimate is ever wrong, the line ends
+`N past the ceiling to record a provider call`, and the tick uses at most 34 of Workers
+Free's 50, which still leaves the host 16. **If you set a custom budget, keep it at least 4
+under your plan's per-invocation limit after the host's own share.**
+
+A leg the budget did not reach is listed as deferred and runs on a later tick — that is not a
+failure, and a backlog (say, hundreds of expired holds after an outage) drains over several
+ticks. Five deferrals in a row of the same leg log a warning.
+
+**Order emails: a timeout is retried later, and only counts once it keeps happening.** Each send
+gets at most 5 s, or what is left of the outbox's share of the tick, whichever is sooner — and
+that limit covers the whole send, including the host resolving the provider's address; 5 s is
+long enough for a slow-but-working provider to deliver. Just before sending, the sweep checks the
+time again (the claim and the order reads take time of their own); with too little left it hands
+the email back untried, due again in 30 s (so a short tick cannot keep one email at the head of
+the queue). A send the tick had to give **less** than the full 5 s and that then times out is
+the sweep's doing, not the provider's: it is handed back due at once, uncounted, with nothing
+recorded against it. A send that **times out with the full 5 s** is handed back **without
+counting an attempt** and backed off — retried after 1 minute, then 2, 4, 8, up to 15 — so it moves
+behind other queued emails instead of holding the head of the queue; if the provider did deliver
+after all, the retry carries the same `Idempotency-Key` and the provider dedupes it. After **ten**
+timeouts on one email the sweep logs `[otta] cron sweep order-emails: the email provider has
+timed out N times …` with `console.error` (alert on it), and from then on each timeout counts as
+a failed attempt, so the email is eventually parked `failed` with the reason "provider kept
+timing out". A genuine provider failure (a non-2xx answer or a network error) always counts, and
+an email is parked `failed` after five attempts. There is
+no admin action to re-queue a parked email yet (a follow-up); until there is, a parked
+email is a provider or configuration problem to fix at the provider, and the customer will not
+receive that message.
+
+**The plan this assumes.** Cloudflare caps one Worker invocation at **50 D1 queries and 50
+subrequests on Workers Free** (1000 queries and 10,000 subrequests on Workers Paid; see
+Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) and
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/)). The scheduled event
+that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
+so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
+call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
+scans come due adds about 17–20 more; one email is about **12** (the claim, the order, the
+sender's key and from-address reads, the request, marking it sent), one hold expired about
+**20** with its list on Free, one order expired **13** for a one-line order (22 before the
+QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
+about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
+transition it absorbs; it is spread over ticks (about five absorbed a Free tick) instead of
+being done in one.
+
+**What Workers Free (30) sustains** — measured by `cron-sweep-backlog.test.ts`, which seeds work
+in every leg at once (50 lapsed orders, ten of them with a payable intent, ten abandoned carts,
+five paid orders owing their stock commit and confirmation, expired challenges, a stranded sku
+carry, lost sku pointers, an unhealed closed day, orphaned coupon redemptions and a late refund)
+and sweeps it minute by minute: no tick passed 30 queries; every leg did some of its work within
+seven ticks and no leg waited more than six in a row; all 50 orders expired by minute 71 (about
+0.7 a minute, while everything else progressed too); everything was done by minute 120. With
+only an expiry backlog it is about **one order a minute**. So an order that lapses behind a
+backlog of N others on Free stays `pending` (its stock off sale; the pay page already refuses
+it) for about N to 1.5·N minutes. Free sustains about **0.7 expiries a minute** under a backlog; a
+store whose orders lapse faster than that holds their stock off sale longer and longer — raise the
+budget (the Paid preset, on Workers Paid) in that case. A store that abandons more than about one
+checkout a minute, or that wants a lapsed order's stock back on sale within a minute or two under
+load, has outgrown the Free preset.
+
+`cancel-intents` (withdrawing a lapsed or unpaid-cancelled order's Stripe PaymentIntent) runs
+first in every tick: about 5 calls per order (one of them the Stripe cancel; up to 7 when Stripe
+refuses the cancel and the intent is read back and, on its last attempt, given up) plus up to 5
+secret reads to build the gateway, at most 20% of the time and 30% of the queries, 1–10 orders a
+tick scaled from the budget, each cancel given a fixed 1.5 s and started only with that much
+left; the intents of the orders the tick's expiry is about to flip are withdrawn right after
+that flip, in the same tick. `late-refunds` (resuming a late payment's automatic refund after a
+transient Stripe failure) is **best-effort**: a tick with nothing due pays one query for it and
+logs nothing. One resume is about 20 calls (two of them Stripe subrequests, the rest mostly the
+refund's finalize and its reporting write) plus up to 5 secret reads to build the gateway; a
+unit is started only with 3.5 s left (a pre-flight, a whole 2.5 s create — a create that times
+out is ambiguous, so it is never started with less — and the writes after it). It runs after
+the money legs and the outbox; only where it cannot fit there — **Workers Free** — does it,
+while refunds are pending, **lead one tick per fifteen minutes** (ahead of even
+`cancel-intents`), resuming one refund: that lead tick takes most of that minute's budget, so
+the intent cancels and the expiry wait one minute together (at most once per fifteen minutes,
+and only while late refunds are pending). In the other minutes a cheap give-up step — no Stripe call, its own list of the
+oldest retries, about 9 calls — runs at the head of the tick, so a refund past the ~3-day limit
+is handed to a human within a tick on every plan. On Paid it never leads and resumes up to five
+a tick, within 40% of the query budget.
+
+**Background work per minute (Settings → Checkout & holds).** The query budget is an
+operational setting, beside the cart hold TTL, with two presets: **Workers Free (30)**, the
+default, and **Workers Paid (600)** — set it to the plan the store actually runs on. The sweep
+reads it once per tick (that read counts against the budget) and sizes its per-tick bites from
+it and the measured costs: Free takes 1 hold, 1 order and 1 email a tick at most (a second never
+fits a Free tick); Paid up to 18, 18 and 15, which clears a backlog of the size QA saw (14–18 due
+in one tick) in about one tick.
+The 9.5 s time budget applies on both plans, so on Paid it — not the query count — is usually
+what ends a busy tick. **30 is also the minimum**: below it the costliest critical unit (a hold
+expiry with its list, about 20 calls, plus the tick's own reads and reserve) could not start
+behind the other legs' due checks, and hold expiry would stall. Any whole number from 30 to 900 is accepted on save
+(anything else is refused with a message, never clamped); a stored value outside those bounds is
+ignored for the Free preset. **Choosing Paid on Workers Free is a mistake the platform
+punishes**: ticks then fail with D1's "too many API requests by single Worker invocation" once
+there is a backlog. Against D1's *daily* Free limits the cadence is small: about 12,000 queries a
+day from the sweep when idle (8 a minute, plus the scans every fifteen), each reading a handful
+of rows and writing almost none — well under the 5 million rows read and 100,000 rows written a
+day. The host's own share of each scheduled event was not measured; on Free, 20 queries is the
+allowance left for it, and on Paid the 600 preset leaves 400 of the 1000.
+
+**Choosing the budget.**
+
+- **On Workers Free, keep 30.** It is the most the sweep can take and still leave the host's
+  own work in the same event (its executor, scheduled publishing, cleanup, heartbeat) about 20
+  of the 50. Watch the `cron sweep used N of 30 queries` lines: a store whose ticks are
+  routinely full, with `deferred to the next tick` naming the same legs minute after minute, or
+  with expiry lag growing after a sale, needs Workers Paid — not a higher Free number.
+- **On Workers Paid, choose 600.** That clears tens of expiries and emails a tick and leaves 400
+  of D1's 1000 per-invocation queries for the host. Anything up to 900 is accepted, for a store
+  that measured its host share; past that the 9.5 s time budget, not the query count, ends a
+  busy tick anyway.
+- **Never more than the plan allows.** A number above 50 on Workers Free makes the sweep plan
+  ticks the platform refuses partway (D1's "too many API requests by single Worker invocation"):
+  the work is not lost — every unit is a guarded write a later tick completes — but nothing
+  finishes reliably.
+- The log line's per-leg figures say where a full tick went: a leg that keeps taking most of the
+  budget with the same work (a large closed day's rollup heal, a huge outbox) is what to
+  investigate, not the budget.
+
+Two kinds of `wrangler tail` lines mean something beyond a slow tick:
+`[cron] Hook failed for otta:commerce-sweeps: Error: Hook timeout` (a single storage call or
+email request hanging past every guard — the email send is the usual suspect, so check the
+provider), and D1's "too many API requests by single Worker invocation" (the host's own work in
+that event used more of the 50 than the 20 the sweep leaves it).
 
 Nothing needs to register that task by hand. The site lists the plugin in its `plugins`
 array, so the host never fires `plugin:activate` for it; instead the plugin wraps its four
 content-sync hooks and the two public catalog routes (product list and product page) in
 `withSweepBootstrap` (`packages/plugin/src/cron/index.ts`), which ensures the task exists
-once per isolate on the first such request and retries on the next if that write fails.
+once per isolate on the first such request (the tick does the same, for a cron-only isolate)
+and retries on the next if that fails. It reads the task row first and writes only when the
+schedule differs.
 
 Every leg is **idempotent** and runs in its own try/catch with its own label, so a leg that
-throws cannot starve the eight beside it; a tick always returns a summary, and each leg logs
-one line on success and one `console.error` on failure (visible in `wrangler tail`). Per
+throws cannot starve the others beside it; a tick always returns a summary. A leg logs one line
+when it did work or has more left, nothing when idle, and one `console.error` on failure
+(visible in `wrangler tail`). Per
 [ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md), these sweepers are not
 an optimization — a coupling that spans two aggregates is made idempotently completable
-rather than transactional, so **a missing sweeper is a correctness bug**. The site's cron
-may be relaxed (e.g. `*/5 * * * *`) if cron noise ever matters more than publish latency,
-but relaxing it past the task's own `*/15` delays every sweep.
+rather than transactional, so **a missing sweeper is a correctness bug**. Do not relax the
+site's cron: the task is due every minute, so a slower trigger directly lengthens how long an
+expired hold keeps stock off sale and how long a queued email waits.
 
 **Scaling.** Commerce truth is one document per aggregate in the site's D1 database, written
 by compare-and-set; every command carries an idempotency key the store enforces once-only,
@@ -366,5 +652,8 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
+| An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
+| An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
+| An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

@@ -1,7 +1,7 @@
 /**
  * A second, in-test theme for the suites that exercise the theme SYSTEM's
- * per-request machinery — the admin preview and the chrome's bag read — which
- * need a shipped id other than the default (and, for the bag, one whose chrome
+ * per-request machinery — the chrome's bag read — which needs a shipped id
+ * other than the default (and, for the bag, one whose chrome
  * opts into `cartLines`). This repo ships Tempered only, so the fixture is
  * spliced into the manifest and the registry with `vi.mock`, never on disk:
  *
@@ -31,8 +31,6 @@ export function withFixtureManifest(real: typeof Manifest): typeof Manifest {
 		{
 			id: FIXTURE_THEME_ID,
 			label: "Fixture",
-			description: "An in-test theme whose chrome draws the bag.",
-			preview: `/theme-previews/${FIXTURE_THEME_ID}.webp`,
 		},
 	];
 	return {

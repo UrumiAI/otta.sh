@@ -64,7 +64,13 @@ export interface CreateOrderCommand {
 	shippingMethodId?: string;
 	/** An optional coupon code, redeemed atomically alongside order creation. */
 	couponCode?: string;
-	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
+	/**
+	 * The signed-in customer who OWNS the order (Phase 5) — drives
+	 * `maxUsesPerCustomer` when present, and is written onto the order so it is in
+	 * their list from birth. Pass it only when the buyer reference is that
+	 * customer's own email (`checkoutOwner`); for anyone else the order is a guest
+	 * order, claimed by whoever later proves that inbox.
+	 */
 	customerId?: CustomerId;
 	/**
 	 * The shipping address the checkout submitted (ADR-0009). Validated (shape,
@@ -168,8 +174,9 @@ export async function createOrderFromCart(
 			// untouched — nothing to release, nothing to roll back.
 			if (!(err instanceof PaymentIntentError)) throw err;
 			logIntentFailure(err, already.id);
-			return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+			return { ok: false, reason: intentFailureReason(err) };
 		}
+		await rememberIntent(deps, already, intent);
 		return { ok: true, order: already, intent };
 	}
 
@@ -382,6 +389,13 @@ export async function createOrderFromCart(
 	}
 }
 
+/** A same-key request still in flight is not a failure (see the reason's doc). */
+function intentFailureReason(
+	err: PaymentIntentError,
+): "PAYMENT_INTENT_FAILED" | "PAYMENT_INTENT_IN_FLIGHT" {
+	return err.inFlight ? "PAYMENT_INTENT_IN_FLIGHT" : "PAYMENT_INTENT_FAILED";
+}
+
 /**
  * Surface a mapped intent failure with its DIAGNOSTIC provider fields (status /
  * code), so `PaymentIntentError.providerStatus` / `providerCode` are read, not
@@ -398,12 +412,13 @@ export async function createOrderFromCart(
  * drive-by widening of this use-case's dependency surface.
  */
 function logIntentFailure(err: PaymentIntentError, forOrder: OrderId): void {
-	console.error("[domain] createIntent failed → PAYMENT_INTENT_FAILED", {
+	console.error(`[domain] createIntent failed → ${intentFailureReason(err)}`, {
 		orderId: forOrder,
 		gateway: err.gateway,
 		retryable: err.retryable,
 		providerStatus: err.providerStatus,
 		providerCode: err.providerCode,
+		inFlight: err.inFlight,
 	});
 }
 
@@ -454,6 +469,9 @@ async function finalizeOrder(
 		idempotencyKey: command.idempotencyKey,
 		holdExpiresAt: ctx.holdExpiresAt,
 		buyerRef: command.buyerRef,
+		// The signed-in owner, when the caller resolved one (`checkoutOwner`): the
+		// order is in their list from birth rather than after their next sign-in.
+		...(command.customerId !== undefined ? { customerId: command.customerId } : {}),
 		paymentMethod: command.paymentMethod,
 		lines: ctx.lines,
 		// ADR-0009: freeze the ship-to snapshot alongside the order, in the same
@@ -505,11 +523,12 @@ async function finalizeOrder(
 	//    in `finishCheckout`'s lost-hold branch).
 	try {
 		const intent = await ctx.gateway.createIntent(intentInput);
+		await rememberIntent(deps, order, intent);
 		return { ok: true, order, intent };
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
 		logIntentFailure(err, order.id);
-		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+		return { ok: false, reason: intentFailureReason(err) };
 	}
 }
 
@@ -707,6 +726,42 @@ function leftCheckoutWindow(order: Order, gateway: PaymentGateway): CreateOrderF
 		order,
 		intent: { gateway: gateway.id, intentId: "", clientAction: { kind: "none" } },
 	};
+}
+
+/**
+ * Record the intent the gateway just minted against its order, so the expiry
+ * sweep (and an unpaid cancel) can withdraw it later — the checkout reply and the
+ * buyer's pay-page cookie are otherwise the only places its id ever lives.
+ *
+ * Runs on the fresh path AND the replay, because a call can die between the
+ * gateway answering and this write; the store dedupes on `(orderId, intentId)`,
+ * so the replay that re-issues the SAME intent records nothing new.
+ *
+ * BEST-EFFORT: a failed write is logged and the checkout still succeeds. The
+ * buyer already holds a payable intent at this point — failing the checkout over
+ * bookkeeping would not un-mint it, it would only send them to retry the same
+ * key. An intent this misses is not cancelled at expiry, and a payment on it
+ * takes `settleOrder`'s late-payment refund path: prevention narrows, the refund
+ * guarantees. An empty id (no intent was minted) is skipped.
+ */
+async function rememberIntent(
+	deps: CreateOrderDeps,
+	order: Order,
+	intent: PaymentIntentHandle,
+): Promise<void> {
+	if (intent.intentId.length === 0) return;
+	try {
+		await deps.orderStore.recordPaymentIntent({
+			orderId: order.id,
+			gateway: intent.gateway,
+			intentId: intent.intentId,
+		});
+	} catch (err) {
+		console.error(
+			`[domain] could not record payment intent ${intent.intentId} for order ${order.id}; it will not be cancelled if the order expires`,
+			{ error: err instanceof Error ? err.message : String(err) },
+		);
+	}
 }
 
 /**

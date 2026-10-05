@@ -17,7 +17,6 @@ import {
 	buildCoil,
 	coilGeometry,
 	coilPath,
-	coilTint,
 } from "../src/lib/coil.js";
 
 const SLUGS = [
@@ -63,49 +62,19 @@ describe("buildCoil — determinism", () => {
 	});
 });
 
-describe("coilTint — tint by POSITION, because a hash is lumpy over three products", () => {
-	test("cycles through all three, in order", () => {
-		expect([0, 1, 2, 3, 4, 5].map(coilTint)).toEqual([...COIL_TINTS, ...COIL_TINTS]);
-	});
-
-	test("a negative index still lands inside the palette", () => {
-		// `%` alone in JS returns a negative remainder and falls off the array.
-		expect(COIL_TINTS).toContain(coilTint(-1));
-		expect(COIL_TINTS).toContain(coilTint(-7));
-	});
-
-	test("any three CONSECUTIVE products show all three tints", () => {
-		// This is the whole point, and the thing the hash could not promise: the
-		// three-product seed drew no straw at all, and a nine-slug strip drew no
-		// violet. On a page that shows the catalog at once the eye compares the
-		// coils to each other, not to a distribution.
-		for (let start = 0; start < 12; start++) {
-			const window = [start, start + 1, start + 2].map(coilTint);
-			expect(new Set(window).size).toBe(COIL_TINTS.length);
-		}
-	});
-});
-
-describe("buildCoil — index cycles the tint, the slug keeps the shape", () => {
-	test("passing an index takes the tint off the position", () => {
-		for (const [index, tint] of COIL_TINTS.entries()) {
-			expect(buildCoil("otta-mug", index).tint).toBe(tint);
+describe("buildCoil — one product, one coil, wherever it is drawn", () => {
+	test("the tint is the product's own, the same every time", () => {
+		// QA: the Tee's coil was blue-grey in the shop grid and tan on its own
+		// page. The grid cycled tints by POSITION and the product page fell back
+		// to the slug's hash, so one product wore two colours a click apart. The
+		// art is the product's picture; it must not change between pages.
+		for (const slug of SLUGS) {
+			expect(buildCoil(slug).tint).toBe(coilGeometry(slug).tint);
 		}
 	});
 
-	test("the DRAWING is unchanged by position — a product does not reshape when something above it sells out", () => {
-		const byHash = buildCoil("otta-mug");
-		for (let index = 0; index < 6; index++) {
-			expect(buildCoil("otta-mug", index).path).toBe(byHash.path);
-		}
-	});
-
-	test("omitting the index falls back to the slug's own hash", () => {
-		expect(buildCoil("otta-mug").tint).toBe(coilGeometry("otta-mug").tint);
-	});
-
-	test("two products at the same position in different lists still differ in shape", () => {
-		expect(buildCoil("otta-tee", 0).path).not.toBe(buildCoil("otta-mug", 0).path);
+	test("takes no position at all — a list cannot recolour a product", () => {
+		expect(buildCoil.length).toBe(1);
 	});
 });
 

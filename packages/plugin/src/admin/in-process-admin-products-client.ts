@@ -88,10 +88,12 @@ import type {
 	ProductDetailWire,
 	ProductEditResult,
 	ProductEditWire,
+	ProductPriceStockWire,
 	ProductsListFilter,
 	ProductsListResult,
 	ProductSummaryWire,
 	RestockResult,
+	StockMoveApplied,
 	StockRemovalResult,
 	TaxClassWire,
 } from "./admin-products-surface.js";
@@ -171,6 +173,32 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		const onHand =
 			product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku);
 		return toProductDetailWire(product, onHand);
+	}
+
+	/** Price and stock for a bounded list of products, in the order asked; ids
+	 *  with no commerce row are left out. One batched row read, then one stock
+	 *  read per sku — the same `findOnHand` the detail uses, so `null` ("no
+	 *  inventory row") is never collapsed into `0`. */
+	async getProductSummaries(productIds: readonly string[]): Promise<ProductPriceStockWire[]> {
+		for (const id of productIds) requireIdToken("productId", id);
+		const rows = await this.#stores.productCommerce.getManyByProductId(
+			productIds.map((id) => toProductId(id)),
+		);
+		const ordered = productIds.flatMap((id) => {
+			const row = rows.get(toProductId(id));
+			return row === undefined ? [] : [row];
+		});
+		return Promise.all(
+			ordered.map(async (product) => ({
+				productId: product.productId,
+				sku: product.sku,
+				priceCents: product.price?.amount ?? null,
+				currency: product.price?.currency ?? null,
+				compareAtCents: product.compareAtPrice?.amount ?? null,
+				onHand: product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku),
+				deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
+			})),
+		);
 	}
 
 	/**
@@ -262,7 +290,7 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 	 *  per submission: a restock is additive, so two deliberate "+5"s must not
 	 *  collapse and there is no safe content-only fallback. */
 	async restock(productId: string, qty: number, key: string): Promise<RestockResult> {
-		const resolved = await this.#resolveStockMovement(productId, qty, key);
+		const resolved = await this.#resolveStockMovement(productId, qty, key, undefined);
 		if (resolved.status !== "ok") return { ok: false, reason: resolved.status };
 		const res = await restockUseCase(
 			this.#stores.inventory,
@@ -270,7 +298,7 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 			qty,
 			toIdempotencyKey(key),
 		);
-		if (res.ok) return { ok: true, onHand: res.onHand };
+		if (res.ok) return appliedMove(res);
 		// UNKNOWN_SKU: the product exists but has no inventory row yet (priced but
 		// never seeded). A stock movement cannot create one.
 		return { ok: false, reason: "no_inventory_row" };
@@ -279,16 +307,25 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 	/** REMOVE `qty` damaged/shrinkage units. The domain applies a GUARDED
 	 *  decrement, so an over-removal is a clean `insufficient_stock` carrying the
 	 *  current count — never a negative stock and never a throw. */
-	async removeStock(productId: string, qty: number, key: string): Promise<StockRemovalResult> {
-		const resolved = await this.#resolveStockMovement(productId, qty, key);
+	async removeStock(
+		productId: string,
+		qty: number,
+		key: string,
+		expectedOnHand?: number,
+	): Promise<StockRemovalResult> {
+		const resolved = await this.#resolveStockMovement(productId, qty, key, expectedOnHand);
 		if (resolved.status !== "ok") return { ok: false, reason: resolved.status };
 		const res = await removeStockUseCase(
 			this.#stores.inventory,
 			toSku(resolved.sku),
 			qty,
 			toIdempotencyKey(key),
+			watermark(expectedOnHand),
 		);
-		if (res.ok) return { ok: true, onHand: res.onHand };
+		if (res.ok) return appliedMove(res);
+		if (res.reason === "STALE_ON_HAND") {
+			return { ok: false, reason: "stale_on_hand", onHand: res.onHand };
+		}
 		if (res.reason === "INSUFFICIENT_STOCK") {
 			return { ok: false, reason: "insufficient_stock", onHand: res.onHand };
 		}
@@ -373,11 +410,20 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		productId: string,
 		qty: number,
 		key: string,
+		expectedOnHand: number | undefined,
 	): Promise<{ status: "ok"; sku: string } | { status: "not_found" | "no_sku" | "invalid" }> {
 		try {
 			requireIdToken("productId", productId);
 			requireStockMovementQty(qty);
 			if (key.length === 0) throw new CommerceInputError("idempotencyKey", "must not be empty");
+			// A count, or absent. Checked here so a bad one is `invalid` like a bad
+			// qty, rather than the RangeError the use-case would throw.
+			if (
+				expectedOnHand !== undefined &&
+				(!Number.isSafeInteger(expectedOnHand) || expectedOnHand < 0)
+			) {
+				throw new CommerceInputError("expectedOnHand", "must be a non-negative integer");
+			}
 		} catch (err) {
 			if (isCommerceInputError(err)) return { status: "invalid" };
 			throw err;
@@ -387,6 +433,20 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		if (product.sku === null) return { status: "no_sku" };
 		return { status: "ok", sku: product.sku };
 	}
+}
+
+/** A movement that went in, with the store's `replayed` marker carried through
+ *  — dropping it would let a ledger echo read as a fresh movement. */
+function appliedMove(res: { onHand: number; replayed?: true }): StockMoveApplied {
+	return res.replayed === true
+		? { ok: true, onHand: res.onHand, replayed: true }
+		: { ok: true, onHand: res.onHand };
+}
+
+/** The use-case's options for an optional watermark — none at all when absent,
+ *  so an unpinned movement stays exactly the unconditional one it always was. */
+function watermark(expectedOnHand: number | undefined): { expectedOnHand: number } | undefined {
+	return expectedOnHand === undefined ? undefined : { expectedOnHand };
 }
 
 // ── the wire projections, field for field ─────────────────────────────────

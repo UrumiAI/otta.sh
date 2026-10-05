@@ -67,6 +67,42 @@ describeEachDialect("hold expiry", (ctx) => {
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
 	});
 
+	test("an add DECIDED out of stock leaves an ACTIVE cart with no expiry work (QA U-16)", async () => {
+		// Its claim used to stay outstanding forever: `holdExpiresAt` was pinned at
+		// the claim's (past) `claimedAt`, so the sweep's candidate query listed
+		// this cart — and re-read its reserve key — on every tick for good.
+		const h = make();
+		await h.seedStock("SKU-1", 1);
+		const cartId = await createCart(h.deps, USD);
+		const oos = await addLine(h.deps, cartId, sku("SKU-1"), null, 3, idempotencyKey("k1"));
+		expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+
+		const doc = await h.carts.get(cartId);
+		expect(doc?.holdExpiresAt).toBeNull();
+		expect(doc?.mutations["k1"]).toMatchObject({ kind: "add", completed: false, abandoned: true });
+
+		h.advance(PAST_TTL_MS);
+		const listed = await h.carts.query({
+			where: { holdExpiresAt: { lte: h.clock.now().toISOString() } },
+		});
+		expect(listed.items.map((item) => item.id)).not.toContain(cartId);
+		expect(await h.onHand("SKU-1")).toBe(1);
+	});
+
+	test("an out-of-stock add beside a held line keeps the cart's deadline at the HOLD's, not the claim's", async () => {
+		const h = make();
+		await h.seedStock("SKU-1", 5);
+		await h.seedStock("SKU-2", 1);
+		const cartId = await createCart(h.deps, USD);
+		const held = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k1"));
+		if (!held.ok) throw new Error("add must succeed");
+		h.advance(60_000);
+		const oos = await addLine(h.deps, cartId, sku("SKU-2"), null, 3, idempotencyKey("k2"));
+		expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+
+		expect((await h.carts.get(cartId))?.holdExpiresAt).toBe(held.line.expiresAt);
+	});
+
 	test("a lazy read racing the sweep returns stock exactly once", async () => {
 		const h = make();
 		await h.seedStock("SKU-1", 5);

@@ -50,6 +50,7 @@ import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
 	type AdminProductsSurface,
 	type ProductDetailWire,
+	type ProductPriceStockWire,
 	type ProductsListResult,
 	type ProductSummaryWire,
 	type TaxClassWire,
@@ -86,13 +87,14 @@ import {
 } from "./products-read.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
+import { isCommerceIdToken } from "../commerce/commerce-input.js";
 import { readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
  *  per service endpoint: the detail fans out to three reads in PARALLEL, because
  *  a screen making three sequential round trips through this route would be
  *  slower than the one it replaced. */
-export type ProductsConsoleResource = "products.list" | "products.detail";
+export type ProductsConsoleResource = "products.list" | "products.detail" | "products.summaries";
 
 /**
  * Everything the console needs to render the filter controls.
@@ -207,6 +209,7 @@ export interface ProductsConsoleInput {
 	type?: unknown;
 	resource?: unknown;
 	productId?: unknown;
+	productIds?: unknown;
 	cursor?: unknown;
 	filter?: unknown;
 	action_id?: unknown;
@@ -352,6 +355,47 @@ async function consoleDetail(
 	};
 }
 
+/** The most ids one `products.summaries` read answers — a page of the
+ *  collection list is far smaller; anything larger is a caller bug. */
+export const MAX_SUMMARY_IDS = 100;
+
+export interface ProductsConsoleSummariesPayload {
+	readonly ok: true;
+	readonly products: readonly ProductPriceStockWire[];
+	readonly threshold: number | null;
+}
+
+/**
+ * The Products list's Price and Stock columns: one read for the page of CMS
+ * entries the list is showing (ADR-0014, amendment 2026-10-01). The ids are the
+ * CMS entry ids, which ARE the commerce product ids. A request that is not a
+ * bounded, non-empty list of strings is refused rather than truncated: a column
+ * that silently showed nothing for row 101 would look like "no price".
+ */
+async function consoleSummaries(
+	input: ProductsConsoleInput,
+	ctx: PluginContext,
+): Promise<ProductsConsoleSummariesPayload | ConsoleFailure> {
+	const raw = input.productIds;
+	if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SUMMARY_IDS) {
+		return UNREADABLE_REQUEST;
+	}
+	const productIds: string[] = [];
+	for (const id of raw) {
+		// The id rule the client enforces, applied HERE so a malformed id is a
+		// refused request rather than a throw the catch-all would report as an
+		// outage.
+		if (typeof id !== "string" || !isCommerceIdToken(id)) return UNREADABLE_REQUEST;
+		if (!productIds.includes(id)) productIds.push(id);
+	}
+	const client = await createClient(ctx);
+	const [products, threshold] = await Promise.all([
+		client.products.getProductSummaries(productIds),
+		readLowStockThreshold(client.settings),
+	]);
+	return { ok: true, products, threshold };
+}
+
 /**
  * Run a console write and return its outcome.
  *
@@ -359,7 +403,7 @@ async function consoleDetail(
  * in the payload — the product id, the `expectedUpdatedAt` or `onHand` watermark
  * the operator observed, the typed amounts — is untrusted operator-round-tripped
  * input, and every one of those fields is re-validated (and, for stock,
- * re-checked against live truth) inside `products-actions.ts` before a single
+ * judged against live truth in the same write as the movement) inside `products-actions.ts` before a single
  * byte is written. This module adds no trust and removes none.
  *
  * THE GATE ON THE ID IS NOT BELT-AND-BRACES. An id this screen does not offer is
@@ -402,6 +446,7 @@ export function createProductsConsoleHandler(): RouteHandler<ProductsConsoleInpu
 			const resource = readString(input.resource);
 			if (resource === "products.list") return await consoleList(input, ctx);
 			if (resource === "products.detail") return await consoleDetail(input, ctx);
+			if (resource === "products.summaries") return await consoleSummaries(input, ctx);
 			return UNREADABLE_REQUEST;
 		} catch (err) {
 			// Storage pressure is its own answer — retryable, and not an outage.

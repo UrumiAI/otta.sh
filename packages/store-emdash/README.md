@@ -276,12 +276,13 @@ increment renders, not for this store.
 ## Cart document model
 
 `EmdashCartStore` implements the domain's `CartStore` over **one aggregate document
-per cart**, plus one lookup collection the port signature forces.
+per cart**, plus two lookup collections the port signatures force.
 
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
 | `carts` | cart id | `state`, `orderId`, `currency`, the `lines` map keyed by sku, the embedded mutation ledger, the denormalized `holdExpiresAt` | `state`, `holdExpiresAt` |
 | `cart_mutation_index` | mutation idempotency key | `{ cartId }` — a locator, never the record | — |
+| `cart_create_keys` | a keyed create's key (server-derived: `rotate:<spentCartId>`) | `{ cartId }` — the cart that key minted; claimed before the cart is written, so racing creates converge | — |
 
 **Three SQL features disappear into the shape.** `cart_lines (cart_id, sku)` UNIQUE
 becomes the lines map being keyed by sku — structural, and not an index, which
@@ -303,6 +304,18 @@ that mutates is given the cart id directly and each of them re-ensures the locat
 reserve key, which IS the add's mutation key, which the locator maps to the cart —
 and that second hop is also the sweep's SCOPING: a raw reserve has no cart claim,
 so no locator, so the cart sweep can never reap it.
+
+**Why there is a third.** A keyed `create(currency, key)` must answer the same cart
+for the same key however many calls race, and a create has no cart id to start
+from. `cart_create_keys/{key}` is claimed FIRST (create-if-absent naming a freshly
+minted id); a loser reads the winner's id back, and every caller then
+create-if-absents the cart document, so a crash between the two writes is finished
+by the next call. The only key producer is the domain's `replaceSpentCart`
+(`rotate:<spentCartId>`), so the collection gains **one document per replaced
+cart** — bounded by the number of orders that ever left a cart behind — and it is
+**never pruned**: a locator removed while its spent cart's cookie is still in some
+browser would let a later replacement mint a second cart. That growth is accepted
+(one tiny document per order) until a retention policy for spent carts exists.
 
 ### The cart is the first cross-aggregate edge
 
@@ -415,8 +428,13 @@ is **never** pruned at any age: it is what tells a replayer to resume and what m
 a dangling hold listable, so dropping one would orphan real stock. `completed`
 records keep the last `CART_MUTATION_LEDGER_SIZE = 64`, oldest evicted. `abandoned`
 records — the audit trail of a reaped crash, whose units are already back and whose
-claim is retired — keep the last `CART_ABANDONED_LEDGER_SIZE = 16`, so the second
-thing that could grow without limit on a long-lived cart does not. The accepted
+claim is retired, or of an add refused `OUT_OF_STOCK`, which never had a hold and
+is retired by the domain as it decides (`abandonClaim`) — keep the last
+`CART_ABANDONED_LEDGER_SIZE = 16`, so the second thing that could grow without
+limit on a long-lived cart does not. Evicting a refused add's record has one
+residual: a very late replay of its key runs as a fresh add, which on a cart that
+has since gained a line for that sku is an increment of that line (current truth,
+as for an evicted completed record). The accepted
 residual is
 narrow and stated in the source: a replay of a key whose completed record was
 evicted no longer short-circuits, so it answers with current truth instead of the

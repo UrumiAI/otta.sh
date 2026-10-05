@@ -19,7 +19,7 @@
  *    theme's pages. A theme's Layout LINKS its sheets through `?url`.
  *
  * And the registry is held to the manifest, which is the single theme list
- * (the admin's options come from it via the `__OTTA_STORE_THEMES__` define).
+ * (it once fed the admin's theme picker too; that picker is gone).
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -139,13 +139,7 @@ describe("the theme list has one source", () => {
 		expect(THEME_DIRS).toEqual(STORE_THEMES.map((theme) => theme.id).toSorted());
 	});
 
-	test("astro.config.ts bakes the manifest into __OTTA_STORE_THEMES__ rather than a copy", () => {
-		const config = readFileSync(path.resolve(SRC, "../astro.config.ts"), "utf8");
-		expect(config).toContain('import { STORE_THEMES } from "./src/themes/manifest.js"');
-		expect(config).toMatch(/__OTTA_STORE_THEMES__:\s*JSON\.stringify\(\s*STORE_THEMES\.map\(/);
-	});
-
-	test("the manifest is pure data — astro.config imports it, so it may import nothing", () => {
+	test("the manifest is pure data — it may import nothing", () => {
 		expect(code("themes/manifest.ts")).not.toMatch(/^\s*import\s/m);
 	});
 });
@@ -278,7 +272,10 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		// Opted in, not a checkout-flow view, and a cart link in the chrome to
 		// hang the bag on — all three, or no read.
 		expect(shell).toMatch(
-			/const drawsBag =\s*theme\.chrome\?\.cartLines === true &&\s*!BAGLESS_VIEWS\.has\(props\.view \?\? ""\) &&\s*chromeNav\.some\(\(item\) => item\.isCart\);/,
+			/const drawsBag =\s*theme\.chrome\?\.cartLines === true && !BAGLESS_VIEWS\.has\(props\.view \?\? ""\) && hasCartLink;/,
+		);
+		expect(shell).toMatch(
+			/const hasCartLink = withAccountLink\(navItems\)\.some\(\(item\) => isCartLink\(item\.url\)\);/,
 		);
 		expect(shell).toMatch(/const bagPending = drawsBag\s*\?\s*readBag\(/);
 		expect(shell).toContain('new Set(["cart", "checkout", "pay", "order"])');

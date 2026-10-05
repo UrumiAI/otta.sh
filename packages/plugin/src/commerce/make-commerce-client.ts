@@ -14,6 +14,14 @@
  * `reporting-settings-surface`). They are their own ports rather than
  * implementations of this one, and `makeAdminClients` constructs them; INC-D3b
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
+ *
+ * THE ONE STOREFRONT EXCEPTION: `storefront/shopper-state`
+ * (`storefront/shopper-state-route.ts`) constructs `InProcessCommerceClient`
+ * directly. It runs on every uncached page a shopper with a cart or session
+ * loads and only reads (`getShopperState`: a cart document and a session
+ * document), so it needs no payment gateways and no login email sender — and
+ * building them here would cost the kv reads `resolvePaymentGateways` makes on
+ * every call. Any route that can take a payment or send mail comes through here.
  */
 
 import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
@@ -21,7 +29,7 @@ import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
-import { InProcessCommerceClient } from "./in-process-commerce-client.js";
+import { ABANDON_CANCEL_CALL_MS, InProcessCommerceClient } from "./in-process-commerce-client.js";
 
 /**
  * One client per invocation, matching the request-scoped lifecycle the
@@ -51,5 +59,9 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// LOGIN sender, with its short ceiling: the send is awaited inline.
 		resolveEmailSender: () =>
 			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
+		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
+		resolveWithdrawGateways: () =>
+			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
 	});
 }

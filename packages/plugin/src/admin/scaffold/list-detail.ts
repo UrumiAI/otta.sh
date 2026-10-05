@@ -9,6 +9,7 @@ import type {
 	PluginContext,
 	RouteHandler,
 } from "../../types.js";
+import { isCommerceInputError } from "../../commerce/commerce-input.js";
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
@@ -413,6 +414,111 @@ const ACTION_OUTCOME_UNKNOWN: Notice = {
 		"The action may already have been applied, but this screen could not be rebuilt afterwards. Re-check the record before retrying.",
 };
 
+/** The banner/toast title for a refused input (see {@link inputRefusedNotice}). */
+const INPUT_REFUSED_TITLE = "Not saved — check what you entered";
+
+/**
+ * The notice for a custom action the commerce boundary REFUSED.
+ *
+ * WHY IT IS NOT {@link ACTION_OUTCOME_UNKNOWN}. `CommerceInputError` is thrown by
+ * the input checks in `commerce-input.ts` (and the clients' own bounds) BEFORE any
+ * read or write — that is the class's documented contract — so the outcome is
+ * KNOWN: nothing happened. QA found "the action may already have been applied" on
+ * an operator's typo (a zone id with a space in it), which sends them off to audit
+ * a record that was never touched. Screens should catch such input themselves and
+ * keep the draft; this is the net for the ones that slip through, and it states
+ * the refusal in the operator's terms rather than the boundary's.
+ *
+ * Matched STRUCTURALLY (`code === "INVALID_INPUT"`), never by message text: a
+ * look-alike error with no code is still an unknown outcome.
+ */
+function inputRefusedNotice(field: string, reason: string): Notice {
+	return {
+		variant: "error",
+		title: INPUT_REFUSED_TITLE,
+		description: `The ${humanFieldName(field)} ${humanReason(reason)}. Nothing was changed.`,
+	};
+}
+
+/** `taxClassId` → `tax class ID`, `rates[].amount` → `rates amount`. A field name
+ *  is the boundary's word for an input, and the banner is for an operator. */
+function humanFieldName(field: string): string {
+	return field
+		.replace(/\[\]/g, "")
+		.split(".")
+		.flatMap((part) => part.split(/(?=[A-Z])/))
+		.map((word) => (word.toLowerCase() === "id" ? "ID" : word.toLowerCase()))
+		.join(" ");
+}
+
+/** The one boundary reason an operator can actually trip from a text field gets
+ *  words they can act on; every other reason is already plain. */
+function humanReason(reason: string): string {
+	// The boundary's one reason covers BOTH a space and a non-ASCII character
+	// (`ID_CHARSET`), and this net has only the reason, not the value — so the
+	// words name both, in `id-input.ts`'s vocabulary. A coupon code's own ASCII
+	// reason (ADR-0025) gets the console's create-screen wording.
+	if (reason === "must be printable ASCII with no whitespace") {
+		return "can only use plain letters, digits and punctuation — no spaces or accented characters";
+	}
+	if (reason === "must be printable ASCII") {
+		return "can only use plain letters, digits and punctuation — no accented letters or symbols";
+	}
+	return reason;
+}
+
+/** Client methods that only READ: a read verb followed by a capital or nothing
+ *  (`listZones`, `get`), so `issueRefund` or `listen…` is not mistaken for one.
+ *  Everything else is treated as a possible write — the conservative default,
+ *  since a wrongly-flagged read only costs the friendlier banner, while a
+ *  wrongly-trusted write would make it lie. */
+const READ_METHOD = /^(get|list|count|find|read|load|search|has|is)(?:[A-Z]|$)/;
+
+/**
+ * Watch the client a custom action is handed, so the refusal banner's "Nothing
+ * was changed" is a STRUCTURAL fact rather than a convention every action must
+ * keep.
+ *
+ * A non-read call counts as a possible write FROM THE MOMENT IT IS CALLED — a
+ * sibling in a `Promise.all` can be refused while it is still in flight and may
+ * yet land — and is un-counted only when THAT SAME call is refused with
+ * `CommerceInputError` (whose contract is "refused before any write"). So
+ * `wrote()` is true while any write is pending or has completed.
+ *
+ * A Proxy that calls through on the REAL target (`apply(target, …)`), so a client
+ * class's private fields keep working; non-function properties pass untouched.
+ * A non-object client (a test's literal) is handed over as-is.
+ */
+function watchWrites(client: unknown): { client: unknown; wrote(): boolean } {
+	let writes = 0;
+	const wrote = (): boolean => writes > 0;
+	if (client === null || typeof client !== "object") return { client, wrote };
+	const target = client as Record<PropertyKey, unknown>;
+	const proxy = new Proxy(target, {
+		get(obj, prop) {
+			const value = Reflect.get(obj, prop, obj);
+			if (typeof value !== "function" || typeof prop !== "string" || READ_METHOD.test(prop)) {
+				return typeof value === "function" ? value.bind(obj) : value;
+			}
+			return (...args: unknown[]): unknown => {
+				writes += 1;
+				const refused = (err: unknown): never => {
+					if (isCommerceInputError(err)) writes -= 1;
+					throw err;
+				};
+				let result: unknown;
+				try {
+					result = (value as (...a: unknown[]) => unknown).apply(obj, args);
+				} catch (err) {
+					return refused(err);
+				}
+				return result instanceof Promise ? result.catch(refused) : result;
+			};
+		},
+	});
+	return { client: proxy, wrote };
+}
+
 /**
  * Build the single `RouteHandler` for a list/detail screen. The returned
  * handler is what the admin-route dispatcher forwards `open`/`back`/`page`/
@@ -626,10 +732,11 @@ function createDispatcher<RenderState>(
 		// -- custom (side-effecting) actions --------------------------------------
 		const custom = action === undefined ? undefined : config.customActions?.[action];
 		if (custom !== undefined) {
+			const watched = watchWrites(client);
 			try {
 				return (await custom({
 					input,
-					client,
+					client: watched.client,
 					carried: readCarrier(input),
 					carriedPath: readNavPath(input),
 					// The render-state argument is forwarded UNTOUCHED and un-inspected: the
@@ -642,6 +749,25 @@ function createDispatcher<RenderState>(
 							: renderPath(path, notice, renderState),
 				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
 			} catch (err) {
+				// A REFUSED INPUT is the exception to everything below: it was refused
+				// before any read or write (see `inputRefusedNotice`), so its outcome is
+				// known, and saying otherwise is the scary-and-false banner QA reported.
+				// ONLY WHILE NOTHING WAS WRITTEN. "Nothing was changed" is a claim about
+				// the whole action, not about the call that threw: an action that wrote
+				// and THEN tripped a refusal has an outcome the operator must re-check.
+				if (isCommerceInputError(err) && !watched.wrote()) {
+					let refusedBlocks: Block[];
+					try {
+						refusedBlocks = (await rootList()).blocks;
+					} catch (fallbackErr) {
+						console.error("[otta] admin custom action fallback render failed:", fallbackErr);
+						refusedBlocks = [];
+					}
+					return {
+						blocks: [noticeBanner(inputRefusedNotice(err.field, err.reason)), ...refusedBlocks],
+						toast: { message: INPUT_REFUSED_TITLE, type: "error" as const },
+					};
+				}
 				// A custom action is the one place a SIDE EFFECT may already have
 				// applied, so this cannot be a silent fallback: the mutation might have
 				// committed and only the re-render failed. Log it (the operator's banner

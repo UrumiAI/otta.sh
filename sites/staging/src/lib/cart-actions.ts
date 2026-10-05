@@ -30,6 +30,11 @@ export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
  *  whose live product disagrees with the submitted `sku` / isn't
  *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
+
+/** A quantity over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
+ *  refusal, which `/cart/add` and `/cart/update` also give before dispatch (so an
+ *  over-cap add never mints a cart). Its copy names the limit. */
+export const QTY_TOO_LARGE = "QTY_TOO_LARGE";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
 /** 303 See Other — the POST-redirect-GET turn. The target is normalized to a
@@ -87,6 +92,10 @@ export type EnsureCartResult =
 export async function ensureCartId(
 	context: APIContext,
 	handler: PublicPluginApiRouteHandler | undefined,
+	/** When there is no cart, mint the REPLACEMENT for this spent cart: the plugin
+	 *  checks it and derives the key, so the same spent cart always gets the same new
+	 *  cart (cart-rotation.ts). */
+	opts: { replacesCartId?: string } = {},
 ): Promise<EnsureCartResult> {
 	const existing = currentCartId(context);
 	if (existing !== undefined) return { ok: true, cartId: existing };
@@ -94,7 +103,7 @@ export async function ensureCartId(
 	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
 		STOREFRONT_CART_CREATE_ROUTE,
-		{},
+		opts.replacesCartId !== undefined ? { replacesCartId: opts.replacesCartId } : {},
 		context.url,
 	);
 	if (isBusyResult(created)) return { ok: false, reason: "busy" };

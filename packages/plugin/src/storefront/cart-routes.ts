@@ -39,6 +39,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import { CART_LINE_MAX_QTY, isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -105,6 +106,14 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 
 export interface CartCreateRouteInput {
 	currency?: unknown;
+	/**
+	 * Optional: the SPENT cart this one replaces (the cookie's cart, checked out
+	 * into a finished order). The plugin checks both and derives the idempotency key
+	 * itself, so the same spent cart always gets the same replacement; a caller can
+	 * never name a key. When present, `currency` is ignored — the replacement takes
+	 * the spent cart's.
+	 */
+	replacesCartId?: unknown;
 }
 
 export interface CartReadRouteInput {
@@ -144,7 +153,10 @@ export interface CartLineRemoveRouteInput {
 
 export type CartCreateRouteResult =
 	| { ok: true; cartId: string; cookie: CartCookieDescriptor }
-	| { ok: false; error: "INVALID_CURRENCY" }
+	| { ok: false; error: "INVALID_CURRENCY" | "INVALID_INPUT" }
+	/** `replacesCartId` names no cart, one still active (nothing to replace), or one
+	 *  whose order is not finished (a pending payment may still use it). */
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" }
 	| RenderGuardFailure;
 
 export type CartReadRouteResult =
@@ -156,6 +168,9 @@ export type CartReadRouteResult =
 export type CartLineMutationRouteResult<T> =
 	| ({ ok: true } & T)
 	| { ok: false; error: "INVALID_INPUT" }
+	/** A quantity over {@link CART_LINE_MAX_QTY} — its own token, so a storefront
+	 *  can name the limit instead of a generic failure. */
+	| { ok: false; error: "QTY_TOO_LARGE" }
 	| { ok: false; reason: CartFailureReason }
 	| RenderGuardFailure;
 
@@ -177,6 +192,17 @@ function isPositiveInt(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
+/**
+ * A positive integer OVER the shopper-facing cap: the route's own typed
+ * QTY_TOO_LARGE, checked here rather than left to the client's `requireQty`
+ * throw, which renderGuard would log and answer as RENDER_FAILED — "Something
+ * went wrong" for a shopper who typed a big number (QA U-6). The cap is per
+ * REQUEST: an add that takes an existing line past it is not refused here.
+ */
+function isOverCartQtyCap(value: number): boolean {
+	return value > CART_LINE_MAX_QTY;
+}
+
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
 /**
@@ -189,6 +215,21 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			const raw = routeCtx.input.currency;
 			if (raw !== undefined && (typeof raw !== "string" || !CURRENCY_PATTERN.test(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
+			}
+			const replaces = routeCtx.input.replacesCartId;
+			if (replaces !== undefined) {
+				// Present-but-malformed is REFUSED, never dropped: dropped, it would turn
+				// a converging replacement into one cart per racing request.
+				if (typeof replaces !== "string" || !isIdToken(replaces)) {
+					return { ok: false, error: "INVALID_INPUT" } as const;
+				}
+				const replaced = await (await makeCommerceClient(ctx)).replaceCart(replaces);
+				if (!replaced.ok) return { ok: false as const, reason: replaced.reason };
+				return {
+					ok: true as const,
+					cartId: replaced.cartId,
+					cookie: cartCookieDescriptor(replaced.cartId),
+				};
 			}
 			const client = await makeCommerceClient(ctx);
 			const { cartId } = await client.createCart(raw as string | undefined);
@@ -292,6 +333,7 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
 			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.addCartLine(
 				cartId,
@@ -319,6 +361,7 @@ export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateR
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
 			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.adjustCartLine(
 				cartId,

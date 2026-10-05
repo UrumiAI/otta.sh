@@ -10,6 +10,7 @@
  * missing key is a 400, mirroring the plugin route's own input guard.
  */
 import {
+	CART_LINE_MAX_QTY,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type CartLineMutationRouteResult,
@@ -24,10 +25,12 @@ import {
 	failureToken,
 	PRODUCT_NOT_FOUND,
 	PRODUCT_UNAVAILABLE,
+	QTY_TOO_LARGE,
 	routeDispatcher,
 	seeOther,
 	SERVICE_UNAVAILABLE,
 } from "../../lib/cart-actions.js";
+import { forgetCheckedOutCart } from "../../lib/cart-rotation.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
@@ -36,6 +39,8 @@ import {
 	formPositiveInt,
 	formString,
 	isBusyResult,
+	notAFormResponse,
+	readFormBody,
 	safeReturnPath,
 } from "../../lib/otta-api.js";
 
@@ -45,7 +50,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const sku = formString(form.get("sku"));
 	// The CMS content id (join key to product_commerce) minted into the PDP
 	// add-to-cart slot — forwarded so the cart line is priceable/quotable/
@@ -73,6 +79,11 @@ export const POST: APIRoute = async (context) => {
 			{ status: 400 },
 		);
 	}
+
+	// Over the cap: the plugin refuses it as QTY_TOO_LARGE anyway, so answer that
+	// here, before `ensureCartId` can mint a cart for an add that cannot succeed
+	// (QA U-6). The copy names the limit.
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, returnTo, QTY_TOO_LARGE);
 
 	const handler = routeDispatcher(context);
 
@@ -147,6 +158,14 @@ export const POST: APIRoute = async (context) => {
 		}
 	}
 
+	const addTo = async (cartId: string) =>
+		dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
+			handler,
+			STOREFRONT_CART_LINE_ADD_ROUTE,
+			{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
+			context.url,
+		);
+
 	const cart = await ensureCartId(context, handler);
 	if (!cart.ok) {
 		// A busy `cart/create` (key-less, so never auto-retried) is the busy 503;
@@ -154,14 +173,41 @@ export const POST: APIRoute = async (context) => {
 		if (cart.reason === "busy") return busyResponse(returnTo);
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 	}
-	const { cartId } = cart;
 
-	const result = await dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
-		handler,
-		STOREFRONT_CART_LINE_ADD_ROUTE,
-		{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
-		context.url,
-	);
+	let result = await addTo(cart.cartId);
+
+	// The cookie still names a cart that became an order. When that order can no
+	// longer be paid (paid, expired, failed…) the cart is SPENT: forget it, start a
+	// new one and add there. A PENDING order's cart is kept — its payment may still
+	// happen, and /checkout resumes it from this cookie — so that add still answers
+	// CART_CHECKED_OUT, and the product page's notice links to the cart, which
+	// offers the way out (cart-rotation.ts).
+	//
+	// The new cart is the spent cart's REPLACEMENT: the plugin keys it on the spent
+	// cart (`rotate:<cartId>`, derived server-side), so a duplicate request racing this
+	// one lands in the same new cart. The retry reuses the form's own key: an add
+	// refused CART_CHECKED_OUT records no mutation (pinned by cartStoreContract), so
+	// this is the key's first application and a racing duplicate replays into the
+	// same line instead of adding twice. If the replacement itself is refused (the
+	// cart changed under us), the shopper gets the ordinary unavailable turn; the
+	// spent cookie is already gone, so their next add starts a fresh cart.
+	if (
+		result !== null &&
+		!isBusyResult(result) &&
+		!result.ok &&
+		failureToken(result) === "CART_CHECKED_OUT" &&
+		(await forgetCheckedOutCart(
+			{ cookies: context.cookies, handler, url: context.url },
+			cart.cartId,
+		))
+	) {
+		const fresh = await ensureCartId(context, handler, { replacesCartId: cart.cartId });
+		if (!fresh.ok) {
+			if (fresh.reason === "busy") return busyResponse(returnTo);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		}
+		result = await addTo(fresh.cartId);
+	}
 
 	// Still busy after dispatch's one retry (same idempotency key): 503, not a
 	// generic "went wrong" — a reload re-posts the same key, which is replay-safe.
@@ -171,7 +217,10 @@ export const POST: APIRoute = async (context) => {
 		// A stale cookie pointing at a vanished cart: drop it so the next
 		// add mints a fresh cart instead of failing forever.
 		if (token === "CART_NOT_FOUND") clearCartCookie(context);
-		return seeOther(context, returnTo, token);
+		// One unit refused is a sold-out item: "try a smaller quantity" would send
+		// the shopper looking for a quantity below 1 (QA2 F). More than one keeps
+		// the quantity sentence, which is true either way.
+		return seeOther(context, returnTo, token === "OUT_OF_STOCK" && qty === 1 ? "SOLD_OUT" : token);
 	}
 
 	return seeOther(context, "/cart");

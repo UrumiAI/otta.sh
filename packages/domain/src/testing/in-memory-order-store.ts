@@ -1,3 +1,4 @@
+import { assertSweepLimit } from "../sweep/batch.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import {
 	type CustomerId,
@@ -7,11 +8,17 @@ import {
 	orderId as toOrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type {
+	ExpiredOrder,
+	OrderExpiryListOptions,
+	ReleaseEmailClaimOptions,
+} from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
 	CapturedPayment,
+	ClaimEmailForOrderOptions,
 	CreateOrderInput,
 	CreateOrderResult,
 	FinalizeRefundInput,
@@ -25,9 +32,16 @@ import type {
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
+	OrderLedger,
+	RefundRetry,
+	RefundRetrySchedule,
+	PaymentIntentCancelUpdate,
+	PaymentIntentRecord,
+	OrderNoticeInput,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordPaymentIntentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
 	RefundRecord,
@@ -39,6 +53,7 @@ import type {
 	Order,
 	OrderAddress,
 	OrderLine,
+	OrderNotice,
 	OrderState,
 	OrderTotals,
 	PaymentMethod,
@@ -90,9 +105,13 @@ interface StoredOutbox {
 	toState: OrderState;
 	status: OutboxStatus;
 	attempts: number;
+	timeouts: number;
+	failureReason: string | null;
 	leaseUntil: string | null;
 	sentAt: string | null;
 	createdAt: string;
+	/** Non-null on a NOTICE row (`enqueueNotice`); null on a state row. */
+	notice: OrderNoticeInput | null;
 }
 
 /**
@@ -109,6 +128,10 @@ export class InMemoryOrderStore implements OrderStore {
 	#orders = new Map<string, StoredOrder>();
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
+	/** Payment intents per order, in recording order (`recordPaymentIntent`). */
+	#intents = new Map<string, PaymentIntentRecord[]>();
+	/** Scheduled late-payment refund retries, per order then per refund key. */
+	#refundRetries = new Map<string, Map<string, RefundRetrySchedule>>();
 	/** Append-only refunds ledger — the fake analogue of the `refunds` table
 	 *  (ADR-0008). */
 	#refunds: RefundRecord[] = [];
@@ -164,7 +187,7 @@ export class InMemoryOrderStore implements OrderStore {
 			holdExpiresAt: input.holdExpiresAt,
 			paymentMethod: input.paymentMethod,
 			buyerRef: input.buyerRef,
-			customerId: null,
+			customerId: input.customerId ?? null,
 			createdAt: now,
 			updatedAt: now,
 			lines,
@@ -211,14 +234,34 @@ export class InMemoryOrderStore implements OrderStore {
 		return true;
 	}
 
-	async listExpirable(now: string): Promise<OrderId[]> {
+	/** The fake's flip records no release intent, so the caller releases the holds. */
+	async expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null> {
+		if (!(await this.expire(orderId, now))) return null;
+		const stored = this.#orders.get(orderId);
+		if (stored === undefined) return null;
+		return { order: this.#clone(stored.order), holdsReleased: false };
+	}
+
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
+		assertSweepLimit(options.limit);
+		const candidates = [...this.#orders.values()]
+			.filter((stored) => stored.order.state === "pending" && stored.order.holdExpiresAt <= now)
+			.toSorted((a, b) => (a.order.holdExpiresAt < b.order.holdExpiresAt ? -1 : 1));
 		const out: OrderId[] = [];
-		for (const stored of this.#orders.values()) {
-			if (stored.order.state === "pending" && stored.order.holdExpiresAt <= now) {
-				out.push(stored.order.id);
-			}
+		for (const stored of candidates) {
+			if (options.limit !== undefined && out.length >= options.limit) break;
+			if (options.excludeIntentDue === true && this.#hasIntentDue(stored.order.id, now)) continue;
+			out.push(stored.order.id);
 		}
 		return out;
+	}
+
+	/** A payment intent due for withdrawal and not yet withdrawn (see the port). */
+	#hasIntentDue(orderId: OrderId, now: string): boolean {
+		return (this.#intents.get(orderId) ?? []).some(
+			(intent) =>
+				intent.cancelOutcome === null && intent.cancelDueAt !== null && intent.cancelDueAt <= now,
+		);
 	}
 
 	async recordPayment(input: RecordPaymentInput): Promise<void> {
@@ -231,6 +274,115 @@ export class InMemoryOrderStore implements OrderStore {
 			currency: input.currency,
 			status: input.status,
 		});
+	}
+
+	async recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void> {
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) throw new Error(`recordPaymentIntent: no order ${input.orderId}`);
+		const list = this.#intents.get(input.orderId) ?? [];
+		if (list.some((i) => i.intentId === input.intentId)) return; // idempotent
+		const paid = stored.order.state !== "pending";
+		list.push({
+			gateway: input.gateway,
+			intentId: input.intentId,
+			recordedAt: this.#clock.now().toISOString(),
+			// Due at the hold — unless the order already left `pending` paid-ish, which
+			// the real adapter mirrors: only a pending order's intent can still be paid.
+			cancelDueAt: paid ? null : stored.order.holdExpiresAt,
+			cancelAttempts: 0,
+			cancelOutcome: paid ? "not_needed" : null,
+		});
+		this.#intents.set(input.orderId, list);
+	}
+
+	async listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]> {
+		return (this.#intents.get(orderId) ?? []).map((i) => ({ ...i }));
+	}
+
+	async listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]> {
+		const due: [string, string][] = [];
+		for (const [id, list] of this.#intents) {
+			let earliest: string | null = null;
+			for (const i of list) {
+				if (i.cancelOutcome !== null || i.cancelDueAt === null) continue;
+				if (earliest === null || i.cancelDueAt < earliest) earliest = i.cancelDueAt;
+			}
+			if (earliest !== null && earliest <= now) due.push([id, earliest]);
+		}
+		return due
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
+	}
+
+	async updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void> {
+		const intent = this.#intents.get(orderId)?.find((i) => i.intentId === intentId);
+		if (intent === undefined) return;
+		intent.cancelDueAt = update.cancelDueAt;
+		intent.cancelAttempts = update.cancelAttempts;
+		intent.cancelOutcome = update.cancelOutcome;
+	}
+
+	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
+		const order = await this.getById(orderId);
+		if (order === null) return null;
+		return {
+			order,
+			events: await this.listEventsForOrder(orderId),
+			payments: await this.getCapturedPayments(orderId),
+			refunds: await this.listRefunds(orderId),
+			refundRetries: this.#retriesOf(orderId),
+			paymentIntents: await this.listPaymentIntents(orderId),
+		};
+	}
+
+	#retriesOf(orderId: string): RefundRetry[] {
+		return [...(this.#refundRetries.get(orderId) ?? new Map<string, RefundRetrySchedule>())]
+			.toSorted((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+			.map(([key, r]) => ({ idempotencyKey: toIdempotencyKey(key), ...r }));
+	}
+
+	async scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void> {
+		if (!this.#orders.has(orderId)) return;
+		const perOrder = this.#refundRetries.get(orderId) ?? new Map<string, RefundRetrySchedule>();
+		if (retry === null) perOrder.delete(idempotencyKey);
+		else perOrder.set(idempotencyKey, { ...retry });
+		if (perOrder.size === 0) this.#refundRetries.delete(orderId);
+		else this.#refundRetries.set(orderId, perOrder);
+	}
+
+	async listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]> {
+		const stale: [string, string][] = [];
+		for (const [id, perOrder] of this.#refundRetries) {
+			let oldest: string | null = null;
+			for (const r of perOrder.values()) if (oldest === null || r.since < oldest) oldest = r.since;
+			if (oldest !== null && oldest <= cutoff) stale.push([id, oldest]);
+		}
+		return stale
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
+	}
+
+	async listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]> {
+		const due: [string, string][] = [];
+		for (const [id, perOrder] of this.#refundRetries) {
+			let earliest: string | null = null;
+			for (const r of perOrder.values()) if (earliest === null || r.at < earliest) earliest = r.at;
+			if (earliest !== null && earliest <= now) due.push([id, earliest]);
+		}
+		return due
+			.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+			.slice(0, limit)
+			.map(([id]) => toOrderId(id));
 	}
 
 	// -- Refunds ledger (ADR-0008) --------------------------------------------
@@ -338,13 +490,17 @@ export class InMemoryOrderStore implements OrderStore {
 			status: opts.status,
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
+			purpose: input.purpose ?? "refund",
+			...(input.restock !== undefined ? { restock: input.restock } : {}),
 		};
 		this.#refunds.push(refund);
 		let fullyRefunded = false;
 		// FULL refund (finalized Σ reached the ceiling) → drive → refunded atomically
 		// with the ledger row (actor = the refunder). Finalized path only — a held
 		// reservation never flips; the finalized prior counts 'recorded' rows.
-		if (opts.driveFlip) {
+		// Only an admin refund in its own right flips: a cancellation closes its order
+		// itself, and a late payment's order is already terminal.
+		if (opts.driveFlip && (refund.purpose ?? "refund") === "refund") {
 			const finalizedTotal = this.#refunds
 				.filter((r) => r.orderId === input.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
@@ -356,6 +512,12 @@ export class InMemoryOrderStore implements OrderStore {
 				if (emailTemplateForState("refunded") !== null) this.#enqueue(input.orderId, "refunded");
 				fullyRefunded = true;
 			}
+		}
+		// The refund email (QA T1-6), in the same step: a finalized admin refund that
+		// left money captured announces itself; a full one is announced by the
+		// refunded email; a cancellation's or a late payment's by its own.
+		if (refund.status === "recorded" && announcesItself(refund) && !fullyRefunded) {
+			this.#appendNotice(input.orderId, stored.order.state, refundNotice(refund));
 		}
 		return {
 			outcome: "recorded",
@@ -409,6 +571,7 @@ export class InMemoryOrderStore implements OrderStore {
 		const now = this.#clock.now().toISOString();
 		row.status = "recorded";
 		row.refundRef = input.refundRef;
+		if (input.resolvedBy !== undefined) row.resolvedBy = input.resolvedBy;
 		let fullyRefunded = false;
 		if (stored !== undefined) {
 			stored.order.updatedAt = now;
@@ -421,12 +584,19 @@ export class InMemoryOrderStore implements OrderStore {
 			const finalizedTotal = this.#refunds
 				.filter((r) => r.orderId === row.orderId && r.status === "recorded")
 				.reduce((sum, r) => sum + r.amount, 0);
-			if (finalizedTotal === ceiling && isLegalOrderTransition(stored.order.state, "refunded")) {
+			if (
+				(row.purpose ?? "refund") === "refund" &&
+				finalizedTotal === ceiling &&
+				isLegalOrderTransition(stored.order.state, "refunded")
+			) {
 				const fromState = stored.order.state;
 				stored.order.state = "refunded";
 				this.#appendEvent(row.orderId, fromState, "refunded", row.refundedBy);
 				if (emailTemplateForState("refunded") !== null) this.#enqueue(row.orderId, "refunded");
 				fullyRefunded = true;
+			}
+			if (announcesItself(row) && !fullyRefunded) {
+				this.#appendNotice(row.orderId, stored.order.state, refundNotice(row));
 			}
 		}
 		return {
@@ -446,6 +616,21 @@ export class InMemoryOrderStore implements OrderStore {
 		);
 		if (row === undefined) return false;
 		row.status = "voided";
+		return true;
+	}
+
+	async voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person says the provider never issued it;
+		// the capacity is released and who said so is kept on the row.
+		const row = this.#refunds.find(
+			(r) => r.idempotencyKey === input.idempotencyKey && r.status === "unverified",
+		);
+		if (row === undefined) return false;
+		row.status = "voided";
+		row.resolvedBy = input.resolvedBy;
 		return true;
 	}
 
@@ -546,6 +731,8 @@ export class InMemoryOrderStore implements OrderStore {
 			detail: input.detail,
 			cancelledBy: input.cancelledBy,
 			cancelledAt: now,
+			refund: input.refund ?? null,
+			restocked: input.restocked ?? false,
 		};
 		stored.order.updatedAt = now;
 		// Same-"transaction" state-change audit as the real adapter — the actor is
@@ -570,16 +757,25 @@ export class InMemoryOrderStore implements OrderStore {
 			input.fromState,
 			input.toState,
 			input.enqueueEmail,
+			input.actor ?? null,
 		);
 		const order = await this.getById(input.orderId);
 		return { transitioned, order };
 	}
 
 	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
-		return [...this.#orders.values()]
-			.filter((s) => s.order.customerId === customerId)
-			.toSorted((a, b) => a.order.createdAt.localeCompare(b.order.createdAt))
-			.map((s) => this.#clone(s.order));
+		return (
+			[...this.#orders.values()]
+				.filter((s) => s.order.customerId === customerId)
+				// Newest first, `createdAt DESC, id DESC` — the port's order, in the same
+				// code-unit comparison the admin list uses (never `localeCompare`).
+				.toSorted(
+					(a, b) =>
+						codeUnitDesc(a.order.createdAt, b.order.createdAt) ||
+						codeUnitDesc(a.order.id, b.order.id),
+				)
+				.map((s) => this.#clone(s.order))
+		);
 	}
 
 	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
@@ -754,6 +950,33 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
+		return this.#claimFirstDue(now, leaseUntil, () => true);
+	}
+
+	async claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options: ClaimEmailForOrderOptions = {},
+	): Promise<OutboxEmail | null> {
+		// The same claim, filtered to one order — the predicate is shared rather than
+		// restated so the two can never disagree about what "due" means.
+		return this.#claimFirstDue(
+			now,
+			leaseUntil,
+			(r) =>
+				r.orderId === orderId &&
+				// Never tried: no counted attempt AND no uncounted timeout (which leaves
+				// `attempts` at 0 but makes the row the cron's to retry, on its backoff).
+				(options.onlyUnattempted !== true || (r.attempts === 0 && r.timeouts === 0)),
+		);
+	}
+
+	async #claimFirstDue(
+		now: string,
+		leaseUntil: string,
+		scope: (row: { orderId: string; attempts: number; timeouts: number }) => boolean,
+	): Promise<OutboxEmail | null> {
 		// Claimability is lease-driven: a row is claimable when it isn't sent, isn't
 		// failed, and has no live lease (null, or elapsed). This unifies "fresh
 		// pending", "crashed 'sending' whose lease expired", and "rescheduled with a
@@ -761,6 +984,7 @@ export class InMemoryOrderStore implements OrderStore {
 		const claimable = this.#outbox
 			.filter(
 				(r) =>
+					scope(r) &&
 					r.sentAt === null &&
 					r.status !== "failed" &&
 					(r.leaseUntil === null || r.leaseUntil <= now),
@@ -776,7 +1000,49 @@ export class InMemoryOrderStore implements OrderStore {
 			orderId: row.orderId as OrderId,
 			toState: row.toState,
 			attempts: row.attempts,
+			timeouts: row.timeouts,
+			notice: row.notice === null ? null : { ...row.notice },
 		};
+	}
+
+	async enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean> {
+		const stored = this.#orders.get(orderId);
+		if (stored === undefined) return false;
+		return this.#appendNotice(orderId, stored.order.state, notice);
+	}
+
+	/** First-wins per `(orderId, kind, refundId)` — the notice analogue of the state
+	 *  rows' ON CONFLICT (order_id, to_state) DO NOTHING. `true` ⇒ appended. */
+	#appendNotice(orderId: string, state: OrderState, notice: OrderNoticeInput): boolean {
+		if (
+			this.#outbox.some(
+				(r) =>
+					r.orderId === orderId &&
+					r.notice?.kind === notice.kind &&
+					// A legacy entry (no refundId, written before refund ids existed) stands
+					// for any refund of its kind, so a replay after deploy does not re-send.
+					// The cost, accepted: a SECOND, distinct late-payment refund on an order that
+					// holds a legacy entry is not announced — exactly the old first-wins-per-kind
+					// behaviour, so no order is worse off than before refund ids existed.
+					(r.notice.refundId === undefined || r.notice.refundId === notice.refundId),
+			)
+		) {
+			return false;
+		}
+		this.#outbox.push({
+			id: this.#idGen.newId(),
+			orderId,
+			toState: state,
+			status: "pending",
+			attempts: 0,
+			timeouts: 0,
+			failureReason: null,
+			leaseUntil: null,
+			sentAt: null,
+			createdAt: this.#clock.now().toISOString(),
+			notice: { ...notice },
+		});
+		return true;
 	}
 
 	async markEmailSent(id: string, now: string): Promise<void> {
@@ -786,11 +1052,22 @@ export class InMemoryOrderStore implements OrderStore {
 		row.sentAt = now;
 	}
 
-	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
+		const row = this.#outbox.find((r) => r.id === id);
+		if (row === undefined || row.status !== "sending") return;
+		row.status = "pending";
+		// In this fake a lease IS the backoff (claimability is lease-driven).
+		row.leaseUntil = options.retryAt ?? null;
+		row.attempts = Math.max(0, row.attempts - 1);
+		if (options.timedOut === true) row.timeouts += 1;
+	}
+
+	async rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void> {
 		const row = this.#outbox.find((r) => r.id === id);
 		if (row === undefined) return;
 		if (retryAt === null) {
 			row.status = "failed";
+			row.failureReason = reason ?? null;
 			row.leaseUntil = null;
 		} else {
 			row.status = "pending";
@@ -800,30 +1077,62 @@ export class InMemoryOrderStore implements OrderStore {
 
 	// -- test surface ---------------------------------------------------------
 
+	/** The first outbox row for an order, as stored (a copy). */
+	outboxEntry(orderId: string): Readonly<StoredOutbox> | undefined {
+		const row = this.#outbox.find((r) => r.orderId === orderId);
+		return row === undefined ? undefined : { ...row };
+	}
+
 	/** Payments recorded (for contract assertions). */
 	payments(orderId: string): StoredPayment[] {
 		return this.#payments.filter((p) => p.orderId === orderId);
 	}
 
-	/** Outbox rows for an order (for contract assertions). */
+	/** STATE-transition outbox rows for an order (for contract assertions).
+	 *  Notice rows are reported by {@link noticesFor}, so a case that pins an
+	 *  order's transition emails is not perturbed by a late-payment notice. */
 	outboxFor(orderId: string): { toState: OrderState; status: OutboxStatus }[] {
 		return this.#outbox
-			.filter((r) => r.orderId === orderId)
+			.filter((r) => r.orderId === orderId && r.notice === null)
 			.map((r) => ({ toState: r.toState, status: r.status }));
+	}
+
+	/** NOTICE outbox rows for an order (for contract assertions). */
+	noticesFor(orderId: string): { notice: OrderNotice; status: OutboxStatus }[] {
+		return this.#outbox.flatMap((r) =>
+			r.orderId === orderId && r.notice !== null
+				? [{ notice: r.notice.kind, status: r.status }]
+				: [],
+		);
 	}
 
 	// -- internals ------------------------------------------------------------
 
-	#guardedFlip(orderId: OrderId, from: OrderState, to: OrderState, enqueue?: boolean): boolean {
+	#guardedFlip(
+		orderId: OrderId,
+		from: OrderState,
+		to: OrderState,
+		enqueue?: boolean,
+		actor: string | null = null,
+	): boolean {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
-		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
-		// no modeled who (markPaid/transition).
-		this.#appendEvent(orderId, from, to, null);
+		// (already-flipped / lost race) writes NO event. The actor is the admin's,
+		// when a `transition` carries one; markPaid has none.
+		this.#appendEvent(orderId, from, to, actor);
+		// A PAID order owes no intent cancels: resolve its unresolved intents in the
+		// same step as the flip, exactly as the real adapter does in the same write.
+		if (to === "paid") {
+			for (const intent of this.#intents.get(orderId) ?? []) {
+				if (intent.cancelOutcome !== null) continue;
+				intent.cancelDueAt = null;
+				intent.cancelOutcome = "not_needed";
+			}
+		}
 		// markPaid passes no explicit flag → enqueue iff the target state has a
 		// template (paid ⇒ yes); `transition` passes it explicitly.
 		const shouldEnqueue = enqueue ?? emailTemplateForState(to) !== null;
@@ -847,16 +1156,22 @@ export class InMemoryOrderStore implements OrderStore {
 
 	/** Outbox INSERT … ON CONFLICT(order_id, to_state) DO NOTHING (§5). */
 	#enqueue(orderId: string, toState: OrderState): void {
-		if (this.#outbox.some((r) => r.orderId === orderId && r.toState === toState)) return;
+		if (
+			this.#outbox.some((r) => r.orderId === orderId && r.notice === null && r.toState === toState)
+		)
+			return;
 		this.#outbox.push({
 			id: this.#idGen.newId(),
 			orderId,
 			toState,
 			status: "pending",
 			attempts: 0,
+			timeouts: 0,
+			failureReason: null,
 			leaseUntil: null,
 			sentAt: null,
 			createdAt: this.#clock.now().toISOString(),
+			notice: null,
 		});
 	}
 
@@ -878,4 +1193,20 @@ export class InMemoryOrderStore implements OrderStore {
  *  mutable reference with a caller — the snapshot must read frozen. */
 function cloneAddress(address: OrderAddress | null): OrderAddress | null {
 	return address === null ? null : { ...address };
+}
+
+/** Only an admin refund in its own right (`purpose: "refund"`, the default) announces
+ *  itself with a refund email (ADR-0026). */
+function announcesItself(refund: RefundRecord): boolean {
+	return (refund.purpose ?? "refund") === "refund";
+}
+
+/** The `refund-issued` notice a refund announces itself with. */
+function refundNotice(refund: RefundRecord): OrderNoticeInput {
+	return {
+		kind: "refund-issued",
+		amount: refund.amount,
+		currency: refund.currency,
+		refundId: refund.id,
+	};
 }

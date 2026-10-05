@@ -1,61 +1,62 @@
 /**
- * The site's own middleware. It does TWO things, both about who may be served
- * a stored copy of a storefront page (ADR-0024 as amended 2026-09-30):
+ * The site's own middleware. It decides one thing: who may be served a stored
+ * copy of a storefront page (ADR-0024).
  *
- *  1. the admin-only live theme preview (`src/lib/theme-preview.ts`);
- *  2. a page that draws the shopper's own bag is PER-SHOPPER. For a theme that
- *     opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`),
- *     a request carrying a cart cookie can render that shopper's lines into the
- *     header of any page, so its HTML is sent `private, no-store` and kept out
- *     of Astro's route cache — it must never be stored and replayed to anyone
- *     else. Any other theme renders the same page for every shopper, and its
- *     caching is left alone.
+ * A page whose chrome draws the shopper's own state is PER-SHOPPER. For a theme
+ * that opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`)
+ * or into the shopper's state (`chrome.shopperState`: the cart count and the
+ * signed-in label on every page — QA U-12, U-14), a request carrying a cart
+ * cookie can render that shopper's cart into the header of any page, and (for
+ * `shopperState`) one carrying a session cookie their signed-in state. Its HTML
+ * is sent `private, no-store` and kept out of Astro's route cache — it must
+ * never be stored and replayed to anyone else.
  *
- * WHY MIDDLEWARE AND NOT THE STOREFRONT SHELL. The preview sets a cookie and a
- * `Cache-Control` header, and Astro lets only the PAGE (or middleware) touch the
- * response — a layout renders while the body may already be streaming. Every
- * storefront page would otherwise have to repeat the same three lines, and the
- * first page to forget would cache a preview.
+ * A request with NEITHER cookie gets the neutral header (no count, "Account"),
+ * the same for every such visitor, and its caching is left alone: that is the
+ * copy a shared cache may hold. A shopper WITH a cookie can at worst be handed
+ * that neutral copy by a cache that ignores cookies — a header missing their
+ * state, never someone else's. (A CDN rule that bypasses the cache when
+ * `otta_cart` or `otta_session` is present gives them their own.)
+ *
+ * (The admin-only live theme preview this file used to handle is gone with the
+ * admin's theme picker: the store ships one theme, Tempered.)
+ *
+ * WHY MIDDLEWARE AND NOT THE STOREFRONT SHELL. A `Cache-Control` header can only
+ * be set by the PAGE (or middleware) — a layout renders while the body may
+ * already be streaming — and every storefront page would otherwise repeat it.
  *
  * ORDER. EmDash's middlewares are all `order: "pre"`, so they have run by the
- * time this does: `locals.user` is already the session's user (or absent) on
- * public routes too.
+ * time this does.
  *
- * TWO CACHES. `Cache-Control: private, no-store` keeps a preview out of HTTP
+ * TWO CACHES. `Cache-Control: private, no-store` keeps a page out of HTTP
  * caches, but NOT out of Astro's route cache (e.g. Workers Cache on
  * Cloudflare): the adapter derives that cache's TTL from the route-cache
  * options, not from the header, and a stored entry is served without running
  * middleware again. So, as EmDash does for its own session-specific responses,
- * every previewed response and every exit also calls `context.cache.set(false)`
- * (and so does every per-shopper page, below). A preview or a per-shopper page
- * calls it both before AND after `next()`: in Astro 7 any later
- * `cache.set(options)` (a page's `Astro.cache.set(hint)`) clears the disabled
- * flag again, and the route cache reads the options only once `next()` has
- * returned, so the call after the page is the one that counts. With no cache
- * provider configured it is a no-op.
+ * every per-shopper page also calls `context.cache.set(false)` — both before
+ * AND after `next()`: in Astro 7 any later `cache.set(options)` (a page's
+ * `Astro.cache.set(hint)`) clears the disabled flag again, and the route cache
+ * reads the options only once `next()` has returned, so the call after the page
+ * is the one that counts. With no cache provider configured it is a no-op.
  *
  * SCOPE. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
- * write: a preview changes presentation, never what a POST does.
+ * write.
  */
-import { CART_COOKIE_NAME } from "@otta-sh/plugin";
+import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
 import { defineMiddleware } from "astro:middleware";
-import {
-	decideThemePreview,
-	setRequestThemePreview,
-	THEME_PREVIEW_COOKIE,
-	THEME_PREVIEW_NO_STORE,
-} from "./lib/theme-preview.js";
+import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
 
-/** `Cache-Control` for a page that drew one shopper's bag. */
-export const PER_SHOPPER_NO_STORE = "private, no-store";
+/** `Cache-Control` for a page that drew one shopper's state — the site's ONE
+ *  private, no-store constant, under the name its callers already use. */
+export { PRIVATE_NO_STORE as PER_SHOPPER_NO_STORE } from "./lib/no-store.js";
 
 /** Mark a response private. A `Response` built by `Response.redirect()` (or
  *  handed through from elsewhere) can carry IMMUTABLE headers, so a refusal to
  *  set is answered by copying the response rather than by sending it cacheable. */
-function noStore(response: Response, value: string = THEME_PREVIEW_NO_STORE): Response {
+function noStore(response: Response, value: string = PRIVATE_NO_STORE): Response {
 	try {
 		response.headers.set("Cache-Control", value);
 		return response;
@@ -72,60 +73,28 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {
-	const { request, url, cookies, locals } = context;
+	const { request, url, cookies } = context;
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
 	if (url.pathname.startsWith("/_")) return next();
 
-	const decision = decideThemePreview({
-		url,
-		cookie: cookies.get(THEME_PREVIEW_COOKIE)?.value,
-		user: locals.user,
-	});
-
-	if (decision.cookie === "clear") {
-		cookies.delete(THEME_PREVIEW_COOKIE, { path: "/" });
-	} else if (decision.cookie !== "keep") {
-		cookies.set(THEME_PREVIEW_COOKIE, decision.cookie.set, {
-			path: "/",
-			httpOnly: true,
-			sameSite: "lax",
-			secure: !import.meta.env.DEV,
-			// No maxAge / expires: a session cookie, gone with the browser session.
-		});
-	}
-
-	if (decision.exitTo !== null) {
-		skipRouteCache(context);
-		// The Themes screen's hidden exit frame wants the clearing cookie and a
-		// `load`, not a page: an empty 200 (Chromium fires no `load` on a 204).
-		if (decision.silent) return noStore(new Response(null, { status: 200 }));
-		return noStore(context.redirect(decision.exitTo, 303));
-	}
-
-	if (decision.themeId !== null) {
-		skipRouteCache(context);
-		setRequestThemePreview(locals, decision.themeId);
-		const response = await next();
-		// Again after the page: its own `Astro.cache.set(hint)` re-enables the cache.
-		skipRouteCache(context);
-		// Whatever the page set (a public page may set none; the account pages set
-		// their own no-store): a previewed response is private to this admin.
-		return noStore(response);
-	}
-
-	// (2) A shopper with a cart, on a theme whose chrome draws the cart's lines.
-	// The theme is asked only when there IS a cart cookie, and `activeTheme` is
+	// A shopper with a cart or a session, on a theme whose chrome draws it. The
+	// theme is asked only when there IS such a cookie, and `activeTheme` is
 	// memoized per request, so the shell's own call reuses this answer. It is
 	// asked on every such GET, not only pages (an endpoint or a redirect too):
 	// deliberate, since it is one memoized read and the HTML check below is what
 	// decides the header.
-	const cartId = cookies.get(CART_COOKIE_NAME)?.value;
-	if (cartId === undefined || cartId.length === 0) return next();
-	if (themeFor(await activeTheme(context)).chrome?.cartLines !== true) return next();
+	const hasCart = (cookies.get(CART_COOKIE_NAME)?.value ?? "").length > 0;
+	const hasSession = (cookies.get(SESSION_COOKIE_NAME)?.value ?? "").length > 0;
+	if (!hasCart && !hasSession) return next();
+	const chrome = themeFor(await activeTheme(context)).chrome;
+	const drawsShopper = chrome?.shopperState === true;
+	const perShopper =
+		(hasCart && (drawsShopper || chrome?.cartLines === true)) || (hasSession && drawsShopper);
+	if (!perShopper) return next();
 	skipRouteCache(context);
 	const response = await next();
-	// Again after the page, as for a preview (TWO CACHES above).
+	// Again after the page (TWO CACHES above).
 	skipRouteCache(context);
 	const html = response.headers.get("Content-Type")?.includes("text/html") ?? false;
-	return html ? noStore(response, PER_SHOPPER_NO_STORE) : response;
+	return html ? noStore(response, PRIVATE_NO_STORE) : response;
 });

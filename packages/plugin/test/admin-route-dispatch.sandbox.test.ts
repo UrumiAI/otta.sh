@@ -198,9 +198,9 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		// field outright (ADR-0014 D3) — there is no second deployable left to
 		// authenticate to, so no form on this page submits that id any more.
 		expect(formFor(blocks, "save-token")).toBeUndefined();
-		// INC-09: every payment/email secret still renders write-only — a plain
-		// `text_input`, never a masked `secret_input`, and carrying no
-		// `initial_value` (the stored secret is never echoed back).
+		// INC-09 / U-8: every payment/email secret renders write-only — a
+		// password input (`secret_input`) carrying no `initial_value` and no
+		// `has_value` (the stored secret is never echoed back).
 		for (const actionId of [
 			"save-stripe-secret-key",
 			"save-stripe-webhook-secret",
@@ -212,8 +212,9 @@ describe("admin route dispatch (workerd sandbox)", () => {
 			expect(form, `no form submitting ${actionId}`).toBeDefined();
 		}
 		const stripeKeyField = field(formFor(blocks, "save-stripe-secret-key"), "stripeSecretKey");
-		expect(stripeKeyField?.type).toBe("text_input");
+		expect(stripeKeyField?.type).toBe("secret_input");
 		expect(stripeKeyField).not.toHaveProperty("initial_value");
+		expect(stripeKeyField).not.toHaveProperty("has_value");
 	});
 
 	test("NO-STORAGE page_load /reports (ctx.storage undeclared) fails closed with a GENERIC banner (no raw HTTP status/URL)", async () => {
@@ -231,6 +232,29 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(banner).toBeDefined();
 		const text = `${String(banner?.title ?? "")} ${String(banner?.description ?? "")}`;
 		expect(text).not.toMatch(/HTTP \d|\/reports\/|401/);
+	});
+
+	test("an UNKNOWN page renders a friendly not-found, never a blank screen or a raw status", async () => {
+		// A bookmark to a retired Block Kit page (`/orders`, `/products` moved to
+		// the React console — ADR-0015) or a typo used to render an empty tree.
+		sandbox = await loadPluginInSandbox({ allowedHosts: [] });
+		for (const page of ["/orders", "/nope", "/<img src=x onerror=alert(1)>"]) {
+			const blocks = blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page }));
+			const header = blocks.find((b) => b.type === "header");
+			expect(header?.text, page).toBe("Page not found");
+			const context = blocks.find((b) => b.type === "context");
+			// The requested path is URL-controlled input: it is never echoed back.
+			expect(JSON.stringify(blocks)).not.toContain(page.slice(1));
+			expect(String(context?.text).length).toBeLessThanOrEqual(140);
+			expect(JSON.stringify(blocks)).not.toMatch(/404|ROUTE_NOT_FOUND/);
+		}
+		// An unrecognised ACTION keeps em-dash's house style — there is no page to
+		// replace, so it answers with nothing rather than a not-found screen.
+		const action = await sandbox.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "nobody:owns-this",
+		});
+		expect(blocksOf(action)).toEqual([]);
 	});
 
 	test("the old per-page keys no longer resolve (404 unknown route)", async () => {

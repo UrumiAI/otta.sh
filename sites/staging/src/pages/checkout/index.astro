@@ -30,8 +30,13 @@
  * URL — prices the cart for the destination and offers the matched zone's
  * delivery options as radios (a lone priced option comes back preselected).
  * The place form then carries the destination and the method the totals were
- * priced with as hidden fields, and the typed street address beside them. As
- * with the coupon, resubmitting the delivery form loses typed address fields.
+ * priced with as hidden fields, and the typed street address beside them.
+ * Updating the delivery or applying a coupon keeps what was typed: both post
+ * the details form (QA U-1).
+ *
+ * KEPT VALUES (QA U-1). A refused place comes back here with the buyer's typed
+ * values in the draft cookie (lib/checkout-draft.ts), never in the URL; the
+ * page fills the form from it and marks the fields the refusal named.
  *
  * Shape (§8): step track, then two panels — the details form left (~1.15fr),
  * the order ledger + totals right.
@@ -43,8 +48,19 @@ import {
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
+import { checkoutEmailNote, currentSessionToken, signedInEmail } from "../../lib/account.js";
+import { keepPrivate } from "../../lib/no-store.js";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { resumeHref } from "../../lib/checkout-resume.js";
+import { lockedOtherEmailNotice, reviewErrorToken } from "../../lib/checkout-review.js";
+import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import {
+	draftAddressValues,
+	readCheckoutDraft,
+	shownFieldErrors,
+} from "../../lib/checkout-draft.js";
+import {
+	isCouponFailure,
 	readCouponParam,
 	readDestinationParams,
 	readMethodParam,
@@ -56,6 +72,13 @@ import { checkoutFootnote } from "../../lib/totals.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
+
+/* This page renders one shopper's cart, email and delivery choice: never stored by a shared cache, and kept out of
+   Astro's route cache, which ignores Cache-Control (middleware.ts, "TWO
+   CACHES") — QA U-7. Called FIRST so no rendered branch (an error state, a
+   busy 503) goes out without it; a redirect is its own response and carries
+   no body to store. */
+keepPrivate(Astro);
 
 /* The coupon rides this page's URL, so no Referer carrying it may leave for
    another origin. Sent as a HEADER as well as the meta below, as defence in
@@ -124,22 +147,44 @@ const checkedOut = error === "CART_CHECKED_OUT";
 const locked = summary.orderCreated ? summary.order : null;
 const ended = locked?.phase === "ended";
 
+/** The `?error=` this render may show. A LOCKED review drops it: a place-time
+ *  refusal describes a form that is no longer here — typically the history entry
+ *  Back returns to from the pay page (QA U-2). */
+const shownError = reviewErrorToken(error, locked !== null);
+
+/** What the buyer typed before the last refused place (QA U-1) — read back into
+ *  the form from the draft cookie (lib/checkout-draft.ts), never from the URL.
+ *  A locked review has no form to fill. */
+const draft = locked === null ? readCheckoutDraft(Astro.cookies) : null;
+
+/** A coupon refused AT PLACE: the redirect dropped it from the URL (so the
+ *  totals are priced without it), and it comes back into the coupon field with
+ *  its refusal beside it — not as a second, page-level notice. */
+const placeCouponError =
+	shownError !== null &&
+	isCouponFailure(shownError) &&
+	draft?.error === shownError &&
+	draft.coupon !== undefined
+		? { code: draft.coupon, message: cartErrorMessage(shownError) }
+		: null;
+
 /** The coupon refusal to explain, from the plugin or from the cap check above.
  *  Its code goes back into the field so a typo can be fixed. */
 const couponError = summary.selectionErrors.coupon ?? coupon.rejected ?? null;
-const couponValue = couponError?.code ?? summary.selection.couponCode ?? "";
+const couponValue =
+	couponError?.code ?? placeCouponError?.code ?? summary.selection.couponCode ?? "";
 const shippingError = summary.selectionErrors.shippingMethod ?? null;
 /** A refused destination — by the plugin, or by the shape check above. */
 const destinationError = summary.selectionErrors.destination ?? destinationRead.rejected ?? null;
 
 /** The destination the totals were priced for, or null. */
 const destination = summary.selection.destination;
-/** What the delivery form's fields show: the priced destination, else what was
+/** What the delivery block's fields show: the priced destination, else what was
  *  typed and refused (so a typo can be fixed). */
 const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
 const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
 
-/** The delivery form: an unlocked cart that ships, in a store with zones. */
+/** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
 /** The address block: an unlocked cart that ships. On a store with NO zones
  *  it also asks for the country; otherwise the country/region are the hidden
@@ -162,18 +207,33 @@ const notReadyCopy = summary.shipping.noOptions
 		? "Choose a delivery option above to continue."
 		: "Choose where we're delivering above to continue.";
 
-/** SKU / qty / money — the same tape the home page opens with, itemised. The
- *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
+/** The signed-in shopper's own address, prefilled into the email field — the
+ *  order is filed under their account only when placed with it (the plugin's
+ *  rule; place.ts forwards the session). `null` when signed out. */
+if (currentSessionToken(Astro.cookies) !== undefined) keepPrivate(Astro);
+const accountEmail = await signedInEmail(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	Astro.cookies,
+	Astro.url,
+);
+
+/** Name / SKU / qty / money. The name is the summary's `title` — the string
+ *  the order will snapshot (the locked review's IS the snapshot) — so this,
+ *  the last summary before paying, reads as the receipt will. A line the store
+ *  cannot name leaves the SKU standing alone, never a made-up name. The money
+ *  cell is `lineTotal.formatted` or the honest prose; never assembled. */
 const ledgerRows = lines.map((line) => ({
+	...(line.title !== null ? { title: line.title } : {}),
 	sku: line.sku,
 	qty: line.qty,
 	money: line.lineTotal?.formatted ?? "priced at checkout",
 }));
 
-/** The coupon code rides on the row's own label rather than a second line: it
- *  IS the name of that discount, and the totals block has one slot per row. */
-const discountLabel =
-	totals.appliedCouponCode !== null ? `Discount · ${totals.appliedCouponCode}` : "Discount";
+/** The coupon code rides on the row itself rather than a second line: it IS the
+ *  name of that discount, and the totals block has one slot per row. It is the
+ *  row's `code`, not part of its label, so the label's uppercase cannot re-spell
+ *  it (QA round 2). */
+const discountCode = totals.appliedCouponCode !== null ? { code: totals.appliedCouponCode } : {};
 
 /**
  * Straight off the view model (§7). The only thing this page adds is the
@@ -182,7 +242,7 @@ const discountLabel =
  */
 const sumRows = [
 	{ label: "Subtotal", amount: totals.subtotal },
-	{ label: discountLabel, amount: totals.discount, fallback: "No coupon applied" },
+	{ label: "Discount", ...discountCode, amount: totals.discount, fallback: "No coupon applied" },
 	{ label: "Shipping", amount: totals.shipping },
 	{ label: "Tax", amount: totals.tax },
 ];
@@ -193,12 +253,26 @@ const sumRows = [
  */
 const model: CheckoutModel = {
 	summary,
-	errorMessage: error !== null ? cartErrorMessage(error) : null,
+	errorMessage:
+		shownError !== null && placeCouponError === null ? cartErrorMessage(shownError) : null,
 	checkedOut,
-	locked: locked === null ? null : { id: locked.id },
+	locked:
+		locked === null
+			? null
+			: {
+					id: locked.id,
+					resumeHref: resumeHref(locked.id),
+					/* Another tab placed this order with another email (QA2 X2):
+					   which (masked), from the stash place just wrote. */
+					otherEmailNotice: lockedOtherEmailNotice(error, locked, readCheckoutStash(Astro.cookies)),
+				},
 	ended,
 	couponValue,
-	couponError: couponError !== null ? cartErrorMessage(couponError.reason) : null,
+	refusedCouponCode: couponError !== null || placeCouponError !== null ? couponValue : null,
+	couponError:
+		couponError !== null
+			? cartErrorMessage(couponError.reason)
+			: (placeCouponError?.message ?? null),
 	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
@@ -215,6 +289,10 @@ const model: CheckoutModel = {
 	/* Quoted from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
+	emailValue: draft?.values.email ?? accountEmail ?? "",
+	addressValues: draftAddressValues(draft),
+	fieldErrors: shownFieldErrors(draft, shownError),
+	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,
 	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated),

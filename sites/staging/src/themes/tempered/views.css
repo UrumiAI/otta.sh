@@ -173,6 +173,12 @@
 /* ── Home (was pages/index.astro) ────────────────────────────────────────── */
 
 /* §8: asymmetric, ~1.15fr / 1fr — the copy leads and the tape answers. */
+/* A one-line notice the page decided on (sign-out, QA2 A5), above the hero. */
+[data-theme-id="tempered"] .home-notice {
+	margin-bottom: 1.5rem;
+	max-width: 34rem;
+}
+
 [data-theme-id="tempered"] .home-hero {
 	display: grid;
 	grid-template-columns: 1.15fr 1fr;
@@ -246,8 +252,38 @@
 	border-bottom: none;
 }
 
+/* Name over sku, one grid cell: the Ledger's pattern. The name is prose in
+   the body face (§3 — data face for data only); the sku is the reference. */
 [data-theme-id="tempered"] .home-item {
-	font-size: 0.75rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
+	min-width: 0;
+}
+
+[data-theme-id="tempered"] .home-item-link {
+	/* A little vertical slop so the focus ring clears the name and the target
+	   is not just the cap height of 14px type. */
+	padding-block: 2px;
+	font-size: 0.875rem;
+	font-weight: 500;
+	color: var(--u-ink);
+	text-decoration: none;
+	overflow-wrap: anywhere;
+}
+
+/* Straw is the fitting: it underlines, it never fills (§2) — the card
+   title's hover, so a name is a link the same way everywhere. */
+[data-theme-id="tempered"] .home-item-link:hover {
+	text-decoration: underline;
+	text-decoration-color: var(--u-straw);
+	text-decoration-thickness: 2px;
+	text-underline-offset: 3px;
+}
+
+[data-theme-id="tempered"] .home-sku {
+	font-size: 0.6875rem;
+	color: var(--u-mute);
 	overflow-wrap: anywhere;
 }
 

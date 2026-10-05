@@ -24,6 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
+import { BUYER_REF_MAX, isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -37,6 +38,7 @@ import type {
 	QuoteFailureReason,
 	QuoteRequestWire,
 	QuoteResult,
+	ResumeProof,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import {
@@ -46,6 +48,7 @@ import {
 	type CartPricingWire,
 } from "./cart-pricing.js";
 import {
+	exceedsAddressBounds,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -85,6 +88,13 @@ import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pd
 export const STOREFRONT_CHECKOUT_SUMMARY_ROUTE = "storefront/checkout/summary";
 export const STOREFRONT_CHECKOUT_PLACE_ROUTE = "storefront/checkout/place";
 export const STOREFRONT_ORDER_ROUTE = "storefront/order";
+/** The order page's "Complete payment" (QA U-2): the pending order's own intent,
+ *  from the order id plus a second factor (cart, owning session or email); the
+ *  id alone is `PROOF_REQUIRED`. */
+export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
+/** "Start a new cart" (QA2 X4): cancel the order a cart became, if it is still
+ *  unpaid — from the cart id alone (the cookie is the possession proof). */
+export const STOREFRONT_ORDER_ABANDON_ROUTE = "storefront/order/abandon";
 
 /** The one payment method this slice offers. x402's `x402_challenge` client
  *  action is a second flow, out of scope (plan §7.2). */
@@ -93,7 +103,8 @@ const PAYMENT_METHOD = "stripe" as const;
 export interface CheckoutSummaryRouteInput {
 	cartId?: unknown;
 	locale?: unknown;
-	/** Trimmed, case kept (lookup is case-sensitive); blank ⇒ no coupon. */
+	/** Trimmed, case kept as typed (the lookup folds case — ADR-0025); blank ⇒ no
+	 *  coupon. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
 	/** `{ country, region? }` — ISO codes (ADR-0021). The coarse ship-to the
@@ -117,12 +128,36 @@ export interface CheckoutPlaceRouteInput {
 	 *  two routes take, so the amount on the pay button reads exactly like the
 	 *  total the buyer just approved on the review page. */
 	locale?: unknown;
+	/** The signed-in shopper's session (the theme reads its own cookie — the
+	 *  route is cookie-blind). The order is theirs from birth when the buyer
+	 *  email is their own; otherwise, or without one, it is a guest order. */
+	sessionToken?: unknown;
 }
 
 export interface OrderRouteInput {
 	orderId?: unknown;
 	locale?: unknown;
 }
+
+/** The order id, the SECOND FACTOR (any one of cart, session, email — see
+ *  `commerce/resume-proof.ts`) and the locale the total is formatted in. Nothing
+ *  else in the input is read. */
+export interface OrderResumeRouteInput extends OrderRouteInput {
+	cartId?: unknown;
+	sessionToken?: unknown;
+	email?: unknown;
+}
+
+export interface OrderAbandonRouteInput {
+	cartId?: unknown;
+}
+
+/** Whether THIS call cancelled the cart's unpaid order. Never the order id: the
+ *  caller holds the cart, and the cart page already links its order. */
+export type OrderAbandonRouteResult =
+	| { ok: true; cancelled: boolean }
+	| { ok: false; error: "INVALID_INPUT" }
+	| RenderGuardFailure;
 
 /** What the totals were computed WITH — the form echoes it, so the place
  *  prices exactly what the buyer reviewed. `null` ⇒ not applied. */
@@ -240,15 +275,56 @@ export type CheckoutPlaceRouteResult =
 			 * the payment. A healthy reply always carries it, replays included.
 			 */
 			total?: CartMoneyWire;
+			/** The order's email as a hint (`j•••@g•••.com`), never the address —
+			 *  the pay page states where the confirmation goes (QA2 X2). */
+			buyerRefHint: string;
+			/**
+			 * `false` when the order was ALREADY placed for this cart with another
+			 * email — a second checkout tab, whose same-key place replays the first
+			 * tab's order and keeps that order's email. The site tells the shopper
+			 * instead of sending them on to pay (QA2 X2).
+			 */
+			emailMatches: boolean;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
+	/**
+	 * The idempotency key is not this cart's `checkout:<cartId>` — a page reviewed
+	 * for some other cart, or a caller trying to bind another cart's key to this
+	 * one. Nothing was minted, adopted or asked of the payment provider.
+	 */
+	| { ok: false; reason: "CHECKOUT_STALE" }
 	| RenderGuardFailure;
 
 export type OrderRouteResult =
 	| { ok: true; order: PublicOrderView }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
+	| RenderGuardFailure;
+
+export type OrderResumeRouteResult =
+	| {
+			ok: true;
+			orderId: string;
+			/** Passed through UNMODIFIED, like the place route's. */
+			clientAction: ClientActionWire;
+			/** The order's own total — absent only when it could not be formatted
+			 *  (the same load-bearing optionality as the place route's). */
+			total?: CartMoneyWire;
+			/** The order's email as a hint (`j•••@g•••.com`), never the address. */
+			buyerRefHint: string;
+	  }
+	| { ok: false; error: "INVALID_INPUT" }
+	| {
+			ok: false;
+			reason:
+				| "ORDER_NOT_FOUND"
+				| "ORDER_NOT_PAYABLE"
+				| "PROOF_REQUIRED"
+				| "EMAIL_MISMATCH"
+				| "THROTTLED"
+				| CheckoutFailureReason;
+	  }
 	| RenderGuardFailure;
 
 /**
@@ -323,8 +399,11 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			// the whole checkout into RENDER_FAILED — the quote below is the
 			// authority on what the buyer pays, and it is a separate call.
 			let pricing: CartPricingWire;
+			// Hoisted out of the try: the same batch names the lines (each row's
+			// title cache, the string the order will snapshot). A failed lookup
+			// leaves it empty, so the lines go nameless rather than the page down.
+			let commerceById = new Map<string, CatalogProductCommerce | null>();
 			try {
-				let commerceById = new Map<string, CatalogProductCommerce | null>();
 				if (productIds.length > 0) {
 					const loader = await createCommerceLoader(ctx);
 					commerceById = await loader.loadMany(productIds);
@@ -431,7 +510,11 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
-				lines: buildCheckoutLines(cart.lines, pricing),
+				lines: buildCheckoutLines(
+					cart.lines,
+					pricing,
+					new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+				),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
 					// Shipping was calculated iff a method was priced (a free-threshold
@@ -534,7 +617,29 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 	return (routeCtx, ctx): Promise<CheckoutPlaceRouteResult> =>
 		renderGuard(STOREFRONT_CHECKOUT_PLACE_ROUTE, async () => {
 			const input = parseCheckoutPlaceInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null) {
+				// Everything else is well-formed and only the ship-to has a field over
+				// the domain's bound: that is the buyer's address being too long, the
+				// typed INVALID_SHIPPING_ADDRESS the domain would give — not a malformed
+				// call (QA U-6).
+				const { shippingAddress, ...rest } = routeCtx.input;
+				if (exceedsAddressBounds(shippingAddress) && parseCheckoutPlaceInput(rest) !== null) {
+					return { ok: false as const, reason: "INVALID_SHIPPING_ADDRESS" as const };
+				}
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			// The key is `checkout:<cartId>` BY CONSTRUCTION (the summary derives it),
+			// and this route — public, reachable directly — now enforces that rather
+			// than trusting its caller (QA T1-10). Taken as given, a caller could
+			// place its own cart under `checkout:<another cart>`; that key would then
+			// name the wrong order, and the other cart's real checkout would fail
+			// IDEMPOTENCY_KEY_REUSED for good. Refused, not rewritten: the key is also
+			// the review page's statement of which cart it priced, so a mismatch is a
+			// stale page, and placing this cart against it would charge totals the
+			// buyer never saw.
+			if (input.idempotencyKey !== checkoutIdempotencyKey(input.cartId)) {
+				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.createOrder(
@@ -548,8 +653,19 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 						: {}),
 				},
 				input.idempotencyKey,
+				input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
 			);
-			if (!result.ok) return { ok: false as const, reason: result.reason };
+			if (!result.ok) {
+				// A same-key PaymentIntent request still in flight (a double-submitted
+				// checkout) is not a failure: the first request is about to land, and
+				// a retry with this same key returns its intent. So it is answered as
+				// the storefront's retryable BUSY — "try again in a few seconds" — not
+				// as PAYMENT_INTENT_FAILED's "we couldn't start a payment" (QA T1-9).
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
 
 			// CONTAINED, deliberately. `buildOrderTotal` runs `cents()`/`currency()`,
 			// which THROW, over a reply this client has only envelope-checked — and
@@ -576,6 +692,8 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				alreadyPlaced: isAlreadyPlaced(result.intent),
 				clientAction: result.intent.clientAction,
 				...(total !== undefined ? { total } : {}),
+				buyerRefHint: result.buyerRefHint,
+				emailMatches: result.buyerRefMatches,
 			};
 		});
 }
@@ -590,13 +708,123 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 	return (routeCtx, ctx): Promise<OrderRouteResult> =>
 		renderGuard(STOREFRONT_ORDER_ROUTE, async () => {
+			// Not a string at all is a malformed CALL (no URL produces one):
+			// INVALID_INPUT. Any string that cannot be an order id — blank,
+			// over-long, carrying whitespace or a control character — names no order:
+			// ORDER_NOT_FOUND, which the page renders as "not found". Before, such ids
+			// were INVALID_INPUT or threw out of the client as RENDER_FAILED, both
+			// "Something went wrong" on the page (QA U-6).
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
 			const input = parseOrderRouteInput(routeCtx.input);
-			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
 
 			const client = await makeCommerceClient(ctx);
 			const result = await client.getPublicOrder(input.orderId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 
 			return { ok: true as const, order: buildOrderView(result.order, input.locale) };
+		});
+}
+
+/** A non-blank string, or nothing. */
+function proofText(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Resume a pending order's payment from the order page (QA U-2) — on ANY device,
+ * but NOT on the order id alone: the caller also holds the order's cart, a
+ * session owning it, or its email (`commerce/resume-proof.ts`). No key or buyer
+ * can be smuggled in to steer the replay; the client replays the order's OWN
+ * checkout.
+ *
+ * What this grants beyond the order read is the client secret of the order's
+ * existing PaymentIntent — i.e. the means to PAY that order, for as long as it is
+ * payable (pending, before its hold deadline). The reply is projected like the
+ * place route's: the order id, the client action, the total and a masked email —
+ * never the buyer reference, the ship-to or the intent id.
+ */
+export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteInput> {
+	return (routeCtx, ctx): Promise<OrderResumeRouteResult> =>
+		renderGuard(STOREFRONT_ORDER_RESUME_ROUTE, async () => {
+			if (typeof routeCtx.input.orderId !== "string") {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			const input = parseOrderRouteInput(routeCtx.input);
+			if (input === null || !isIdToken(input.orderId)) {
+				return { ok: false, reason: "ORDER_NOT_FOUND" } as const;
+			}
+
+			// The second factor: only non-blank strings, bounded. An email longer
+			// than any buyer reference can be cannot match, and is refused without
+			// spending a throttle slot or a store read.
+			const proof: ResumeProof = {};
+			const cartId = proofText(routeCtx.input.cartId);
+			const sessionToken = proofText(routeCtx.input.sessionToken);
+			const email = proofText(routeCtx.input.email);
+			if (cartId !== undefined && isIdToken(cartId)) proof.cartId = cartId;
+			if (sessionToken !== undefined && sessionToken.length <= 400) {
+				proof.sessionToken = sessionToken;
+			}
+			if (email !== undefined) {
+				if (email.length > BUYER_REF_MAX) {
+					return { ok: false as const, reason: "EMAIL_MISMATCH" as const };
+				}
+				proof.email = email;
+			}
+
+			const client = await makeCommerceClient(ctx);
+			const result = await client.resumeOrderPayment(input.orderId, proof);
+			if (!result.ok) {
+				// A same-key intent still in flight (a double click on "Complete
+				// payment") is BUSY and retryable, as on the place route.
+				if (result.reason === "PAYMENT_INTENT_IN_FLIGHT") {
+					return { ok: false as const, error: "BUSY" as const, retryable: true as const };
+				}
+				return { ok: false as const, reason: result.reason };
+			}
+			if (result.intent.clientAction.kind !== "stripe_client_secret") {
+				return { ok: false as const, reason: "ORDER_NOT_PAYABLE" as const };
+			}
+
+			let total: CartMoneyWire | undefined;
+			try {
+				total = buildOrderTotal(result.order, input.locale);
+			} catch (err) {
+				console.error(`[otta] ${STOREFRONT_ORDER_RESUME_ROUTE} total format failed:`, err);
+			}
+			return {
+				ok: true as const,
+				orderId: result.order.id,
+				clientAction: result.intent.clientAction,
+				...(total !== undefined ? { total } : {}),
+				buyerRefHint: result.buyerRefHint,
+			};
+		});
+}
+
+/**
+ * "Start a new cart" (QA2 X4) — cancel the order this cart became, if that order
+ * is still unpaid, so a payment still open for it elsewhere can no longer go
+ * through and its stock goes back on sale now. The cart id is the whole input
+ * and the whole proof (the cart cookie — the same possession factor the resume
+ * route accepts); see `CommerceClient.abandonCartOrder`. A storage failure is the
+ * render guard's BUSY / RENDER_FAILED, never a success: the site must not tell
+ * the shopper a payment was stopped when it was not.
+ */
+export function createOrderAbandonRouteHandler(): RouteHandler<OrderAbandonRouteInput> {
+	return (routeCtx, ctx): Promise<OrderAbandonRouteResult> =>
+		renderGuard(STOREFRONT_ORDER_ABANDON_ROUTE, async () => {
+			const cartId = routeCtx.input.cartId;
+			if (typeof cartId !== "string" || !isIdToken(cartId)) {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
+			const client = await makeCommerceClient(ctx);
+			const result = await client.abandonCartOrder(cartId);
+			return { ok: true as const, cancelled: result.cancelled };
 		});
 }

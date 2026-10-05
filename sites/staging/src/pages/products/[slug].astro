@@ -34,7 +34,7 @@ import {
 import { getEmDashEntry } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
-import { cartErrorMessage } from "../../lib/error-messages.js";
+import { cartErrorAction, cartErrorMessage } from "../../lib/error-messages.js";
 import { holdNote } from "../../lib/hold.js";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -138,12 +138,8 @@ if (busy) markBusy(Astro.response);
 const error = Astro.url.searchParams.get("error");
 
 /* The coil keys off the product's OWN identity, not the path the visitor
-   typed (em-dash resolves an entry by slug OR id), so the SHAPE on this page is
-   the one the catalog card drew. The TINT can differ, and that is by design:
-   a card cycles its tint by grid position so every three cards show all three,
-   and a PDP has no list to hold a position in, so it falls back to the slug's
-   own hash (see `buildCoil`). The geometry is the product's; the tint belongs
-   to the page. */
+   typed (em-dash resolves an entry by slug OR id), so the coil on this page —
+   drawing and tint — is the one the catalog card drew (see `buildCoil`). */
 const art = content !== null ? productKey(content) : "";
 const image = product?.images?.[0] ?? content?.images?.[0] ?? null;
 const purchasable = product?.purchasable === true && product.price !== null;
@@ -166,6 +162,8 @@ const purchase: ProductPurchase | null =
 	content !== null && purchasable && product?.price
 		? {
 				priceFormatted: product.price.formatted,
+				/* The sale decision is the plugin's (null unless above the price). */
+				compareAtFormatted: product.compareAtPrice?.formatted ?? null,
 				priceStruck: !inStock,
 				availability: product.availability,
 				sku: product.sku,
@@ -203,6 +201,7 @@ const model: ProductModel =
 						: "Prices and stock are unavailable right now."
 					: null,
 				errorMessage: error !== null ? cartErrorMessage(error) : null,
+				errorAction: error !== null ? cartErrorAction(error) : null,
 				purchase,
 				/* Decided once, here, as the contract states it — neither
 				   purchasable nor degraded — so no view re-derives it. */

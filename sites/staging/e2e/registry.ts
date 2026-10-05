@@ -78,8 +78,14 @@ export interface ConsoleScreen {
  * Coupons are a ruling the user has not made (D3), so adding either is out of
  * scope until they do.
  *
- * INC-26 ADDS THEMES, the first entry with no Block Kit original (ADR-0014's
- * amendment of 2026-09-30), so it moves the Block Kit inventory not at all.
+ * INC-26 ADDED THEMES, the first entry with no Block Kit original (ADR-0014's
+ * amendment of 2026-09-30), and it has since been REMOVED: the store ships one
+ * theme, so the admin offers no theme choice (ADR-0024's amendment of 2026-10-02).
+ *
+ * PRICING & INVENTORY HAS LEFT THE LIST: ADR-0014's amendment of 2026-10-01 moved
+ * it into the products collection's own editor (cards) and list (two columns),
+ * which are not pages and have no sidebar entry. Its Playwright gate is
+ * `products-pricing.spec.ts`.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -98,35 +104,6 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// unique — so this stays the H1's own text; disambiguating it here, by
 		// reviving a suffix, would be fixing the wrong file.
 		heading: /^Orders$/,
-	},
-	{
-		name: "Pricing & inventory",
-		increment: "INC-21",
-		// It shared this path with the Block Kit screen for the parallel period —
-		// they never collided, because a page's URL carries its plugin id — and
-		// INC-R3 retired that screen, so `/products` is now this screen's alone.
-		path: "/products",
-		// The H1. The `&` is rendered from an HTML entity, so the regex matches the
-		// TEXT the browser produces rather than the source. INC-R3 dropped the
-		// `(new)` sidebar suffix with the screen it disambiguated from, so — exactly
-		// as on `/orders` — the nav label and this heading now read the same string
-		// and the anchors no longer separate them. Its consumers match the heading
-		// ROLE, which is unique; reviving a suffix to disambiguate a TEXT match
-		// would be fixing the wrong file.
-		heading: /^Pricing & inventory$/,
-	},
-	{
-		// Not a migration — the first console screen with no Block Kit original
-		// (its fallback, the Settings "Store theme" radio, stays). It is gated here
-		// anyway because this registry is the ONE list every console page must be
-		// on (`site-config.test.ts`); "migrated" is this list's history, not a
-		// condition of entry. Its increment is INC-26, made under ADR-0014's
-		// amendment of 2026-09-30; the harness accepts only an `INC-NN` id.
-		name: "Themes",
-		increment: "INC-26",
-		path: "/themes",
-		// The H1 alone: the theme count is a sibling badge, not part of the heading.
-		heading: /^Themes$/,
 	},
 ];
 

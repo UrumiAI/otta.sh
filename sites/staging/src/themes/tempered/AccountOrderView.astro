@@ -5,23 +5,26 @@
  * what a receipt must show. Presentation only — `src/pages/account/orders/
  * [id].astro` reads through the session route (NOT_FOUND for an order that is
  * not theirs, the same answer as for one that does not exist), sets the status
- * and the no-store header, and formats every figure.
+ * and the no-store header, and builds every figure — the totals by the public
+ * order page's own rules (`lib/order-view.ts`), rendered by the same `Sum`.
  *
  * Styles: `commerce.css` (`account-order-*`).
  */
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
+import Sum from "../../components/Sum.astro";
 import type { AccountOrderModel } from "../contract.js";
 
 interface Props {
 	model: AccountOrderModel;
 }
 
-const { order, errorMessage } = Astro.props.model;
+const { order, errorMessage, signedInAs } = Astro.props.model;
 ---
 
 <p class="account-order-back">
 	<a href="/account/orders">← Your orders</a>
+	{signedInAs !== null && <span class="account-order-who">Signed in as {signedInAs}</span>}
 </p>
 
 {
@@ -36,10 +39,33 @@ const { order, errorMessage } = Astro.props.model;
 		</>
 	) : (
 		<>
-			<h1 class="account-order-title">
-				Order <span class="u-mono account-order-ref">{order.id}</span>
-			</h1>
-			<p class="account-order-state">{order.state}</p>
+			{/* The order's products, not its id: the UUID names nothing the
+			    shopper bought, and the receipt below says the rest. */}
+			<h1 class="account-order-title">{order.label}</h1>
+			<p class="account-order-state">
+				{order.state}
+				{order.placed !== null && (
+					<>
+						{" · Placed "}
+						<time datetime={order.placed.iso}>{order.placed.text}</time>
+					</>
+				)}
+			</p>
+			{order.stateNote !== null && <p class="account-order-note">{order.stateNote}</p>}
+
+			{/* What the public order page offers for this order, decided by the
+			    page (QA2 X1): Complete payment while it can still be paid — the
+			    same resume path — and always the order's own page. */}
+			<div class="account-order-actions">
+				{order.payHref !== null && (
+					<a class="u-btn" href={order.payHref}>
+						Complete payment
+					</a>
+				)}
+				<a class="account-order-link" href={order.orderPageHref}>
+					View the order page
+				</a>
+			</div>
 
 			<div class="account-order-cols">
 				<section class="account-order-panel">
@@ -47,26 +73,45 @@ const { order, errorMessage } = Astro.props.model;
 						<h2 class="u-label account-order-head-label">Items</h2>
 					</div>
 					<Ledger rows={order.ledgerRows} />
+					{order.tracking !== null && (
+						<p class="account-order-ship">
+							Shipped with {order.tracking.carrier} — tracking{" "}
+							{order.tracking.trackingUrl !== null ? (
+								<a class="u-mono" href={order.tracking.trackingUrl} rel="noopener noreferrer">
+									{order.tracking.trackingNumber}
+								</a>
+							) : (
+								<span class="u-mono">{order.tracking.trackingNumber}</span>
+							)}
+						</p>
+					)}
+					{order.addressLines !== null && (
+						<div class="account-order-address">
+							<h2 class="u-label account-order-head-label">Delivery address</h2>
+							<address>
+								{order.addressLines.map((line) => (
+									<span>{line}</span>
+								))}
+							</address>
+						</div>
+					)}
 				</section>
 
 				<section class="account-order-panel">
 					<div class="account-order-panel-head">
 						<h2 class="u-label account-order-head-label">Totals</h2>
 					</div>
-					<dl class="account-order-totals">
-						{order.totals.map((row) => (
-							<div class="account-order-row">
-								<dt>{row.label}</dt>
-								<dd class="u-mono">{row.value}</dd>
-							</div>
-						))}
-						<div class="account-order-row account-order-grand">
-							<dt>Total</dt>
-							<dd class="u-mono">
-								{order.total}
-							</dd>
-						</div>
-					</dl>
+					{/* The order page's own totals block and rows (`orderSumRows`):
+					    "Not calculated" stays prose, never $0.00 (TEMPERED.md §7). */}
+					<Sum
+						rows={order.sumRows}
+						total={order.total}
+						totalLabel={order.totalLabel}
+						excludesUncalculated={order.excludesUncalculated}
+					/>
+					{order.refundedNote !== null && (
+						<p class="account-order-refunded u-mono">{order.refundedNote}</p>
+					)}
 				</section>
 			</div>
 		</>

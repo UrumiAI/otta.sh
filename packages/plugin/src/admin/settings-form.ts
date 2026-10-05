@@ -1,6 +1,29 @@
+import {
+	BACKGROUND_WORK_KEY,
+	BACKGROUND_WORK_PRESETS,
+	readBackgroundWork,
+	validateBackgroundWork,
+} from "../cron/background-work-setting.js";
+import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
+import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
-import { isValidLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../storefront/login-link.js";
+import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
+import {
+	checkEmailApiKey,
+	checkOpaqueToken,
+	checkStripeSecretKey,
+	checkStripeWebhookSecret,
+	isResendApiUrl,
+	type SecretShapeCheck,
+	stripeKeyMode,
+} from "../payment-secret-shapes.js";
+import {
+	isSavableLoginLinkUrl,
+	isValidLoginLinkUrl,
+	LOGIN_LINK_URL_KEY,
+} from "../storefront/login-link.js";
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
@@ -20,14 +43,13 @@ import type {
 	RouteHandler,
 	SettingsFieldSpec,
 } from "../types.js";
+import { MAX_LOW_STOCK_THRESHOLD } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type {
 	OperationalSettingsWire,
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
 import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
-import { readStoreThemeId, saveStoreTheme, STORE_THEME_KEY } from "./store-theme-kv.js";
-import { DEFAULT_STORE_THEME, STORE_THEMES, type StoreTheme } from "./store-themes.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -42,6 +64,10 @@ import { DEFAULT_STORE_THEME, STORE_THEMES, type StoreTheme } from "./store-them
  *    rather than from an HTTP status the in-process tier does not have.
  *  - the write-only payment/email credentials ("Payments & email" group) save
  *    into write-only plugin kv, one key per secret ({@link PAYMENT_SECRET_FIELDS}).
+ *  - "Background work per minute" (in "Checkout & holds", beside the hold TTL)
+ *    saves the commerce sweep's per-tick query budget into plugin kv — a
+ *    deployment fact (the Cloudflare plan), not domain configuration; see
+ *    `cron/background-work-setting.ts`.
  *
  * RETIRED (work order 02, INC-D3a): this screen used to carry a FOURTH
  * "Service connection" group with two more write-only secret forms —
@@ -72,16 +98,13 @@ export const SETTINGS_PAGE: AdminPageConfig = {
 	icon: "settings",
 };
 
-/** The kv key for the cosmetic store display name (`settings:*` = the em-dash
- *  convention for user-configurable prefs shown in admin UI). */
-export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
+/** The kv key for the store display name (`settings:*` = the em-dash
+ *  convention for user-configurable prefs shown in admin UI). Defined beside the
+ *  email sender, which names the store in the sign-in email. */
+export { STORE_DISPLAY_NAME_KEY };
 
-/** The kv key for the storefront theme id. Defined with the setting's one
- *  write path in `store-theme-kv.ts`; re-exported where it always lived. */
-export { STORE_THEME_KEY };
-
-/** The Store group's theme save action. */
-const SAVE_THEME_ACTION = "save-theme";
+/** The "Background work per minute" form's submit — a kv save. */
+const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -117,12 +140,24 @@ interface SecretFieldSpec {
 	kvKey: string;
 	/** Write-only kv key holding this secret's save generation. */
 	genKey: string;
-	/** Field label — names the credential, never any part of its value. */
+	/** Field label — names the credential, never any part of its value. The
+	 *  field shows it with "— set" / "— not set" after it. */
 	label: string;
-	/** What the notice/toast calls it. */
+	/** What notices, toasts and the submit button call it, capitalised as the
+	 *  operator reads it ("Stripe secret key"). */
 	noun: string;
-	/** Two words for the collapsed group label ("stripe key", "webhook"). */
-	short: string;
+	/** The placeholder while nothing is stored: the shape to paste. */
+	hint: string;
+	/** U-8: trim, then check the shape the provider issues. The trimmed value is
+	 *  what is stored; the reason names the shape, never the value. */
+	check: (raw: string) => SecretShapeCheck;
+	/** What stops working when this key is removed — the confirm dialog's text. */
+	removeEffect: string;
+	/** The shape, as visible help text above the field (a set key's placeholder
+	 *  no longer shows it). */
+	shapeHelp: string;
+	/** Where the operator finds the key again — named after a Remove. */
+	whereToFind: string;
 }
 
 const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
@@ -133,7 +168,12 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		genKey: "settings:stripeSecretKeyGen",
 		label: "Stripe secret key",
 		noun: "Stripe secret key",
-		short: "stripe key",
+		hint: "sk_live_… or sk_test_…",
+		check: checkStripeSecretKey,
+		removeEffect: "Card payments and refunds stop working until a new key is saved.",
+		shapeHelp:
+			"Starts with sk_live_ or sk_test_ (rk_live_ / rk_test_ for a restricted key). Not the publishable pk_ key.",
+		whereToFind: "Stripe Dashboard → Developers → API keys",
 	},
 	{
 		actionId: "save-stripe-webhook-secret",
@@ -141,8 +181,14 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		kvKey: STRIPE_WEBHOOK_SECRET_KEY,
 		genKey: "settings:stripeWebhookSecretGen",
 		label: "Stripe webhook signing secret",
-		noun: "Stripe webhook secret",
-		short: "webhook",
+		noun: "Stripe webhook signing secret",
+		hint: "whsec_…",
+		check: checkStripeWebhookSecret,
+		shapeHelp: "Starts with whsec_ — the signing secret of your webhook endpoint.",
+		whereToFind:
+			"your webhook endpoint in the Stripe Dashboard (Developers or Workbench → Webhooks) → Signing secret",
+		removeEffect:
+			"Card orders stop being marked paid when Stripe reports a payment, until a new secret is saved.",
 	},
 	{
 		actionId: "save-email-api-key",
@@ -151,7 +197,19 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		genKey: "settings:emailApiKeyGen",
 		label: "Email provider API key",
 		noun: "Email API key",
-		short: "email",
+		hint: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "re_…"
+			: "Your email provider's API key",
+		// Which provider the store sends through is fixed at build time
+		// (`IN_PROCESS_EGRESS_URLS`), so the shape is too.
+		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl),
+		removeEffect: "Order and sign-in emails stop sending until a new key is saved.",
+		shapeHelp: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Starts with re_ — a Resend API key."
+			: "Your email provider's API key: one line, no spaces.",
+		whereToFind: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Resend → API Keys"
+			: "your email provider's dashboard",
 	},
 	{
 		actionId: "save-x402-facilitator-secret",
@@ -165,11 +223,14 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// forge-a-settlement secret this increment would hand to a third-party
 		// host, so the old value must not be inherited — the new key names make
 		// the field read as unset until it is deliberately re-provisioned (review
-		// round 2, A5). `short` is unchanged, so the group label stays exactly
-		// inside the X-11 budget.
+		// round 2, A5).
 		label: "x402 facilitator API key",
 		noun: "x402 facilitator API key",
-		short: "x402",
+		hint: "Your x402 facilitator's API key",
+		check: checkOpaqueToken,
+		removeEffect: "Crypto (x402) checkout stops working until a new key is saved.",
+		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
+		whereToFind: "your x402 facilitator's dashboard",
 	},
 	{
 		// INC-C1b. Not a renamed service env var like the four above — it is the
@@ -178,22 +239,33 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// gets the identical write-only treatment because it is a shared secret,
 		// and it is provisioned HERE because this is the only screen an operator
 		// has. Leaving it unset is a supported configuration (the route falls back
-		// to Stripe-HMAC-only), which is why the group label calls it optional.
+		// to Stripe-HMAC-only), which is why its label says optional and the group
+		// label leaves it out.
 		actionId: "save-webhook-edge-token",
 		fieldId: "webhookEdgeToken",
 		kvKey: WEBHOOK_EDGE_TOKEN_KEY,
 		genKey: "settings:otta-wh-tokenGen",
 		label: "Stripe webhook edge token (optional)",
 		noun: "Webhook edge token",
-		// "edge", not "wh token": a fifth entry pushes the all-missing group label
-		// ("Payments & email — no stripe key, webhook, email, x402, …") against
-		// X-11's 60-character budget, and overflowing it makes `valueLabel` elide
-		// the list — so the fresh-install label, the one case where every name
-		// matters, would be the one that loses a name. Four characters keep it
-		// exactly inside the budget with nothing truncated.
-		short: "edge",
+		hint: "The token your storefront sends with Stripe webhooks",
+		check: checkOpaqueToken,
+		removeEffect:
+			"Stripe webhooks are then checked by their Stripe signature alone, which still refuses forgeries.",
+		shapeHelp:
+			"Optional. The token your storefront sends with Stripe webhooks: one line, no spaces.",
+		whereToFind: "your storefront's deployment settings",
 	},
 ];
+
+/** Look a secret up by the field id a Remove button carries. */
+function secretSpecByField(fieldId: unknown): SecretFieldSpec | undefined {
+	return PAYMENT_SECRET_FIELDS.find((spec) => spec.fieldId === fieldId);
+}
+
+/** U-8: the Remove button's action. ONE id for every secret — the button's
+ *  `value` names which (`{ secret: <fieldId> }`), the only context a button
+ *  can carry. */
+export const CLEAR_PAYMENT_SECRET_ACTION = "clear-payment-secret";
 
 /**
  * INC-C5 — the NON-SECRET companions of the four secrets above: the in-process
@@ -230,7 +302,11 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		fieldId: "emailFrom",
 		kvKey: EMAIL_FROM_KEY,
 		label: "Order email from-address",
-		placeholder: "no-reply@otta.local",
+		// A placeholder the save ACCEPTS. It used to be the runtime default,
+		// `no-reply@otta.local` — a reserved domain no provider sends from, which
+		// the save now refuses (`email/from-address.ts`). Shows the display-name
+		// form because that is what customers read in their inbox.
+		placeholder: "Your Shop <orders@yourdomain.com>",
 	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back for
@@ -238,7 +314,7 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 	{
 		fieldId: "loginLinkUrl",
 		kvKey: LOGIN_LINK_URL_KEY,
-		label: "Sign-in link page (absolute URL of the storefront's /account/verify page)",
+		label: "Sign-in page address (your storefront's /account/verify page)",
 		placeholder: "https://shop.example/account/verify",
 	},
 	{
@@ -250,7 +326,7 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 	{
 		fieldId: "x402Accepts",
 		kvKey: X402_ACCEPTS_KEY,
-		label: "x402 accepted networks (comma-separated CAIP-2)",
+		label: "x402 networks, comma-separated",
 		placeholder: "eip155:8453",
 	},
 ];
@@ -268,6 +344,11 @@ export const PAYMENT_SECRET_ACTION_IDS: ReadonlySet<string> = new Set(
 interface SecretRenderState {
 	set: boolean;
 	gen: number;
+	/** U-8: test or live, for the Stripe secret key only — read from the key's
+	 *  prefix, which says which Stripe mode checkout runs in and nothing about
+	 *  the key itself. `undefined` for every other secret, or a Stripe key saved
+	 *  before shapes were checked. */
+	mode?: "test" | "live";
 }
 
 /** Read the render state for every payment secret. FAIL-CLOSED per secret
@@ -281,7 +362,13 @@ async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, S
 				readWriteOnlySecret(ctx, spec.kvKey),
 				readSaveGen(ctx, spec.genKey),
 			]);
-			return [spec.kvKey, { set: value !== undefined, gen }] as const;
+			const mode =
+				spec.kvKey === STRIPE_SECRET_KEY_KEY && value !== undefined
+					? stripeKeyMode(value)
+					: undefined;
+			const state: SecretRenderState =
+				mode === undefined ? { set: value !== undefined, gen } : { set: true, gen, mode };
+			return [spec.kvKey, state] as const;
 		}),
 	);
 	return new Map(entries);
@@ -291,18 +378,15 @@ async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, S
  *  handler invocation (INC-15). */
 interface SettingsPageState {
 	displayName: string;
-	/** The themes the site offers, `undefined` when it baked none (then the
-	 *  Store group renders no theme picker). */
-	storeThemes: readonly StoreTheme[] | undefined;
-	/** The theme the picker shows — always one the site offers; see
-	 *  {@link readStoreThemeId}. Meaningless when `storeThemes` is absent. */
-	storeTheme: string;
 	/** INC-C3: per payment secret, "is it set" + its save generation, keyed by kv
 	 *  key. NEVER the values — see {@link readPaymentSecretState}. */
 	paymentSecrets: Map<string, SecretRenderState>;
 	/** INC-C5: the NON-secret payment/email settings, keyed by kv key. These ARE
 	 *  the values, and they are rendered back — that is the tier difference. */
 	plainSettings: Map<string, string>;
+	/** The commerce sweep's per-tick query budget ("Background work per minute"),
+	 *  as the sweep would read it — the default when unset or unusable. */
+	backgroundWork: number;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -328,31 +412,24 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * were redundant re-reads). With both tokens gone — the commerce service they
  * authenticated to is gone — there is nothing left to derive from a
  * caller-supplied argument, so this reads everything itself: the display name,
- * the payment-secret state, the plain payment settings and — only when the site
- * offers themes — the store theme: four concurrent gets, one conditional.
+ * the payment-secret state, the plain payment settings and the background-work
+ * budget: four concurrent gets.
  */
-async function readPageState(
-	ctx: PluginContext,
-	storeThemes: readonly StoreTheme[] | undefined,
-): Promise<SettingsPageState> {
-	const [displayName, storeTheme, paymentSecrets, plainSettings] = await Promise.all([
+async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
+	const [displayName, paymentSecrets, plainSettings, backgroundWork] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		// FAIL-SOFT too (inside `readStoreThemeId`), and only read when the site
-		// offers themes at all: a kv blip shows the default theme rather than
-		// taking the screen down.
-		storeThemes === undefined
-			? Promise.resolve(DEFAULT_STORE_THEME)
-			: readStoreThemeId(ctx, storeThemes),
 		readPaymentSecretState(ctx),
 		readPlainSettings(ctx),
+		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+		// sweep makes, so the form shows the budget the next tick will use.
+		readBackgroundWork(ctx),
 	]);
 	return {
+		backgroundWork,
 		plainSettings,
 		displayName: displayName ?? "",
-		storeThemes,
-		storeTheme,
 		paymentSecrets,
 	};
 }
@@ -367,13 +444,30 @@ function secretNotice(spec: SecretFieldSpec, entered: boolean): Notice {
 		? {
 				variant: "default",
 				title: `${spec.noun} saved`,
-				description: `The ${spec.noun.toLowerCase()} was updated. It is stored write-only and never displayed.`,
+				description: `The ${lowerFirst(spec.noun)} was saved. It won't be shown again.`,
 			}
 		: {
 				variant: "default",
-				title: `Nothing entered — ${spec.noun.toLowerCase()} unchanged`,
-				description: `The field was blank, so the stored ${spec.noun.toLowerCase()} was kept. Enter a value to replace it.`,
+				title: `Nothing entered — ${spec.noun} unchanged`,
+				description: `The field was blank, so the ${lowerFirst(spec.noun)} you saved before was kept. Enter a new one to replace it.`,
 			};
+}
+
+/** `https://user:pw@host/…` → `https://host/…`, leaving the rest as typed. */
+function withoutUserInfo(url: string): string {
+	return url.replace(/^(\s*[a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, "$1");
+}
+
+/** "a, b and c". */
+function joinNames(names: readonly string[]): string {
+	if (names.length <= 1) return names.join("");
+	return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
+}
+
+/** "Email API key" → "email API key" mid-sentence; a name that starts with a
+ *  proper noun or a code ("Stripe…", "x402…") is left alone. */
+function lowerFirst(noun: string): string {
+	return /^(Email|Webhook)\b/.test(noun) ? noun.charAt(0).toLowerCase() + noun.slice(1) : noun;
 }
 
 /** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
@@ -388,13 +482,15 @@ async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
  *  NO `page` — is routed here, not to Reports). */
 export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
-	SAVE_THEME_ACTION,
 	"save-operational",
+	SAVE_BACKGROUND_WORK_ACTION,
 	// INC-C3: the four payment/email secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
 	// INC-C5: their non-secret companions, saved as one form.
 	SAVE_PAYMENT_SETTINGS_ACTION,
+	// U-8: removing a stored secret on purpose.
+	CLEAR_PAYMENT_SECRET_ACTION,
 ]);
 
 /** The three settings fields this phase moves end-to-end (§2). */
@@ -410,19 +506,20 @@ export const SETTINGS_SCHEMA: SettingsSchema = {
 	storeDisplayName: {
 		type: "string",
 		label: "Store display name",
-		description: "Cosmetic label for the admin reporting widget (stored in plugin kv).",
+		description:
+			"Your store's name as shown in this admin, in sign-in emails and at the end of order emails.",
 		tier: "kv",
 	},
 	holdTtlMinutes: {
 		type: "number",
-		label: "Cart hold TTL (minutes)",
-		description: "Operational — how long a checkout hold survives (service DB).",
+		label: "Cart hold time (minutes)",
+		description: "How long items in a shopper's checkout stay reserved for them.",
 		tier: "service",
 	},
 	lowStockThreshold: {
 		type: "number",
 		label: "Low-stock threshold",
-		description: "Operational — default threshold for the low-stock report (service DB).",
+		description: "Products at or below this stock count show in the low-stock report.",
 		tier: "service",
 	},
 };
@@ -439,26 +536,19 @@ export interface SettingsFormInput {
 	 *  (kv), or a page load. */
 	action_id?: unknown;
 	values?: Record<string, unknown>;
+	/** A button's payload (`block_action`): the Remove button's `{ secret }`. */
+	value?: unknown;
 	/** Idempotency key for the privileged PUT (defaulted if absent). */
 	idempotencyKey?: unknown;
 }
 
-export interface SettingsFormOptions {
-	/** The themes the site offers. Defaults to the baked `__OTTA_STORE_THEMES__`
-	 *  list ({@link STORE_THEMES}); a seam for tests, not a host knob. */
-	storeThemes?: readonly StoreTheme[] | undefined;
-}
-
-export function createSettingsFormHandler(
-	options: SettingsFormOptions = {},
-): RouteHandler<SettingsFormInput> {
-	const storeThemes = "storeThemes" in options ? options.storeThemes : STORE_THEMES;
-	// Every render on this screen reads the same theme list.
+export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	const renderPage = (
 		ctx: PluginContext,
 		client: ReportingSettingsSurface,
 		notice?: Notice,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, storeThemes, notice);
+		paymentRefusal?: PaymentRefusal,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -511,36 +601,35 @@ export function createSettingsFormHandler(
 			} satisfies BlockResponse;
 		}
 
-		// -- kv save path: store theme ------------------------------------------------
-		// Only an id the SITE offers is ever stored — the plugin hard-codes none.
-		// With no baked list (sandbox, other hosts) every submit is refused: there
-		// is no picker to have submitted it, and nothing to validate against. The
-		// notice names the field, never the rejected value.
-		if (action === SAVE_THEME_ACTION) {
-			// The ONE write path, shared with the React Themes screen's Activate.
-			// A kv write that THROWS propagates out of it to the route's generic
-			// error path, as save-display's does — never a "saved" toast for a
-			// write that failed.
-			const saved = await saveStoreTheme(ctx, storeThemes, input.values?.storeTheme);
-			if (!saved.ok) {
-				return renderPage(ctx, client, {
+		// -- kv save path: Background work per minute -----------------------------
+		// The sweep's per-tick query budget. Validated here, at the one writer, and
+		// REFUSED rather than clamped when out of bounds — a budget above the
+		// platform's per-invocation cap fails every tick, one below the floor makes
+		// no progress. The sweep re-validates on read, so nothing else can slip a
+		// bad value past it either.
+		if (action === SAVE_BACKGROUND_WORK_ACTION) {
+			const checked = validateBackgroundWork(input.values?.backgroundWorkPerMinute);
+			if (!checked.ok) {
+				const page = await renderPage(ctx, client, {
 					variant: "error",
-					title: "Store theme not saved",
-					description:
-						saved.reason === "no-themes"
-							? "Store themes come from the site build — offer them there to choose one here. Nothing was saved."
-							: "That is not one of the themes this site offers. Nothing was saved.",
+					title: "Background work not saved",
+					description: `${checked.message} Nothing was changed.`,
 				});
+				return {
+					...page,
+					toast: { message: "Background work not saved", type: "error" },
+				} satisfies BlockResponse;
 			}
-			const chosen = saved.theme;
+			await ctx.kv.set(BACKGROUND_WORK_KEY, checked.value);
+			const preset = BACKGROUND_WORK_PRESETS.find((entry) => entry.value === checked.value);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
-				title: "Store theme saved",
-				description: `Store theme set to ${chosen.label}. It goes live on the next page load.`,
+				title: "Background work saved",
+				description: `Background work per minute set to ${preset?.label ?? String(checked.value)}. It applies from the next minute's sweep.`,
 			});
 			return {
 				...page,
-				toast: { message: "Theme saved — live on the next page load", type: "success" },
+				toast: { message: "Background work saved", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -554,9 +643,25 @@ export function createSettingsFormHandler(
 		const secretSpec = PAYMENT_SECRET_FIELDS.find((spec) => spec.actionId === action);
 		if (secretSpec !== undefined) {
 			const raw = input.values?.[secretSpec.fieldId];
-			const entered = typeof raw === "string" && raw !== "";
+			// U-8: TRIMMED, so a key copied with a trailing newline is stored as the
+			// key — and a whitespace-only submit is the blank submit it looks like.
+			const entered = typeof raw === "string" && raw.trim() !== "";
 			if (entered) {
-				await ctx.kv.set(secretSpec.kvKey, raw);
+				const checked = secretSpec.check(raw);
+				if (!checked.ok) {
+					// U-8: a wrong paste is REFUSED, naming the field and the shape it
+					// needs — never the value — and the key already stored stays.
+					const page = await renderPage(ctx, client, {
+						variant: "error",
+						title: `${secretSpec.noun} not saved`,
+						description: `The ${lowerFirst(secretSpec.noun)} ${checked.problem}. Nothing was saved.`,
+					});
+					return {
+						...page,
+						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
+					} satisfies BlockResponse;
+				}
+				await ctx.kv.set(secretSpec.kvKey, checked.value);
 				await bumpSaveGen(ctx, secretSpec.genKey);
 				// A5. The INC-C3 key this credential moved OFF of holds a value with a
 				// different threat model (an offline HMAC secret, never transmitted)
@@ -580,6 +685,45 @@ export function createSettingsFormHandler(
 					message: `${secretSpec.noun} ${entered ? "saved" : "unchanged"}`,
 					type: entered ? "success" : "info",
 				},
+			} satisfies BlockResponse;
+		}
+
+		// -- remove a stored secret (U-8) ---------------------------------------------
+		// The button sits under a SET secret's form, behind a confirm dialog, and
+		// carries only which secret (`{ secret: <fieldId> }`). Anything else — a
+		// missing or unknown name — removes nothing and says so.
+		if (action === CLEAR_PAYMENT_SECRET_ACTION) {
+			const named =
+				typeof input.value === "object" && input.value !== null && "secret" in input.value
+					? (input.value as { secret: unknown }).secret
+					: undefined;
+			const spec = secretSpecByField(named);
+			if (spec === undefined) {
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: "Key not removed",
+					description: "That button did not name a key on this page. Nothing was removed.",
+				});
+				return { ...page, toast: { message: "Key not removed", type: "error" } };
+			}
+			// Nothing stored: say so rather than claim a removal (a second click, or
+			// a page left open while someone else removed it).
+			if ((await readWriteOnlySecret(ctx, spec.kvKey)) === undefined) {
+				const page = await renderPage(ctx, client, {
+					variant: "default",
+					title: `No ${lowerFirst(spec.noun)} was stored — nothing was removed.`,
+				});
+				return { ...page, toast: { message: "Nothing removed", type: "info" } };
+			}
+			await ctx.kv.delete(spec.kvKey);
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: `${spec.noun} removed`,
+				description: `${spec.removeEffect} Copy it again from ${spec.whereToFind}, then enter it above.`,
+			});
+			return {
+				...page,
+				toast: { message: `${spec.noun} removed`, type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -607,35 +751,71 @@ export function createSettingsFormHandler(
 					return typeof raw === "string" ? [[spec.kvKey, raw.trim()] as const] : [];
 				}),
 			);
+			// Review nit: EVERY broken rule is collected, so the operator fixes them
+			// in one pass. Each names the FIELD and the SHAPE, never the rejected
+			// value (the form, not the banner, keeps what was typed).
+			const problems: Array<{ field: string; rule: string }> = [];
 			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";
 			if (payTo.length > 0 && !isPlausiblePayTo(payTo)) {
-				// Names the FIELD and the SHAPE, never the rejected value — the value
-				// is an address, not a secret, but echoing rejected input back into a
-				// banner is how a screen grows an injection surface it never needed.
-				return renderPage(ctx, client, {
-					variant: "error",
-					title: "Payment settings not saved",
-					description:
-						"The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed). Nothing was saved.",
+				problems.push({
+					field: "the x402 destination wallet",
+					rule: "The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed).",
 				});
 			}
-			// Issue #306: the sign-in link page must be an absolute http(s) URL with no
-			// credentials — the emailed token rides on it. Same all-or-nothing
-			// refusal, and the same rule the send path re-checks (`login-link.ts`).
+			// Issue #306: the sign-in link page must be an absolute URL with no
+			// credentials — the emailed token rides on it. U-8: and https, or http
+			// only on this machine, so that token never crosses a network in clear
+			// text (`isSavableLoginLinkUrl`).
 			const loginLinkUrl = submitted.get(LOGIN_LINK_URL_KEY) ?? "";
-			if (loginLinkUrl.length > 0 && !isValidLoginLinkUrl(loginLinkUrl)) {
-				return renderPage(ctx, client, {
-					variant: "error",
-					title: "Payment settings not saved",
-					description:
-						"The sign-in link page must be an absolute http(s) URL with no username or password. Nothing was saved.",
+			if (loginLinkUrl.length > 0 && !isSavableLoginLinkUrl(loginLinkUrl)) {
+				problems.push({
+					field: "the sign-in page address",
+					rule: "The sign-in page address must be a full https:// address (http:// only for localhost) with no username or password.",
 				});
+			}
+			// The from-address must be one a real provider will send from: a bare
+			// `addr@domain` or `Name <addr@domain>`, on a domain that is not a
+			// reserved name (`.local`, `.test`, `example.com`, …). EMPTY stays
+			// allowed — clearing the box falls back to the dev default, which a local
+			// mail catcher accepts.
+			const emailFrom = submitted.get(EMAIL_FROM_KEY) ?? "";
+			if (emailFrom.length > 0 && !isDeliverableFromAddress(emailFrom)) {
+				problems.push({
+					field: "the order email from-address",
+					rule: "The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form).",
+				});
+			}
+			if (problems.length > 0) {
+				// One problem: its rule IS the banner. Several: the banner names them
+				// all (the 240-character budget cannot hold every rule) and each rule
+				// is stated in full beside the form.
+				const [only] = problems;
+				const description =
+					problems.length === 1 && only !== undefined
+						? `${only.rule} Nothing was saved.`
+						: `${String(problems.length)} settings need fixing: ${joinNames(problems.map((p) => p.field))}. Each rule is stated above the form. Nothing was saved.`;
+				const typed = new Map(
+					PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
+						const raw = input.values?.[spec.fieldId];
+						if (typeof raw !== "string") return [];
+						// A sign-in URL with user:pw@ in it is put back WITHOUT them: the
+						// credentials are refused anyway, and are not echoed into the page.
+						const shown = spec.kvKey === LOGIN_LINK_URL_KEY ? withoutUserInfo(raw) : raw;
+						return [[spec.kvKey, shown] as const];
+					}),
+				);
+				return renderPage(
+					ctx,
+					client,
+					{ variant: "error", title: "Payment settings not saved", description },
+					{ problems: problems.map((p) => p.rule), typed },
+				);
 			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "Email, sign-in link and x402 settings were updated.",
+				description: "The from-address, sign-in page and x402 settings were saved.",
 			});
 			return {
 				...page,
@@ -643,9 +823,45 @@ export function createSettingsFormHandler(
 			} satisfies BlockResponse;
 		}
 
-		// -- service save path: operational settings via PUT /settings --------------
+		// -- operational settings: hold time and low-stock threshold --------------------
+		// U-8: ALL-OR-NOTHING, like the payment settings. Every present value is
+		// checked here first — a value that is not a whole number in range is
+		// REFUSED by the field's name, and nothing in the submit is saved. It used
+		// to be dropped from the patch instead, so "abc" or "-1" saved nothing and
+		// the screen still said "Settings saved".
 		if (action === "save-operational") {
-			const patch = extractOperationalPatch(input.values ?? {});
+			const checked = checkOperationalValues(input.values ?? {});
+			// This branch writes no display name, so a fresh read here is current.
+			const state = await readPageState(ctx);
+			const refuse = async (title: string, description: string): Promise<BlockResponse> => {
+				let stored: OperationalSettingsWire | undefined;
+				try {
+					stored = await client.getSettings();
+				} catch {
+					stored = undefined;
+				}
+				return {
+					blocks: buildSettingsBlocks({
+						...state,
+						// J6: the form keeps what was typed — exactly as typed, so "abc"
+						// can be corrected — over the stored value for an untouched field.
+						settings: {
+							holdTtlMinutes: checked.typed.holdTtlMinutes ?? String(stored?.holdTtlMinutes ?? ""),
+							lowStockThreshold:
+								checked.typed.lowStockThreshold ?? String(stored?.lowStockThreshold ?? ""),
+						},
+						// INC-15: the LABEL reads as persisted state, so on a refusal it
+						// keeps stating what is stored ("not loaded" when that re-read
+						// failed), never the refused value.
+						persisted: stored,
+						notice: { variant: "error", title, description },
+					}),
+					toast: { message: title, type: "error" },
+				};
+			};
+			if (checked.problems.length > 0) {
+				return refuse("Settings not saved", `${checked.problems.join(" ")} Nothing was saved.`);
+			}
 			const key =
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
@@ -653,9 +869,7 @@ export function createSettingsFormHandler(
 			// There is nothing to authenticate any more (INC-D3a): `updateSettings`
 			// runs in-process against this plugin's own store, not a separate
 			// service call that would need a token attached.
-			const result = await client.updateSettings(patch, { idempotencyKey: key });
-			// This branch writes no display name, so a fresh read here is current.
-			const state = await readPageState(ctx, storeThemes);
+			const result = await client.updateSettings(checked.patch, { idempotencyKey: key });
 			if (!result.ok) {
 				// WHY THE SAVE FAILED, from the STRUCTURAL field first. `reason` is
 				// stated by every tier that can say why; `status` is the HTTP tier's
@@ -666,57 +880,24 @@ export function createSettingsFormHandler(
 				// so the banner says reload rather than "try again".
 				const superseded =
 					result.reason === "superseded" || (result.reason === undefined && result.status === 409);
-				// Surface the service's validation error INLINE (never a generic
-				// "save failed" that hides the real reason). Re-render the ATTEMPTED
-				// value for edited fields over the STORED value for un-edited ones (J6)
-				// — never zero an un-edited field.
-				let stored: OperationalSettingsWire | undefined;
-				try {
-					stored = await client.getSettings();
-				} catch {
-					stored = undefined;
-				}
-				const shown: OperationalSettingsWire = {
-					holdTtlMinutes: patch.holdTtlMinutes ?? stored?.holdTtlMinutes ?? 0,
-					lowStockThreshold: patch.lowStockThreshold ?? stored?.lowStockThreshold ?? 0,
-				};
-				return {
-					blocks: buildSettingsBlocks({
-						...state,
-						settings: shown,
-						// INC-15: the LABEL is the one place on this screen that reads as
-						// PERSISTED state — a closed group saying "45 min hold" claims the
-						// service holds 45. On a REJECTED save it does not: the form keeps
-						// the attempted value so the operator can correct it (J6), and the
-						// label keeps stating what is actually stored. When the stored
-						// re-read failed there is nothing to state, and the label says
-						// "not loaded" rather than inventing a zero.
-						persisted: stored,
-						notice: {
-							variant: "error",
-							title: superseded ? "Settings changed by someone else" : "Settings not saved",
-							description: superseded
-								? `${result.message} Nothing was saved.`
-								: `Could not save settings: ${result.message}`,
-						},
-					}),
-					toast: {
-						message: superseded ? "Settings changed by someone else" : "Settings not saved",
-						type: "error",
-					},
-				} satisfies BlockResponse;
+				// The domain checks the same bounds as `checkOperationalValues`, so a
+				// refusal here is a backstop — still worded with the field's name, not
+				// the domain's identifier.
+				return superseded
+					? refuse("Settings changed by someone else", `${result.message} Nothing was saved.`)
+					: refuse("Settings not saved", `${namedForOperator(result.message)} Nothing was saved.`);
 			}
 			return {
 				blocks: buildSettingsBlocks({
 					...state,
-					settings: result.settings,
+					settings: formValuesOf(result.settings),
 					// An ACCEPTED save: what is shown and what is stored are the same
 					// thing, so the label states the values that just persisted.
 					persisted: result.settings,
 					notice: {
 						variant: "default",
 						title: "Settings saved",
-						description: "Operational settings were updated.",
+						description: savedOperationalSentence(result.settings),
 					},
 				}),
 				toast: { message: "Settings saved", type: "success" },
@@ -748,47 +929,124 @@ export function createSettingsFormHandler(
 async function renderSettingsPage(
 	ctx: PluginContext,
 	client: ReportingSettingsSurface,
-	storeThemes: readonly StoreTheme[] | undefined,
 	notice?: Notice,
+	paymentRefusal?: PaymentRefusal,
 ): Promise<BlockResponse> {
-	const state = await readPageState(ctx, storeThemes);
+	const state = await readPageState(ctx);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
 		const settings = await client.getSettings();
-		return { blocks: buildSettingsBlocks({ ...state, settings, persisted: settings, notice }) };
+		return {
+			blocks: buildSettingsBlocks({
+				...state,
+				settings: formValuesOf(settings),
+				persisted: settings,
+				notice,
+				paymentRefusal,
+			}),
+		};
 	} catch {
 		return {
-			blocks: buildSettingsBlocks({ ...state, settings: undefined, persisted: undefined, notice }),
+			blocks: buildSettingsBlocks({
+				...state,
+				settings: undefined,
+				persisted: undefined,
+				notice,
+				paymentRefusal,
+			}),
 		};
 	}
+}
+
+/** What the "Checkout & holds" form shows: strings, because on a refused save
+ *  it shows exactly what was typed (J6), and "abc" is not a number. */
+interface OperationalFormValues {
+	holdTtlMinutes: string;
+	lowStockThreshold: string;
+}
+
+function formValuesOf(settings: OperationalSettingsWire): OperationalFormValues {
+	return {
+		holdTtlMinutes: String(settings.holdTtlMinutes),
+		lowStockThreshold: String(settings.lowStockThreshold),
+	};
 }
 
 /** Non-money integer fields (minutes, thresholds) route through `text_input`
  *  with ONE parsing discipline (F-6): digits only, no sign, no decimal point.
  *  Accepts a raw `number` too — defensive only, since the real host's
- *  `text_input` always submits a string; a value that fails the pattern is
- *  OMITTED from the patch (never coerced to `NaN` or silently zeroed), so an
- *  un-parseable submission leaves that field untouched rather than corrupting
- *  it — the same "never zero an un-edited field" discipline as J6. */
+ *  `text_input` always submits a string. */
 const DIGITS_ONLY = /^\d+$/;
 
-function parseDigitsField(raw: unknown): number | undefined {
-	const text =
-		typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : undefined;
-	if (text === undefined || !DIGITS_ONLY.test(text)) return undefined;
-	return Number(text);
+/** Each operational field: its name as the operator reads it, its bounds, and
+ *  the rule a refusal states. The bounds are the domain's own
+ *  (`MAX_HOLD_TTL_MINUTES`) and the settings client's (`MAX_LOW_STOCK_THRESHOLD`),
+ *  checked here so the refusal can name the field and cover every field at once. */
+const OPERATIONAL_FIELDS = [
+	{
+		id: "holdTtlMinutes",
+		name: "Cart hold time",
+		min: 1,
+		max: MAX_HOLD_TTL_MINUTES,
+		rule: `must be a whole number of minutes from 1 to ${String(MAX_HOLD_TTL_MINUTES)}.`,
+	},
+	{
+		id: "lowStockThreshold",
+		name: "Low-stock threshold",
+		min: 0,
+		max: MAX_LOW_STOCK_THRESHOLD,
+		rule: `must be a whole number from 0 to ${String(MAX_LOW_STOCK_THRESHOLD)}.`,
+	},
+] as const satisfies ReadonlyArray<{
+	id: keyof OperationalSettingsWire;
+	name: string;
+	min: number;
+	max: number;
+	rule: string;
+}>;
+
+/**
+ * U-8: check every PRESENT operational value. A field absent from the submit is
+ * left alone (absent is not empty — the INC-C5 rule); a field present but blank,
+ * signed, fractional, non-numeric or out of range is a PROBLEM, named. The patch
+ * is only meant to be sent when there are no problems.
+ */
+function checkOperationalValues(values: Record<string, unknown>): {
+	patch: Partial<OperationalSettingsWire>;
+	typed: Partial<OperationalFormValues>;
+	problems: string[];
+} {
+	const patch: Partial<OperationalSettingsWire> = {};
+	const typed: Partial<OperationalFormValues> = {};
+	const problems: string[] = [];
+	for (const spec of OPERATIONAL_FIELDS) {
+		const raw = values[spec.id];
+		if (typeof raw !== "string" && typeof raw !== "number") continue;
+		const text = String(raw).trim();
+		typed[spec.id] = typeof raw === "string" ? raw : text;
+		const value = DIGITS_ONLY.test(text) ? Number(text) : Number.NaN;
+		if (!Number.isSafeInteger(value) || value < spec.min || value > spec.max) {
+			problems.push(`${spec.name} ${spec.rule}`);
+			continue;
+		}
+		patch[spec.id] = value;
+	}
+	return { patch, typed, problems };
 }
 
-function extractOperationalPatch(
-	values: Record<string, unknown>,
-): Partial<OperationalSettingsWire> {
-	const patch: Partial<OperationalSettingsWire> = {};
-	const holdTtlMinutes = parseDigitsField(values.holdTtlMinutes);
-	if (holdTtlMinutes !== undefined) patch.holdTtlMinutes = holdTtlMinutes;
-	const lowStockThreshold = parseDigitsField(values.lowStockThreshold);
-	if (lowStockThreshold !== undefined) patch.lowStockThreshold = lowStockThreshold;
-	return patch;
+/** A settings-store message names fields by identifier ("holdTtlMinutes must
+ *  be…"); the operator knows them by their labels. */
+function namedForOperator(message: string): string {
+	let named = message;
+	for (const spec of OPERATIONAL_FIELDS) named = named.replaceAll(spec.id, spec.name);
+	return /[.!?]$/.test(named) ? named : `${named}.`;
+}
+
+/** The receipt for an accepted save: what is now in force, in words. */
+function savedOperationalSentence(settings: OperationalSettingsWire): string {
+	const minutes = settings.holdTtlMinutes === 1 ? "minute" : "minutes";
+	return `Cart hold time is ${String(settings.holdTtlMinutes)} ${minutes} and the low-stock threshold is ${String(settings.lowStockThreshold)}.`;
 }
 
 /**
@@ -814,19 +1072,16 @@ function extractOperationalPatch(
  * discarded (that is the forbidden "programmatic accordion close").
  *
  * S-4: every prefilling form's `block_id` comes from `carriedForm` so a saved
- * value redisplays correctly (the forms are mount-only `text_input` — INC-09
- * dropped the one `secret_input` this screen used to render — and once inside
- * an accordion each is that container's own index-0 child forever — nothing
- * else remounts them).
+ * value redisplays correctly (the forms are mount-only `text_input` and, for
+ * the keys, `secret_input` — and once inside an accordion each is that
+ * container's own index-0 child forever — nothing else remounts them).
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
-	storeThemes: readonly StoreTheme[] | undefined;
-	storeTheme: string;
 	/** What the "Checkout & holds" FORM prefills from — on a rejected save this
 	 *  carries the ATTEMPTED values over the stored ones (J6), so the operator can
 	 *  correct what they typed. */
-	settings: OperationalSettingsWire | undefined;
+	settings: OperationalFormValues | undefined;
 	/** What the "Checkout & holds" LABEL states: only values the service actually
 	 *  holds, `undefined` when that is unknown. A collapsed label reads as
 	 *  persisted state — it is the one thing on this screen that does — so it must
@@ -834,20 +1089,22 @@ function buildSettingsBlocks(args: {
 	persisted: OperationalSettingsWire | undefined;
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
+	backgroundWork: number;
 	notice?: Notice;
+	paymentRefusal?: PaymentRefusal;
 }): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "Settings" },
 		{
 			type: "context",
-			text: "Display name is cosmetic; the rest is operational and lives in the service.",
+			text: "Your store's name, how checkout holds stock, and the payment and email accounts the store uses.",
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
-		storeGroup(args.displayName, args.storeThemes, args.storeTheme),
-		checkoutGroup(args.settings, args.persisted),
-		paymentsGroup(args.paymentSecrets, args.plainSettings),
+		storeGroup(args.displayName),
+		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
+		paymentsGroup(args.paymentSecrets, args.plainSettings, args.paymentRefusal),
 	);
 	return blocks;
 }
@@ -895,15 +1152,8 @@ function valueLabel(prefix: string, values: readonly string[]): string {
 /** The Store group's label carries the name itself, so the one thing this group
  *  holds is readable closed. An unset name says so — never a blank tail after
  *  the dash, which would read as a rendering fault rather than as "not set". */
-function storeGroupLabel(
-	displayName: string,
-	storeThemes: readonly StoreTheme[] | undefined,
-	storeTheme: string,
-): string {
-	const name = displayName.length > 0 ? displayName : "no display name";
-	if (storeThemes === undefined) return valueLabel("Store", [name]);
-	const theme = storeThemes.find((entry) => entry.id === storeTheme)?.label ?? storeTheme;
-	return valueLabel("Store", [name, theme]);
+function storeGroupLabel(displayName: string): string {
+	return valueLabel("Store", [displayName.length > 0 ? displayName : "no display name"]);
 }
 
 /** The PERSISTED operational values, closed: "Checkout & holds — 15 min hold ·
@@ -919,15 +1169,11 @@ function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): str
 	]);
 }
 
-function storeGroup(
-	displayName: string,
-	storeThemes: readonly StoreTheme[] | undefined,
-	storeTheme: string,
-): AccordionBlock {
+function storeGroup(displayName: string): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:store",
-		label: storeGroupLabel(displayName, storeThemes, storeTheme),
+		label: storeGroupLabel(displayName),
 		default_open: false, // INC-15: the label carries the value; see buildSettingsBlocks
 		blocks: [
 			carriedForm({
@@ -945,48 +1191,56 @@ function storeGroup(
 					submit: { label: "Save display name", action_id: "save-display" },
 				},
 			}),
-			// Only when the site offers themes: no list, no picker (the sandbox
-			// bundle and other hosts bake none — see `store-themes.ts`).
-			...(storeThemes === undefined ? [] : [storeThemeForm(storeThemes, storeTheme)]),
 		],
 	};
 }
 
+/** What the choice means, in the operator's terms. */
+const backgroundWorkContext: Block = {
+	type: "context",
+	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
+};
+
 /**
- * The "Store theme" picker, its options straight from the site's baked list.
+ * "Background work per minute" — a radio of the two plan presets, beside the
+ * hold TTL because it decides how fast expired holds come back on sale.
  *
- * A `radio`, not a `select`: EmDash's select element (`@emdash-cms/blocks`
- * `elements/select.tsx`) hands Kumo's `Select` its options as children with no
- * `items`/`renderValue`, so the closed trigger shows the raw id (`tempered`), not
- * the label (R-17a). Radio rows caption each option with its label. A `combobox`
- * would show the label too, but a prefilled one can be cleared to `null` (F-6).
- * The radio is prefilled safely: R-12a's display/submit divergence applies to it
- * too, but `carriedForm` keys the form on its `initial_value` (the prefill
- * digest in `block_id`), so a new stored theme remounts the form rather than
- * leaving the old value behind the new one.
+ * A `radio`, because a Block Kit `select` shows the raw value, not the label
+ * (R-17a). A stored value that is not a preset (one saved before
+ * the presets changed, say) is offered as its own "Custom" row, so the form
+ * never shows a choice that is not what is stored. Keyed on its prefill by
+ * `carriedForm`, so a new stored value remounts it.
  */
-function storeThemeForm(storeThemes: readonly StoreTheme[], storeTheme: string): FormBlock {
+function backgroundWorkForm(backgroundWork: number): FormBlock {
+	const presets = BACKGROUND_WORK_PRESETS.map((preset) => ({
+		value: String(preset.value),
+		label: preset.label,
+	}));
+	const options = BACKGROUND_WORK_PRESETS.some((preset) => preset.value === backgroundWork)
+		? presets
+		: [...presets, { value: String(backgroundWork), label: `Custom (${String(backgroundWork)})` }];
 	return carriedForm({
-		namespace: "settings:store-theme",
+		namespace: "settings:background-work",
 		form: {
 			type: "form",
 			fields: [
 				{
 					type: "radio",
-					action_id: "storeTheme",
-					label: "Store theme",
-					options: storeThemes.map((theme) => ({ value: theme.id, label: theme.label })),
-					initial_value: storeTheme,
+					action_id: "backgroundWorkPerMinute",
+					label: "Background work per minute",
+					options,
+					initial_value: String(backgroundWork),
 				},
 			],
-			submit: { label: "Save store theme", action_id: SAVE_THEME_ACTION },
+			submit: { label: "Save background work", action_id: SAVE_BACKGROUND_WORK_ACTION },
 		},
 	});
 }
 
 function checkoutGroup(
-	settings: OperationalSettingsWire | undefined,
+	settings: OperationalFormValues | undefined,
 	persisted: OperationalSettingsWire | undefined,
+	backgroundWork: number,
 ): AccordionBlock {
 	const body: Block[] =
 		settings === undefined
@@ -995,13 +1249,16 @@ function checkoutGroup(
 					// never a fail-closed whole screen (see `renderPage`'s doc comment).
 					{
 						type: "context",
-						text: "Operational settings could not be loaded right now. Store display name and payment/email settings are unaffected.",
+						text: "Checkout settings could not be loaded right now. Reload to try again — the rest of this page still works.",
 					},
+					// Stored in plugin kv, not the settings store, so it stays usable.
+					backgroundWorkContext,
+					backgroundWorkForm(backgroundWork),
 				]
 			: [
 					{
 						type: "context",
-						text: "These persist in the commerce service and affect live checkout.",
+						text: "These apply to live checkout as soon as you save them.",
 					},
 					carriedForm({
 						namespace: "settings:ops",
@@ -1012,18 +1269,20 @@ function checkoutGroup(
 									type: "text_input",
 									action_id: "holdTtlMinutes",
 									label: SETTINGS_SCHEMA.holdTtlMinutes.label,
-									initial_value: String(settings.holdTtlMinutes),
+									initial_value: settings.holdTtlMinutes,
 								},
 								{
 									type: "text_input",
 									action_id: "lowStockThreshold",
 									label: SETTINGS_SCHEMA.lowStockThreshold.label,
-									initial_value: String(settings.lowStockThreshold),
+									initial_value: settings.lowStockThreshold,
 								},
 							],
-							submit: { label: "Save operational settings", action_id: "save-operational" },
+							submit: { label: "Save checkout settings", action_id: "save-operational" },
 						},
 					}),
+					backgroundWorkContext,
+					backgroundWorkForm(backgroundWork),
 				];
 	return {
 		type: "accordion",
@@ -1040,16 +1299,17 @@ function checkoutGroup(
  * `@otta-sh/service` package's own wrangler config. With the service folded in
  * there is no second deployable to hold them, so this screen is where they land.
  *
- * Every field is a PLAIN, ALWAYS-EMPTY `text_input` — the INC-09 discipline
- * this screen's two now-retired connection tokens introduced (see the module
- * doc comment): no `secret_input`, no `initial_value`, no `has_value`, so a
- * SET secret renders identically to an unset one and there is nothing on the
- * screen to reveal. The placeholder alone carries "blank keeps current",
- * which is unconditionally true.
+ * U-8: every key field is an ALWAYS-EMPTY `secret_input` — a password box, so a
+ * live key being typed or pasted is not on screen for anyone behind the
+ * operator. Still no `initial_value` (nothing stored is ever sent to the
+ * browser) and no `has_value` (that makes the host draw a fake "••••••••"
+ * value that reveals to the same dots, the confusion INC-09 removed). Whether a
+ * key is set is stated in its LABEL instead, and a set key gets a Remove button.
  */
 function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	refusal?: PaymentRefusal,
 ): AccordionBlock {
 	return {
 		type: "accordion",
@@ -1059,19 +1319,50 @@ function paymentsGroup(
 		blocks: [
 			{
 				type: "context",
-				text: "Payment and email credentials, stored write-only — a blank submit keeps the current one. None is ever displayed.",
+				text: "Keys are never shown once saved. Leave a field blank to keep the key you saved before.",
 			},
-			...PAYMENT_SECRET_FIELDS.map((spec) => secretForm(spec, state.get(spec.kvKey)?.gen ?? 0)),
+			...PAYMENT_SECRET_FIELDS.flatMap((spec) => {
+				const secret = state.get(spec.kvKey);
+				const help: Block = { type: "context", text: spec.shapeHelp };
+				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
+				return secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+			}),
 			// INC-C5: the non-secret companions, LAST so the group still reads
-			// credentials-first, and visibly a different kind of field — these
-			// prefill with what is stored.
+			// keys-first, and visibly a different kind of field — these prefill with
+			// what is stored.
 			{
 				type: "context",
-				text: "These are configuration, not credentials, so they are shown back to you. The x402 destination wallet is where buyers' payments go — x402 checkout stays unavailable until it is set.",
+				text: "The settings below are shown as saved. Crypto (x402) checkout stays off until a destination wallet is set.",
 			},
-			plainSettingsForm(plain),
+			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
+			// A refused save states each rule in full beside the form, and the form
+			// keeps what was typed (J6).
+			...(refusal?.problems ?? []).map((problem): Block => ({ type: "context", text: problem })),
+			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
 	};
+}
+
+/** A refused payment-settings save: every rule broken, and what was typed. */
+interface PaymentRefusal {
+	problems: string[];
+	typed: Map<string, string>;
+}
+
+/** Review nit: a STORED sign-in page that is valid but clear text off this
+ *  machine was saved before the https rule. It is still used (the send path
+ *  keeps `isValidLoginLinkUrl`), so the screen says so rather than blocking it. */
+function legacySignInWarning(stored: string): Block[] {
+	if (stored === "" || !isValidLoginLinkUrl(stored) || isSavableLoginLinkUrl(stored)) return [];
+	return [
+		{
+			type: "banner",
+			variant: "alert",
+			title: "Sign-in page address needs https",
+			description:
+				"The links in sign-in emails point to an http page, so their tokens travel unencrypted when clicked — change this address to https. You'll need to change it before saving other payment settings.",
+		},
+	];
 }
 
 /** The three non-secret payment/email settings, as ONE form. Prefilled from kv —
@@ -1095,30 +1386,40 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 	});
 }
 
-/** Which payment credentials are provisioned, readable with the group closed —
- *  the only question this group answers from state.
+/** U-8 — what card checkout and email have, readable with the group closed:
+ *  "Payments & email — Stripe test · webhook set · email set".
  *
- *  SECURITY: "set"/"not set" is a FACT ABOUT a credential, not any part of it.
- *  No secret VALUE is in scope in this function or its caller, so there is
- *  nothing here to echo. The label lists only what is MISSING (or says
- *  "configured"), which is the actionable half and keeps the longest render
- *  inside X-11's 60-character budget via {@link valueLabel}. */
+ *  The old label listed whichever of the five keys were missing, so a store with
+ *  working card checkout and email read "no x402, edge" — two optional keys —
+ *  as if something were broken. It now states the three that decide whether
+ *  the store can take a card payment and send an email. The x402 and edge keys
+ *  state their own status on their fields.
+ *
+ *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
+ *  key, not any part of it; no value is in scope here. The longest render
+ *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
+ *  the X-11 60-character budget. */
 function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
-	const missing = PAYMENT_SECRET_FIELDS.filter((spec) => state.get(spec.kvKey)?.set !== true).map(
-		(spec) => spec.short,
-	);
-	return valueLabel(
-		"Payments & email",
-		missing.length === 0 ? ["configured"] : [`no ${missing.join(", ")}`],
-	);
+	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
+	const stripePart =
+		stripe?.set !== true
+			? "no Stripe key"
+			: stripe.mode === undefined
+				? "Stripe key set"
+				: `Stripe ${stripe.mode}`;
+	const webhookPart =
+		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
+	const emailPart = state.get(EMAIL_API_KEY_KEY)?.set === true ? "email set" : "no email";
+	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }
 
 /** One write-only secret field, with a `gen`-carried post-save clear: because
  *  the field never varies, `carriedForm`'s own prefill digest is constant, so
  *  the save generation rides in the carrier CONTEXT to change the form's
  *  `block_id` on a real save and force the mount-only input to remount
- *  blank. */
-function secretForm(spec: SecretFieldSpec, gen: number): FormBlock {
+ *  blank. The label's "— set" / "— not set" is a prop, not a prefill: it
+ *  updates without a remount. */
+function secretForm(spec: SecretFieldSpec, set: boolean, gen: number): FormBlock {
 	return carriedForm({
 		namespace: `settings:${spec.actionId}`,
 		context: { gen: String(gen) },
@@ -1126,13 +1427,37 @@ function secretForm(spec: SecretFieldSpec, gen: number): FormBlock {
 			type: "form",
 			fields: [
 				{
-					type: "text_input",
+					type: "secret_input",
 					action_id: spec.fieldId,
-					label: spec.label,
-					placeholder: `Enter new ${spec.noun.toLowerCase()} (blank keeps current)`,
+					label: `${spec.label} — ${set ? "set" : "not set"}`,
+					placeholder: set ? "Set — leave blank to keep it, or enter a new one" : spec.hint,
 				},
 			],
-			submit: { label: `Save ${spec.noun.toLowerCase()}`, action_id: spec.actionId },
+			submit: { label: `Save ${lowerFirst(spec.noun)}`, action_id: spec.actionId },
 		},
 	});
+}
+
+/** U-8 — the Remove button under a SET key, behind a confirm that says what
+ *  stops working. */
+function removeSecretActions(spec: SecretFieldSpec): Block {
+	return {
+		type: "actions",
+		elements: [
+			{
+				type: "button",
+				action_id: CLEAR_PAYMENT_SECRET_ACTION,
+				label: `Remove ${lowerFirst(spec.noun)}`,
+				style: "danger",
+				value: { secret: spec.fieldId },
+				confirm: {
+					title: `Remove the ${lowerFirst(spec.noun)}?`,
+					text: spec.removeEffect,
+					confirm: "Yes, remove it",
+					deny: "Keep it",
+					style: "danger",
+				},
+			},
+		],
+	};
 }

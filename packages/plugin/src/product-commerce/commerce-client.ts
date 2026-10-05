@@ -101,6 +101,12 @@ export interface ProductCommerceBatchItem {
 	productId: string;
 	sku: string;
 	price: CommerceMoney;
+	/** The row's title cache — what an order line will snapshot. Null until a
+	 *  sync has carried one. */
+	title: string | null;
+	/** The compare-at / was-price as stored, or null. Display-only; whether it
+	 *  reads as a sale is the product view model's call. */
+	compareAtPrice: CommerceMoney | null;
 	inStock: boolean;
 	/** The publish gate: the join derives purchasability from it
 	 *  (`purchasable ⟺ present && active`). */
@@ -302,11 +308,30 @@ export interface CommerceClient {
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
 	createCart(currency?: string): Promise<{ cartId: string }>;
+	/**
+	 * The replacement for a SPENT cart — one checked out into an order that is no
+	 * longer pending. The caller names only the spent cart; the key that makes this
+	 * idempotent is derived server-side (`rotate:<cartId>`), so the same spent cart
+	 * always gets the same new cart and racing requests converge. A caller never
+	 * chooses a key. Cart ids are bearer secrets: a spent cart's id grants access to
+	 * the cart that replaces it. Refused `CART_NOT_FOUND`, `CART_NOT_CHECKED_OUT`, or
+	 * `ORDER_NOT_FINISHED` (no order, or one still pending — its payment may still
+	 * happen).
+	 */
+	replaceCart(spentCartId: string): Promise<ReplaceCartResult>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
 	getCartHoldTtlMinutes(): Promise<number>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	/**
+	 * The storefront header's two facts, as cheaply as they can be known: the
+	 * cart's state and unit count (ONE cart-document read — no hold expiry, no
+	 * price join) and whether the session is live (ONE session-document read — no
+	 * customer read, and never who). Either input absent or unusable ⇒ `null` /
+	 * `false` without a read. Read-only.
+	 */
+	getShopperState(input: { cartId?: string; sessionToken?: string }): Promise<ShopperStateWire>;
 	addCartLine(
 		cartId: string,
 		sku: string,
@@ -348,9 +373,16 @@ export interface CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	>;
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
+	/**
+	 * Who the session is: its customer's email, read server-side off the session
+	 * (never caller-named). For a storefront that greets a signed-in shopper or
+	 * prefills their checkout; an unusable bearer, or one whose customer is gone,
+	 * is UNAUTHENTICATED.
+	 */
+	getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>>;
 	// ── end Phase 5 customer account ──────────────────────────────────────
 
 	// ── Delivery authorization (ADR-0011) ─────────────────────────────────
@@ -381,8 +413,18 @@ export interface CommerceClient {
 	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
 	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
 	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
-	 *  it must be stable per cart, or a reload mints a second order). */
-	createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult>;
+	 *  it must be stable per cart, or a reload mints a second order).
+	 *
+	 *  `opts.sessionToken` — the shopper's session, when they are signed in. It
+	 *  is a bearer like every other here: the customer is resolved FROM it, and
+	 *  the order is theirs from birth only when `buyerRef` is that customer's own
+	 *  email (ADR-0004, amended 2026-10-02). Any other email, or an unusable
+	 *  session, places a guest order — a session never refuses a checkout. */
+	createOrder(
+		input: CheckoutRequestWire,
+		idempotencyKey: string,
+		opts?: { sessionToken?: string },
+	): Promise<CheckoutResult>;
 	/**
 	 * The delivery options of the zone a quote MATCHED (ADR-0021), each priced
 	 * for the cart. `zoneId` and `discountedSubtotalCents` come ONLY from this
@@ -396,6 +438,48 @@ export interface CommerceClient {
 	 *  (`serializeOrder`, incl. `buyerRef`/`shippingAddress`) on a page a guest
 	 *  reads. The guest gets `serializePublicOrder`'s whitelist. */
 	getPublicOrder(orderId: string): Promise<PublicOrderResult>;
+	/**
+	 * Resume a PENDING order's payment (QA U-2) — the order page's "Complete
+	 * payment" on any device — from the order id PLUS a second factor (the
+	 * order's cart, a session owning it, or its email). The id alone, the
+	 * capability {@link getPublicOrder} reads with, is `PROOF_REQUIRED`.
+	 *
+	 * It replays the order's OWN checkout — its cart, its idempotency key, its
+	 * buyer — so the reply is the same order and the provider is asked for the
+	 * same intent under the same key: never a second order, never a second
+	 * intent. Refused `ORDER_NOT_PAYABLE` unless the order is `pending` and
+	 * strictly before its hold deadline (the pay page's own rule), and then
+	 * nothing is asked of the provider at all.
+	 *
+	 * SECOND FACTOR (`proof`, see `commerce/resume-proof.ts`): the id alone is
+	 * `PROOF_REQUIRED`. The cart the order was made from, a session whose customer
+	 * owns it, or the order's email (trimmed, case-folded; a wrong one is
+	 * `EMAIL_MISMATCH`, and guesses are `THROTTLED` per order) unlocks it.
+	 *
+	 * The reply carries `buyerRefHint` (`j•••@g•••.com`), never the buyer
+	 * reference: the order's email shown read-only, without handing the address
+	 * to whoever holds the link.
+	 */
+	resumeOrderPayment(orderId: string, proof?: ResumeProof): Promise<ResumeOrderPaymentResult>;
+	/**
+	 * "Start a new cart" (QA2 X4): cancel the order this cart became, if that
+	 * order is still UNPAID — so a payment still open for it in another tab can no
+	 * longer go through, and its stock goes back on sale now rather than at the
+	 * hold deadline. The cart id is the proof (the cookie, the same possession
+	 * factor {@link resumeOrderPayment} accepts); nothing else is read from the
+	 * caller.
+	 *
+	 * The plain cancel (`cancelOrder`, reason `customer_request`, by `shopper`):
+	 * it releases the held stock and makes the order's PaymentIntent due for
+	 * withdrawal at once. A payment that still lands is refunded at settle, like
+	 * any payment on a cancelled unpaid order. Idempotent under a key derived from
+	 * the order.
+	 *
+	 * A cart with no order, an unknown cart, or an order that is no longer
+	 * `pending` (paid, expired, already cancelled) is a no-op success:
+	 * `cancelled: false` — there is nothing in progress to clear.
+	 */
+	abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult>;
 	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
 
@@ -554,6 +638,23 @@ export interface PublicOrderWire {
 		shippedAt: string;
 	} | null;
 	cancellation: { reason: string; cancelledAt: string } | null;
+	/**
+	 * Money on a DEAD order, for the buyer's own page: `none` (nothing captured, or
+	 * the order is live / was paid), `refunded` (a payment arrived after the order
+	 * expired or was cancelled, and was refunded in full), `refund_pending`
+	 * (captured and not yet refunded). It is what lets the page stop saying
+	 * "Nothing was charged" when something was. A derived status only — never an
+	 * amount, a provider ref or the reconciliation detail behind it.
+	 */
+	latePayment: "none" | "refunded" | "refund_pending";
+	/**
+	 * Money the order's refunds LEDGER shows returned — RECORDED refunds only, in
+	 * the order's minor units; `0` when none (QA2 X3). The confirmation page says
+	 * "Refunded $X" from it. A refund made outside Otta ("Mark refunded",
+	 * ADR-0026) has no ledger row and is not counted: the page then states the
+	 * status and invents no amount. Read off the same ledger read as `latePayment`.
+	 */
+	refundedCents: number;
 }
 
 /** `CreateOrderFailure` verbatim (`@otta-sh/domain`'s orders/errors.ts). */
@@ -566,6 +667,9 @@ export type CheckoutFailureReason =
 	| "CURRENCY_MISMATCH"
 	| "INVALID_SHIPPING_ADDRESS"
 	| "PAYMENT_INTENT_FAILED"
+	/** A same-key intent request is still in flight (a double-submitted
+	 *  checkout): not a failure — the place route answers it as BUSY. */
+	| "PAYMENT_INTENT_IN_FLIGHT"
 	/** The idempotency key already names an order of ANOTHER cart (issue #133):
 	 *  a stale/second checkout tab. Nothing was placed; the cart is untouched. */
 	| "IDEMPOTENCY_KEY_REUSED"
@@ -596,12 +700,53 @@ export type CheckoutFailureReason =
  * the whitelist.
  */
 export type CheckoutResult =
-	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire }
+	| {
+			ok: true;
+			order: PublicOrderWire;
+			intent: PaymentIntentWire;
+			/** The ORDER's email, masked (`j•••@g•••.com`) — never the address. A
+			 *  same-key replay (a second checkout tab) answers with the order the
+			 *  first tab placed, which keeps the email IT was placed with (QA2 X2). */
+			buyerRefHint: string;
+			/** Whether that email is the one this request carried (trimmed,
+			 *  case-folded). `false` only on a replay placed with another email:
+			 *  the site must say so rather than send the shopper on to pay. */
+			buyerRefMatches: boolean;
+	  }
 	| { ok: false; reason: CheckoutFailureReason };
 
 export type PublicOrderResult =
 	| { ok: true; order: PublicOrderWire }
 	| { ok: false; reason: "ORDER_NOT_FOUND" };
+
+/** The second factor beside an order id for {@link CommerceClient.resumeOrderPayment}
+ *  (`commerce/resume-proof.ts`). Any one that holds is enough. */
+export interface ResumeProof {
+	/** The cart cookie's id — proof when it is the cart the order was made from. */
+	cartId?: string;
+	/** A session — proof when its customer owns the order. */
+	sessionToken?: string;
+	/** The order's email, typed again. */
+	email?: string;
+}
+
+/** {@link CommerceClient.abandonCartOrder}'s reply: did THIS call cancel the
+ *  cart's order (and which order the cart names, if any). */
+export type AbandonCartOrderResult = { ok: true; cancelled: boolean; orderId: string | null };
+
+/** {@link CommerceClient.resumeOrderPayment}'s reply. */
+export type ResumeOrderPaymentResult =
+	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire; buyerRefHint: string }
+	| {
+			ok: false;
+			reason:
+				| "ORDER_NOT_FOUND"
+				| "ORDER_NOT_PAYABLE"
+				| "PROOF_REQUIRED"
+				| "EMAIL_MISMATCH"
+				| "THROTTLED"
+				| CheckoutFailureReason;
+	  };
 // ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────
@@ -631,8 +776,53 @@ export interface OrderSummaryWire {
 	currency: string;
 	paymentMethod: string | null;
 	holdExpiresAt: string;
-	totals: OrderTotalsWire;
+	/** When the order was placed (ISO-8601) — the account list dates its rows by it. */
+	createdAt: string;
+	/**
+	 * The figures, plus the same evidence the public order wire carries of WHAT
+	 * they were priced with: the coupon, and the shipping snapshot's zone and
+	 * method ids (`orderTotalsFlags` reads these — a method means shipping was
+	 * calculated, a zone means tax was). Without them an account page can only
+	 * print `$0.00` where the order page honestly says "Not calculated".
+	 */
+	totals: OrderTotalsWire & {
+		appliedCouponCode: string | null;
+		shippingZoneId: string | null;
+		shippingMethodId: string | null;
+	};
 	lines: OrderLineWire[];
+}
+
+/**
+ * One of the customer's orders, read on its own: the summary plus the late-payment
+ * status the public order wire carries ({@link PublicOrderWire.latePayment}), so
+ * the account's order page says what the public order page says about money on a
+ * dead order. Only the single read carries it — deriving it needs the order's
+ * ledgers, which the list does not read.
+ */
+export interface AccountOrderWire extends OrderSummaryWire {
+	latePayment: PublicOrderWire["latePayment"];
+	/** The tracking, as the public order read trims it (QA2 X1). */
+	fulfillment: PublicOrderWire["fulfillment"];
+	/** Where the order is going — the ship-to snapshot without its contact
+	 *  fields, or `null` when none was taken (QA2 X1). The OWNER's read only: the
+	 *  public order read never carries it. */
+	shippingAddress: AccountOrderAddressWire | null;
+	/** Money the order's ledger shows refunded (RECORDED refunds only), in the
+	 *  order's minor units — `0` when none. A refund made outside Otta ("Mark
+	 *  refunded", ADR-0026) is not on the ledger and is not counted. */
+	refundedCents: number;
+}
+
+/** An order's ship-to as its owner's account page shows it. */
+export interface AccountOrderAddressWire {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
 }
 
 export interface AddressWire {
@@ -670,6 +860,19 @@ export interface CartLineWire {
 	reservationId: string | null;
 	expiresAt: string | null;
 }
+
+/** {@link CommerceClient.getShopperState}'s answer. `cart.count` is the sum of
+ *  line quantities as stored (`0` for an empty cart); `cart` is `null` for no
+ *  cart id, an unusable one, or a cart that does not exist. */
+export interface ShopperStateWire {
+	cart: { state: string; count: number } | null;
+	signedIn: boolean;
+}
+
+/** `replaceCart`'s answer: the new cart, or why the named cart cannot be replaced. */
+export type ReplaceCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
 
 export interface CartWire {
 	cartId: string;

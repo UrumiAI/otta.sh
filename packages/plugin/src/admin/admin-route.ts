@@ -1,4 +1,4 @@
-import type { RouteHandler, SandboxedRouteContext } from "../types.js";
+import type { Block, RouteHandler, SandboxedRouteContext } from "../types.js";
 import {
 	COUPONS_ACTION_IDS,
 	COUPONS_PAGE,
@@ -32,12 +32,6 @@ import {
 	type ShippingPageInput,
 } from "./shipping-page.js";
 import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE, type TaxPageInput } from "./tax-page.js";
-import {
-	createThemesConsoleHandler,
-	THEMES_ACTION_IDS,
-	THEMES_CONSOLE_RESOURCE_PREFIX,
-	type ThemesConsoleInput,
-} from "./themes-console-route.js";
 
 /**
  * The SINGLE admin route em-dash's admin shell dispatches to. EmDash renders
@@ -82,7 +76,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const coupons = createCouponsPageHandler();
 	const ordersConsole = createOrdersConsoleHandler();
 	const productsConsole = createProductsConsoleHandler();
-	const themesConsole = createThemesConsoleHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -90,7 +83,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
 
-		// 0. THE REACT CONSOLE (INC-20, INC-21, Themes), gated FIRST and on its own
+		// 0. THE REACT CONSOLE (INC-20, INC-21), gated FIRST and on its own
 		// interaction types. `otta-console` holds no routes of its own (ADR-0014
 		// Decision 3), so its screens reach commerce through THIS route, with the
 		// operator's session and the same CSRF header the admin shell sends — the
@@ -112,14 +105,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 				(actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId));
 			if (forProducts) {
 				return productsConsole(routeCtx as SandboxedRouteContext<ProductsConsoleInput>, ctx);
-			}
-			// Themes (ADR-0014 as amended 2026-09-30): the same two interaction
-			// types, one read and one write, routed the same way.
-			const forThemes =
-				resource?.startsWith(THEMES_CONSOLE_RESOURCE_PREFIX) === true ||
-				(actionId !== undefined && THEMES_ACTION_IDS.has(actionId));
-			if (forThemes) {
-				return themesConsole(routeCtx as SandboxedRouteContext<ThemesConsoleInput>, ctx);
 			}
 			return ordersConsole(routeCtx as SandboxedRouteContext<OrdersConsoleInput>, ctx);
 		}
@@ -163,7 +148,38 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
 		}
 
-		// 6. Fallback — em-dash house style for an unrecognized interaction.
+		// 6. An UNKNOWN PAGE gets a not-found screen, not an empty tree. A bookmark
+		// to a retired Block Kit page (`/orders`, `/products` — ADR-0015) or a typo
+		// used to render nothing at all, which reads as a broken console.
+		if (type === "page_load" && page !== undefined) return pageNotFound();
+
+		// 7. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
+	};
+}
+
+/**
+ * What an unknown `page_load` renders. Header + one page-level `context` (≤140,
+ * §1) — no banner, because nothing failed: the page simply does not exist.
+ *
+ * SCOPE: this covers the `otta` descriptor only. An unknown path under the React
+ * `otta-console` descriptor never reaches this route — that descriptor
+ * deliberately has no routes (ADR-0014 D3), so the host falls back to its own
+ * sandboxed-page renderer, which answers "Plugin responded with 404: …". Fixing
+ * that needs either a route on `otta-console` (an ADR-0014 amendment) or a host
+ * change, and is out of this module's reach.
+ */
+function pageNotFound(): { blocks: Block[] } {
+	// THE REQUESTED PATH IS NOT ECHOED. It is URL-controlled text, and the
+	// renderer is the only thing standing between it and the page; naming it buys
+	// the operator nothing they cannot read in their own address bar.
+	return {
+		blocks: [
+			{ type: "header", text: "Page not found" },
+			{
+				type: "context",
+				text: "This Otta admin page doesn't exist. Pick one from the sidebar — Orders and Pricing & inventory are there too.",
+			},
+		],
 	};
 }

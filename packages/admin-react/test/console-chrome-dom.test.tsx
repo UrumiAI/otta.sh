@@ -212,6 +212,9 @@ function envelope(data: unknown): Response {
 let mounted: Mounted | null = null;
 
 beforeEach(() => {
+	// Each case starts from empty tab storage, so the duplicated-tab case sees
+	// only what its own original tab could have left there.
+	sessionStorage.clear();
 	apiFetch.mockReset();
 	apiFetch.mockImplementation((_input, init) => {
 		const body = JSON.parse(String(init?.body ?? "{}")) as { resource?: string };
@@ -402,4 +405,235 @@ test("removing stock keeps the destructive weight, on the confirm and not the wa
 	const deny = inDialog(dialog, "otta-confirm-deny");
 	expect(deny.style.borderColor).not.toBe(FAIL_ACCENT);
 	expect(deny.style.fontWeight).toBe("");
+});
+
+/** Every console write this test has sent, in order, as its posted `value`. */
+function sentMoves(): Array<Record<string, string>> {
+	return apiFetch.mock.calls
+		.map(([, init]) => JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>)
+		.filter((body) => body["type"] === "otta_console_act")
+		.map((body) => body["value"] as Record<string, string>);
+}
+
+/** Ask for a movement, confirm it, and let the write and its re-read land. */
+async function confirmMovement(view: Mounted, prefix: string, qty: string): Promise<void> {
+	const dialog = await askForMovement(view, prefix, qty);
+	await fire(inDialog(dialog, "otta-confirm-yes"), "click");
+	await React.act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+test("every DEFINITIVELY answered stock click gets its OWN nonce — the same move twice is two keys, not a replay", async () => {
+	// The admin QA repro was Add 2, Remove 2, Add 2 with the third swallowed: a
+	// key derived from (direction, count, qty) made it the first one again. The
+	// console is the only party that knows two clicks are two decisions, so each
+	// answered click mints a fresh nonce and the server keys on it.
+	const view = await show(<ProductDetail productId="prod-1" onBack={noop} />);
+	await fire(one(view, '[data-testid="tab-stock"]'), "click");
+
+	for (const prefix of ["restock", "restock", "remove", "restock"]) {
+		await confirmMovement(view, prefix, "2");
+	}
+
+	const sent = sentMoves();
+	expect(sent).toHaveLength(4);
+	const nonces = sent.map((value) => value["nonce"]);
+	for (const nonce of nonces) expect(nonce).toMatch(/^[A-Za-z0-9-]{16,64}$/);
+	expect(new Set(nonces).size).toBe(4);
+	// The watermark still rides beside it: the store refuses a stale removal.
+	expect(sent.every((value) => value["onHand"] === String(ON_HAND))).toBe(true);
+});
+
+/** What the plugin serves for a movement the store answered from its ledger. */
+const ALREADY_APPLIED = {
+	ok: true,
+	notice: {
+		variant: "default",
+		title: "Already applied",
+		description: "This change was already applied — stock is now 17.",
+	},
+};
+
+/**
+ * Script the console's writes: each `otta_console_act` takes the next step —
+ * `lose` (the request never comes back), `ok` (applied), `replayed` (the plugin
+ * reports the ledger's answer), or `refuse` (the plugin's own definitive
+ * `{ok:false}`). Reads answer as usual.
+ */
+function scriptWrites(steps: Array<"lose" | "ok" | "replayed" | "refuse">): void {
+	const answer = apiFetch.getMockImplementation();
+	apiFetch.mockImplementation((input, init) => {
+		const body = JSON.parse(String(init?.body ?? "{}")) as { type?: string };
+		if (body.type === "otta_console_act") {
+			const step = steps.shift() ?? "ok";
+			if (step === "lose") return Promise.reject(new TypeError("Failed to fetch"));
+			if (step === "replayed") return Promise.resolve(envelope(ALREADY_APPLIED));
+			if (step === "refuse") {
+				return Promise.resolve(
+					envelope({ ok: false, title: "Nothing was changed", description: "Refused." }),
+				);
+			}
+		}
+		if (answer === undefined) throw new Error("no default apiFetch");
+		return answer(input, init);
+	});
+}
+
+async function openStock(): Promise<Mounted> {
+	const view = await show(<ProductDetail productId="prod-1" onBack={noop} />);
+	await fire(one(view, '[data-testid="tab-stock"]'), "click");
+	return view;
+}
+
+const RETRY = '[data-testid="detail-notice-action"]';
+const retryButton = (view: Mounted): HTMLElement | null => view.container.querySelector(RETRY);
+
+async function retry(view: Mounted): Promise<void> {
+	await fire(one(view, RETRY), "click");
+	await React.act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+test("a LOST stock response says the change MAY have been applied, and offers an explicit Retry", async () => {
+	scriptWrites(["lose"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5");
+	expect(one(view, '[data-testid="detail-notice"]').textContent).toContain(
+		"The change may have been applied — check the count before trying again.",
+	);
+	expect(one(view, RETRY).textContent).toContain("Retry this change");
+});
+
+test("RETRY is the only re-send: it sends the held nonce ONCE, and the plugin's 'already applied' answer is shown", async () => {
+	scriptWrites(["lose", "replayed"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5");
+	await retry(view);
+
+	const sent = sentMoves();
+	expect(sent).toHaveLength(2);
+	expect(sent[1]).toEqual(sent[0]); // the same move, the same nonce, re-sent
+	// The answer reports where every stock outcome does: in the Add group.
+	expect(one(view, '[data-testid="stock-add-receipt"]').textContent).toContain(
+		"This change was already applied — stock is now 17.",
+	);
+	// Spent: there is nothing left to re-send.
+	expect(retryButton(view)).toBeNull();
+});
+
+test("a NEW click after a lost response is a NEW move with a fresh nonce — even the same Add — and supersedes the Retry", async () => {
+	// The operator reloads or simply looks, sees the count, and later adds 5
+	// again on purpose. Treating that as the lost one's retry would drop it.
+	scriptWrites(["lose", "ok"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5");
+	expect(retryButton(view)).not.toBeNull();
+	await confirmMovement(view, "restock", "5");
+
+	const nonces = sentMoves().map((value) => value["nonce"]);
+	expect(nonces).toHaveLength(2);
+	expect(nonces[1]).not.toBe(nonces[0]);
+	expect(retryButton(view)).toBeNull();
+});
+
+test("after a lost response and a RELOAD, the same Add is a fresh move — nothing is carried across", async () => {
+	scriptWrites(["lose", "ok"]);
+	await confirmMovement(await openStock(), "restock", "5");
+	await mounted?.unmount();
+	mounted = null;
+	const reloaded = await openStock();
+	expect(retryButton(reloaded)).toBeNull();
+	await confirmMovement(reloaded, "restock", "5");
+
+	const nonces = sentMoves().map((value) => value["nonce"]);
+	expect(nonces).toHaveLength(2);
+	expect(nonces[1]).not.toBe(nonces[0]);
+});
+
+test("a DUPLICATED tab (same storage) re-sends nothing on its own, and its Add is its own move", async () => {
+	// Duplicate Tab copies sessionStorage; no held state may live there.
+	scriptWrites(["lose", "ok"]);
+	const original = await openStock();
+	await confirmMovement(original, "restock", "5");
+	const duplicate = await mount(<ProductDetail productId="prod-1" onBack={noop} />);
+	await React.act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(sentMoves()).toHaveLength(1); // mounting the duplicate sent nothing
+	await fire(one(duplicate, '[data-testid="tab-stock"]'), "click");
+	await confirmMovement(duplicate, "restock", "5");
+	await duplicate.unmount();
+
+	const nonces = sentMoves().map((value) => value["nonce"]);
+	expect(nonces).toHaveLength(2);
+	expect(nonces[1]).not.toBe(nonces[0]);
+});
+
+test("DENY leaves nothing held: no request, no Retry", async () => {
+	const view = await openStock();
+	const dialog = await askForMovement(view, "restock", "5");
+	await fire(inDialog(dialog, "otta-confirm-deny"), "click");
+	expect(sentMoves()).toHaveLength(0);
+	expect(retryButton(view)).toBeNull();
+});
+
+test("a DEFINITIVE refusal offers no Retry — nothing ran", async () => {
+	scriptWrites(["refuse"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5");
+	expect(retryButton(view)).toBeNull();
+});
+
+test("a held Retry EXPIRES: after ten minutes it re-sends nothing and says to check the count", async () => {
+	scriptWrites(["lose"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5");
+	const now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60_000);
+	try {
+		await retry(view);
+	} finally {
+		clock.mockRestore();
+	}
+	expect(sentMoves()).toHaveLength(1);
+	expect(one(view, '[data-testid="detail-notice"]').textContent).toContain(
+		"too old to retry safely",
+	);
+	expect(retryButton(view)).toBeNull();
+});
+
+test("opening a confirm and pressing DENY keeps the held Retry — only DISPATCHING a new move supersedes it", async () => {
+	scriptWrites(["lose", "ok"]);
+	const view = await openStock();
+	await confirmMovement(view, "restock", "5"); // lost: Retry offered
+	const dialog = await askForMovement(view, "remove", "2");
+	await fire(inDialog(dialog, "otta-confirm-deny"), "click");
+	expect(retryButton(view)).not.toBeNull(); // looking is not deciding
+
+	await confirmMovement(view, "remove", "2"); // a new move dispatched
+	expect(retryButton(view)).toBeNull();
+});
+
+test("a Retry that is lost AGAIN keeps the ORIGINAL hold time — the ten minutes are not restarted", async () => {
+	scriptWrites(["lose", "lose"]);
+	const base = Date.now();
+	let offset = 0;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => base + offset);
+	try {
+		const view = await openStock();
+		await confirmMovement(view, "restock", "5"); // lost at +0
+		offset = 6 * 60_000;
+		await retry(view); // lost again at +6 min: still held, from +0
+		expect(retryButton(view)).not.toBeNull();
+		offset = 11 * 60_000;
+		await retry(view); // +11 min since the ORIGINAL loss: expired
+		expect(sentMoves()).toHaveLength(2);
+		expect(one(view, '[data-testid="detail-notice"]').textContent).toContain(
+			"too old to retry safely",
+		);
+	} finally {
+		clock.mockRestore();
+	}
 });

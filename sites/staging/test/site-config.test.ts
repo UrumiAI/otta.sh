@@ -96,8 +96,9 @@ describe("ottaPluginDescriptor", () => {
 		// ORDERS AND PRICING & INVENTORY ARE BOTH ABSENT (INC-R2/INC-R3,
 		// ADR-0015): each Block Kit screen was retired once the React console's
 		// write path moved off it, taking the list from seven entries to FIVE.
-		// `/orders` and `/products` are now served only by the `otta-console`
-		// descriptor.
+		// `/orders` is now served only by the `otta-console` descriptor, and
+		// pricing and stock live in the products collection's own editor and list
+		// (ADR-0014, amendment 2026-10-01).
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
@@ -781,55 +782,18 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the storefront theme list rides a build-time define the plugin's shape check accepts",
+		"no storefront theme list is baked into the build: the admin offers no theme choice",
 		async () => {
-			// The plugin hard-codes no theme list: its Settings "Store theme" radio is
-			// built from this list, and a list its check refuses renders no radio.
+			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered), and
+			// the admin's Themes screen and Settings "Store theme" radio — the only
+			// readers of this define — are gone with it.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
-			const themes = JSON.parse(define["__OTTA_STORE_THEMES__"] ?? "null") as unknown;
-			const entries = themes as Array<{
-				id: string;
-				label: string;
-				description: string;
-				preview: string;
-			}>;
-			expect(entries.map(({ id, label }) => ({ id, label }))).toEqual([
-				{ id: "tempered", label: "Tempered" },
-			]);
-			for (const { id, label, description, preview } of entries) {
-				expect(id).toMatch(/^[a-z][a-z0-9-]{0,31}$/);
-				expect(id).not.toBe("off");
-				expect(label.length).toBeGreaterThan(0);
-				expect(label.length).toBeLessThanOrEqual(40);
-				// The Themes screen's card copy and screenshot (ADR-0024, amended
-				// 2026-09-30): one line, and a same-origin path the plugin accepts.
-				expect(description.length).toBeGreaterThan(0);
-				expect(description.length).toBeLessThanOrEqual(160);
-				expect(preview).toBe(`/theme-previews/${id}.webp`);
-			}
+			expect(Object.keys(define)).not.toContain("__OTTA_STORE_THEMES__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
-	/**
-	 * THE LOAD-BEARING ONE — the baked egress defines and the REGISTERED
-	 * descriptor's allowlist must come from ONE decision.
-	 *
-	 * INC-D3a removed the transport half of this (there is one transport now, and
-	 * no mode to disagree about), but the egress half is unchanged and is the
-	 * reason this test still exists. The two values are consumed in two different
-	 * places: the plugin BUNDLE reads `__OTTA_EMAIL_API_URL__` /
-	 * `__OTTA_X402_FACILITATOR_URL__` as Vite defines to decide whether to build an
-	 * `EmailSender` and a facilitator client at all, while the DESCRIPTOR's
-	 * `allowedHosts` — the one ADR-0006 gate that still bites in trusted mode — is
-	 * built in Node at config time, where those defines do not exist.
-	 *
-	 * Feed only the defines and the bundle holds a sender aimed at a host the gate
-	 * refuses: every send fails, rows reschedule and park `failed`, and the sweep
-	 * leg reports `count: 0` instead of the honest `skipped`. Hence one named
-	 * const, both consumers, and hence this test.
-	 */
 	test(
 		"the baked egress URLs and the REGISTERED descriptor cannot disagree",
 		async () => {

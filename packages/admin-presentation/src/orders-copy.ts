@@ -197,22 +197,106 @@ export const CANCEL_CONFIRM = {
 	deny: "Keep the order",
 } as const;
 
+/**
+ * What a cancellation will do with the order's money and stock (QA T1-4) — the
+ * input every piece of cancel copy is composed from, so the banner, the group
+ * label and the confirm cannot describe three different cancellations.
+ *
+ * - `refund` — the amount it will return, ALREADY FORMATTED (`"$24.00"`), or null
+ *   when nothing is refundable (an unpaid order, or nothing was captured).
+ * - `refundAutomatic` — whether the order's gateway can return it. False means the
+ *   cancel will be refused: Otta does not cancel while keeping the money.
+ * - `stock` — `release` (a pending order's held stock goes back), `restock` (sold
+ *   units return), `keep` (the operator unticked Return to stock) or `none` (no
+ *   physical units).
+ */
+export interface CancelEffects {
+	readonly refund: string | null;
+	readonly refundAutomatic: boolean;
+	readonly stock: "release" | "restock" | "keep" | "none";
+}
+
+/** A pending order's cancellation: no money, held stock released. */
+export const PENDING_CANCEL_EFFECTS: CancelEffects = {
+	refund: null,
+	refundAutomatic: true,
+	stock: "release",
+};
+
+/** The Return-to-stock box beside the cancel controls of a paid order. */
+export const CANCEL_RESTOCK_LABEL = "Return the items to stock";
+export const CANCEL_RESTOCK_HINT =
+	"Untick for goods that came back damaged or were lost, that are already picked or packed, or that you restocked by hand.";
+
+/** A paid order's cancel group when the refund ledger could not be read: what
+ *  cancelling would refund is UNKNOWN — never "nothing" — so no control is offered. */
+export const CANCEL_REFUNDS_UNKNOWN =
+	"The refund ledger couldn’t be loaded, so Otta can’t say what cancelling this order would refund. Reload before cancelling.";
+
 /** The cancel confirm's sentence, named by the human REASON LABEL rather than
  *  the wire value — the operator picked a label and must read the same one
- *  back. */
-export function cancelConfirmText(reasonLabel: string): string {
-	return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`;
+ *  back. It states the money and the stock, because those are what cannot be
+ *  undone (T1-4: it used to promise "released" stock on a paid order and say
+ *  nothing about the money). `effects` is REQUIRED: a caller that forgot it would
+ *  get the pending sentence on a paid order. */
+export function cancelConfirmText(reasonLabel: string, effects: CancelEffects): string {
+	if (effects.stock === "release") {
+		return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`;
+	}
+	const money =
+		effects.refund === null ? "nothing is refunded" : `${effects.refund} is refunded to the buyer`;
+	const stock =
+		effects.stock === "restock"
+			? ", and the items go back to stock"
+			: effects.stock === "keep"
+				? ", and nothing goes back to stock"
+				: "";
+	return `Cancel this order as “${reasonLabel}”? This is permanent — ${money}${stock}.`;
+}
+
+/** The Cancel group's alert sentence for these effects. A pending order's is
+ *  {@link CANCEL_BANNER}'s, unchanged. */
+export function cancelBannerText(effects: CancelEffects): string {
+	if (effects.stock === "release") return CANCEL_BANNER.description;
+	if (effects.refund !== null && !effects.refundAutomatic) {
+		return `Otta can’t refund this order’s ${effects.refund} automatically, so it can’t be cancelled here — that would keep the buyer’s money. Send the refund yourself and record it as a manual refund in Money → Refunds — a full refund closes the order as refunded, so restock the items by hand if they came back.`;
+	}
+	const parts = [
+		effects.refund === null
+			? null
+			: `refunds ${effects.refund} to the buyer’s original payment method`,
+		effects.stock === "restock"
+			? "returns the items to stock"
+			: effects.stock === "keep"
+				? "keeps the items out of stock"
+				: null,
+	].filter((part): part is string => part !== null);
+	const lead = parts.length === 0 ? "Cancelling" : `Cancelling ${parts.join(", ")},`;
+	const email =
+		effects.refund === null
+			? "emails the buyer"
+			: "emails the buyer that their refund is on its way";
+	return `${lead} moves this order to “cancelled” and ${email}. It cannot be undone.`;
+}
+
+/** The Cancel group's label for these effects (D-6a: it carries the consequence). */
+export function cancelGroupLabel(effects: CancelEffects): string {
+	if (effects.stock === "release") return CANCEL_GROUP_LABEL;
+	return effects.refund === null
+		? "Cancel order — permanent"
+		: "Cancel order — permanent, refunds the buyer";
 }
 
 // ── the detail: the refunded transition ──────────────────────────────────────
 
 /** The one bookkeeping transition dangerous enough to confirm. The sentence's
  *  whole job is to separate the LEDGER from the MONEY: marking an order
- *  refunded moves nothing, and an operator who believes otherwise has just
- *  told a buyer they were paid. */
+ *  refunded moves nothing, so it is for a refund made OUTSIDE Otta (the Stripe
+ *  dashboard, a bank transfer), and it emails the buyer nothing — Otta does not
+ *  tell a buyer about money it did not move (QA T1-6). */
 export const MARK_REFUNDED_CONFIRM = {
 	title: "Mark this order refunded?",
-	text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
+	text: "Marks the order refunded for bookkeeping, for a refund you made outside Otta. It does not move money and does not email the buyer — to refund through Otta, use Money → Refunds.",
 	confirm: "Yes, mark refunded",
 	deny: "Keep as is",
 } as const;
@@ -248,6 +332,17 @@ export const REFUND_PARTIAL_BANNER_TITLE = "A recorded refund cannot be reversed
  *  clause that answers the operator's actual question. */
 export const REFUND_AMOUNT_INVALID =
 	"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.";
+
+/** A refund amount with more decimal places than the currency's cents (QA round
+ *  2: "7.001" was answered "enter a valid amount greater than zero", which it
+ *  already was). */
+export const REFUND_AMOUNT_PRECISION =
+	"Use at most 2 decimal places for the refund amount (e.g. 19.99). Nothing was changed.";
+
+/** True when an otherwise-plain amount has more than two decimal places. */
+export function hasExcessDecimals(input: string): boolean {
+	return /^\d+\.\d{3,}$/.test(input.trim());
+}
 
 /** A refund with nobody recorded as issuing it. */
 export const REFUND_BY_REQUIRED =
@@ -287,7 +382,8 @@ export function refundTooHighInline(amount: string, remaining: string): string {
 // Shared for the same reason every string above is: two Orders screens in one
 // sidebar must not label the same group two ways.
 
-/** The Cancel group. Names what cancelling COSTS, not merely that it cancels. */
+/** The Cancel group of a PENDING order. Names what cancelling COSTS, not merely
+ *  that it cancels. A paid order's is {@link cancelGroupLabel}'s. */
 export const CANCEL_GROUP_LABEL = "Cancel order — permanent, releases held stock";
 
 /** The partial-refund group. A bare noun would make the most dangerous control
@@ -317,14 +413,16 @@ export const ORDERS_BACK_LABEL = "← Back to orders";
 /** The list's free-text filter. It names ALL THREE things it searches, because
  *  an operator who thinks it is id-only will not paste an email into it — and
  *  one that reaches a purchased SKU without saying so is a feature that ships
- *  dark. It also names ONE match mode, following `products-copy.ts`'s
+ *  dark. It also names EACH match mode, following `products-copy.ts`'s
  *  `Search (SKU exact, or title contains)`: a mode is worth a word exactly when
- *  it changes what the operator should type. The id and the email FORGIVE a
- *  fragment (a prefix and a substring), so a partial attempt teaches itself; a
- *  SKU is matched whole, so a pasted fragment returns nothing and reads as
- *  "SKU search is broken". `exact` is the word that prevents that, and it is the
- *  only mode word the label spends. */
-export const ORDERS_SEARCH_LABEL = "Search order ID, buyer email, or exact SKU";
+ *  it changes what the operator should type. A SKU is matched whole (`exact`).
+ *  The id and the email match a PREFIX — the port's guarantee
+ *  (`OrderListFilter.search`), and all the document store serves — so a
+ *  mid-string fragment such as `example.com` finds nothing. This label used to
+ *  say nothing about that, on the theory that the email forgave any fragment;
+ *  QA searched a domain, got "No orders match", and read it as a broken search.
+ *  `start of` is the two words that prevent it. */
+export const ORDERS_SEARCH_LABEL = "Search by start of order ID or buyer email, or exact SKU";
 
 /** The fulfilment form. `Ship date (optional, UTC)` states the zone in the
  *  LABEL because the control is a bare `<input type="date">` that shows none —

@@ -52,10 +52,26 @@ export {
 } from "./refund-order-contract.js";
 export { orderCancellationContract } from "./order-cancellation-contract.js";
 export {
+	intentCancelContract,
+	type IntentCancelContractOptions,
+	type IntentCancelHarness,
+} from "./intent-cancel-contract.js";
+export {
+	latePaymentContract,
+	type LatePaymentContractOptions,
+	type LatePaymentHarness,
+} from "./late-payment-contract.js";
+export {
+	cancelWithRefundContract,
+	type CancelWithRefundContractOptions,
+	type CancelWithRefundHarness,
+} from "./cancel-with-refund-contract.js";
+export {
 	paymentDeclineContract,
 	type PaymentDeclineContractOptions,
 	type PaymentDeclineHarness,
 } from "./payment-decline-contract.js";
+export { orderExpiryContract, type OrderExpiryContractOptions } from "./order-expiry-contract.js";
 export {
 	orderTimelineContract,
 	type OrderTimelineHarness,
@@ -169,3 +185,9 @@ export {
 	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";
+export { InMemoryAttemptThrottle } from "./in-memory-attempt-throttle.js";
+export {
+	attemptThrottleContract,
+	type AttemptThrottleContractOptions,
+	type AttemptThrottleHarness,
+} from "./attempt-throttle-contract.js";

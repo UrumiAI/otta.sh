@@ -16,6 +16,11 @@
 - Note: 2026-10-01 — five of the six themes (`plinth`, `pressing`, `batch`, `jumble`, `counter`)
   moved out of this repo; only `tempered` ships here. The decision is unchanged. See "Note
   2026-10-01 — five themes moved out of this repo" at the end.
+- Amended: 2026-10-02 — **the admin offers no theme choice.** The Themes screen, its live preview
+  and the Settings "Store theme" radio are removed; the store renders Tempered. Decision 2 ("the
+  merchant picks the theme in the admin") and the 2026-09-30 Themes-screen amendment are retired;
+  the rest of the theme system stays. See "Amendment 2026-10-02 — no theme choice in the admin" at
+  the end.
 
 ## Context
 
@@ -221,8 +226,73 @@ Decision 10's list now reads as history: only `tempered` ships here, and it rema
 the fallback. A stored `settings:storeTheme` naming a removed id falls back to Tempered, as the
 Consequences already state for any id a later build drops.
 
+*(The admin-facing part of the next paragraph — the admin preview, the `__OTTA_STORE_THEMES__`
+define, the Store theme setting and the Themes screen — is superseded by the amendment of
+2026-10-02, which removes them.)*
+
 The theme system stays whole — the contract, manifest, registry, resolver, shell, the admin preview,
 the opt-in chrome bag read (`chrome.cartLines`, `lib/bag.ts`, `forms/CartLineFields.astro`), the
 `__OTTA_STORE_THEMES__` define, the plugin's Store theme setting and the admin Themes screen — as the
 host side external themes will plug into. Mechanisms no shipped theme exercises today (the bag read,
 the preview of a non-default theme) are covered by an in-test fixture theme rather than dropped.
+
+## Amendment 2026-10-02 — no theme choice in the admin
+
+With one theme shipping here (the note of 2026-10-01), a theme picker offers a single option, and
+the product owner wants none from the start: external themes will come from the separate themes
+repo, for a merchant who asks for one. So the admin-facing half of this decision is removed:
+
+- **Removed:** the React **Themes** screen (`otta-console` `/themes`, its `themes.list` read and
+  `themes:activate` write), the admin-only **live preview** (`?preview_theme`, its session cookie,
+  the "Previewing …" pill and the middleware branch that decided it), the Settings **"Store theme"**
+  radio and its `save-theme` action, and the `__OTTA_STORE_THEMES__` define that fed both pickers.
+  Decision 2 and the 2026-09-30 Themes-screen amendment are retired with them.
+- **Also removed:** the Themes-card metadata (`description` and `preview` on manifest entries), the
+  `tempered.webp` screenshot, `scripts/capture-theme-previews.ts` and its test — the admin cards were
+  their only reader.
+- **Kept, unchanged:** the contract, manifest (`id`, `label`), registry, shell, the opt-in chrome
+  bag read, the dev `?theme=` override and the resolver — which still reads the stored
+  `settings:storeTheme` and falls back to Tempered. **Nothing in this repo writes that setting any
+  more**: activating a theme from the separate themes repo needs a write path that ships with it
+  (or a later change here). Until one exists, every request renders Tempered.
+
+Reopens this amendment: a second theme shipping in this repo, or a request for merchants to choose
+one in the admin — at which point a picker is designed for it, not restored by default.
+
+
+## Amended 2026-10-02 — a theme may draw the shopper's state in its chrome; such pages are private
+
+QA U-14: the header's cart count appeared only on `/cart`, the one page that already read the
+cart. QA U-12: the header looked the same signed in and signed out.
+
+- **A second opt-in chrome capability, `chrome.shopperState`** (Tempered sets it): the cart's
+  unit count beside the cart link, and whether the shopper is signed in, on every storefront
+  page off the checkout flow. The shell makes ONE dispatch (no BUSY retry) of the lean public
+  route `storefront/shopper-state` (`lib/chrome-state.ts`), carrying only the cart and session
+  cookies the request has — none ⇒ no dispatch. Plugin side that is at most one cart-document
+  read (`CartStore.units`: no reservation lookups, no hold expiry, no price join) and one
+  session-document read (validity only, no customer read), with no kv; the route answers
+  signed-in as yes/no, never who, and the theme's own Account entry reads "Your account". The
+  badge follows one rule on every page, `/cart` included: a count only when the cart has
+  something in it. `/checkout`, `/checkout/pay` and `/orders/<id>` make neither read;
+  `/cart` and the account pages pass what they already know.
+- **Caching.** Both facts are one visitor's. The middleware now treats a request carrying a cart
+  OR a session cookie, under a theme that draws shopper state, exactly as it treated a cart
+  cookie under `cartLines`: its HTML is `private, no-store` and kept out of the route cache,
+  before and after the page. A request with neither cookie renders the neutral header and its
+  caching is untouched; that is the only copy a shared cache may hold, so the worst a
+  cookie-blind cache can do is hand a shopper a header missing their state, never someone
+  else's. A CDN that caches HTML should bypass its cache when `otta_cart` or `otta_session` is
+  present.
+- **Cost.** A shopper with a cart or a session pays one dispatch and at most two document reads
+  per uncached page view (pinned in the plugin's `shopper-state-route.test.ts` and the site's
+  `chrome-shopper-state.test.ts`); a visitor with neither pays nothing. (A first cut used the
+  full priced cart read plus `account/me`; review measured it against Workers Free's 50 D1
+  queries per invocation.)
+- **Follow-up, not done:** a cart cookie whose cart is gone, empty or checked out keeps the
+  visitor's pages private. Clearing it is not safe from the chrome (the layout cannot set a
+  cookie once the body may be streaming, and a checked-out cart's cookie is what
+  fix/new-cart-after-order's rotation and `/cart`'s way back to a pending checkout use); a
+  page-level rule for a cart that no longer exists could do it later. Client-side fetching from a private
+  endpoint was considered and not chosen: it would keep those pages cacheable for shoppers too,
+  but it puts client JavaScript on every page, which ADR-0012 decision 2 fences to two pages.

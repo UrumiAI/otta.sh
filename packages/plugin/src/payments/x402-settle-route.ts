@@ -73,6 +73,7 @@ import {
 	currency as toCurrency,
 	orderId as toOrderId,
 	settleOrder,
+	type OrderId,
 	type SettleDeps,
 	type SettleResult,
 	type X402Proof,
@@ -81,8 +82,13 @@ import { X402FacilitatorUnavailableError } from "@otta-sh/payments-x402";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenAccepted } from "../edge-token.js";
+import {
+	sendOrderEmailsNow,
+	type SendOrderEmailsNowOptions,
+} from "../email/send-order-emails-now.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
-import type { PluginContext, RouteHandler } from "../types.js";
+import { settleDeadline } from "../settle-deadline.js";
+import type { RouteHandler } from "../types.js";
 import { x402GatewayFromCtx, type X402Egress } from "./x402-wiring.js";
 
 /** The PUBLIC route path an x402 page-gate proof posts to. Named in the repo's
@@ -121,7 +127,12 @@ export type X402SettleReason =
 	| "BUSY"
 	/** The receipt's `transaction` is already recorded against a DIFFERENT order
 	 *  (`settleOrder` step 2b). One settlement, one on-chain payment. */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/** `settleOrder`'s late-payment refund hit a transient gateway failure: 503,
+	 *  retry. UNREACHABLE on this route today — x402 is not refundable, so a late
+	 *  x402 receipt is flagged for a manual refund instead — and mapped anyway so
+	 *  the table stays total over `SettleFailure` rather than mislabelling it 400. */
+	| "LATE_PAYMENT_REFUND_RETRYABLE";
 
 /**
  * What the caller reconstructs an HTTP response from — the same in-body-status
@@ -131,10 +142,14 @@ export type X402SettleReason =
  */
 export type X402SettleResult =
 	| { ok: true; status: 200 }
-	| { ok: false; status: 400 | 401 | 404 | 503; reason: Exclude<X402SettleReason, "BUSY"> }
+	| {
+			ok: false;
+			status: 400 | 401 | 404 | 503;
+			reason: Exclude<X402SettleReason, "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE">;
+	  }
 	/** Storage contention: the same proof will work later. `retryable` rides on
 	 *  every busy shape Otta emits. */
-	| { ok: false; status: 503; reason: "BUSY"; retryable: true };
+	| { ok: false; status: 503; reason: "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE"; retryable: true };
 
 /** UUID v4, the shape every order id in this system has — the same bound the
  *  service's `idParam` enforced, restated because there is no zod in the
@@ -202,6 +217,9 @@ function parseProof(input: X402SettleInput): X402Proof | undefined {
  */
 export function x402SettleResultToResponse(res: SettleResult): X402SettleResult {
 	if (res.ok) return { ok: true, status: 200 };
+	if (res.reason === "LATE_PAYMENT_REFUND_RETRYABLE") {
+		return { ok: false, status: 503, reason: res.reason, retryable: true };
+	}
 	return res.reason === "ORDER_NOT_FOUND"
 		? { ok: false, status: 404, reason: "ORDER_NOT_FOUND" }
 		: // `RECEIPT_REBOUND` lands here too, and 400 is right for it on this route
@@ -217,6 +235,12 @@ export interface X402SettleOptions {
 	 *  the allowlist is derived from — injected only so a suite can drive both the
 	 *  configured and unconfigured arms without a bundler. */
 	egress?: X402Egress;
+	/** The inline order-email dispatch's overrides — an injected sender, so a suite
+	 *  proves the confirmation goes out without any egress. Default: the sender built
+	 *  from this bundle's email API URL (none ⇒ no inline send). */
+	orderEmails?: SendOrderEmailsNowOptions;
+	/** The wall clock the request's deadline is measured on. Default: `Date.now`. */
+	now?: () => number;
 }
 
 export function createX402SettleHandler(
@@ -224,6 +248,9 @@ export function createX402SettleHandler(
 ): RouteHandler<X402SettleInput> {
 	const egress = options.egress ?? IN_PROCESS_EGRESS_URLS;
 	return async (routeCtx, ctx): Promise<X402SettleResult> => {
+		// The request's ONE deadline, fixed FIRST (`settle-deadline.ts`), which the
+		// inline order-email attempt draws on after the facilitator call and the settle.
+		const deadline = settleDeadline(options.now);
 		// VALIDATE BEFORE ANYTHING: a garbage body must cost no kv read and no
 		// network call. It is also the arm a scanner finds first.
 		const proof = parseProof(routeCtx.input);
@@ -244,8 +271,12 @@ export function createX402SettleHandler(
 		const gateway = await x402GatewayFromCtx(ctx, egress);
 		if (gateway === undefined) return { ok: false, status: 503, reason: "NOT_CONFIGURED" };
 
+		// Built HERE rather than inside `settleProof` so the inline email dispatch below
+		// reads through the same stores (and clock) the settlement wrote through.
+		const stores = createInProcessCommerceStores(ctx);
+		let settled: SettledProof;
 		try {
-			return await settleProof(ctx, proof, gateway);
+			settled = await settleProof(stores, proof, gateway);
 		} catch (err) {
 			// Storage pressure — a compare-and-set budget ran out, or the host aborted
 			// a transaction as retryable — anywhere in the pre-flight read or the
@@ -259,16 +290,42 @@ export function createX402SettleHandler(
 			}
 			throw err;
 		}
+
+		// The order's emails, NOW — the same best-effort inline dispatch, for the same
+		// reasons, as `webhooks/stripe/settle` (see the comment there and ADR-0005's
+		// 2026-10-02 amendment): outside the BUSY mapping, on any ok result (a replay
+		// included — it costs one read when nothing is due), first attempts only,
+		// scoped to the order the settlement itself reports, bounded by the request's
+		// budget, and unable to change the response.
+		if (settled.orderId !== null) {
+			await sendOrderEmailsNow(ctx, stores, settled.orderId, {
+				...options.orderEmails,
+				deadline,
+			});
+		}
+		return settled.response;
 	};
+}
+
+/** A settle attempt's response, plus the order `settleOrder` reported settling — or
+ *  `null` for every refusal (and for an ok result that names no order), which is
+ *  exactly when no inline order email is attempted. */
+interface SettledProof {
+	response: X402SettleResult;
+	orderId: OrderId | null;
+}
+
+function refused(response: X402SettleResult): SettledProof {
+	return { response, orderId: null };
 }
 
 /** CHECK 2 and the settle itself — split out so the storage-pressure mapping
  *  above covers both the pre-flight order read and the settlement. */
 async function settleProof(
-	ctx: PluginContext,
+	stores: ReturnType<typeof createInProcessCommerceStores>,
 	proof: X402Proof,
 	gateway: NonNullable<Awaited<ReturnType<typeof x402GatewayFromCtx>>>,
-): Promise<X402SettleResult> {
+): Promise<SettledProof> {
 	// ── CHECK 2: THIS ORDER IS AN x402 ORDER — before the facilitator call ────
 	// `settleOrder` is gateway-agnostic by design and never consults
 	// `paymentMethod`; behind `requireInternalToken` the service could rely on
@@ -276,26 +333,24 @@ async function settleProof(
 	// the right amount settles a STRIPE order of the same total, and storefront
 	// checkout originates nothing else today. Route-local on purpose — it is a
 	// statement about THIS surface, not a new rule for every gateway.
-	const stores = createInProcessCommerceStores(ctx);
 	const order = await stores.orderStore.getById(proof.orderId);
-	if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
+	if (order === null) return refused({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
 	if (order.paymentMethod !== "x402") {
-		return { ok: false, status: 400, reason: "WRONG_PAYMENT_METHOD" };
+		return refused({ ok: false, status: 400, reason: "WRONG_PAYMENT_METHOD" });
 	}
 
 	try {
-		return x402SettleResultToResponse(
-			await settleOrder(settleDeps(stores), gateway, {
-				kind: "page_gate",
-				proof,
-			}),
-		);
+		const res = await settleOrder(settleDeps(stores), gateway, { kind: "page_gate", proof });
+		return {
+			response: x402SettleResultToResponse(res),
+			orderId: res.ok && res.order !== null ? res.order.id : null,
+		};
 	} catch (err) {
 		// The one throw this path can produce on purpose. Anything else is a real
 		// fault and must keep propagating rather than be flattened into a 503
 		// that hides it.
 		if (err instanceof X402FacilitatorUnavailableError) {
-			return { ok: false, status: 503, reason: "FACILITATOR_UNAVAILABLE" };
+			return refused({ ok: false, status: 503, reason: "FACILITATOR_UNAVAILABLE" });
 		}
 		throw err;
 	}

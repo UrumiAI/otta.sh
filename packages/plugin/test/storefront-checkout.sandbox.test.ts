@@ -71,6 +71,8 @@ import {
 	startStripeApiStub,
 	stripeLikeResponder,
 	type StripeApiStub,
+	type StripeRecordedRequest,
+	type StripeResponder,
 } from "./helpers/stripe-api-stub.js";
 import {
 	loadPluginInSandbox,
@@ -543,6 +545,10 @@ beforeEach(async () => {
 	orderOps.length = 0;
 });
 
+/** Is this the Stripe cancel of a PaymentIntent? */
+const isCancel = (req: StripeRecordedRequest) =>
+	req.method === "POST" && /^\/v1\/payment_intents\/[^/]+\/cancel$/.test(req.path);
+
 describe("storefront/checkout/summary (workerd sandbox)", () => {
 	test("a MULTI-line cart costs ONE batched commerce read per leg and ZERO per-line reads (the N+1 guard)", async () => {
 		const cartId = await seedThreeLineCart();
@@ -582,12 +588,15 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 
 		const lines = result["lines"] as {
 			sku: string;
+			title: string | null;
 			qty: number;
 			lineTotal: { formatted: string };
 		}[];
 		expect(lines).toHaveLength(3);
 		const first = lines.find((l) => l.sku === LINE_SKUS[0]);
-		expect(first).toMatchObject({ qty: 1 });
+		// Named off the same batch read the pricing join made — the title the
+		// order will snapshot — so the review never shows a bare SKU as a name.
+		expect(first).toMatchObject({ qty: 1, title: "Bamboo Water Bottle" });
 		expect(first!.lineTotal.formatted).toBe("$19.99");
 		expect(result["hasUnpricedLines"]).toBe(false);
 	});
@@ -726,20 +735,21 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		expect(productQueries).toHaveLength(2);
 	});
 
-	test("coupon codes are matched case-SENSITIVELY and the typed code is echoed back verbatim", async () => {
+	test("coupon codes are matched case-INSENSITIVELY — the typed code is trimmed and the merchant's spelling is what applies", async () => {
+		// ONE RULE FOR CODES (the `CouponStore.findByCode` port doc): codes are
+		// unique after case folding and the admin search was already
+		// case-insensitive, so checkout refusing `ck-save5` for `CK-SAVE5` was the
+		// one place the rule split. The DISCOUNT carries the coupon's own spelling —
+		// that is what the order snapshots and what the buyer sees applied.
 		const cartId = await seedThreeLineCart();
 
 		const result = await summary({ cartId, couponCode: " ck-save5 " });
 
 		expect(result["ok"]).toBe(true);
-		expect(result["selectionErrors"]).toEqual({
-			coupon: { code: "ck-save5", reason: "COUPON_NOT_FOUND" },
-		});
-		expect(result["selection"]).toEqual({
-			couponCode: null,
-			shippingMethodId: null,
-			destination: null,
-		});
+		expect(result["selectionErrors"]).toEqual({});
+		const totals = totalsOf(result);
+		expect(totals["discount"]!.label).toBe("$5.00");
+		expect(totals.appliedCouponCode).toBe("CK-SAVE5");
 	});
 
 	// COUPON_EXHAUSTED is proven by a REAL redemption on the Stripe boot below —
@@ -1407,6 +1417,199 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(replay["clientAction"]).toEqual(first["clientAction"]);
 	});
 
+	test("storefront/order/resume (QA U-2): the order id plus its email gets the SAME PaymentIntent — the same key and body at Stripe, no second order, only a hint of the email", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+		const orderId = first["orderId"] as string;
+
+		// The order id ALONE is not enough (QA U-2): no proof, nothing asked of Stripe.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId }))).toEqual({
+			ok: false,
+			reason: "PROOF_REQUIRED",
+		});
+		const wrong = resultOf(
+			await stripeBoot.invokeRoute("storefront/order/resume", {
+				orderId,
+				email: "someone.else@example.com",
+			}),
+		);
+		expect(wrong).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+		expect(stripe.requests).toHaveLength(1);
+
+		// The order's email, typed again (case aside), is the proof.
+		const resumed = resultOf(
+			await stripeBoot.invokeRoute("storefront/order/resume", {
+				orderId,
+				email: ` ${BUYER_REF.toUpperCase()} `,
+			}),
+		);
+
+		expect(resumed, JSON.stringify(resumed)).toMatchObject({
+			ok: true,
+			orderId,
+			clientAction: first["clientAction"],
+			total: { currency: "USD" },
+		});
+		expect(typeof resumed["buyerRefHint"]).toBe("string");
+		expect(JSON.stringify(resumed)).not.toContain(BUYER_REF);
+		expect(resumed).not.toHaveProperty("intentId");
+		expect(stripe.requests).toHaveLength(2);
+		expect(stripe.requests[1]!.path).toBe("/v1/payment_intents");
+		expect(stripe.requests[1]!.headers["idempotency-key"]).toBe(`checkout:${cartId}`);
+		expect(stripe.requests[1]!.form.toString()).toBe(stripe.requests[0]!.form.toString());
+		// Still the one order under the cart's key.
+		expect((await storedOrder(orderId)).idempotencyKey).toBe(`checkout:${cartId}`);
+	});
+
+	test("storefront/order/abandon (QA2 X4): the cart cancels its own unpaid order — once — and a resume can no longer pay it", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+		const orderId = first["orderId"] as string;
+
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }))).toEqual({
+			ok: true,
+			cancelled: true,
+		});
+		expect((await storedOrder(orderId)).state).toBe("cancelled");
+		// A replay (a double click) cancels nothing more.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }))).toEqual({
+			ok: true,
+			cancelled: false,
+		});
+		// The cart's own way back to paying is closed: nothing asked of Stripe beyond
+		// the create and the abandon's one withdrawal of the intent.
+		expect(
+			resultOf(await stripeBoot.invokeRoute("storefront/order/resume", { orderId, cartId })),
+		).toEqual({ ok: false, reason: "ORDER_NOT_PAYABLE" });
+		expect(stripe.requests.map((r) => `${r.method} ${r.path.replace(/pi_[^/]+/, "pi")}`)).toEqual([
+			"POST /v1/payment_intents",
+			"POST /v1/payment_intents/pi/cancel",
+		]);
+		// No cart id, no call.
+		expect(resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", {}))).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
+	});
+
+	/**
+	 * QA2 X4 follow-up: after the abandon's cancel, the intent is withdrawn at Stripe
+	 * IN the request — best-effort, under a small fixed bound — instead of waiting
+	 * for the sweep. Anything short of a definite answer is left to the sweep, on
+	 * the sweep's own keys.
+	 */
+	describe("storefront/order/abandon withdraws the PaymentIntent at Stripe, bounded", () => {
+		async function abandonedOrder(
+			responder?: (fallback: ReturnType<typeof stripeLikeResponder>) => StripeResponder,
+		) {
+			const fallback = stripeLikeResponder();
+			stripe.respondWith(responder === undefined ? fallback : responder(fallback));
+			const cartId = await seedThreeLineCart();
+			const placed = await placeCart(cartId);
+			expect(placed["ok"]).toBe(true);
+			const orderId = placed["orderId"] as string;
+			const [intent] = await orderStore.listPaymentIntents(toOrderId(orderId));
+			const started = Date.now();
+			const res = resultOf(await stripeBoot.invokeRoute("storefront/order/abandon", { cartId }));
+			const tookMs = Date.now() - started;
+			expect(res).toEqual({ ok: true, cancelled: true });
+			const [after] = await orderStore.listPaymentIntents(toOrderId(orderId));
+			return { orderId, intentId: intent!.intentId, after: after!, tookMs };
+		}
+
+		test("a definite cancel is recorded at once, under the sweep's own first key", async () => {
+			const { intentId, after } = await abandonedOrder(
+				(fallback) => (req) =>
+					isCancel(req) ? { status: 200, body: { id: "x", status: "canceled" } } : fallback(req),
+			);
+			const cancels = stripe.requests.filter(isCancel);
+			expect(cancels.map((r) => r.path)).toEqual([`/v1/payment_intents/${intentId}/cancel`]);
+			expect(cancels[0]!.headers["idempotency-key"]).toBe(`cancel-intent:${intentId}`);
+			expect(after.cancelOutcome).toBe("cancelled");
+			expect(after.cancelDueAt).toBeNull();
+		});
+
+		test("a Stripe that does not answer in time does not hold the shopper — the intent is left due for the sweep", async () => {
+			const { after, tookMs } = await abandonedOrder(
+				(fallback) => (req) =>
+					isCancel(req) ? { status: 200, body: {}, delayMs: 6_000 } : fallback(req),
+			);
+			expect(stripe.requests.filter(isCancel)).toHaveLength(1);
+			expect(tookMs).toBeLessThan(4_500);
+			expect(after.cancelOutcome).toBeNull();
+			expect(after.cancelDueAt).not.toBeNull();
+		});
+
+		test("an intent that already SUCCEEDED is not_cancellable, and the payment then takes the late-payment refund", async () => {
+			const { orderId, intentId, after } = await abandonedOrder((fallback) => (req) => {
+				if (isCancel(req)) {
+					return {
+						status: 400,
+						body: {
+							error: { type: "invalid_request_error", code: "payment_intent_unexpected_state" },
+						},
+					};
+				}
+				if (req.method === "GET") {
+					return {
+						status: 200,
+						body: {
+							id: req.path.split("/")[3]?.split("?")[0],
+							status: "succeeded",
+							latest_charge: {
+								amount_refunded: 0,
+								amount_captured: SUBTOTAL_CENTS,
+								currency: "usd",
+							},
+						},
+					};
+				}
+				if (req.method === "POST" && req.path === "/v1/refunds") {
+					return {
+						status: 200,
+						body: { id: "re_abandon", amount: SUBTOTAL_CENTS, currency: "usd" },
+					};
+				}
+				return fallback(req);
+			});
+			expect(after.cancelOutcome).toBe("not_cancellable");
+
+			const signed = await signStripeWebhook(
+				{
+					eventId: `evt_abandon_${orderId}`,
+					type: "payment_intent.succeeded",
+					paymentIntentId: intentId,
+					orderId,
+					amountCents: SUBTOTAL_CENTS,
+					currency: "usd",
+				},
+				STRIPE_WEBHOOK_SECRET,
+			);
+			resultOf(
+				await stripeBoot.invokeRoute("webhooks/stripe/settle", {
+					rawBodyBase64: Buffer.from(signed.body).toString("base64"),
+					stripeSignature: signed.signatureHeader,
+					idempotencyKey: `wh-abandon-${orderId}`,
+				}),
+			);
+			expect((await storedOrder(orderId)).state).toBe("cancelled");
+			expect(stripe.requests.some((r) => r.method === "POST" && r.path === "/v1/refunds")).toBe(
+				true,
+			);
+		});
+	});
+
+	test("storefront/order/resume refuses an unknown order without asking Stripe", async () => {
+		expect(
+			resultOf(
+				await stripeBoot.invokeRoute("storefront/order/resume", { orderId: `no-such-order-${NS}` }),
+			),
+		).toEqual({ ok: false, reason: "ORDER_NOT_FOUND" });
+		expect(stripe.requests).toHaveLength(0);
+	});
+
 	test("passes clientAction through UNMODIFIED — the client secret is data in transit", async () => {
 		const cartId = await seedThreeLineCart();
 		stripe.respondWith(() => ({
@@ -1429,7 +1632,16 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 
 		expect(result["ok"]).toBe(true);
 		expect(Object.keys(result).toSorted()).toEqual(
-			["alreadyPlaced", "clientAction", "ok", "orderId", "state", "total"].toSorted(),
+			[
+				"alreadyPlaced",
+				"buyerRefHint",
+				"clientAction",
+				"emailMatches",
+				"ok",
+				"orderId",
+				"state",
+				"total",
+			].toSorted(),
 		);
 		const wire = JSON.stringify(result);
 		expect(wire).not.toContain(BUYER_REF);
@@ -1558,6 +1770,9 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				state: "paid",
 				alreadyPlaced: true,
 				clientAction: { kind: "none" },
+				// The order's email, masked — never the address (QA2 X2).
+				buyerRefHint: expect.stringMatching(/^.•••@.•••\.[a-z]+$/i),
+				emailMatches: true,
 			});
 			expect(replay).not.toHaveProperty("total");
 			expect(stripe.requests).toHaveLength(0);
@@ -1577,20 +1792,33 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
 	});
 
-	test("a second checkout of a placed cart under a NEW key is the typed CART_CHECKED_OUT", async () => {
-		const cartId = await seedThreeLineCart();
-		expect((await placeCart(cartId))["ok"]).toBe(true);
+	// QA T1-10: the key is checkout:<cartId> by construction, and the route
+	// now ENFORCES that rather than trusting its caller. Forwarded as given, a
+	// caller could post checkout:<another cart> against its own cart and bind
+	// that key to the wrong order, locking the other cart out with
+	// IDEMPOTENCY_KEY_REUSED for good. A key that is not this cart's is
+	// CHECKOUT_STALE — a page reviewed for some other cart — and nothing is
+	// minted, adopted or asked of Stripe.
+	test.each([
+		["another cart's key", (cartId: string) => `checkout:${cartId}-other`],
+		["a key that is not a checkout key", (cartId: string) => cartId],
+		["this cart's key with a suffix", (cartId: string) => `checkout:${cartId}:again`],
+	])(
+		"%s is the typed CHECKOUT_STALE — no order, no intent, and the cart still places under its own key",
+		async (_label, keyFor) => {
+			const cartId = await seedThreeLineCart();
+			orderOps.length = 0;
 
-		const second = await place({
-			cartId,
-			buyerRef: BUYER_REF,
-			idempotencyKey: `checkout:${cartId}:again`,
-		});
+			const stale = await place({ cartId, buyerRef: BUYER_REF, idempotencyKey: keyFor(cartId) });
 
-		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
-	});
+			expect(stale).toEqual({ ok: false, reason: "CHECKOUT_STALE" });
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+			expect(await placeCart(cartId)).toMatchObject({ ok: true, alreadyPlaced: false });
+		},
+	);
 
-	test("the OLD cart's key submitted against a NEW cart (a stale tab) is the typed IDEMPOTENCY_KEY_REUSED — no intent, and the new cart still places under its own key (issue #133)", async () => {
+	test("the OLD cart's key submitted against a NEW cart (a stale tab) is CHECKOUT_STALE — and can no longer lock the old cart's key onto the new cart (issue #133, QA T1-10)", async () => {
 		const oldCart = await seedThreeLineCart();
 		expect((await placeCart(oldCart))["ok"]).toBe(true);
 		const newCart = await seedThreeLineCart();
@@ -1602,10 +1830,41 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			idempotencyKey: `checkout:${oldCart}`,
 		});
 
-		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(stale).toEqual({ ok: false, reason: "CHECKOUT_STALE" });
 		expect(stripe.requests).toHaveLength(0);
 		expect(await placeCart(newCart)).toMatchObject({ ok: true, alreadyPlaced: false });
 	});
+
+	test("a second place of a placed cart under its own key replays the SAME order — the only key the route accepts", async () => {
+		const cartId = await seedThreeLineCart();
+		const first = await placeCart(cartId);
+		expect(first["ok"]).toBe(true);
+
+		const second = await placeCart(cartId);
+
+		expect(second).toMatchObject({ ok: true, orderId: first["orderId"] });
+	});
+
+	test("Stripe still answering idempotency_key_in_use after the adapter's wait is BUSY (retryable), never PAYMENT_INTENT_FAILED (QA T1-9)", async () => {
+		// The first click's request never lands within the adapter's ~3 s budget.
+		// Nothing failed, so the shopper gets the store's "busy, try again in a
+		// few seconds", whose retry replays the same key.
+		const cartId = await seedThreeLineCart();
+		stripe.respondWith(() => ({
+			status: 409,
+			body: { error: { code: "idempotency_key_in_use", type: "idempotency_error" } },
+		}));
+
+		const result = await placeCart(cartId);
+
+		expect(result).toEqual({ ok: false, error: "BUSY", retryable: true });
+		expect(stripe.requests.length).toBeGreaterThan(1);
+		expect(JSON.stringify(result)).not.toContain(STRIPE_SECRET_KEY);
+
+		// The first request lands: the same key now places the SAME pending order.
+		stripe.reset();
+		expect(await placeCart(cartId)).toMatchObject({ ok: true, alreadyPlaced: false });
+	}, 20_000);
 
 	test("a line whose hold was released before checkout is the typed RESERVATION_LOST", async () => {
 		const cartId = await seedThreeLineCart();
@@ -1619,9 +1878,24 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	});
 
 	test.each([
-		["a whitespace-only required field", { ...SHIP_TO, name: "   " }],
-		["a field over the domain's cap", { ...SHIP_TO, country: "X".repeat(101) }],
+		["line1 over the domain's cap", { ...SHIP_TO, line1: "x".repeat(201) }],
+		["the country over the domain's cap", { ...SHIP_TO, country: "X".repeat(101) }],
 	])(
+		"an over-long ship-to field (%s) is the typed INVALID_SHIPPING_ADDRESS before any order or intent exists (QA U-6)",
+		async (_label, shippingAddress) => {
+			const cartId = await seedThreeLineCart();
+			orderOps.length = 0;
+
+			expect(await placeCart(cartId, { shippingAddress })).toEqual({
+				ok: false,
+				reason: "INVALID_SHIPPING_ADDRESS",
+			});
+			expect(orderOps).toEqual([]);
+			expect(stripe.requests).toHaveLength(0);
+		},
+	);
+
+	test.each([["a whitespace-only required field", { ...SHIP_TO, name: "   " }]])(
 		"a ship-to the domain would refuse (%s) is refused as INVALID_INPUT before any order or intent exists",
 		async (_label, shippingAddress) => {
 			const cartId = await seedThreeLineCart();
@@ -1841,9 +2115,12 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			// The lines are the ORDER's snapshot, not a live re-join.
 			const lines = locked["lines"] as {
 				sku: string;
+				title: string | null;
 				qty: number;
 				lineTotal: { formatted: string };
 			}[];
+			// The order's own snapshot title rides each locked row.
+			expect(lines.every((l) => l.title === "Bamboo Water Bottle")).toBe(true);
 			// (The store's line order, not the cart's — so compared as a set.)
 			expect(lines.map((l) => `${l.sku}×${String(l.qty)}`).toSorted()).toEqual([
 				`${LINE_SKUS[0]!}×1`,

@@ -172,6 +172,15 @@ export interface TimelineEntry {
 	readonly reason?: string | null;
 	readonly detail?: string | null;
 	readonly outcome?: string | null;
+	/** refund (QA round 2): the ledger row's money, its state and who issued it. */
+	readonly amount?: number | null;
+	readonly currency?: string | null;
+	readonly status?: string | null;
+	readonly purpose?: string | null;
+	readonly refundedBy?: string | null;
+	/** cancellation: what it refunded, and whether it returned the units to stock. */
+	readonly refund?: { readonly amount: number; readonly currency: string } | null;
+	readonly restocked?: boolean | null;
 }
 
 export interface OrderTimeline {
@@ -295,6 +304,13 @@ export interface ActPayload {
 	 * HTTP, not a guarantee about it.
 	 */
 	readonly field?: "sku";
+	/** The plugin's `ProductsActionResult.recordMoved`, mirrored: someone else
+	 *  saved first, so the form shows the latest values. */
+	readonly recordMoved?: true;
+	/** The plugin's `ProductsActionResult.replayed`, mirrored: a stock move the
+	 *  ledger answered — an earlier send with the same nonce moved the units, and
+	 *  this one moved nothing. */
+	readonly replayed?: true;
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────
@@ -427,6 +443,18 @@ export interface Failure {
 	readonly ok: false;
 	readonly title: string;
 	readonly description: string;
+	/** The HTTP status, when the refusal came from one — so a surface can tell
+	 *  "you may not" (403) from "it is broken" without reading the sentence. */
+	readonly status?: number;
+	/**
+	 * THE WRITE MAY HAVE RUN. Set when the request never came back, came back
+	 * 5xx, or came back 2xx with an answer this screen could not read — every
+	 * case where the plugin may have applied a write whose outcome was lost.
+	 * Absent on a 4xx and on the plugin's own `{ok:false}`, which are a
+	 * definitive no. A stock movement holds its nonce across exactly these, so a
+	 * re-send is answered by the ledger rather than applied a second time.
+	 */
+	readonly indeterminate?: true;
 }
 
 export type Result<T> = T | Failure;
@@ -469,8 +497,11 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 		// the Pricing & inventory screen sends an operator to look at the wrong
 		// thing. It names the SCREEN rather than the request, because the screen
 		// is what the operator is looking at.
+		status: response.status,
 		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
+		// A 5xx can follow a write that landed; a 4xx refused before anything ran.
+		...(response.status >= 500 ? { indeterminate: true as const } : {}),
 	};
 }
 
@@ -491,6 +522,7 @@ function transportFailure(error: unknown): Failure {
 		description: `The request never completed${
 			error instanceof Error ? ` — ${error.message}` : ""
 		}. Check that you are online, then reload.`,
+		indeterminate: true,
 	};
 }
 
@@ -519,6 +551,8 @@ async function post<T extends { ok: true }>(body: unknown, subject: string): Pro
 	if (typeof data === "object" && data !== null && "ok" in data) return data as Result<T>;
 	return {
 		ok: false,
+		// It answered 2xx, so the plugin ran — whatever it did is unknown here.
+		indeterminate: true,
 		title: "The admin sent something this screen could not read",
 		description:
 			"The response did not have the shape this screen expects. Reload the page; if it happens again, this is a fault in the console itself.",
@@ -566,6 +600,36 @@ export function fetchProductDetail(productId: string): Promise<Result<ProductDet
 	);
 }
 
+/** One product's price and stock for the Products list's columns — the
+ *  plugin's `ProductPriceStockWire`, mirrored. `onHand: null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStock {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly compareAtCents: number | null;
+	readonly onHand: number | null;
+	readonly deletedAt: string | null;
+}
+
+export interface ProductSummariesPayload {
+	readonly ok: true;
+	readonly products: readonly ProductPriceStock[];
+	readonly threshold: number | null;
+}
+
+/** The price and stock of a page of products (ADR-0014, amendment
+ *  2026-10-01). The ids are CMS entry ids, which are the commerce ids. */
+export function fetchProductSummaries(
+	productIds: readonly string[],
+): Promise<Result<ProductSummariesPayload>> {
+	return post<ProductSummariesPayload>(
+		{ type: READ, resource: "products.summaries", productIds },
+		PRODUCTS_UNAVAILABLE,
+	);
+}
+
 /**
  * Perform a write.
  *
@@ -586,49 +650,3 @@ export function performAction(
 /** The subject a Pricing & inventory write's transport refusal names. Exported
  *  so the screen states it once rather than at every call site. */
 export const PRODUCTS_ACT_SUBJECT = PRODUCTS_UNAVAILABLE;
-
-// ── wire shapes: Themes (ADR-0014 as amended 2026-09-30) ─────────────────────
-
-/** One theme card — the plugin's `ThemeWire`, mirrored. `preview` is a
- *  same-origin path the plugin has already validated; `previewUrl` is the
- *  storefront in this theme, honoured by the site for an admin only. */
-export interface ThemeSummary {
-	readonly id: string;
-	readonly label: string;
-	readonly description: string | null;
-	readonly preview: string | null;
-	readonly previewUrl: string;
-}
-
-export interface ThemesPayload {
-	readonly ok: true;
-	readonly themes: readonly ThemeSummary[];
-	readonly activeId: string;
-	/** Loading this URL ends the admin's preview session on the storefront. */
-	readonly exitPreviewUrl: string;
-}
-
-export interface ThemeActivatePayload {
-	readonly ok: true;
-	readonly activeId: string;
-	readonly notice: {
-		readonly variant: string;
-		readonly title: string;
-		readonly description: string;
-	};
-}
-
-const THEMES_UNAVAILABLE = "Themes are unavailable";
-
-export function fetchThemes(): Promise<Result<ThemesPayload>> {
-	return post<ThemesPayload>({ type: READ, resource: "themes.list" }, THEMES_UNAVAILABLE);
-}
-
-/** Make `themeId` the store's theme — the Settings "Store theme" radio's write,
- *  through the same plugin function. */
-export function activateTheme(themeId: string): Promise<Result<ThemeActivatePayload>> {
-	return post<ThemeActivatePayload>(
-		{ type: ACT, action_id: "themes:activate", value: { themeId } },
-		"The theme could not be activated",
-	);
-}

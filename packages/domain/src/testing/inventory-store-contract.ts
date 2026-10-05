@@ -398,8 +398,30 @@ export function inventoryStoreContract(
 			const first = await h.store.restock("SKU-R1", 3, idempotencyKey("r1"));
 			const replay = await h.store.restock("SKU-R1", 3, idempotencyKey("r1"));
 			expect(first).toEqual({ ok: true, onHand: 8 });
-			expect(replay).toEqual(first);
+			// The ledger's answer, SAID to be the ledger's: a caller must be able to
+			// tell "this call added 3" from "an earlier call did".
+			expect(replay).toEqual({ ...first, replayed: true });
 			expect(await h.onHand("SKU-R1")).toBe(8); // added once, not twice
+		});
+
+		test("REPLAYED IS SAID ONLY OF A LEDGER ANSWER: a first movement never carries it; a replayed refusal reads as the refusal", async () => {
+			// `replayed: true` is what lets an admin say "this change was already
+			// applied" instead of a fresh "Added 3" for a call that moved nothing.
+			const h = await makeStore();
+			await h.seed("SKU-RP", 5);
+			const add = await h.store.restock("SKU-RP", 3, idempotencyKey("rp-add"));
+			const rem = await h.store.removeStock("SKU-RP", 2, idempotencyKey("rp-rem"));
+			expect(add).toEqual({ ok: true, onHand: 8 });
+			expect(rem).toEqual({ ok: true, onHand: 6 });
+			expect("replayed" in add || "replayed" in rem).toBe(false);
+			expect(await h.store.restock("SKU-RP", 3, idempotencyKey("rp-add"))).toEqual({
+				ok: true,
+				onHand: 8,
+				replayed: true,
+			});
+			const tooMany = await h.store.removeStock("SKU-RP", 99, idempotencyKey("rp-big"));
+			expect(await h.store.removeStock("SKU-RP", 99, idempotencyKey("rp-big"))).toEqual(tooMany);
+			expect(await h.onHand("SKU-RP")).toBe(6);
 		});
 
 		test("restock on an unknown sku is a clean UNKNOWN_SKU failure that never creates a row", async () => {
@@ -477,7 +499,7 @@ export function inventoryStoreContract(
 			const first = await h.store.removeStock("SKU-D1", 4, idempotencyKey("d1"));
 			const replay = await h.store.removeStock("SKU-D1", 4, idempotencyKey("d1"));
 			expect(first).toEqual({ ok: true, onHand: 6 });
-			expect(replay).toEqual(first);
+			expect(replay).toEqual({ ...first, replayed: true });
 			expect(await h.onHand("SKU-D1")).toBe(6); // removed once, not twice
 		});
 
@@ -501,6 +523,158 @@ export function inventoryStoreContract(
 			await expect(h.store.removeStock("SKU-D1", 3, key)).rejects.toThrow(/was recorded for/);
 			await expect(h.store.restock("SKU-D1", 99, key)).rejects.toThrow(/was recorded for/);
 			expect(await h.onHand("SKU-D1")).toBe(13);
+		});
+
+		// -- removeStock's expectedOnHand: the watermark, checked IN the movement --
+		//
+		// WHY THE STORE CHECKS IT, NOT THE CALLER. A removal is decided against the
+		// count the operator SAW. A caller-side re-read can refuse a stale one, but
+		// it runs BEFORE the ledger, so a retry of a removal that already applied
+		// re-reads the count the removal itself produced and is refused as "stock
+		// changed" — a lie about a write that landed. Checked inside the same
+		// compare-and-set as the movement, the ledger answers a retry first and the
+		// watermark only ever judges a FIRST attempt.
+		//
+		// RESTOCK TAKES NO WATERMARK, deliberately. `onHand` is the AVAILABLE count,
+		// which every reserve, release and hold expiry moves; a watermarked add would
+		// fail as stale through an ordinary sale. An add is a commutative increment,
+		// so two operators who each add 3 to 4 end at 10 — and a removal, which can
+		// strand or misjudge units, is the movement that keeps the check.
+
+		test("removeStock with a CURRENT expectedOnHand applies", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W1", 9);
+			const res = await h.store.removeStock("SKU-W1", 2, idempotencyKey("w1"), {
+				expectedOnHand: 9,
+			});
+			expect(res).toEqual({ ok: true, onHand: 7 });
+			expect(await h.onHand("SKU-W1")).toBe(7);
+		});
+
+		test("removeStock with a STALE expectedOnHand is a STALE_ON_HAND carrying the live count, and removes nothing", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W2", 30);
+			const res = await h.store.removeStock("SKU-W2", 10, idempotencyKey("w2"), {
+				expectedOnHand: 42,
+			});
+			expect(res).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 30 });
+			expect(await h.onHand("SKU-W2")).toBe(30);
+		});
+
+		test("a stale watermark is judged BEFORE the floor: STALE_ON_HAND, not INSUFFICIENT_STOCK", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W3", 3);
+			const res = await h.store.removeStock("SKU-W3", 5, idempotencyKey("w3"), {
+				expectedOnHand: 8,
+			});
+			expect(res).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 3 });
+		});
+
+		test("a reserve between the operator's look and the removal makes it STALE — it never applies against a count that is not live", async () => {
+			// A sale moves the available count. The removal was decided against 10,
+			// so it must not land against 8 as if the operator had seen 8.
+			const h = await makeStore();
+			await h.seed("SKU-W4", 10);
+			expect((await h.store.reserve("SKU-W4", 2, idempotencyKey("w4-sale"))).ok).toBe(true);
+			const res = await h.store.removeStock("SKU-W4", 1, idempotencyKey("w4"), {
+				expectedOnHand: 10,
+			});
+			expect(res).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 8 });
+			expect(await h.onHand("SKU-W4")).toBe(8);
+		});
+
+		test("a RETRY of an applied removal echoes its success even though the count it was taken against has moved", async () => {
+			// The retry is answered by the ledger, never re-judged against the
+			// watermark — the count moved BECAUSE of this very removal.
+			const h = await makeStore();
+			await h.seed("SKU-W5", 9);
+			const pinned = { expectedOnHand: 9 };
+			const first = await h.store.removeStock("SKU-W5", 2, idempotencyKey("w5"), pinned);
+			const retry = await h.store.removeStock("SKU-W5", 2, idempotencyKey("w5"), pinned);
+			expect(first).toEqual({ ok: true, onHand: 7 });
+			expect(retry).toEqual({ ...first, replayed: true });
+			expect(await h.onHand("SKU-W5")).toBe(7);
+		});
+
+		test("a STALE_ON_HAND consumes the key: a retry replays the refusal even once the count is back", async () => {
+			// Same terminal discipline as INSUFFICIENT_STOCK (R2): one submission gets
+			// one answer. A fresh decision is a fresh key.
+			const h = await makeStore();
+			await h.seed("SKU-W6", 5);
+			const pinned = { expectedOnHand: 6 };
+			const first = await h.store.removeStock("SKU-W6", 1, idempotencyKey("w6"), pinned);
+			expect(first).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 5 });
+			await h.store.restock("SKU-W6", 1, idempotencyKey("w6-up"));
+			const retry = await h.store.removeStock("SKU-W6", 1, idempotencyKey("w6"), pinned);
+			expect(retry).toEqual(first);
+			expect(await h.onHand("SKU-W6")).toBe(6);
+		});
+
+		test("Add, Remove, Add of the same size under three keys lands every movement", async () => {
+			// The admin bug this section exists for: a key derived from (direction,
+			// observed count, qty) made the third movement a replay of the first.
+			const h = await makeStore();
+			await h.seed("SKU-W7", 7);
+			const add1 = await h.store.restock("SKU-W7", 2, idempotencyKey("w7-a"));
+			const rem = await h.store.removeStock("SKU-W7", 2, idempotencyKey("w7-b"), {
+				expectedOnHand: 9,
+			});
+			const add2 = await h.store.restock("SKU-W7", 2, idempotencyKey("w7-c"));
+			expect([add1, rem, add2]).toEqual([
+				{ ok: true, onHand: 9 },
+				{ ok: true, onHand: 7 },
+				{ ok: true, onHand: 9 },
+			]);
+			expect(await h.onHand("SKU-W7")).toBe(9);
+		});
+
+		test("two restocks of 3 against the same observed 4, under two keys, BOTH apply — an add is commutative", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W10", 4);
+			await h.store.restock("SKU-W10", 3, idempotencyKey("w10-tab-a"));
+			const tabB = await h.store.restock("SKU-W10", 3, idempotencyKey("w10-tab-b"));
+			expect(tabB).toEqual({ ok: true, onHand: 10 });
+			expect(await h.onHand("SKU-W10")).toBe(10);
+		});
+
+		test("a key reused with a DIFFERENT expectedOnHand is a mis-keyed caller, rejected and moving nothing", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W8", 9);
+			const key = idempotencyKey("w8");
+			await h.store.removeStock("SKU-W8", 2, key, { expectedOnHand: 9 });
+			await expect(h.store.removeStock("SKU-W8", 2, key, { expectedOnHand: 7 })).rejects.toThrow(
+				/was recorded for/,
+			);
+			// Pinned first, unpinned on the retry: also a different intent.
+			await expect(h.store.removeStock("SKU-W8", 2, key)).rejects.toThrow(/was recorded for/);
+			expect(await h.onHand("SKU-W8")).toBe(7);
+		});
+
+		test("a key recorded WITHOUT a watermark is honoured when retried WITH one — the recorded intent wins", async () => {
+			// A movement claimed before watermarks existed carries none. The release
+			// that wrote it already embedded the observed count in the key itself,
+			// so the retry IS that movement: it echoes the recorded answer, whatever
+			// watermark it now carries, and is never re-judged against one.
+			const h = await makeStore();
+			await h.seed("SKU-W11", 9);
+			const key = idempotencyKey("w11");
+			const first = await h.store.removeStock("SKU-W11", 2, key);
+			const retry = await h.store.removeStock("SKU-W11", 2, key, { expectedOnHand: 4 });
+			expect(retry).toEqual({ ...first, replayed: true });
+			expect(await h.onHand("SKU-W11")).toBe(7);
+		});
+
+		test("expectedOnHand must be a non-negative integer", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-W9", 7);
+			for (const expectedOnHand of [-1, 1.5, Number.NaN]) {
+				await expect(
+					h.store.removeStock("SKU-W9", 1, idempotencyKey(`w9-${String(expectedOnHand)}`), {
+						expectedOnHand,
+					}),
+				).rejects.toThrow(RangeError);
+			}
+			expect(await h.onHand("SKU-W9")).toBe(7);
 		});
 
 		// -- PR B: batched checkout ADOPT (adoptMany) ---------------------------
@@ -643,6 +817,86 @@ export function inventoryStoreContract(
 				held.reservationId,
 			]);
 			expect(res.lost).toEqual([released.reservationId]);
+		});
+
+		// -- QA2 M2: the batched ORDER-SCOPED release (releaseAdoptedMany) -------
+		//
+		// The expiry and cancel paths release every hold an order adopted at once.
+		// Per-id semantics are singular `releaseAdopted`'s; only the round trips
+		// change (grouped per SKU).
+
+		/** Hold `qty` on `sku` under `key` and adopt it for `order`. */
+		async function adoptedHold(
+			h: InventoryStoreHarness,
+			sku: string,
+			qty: number,
+			key: string,
+			order: string,
+		): Promise<string> {
+			if (!h.holdWithExpiry) throw new Error("harness has no holdWithExpiry");
+			const id = await h.holdWithExpiry(sku, qty, key, FUTURE);
+			const adopted = await h.store.adoptMany({
+				reservationIds: [id],
+				orderId: order,
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			if (adopted.adopted.length !== 1) throw new Error("seed adopt failed");
+			return id;
+		}
+
+		test("releaseAdoptedMany returns every hold the order adopted, across SKUs, exactly once", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			await h.seed("SKU-B", 10);
+			const a1 = await adoptedHold(h, "SKU-A", 2, "ka1", "ord-1");
+			const a2 = await adoptedHold(h, "SKU-A", 1, "ka2", "ord-1");
+			const b1 = await adoptedHold(h, "SKU-B", 3, "kb1", "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([7, 7]);
+
+			await h.store.releaseAdoptedMany([a1, b1, a2], "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([10, 10]);
+
+			// A replay (a second sweep, a completer) returns nothing twice.
+			await h.store.releaseAdoptedMany([a1, a2, b1], "ord-1");
+			await h.store.releaseAdopted(a1, "ord-1");
+			expect([await h.onHand("SKU-A"), await h.onHand("SKU-B")]).toEqual([10, 10]);
+			// And the singular call agrees the holds are gone: a later commit is lost.
+			expect((await h.store.commitMany([a1, b1])).lost.toSorted()).toEqual([a1, b1].toSorted());
+		});
+
+		test("releaseAdoptedMany is ORDER-SCOPED: another order's hold, a cart's held hold, a committed hold and an unknown id are untouched", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			const mine = await adoptedHold(h, "SKU-A", 1, "k-mine", "ord-1");
+			const theirs = await adoptedHold(h, "SKU-A", 2, "k-theirs", "ord-2");
+			const cartHeld = await h.holdWithExpiry("SKU-A", 3, "k-cart", FUTURE);
+			const sold = await adoptedHold(h, "SKU-A", 1, "k-sold", "ord-1");
+			await h.store.commit(sold);
+			expect(await h.onHand("SKU-A")).toBe(3);
+
+			await h.store.releaseAdoptedMany(
+				[mine, theirs, cartHeld, sold, "no-such-reservation"],
+				"ord-1",
+			);
+			// Only `mine` came back: +1.
+			expect(await h.onHand("SKU-A")).toBe(4);
+			// The others are exactly as they were: theirs and the cart's hold still commit.
+			expect((await h.store.commitMany([theirs, cartHeld])).lost).toEqual([]);
+			expect(await h.onHand("SKU-A")).toBe(4);
+		});
+
+		test("releaseAdoptedMany collapses duplicate ids and is a no-op for an empty list", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-A", 10);
+			const id = await adoptedHold(h, "SKU-A", 2, "k-dup", "ord-1");
+			await h.store.releaseAdoptedMany([], "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(8);
+			await h.store.releaseAdoptedMany([id, id, id], "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(10);
 		});
 
 		test("commitMany with no ids is a no-op ({ lost: [] })", async () => {

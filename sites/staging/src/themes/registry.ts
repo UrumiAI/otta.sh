@@ -43,6 +43,9 @@ const tempered = {
 		accountOrders: TemperedAccountOrdersView,
 		accountOrder: TemperedAccountOrderView,
 	},
+	/* The header's cart count and signed-in state on every storefront page
+	   (QA U-12, U-14) — see ThemeChromeNeeds.shopperState. */
+	chrome: { shopperState: true },
 } satisfies ThemeModule & { views: ThemeViews };
 
 /** Every theme the manifest lists, and nothing else (held equal by test). */

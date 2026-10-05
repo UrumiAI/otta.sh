@@ -8,7 +8,9 @@
  *
  * WHAT LIVES HERE. INC-20 migrated Orders (`./orders/`) and INC-21 migrated
  * Pricing & inventory (`./products/`) — every screen ADR-0014 Decision 6 puts in
- * scope. INC-19's diagnostic landing page is gone: it managed no data, and the
+ * scope. Pricing & inventory has since moved into the products collection's own
+ * editor and list (ADR-0014, amendment 2026-10-01), so it is a panel and two
+ * columns below rather than a page. INC-19's diagnostic landing page is gone: it managed no data, and the
  * one thing it proved — that a page served under `otta-console` can call the
  * `otta` plugin's admin route and get a 200 (ADR-0014 Decision 3's only data
  * path) — is now proved by the two real screens, which do nothing else for
@@ -35,8 +37,8 @@
  */
 import type { PluginAdminExports } from "emdash";
 import { OrdersScreen } from "./orders/orders-screen.js";
-import { ProductsScreen } from "./products/products-screen.js";
-import { ThemesScreen } from "./themes/themes-screen.js";
+import { PRICING_COLUMNS } from "./products/pricing-columns.js";
+import { PRICING_FIELD_WIDGET, PricingStockField } from "./products/pricing-cards.js";
 
 /**
  * EmDash types `PluginAdminExports["pages"]` as `Record<string, JSX.Element>`
@@ -45,12 +47,23 @@ import { ThemesScreen } from "./themes/themes-screen.js";
  * shipped `@emdash-cms/plugin-forms` has the same mismatch and casts too.
  *
  * EVERY KEY MUST EQUAL THE `path` OF THE MATCHING ENTRY in
- * `OTTA_CONSOLE_ADMIN_PAGES` (`./index.ts`) — `ORDERS_PAGE.path`,
- * `PRODUCTS_PAGE.path` and `THEMES_PAGE.path` — or the sidebar drops the entry without an error;
+ * `OTTA_CONSOLE_ADMIN_PAGES` (`./index.ts`) — `ORDERS_PAGE.path` — or the
+ * sidebar drops the entry without an error;
  * `test/console-plugin.test.ts` pins the two lists together in both directions.
  */
 export const pages = {
 	"/orders": OrdersScreen,
-	"/products": ProductsScreen,
-	"/themes": ThemesScreen,
 } as unknown as PluginAdminExports["pages"];
+
+/**
+ * Pricing & inventory lives INSIDE the products collection's own screens
+ * (ADR-0014, amendment 2026-10-01): Pricing, Inventory and Shipping & tax cards
+ * in the product editor's main column, and Price / Stock columns on the list.
+ * EmDash discovers both as named exports of this module — the cards as the
+ * custom editor of the products collection's `pricing` field
+ * (`widget: "otta-console:pricing"`), the columns by collection — so neither
+ * needs an `admin.pages` entry or a sidebar item.
+ */
+export const fields = { [PRICING_FIELD_WIDGET]: PricingStockField };
+
+export const contentListColumns = PRICING_COLUMNS;

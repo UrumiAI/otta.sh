@@ -22,8 +22,13 @@
  * The service remains the sole authority on identity — it derives `customerId`
  * from the bearer token (§4); this layer only transports it.
  */
+import { isIdToken, LOGIN_TOKEN_MAX } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
-import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
+import type {
+	AccountOrderWire,
+	AddressWire,
+	OrderSummaryWire,
+} from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
@@ -35,6 +40,9 @@ export const ACCOUNT_ORDERS_ROUTE = "storefront/account/orders";
 export const ACCOUNT_ORDER_ROUTE = "storefront/account/order";
 export const ACCOUNT_ADDRESSES_ROUTE = "storefront/account/addresses";
 export const ACCOUNT_LOGOUT_ROUTE = "storefront/account/logout";
+/** Who the session is — its customer's email — for a storefront that greets a
+ *  signed-in shopper or prefills their checkout. */
+export const ACCOUNT_ME_ROUTE = "storefront/account/me";
 
 /** Where an unauthenticated account request is redirected. */
 export const ACCOUNT_LOGIN_PATH = "/account/login";
@@ -110,7 +118,7 @@ export interface AccountOrderInput {
 	orderId?: unknown;
 }
 export type AccountOrderResult =
-	| { ok: true; order: OrderSummaryWire }
+	| { ok: true; order: AccountOrderWire }
 	| { ok: false; error: "NOT_FOUND" }
 	| { ok: false; redirectTo: string }
 	| RenderGuardFailure;
@@ -124,8 +132,17 @@ export interface AccountLogoutResult {
 }
 
 /** A session token longer than this is not one we minted — it is dropped
- *  without a store round trip. */
-const MAX_SESSION_TOKEN_LENGTH = 512;
+ *  without a store round trip. Shared with the checkout's place input, which
+ *  carries the same bearer. */
+export const MAX_SESSION_TOKEN_LENGTH = 512;
+
+/** `ok: false` is "not signed in" — no session, or one that no longer resolves —
+ *  with the login path, like every other account read. Never an error: a page
+ *  that asks is rendering for a signed-out shopper too. */
+export type AccountMeResult =
+	| { ok: true; email: string }
+	| { ok: false; redirectTo: string }
+	| RenderGuardFailure;
 
 export type AccountAddressesResult =
 	| { ok: true; addresses: AddressWire[] }
@@ -158,6 +175,13 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 			if (!isNonEmptyString(challengeId) || !isNonEmptyString(token)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			// A challenge id or token no store could have minted is an INVALID LINK —
+			// the answer a tampered or truncated link deserves — not the client's
+			// thrown input error, which renderGuard would report as RENDER_FAILED and
+			// the site as an outage (QA U-6).
+			if (!isIdToken(challengeId) || token.length > LOGIN_TOKEN_MAX) {
+				return { ok: false as const, reason: "INVALID" as const };
+			}
 			const result = await (await makeCommerceClient(ctx)).verifyLogin(challengeId, token);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			return {
@@ -185,6 +209,21 @@ export function createAccountLogoutHandler(): RouteHandler<AccountSessionInput> 
 		});
 }
 
+/** Who the session is. The email is read off the session's customer — the
+ *  route takes no other identity input, so it cannot be asked about anyone else. */
+export function createAccountMeHandler(): RouteHandler<AccountSessionInput> {
+	return (routeCtx, ctx): Promise<AccountMeResult> =>
+		renderGuard(ACCOUNT_ME_ROUTE, async () => {
+			const sessionToken = routeCtx.input.sessionToken;
+			if (!isNonEmptyString(sessionToken) || sessionToken.length > MAX_SESSION_TOKEN_LENGTH) {
+				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
+			}
+			const result = await (await makeCommerceClient(ctx)).getMyAccount(sessionToken);
+			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
+			return { ok: true as const, email: result.email };
+		});
+}
+
 /** `GET /me/orders` proxy — unauthenticated ⇒ redirect to login (never a leak). */
 export function createAccountOrdersHandler(): RouteHandler<AccountSessionInput> {
 	return (routeCtx, ctx): Promise<AccountOrdersResult> =>
@@ -208,7 +247,12 @@ export function createAccountOrderHandler(): RouteHandler<AccountOrderInput> {
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			if (!isNonEmptyString(orderId)) return { ok: false as const, error: "NOT_FOUND" };
+			// An id no store could have minted is simply not found — never the
+			// client's thrown input error, which renderGuard would report as
+			// RENDER_FAILED and the account page as a 503 outage (QA U-6).
+			if (!isNonEmptyString(orderId) || !isIdToken(orderId)) {
+				return { ok: false as const, error: "NOT_FOUND" };
+			}
 			const result = await (await makeCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
 			if (result.ok) return { ok: true as const, order: result.order };
 			if (result.reason === "NOT_FOUND") return { ok: false as const, error: "NOT_FOUND" };

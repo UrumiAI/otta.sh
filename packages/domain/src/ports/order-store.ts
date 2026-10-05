@@ -1,3 +1,4 @@
+import type { ExpiryListOptions } from "./cart-store.js";
 import type { Cents, Currency } from "../money/cents.js";
 import type {
 	CustomerId,
@@ -9,9 +10,11 @@ import type {
 } from "../money/ids.js";
 import type {
 	CancellationReason,
+	CancellationRefund,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
+	OrderNotice,
 	OrderState,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -52,10 +55,87 @@ export interface OrderStore {
 	 * 0 rows ⇒ someone else won (paid/cancelled/expired, or not yet due) ⇒ false.
 	 */
 	expire(orderId: OrderId, now: string): Promise<boolean>;
-	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
-	listExpirable(now: string): Promise<OrderId[]>;
+	/**
+	 * `expire`, for the sweep (QA2 M2): the SAME guarded flip, answering with what
+	 * the expiry use-case needs next so it never re-reads the order. `null` when
+	 * this call did not win the flip (exactly when `expire` would answer `false`);
+	 * otherwise the order as the flip left it, and whether the store has ALREADY
+	 * released the holds the order adopted.
+	 *
+	 * `holdsReleased: true` is a promise, not a hint: a store that records a release
+	 * intent with the flip and completes it in the same call (the document store)
+	 * says so, and the use-case then releases nothing itself. A store that cannot,
+	 * or whose completion failed this time (its intent stays outstanding for the
+	 * completer), says `false` and the use-case releases them through
+	 * `InventoryStore.releaseAdoptedMany`, which is order-scoped and idempotent.
+	 */
+	expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null>;
+	/**
+	 * Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`, oldest
+	 * deadline first.
+	 *
+	 * `excludeIntentDue` (QA3 N1): leave out every order with a payment intent that
+	 * is DUE for withdrawal and not yet withdrawn (`cancelOutcome` null and
+	 * `cancelDueAt <= now`) — such an order must not expire while the buyer can still
+	 * pay it; `cancelDueIntents` withdraws it first. An intent whose cancel failed and
+	 * was rescheduled is not due until its retry, so a provider outage never holds an
+	 * order. `limit` then counts the orders LISTED, not the ones read: the store keeps
+	 * reading past excluded ones (within its page bound).
+	 */
+	listExpirable(now: string, options?: OrderExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
+
+	// -- Payment intents (late-payment prevention) ----------------------------
+
+	/**
+	 * Remember a payment intent the gateway minted for this order — idempotent on
+	 * `(orderId, intentId)`: a checkout replay that re-issues the SAME intent (the
+	 * provider's native idempotency) records nothing new.
+	 *
+	 * WHY THE ORDER HAS TO REMEMBER IT. The intent id used to live only in the
+	 * checkout reply and the buyer's pay-page cookie, so when the order expired
+	 * nothing on the server could name the intent to cancel — and a buyer who kept
+	 * the pay page open could still pay an order whose stock was already back on
+	 * sale.
+	 *
+	 * DUE AT THE HOLD. A new intent is recorded with `cancelDueAt` = the order's
+	 * `holdExpiresAt`: the instant from which, unless the order was paid, it should
+	 * no longer be payable. The intent-cancel sweep (`cancelDueIntents`) drains due
+	 * intents through {@link listIntentCancelsDue}; an order that is PAID owes no
+	 * cancel, so the guarded `pending → paid` flip resolves its unresolved intents
+	 * (`not_needed`) in the same write, and they never reach the sweep.
+	 *
+	 * A LIST, not a field: Stripe expires idempotency keys after ~24 h, so a very
+	 * late checkout replay can mint a second intent for the same order, and every
+	 * intent that can still be paid is one that must be cancelled.
+	 */
+	recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void>;
+	/** The intents recorded for this order, oldest first (empty when none). */
+	listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]>;
+	/**
+	 * Orders holding at least one UNRESOLVED intent whose `cancelDueAt <= now`,
+	 * earliest first, at most `limit` — the intent-cancel sweep's batch.
+	 */
+	listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]>;
+	/**
+	 * Write one intent's cancel bookkeeping: reschedule it (`cancelDueAt` set,
+	 * `cancelOutcome` null), or resolve it (`cancelDueAt` null, an outcome set). A
+	 * resolved intent leaves the due index for good. No-op for an unknown order or
+	 * intent. Last-writer-wins on the entry; the domain owns the policy.
+	 *
+	 * THE RACE THIS ALLOWS IS HARMLESS. Two writers can meet on one entry — two
+	 * overlapping sweep runs, or an unpaid cancel expediting an intent while a sweep
+	 * reschedules it — and the later write wins outright. Every outcome of that is
+	 * safe: the worst is one extra (idempotently-keyed, so deduplicated by Stripe)
+	 * cancel call, or an intent looked at a little later than it could have been.
+	 * Nothing here moves money; a payment that slips through is refunded at settle.
+	 */
+	updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void>;
 
 	// -- Refunds ledger (ADR-0008) --------------------------------------------
 
@@ -163,6 +243,61 @@ export interface OrderStore {
 	 * retried or released. False ⇒ no reserved row under the key.
 	 */
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean>;
+
+	/**
+	 * A person's answer to an UNVERIFIED refund, "it didn't happen" (review round
+	 * 2): guarded `unverified → voided`, releasing the row's ceiling capacity and
+	 * recording `resolvedBy` on it. False ⇒ no unverified row under the key. The
+	 * other answer, "confirmed at the provider", is {@link finalizeRefund} with
+	 * `resolvedBy`.
+	 */
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean>;
+	/**
+	 * Read the order AND its ledgers — state-change audit, captured payments,
+	 * refunds — in ONE read of the aggregate, or `null` when there is no such order.
+	 *
+	 * The late-payment paths (settle's cure, the storefront's "was anything
+	 * charged?" status, the refund-retry sweep) need all four together, and every
+	 * one of them already lives on the order's single document: reading them
+	 * through `getById` + `listEventsForOrder` + `getCapturedPayments` +
+	 * `listRefunds` would read that same document four times, on a page a buyer
+	 * reloads.
+	 */
+	readOrderLedger(orderId: OrderId): Promise<OrderLedger | null>;
+	/**
+	 * Schedule (or, with `null`, clear) a retry of ONE automatic late-payment refund,
+	 * keyed by that refund's idempotency key — set after a transient provider
+	 * failure, cleared once the refund is finalized or handed to a human. PER REFUND,
+	 * not per order: an order can carry two late captures, and finishing one must
+	 * never drop the retry the other still needs. The order is due
+	 * ({@link listRefundRetriesDue}) while ANY of its refunds is scheduled.
+	 * Last-writer-wins per key; the store only remembers the bookkeeping, the
+	 * domain owns what a retry means (`retryLatePaymentRefunds`).
+	 *
+	 * WHY IT EXISTS. Stripe's redelivery is the first retry, but Stripe stops after
+	 * a few days, and a `reserved` refund row keeps holding ceiling capacity —
+	 * which would also refuse any admin refund against the same money — until
+	 * something resumes it or hands it to a human.
+	 */
+	scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void>;
+	/** Orders with at least one scheduled refund retry due (`at <= now`), earliest
+	 *  first, at most `limit`. */
+	listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]>;
+	/**
+	 * Orders with at least one scheduled refund retry whose FIRST failure (`since`)
+	 * is at or before `cutoff`, oldest first, at most `limit` — the give-up
+	 * escalation's own list. Ranked by age rather than by due time, so a run of
+	 * due-but-young retries at the head of the due list can never keep a stale
+	 * one from being handed to a human.
+	 */
+	listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
 	/**
@@ -254,9 +389,11 @@ export interface OrderStore {
 	 */
 	transition(input: OrderTransitionInput): Promise<OrderTransitionResult>;
 
-	/** Every order owned by a customer (Phase 5 §7). The identity is derived
-	 *  server-side from the session — the customer id is never client-supplied —
-	 *  which is the actual mechanism behind "sees only own orders" (§4). */
+	/** Every order owned by a customer (Phase 5 §7), NEWEST FIRST — `created_at
+	 *  DESC, id DESC`, the admin list's order — because a shopper's list leads with
+	 *  the order they just placed. The identity is derived server-side from the
+	 *  session — the customer id is never client-supplied — which is the actual
+	 *  mechanism behind "sees only own orders" (§4). */
 	listForCustomer(customerId: CustomerId): Promise<Order[]>;
 
 	/**
@@ -309,11 +446,14 @@ export interface OrderStore {
 	countOrders(filter: OrderListFilter): Promise<number>;
 
 	/**
-	 * Claim guest orders for a just-authenticated customer (Phase 5 §9 Risk 3):
-	 * `UPDATE orders SET customer_id=:customerId WHERE buyer_ref=:buyerRef AND
-	 * customer_id IS NULL`. Safe because a magic-link login already proves the
-	 * person owns that inbox. Returns the number of orders linked. Idempotent —
-	 * a second login links nothing new.
+	 * Claim guest orders for a customer whose inbox is PROVEN (Phase 5 §9 Risk 3):
+	 * `UPDATE orders SET customer_id=:customerId WHERE lower(buyer_ref)=lower(:buyerRef)
+	 * AND customer_id IS NULL`. Called at sign-in (`verifyLogin` — the magic link
+	 * just proved the inbox) and, since ADR-0004's 2026-10-02 amendment, whenever a
+	 * signed-in customer lists their orders (`listCustomerOrders` — a live session
+	 * is the same proof until it expires or is revoked). Pass only the customer's
+	 * own email. Returns the number of orders linked. Idempotent — a second call
+	 * links nothing new.
 	 */
 	linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number>;
 
@@ -326,6 +466,53 @@ export interface OrderStore {
 	 * to dispatch.
 	 */
 	claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null>;
+	/**
+	 * Enqueue a NON-transition email about this order (see {@link OrderNotice}) on
+	 * the same outbox the state emails drain from — first-wins per
+	 * `(orderId, notice.kind, notice.refundId)`, the notice analogue of the state
+	 * rows' `UNIQUE(order_id, to_state)`. The finalizing refund writes
+	 * (`finalizeRefund`, the one-shot `recordRefund`) append a `refund-issued` notice
+	 * in the SAME write for a `refund`-purpose row that leaves money captured
+	 * (ADR-0026); a row that reaches the ceiling is announced by the `refunded` state
+	 * email instead, and a `cancellation` or `late-payment` row by its own email. A replay (a redelivered webhook re-driving the
+	 * step that enqueued it) writes nothing and answers `false`; `true` ⇒ this call
+	 * enqueued the row. The row's `toState` is the order's state at enqueue time —
+	 * informational only; the dispatcher picks the template from `notice`.
+	 * `false` too when the order does not exist.
+	 */
+	enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean>;
+	/**
+	 * {@link claimNextEmail} narrowed to ONE order: the earliest due row of `orderId`,
+	 * under the same due predicate, the same lease and the same single-winner
+	 * conditional write — so it composes with a concurrent `claimNextEmail` (or a
+	 * second call of its own) exactly as two global dispatchers do (ADR-0005). `null`
+	 * ⇒ that order has nothing due (none enqueued, all sent/failed, or leased), or the
+	 * order does not exist; it NEVER claims another order's row.
+	 *
+	 * It exists for the payment-settle route, which sends the order it just settled
+	 * inline (ADR-0005's 2026-10-02 amendment). A request must never run the global
+	 * drain — that walks the whole queue and belongs to the cron — and an order-scoped
+	 * claim is a single read of one aggregate plus one write, bounded by construction.
+	 *
+	 * `onlyUnattempted` narrows it further to rows NO dispatcher has tried yet —
+	 * `attempts === 0` AND `timeouts === 0` — checked inside the same conditional
+	 * write, on top of the due predicate (so a row backed off to a future due time is
+	 * never claimable early either). The settle route passes it: it makes at most one
+	 * COUNTED attempt per row (the total budget, `maxAttempts`, is unchanged), so
+	 * repeated deliveries during a provider outage cannot spend that budget and park
+	 * the email `failed` within minutes. A cut-short inline attempt is released
+	 * uncounted, so it may recur on a later delivery before the sweep takes the row
+	 * (the provider `Idempotency-Key` dedupes it); and a row the cron has already
+	 * backed off — an uncounted timeout leaves `attempts` at 0 but `timeouts` above
+	 * it — is never retried inline, so a request can never undercut the cron's
+	 * backoff.
+	 */
+	claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options?: ClaimEmailForOrderOptions,
+	): Promise<OutboxEmail | null>;
 	/**
 	 * Mark a claimed row delivered (`sent_at`), terminal. Only ever called on a row
 	 * `claimNextEmail` has already handed this dispatcher, so the entry it names is
@@ -348,7 +535,23 @@ export interface OrderStore {
 	 * unfound row as a no-op, a document adapter throws a typed retryable error,
 	 * and neither may report success without having written the reschedule.
 	 */
-	rescheduleEmail(id: string, retryAt: string | null): Promise<void>;
+	rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void>;
+	/**
+	 * Hand a claimed row back UNTRIED: `pending`, due at once, and with the
+	 * attempt its claim counted taken back off. For a dispatcher that claimed a
+	 * row and then could not try it — its time ran out before the send, or the
+	 * send was cut off by the dispatcher's own timeout — so the row's
+	 * `maxAttempts` budget is spent only on tries the provider actually got. The
+	 * locate semantics are `markEmailSent`'s; only a `sending` row is released, so
+	 * a double release is a no-op.
+	 *
+	 * `retryAt` moves the row's due time FORWARD (a backoff — without it the row is
+	 * due at once); `timedOut` also records one more dispatcher timeout on it
+	 * (`OutboxEmail.timeouts`). A row released with a forward due time sits behind
+	 * every other due row, so one that keeps timing out cannot hold the head of the
+	 * queue.
+	 */
+	releaseEmailClaim(id: string, options?: ReleaseEmailClaimOptions): Promise<void>;
 }
 
 /** The store-level resolve command. `outcome`/`reason`/`resolvedBy` are already
@@ -436,6 +639,12 @@ export interface CancelOrderInput {
 	 *  `OrderTransitionInput`/`RecordFulfillmentInput` — `cancelled` always has a
 	 *  template. */
 	enqueueEmail: boolean;
+	/** The refund the cancellation already issued, recorded on the envelope
+	 *  verbatim (`OrderCancellation.refund`). Absent ⇒ `null`. */
+	refund?: CancellationRefund | null;
+	/** Whether the cancellation restocked the order's units, recorded verbatim
+	 *  (`OrderCancellation.restocked`). Absent ⇒ `false`. */
+	restocked?: boolean;
 }
 
 /** `cancelled:false` ⇒ the guarded `fromState → cancelled` flip matched 0 rows
@@ -459,6 +668,8 @@ export interface OrderTransitionInput {
 	/** Enqueue an outbox row for `toState` in the same transaction. False for a
 	 *  state with no template (`failed`) so no undeliverable row is ever written. */
 	enqueueEmail: boolean;
+	/** Who made the move — recorded on the flip's audit event. Absent ⇒ `null`. */
+	actor?: string;
 }
 
 export interface OrderTransitionResult {
@@ -468,6 +679,109 @@ export interface OrderTransitionResult {
 	order: Order | null;
 }
 
+/**
+ * A notice to enqueue, WITH the facts its email states. The amount is the money
+ * the notice is about — for `late-payment-refunded`, the refund itself — and NOT
+ * the order total: a late capture can differ from the total, and an email that
+ * tells the buyer the wrong figure came back is worse than no email.
+ */
+export interface OrderNoticeInput {
+	kind: OrderNotice;
+	amount: Cents;
+	currency: Currency;
+	/** The refund the notice announces, when it announces one. Part of the dedupe
+	 *  key: first-wins per `(orderId, kind, refundId)`, so two refunds of the same
+	 *  kind are two emails and a replay of either is none. */
+	refundId?: string;
+}
+
+/** One refund's retry bookkeeping ({@link OrderStore.scheduleRefundRetry}). */
+export interface RefundRetrySchedule {
+	/** When to try again (ISO-8601 UTC). */
+	at: string;
+	/** Transient failures so far — drives the backoff. */
+	attempts: number;
+	/** When the FIRST transient failure happened — drives the give-up window. */
+	since: string;
+}
+
+/** A scheduled retry, as the ledger read reports it. */
+export interface RefundRetry extends RefundRetrySchedule {
+	idempotencyKey: IdempotencyKey;
+}
+
+/** Remember one gateway-minted payment intent against its order. */
+export interface RecordPaymentIntentInput {
+	orderId: OrderId;
+	gateway: PaymentMethod;
+	/** The provider's intent id (`pi_…` for Stripe). */
+	intentId: string;
+}
+
+/**
+ * How an intent's cancel ended:
+ *  - `cancelled` / `not_cancellable` — the provider withdrew it / it was already
+ *    final (succeeded or cancelled);
+ *  - `unsupported` — the gateway holds no standing intent or no credential;
+ *  - `not_needed` — the order was paid (or vanished): there is nothing to withdraw;
+ *  - `failed` — a terminal refusal, or retries exhausted. Logged; the late-payment
+ *    refund remains the backstop.
+ */
+export type PaymentIntentCancelOutcome =
+	| "cancelled"
+	| "not_cancellable"
+	| "unsupported"
+	| "not_needed"
+	| "failed";
+
+/** A payment intent recorded for an order ({@link OrderStore.recordPaymentIntent}). */
+export interface PaymentIntentRecord {
+	gateway: PaymentMethod;
+	intentId: string;
+	/** ISO-8601 UTC — the store clock when it was first recorded. */
+	recordedAt: string;
+	/** When the sweep should next look at it; `null` once resolved. */
+	cancelDueAt: string | null;
+	/** Cancel attempts the sweep has made (transient failures count). */
+	cancelAttempts: number;
+	/** How it ended; `null` while unresolved. */
+	cancelOutcome: PaymentIntentCancelOutcome | null;
+}
+
+/** One intent's next cancel bookkeeping ({@link OrderStore.updatePaymentIntentCancel}). */
+export interface PaymentIntentCancelUpdate {
+	cancelDueAt: string | null;
+	cancelAttempts: number;
+	cancelOutcome: PaymentIntentCancelOutcome | null;
+}
+
+/** The order with its ledgers, as {@link OrderStore.readOrderLedger} returns it. */
+export interface OrderLedger {
+	order: Order;
+	events: OrderEvent[];
+	payments: CapturedPayment[];
+	refunds: RefundRecord[];
+	/** The order's scheduled late-payment refund retries, by key order. */
+	refundRetries: RefundRetry[];
+	/** The payment intents its checkout recorded, oldest first. */
+	paymentIntents: PaymentIntentRecord[];
+}
+
+/** Narrowing for {@link OrderStore.claimNextEmailForOrder}. */
+export interface ClaimEmailForOrderOptions {
+	/** Claim only a row no dispatcher has tried before — never claimed for an
+	 *  attempt (`attempts === 0`) and never timed out (`timeouts === 0`). */
+	onlyUnattempted?: boolean;
+}
+
+/** How {@link OrderStore.releaseEmailClaim} hands a row back. */
+export interface ReleaseEmailClaimOptions {
+	/** When the row is due again (a backoff). Absent: due at once. */
+	readonly retryAt?: string;
+	/** The send was cut off for time: record one more timeout on the row. */
+	readonly timedOut?: boolean;
+}
+
 /** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
 export interface OutboxEmail {
 	id: string;
@@ -475,6 +789,17 @@ export interface OutboxEmail {
 	toState: OrderState;
 	/** Delivery attempts so far (incremented on claim) — drives retry budgeting. */
 	attempts: number;
+	/** Sends that timed out with their FULL allowance (`EmailSendTimeoutError`,
+	 *  not cut short) — not attempts, but counted separately so a provider that is
+	 *  merely slow is backed off and, past a limit, reported and counted after all.
+	 *  It stops at that limit (`MAX_UNCOUNTED_TIMEOUTS`): from then on a timeout is
+	 *  recorded as an attempt instead, so the row's `attempts` carries the rest. 0
+	 *  when absent. */
+	timeouts: number;
+	/** Set on a NON-transition row ({@link OrderStore.enqueueNotice}): the
+	 *  dispatcher renders the notice's template, with its own payload, instead of
+	 *  `toState`'s. `null` on every state-transition row. */
+	notice: OrderNoticeInput | null;
 }
 
 /** A line to snapshot into `order_items` — price + title already resolved from
@@ -498,6 +823,15 @@ export interface CreateOrderInput {
 	idempotencyKey: IdempotencyKey;
 	holdExpiresAt: string;
 	buyerRef: string;
+	/**
+	 * The account that owns the order FROM BIRTH, or absent/null for a guest order.
+	 * Set only when the checkout came from a session whose customer's email IS the
+	 * `buyerRef` (`checkoutOwner`), so it is the same claim `linkGuestOrders` makes
+	 * at the next sign-in — made now, so a signed-in shopper's order is in their
+	 * list at once instead of after another magic link. A replay keeps the first
+	 * write's owner: the order, like its snapshots, is written once.
+	 */
+	customerId?: CustomerId | null;
 	paymentMethod: PaymentMethod | null;
 	lines: CreateOrderLineInput[];
 	/**
@@ -841,6 +1175,13 @@ export interface CapturedPayment {
  *  return the admin recorded — x402's honest degraded path). `status` is the
  *  row's reserve-before-issue lifecycle — see {@link RefundStatus}. */
 export interface RefundRecord {
+	/** Why the money went back — see {@link RefundPurpose}. ABSENT on a row written
+	 *  before the field existed, which reads as `"refund"`. */
+	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
 	id: string;
 	orderId: OrderId;
 	amount: Cents;
@@ -853,9 +1194,28 @@ export interface RefundRecord {
 	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
+	/** Who resolved this row by hand when its outcome was unknown (`unverified`
+	 *  → recorded or voided, review round 2). Absent otherwise. */
+	resolvedBy?: string;
 }
 
 export type RefundKind = "gateway" | "manual";
+
+/**
+ * Why a refund was made (QA T1-4):
+ *  - `refund`       — an admin refund in its own right. When the FINALIZED `Σ`
+ *    reaches the ceiling it drives `→ refunded`, as ADR-0008 decided.
+ *  - `cancellation` — the money a cancellation returns BEFORE it flips the order
+ *    `→ cancelled` (`cancelOrderWithRefund`). It consumes ceiling capacity like any
+ *    other row but NEVER drives `→ refunded`: the cancellation is what closes the
+ *    order, and `refunded` is terminal, so flipping first would make the cancel
+ *    illegal and send the buyer a second email.
+ *  - `late-payment` — the automatic refund of a payment that landed after the order
+ *    had expired or been cancelled unpaid (`settleOrder`, ADR-0022). Its order is
+ *    already terminal, so it never flips anything, and the buyer hears about it
+ *    through its own `late-payment-refunded` notice — never an admin-refund email.
+ */
+export type RefundPurpose = "refund" | "cancellation" | "late-payment";
 
 /**
  * A refund row's lifecycle (ADR-0008, reserve-before-issue):
@@ -881,6 +1241,9 @@ export type RefundStatus = "recorded" | "reserved" | "unverified" | "voided";
 export interface FinalizeRefundInput {
 	idempotencyKey: IdempotencyKey;
 	refundRef: string;
+	/** A person confirmed an UNVERIFIED refund at the provider: who, recorded on
+	 *  the row. Absent on the gateway's own finalize. */
+	resolvedBy?: string;
 }
 
 /** `found:false` ⇒ no reserved/unverified row under the key AND no benign
@@ -918,6 +1281,13 @@ export interface RecordRefundInput {
 	/** Every command carries one (CLAUDE.md); `UNIQUE(idempotency_key)` enforces
 	 *  once-only — the ledger dedupe AND (for gateway) Stripe's native key. */
 	idempotencyKey: IdempotencyKey;
+	/** Stored on the row; a `cancellation` row never drives `→ refunded`, on the
+	 *  one-shot record OR on a later finalize. Absent ⇒ `"refund"`. */
+	purpose?: RefundPurpose;
+	/** On a `cancellation` row: whether that cancellation returns the units to stock —
+	 *  the FIRST attempt's choice, so a retry after a crash keeps it whatever the
+	 *  checkbox then says (ADR-0026). Absent on every other row. */
+	restock?: boolean;
 }
 
 /** The atomic outcome of {@link OrderStore.recordRefund} (ADR-0008).
@@ -945,3 +1315,17 @@ export interface RecordRefundStoreResult {
 }
 
 export type { OrderState };
+
+/** What {@link OrderStore.expireWithOrder} answers for a WON expiry. */
+export interface ExpiredOrder {
+	/** The order as the flip left it: `state` is `expired`. */
+	readonly order: Order;
+	/** True when the store already released every hold the order adopted. */
+	readonly holdsReleased: boolean;
+}
+
+/** {@link OrderStore.listExpirable}'s options. */
+export interface OrderExpiryListOptions extends ExpiryListOptions {
+	/** Leave out orders whose payment intent is due and not yet withdrawn. */
+	readonly excludeIntentDue?: boolean;
+}

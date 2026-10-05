@@ -56,6 +56,6 @@ test.describe("customer login in the browser", () => {
 		]);
 		expect(request.status(), "the login POST was refused as cross-origin").toBe(303);
 		await expect(page).toHaveURL(/\/account\/login\?sent=1$/);
-		await expect(page.getByText("If an account exists for that address")).toBeVisible();
+		await expect(page.getByText("A sign-in link is on its way")).toBeVisible();
 	});
 });

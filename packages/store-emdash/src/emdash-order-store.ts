@@ -115,6 +115,7 @@
  * {@link EmdashOrderStore.listOrders} and the package README.
  */
 import {
+	assertSweepLimit,
 	cents,
 	computeRefundCeiling,
 	emailTemplateForState,
@@ -128,6 +129,9 @@ import {
 	type CreateOrderResult,
 	type Currency,
 	type CustomerId,
+	type OrderExpiryListOptions,
+	type ExpiredOrder,
+	type ReleaseEmailClaimOptions,
 	type FinalizeRefundInput,
 	type FinalizeRefundStoreResult,
 	type IdempotencyKey,
@@ -142,17 +146,25 @@ import {
 	type OrderListFilter,
 	type OrderListPage,
 	type OrderListResult,
+	type OrderLedger,
+	type OrderNoticeInput,
+	type RefundRetry,
+	type RefundRetrySchedule,
+	type PaymentIntentCancelUpdate,
+	type PaymentIntentRecord,
 	type OrderSummary,
 	type OrderState,
 	type OrderStore,
 	type OrderTransitionInput,
 	type OrderTransitionResult,
+	type ClaimEmailForOrderOptions,
 	type OutboxEmail,
 	ReservationCommitLostError,
 	type RecordFulfillmentInput,
 	type RecordFulfillmentStoreResult,
 	ReservationNotFoundError,
 	type RecordPaymentInput,
+	type RecordPaymentIntentInput,
 	type RefundStatus,
 	type RecordRefundInput,
 	type RecordRefundStoreResult,
@@ -180,9 +192,13 @@ import {
 	activeRefundTotal,
 	capturedPaymentTotal,
 	computeEmailDueAt,
+	computeRefundRetryAt,
+	computeRefundRetrySince,
+	computeIntentCancelDueAt,
 	computeHoldsPendingAt,
 	customerKeyFor,
 	finalizedRefundTotal,
+	findNoticeEntry,
 	findOutboxEntry,
 	findRefund,
 	foldBuyerRef,
@@ -190,6 +206,7 @@ import {
 	isOutstanding,
 	newHoldIntent,
 	normalizeOrderDoc,
+	resolveIntentsOnPaid,
 	ORDER_KEYS_COLLECTION,
 	type OrderDoc,
 	type OrderItemDoc,
@@ -336,7 +353,13 @@ export interface HoldCompletionResult {
 interface FlipOutcome {
 	won: boolean;
 	doc: OrderDoc | null;
+	/** The document's revision after a WON flip's write; null otherwise. */
+	revision?: string | null;
 }
+
+/** How many lapsed orders past the bite `listExpirable` reads when it excludes the
+ *  ones still owed an intent withdrawal (QA3 N1). Rows, not queries. */
+const EXPIRY_INTENT_LOOKAHEAD = 10;
 
 export class EmdashOrderStore implements OrderStore {
 	readonly #orders: StorageCollection<OrderDoc>;
@@ -432,7 +455,42 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
-		const { won } = await this.#flip({
+		return (await this.#expire(orderId, now)) !== null;
+	}
+
+	async expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null> {
+		const won = await this.#expire(orderId, now);
+		if (won === null) return null;
+		return { order: toOrder(won.doc), holdsReleased: won.holdsReleased };
+	}
+
+	/**
+	 * The guarded expiry flip, then — in the same call — the release intent it
+	 * recorded, completed from the document the flip just wrote.
+	 *
+	 * THE COMPLETION REUSES THE FLIP'S DOCUMENT AND REVISION (QA2 M2). It used to
+	 * re-read the order, release one reservation at a time and re-read the order
+	 * again to stamp the intent — and the expiry use-case then re-read the order and
+	 * released every line a second time. Now: one batched, order-scoped release
+	 * (`releaseAdoptedMany`), and the stamp is ONE compare-and-set against the
+	 * revision the flip returned (the re-reading stamp only if a peer moved the order
+	 * in between). `holdsReleased` says whether that completion finished, so the
+	 * use-case releases nothing a second time.
+	 *
+	 * A failure in the completion must not become the caller's, and must not be
+	 * reported as a lost flip: the flip is already durable, the port documents the
+	 * answer as "did this call win the guarded expiry", and a throw would make a sweep
+	 * that really did expire the order look like one that did not — so the next run
+	 * would re-read it as pending, find it expired, and report 0 while the release
+	 * stayed owed anyway. The intent is left outstanding (and `holdsPendingAt` keeps
+	 * it findable), which is precisely the state the sweeper exists for, and the
+	 * answer says `holdsReleased: false` so the use-case tries the release itself.
+	 */
+	async #expire(
+		orderId: OrderId,
+		now: string,
+	): Promise<{ doc: OrderDoc; holdsReleased: boolean } | null> {
+		const flipped = await this.#flip({
 			orderId,
 			fromState: "pending",
 			toState: "expired",
@@ -440,49 +498,74 @@ export class EmdashOrderStore implements OrderStore {
 			holdExpiresBefore: now,
 			intent: "release",
 		});
-		// The flip recorded the release intent; completing it is the second,
-		// idempotent step, and any replayer can run it (`expireOrders` also releases
-		// the same holds through the same order-scoped, no-op-on-miss port call).
-		//
-		// A failure HERE must not become the caller's, and must not be reported as a
-		// lost flip: the flip is already durable, the port documents the return as
-		// "did this call win the guarded expiry", and a throw would make a sweep that
-		// really did expire the order look like one that did not — so the next run
-		// would re-read it as pending, find it expired, and report 0 while the release
-		// stayed owed anyway. The intent is left outstanding (and `holdsPendingAt`
-		// keeps it findable), which is precisely the state the sweeper exists for.
-		if (won) {
-			try {
-				await this.completeHoldRelease(orderId);
-			} catch (err) {
-				// Not swallowed silently: recorded on the order's own reconciliation
-				// envelope, the one loud channel this port has that needs no extra
-				// collaborator. Best-effort — if even that write fails, the outstanding
-				// intent is still the durable record of the owed work.
-				await this.#noteReleaseFailure(orderId, err);
-			}
+		if (!flipped.won || flipped.doc === null) return null;
+		try {
+			await this.#completeReleaseFrom(flipped.doc, flipped.revision ?? null);
+			return { doc: flipped.doc, holdsReleased: true };
+		} catch (err) {
+			// Not swallowed silently: recorded on the order's own reconciliation
+			// envelope, the one loud channel this port has that needs no extra
+			// collaborator. Best-effort — if even that write fails, the outstanding
+			// intent is still the durable record of the owed work.
+			await this.#noteReleaseFailure(orderId, err);
+			return { doc: flipped.doc, holdsReleased: false };
 		}
-		return won;
 	}
 
-	async listExpirable(now: string): Promise<OrderId[]> {
+	/**
+	 * Complete a release intent from a document in hand: the batched release, then
+	 * the stamp at `revision` (or the re-reading stamp if that is null or stale).
+	 * Only while the order is `expired` or `cancelled` — see `completeHoldRelease`.
+	 */
+	async #completeReleaseFrom(doc: OrderDoc, revision: string | null): Promise<void> {
+		const intent = doc.holdsReleased ?? null;
+		if (!isOutstanding(intent) || intent === null) return;
+		if (doc.state === "expired" || doc.state === "cancelled") {
+			await this.#inventory.releaseAdoptedMany(intent.reservationIds, doc.orderId);
+		}
+		if (revision !== null && (await this.#stampIntentAt(doc, revision, "holdsReleased"))) return;
+		await this.#stampIntent(doc.orderId as OrderId, "holdsReleased");
+	}
+
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
 		// Both halves of the SQL predicate are declared index fields, so this is the
 		// predicate itself rather than a candidate filter — but `limit` is clamped by
 		// the host, so it pages, and each fetched document is re-checked because a
 		// page read is not a lock.
+		//
+		// A caller's `limit` ends the walk once it holds that many, and a walk that
+		// ends there is NOT the silent truncation the page-limit error below refuses:
+		// the caller asked for a bite and knows the rest is still due (the time-boxed
+		// cron sweep asks for one more than it will expire, to tell the two apart).
+		assertSweepLimit(options.limit);
+		const limit = options.limit;
 		const ids: OrderId[] = [];
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxExpiryPages; page++) {
 			const result = await this.#orders.query({
 				where: { state: "pending", holdExpiresAt: { lte: now } },
-				limit: EXPIRY_PAGE_SIZE,
+				orderBy: { holdExpiresAt: "asc" },
+				// Excluding orders still owed a withdrawal (QA3 N1) can skip rows, so the
+				// page reads ahead of the bite; a page is one query whatever its size.
+				limit:
+					limit === undefined
+						? EXPIRY_PAGE_SIZE
+						: Math.min(
+								EXPIRY_PAGE_SIZE,
+								options.excludeIntentDue === true ? limit + EXPIRY_INTENT_LOOKAHEAD : limit,
+							),
 				cursor,
 			});
 			for (const { data } of result.items) {
-				if (data.state === "pending" && data.holdExpiresAt <= now) {
-					ids.push(data.orderId as OrderId);
-				}
+				if (limit !== undefined && ids.length >= limit) return ids;
+				if (data.state !== "pending" || data.holdExpiresAt > now) continue;
+				// The order's own indexed "earliest due unresolved intent" — due means
+				// the buyer can still pay it, so it waits for its withdrawal.
+				const intentDue = data.intentCancelDueAt ?? null;
+				if (options.excludeIntentDue === true && intentDue !== null && intentDue <= now) continue;
+				ids.push(data.orderId as OrderId);
 			}
+			if (limit !== undefined && ids.length >= limit) return ids;
 			if (!result.hasMore || result.cursor === undefined) return ids;
 			cursor = result.cursor;
 		}
@@ -500,6 +583,8 @@ export class EmdashOrderStore implements OrderStore {
 			fromState: input.fromState,
 			toState: input.toState,
 			enqueueEmail: input.enqueueEmail,
+			// The admin's move carries who made it, onto the flip's audit event.
+			...(input.actor !== undefined ? { actor: input.actor } : {}),
 			// `markPaid`/`expire` route through this same primitive, so a bare
 			// transition into those states records the same intent they would.
 			...(input.toState === "paid"
@@ -525,23 +610,7 @@ export class EmdashOrderStore implements OrderStore {
 
 	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		// `at` is fixed-width ISO-8601 text, so lexical order IS chronological; `id`
-		// is the stable tie-break when two events share a timestamp under a fixed
-		// clock — the same `(at, id)` order the SQL's index emitted. The events array
-		// is already in append order; sorting makes the contract's order explicit
-		// rather than a property of how it was built.
-		return [...doc.events]
-			.toSorted((a, b) => (a.at === b.at ? compare(a.id, b.id) : compare(a.at, b.at)))
-			.map((event) => ({
-				id: event.id,
-				orderId: orderId,
-				at: event.at,
-				kind: event.kind,
-				fromState: event.fromState,
-				toState: event.toState,
-				actor: event.actor,
-			}));
+		return doc === null ? [] : eventsOf(normalizeOrderDoc(doc), orderId);
 	}
 
 	// -- the payments ledger ---------------------------------------------------
@@ -593,6 +662,185 @@ export class EmdashOrderStore implements OrderStore {
 			});
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
+	}
+
+	// -- payment intents (late-payment prevention) ----------------------------
+
+	async recordPaymentIntent(input: RecordPaymentIntentInput): Promise<void> {
+		// Keyed WITHIN the order's own document by `intentId`, in one compare-and-set:
+		// unlike `payments.provider_ref` there is no global uniqueness to defend — an
+		// intent id only ever names the order whose checkout minted it, and nothing
+		// sums over intents — so no claim document is owed.
+		await this.#casOrder<void>("recordPaymentIntent", async () => {
+			const current = await this.#orders.getVersioned(input.orderId);
+			// The same choice `recordPayment` makes: an intent recorded nowhere while
+			// the call reports success is worse than a loud throw (the caller logs it).
+			if (current === null) throw new OrderNotFoundError(input.orderId, "recordPaymentIntent");
+			const doc = normalizeOrderDoc(current.value);
+			const intents = doc.paymentIntents ?? [];
+			if (intents.some((intent) => intent.intentId === input.intentId)) return casDone(undefined);
+			const now = this.#clock.now().toISOString();
+			// Due at the hold — the instant from which an unpaid order's intent should no
+			// longer be payable. An order that already left `pending` (a replay after a
+			// settle) owes nothing: only a pending order's intent can still be paid.
+			const pending = doc.state === "pending";
+			const paymentIntents = [
+				...intents,
+				{
+					gateway: input.gateway,
+					intentId: input.intentId,
+					recordedAt: now,
+					cancelDueAt: pending ? doc.holdExpiresAt : null,
+					cancelAttempts: 0,
+					cancelOutcome: pending ? null : ("not_needed" as const),
+				},
+			];
+			const written = await this.#orders.compareAndSet(input.orderId, current.revision, {
+				...doc,
+				paymentIntents,
+				intentCancelDueAt: computeIntentCancelDueAt(paymentIntents),
+				updatedAt: now,
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	async listPaymentIntents(orderId: OrderId): Promise<PaymentIntentRecord[]> {
+		const doc = await this.#orders.get(orderId);
+		return doc === null ? [] : intentsOf(normalizeOrderDoc(doc));
+	}
+
+	async listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `intentCancelDueAt` index, earliest first —
+		// the sweep's batch IS the limit; what this tick does not reach, the next does.
+		const result = await this.#orders.query({
+			where: { intentCancelDueAt: { lte: now } },
+			orderBy: { intentCancelDueAt: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			// A page read is not a lock: re-check what the index promised.
+			const due = data.intentCancelDueAt ?? null;
+			if (due !== null && due <= now) ids.push(data.orderId as OrderId);
+		}
+		return ids;
+	}
+
+	async updatePaymentIntentCancel(
+		orderId: OrderId,
+		intentId: string,
+		update: PaymentIntentCancelUpdate,
+	): Promise<void> {
+		await this.#casOrder<void>("updatePaymentIntentCancel", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeOrderDoc(current.value);
+			const intents = doc.paymentIntents ?? [];
+			if (!intents.some((intent) => intent.intentId === intentId)) return casDone(undefined);
+			const paymentIntents = intents.map((intent) =>
+				intent.intentId === intentId ? { ...intent, ...update } : intent,
+			);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				paymentIntents,
+				// Derived in the SAME write — the only way the due scan stays exact.
+				intentCancelDueAt: computeIntentCancelDueAt(paymentIntents),
+				updatedAt: this.#clock.now().toISOString(),
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	// -- late-payment support ---------------------------------------------------
+
+	async readOrderLedger(orderId: OrderId): Promise<OrderLedger | null> {
+		// ONE document read: the order, its audit, its payments and its refunds all
+		// live on the aggregate, so the late-payment paths never pay four reads for it.
+		const raw = await this.#orders.get(orderId);
+		if (raw === null) return null;
+		const doc = normalizeOrderDoc(raw);
+		return {
+			order: toOrder(doc),
+			events: eventsOf(doc, orderId),
+			payments: paymentsOf(doc),
+			refunds: refundsOf(doc, orderId),
+			refundRetries: Object.entries(doc.refundRetries ?? {})
+				.toSorted((a, b) => compare(a[0], b[0]))
+				.map(
+					([key, retry]): RefundRetry => ({
+						idempotencyKey: key as IdempotencyKey,
+						at: retry.at,
+						attempts: retry.attempts,
+						since: retry.since,
+					}),
+				),
+			paymentIntents: intentsOf(doc),
+		};
+	}
+
+	async scheduleRefundRetry(
+		orderId: OrderId,
+		idempotencyKey: IdempotencyKey,
+		retry: RefundRetrySchedule | null,
+	): Promise<void> {
+		// Last-writer-wins PER KEY: the domain owns what a retry means, the store only
+		// remembers it. The order-level index is re-derived in the SAME write, so the
+		// order stays due while ANY of its refunds is scheduled. Still a
+		// compare-and-set, because every write here is; an unknown order is a no-op.
+		await this.#casOrder<void>("scheduleRefundRetry", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeOrderDoc(current.value);
+			const retries = { ...doc.refundRetries };
+			if (retry === null) {
+				if (!(idempotencyKey in retries)) return casDone(undefined);
+				delete retries[idempotencyKey];
+			} else {
+				retries[idempotencyKey] = { at: retry.at, attempts: retry.attempts, since: retry.since };
+			}
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				refundRetries: retries,
+				refundRetryAt: computeRefundRetryAt(retries),
+				refundRetrySince: computeRefundRetrySince(retries),
+				updatedAt: this.#clock.now().toISOString(),
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
+	async listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `refundRetrySince` index, OLDEST first.
+		const result = await this.#orders.query({
+			where: { refundRetrySince: { lte: cutoff } },
+			orderBy: { refundRetrySince: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			const since = data.refundRetrySince ?? null;
+			if (since !== null && since <= cutoff) ids.push(data.orderId as OrderId);
+		}
+		return ids;
+	}
+
+	async listRefundRetriesDue(now: string, limit: number): Promise<OrderId[]> {
+		// One bounded page of the declared `refundRetryAt` index, earliest first — the
+		// sweep's batch IS the limit, so there is no paging: what is not reached this
+		// tick is reached on the next. A null field drops out of the range by itself.
+		const result = await this.#orders.query({
+			where: { refundRetryAt: { lte: now } },
+			orderBy: { refundRetryAt: "asc" },
+			limit,
+		});
+		const ids: OrderId[] = [];
+		for (const { data } of result.items) {
+			// A page read is not a lock: re-check what the index promised.
+			const at = data.refundRetryAt ?? null;
+			if (at !== null && at <= now) ids.push(data.orderId as OrderId);
+		}
+		return ids;
 	}
 
 	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
@@ -725,9 +973,7 @@ export class EmdashOrderStore implements OrderStore {
 			return { completed: false, lost: [] };
 		}
 		if (doc.state === "expired" || doc.state === "cancelled") {
-			for (const reservationId of intent.reservationIds) {
-				await this.#inventory.releaseAdopted(reservationId, orderId);
-			}
+			await this.#inventory.releaseAdoptedMany(intent.reservationIds, orderId);
 		}
 		await this.#stampIntent(orderId, "holdsReleased");
 		return { completed: true, lost: [] };
@@ -737,27 +983,12 @@ export class EmdashOrderStore implements OrderStore {
 
 	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		return normalizeOrderDoc(doc).payments.map((payment) => ({
-			gateway: payment.gateway,
-			providerRef: payment.providerRef,
-			amount: payment.amount,
-			currency: payment.currency,
-			status: payment.status,
-		}));
+		return doc === null ? [] : paymentsOf(normalizeOrderDoc(doc));
 	}
 
 	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
 		const doc = await this.#orders.get(orderId);
-		if (doc === null) return [];
-		// `(created_at ASC, id ASC)` — the SQL's own order. `createdAt` is fixed-width
-		// ISO-8601 text, so lexical order IS chronological, and `id` is the stable
-		// tie-break when two refunds share a timestamp under a fixed clock.
-		return [...normalizeOrderDoc(doc).refunds]
-			.toSorted((a, b) =>
-				a.createdAt === b.createdAt ? compare(a.id, b.id) : compare(a.createdAt, b.createdAt),
-			)
-			.map((refund) => toRefundRecord(refund, orderId));
+		return doc === null ? [] : refundsOf(normalizeOrderDoc(doc), orderId);
 	}
 
 	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
@@ -830,6 +1061,7 @@ export class EmdashOrderStore implements OrderStore {
 					...entry,
 					status: "recorded",
 					refundRef: input.refundRef,
+					...(input.resolvedBy !== undefined ? { resolvedBy: input.resolvedBy } : {}),
 				};
 				const refunds = doc.refunds.map((row) =>
 					row.idempotencyKey === input.idempotencyKey ? finalized : row,
@@ -844,6 +1076,7 @@ export class EmdashOrderStore implements OrderStore {
 				);
 				let fullyRefunded = false;
 				if (
+					(entry.purpose ?? "refund") === "refund" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
@@ -856,11 +1089,15 @@ export class EmdashOrderStore implements OrderStore {
 					});
 					fullyRefunded = true;
 				}
+				// The refund email (QA T1-6), in THIS write — see `#withRefundNotice`.
+				const notice = !fullyRefunded ? refundNoticeFor(finalized) : null;
+				if (notice !== null) next = this.#withNotice(next, notice, now) ?? next;
 				const written = await this.#orders.compareAndSet(orderId, current.revision, next);
 				if (!written.applied) return CAS_RETRY;
 				// The full-refund path composes `#flipped` rather than `#flip`, so it brackets
 				// its own locator — same ordering, same reason.
 				if (fullyRefunded) await this.#recordOutboxLocator(next, "refunded");
+				if (notice !== null) await this.#recordLocatorFor(next, findNoticeEntry(next, notice));
 				await this.#reportRefund(next, finalized.currency, finalized.id, finalized.amount);
 				if (fullyRefunded) await this.#reportTransition(next, doc.state, "refunded");
 				return casDone({
@@ -880,6 +1117,18 @@ export class EmdashOrderStore implements OrderStore {
 		// the row RELEASES its ceiling capacity (it leaves the active sum) and stays
 		// as an audit record of the attempt.
 		return this.#flipRefundStatus(idempotencyKey, "voided");
+	}
+
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person checked the provider and the refund
+		// never happened. The capacity is released; who said so is kept on the row.
+		return this.#flipRefundStatus(input.idempotencyKey, "voided", {
+			from: "unverified",
+			resolvedBy: input.resolvedBy,
+		});
 	}
 
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
@@ -979,6 +1228,8 @@ export class EmdashOrderStore implements OrderStore {
 					detail: input.detail,
 					cancelledBy: input.cancelledBy,
 					cancelledAt: now,
+					refund: input.refund ?? null,
+					restocked: input.restocked ?? false,
 				},
 			}),
 		});
@@ -998,7 +1249,10 @@ export class EmdashOrderStore implements OrderStore {
 	// -- lists, search, counts, the customer view, guest linking ---------------
 
 	/**
-	 * Every order a customer owns, `createdAt ASC, id ASC` — the SQL's own ordering.
+	 * Every order a customer owns, NEWEST FIRST — `createdAt DESC, id DESC`, the port's
+	 * order (a shopper's list leads with the order they just placed). The index orders
+	 * by `createdAt` alone, so the id tie-break is applied in code, exactly as the admin
+	 * list's merge does ({@link byNewestFirst}).
 	 *
 	 * The SQL predicate is `customer_id = :customerId`, an EQUALITY and not the list's
 	 * union: this read is reached from a session whose identity is already resolved, and
@@ -1012,11 +1266,11 @@ export class EmdashOrderStore implements OrderStore {
 		const docs = await this.#scanOrders(
 			"listForCustomer",
 			{ customerKey: customerId },
-			{ createdAt: "asc" },
+			{ createdAt: "desc" },
 			Number.POSITIVE_INFINITY,
 			(doc) => doc.customerId === customerId,
 		);
-		return docs.map((doc) => toOrder(doc));
+		return docs.toSorted(byNewestFirst).map((doc) => toOrder(doc));
 	}
 
 	/**
@@ -1175,6 +1429,63 @@ export class EmdashOrderStore implements OrderStore {
 	 * Proven by `test/outbox-dispatch.dialects.test.ts` (the crashed-dispatcher and
 	 * failed-send cases, ported from the SQL adapters' own suite).
 	 */
+	async enqueueNotice(orderId: OrderId, notice: OrderNoticeInput): Promise<boolean> {
+		// The notice rides the SAME embedded outbox as the state emails, so it is
+		// claimed, leased, retried and located by exactly the code that already does
+		// that for them — one array, one due index, one locator collection. First-wins
+		// per `(kind, refundId)`, inside the compare-and-set, the way a state entry is
+		// per `toState` inside the flip.
+		const enqueued = await this.#casOrder<OrderDoc | null>("enqueueNotice", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone<OrderDoc | null>(null);
+			const doc = normalizeOrderDoc(current.value);
+			const now = this.#clock.now().toISOString();
+			const next = this.#withNotice(doc, notice, now);
+			if (next === null) return casDone<OrderDoc | null>(null);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...next,
+				updatedAt: now,
+			});
+			return written.applied ? casDone<OrderDoc | null>(next) : CAS_RETRY;
+		});
+		if (enqueued === null) return false;
+		// The locator, bracketed after the write exactly like a flip's (see
+		// `#recordOutboxLocator`): a tear leaves "entry, no locator", which the
+		// settle-time walk heals.
+		await this.#recordLocatorFor(enqueued, findNoticeEntry(enqueued, notice));
+		return true;
+	}
+
+	/**
+	 * Append a NOTICE entry as a pure document transform — the ONE place a non-state
+	 * email enters the outbox, shared by `enqueueNotice` and the refund writes that
+	 * announce a refund in their own compare-and-set (ADR-0026). `null` when the
+	 * notice is already there: first-wins per `(kind, refundId)`. Re-derives R2's due
+	 * index in the same write — the only way the claim can find the entry.
+	 */
+	#withNotice(doc: OrderDoc, notice: OrderNoticeInput, now: string): OrderDoc | null {
+		if (findNoticeEntry(doc, notice) !== undefined) return null;
+		const emailOutbox: OutboxEntryDoc[] = [
+			...doc.emailOutbox,
+			{
+				id: this.#idGen.newId(),
+				toState: doc.state,
+				status: "pending",
+				attempts: 0,
+				leaseUntil: null,
+				sentAt: null,
+				createdAt: now,
+				notice: {
+					kind: notice.kind,
+					amount: notice.amount,
+					currency: notice.currency,
+					...(notice.refundId !== undefined ? { refundId: notice.refundId } : {}),
+				},
+			},
+		];
+		return { ...doc, emailOutbox, emailDueAt: computeEmailDueAt({ emailOutbox }) };
+	}
+
 	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxOutboxPages; page++) {
@@ -1185,7 +1496,12 @@ export class EmdashOrderStore implements OrderStore {
 				cursor,
 			});
 			for (const { data } of result.items) {
-				const claimed = await this.#claimOutboxEntry(data.orderId, now, leaseUntil);
+				const claimed = await this.#claimOutboxEntry(
+					"claimNextEmail",
+					data.orderId,
+					now,
+					leaseUntil,
+				);
 				if (claimed !== null) return claimed;
 			}
 			if (!result.hasMore || result.cursor === undefined) return null;
@@ -1194,9 +1510,58 @@ export class EmdashOrderStore implements OrderStore {
 		throw new ScanPageLimitError("claimNextEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
 	}
 
+	/**
+	 * Claim the earliest due entry on ONE order — the settle route's inline dispatch
+	 * (ADR-0005's 2026-10-02 amendment).
+	 *
+	 * This is exactly the per-order step {@link claimNextEmail} already runs for each
+	 * candidate the `emailDueAt` index yields, minus the index walk: the caller already
+	 * knows the order, so it is one `getVersioned` of that document and one
+	 * compare-and-set that re-applies the due predicate. Sharing the step is what keeps
+	 * the two claims single-winner AGAINST EACH OTHER — a settle route and a cron tick
+	 * racing for the same entry meet at the same revision, and the loser re-reads a
+	 * leased entry and returns `null`. A missing order is `null` too: nothing is due.
+	 */
+	async claimNextEmailForOrder(
+		orderId: OrderId,
+		now: string,
+		leaseUntil: string,
+		options: ClaimEmailForOrderOptions = {},
+	): Promise<OutboxEmail | null> {
+		return this.#claimOutboxEntry(
+			"claimNextEmailForOrder",
+			orderId,
+			now,
+			leaseUntil,
+			options.onlyUnattempted === true,
+		);
+	}
+
 	/** Mark a claimed entry delivered. Terminal — it leaves the due index. */
 	async markEmailSent(id: string, now: string): Promise<void> {
 		await this.#updateOutboxEntry(id, (entry) => ({ ...entry, status: "sent", sentAt: now }));
+	}
+
+	/**
+	 * Hand a claimed entry back untried: `pending`, its due time unchanged (so it is
+	 * due at once), and the attempt its claim counted taken back off. Guarded like
+	 * every settle (`#updateOutboxEntry` writes only a `sending` entry), so a double
+	 * release is a no-op.
+	 */
+	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
+		// A `retryAt` moves `dueAt` FORWARD, so the entry falls behind every other
+		// due entry in the `emailDueAt` index — both the sweep's walk and the
+		// order-scoped claim (`claimNextEmailForOrder`)
+		// apply the same `outboxDueAt(entry) <= now` predicate, so neither re-claims a
+		// backed-off entry early.
+		await this.#updateOutboxEntry(id, (entry) => ({
+			...entry,
+			status: "pending",
+			leaseUntil: null,
+			attempts: Math.max(0, entry.attempts - 1),
+			...(options.retryAt === undefined ? {} : { dueAt: options.retryAt }),
+			...(options.timedOut === true ? { timeouts: (entry.timeouts ?? 0) + 1 } : {}),
+		}));
 	}
 
 	/**
@@ -1204,10 +1569,15 @@ export class EmdashOrderStore implements OrderStore {
 	 * the retries are exhausted. `retryAt` moves the due time FORWARD so the row is
 	 * not re-picked inside the same drain loop.
 	 */
-	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+	async rescheduleEmail(id: string, retryAt: string | null, reason?: string): Promise<void> {
 		await this.#updateOutboxEntry(id, (entry) =>
 			retryAt === null
-				? { ...entry, status: "failed", leaseUntil: null }
+				? {
+						...entry,
+						status: "failed",
+						leaseUntil: null,
+						...(reason === undefined ? {} : { failureReason: reason }),
+					}
 				: { ...entry, status: "pending", leaseUntil: null, dueAt: retryAt },
 		);
 	}
@@ -1244,10 +1614,13 @@ export class EmdashOrderStore implements OrderStore {
 			holdExpiresAt: input.holdExpiresAt,
 			paymentMethod: input.paymentMethod,
 			buyerRef: input.buyerRef,
-			customerId: null,
-			// R3: the fallback value. `linkGuestOrders` rewrites it; `buyerRefLower` is
-			// frozen alongside `buyerRef` and is the second arm of the customer union.
-			customerKey: customerKeyFor(null, input.buyerRef),
+			// Owned from birth when a signed-in checkout named its owner (the port's
+			// `CreateOrderInput.customerId`), else a guest order.
+			customerId: input.customerId ?? null,
+			// R3: the linked id when there is one, else the fallback value that
+			// `linkGuestOrders` rewrites; `buyerRefLower` is frozen alongside `buyerRef`
+			// and is the second arm of the customer union.
+			customerKey: customerKeyFor(input.customerId ?? null, input.buyerRef),
 			buyerRefLower: foldBuyerRef(input.buyerRef),
 			// The one prefix-searchable arm a single indexed field can serve; the line-sku
 			// arm lives in `order_sku_index`, written right after this document lands.
@@ -1400,6 +1773,8 @@ export class EmdashOrderStore implements OrderStore {
 			status: opts.status,
 			idempotencyKey: input.idempotencyKey,
 			createdAt: now,
+			purpose: input.purpose ?? "refund",
+			...(input.restock !== undefined ? { restock: input.restock } : {}),
 		};
 		let orderId: string = input.orderId;
 		let intent = prepared;
@@ -1475,8 +1850,11 @@ export class EmdashOrderStore implements OrderStore {
 				// transform every other state change uses — so the state, the audit event,
 				// the outbox entry and the ledger row commit together. Only the FINALIZED
 				// sum counts: a held reservation never flips an order.
+				// Only an admin refund in its own right flips: a cancellation closes its order
+				// itself, and a late payment's order is already terminal.
 				if (
 					driveFlip &&
+					(intent.purpose ?? "refund") === "refund" &&
 					finalizedRefundTotal(refunds) === ceiling &&
 					isLegalOrderTransition(doc.state, "refunded")
 				) {
@@ -1489,8 +1867,16 @@ export class EmdashOrderStore implements OrderStore {
 					});
 					fullyRefunded = true;
 				}
+				// The refund email (QA T1-6): a FINALIZED admin refund that left money
+				// captured announces itself in the write that records it; a full one is
+				// announced by the refunded email the flip above enqueued; a cancellation's
+				// or a late payment's by its own email; a reservation by nothing yet.
+				const notice =
+					intent.status === "recorded" && !fullyRefunded ? refundNoticeFor(intent) : null;
+				if (notice !== null) next = this.#withNotice(next, notice, writtenAt) ?? next;
 				const applied = await this.#orders.compareAndSet(orderId, current.revision, next);
 				if (!applied.applied) return CAS_RETRY;
+				if (notice !== null) await this.#recordLocatorFor(next, findNoticeEntry(next, notice));
 				// A RESERVED refund is not money that came back, so only a finalized one is
 				// reported; the ceiling-reaching one also reports the flip it folded in.
 				if (intent.status === "recorded") {
@@ -1520,7 +1906,9 @@ export class EmdashOrderStore implements OrderStore {
 	async #flipRefundStatus(
 		key: IdempotencyKey,
 		to: Extract<RefundStatus, "voided" | "unverified">,
+		resolution: { from: "unverified"; resolvedBy: string } | null = null,
 	): Promise<boolean> {
+		const from: RefundStatus = resolution?.from ?? "reserved";
 		const claim = await this.#refundKeys.get(key);
 		if (claim === null) return false;
 		const orderId = claim.orderId;
@@ -1531,12 +1919,18 @@ export class EmdashOrderStore implements OrderStore {
 			const entry = findRefund(doc, key);
 			// The guard the SQL's `WHERE status = 'reserved'` was: capacity is released
 			// or held deliberately, never by accident.
-			if (entry === undefined || entry.status !== "reserved") return casDone(false);
+			if (entry === undefined || entry.status !== from) return casDone(false);
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				refunds: doc.refunds.map((row) =>
-					row.idempotencyKey === key ? { ...row, status: to } : row,
+					row.idempotencyKey === key
+						? {
+								...row,
+								status: to,
+								...(resolution !== null ? { resolvedBy: resolution.resolvedBy } : {}),
+							}
+						: row,
 				),
 				updatedAt: now,
 			});
@@ -1626,7 +2020,9 @@ export class EmdashOrderStore implements OrderStore {
 			// The rollup, after everything this flip owes is durable. Reached only on a WON
 			// flip, and `casDone` ends the retry loop, so it fires exactly once per move.
 			await this.#reportTransition(next, input.fromState, input.toState);
-			return casDone<FlipOutcome>({ won: true, doc: next });
+			// Neither of those writes the order, so the revision is still the flip's own —
+			// which lets a caller close the intent it just recorded without a re-read.
+			return casDone<FlipOutcome>({ won: true, doc: next, revision: written.revision });
 		});
 	}
 
@@ -1687,9 +2083,19 @@ export class EmdashOrderStore implements OrderStore {
 						]
 					: doc.emailOutbox,
 		};
+		// A PAID order owes no intent cancels: its unresolved intents resolve
+		// `not_needed` in the flip's own write, so they never reach the cancel sweep.
+		const intents =
+			input.toState === "paid" ? resolveIntentsOnPaid(doc.paymentIntents) : doc.paymentIntents;
 		// R2's denormalized due time, derived in the SAME write that enqueued the entry
 		// — the only way `claimNextEmail` can find it.
-		return { ...next, emailDueAt: computeEmailDueAt(next) };
+		return {
+			...next,
+			emailDueAt: computeEmailDueAt(next),
+			...(intents === undefined
+				? {}
+				: { paymentIntents: intents, intentCancelDueAt: computeIntentCancelDueAt(intents) }),
+		};
 	}
 
 	/** Mark one hold intent complete. Idempotent; a missing intent is a no-op. */
@@ -1714,6 +2120,28 @@ export class EmdashOrderStore implements OrderStore {
 			});
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * `#stampIntent` against a document and revision already in hand: ONE
+	 * compare-and-set. False when the revision moved (a peer wrote the order since),
+	 * and the caller falls back to the re-reading stamp.
+	 */
+	async #stampIntentAt(
+		doc: OrderDoc,
+		revision: string,
+		field: "holdsAdopted" | "holdsCommitted" | "holdsReleased",
+	): Promise<boolean> {
+		const intent: HoldIntentDoc | null = doc[field] ?? null;
+		if (!isOutstanding(intent) || intent === null) return true;
+		const now = this.#clock.now().toISOString();
+		const stamped: OrderDoc = { ...doc, [field]: { ...intent, completedAt: now } };
+		const written = await this.#orders.compareAndSet(doc.orderId, revision, {
+			...stamped,
+			holdsPendingAt: computeHoldsPendingAt(stamped),
+			updatedAt: now,
+		});
+		return written.applied;
 	}
 
 	/**
@@ -1908,7 +2336,11 @@ export class EmdashOrderStore implements OrderStore {
 	 * a locator pointing at an entry that does not exist, which nothing can heal.
 	 */
 	async #recordOutboxLocator(doc: OrderDoc, toState: OrderState): Promise<void> {
-		const entry = findOutboxEntry(doc, toState);
+		await this.#recordLocatorFor(doc, findOutboxEntry(doc, toState));
+	}
+
+	/** The locator write itself, for a state entry or a notice entry alike. */
+	async #recordLocatorFor(doc: OrderDoc, entry: OutboxEntryDoc | undefined): Promise<void> {
 		if (entry === undefined) return;
 		const written = await this.#outboxKeys.compareAndSet(entry.id, null, {
 			orderId: doc.orderId,
@@ -1928,14 +2360,19 @@ export class EmdashOrderStore implements OrderStore {
 	/**
 	 * Claim the earliest due entry on ONE order, re-applying the due predicate inside
 	 * the write — so only one dispatcher can win a claim, and a lapsed lease is
-	 * claimable again.
+	 * claimable again. `onlyUnattempted` skips any entry a dispatcher has already
+	 * tried (`attempts > 0`, or `timeouts > 0`) — re-checked on every re-read, so it holds under
+	 * contention exactly as the due predicate does. `op` labels a contention error
+	 * with the public method that ran out of budget.
 	 */
 	async #claimOutboxEntry(
+		op: "claimNextEmail" | "claimNextEmailForOrder",
 		orderId: string,
 		now: string,
 		leaseUntil: string,
+		onlyUnattempted = false,
 	): Promise<OutboxEmail | null> {
-		return this.#casOrder<OutboxEmail | null>("claimNextEmail", async () => {
+		return this.#casOrder<OutboxEmail | null>(op, async () => {
 			const current = await this.#orders.getVersioned(orderId);
 			if (current === null) return casDone<OutboxEmail | null>(null);
 			const doc = normalizeOrderDoc(current.value);
@@ -1944,6 +2381,9 @@ export class EmdashOrderStore implements OrderStore {
 			for (const entry of doc.emailOutbox) {
 				const due = outboxDueAt(entry);
 				if (due === null || due > now) continue;
+				// Never tried: no counted attempt AND no uncounted timeout — a timed-out
+				// entry is the cron's to retry, on the cron's backoff.
+				if (onlyUnattempted && (entry.attempts > 0 || (entry.timeouts ?? 0) > 0)) continue;
 				if (pickedDue === undefined || due < pickedDue) {
 					picked = entry;
 					pickedDue = due;
@@ -1964,6 +2404,8 @@ export class EmdashOrderStore implements OrderStore {
 						orderId: doc.orderId as OrderId,
 						toState: claimed.toState,
 						attempts: claimed.attempts,
+						timeouts: claimed.timeouts ?? 0,
+						notice: claimed.notice ?? null,
 					})
 				: CAS_RETRY;
 		});
@@ -2134,6 +2576,61 @@ export class EmdashOrderStore implements OrderStore {
 	}
 }
 
+/**
+ * The order's state-change audit, in `(at, id)` order. `at` is fixed-width ISO-8601
+ * text, so lexical order IS chronological; `id` is the stable tie-break when two
+ * events share a timestamp under a fixed clock — the same `(at, id)` order the
+ * SQL's index emitted. The events array is already in append order; sorting makes
+ * the contract's order explicit rather than a property of how it was built.
+ */
+function eventsOf(doc: OrderDoc, orderId: OrderId): OrderEvent[] {
+	return [...doc.events]
+		.toSorted((a, b) => (a.at === b.at ? compare(a.id, b.id) : compare(a.at, b.at)))
+		.map((event) => ({
+			id: event.id,
+			orderId,
+			at: event.at,
+			kind: event.kind,
+			fromState: event.fromState,
+			toState: event.toState,
+			actor: event.actor,
+		}));
+}
+
+/** The order's recorded payment intents, as the port names them. */
+function intentsOf(doc: OrderDoc): PaymentIntentRecord[] {
+	return (doc.paymentIntents ?? []).map((intent) => ({
+		gateway: intent.gateway,
+		intentId: intent.intentId,
+		recordedAt: intent.recordedAt,
+		cancelDueAt: intent.cancelDueAt,
+		cancelAttempts: intent.cancelAttempts,
+		cancelOutcome: intent.cancelOutcome,
+	}));
+}
+
+/** The order's captured payments, as the port names them. */
+function paymentsOf(doc: OrderDoc): CapturedPayment[] {
+	return doc.payments.map((payment) => ({
+		gateway: payment.gateway,
+		providerRef: payment.providerRef,
+		amount: payment.amount,
+		currency: payment.currency,
+		status: payment.status,
+	}));
+}
+
+/** The refunds ledger in `(created_at ASC, id ASC)` — the SQL's own order.
+ *  `createdAt` is fixed-width ISO-8601 text, so lexical order IS chronological, and
+ *  `id` is the stable tie-break when two refunds share a timestamp. */
+function refundsOf(doc: OrderDoc, orderId: OrderId): RefundRecord[] {
+	return [...doc.refunds]
+		.toSorted((a, b) =>
+			a.createdAt === b.createdAt ? compare(a.id, b.id) : compare(a.createdAt, b.createdAt),
+		)
+		.map((refund) => toRefundRecord(refund, orderId));
+}
+
 /** Beyond any timestamp this domain writes — the upper bound of the due-index scan. */
 const FAR_FUTURE = "9999-12-31T23:59:59.999Z";
 
@@ -2169,6 +2666,9 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		status: refund.status,
 		idempotencyKey: refund.idempotencyKey,
 		createdAt: refund.createdAt,
+		purpose: refund.purpose ?? "refund",
+		...(refund.restock !== undefined ? { restock: refund.restock } : {}),
+		...(refund.resolvedBy !== undefined ? { resolvedBy: refund.resolvedBy } : {}),
 	};
 }
 
@@ -2552,5 +3052,20 @@ function toOrder(doc: OrderDoc): Order {
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,
 		cancellation: doc.cancellation,
+	};
+}
+
+/**
+ * The `refund-issued` notice a finalized refund announces itself with, or `null`
+ * when its purpose says another email carries it: only an admin refund in its own
+ * right (`purpose: "refund"`, the default) emails "refund issued" (ADR-0026).
+ */
+function refundNoticeFor(refund: RefundEntryDoc): OrderNoticeInput | null {
+	if ((refund.purpose ?? "refund") !== "refund") return null;
+	return {
+		kind: "refund-issued",
+		amount: refund.amount,
+		currency: refund.currency,
+		refundId: refund.id,
 	};
 }

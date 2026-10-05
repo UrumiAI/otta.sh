@@ -113,7 +113,13 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(0) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		// The provider's own figures ride along (review round 1), so the domain can
+		// tell a FULL refund outside Otta from a partial one.
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 500, captured: 1000 },
+		});
 		expect(transport.creates, "nothing issued").toHaveLength(0);
 	});
 
@@ -126,7 +132,11 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(800) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 800, captured: 1000 },
+		});
 		expect(transport.creates).toHaveLength(0);
 	});
 
@@ -350,6 +360,87 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 		).toEqual({ ok: false, class: "ambiguous" });
 		expect(seen).toHaveLength(1);
 		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+	});
+
+	test("the gateway's OWN requestTimeoutMs bounds its default transport — the settle webhook's refund cannot outlast Stripe's delivery timeout", async () => {
+		// The settle route refunds a late payment INSIDE the webhook request. Stripe
+		// gives a delivery ~10 s before treating it as failed, so a refund pinned to
+		// the 30 s default could still be running when Stripe gives up and redelivers.
+		const seen: RequestInit[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			fetch: hangingFetch(seen),
+			requestTimeoutMs: 20,
+		});
+		expect(await settlesWithin(1_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "RETRYABLE",
+		});
+		expect(seen).toHaveLength(1);
+	});
+
+	test("requestTimeoutMs may be a FUNCTION, asked at each call — a cron leg bounds every call by the time it has left", async () => {
+		let left = 5_000;
+		const asked: number[] = [];
+		const seen: RequestInit[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			fetch: hangingFetch(seen),
+			requestTimeoutMs: () => {
+				asked.push(left);
+				return left;
+			},
+		});
+		left = 20; // the leg's budget shrank before the call
+		expect(await settlesWithin(1_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "RETRYABLE",
+		});
+		expect(asked).toEqual([20]);
+	});
+
+	test("beforeRefundCreate=false after the pre-flight ⇒ NOT_STARTED and NO create — never start a create that is bound to time out", async () => {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport,
+			beforeRefundCreate: () => false,
+		});
+		expect(await gw.refund(refundInput())).toEqual({ ok: false, reason: "NOT_STARTED" });
+		expect(transport.reads).toHaveLength(1);
+		expect(transport.creates).toHaveLength(0);
+	});
+
+	test("the create gets its FIXED bound (refundCreateTimeoutMs), however little the caller's shrinking budget says is left", async () => {
+		const seen: { method: string | undefined; at: number }[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			requestTimeoutMs: () => 5,
+			refundCreateTimeoutMs: 80,
+			fetch: hangingFetch([], (_url, init) => {
+				seen.push({ method: init?.method, at: Date.now() });
+				return init?.method === "GET"
+					? new Response(
+							JSON.stringify({
+								latest_charge: { amount_refunded: 0, amount_captured: 1000, currency: "usd" },
+							}),
+							{ status: 200 },
+						)
+					: undefined;
+			}),
+		});
+		const started = Date.now();
+		expect(await settlesWithin(2_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "UNVERIFIED",
+		});
+		// Aborted at ITS bound (80 ms), not at the 5 ms the caller had left.
+		expect(Date.now() - started).toBeGreaterThanOrEqual(70);
+		expect(seen.map((x) => x.method)).toEqual(["GET", "POST"]);
 	});
 
 	test("through the gateway: a hung READ is RETRYABLE (nothing issued), a hung CREATE is UNVERIFIED", async () => {

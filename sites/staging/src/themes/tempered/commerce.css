@@ -454,6 +454,17 @@
 [data-theme-id] .checkout-coupon .checkout-note a {
 	color: var(--u-mute);
 }
+/* "Remove coupon" is a submit button of the details form (it carries what was
+   typed with it — QA U-1), drawn as the quiet link it used to be. */
+[data-theme-id] .checkout-link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--u-mute);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
 
 [data-theme-id] .checkout-details {
 	display: flex;
@@ -486,6 +497,18 @@
 	font-size: 0.75rem;
 	line-height: 1.5;
 	color: var(--u-mute);
+}
+
+/* A refused field says why, beside the field (QA U-1). Bronze, the tempering
+   scale's warning — the same colour Stripe's own field errors take (§9). */
+[data-theme-id] .checkout-field-error {
+	margin: 0;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--u-bronze);
+}
+[data-theme-id] .checkout-field [aria-invalid="true"] {
+	border-color: var(--u-bronze);
 }
 
 /* "required" must not fuse into the uppercase mono label beside it, so it
@@ -637,6 +660,16 @@
 	color: var(--u-mute);
 	max-width: 46ch;
 }
+
+/* The order's email (a hint) and its hold deadline, read-only lines above the
+   card fields (QA U-2, U-14). */
+[data-theme-id] .pay-email,
+[data-theme-id] .pay-hold {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	max-width: 46ch;
+}
 /* Continuous, not the dashed bronze a Notice uses: this is a statement of
    fact, not a degraded state. */
 [data-theme-id] .pay-trust-mark {
@@ -699,6 +732,15 @@
 	font-size: 0.75rem;
 	color: var(--u-mute);
 }
+[data-theme-id] .order-keep a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .order-keep a:hover {
+	text-decoration-color: var(--u-straw);
+}
 
 [data-theme-id] .order-actions {
 	display: flex;
@@ -740,6 +782,15 @@
 [data-theme-id] .order-head-label {
 	margin: 0;
 	color: var(--u-ink);
+}
+
+/* The ledger's refunded figure under the total (QA2 X3): the account page's
+   `.account-order-refunded`, on the confirmation. */
+[data-theme-id] .order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
 }
 
 [data-theme-id] .order-ship {
@@ -829,6 +880,42 @@
 	font-size: 0.875rem;
 }
 
+/* Already signed in: a hairline-ruled block above the form, quiet links in the
+   order page's `.order-keep` style — informational, not a second form. */
+[data-theme-id] .account-login-signed-in {
+	margin: 0 0 1.5rem;
+	padding: 0.875rem 0;
+	max-width: 34rem;
+	border-block: var(--u-hair);
+	font-size: 0.875rem;
+}
+
+[data-theme-id] .account-login-signed-in-who {
+	margin: 0 0 0.625rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+
+[data-theme-id] .account-login-signed-in-actions a:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-login-signout {
+	margin: 0;
+}
+
 /* ── Verify (was pages/account/verify/index.astro) ───────────────────────────── */
 
 [data-theme-id] .account-verify-title {
@@ -886,6 +973,17 @@
 [data-theme-id] .account-orders-head-row form {
 	margin: 0;
 }
+[data-theme-id] .account-orders-session {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1rem;
+}
+[data-theme-id] .account-orders-who {
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
 
 [data-theme-id] .account-orders-title {
 	font-family: var(--u-display);
@@ -908,6 +1006,16 @@
 	font-size: 0.875rem;
 	color: var(--u-mute);
 }
+/* The theme's quiet link, as on the order page's keep-this-link line. */
+[data-theme-id] .account-orders-empty-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-orders-empty-link:hover {
+	text-decoration-color: var(--u-straw);
+}
 
 [data-theme-id] .account-orders-list {
 	list-style: none;
@@ -916,9 +1024,12 @@
 	border-top: var(--u-hair);
 }
 
+/* Each row is its own grid, so every track past the name is a FIXED width:
+   `auto` tracks sized to each row's own text, and a row whose status or total
+   was shorter drifted out of line with the rest (QA2 A3). */
 [data-theme-id] .account-orders-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1.4fr) 1fr auto auto;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 11.5rem 4.5rem 6.5rem;
 	gap: 1rem;
 	align-items: baseline;
 	padding: 0.875rem 0;
@@ -926,14 +1037,21 @@
 	font-size: 0.875rem;
 }
 
-[data-theme-id] .account-orders-ref {
+/* The order's products, in the body face: a name, not a code, so not mono
+   (TEMPERED.md §1 rule 2). `anywhere` keeps a long title inside its column. */
+[data-theme-id] .account-orders-name {
 	color: var(--u-ink);
 	overflow-wrap: anywhere;
 }
 
 [data-theme-id] .account-orders-state,
+[data-theme-id] .account-orders-date,
 [data-theme-id] .account-orders-items {
 	color: var(--u-mute);
+}
+
+[data-theme-id] .account-orders-date {
+	white-space: nowrap;
 }
 
 [data-theme-id] .account-orders-total {
@@ -959,6 +1077,66 @@
 [data-theme-id] .account-order-back a:hover {
 	color: var(--u-ink);
 }
+[data-theme-id] .account-order-back {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 0.5rem 1rem;
+}
+[data-theme-id] .account-order-who {
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+
+/* Complete payment and the order's own page (QA2 X1). They follow the status
+   (or its note) directly, so that line gives up half its gap to them. */
+[data-theme-id] .account-order-state:has(+ .account-order-actions),
+[data-theme-id] .account-order-note:has(+ .account-order-actions) {
+	margin-bottom: 1rem;
+}
+[data-theme-id] .account-order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+	margin: 0 0 2rem;
+	font-size: 0.875rem;
+}
+[data-theme-id] .account-order-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-order-link:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-order-ship {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+}
+[data-theme-id] .account-order-ship .u-mono {
+	font-size: 0.75rem;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .account-order-address {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding-top: 1rem;
+	border-top: var(--u-hair);
+}
+[data-theme-id] .account-order-address address {
+	display: flex;
+	flex-direction: column;
+	font-style: normal;
+	font-size: 0.875rem;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
 
 [data-theme-id] .account-order-title {
 	font-family: var(--u-display);
@@ -970,9 +1148,10 @@
 	letter-spacing: -0.025em;
 	line-height: 1;
 	margin: 0 0 0.75rem;
-}
-[data-theme-id] .account-order-ref {
-	font-size: 0.6em;
+	/* The heading is the order's products now, not a short id: a long title
+	   balances across lines like the confirmation's stamp, and an unbroken one
+	   wraps rather than widening the page. */
+	text-wrap: balance;
 	overflow-wrap: anywhere;
 }
 
@@ -981,9 +1160,29 @@
 	font-size: 0.875rem;
 	color: var(--u-mute);
 }
+/* What the order page says about this state (e.g. whether anything was charged):
+   it follows the status line directly, so the status gives up its gap to it. */
+[data-theme-id] .account-order-state:has(+ .account-order-note) {
+	margin-bottom: 0.5rem;
+}
+[data-theme-id] .account-order-note {
+	margin: 0 0 2rem;
+	max-width: 36rem;
+	font-size: 0.875rem;
+	color: var(--u-ink);
+}
 
 [data-theme-id] .account-order-notice-slot {
 	margin-bottom: 1.5rem;
+}
+
+/* The ledger's refunded figure, under the paid total: a fact about the money,
+   set quieter than the total it qualifies. */
+[data-theme-id] .account-order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
 }
 
 [data-theme-id] .account-order-cols {
@@ -1009,34 +1208,6 @@
 }
 [data-theme-id] .account-order-head-label {
 	margin: 0;
-	color: var(--u-ink);
-}
-
-[data-theme-id] .account-order-totals {
-	margin: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 0.5rem;
-	font-size: 0.875rem;
-}
-[data-theme-id] .account-order-row {
-	display: flex;
-	justify-content: space-between;
-	gap: 1rem;
-}
-[data-theme-id] .account-order-row dt {
-	color: var(--u-mute);
-}
-[data-theme-id] .account-order-row dd {
-	margin: 0;
-	color: var(--u-ink);
-}
-[data-theme-id] .account-order-grand {
-	padding-top: 0.625rem;
-	border-top: var(--u-hair);
-	font-weight: 600;
-}
-[data-theme-id] .account-order-grand dt {
 	color: var(--u-ink);
 }
 

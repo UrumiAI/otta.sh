@@ -41,5 +41,16 @@ export interface CustomerCredentialVerifier {
 	 * not grow unboundedly). Returns the number of rows removed. Driven by the
 	 * same cron/internal-trigger precedent as the email outbox dispatcher.
 	 */
-	pruneChallenges(now: string): Promise<number>;
+	pruneChallenges(now: string, options?: PruneChallengesOptions): Promise<number>;
+}
+
+/** {@link CredentialVerifier.pruneChallenges}'s bound (QA2 M2). */
+export interface PruneChallengesOptions {
+	/**
+	 * Asked before each delete (and each page read). `false` stops the prune there:
+	 * what is left is still expired or consumed, so the next run removes it. The
+	 * scheduled sweep passes its tick budget's check, so a pile of expired challenges
+	 * is pruned a bite per tick instead of in one unbounded pass.
+	 */
+	readonly shouldContinue?: () => boolean;
 }

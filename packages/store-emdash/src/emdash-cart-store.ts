@@ -58,6 +58,7 @@
  */
 import {
 	type AdjustLineInput,
+	assertSweepLimit,
 	type Cart,
 	type CartLine,
 	type CartStore,
@@ -66,6 +67,7 @@ import {
 	type Clock,
 	type Currency,
 	type ExpiredHold,
+	type ExpiryListOptions,
 	HoldExpiredError,
 	type IdempotencyKey,
 	type IdGen,
@@ -85,10 +87,12 @@ import {
 	withCasRetry,
 } from "./cas-retry.js";
 import {
+	CART_CREATE_KEYS_COLLECTION,
 	CART_MUTATION_INDEX_COLLECTION,
 	CARTS_COLLECTION,
 	type CartDoc,
 	type CartLineDoc,
+	type CartCreateKeyDoc,
 	type CartMutationIndexDoc,
 	type CartMutationRecord,
 	computeHoldExpiresAt,
@@ -150,6 +154,7 @@ const EXPIRY_PAGE_SIZE = 100;
 export class EmdashCartStore implements CartStore {
 	readonly #carts: StorageCollection<CartDoc>;
 	readonly #mutationIndex: StorageCollection<CartMutationIndexDoc>;
+	readonly #createKeys: StorageCollection<CartCreateKeyDoc>;
 	/** READ-ONLY handles on the inventory aggregate; see the class docblock. */
 	readonly #inventoryDocs: StorageCollection<InventoryDoc>;
 	readonly #reservationIndex: StorageCollection<ReservationIndexDoc>;
@@ -165,6 +170,7 @@ export class EmdashCartStore implements CartStore {
 			options.storage,
 			CART_MUTATION_INDEX_COLLECTION,
 		);
+		this.#createKeys = collectionOf<CartCreateKeyDoc>(options.storage, CART_CREATE_KEYS_COLLECTION);
 		this.#inventoryDocs = collectionOf<InventoryDoc>(options.storage, INVENTORY_COLLECTION);
 		this.#reservationIndex = collectionOf<ReservationIndexDoc>(
 			options.storage,
@@ -187,7 +193,20 @@ export class EmdashCartStore implements CartStore {
 
 	// -- reads -----------------------------------------------------------------
 
-	async create(currency: Currency): Promise<string> {
+	/**
+	 * Mint a cart; with a `key`, idempotently (see the port).
+	 *
+	 * The keyed path CLAIMS THE KEY FIRST, with a create-if-absent on
+	 * `cart_create_keys/{key}` naming a freshly minted id, and only then writes the
+	 * cart. Whoever wins the claim decides the id; a loser reads the winner's id
+	 * back. Every caller — winner or loser — then create-if-absents the cart document
+	 * itself, so a loser that returns before the winner has written it still hands
+	 * back a cart that exists, and a winner that crashed between the two writes is
+	 * finished by the next caller. Two documents, no transaction, and every
+	 * interleaving converges on one active cart.
+	 */
+	async create(currency: Currency, key?: IdempotencyKey): Promise<string> {
+		if (key !== undefined) return this.#createKeyed(currency, key);
 		const cartId = this.#idGen.newId();
 		const now = this.#clock.now().toISOString();
 		const written = await this.#carts.compareAndSet(
@@ -202,10 +221,39 @@ export class EmdashCartStore implements CartStore {
 		return cartId;
 	}
 
+	async #createKeyed(currency: Currency, key: IdempotencyKey): Promise<string> {
+		let cartId = this.#idGen.newId();
+		const claimed = await this.#createKeys.compareAndSet(key, null, { cartId });
+		if (!claimed.applied) {
+			const winner = await this.#createKeys.get(key);
+			if (winner === null) throw new Error(`cart create key ${key} vanished after a lost claim`);
+			cartId = winner.cartId;
+		}
+		// Create-if-absent: a refusal here means the cart is already written (by the
+		// winner, or by an earlier call), which is exactly the answer wanted.
+		await this.#carts.compareAndSet(
+			cartId,
+			null,
+			newCartDoc(cartId, currency, this.#clock.now().toISOString()),
+		);
+		return cartId;
+	}
+
 	async get(cartId: string): Promise<Cart | null> {
 		const doc = await this.#carts.get(cartId);
 		if (doc === null) return null;
 		return this.#toCart(normalizeCartDoc(doc));
+	}
+
+	/** ONE read of the cart document — the lines' stored quantities, no
+	 *  reservation lookup (`get`'s per-line inventory reads), no write. */
+	async units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null> {
+		const doc = await this.#carts.get(cartId);
+		if (doc === null) return null;
+		const cart = normalizeCartDoc(doc);
+		let units = 0;
+		for (const line of Object.values(cart.lines)) units += line.qty;
+		return { state: cart.state, units };
 	}
 
 	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
@@ -251,6 +299,28 @@ export class EmdashCartStore implements CartStore {
 		// directly, and each of them re-ensures the locator.
 		await this.#ensureLocator(input.key, input.cartId);
 		return result;
+	}
+
+	/**
+	 * Retire an `add` claim the domain decided `OUT_OF_STOCK` (see the port). It
+	 * is marked `abandoned`, the flag the sweep already skips, in one
+	 * compare-and-set that also recomputes `holdExpiresAt` — which is the point:
+	 * an outstanding claim contributes its (past) `claimedAt` to that deadline,
+	 * so until it is retired the cart is a sweep candidate on every tick.
+	 */
+	async abandonClaim(cartId: string, key: IdempotencyKey): Promise<void> {
+		await this.#casCart<void>("abandonClaim", async () => {
+			const current = await this.#carts.getVersioned(cartId);
+			if (current === null) return casDone<void>(undefined);
+			const doc = normalizeCartDoc(current.value);
+			const record = doc.mutations[key];
+			if (record === undefined || record.completed || record.abandoned === true) {
+				return casDone<void>(undefined);
+			}
+			const next = this.#withMutations(doc, { [key]: { ...record, abandoned: true } });
+			const written = await this.#carts.compareAndSet(cartId, current.revision, next);
+			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
+		});
 	}
 
 	// -- line mutations --------------------------------------------------------
@@ -464,31 +534,60 @@ export class EmdashCartStore implements CartStore {
 
 	// -- expiry ----------------------------------------------------------------
 
-	async listExpired(now: string, cutoff: string): Promise<ExpiredHold[]> {
+	async listExpired(
+		now: string,
+		cutoff: string,
+		options: ExpiryListOptions = {},
+	): Promise<ExpiredHold[]> {
 		// The declared `holdExpiresAt` index is the CANDIDATE filter: the SQL's OR of
 		// a stamped-deadline arm and a crashed-claim arm cannot be expressed, so both
 		// fold into one `<= now` and the exact per-arm predicate is re-applied to the
 		// fetched document below. `limit` is clamped by the host, so this pages.
+		//
+		// A caller's `limit` stops the walk as soon as it holds that many — pages AND
+		// the per-cart reads below — which is what lets the time-boxed cron sweep list
+		// a bite of a large backlog instead of the whole of it. Pages shrink to the
+		// limit too: a cart owes at least one hold or is skipped, so a page larger
+		// than the limit would mostly be rows read only to be dropped.
+		assertSweepLimit(options.limit);
+		const limit = options.limit;
 		const found = new Set<string>();
 		let cursor: string | undefined;
 		for (let page = 0; page < MAX_EXPIRY_PAGES; page++) {
 			const result = await this.#carts.query({
 				where: { holdExpiresAt: { lte: now } },
-				limit: EXPIRY_PAGE_SIZE,
+				limit: limit === undefined ? EXPIRY_PAGE_SIZE : Math.min(EXPIRY_PAGE_SIZE, limit),
 				cursor,
 			});
 			for (const { id, data } of result.items) {
+				if (limit !== undefined && found.size >= limit) break;
+				if (options.shouldContinue !== undefined && !options.shouldContinue()) {
+					return this.#limitedHolds(found, limit);
+				}
 				const doc = normalizeCartDoc(data);
 				// A checked-out cart is narrowed to what it still OWES before its arms
 				// are re-applied — see `#narrowCheckedOut` for why that, and not a
 				// `state: "active"` filter on this query, is the fix.
 				const owed = doc.state === "checked_out" ? await this.#narrowOrWhole(id, doc) : doc;
-				if (owed !== null) await this.#collectExpired(owed, now, cutoff, found);
+				const dead: DeadCandidates = { reservations: new Set(), claims: new Set() };
+				if (owed !== null) await this.#collectExpired(owed, now, cutoff, found, dead);
+				if (doc.state === "active" && (dead.reservations.size > 0 || dead.claims.size > 0)) {
+					await this.#healDeadCandidates(id, dead);
+				}
 			}
+			if (limit !== undefined && found.size >= limit) break;
 			if (!result.hasMore || result.cursor === undefined) break;
 			cursor = result.cursor;
 		}
-		return [...found].map((reservationId) => ({ reservationId }));
+		return this.#limitedHolds(found, limit);
+	}
+
+	/** One cart can owe several holds, so the last one read may overshoot. */
+	#limitedHolds(found: ReadonlySet<string>, limit: number | undefined): ExpiredHold[] {
+		const ids = [...found];
+		return (limit === undefined ? ids : ids.slice(0, limit)).map((reservationId) => ({
+			reservationId,
+		}));
 	}
 
 	async expireHold(reservationId: string, now: string, cutoff: string): Promise<boolean> {
@@ -702,8 +801,9 @@ export class EmdashCartStore implements CartStore {
 				lines[key] = line;
 			}
 			// An outstanding `add` claim is owed UNLESS its reserve was DECIDED with no
-			// reservation: an OUT_OF_STOCK add leaves its claim incomplete forever (the
-			// domain never completes a failed add), yet a terminal reserve key is
+			// reservation. The domain now retires such a claim itself (`abandonClaim`),
+			// but a claim written before it did, or one whose retirement did not land,
+			// is still incomplete and unretired here — yet a terminal reserve key is
 			// once-only — a replay returns the recorded answer — so that claim can
 			// never mint a hold. It is the same fact `#collectExpired` reads to skip
 			// it; left in, it would pin the deadline at its `claimedAt` and keep the
@@ -757,20 +857,103 @@ export class EmdashCartStore implements CartStore {
 		now: string,
 		cutoff: string,
 		found: Set<string>,
+		dead: DeadCandidates,
 	): Promise<void> {
 		for (const line of Object.values(doc.lines)) {
 			if (line.reservationId === null) continue;
-			if (line.expiresAt !== null && line.expiresAt <= now) found.add(line.reservationId);
+			if (line.expiresAt === null || line.expiresAt > now) continue;
+			// HEAD-OF-LINE: a lapsed line whose reservation can no longer be expired
+			// (released or committed behind the cart's back, or gone) is not offered.
+			// `expireHold` would refuse it every time, and under a caller's `limit` a few
+			// of those would fill every bite forever while the live holds behind them
+			// waited. A line already carrying an expiry token is still offered: that is
+			// a claimed expiry owed its completion, and only `expireHold` completes it.
+			if (line.expiring === undefined && !(await this.#isLiveReservation(line.reservationId))) {
+				dead.reservations.add(line.reservationId);
+				continue;
+			}
+			found.add(line.reservationId);
 		}
 		for (const [key, record] of Object.entries(doc.mutations)) {
 			if (record.kind !== "add" || record.completed || record.abandoned === true) continue;
 			if (record.claimedAt > cutoff) continue;
 			// A claim with no line: the reserve key document says whether it ever
 			// minted a reservation. A decided OUT_OF_STOCK never did, so there is
-			// nothing to reap and the claim simply costs this one read per sweep.
+			// nothing to reap. The domain retires such a claim as it decides it
+			// (`abandonClaim`), so only one it could not retire costs this read.
 			const reservationId = reservationIdOf(await this.#reservationKeys.get(key));
-			if (reservationId !== null) found.add(reservationId);
+			if (reservationId === null) continue;
+			// The same head-of-line rule as the line arm above.
+			if (record.expiring === undefined && !(await this.#isLiveReservation(reservationId))) {
+				dead.claims.add(key);
+				continue;
+			}
+			found.add(reservationId);
 		}
+	}
+
+	/**
+	 * HEAL an active cart's index past its dead candidates, so the listing stops
+	 * matching it.
+	 *
+	 * Skipping a dead line (above) keeps it out of the RESULT, but the cart's
+	 * `holdExpiresAt` still says `<= now`, so the cart is fetched — and pays its
+	 * reads — on every listing, forever. Under a small per-tick budget a few such
+	 * carts sorted ahead of a live one fill the whole listing allowance and the
+	 * live hold behind them is never reached. So, exactly as `#narrowCheckedOut`
+	 * does for a checked-out cart, the index alone is recomputed without the dead
+	 * candidates: lines and claims stay on the document, untouched.
+	 *
+	 * Safe for the same reason: a reservation that is no longer live never becomes
+	 * live again, so a candidate dropped here could never have been reaped. A later
+	 * write recomputes the index from the full document and re-arms the cart for
+	 * one more heal — one extra read and write, not a starvation. Best-effort: a
+	 * contended write is left for the next listing.
+	 *
+	 * NOT healed (accepted residual): a candidate whose reservation index is live
+	 * but which `#claimExpiry` still refuses — its inventory hold not `held`, or its
+	 * mutation locator missing. Telling those apart costs an inventory read per
+	 * line; they are crash residue, rare, and each costs only its own reads.
+	 */
+	async #healDeadCandidates(cartId: string, dead: DeadCandidates): Promise<void> {
+		try {
+			await this.#casCart<void>("listExpired.heal", async () => {
+				const current = await this.#carts.getVersioned(cartId);
+				if (current === null) return casDone(undefined);
+				const doc = normalizeCartDoc(current.value);
+				if (doc.state !== "active") return casDone(undefined);
+				const lines = Object.fromEntries(
+					Object.entries(doc.lines).filter(
+						([, line]) =>
+							line.expiring !== undefined ||
+							line.reservationId === null ||
+							!dead.reservations.has(line.reservationId),
+					),
+				);
+				const mutations = Object.fromEntries(
+					Object.entries(doc.mutations).filter(
+						([key, record]) => record.expiring !== undefined || !dead.claims.has(key),
+					),
+				);
+				const holdExpiresAt = computeHoldExpiresAt({ lines, mutations });
+				if (holdExpiresAt === doc.holdExpiresAt) return casDone(undefined);
+				const written = await this.#carts.compareAndSet(cartId, current.revision, {
+					...doc,
+					holdExpiresAt,
+				});
+				return written.applied ? casDone(undefined) : CAS_RETRY;
+			});
+		} catch (err) {
+			if (!isStorageContentionError(err)) throw err;
+		}
+	}
+
+	/** Whether a reservation is still live (indexed, not terminal) — the cheap
+	 *  half of `#claimExpiry`'s refusal, read here so a list never offers a hold
+	 *  the claim is certain to refuse. */
+	async #isLiveReservation(reservationId: string): Promise<boolean> {
+		const index = await this.#reservationIndex.get(reservationId);
+		return index !== null && index.terminalState === undefined;
 	}
 
 	// -- cross-aggregate reads -------------------------------------------------
@@ -973,6 +1156,7 @@ function toRecorded(
 		lineId: record.lineId,
 		resultingQty: record.resultingQty,
 		completed: record.completed,
+		...(record.abandoned === true ? { abandoned: true } : {}),
 	};
 }
 
@@ -984,4 +1168,11 @@ function toRecorded(
  */
 function reservationIdOf(doc: ReservationKeyDoc | null): string | null {
 	return doc === null ? null : doc.reservationId;
+}
+
+/** What one listing found unexpirable on a cart: lapsed lines (by reservation id)
+ *  and crashed claims (by mutation key) whose reservation is no longer live. */
+interface DeadCandidates {
+	readonly reservations: Set<string>;
+	readonly claims: Set<string>;
 }

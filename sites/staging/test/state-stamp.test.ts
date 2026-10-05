@@ -55,19 +55,36 @@ describe("StateStamp — what it renders", () => {
 		expect(await stamp({ state: "paid", level: "h2" })).toMatch(/<h2[^>]*>/);
 	});
 
-	test("renders the body copy and the reference when given them", async () => {
+	test("renders the body copy and the order's product label when given them", async () => {
 		const html = await stamp({
 			state: "paid",
 			body: "We've received your payment.",
-			reference: "ord_01J8XQ4M7",
+			orderLabel: "Otta Tee and 2 more",
 		});
 		expect(html).toContain("We&#39;ve received your payment.");
-		expect(html).toContain("ord_01J8XQ4M7");
-		expect(html).toContain("Reference");
+		expect(html).toContain("Otta Tee and 2 more");
+		expect(html).toMatch(/class="u-label"[^>]*>Order<\/span>/);
 	});
 
-	test("omits the reference row entirely when there is none", async () => {
-		expect(await stamp({ state: "pending" })).not.toContain("Reference");
+	test("the label is a product name, not a code: it is NOT set in mono", async () => {
+		// TEMPERED.md §1 rule 2 — mono is for figures and codes. The order used to
+		// be named by its id, which is a code; it is now named by what was bought.
+		const html = await stamp({ state: "paid", orderLabel: "Otta Tee" });
+		expect(html).not.toContain("u-mono");
+	});
+
+	test("no longer has a Reference row: the order id is not a thing it prints", async () => {
+		// A shopper never sees the order UUID. The `reference` prop is gone (a
+		// caller still passing one fails the typecheck).
+		const html = await stamp({ state: "paid", reference: "ord_01J8XQ4M7" });
+		// The RAW html, attributes included: a legacy `reference` is swallowed,
+		// not spread onto the root, so an id cannot reach the DOM at all.
+		expect(html).not.toContain("ord_01J8XQ4M7");
+		expect(html).not.toContain("Reference");
+	});
+
+	test("omits the order row entirely when there is no label", async () => {
+		expect(await stamp({ state: "pending" })).not.toMatch(/>Order<\/span>/);
 	});
 
 	test("takes a slot, so a page can put the way out under the headline", async () => {

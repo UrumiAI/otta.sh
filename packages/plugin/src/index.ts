@@ -95,14 +95,6 @@ export {
 // barrel is `@otta-sh/plugin`'s public one.
 export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
 export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
-// The live theme-preview contract (ADR-0024, amended 2026-09-30): the site's
-// middleware honours this query parameter for admins, and the React Themes
-// screen receives URLs built from it. One spelling, read by both sides.
-export {
-	THEME_PREVIEW_OFF,
-	THEME_PREVIEW_PARAM,
-	THEME_PREVIEW_SILENT,
-} from "./admin/store-themes.js";
 export {
 	// The surface, and the type `dispatchProductsAction`'s third
 	// parameter now has (work order 02, INC-B10b-i). Exported from the entry point
@@ -197,16 +189,34 @@ export {
 	createActivateHandler,
 	createCronHandler,
 	ensureSweepTaskScheduled,
+	MAINTENANCE_LEG_INTERVAL_MS,
+	MAINTENANCE_LEGS,
 	runCommerceSweeps,
+	SWEEP_EMAIL_SEND_TIMEOUT_MS,
+	SWEEP_HOOK_TIMEOUT_MS,
 	SWEEP_LEGS,
 	SWEEP_SCHEDULE,
 	SWEEP_TASK_NAME,
+	SWEEP_TICK_BUDGET_MS,
+	SWEEP_TICK_QUERY_BUDGET,
+	SWEEP_TICK_RESERVE_MS,
 	type CommerceSweepOptions,
 	type CommerceSweepSummary,
 	type SweepLeg,
 	type SweepLegOutcome,
 	type SweepScheduleOutcome,
 } from "./cron/index.js";
+// The "Background work per minute" setting — the sweep's per-tick query budget,
+// chosen per Cloudflare plan. Exported so a site or an ops script can read or
+// pre-set the same key the Settings screen writes.
+export {
+	BACKGROUND_WORK_KEY,
+	BACKGROUND_WORK_PRESETS,
+	DEFAULT_BACKGROUND_WORK,
+	MAX_BACKGROUND_WORK,
+	MIN_BACKGROUND_WORK,
+	validateBackgroundWork,
+} from "./cron/background-work-setting.js";
 // INC-C3 — the write-only payment/email secret keys and their fail-closed
 // readers. Exported so a deploying site can assert what the plugin stores, and
 // so INC-C1b's settle route can reach the Stripe webhook secret, without either
@@ -279,6 +289,7 @@ export {
 	type CartLineWire,
 	type CartResult,
 	type CartWire,
+	type ReplaceCartResult,
 	type CommerceClient,
 	type CommerceMoney,
 	type CommerceProductKind,
@@ -359,9 +370,13 @@ export {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderAbandonRouteHandler,
+	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	type CheckoutPlaceRouteInput,
 	type CheckoutLockedOrderView,
 	type CheckoutPlaceRouteResult,
@@ -373,6 +388,10 @@ export {
 	type CheckoutSummaryView,
 	type OrderRouteInput,
 	type OrderRouteResult,
+	type OrderAbandonRouteInput,
+	type OrderAbandonRouteResult,
+	type OrderResumeRouteInput,
+	type OrderResumeRouteResult,
 } from "./storefront/checkout-routes.js";
 // ── Phase 5: storefront customer account (ADR-0004, issue #306) ─────────────
 export {
@@ -381,6 +400,7 @@ export {
 	ACCOUNT_LOGIN_REQUEST_ROUTE,
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
 	ACCOUNT_LOGOUT_ROUTE,
+	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_PATH,
 	ACCOUNT_ORDERS_ROUTE,
@@ -389,6 +409,7 @@ export {
 	type AccountLoginRequestResult,
 	type AccountLoginVerifyResult,
 	type AccountLogoutResult,
+	type AccountMeResult,
 	type AccountOrderResult,
 	type AccountOrdersResult,
 	type SessionCookieDescriptor,
@@ -396,6 +417,7 @@ export {
 export {
 	ACCOUNT_VERIFY_PATH,
 	isValidLoginLinkUrl,
+	LOGIN_LINK_TTL_MS,
 	LOGIN_LINK_URL_KEY,
 } from "./storefront/login-link.js";
 export {
@@ -406,6 +428,7 @@ export {
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
+	orderTotalsFlags,
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
@@ -419,16 +442,58 @@ export {
 	type ShippingSelectionReason,
 	type UncalculatedReason,
 } from "./storefront/checkout-view-model.js";
+// The storefront's one locale — the site's `SITE_LOCALE` and the order emails share it.
+export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
-export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
+export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh/domain";
+// The shopper-facing name of an order — its products, never its id. The site
+// names an order on its confirmation and account pages; the order emails name
+// it through the same function in the domain, so the site takes THAT one rather
+// than a copy that could spell the same order differently.
+export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
+// order emails.
+export { orderTotalLabel } from "@otta-sh/domain";
+// The sign-in link's per-address cap and lifetime, as the in-process verifier
+// enforces them (its defaults — `createInProcessCommerceStores` passes no
+// override), so a storefront's copy about them cannot drift from the truth.
+//
+// Declared HERE as plugin constants rather than re-exported from
+// `@otta-sh/store-emdash`: a re-export makes the emitted declarations reach into
+// that package's types, and through them the host's toolchain (vite, postcss,
+// typescript), which the declaration bundler cannot bundle — the plugin build
+// fails. Same values; the store's defaults stay the one source.
+// The lifetime is `storefront/login-link.ts`'s LOGIN_LINK_TTL_MS (exported
+// above), the one value the verifier is built with and the sign-in email states.
+import { DEFAULT_MAX_ACTIVE_CHALLENGES as STORE_MAX_ACTIVE_CHALLENGES } from "@otta-sh/store-emdash";
+export const LOGIN_LINK_MAX_ACTIVE: number = STORE_MAX_ACTIVE_CHALLENGES;
+// The ship-to's per-field length bounds the domain enforces, for a site that
+// bounds its address inputs and refuses an over-long field as the address
+// error it is rather than a generic one.
+export { ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+// The shopper-facing cart quantity cap the routes enforce, for a site that
+// bounds its quantity field and names the limit instead of a generic failure.
+export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
+// The checkout email's (buyerRef's) bound the place route enforces, for a
+// site's email field.
+export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
 export {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+	type ShopperStateInput,
+	type ShopperStateResult,
+} from "./storefront/shopper-state-route.js";
+export {
+	type AccountOrderWire,
 	type CheckoutFailureReason,
 	type CheckoutResult,
 	type ClientActionWire,
 	type PaymentIntentWire,
 	type PublicOrderResult,
+	type ResumeOrderPaymentResult,
+	type ResumeProof,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
 	type QuoteDestinationWire,

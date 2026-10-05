@@ -65,6 +65,14 @@ import {
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { CartModel } from "../../themes/contract.js";
+import { keepPrivate } from "../../lib/no-store.js";
+
+/* This page renders one shopper's cart: never stored by a shared cache, and kept out of
+   Astro's route cache, which ignores Cache-Control (middleware.ts, "TWO
+   CACHES") — QA U-7. Called FIRST so no rendered branch (an error state, a
+   busy 503) goes out without it; a redirect is its own response and carries
+   no body to store. */
+keepPrivate(Astro);
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
@@ -293,13 +301,12 @@ if (productIds.length > 0) {
  * already made, and a second, narrower view model would be a second place for
  * the title-or-SKU fallback rule to drift.
  */
-const lineViews = lines.map((line, index) => {
+const lineViews = lines.map((line) => {
 	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
 	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
 	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted, pricingDegraded);
 	return {
 		line,
-		index,
 		/** The display-face name, or null when this store cannot name the line. */
 		title: content?.title ?? null,
 		/** What a screen reader calls the line — never null, so every control on

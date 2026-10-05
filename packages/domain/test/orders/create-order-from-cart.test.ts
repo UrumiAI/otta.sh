@@ -580,6 +580,22 @@ describe("createOrderFromCart", () => {
 		expect(res.reason).toBe("INVALID_SHIPPING_ADDRESS");
 	});
 
+	// A signed-in checkout names its owner, and the ORDER carries it — not only the
+	// coupon's per-customer count — so the order is in the shopper's list at once.
+	test("a checkout carrying a customerId mints an order that customer owns; without one it is a guest order", async () => {
+		const cartId = await seededCart();
+		const owner = brandCustomerId("cust-owner");
+		const res = await createOrderFromCart(h.createDeps, { ...cmd(cartId), customerId: owner });
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.customerId).toBe(owner);
+		expect((await h.orderStore.listForCustomer(owner)).map((o) => o.id)).toEqual([res.order.id]);
+
+		const guestCart = await seededCart();
+		const guest = await createOrderFromCart(h.createDeps, cmd(guestCart, "k-guest"));
+		expect(guest.ok && guest.order.customerId).toBeNull();
+	});
+
 	test("the order ship-to is frozen: editing the profile address book afterward never rewrites it", async () => {
 		const cartId = await seededCart();
 		const custId = brandCustomerId("cust-1");

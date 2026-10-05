@@ -14,6 +14,7 @@ export {
 export {
 	CART_ABANDONED_LEDGER_SIZE,
 	CART_COLLECTIONS,
+	CART_CREATE_KEYS_COLLECTION,
 	CART_MUTATION_INDEX_COLLECTION,
 	CART_MUTATION_LEDGER_SIZE,
 	CARTS_COLLECTION,
@@ -25,6 +26,7 @@ export {
 	pruneMutations,
 	type CartDoc,
 	type CartLineDoc,
+	type CartCreateKeyDoc,
 	type CartMutationIndexDoc,
 	type CartMutationRecord,
 } from "./cart-documents.js";
@@ -291,6 +293,10 @@ export {
 	EmdashCredentialVerifier,
 	type EmdashCredentialVerifierOptions,
 } from "./emdash-credential-verifier.js";
+export {
+	EmdashAttemptThrottle,
+	type EmdashAttemptThrottleOptions,
+} from "./emdash-attempt-throttle.js";
 export {
 	DEFAULT_SESSION_TTL_MS,
 	EmdashSessionStore,

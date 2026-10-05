@@ -317,7 +317,7 @@ export function paymentDeclineContract(
 			expect(await couponUses(h, couponId)).toBe(1);
 		});
 
-		test("a success arriving after the order expired is flagged for reconciliation, exactly as before", async () => {
+		test("a success arriving after the order expired is refunded automatically — never paid, never silently kept", async () => {
 			const h = await makeHarness();
 			const { order, sku: s, couponId, holdExpiresAt } = await seedPendingOrder(h, "6");
 			await settleOrder(h.settleDeps, gateway, event(order, "failed", "evt_fail_6"));
@@ -329,12 +329,18 @@ export function paymentDeclineContract(
 			if (res.ok) expect(res.noop).toBe(true);
 			const after = await state(h, order.id);
 			// Money moved on an order that can no longer settle: never silently paid,
-			// never silently dropped — the manual-reconciliation flag (SETTLE_ON_NON_PENDING).
+			// never silently kept. This used to stop at a manual-reconciliation flag
+			// (SETTLE_ON_NON_PENDING) with the buyer out of pocket; since the
+			// late-payment change it is refunded on the spot and the flag resolved
+			// (`latePaymentContract` pins the once-only and failure paths).
 			expect(after.state).toBe("expired");
-			expect(after.reconciliationFlag).not.toBeNull();
+			expect(after.reconciliationFlag).toBeNull();
+			expect(after.reconciliationResolution?.outcome).toBe("refunded");
 			expect(await onHand(h, s), "released stock is not re-taken").toBe(ON_HAND);
 			expect(await couponUses(h, couponId)).toBe(0);
-			expect(await h.settleDeps.orderStore.getCapturedPayments(order.id)).toHaveLength(0);
+			expect(await h.settleDeps.orderStore.getCapturedPayments(order.id)).toHaveLength(1);
+			const refunds = await h.settleDeps.orderStore.listRefunds(order.id);
+			expect(refunds.map((r) => [r.amount, r.status])).toEqual([[TOTAL_CENTS, "recorded"]]);
 		});
 	});
 }

@@ -8,22 +8,61 @@
  * so this page is not an account oracle. Zero client JS, like every page but the
  * payment step (ADR-0012).
  */
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import { ACCOUNT_NO_STORE, LOGIN_LINK_SENT_COPY } from "../../../lib/account.js";
+import {
+	ACCOUNT_HOME_PATH,
+	LOGIN_LINK_MANY_COPY,
+	LOGIN_LINK_SENT_COPY,
+	signedInEmail,
+} from "../../../lib/account.js";
+import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import type { AccountLoginModel } from "../../../themes/contract.js";
 
-Astro.response.headers.set("Cache-Control", ACCOUNT_NO_STORE);
+/* Private, always, and out of Astro's route cache: the page can greet a
+   signed-in shopper by email. One call sets both (lib/no-store.ts). */
+keepPrivate(Astro);
 
-const sent = Astro.url.searchParams.get("sent") === "1";
+/* `many`: THIS BROWSER has asked for more links than the per-address cap inside
+   the window, so a new one may not have been sent (QA U-12). Decided by the
+   browser's own count (request.ts), never by the address — not an oracle. */
+const sentParam = Astro.url.searchParams.get("sent");
+const sent = sentParam === "1" || sentParam === "many";
 const error = Astro.url.searchParams.get("error");
 
-/** The notice is the SAME sentence for every address (not an account oracle). */
+/* Already signed in? Say so, with the way to their orders and out — the page
+   used to show a bare sign-in form to a shopper who was signed in, which read as
+   though they were not. The form is behind "Use a different email": signing in
+   as another address is still how a shopper switches. keepPrivate (above) covers this page's
+   now-personal content. */
+const email = await signedInEmail(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	Astro.cookies,
+	Astro.url,
+);
+
+/** The notice is the SAME sentence for every address (not an account oracle);
+ *  only this browser's own request count can change it. */
+/* Signed in, the form is offered only on request — "Use a different email"
+   (QA2 A6): a sign-in form under "You're signed in" read as though they were
+   not. */
+const switching = Astro.url.searchParams.get("switch") === "1";
 const model: AccountLoginModel = {
+	signedIn:
+		email !== null
+			? { email, ordersHref: ACCOUNT_HOME_PATH, switchHref: "/account/login?switch=1" }
+			: null,
+	showForm: email === null || switching,
 	sent,
-	sentCopy: LOGIN_LINK_SENT_COPY,
+	sentCopy: sentParam === "many" ? LOGIN_LINK_MANY_COPY : LOGIN_LINK_SENT_COPY,
 	errorMessage: error !== null ? cartErrorMessage(error) : null,
 };
 ---
 
-<Storefront view="accountLogin" model={model} title="Sign in" />
+<Storefront
+	view="accountLogin"
+	model={model}
+	title="Sign in or create an account"
+	signedIn={email !== null}
+/>

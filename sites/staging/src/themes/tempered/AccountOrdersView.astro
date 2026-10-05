@@ -3,7 +3,8 @@
  * Tempered's order list for a signed-in customer (issue #306, ADR-0004).
  * Presentation only — `src/pages/account/orders/index.astro` resolves the
  * customer from the SESSION (never a customer id), redirects the signed-out,
- * sets `private, no-store`, maps BUSY, and hands over finished rows.
+ * sets `private, no-store`, maps BUSY, and hands over finished rows — newest
+ * first, each with its status in words and the date it was placed.
  *
  * Styles: `commerce.css` (`account-orders-*`).
  */
@@ -14,14 +15,17 @@ interface Props {
 	model: AccountOrdersModel;
 }
 
-const { errorMessage, rows } = Astro.props.model;
+const { errorMessage, rows, signedInAs } = Astro.props.model;
 ---
 
 <div class="account-orders-head-row">
 	<h1 class="account-orders-title">Your orders</h1>
-	<form method="POST" action="/account/logout">
-		<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
-	</form>
+	<div class="account-orders-session">
+		{signedInAs !== null && <span class="account-orders-who">Signed in as {signedInAs}</span>}
+		<form method="POST" action="/account/logout">
+			<button type="submit" class="u-btn u-btn-ghost">Sign out</button>
+		</form>
+	</div>
 </div>
 
 {
@@ -32,16 +36,23 @@ const { errorMessage, rows } = Astro.props.model;
 	) : rows.length === 0 ? (
 		<p class="account-orders-empty">
 			No orders yet. Orders you place with this email address — including as a guest — appear
-			here. <a href="/products">Browse products</a>
+			here. <a class="account-orders-empty-link" href="/products">Browse products</a>
 		</p>
 	) : (
 		<ul class="account-orders-list">
 			{rows.map((row) => (
 				<li class="account-orders-row">
-					<a class="account-orders-ref u-mono" href={row.href}>
-						{row.id}
+					{/* Named by its products, not the order id — a shopper is never
+					    shown the UUID. The link is how they open it. */}
+					<a class="account-orders-name" href={row.href}>
+						{row.label}
 					</a>
 					<span class="account-orders-state">{row.state}</span>
+					{/* A <time> even when the date is unreadable would claim one; the
+					    cell stays, empty, so the columns still line up. */}
+					<span class="account-orders-date">
+						{row.placed !== null && <time datetime={row.placed.iso}>{row.placed.text}</time>}
+					</span>
 					<span class="account-orders-items">{row.items}</span>
 					<span class="account-orders-total u-mono">{row.total}</span>
 				</li>

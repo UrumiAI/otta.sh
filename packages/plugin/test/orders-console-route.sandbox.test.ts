@@ -91,7 +91,7 @@ interface SeedOptions {
 	 *  own rows with. */
 	tag: string;
 	totalCents?: number;
-	state?: "paid" | "processing";
+	state?: "pending" | "paid" | "processing";
 }
 
 /** One order, seeded through the SAME adapters the console's in-process client
@@ -123,7 +123,7 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		],
 		totals: { subtotal: cents(total), total: cents(total), currency: currency("USD") },
 	});
-	await orderStore.markPaid(toOrderId(id));
+	if (options.state !== "pending") await orderStore.markPaid(toOrderId(id));
 	if (options.state === "processing") {
 		await orderStore.transition({
 			orderId: toOrderId(id),
@@ -198,6 +198,27 @@ describe("the console's read/write branch on the otta admin route", () => {
 		const result = await list({ search: tag });
 		expect(result["total"]).toBe(3);
 		expect(rowsOf(result)).toHaveLength(3);
+	});
+
+	test("a search term with surrounding spaces is TRIMMED before it reaches the store's prefix match", async () => {
+		// Defence in depth behind the console's own trim: a request carrying
+		// `  tag  ` must not be a search for orders starting with a space.
+		const tag = "trimmedsearch";
+		await seedOrder({ tag });
+		const result = await list({ search: `  ${tag}  ` });
+		expect(rowsOf(result)).toHaveLength(1);
+		expect(result["total"]).toBe(1);
+	});
+
+	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {
+		// QA read "25 orders" on a paginated list and suspected the count was the
+		// page's. It is not: `total` is `countOrders` under the page's own filter.
+		const tag = "pagedcount";
+		for (let i = 0; i < PAGE_LIMIT + 2; i++) await seedOrder({ tag });
+		const result = await list({ search: tag });
+		expect(rowsOf(result)).toHaveLength(PAGE_LIMIT);
+		expect(result["total"]).toBe(PAGE_LIMIT + 2);
+		expect(result["nextCursor"]).not.toBeNull();
 	});
 
 	test("the filter vocabulary is SENT as data, so the console holds no copy of it", async () => {
@@ -509,6 +530,18 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["transitions"]).toEqual(["refunded"]);
 	});
 
+	test("an unpaid CARD order is offered no `paid` — only Stripe's confirmation settles it (T1-3)", async () => {
+		// QA marked an unpaid Stripe order paid in one click: the buyer was told their
+		// payment was received and the reports counted the revenue. The offer is the
+		// domain's `adminNextStates`, so the button is gone here and the write is
+		// refused in the domain as well (orders-actions.sandbox.test.ts).
+		const tag = "unpaid-card";
+		const id = await seedOrder({ tag, state: "pending" });
+		const result = await invoke({ type: READ, resource: "orders.detail", orderId: id });
+		expect((result["order"] as Record<string, unknown>)["state"]).toBe("pending");
+		expect(result["transitions"]).toEqual(["expired"]);
+	});
+
 	test("an unknown order is a refusal with copy, at HTTP 200 (G5)", async () => {
 		const result = await invoke({
 			type: READ,
@@ -575,12 +608,14 @@ describe("the console's read/write branch on the otta admin route", () => {
 	});
 
 	test("a write with no notice reports no notice, rather than inventing one", async () => {
+		// A note is the quiet write: an appended note has nothing to report. (A status
+		// move no longer is — it says what became of the buyer's email, QA T1-6.)
 		const tag = "quietwrite";
 		const id = await seedOrder({ tag });
 		const result = await invoke({
 			type: ACT,
-			action_id: "orders:transition-processing",
-			value: { orderId: id, toState: "processing", state: "paid" },
+			action_id: "orders:add-note",
+			value: { orderId: id, author: "carol", body: "called the buyer" },
 		});
 		expect(result["ok"]).toBe(true);
 		expect(result["notice"]).toBeNull();
@@ -601,7 +636,11 @@ describe("the console's read/write branch on the otta admin route", () => {
 			action_id: "orders:transition-processing",
 			value: { orderId: id, toState: "processing", state: "paid" },
 		});
-		expect(result["notice"]).toBeNull();
+		// The notice is the WRITE's own outcome — what became of the buyer's email —
+		// and says nothing of the order's settlement alert.
+		const notice = result["notice"] as Record<string, unknown>;
+		expect(notice["title"]).toBe("Order marked processing");
+		expect(JSON.stringify(notice)).not.toMatch(/mismatch|reconcil/i);
 		// ...and the flag is still standing, unread by the write.
 		const detail = await invoke({ type: READ, resource: "orders.detail", orderId: id });
 		expect((detail["order"] as Record<string, unknown>)["reconciliationFlag"]).toBe(
