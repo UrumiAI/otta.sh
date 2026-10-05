@@ -62,7 +62,6 @@ import {
 } from "../../lib/checkout-selection.js";
 import { ORDER_PLACED_OTHER_EMAIL } from "../../lib/checkout-review.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
@@ -205,11 +204,9 @@ function blankRequiredFields(form: FormData, zoned: boolean): FieldErrors {
 export const POST: APIRoute = async (context) => withoutReferrer(await place(context));
 
 async function place(context: APIContext): Promise<Response> {
-	// CSRF FIRST — before the body is even read. emdash force-disables Astro's
-	// checkOrigin and its replacement covers only /_emdash/api/* (ADR-0006), so
-	// without this a cross-site form POST could create a real order.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
+	// first (lib/origin-guard.ts, ADR-0006),
+	// before the body is read: without it a cross-site form could create a real order.
 
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();

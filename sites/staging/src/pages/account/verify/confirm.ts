@@ -25,7 +25,6 @@ import {
 	verifyFailureToken,
 } from "../../../lib/account.js";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
-import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
 import {
 	busyResponse,
 	dispatchOttaRoute,
@@ -45,11 +44,10 @@ function sameSitePath(target: string): string {
 }
 
 export const POST: APIRoute = async (context) => {
-	// CSRF FIRST. Here it also stops LOGIN CSRF: a cross-site form carrying the
-	// attacker's own link would otherwise sign the victim into the attacker's
-	// account.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
+	// first (lib/origin-guard.ts, ADR-0006).
+	// Here it also stops LOGIN CSRF: a cross-site form carrying the attacker's own
+	// link would otherwise sign the victim into the attacker's account.
 
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();

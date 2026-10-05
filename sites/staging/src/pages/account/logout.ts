@@ -11,13 +11,12 @@ import { ACCOUNT_LOGOUT_ROUTE, type AccountLogoutResult } from "@otta-sh/plugin"
 import type { APIRoute } from "astro";
 import { clearSessionCookie, currentSessionToken } from "../../lib/account.js";
 import { routeDispatcher } from "../../lib/cart-actions.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF FIRST — a cross-site form must not be able to sign a customer out.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
+	// first (lib/origin-guard.ts, ADR-0006):
+	// a cross-site form must not be able to sign a customer out.
 
 	const sessionToken = currentSessionToken(context.cookies);
 	if (sessionToken !== undefined) {
