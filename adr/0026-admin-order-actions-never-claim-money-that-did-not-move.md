@@ -281,6 +281,34 @@ provider first and issues nothing if it is already refunded. This closes the ear
 the provider". When the refund path's own RESUME finds the provider already showing money on a
 reservation, the flag it writes now names the provider's figures and points to this action.
 
+**Resolving finishes what the refund was for (#364).** Settling the row was not enough when the
+refund was part of something larger. A `cancellation` refund that timed out and was then
+confirmed left the order `paid` (still shippable), nothing restocked and nobody emailed; a
+`late-payment` one never ran its finish. Now the resolve continues by the row's purpose, so the
+order ends as it would have had the provider answered success the first time:
+
+- **Cancellation, confirmed** → the cancel is resumed: `cancelOrderWithRefund` under the
+  cancellation's own key (the row's key less its `:refund[:n]` suffix), its reason and canceller
+  read off the row, its first attempt's restock choice. It finds its refund `recorded`, which now
+  needs no gateway and makes no provider call, then restocks, flips and sends the one cancelled
+  email (with the refund on it). The typed free-text detail is not on the row, so the resumed
+  envelope has none. If the order can no longer be cancelled (it shipped meanwhile), it is flagged
+  for a person and the refund announces itself with its `refund-issued` notice, once. If the
+  cancel cannot run here (no inventory store wired) or stops part-way, the operator is told to
+  click Cancel order again, which finishes it without refunding twice.
+- **Cancellation, it didn't happen** → the order is still paid; Cancel order again steps past the
+  voided attempt to a fresh key and refunds and cancels it.
+- **Late payment, confirmed** → the automatic path's own finish: its flag resolved, its retry
+  cleared, one `late-payment-refunded` notice.
+- **Late payment, it didn't happen** → the money is still held and its one key is spent, so the
+  order is flagged to refund it by hand (over its own late-payment flag or none, never another).
+- **Plain refund** → unchanged.
+
+The follow-up also runs on a replay of "confirmed", so a crash between the finalize and the
+follow-up heals on the next click. Every step is keyed or first-wins (the guarded flip, the
+restock keys, the notice per refund), so no path refunds, restocks or emails twice. A replay never
+re-writes a flag a person may have resolved since. The console says which of these happened.
+
 Provider figures in flags are written in the currency's real minor-unit exponent (ICU's table:
 JPY 0, USD 2, BHD 3).
 
