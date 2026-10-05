@@ -17,9 +17,13 @@
  *    that found some OTHER document (the page's, or a canary's): a found document
  *    wipes the strikes, and only the third strike tombstones;
  *  - a CMS that cannot be seen (an empty or failed list, a canary read `null`), and
- *    a page that is mostly missing, mark and delete nothing — and wipe every strike;
+ *    a page where too many rows miss on the first read, mark and delete nothing —
+ *    and wipe every strike; the page breaker moves the walk PAST its page, so a dense
+ *    block of real orphans is left for a human and never stalls the walk;
  *  - a seeded simulation of INTERMITTENT `null`s (the bridge swallowing sporadic D1
- *    errors) tombstones no live product at p ≤ 0.3 over 360 ticks;
+ *    errors, `get` alone or with `list`) tombstones no live product at any p up to 0.7
+ *    over 360 ticks — one seed and one independent-failure model, not a proof;
+ *  - a strike lives for at least seven days, or four full passes if longer;
  *  - a read that rejects never counts as gone, and one row rejecting run after run
  *    is stepped past (left live) rather than stopping the walk forever;
  *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick;
@@ -390,6 +394,20 @@ describe("a CMS that cannot be seen judges nothing, and wipes every strike", () 
 		expect(await lifecycleOf("p-only")).toBe("live");
 	});
 
+	test("a canary read that REJECTS is said, not swallowed: no miss judged, no strike, an anomaly line", async () => {
+		await product("p-lonely");
+		const cms = fakeCms({ gone: ["p-lonely"], failing: ["listed"] });
+		const cursors = memoryCursors();
+		const leg = orphanLeg(await tick(cms, cursors));
+		expect(leg.ok).toBe(true);
+		expect(leg.anomalies?.join("\n")).toMatch(/canary read of listed product listed failed/);
+		expect(
+			errors.some((line) => line.includes("canary read of listed product listed failed")),
+		).toBe(true);
+		expect((await orphanState(cursors)).suspects).toEqual({});
+		expect(await lifecycleOf("p-lonely")).toBe("live");
+	});
+
 	test("a renamed or emptied collection — the bridge's empty list while every get says null — marks nothing", async () => {
 		await product("p-x");
 		const cms = fakeCms({ mode: "bridge", gone: ["p-x"] });
@@ -420,6 +438,84 @@ describe("a CMS that cannot be seen judges nothing, and wipes every strike", () 
 		cms.gone.delete("p-m2");
 		await tick(cms, cursors, 4 * CADENCE);
 		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-m0": 1, "p-m1": 1 });
+	});
+});
+
+describe("a dense block of real orphans never stalls the walk", () => {
+	test("on the Paid budget: a page tripped by a block of 40 deleted products is passed over (the block stays live, named in the log) and a lone orphan after it is still struck out", async () => {
+		const ids = Array.from({ length: 120 }, (_, i) => `p-blk-${String(i).padStart(3, "0")}`);
+		for (const [i, id] of ids.entries()) {
+			await product(id, new Date(CREATED.getTime() + i * 1000));
+		}
+		// Rows 10-49 inside the first page (the leg's Paid share reads about 58 rows a
+		// page); the lone orphan on a later one.
+		const block = ids.slice(10, 50);
+		const lone = ids[110] as string;
+		const cms = fakeCms({ gone: [...block, lone] });
+		const cursors = memoryCursors();
+		let doneAt: number | null = null;
+		for (let t = 0; t < 120 && doneAt === null; t++) {
+			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS));
+			expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
+			if ((await lifecycleOf(lone)) === "deleted") doneAt = t;
+		}
+		expect(doneAt, "the lone orphan after the block was never struck out").not.toBeNull();
+		for (const id of block) expect(await lifecycleOf(id), id).toBe("live");
+		for (const id of ids) {
+			if (id !== lone && !block.includes(id)) expect(await lifecycleOf(id), id).toBe("live");
+		}
+		expect(
+			errors.some(
+				(line) =>
+					/40 of \d+ products read on this page missed on the first look/.test(line) &&
+					/products p-blk-000 \(created [^)]+\) to p-blk-0\d\d/.test(line) &&
+					line.includes("soft-delete them by hand"),
+			),
+		).toBe(true);
+	});
+});
+
+describe("a strike's lifetime follows the pass length", () => {
+	async function seedStruckTwice(lastPassMs: number | null): Promise<SweepCursorStore> {
+		await product("p-slow");
+		const cursors = memoryCursors();
+		await cursors.write(
+			"product-orphans",
+			JSON.stringify({
+				at: null,
+				id: null,
+				suspects: { "p-slow": { n: 2, at: new Date(NOW.getTime() - 8 * DAY_MS).toISOString() } },
+				failures: {},
+				passStartedAt: null,
+				lastPassMs,
+			}),
+		);
+		return cursors;
+	}
+
+	test("seven days by default: a strike eight days old has expired, so the run strikes ONE", async () => {
+		const cursors = await seedStruckTwice(null);
+		await tick(fakeCms({ gone: ["p-slow"] }), cursors);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-slow": 1 });
+		expect(await lifecycleOf("p-slow")).toBe("live");
+	});
+
+	test("on a catalog whose last pass took three days, the lifetime is four passes: the eight-day-old strike survives and this is strike three", async () => {
+		const cursors = await seedStruckTwice(3 * DAY_MS);
+		await tick(fakeCms({ gone: ["p-slow"] }), cursors);
+		expect(await lifecycleOf("p-slow")).toBe("deleted");
+	});
+
+	test("a full pass records its duration", async () => {
+		await product("p-pass");
+		const cursors = memoryCursors();
+		await tick(fakeCms(), cursors);
+		const raw = JSON.parse((await cursors.read("product-orphans")) ?? "{}") as {
+			lastPassMs?: number;
+			passStartedAt?: string | null;
+		};
+		expect(raw.lastPassMs).toBe(0);
+		expect(raw.passStartedAt).toBeNull();
 	});
 });
 
@@ -695,9 +791,9 @@ describe("the walk fits the budget and pages across ticks", () => {
 		}
 		// Measured: the first pass ends in 18 ticks; the orphans go on the third
 		// pass, each pass a maintenance interval after the last finished. A
-		// 1000-product catalog measured one pass in 280 ticks on Workers Free (under
-		// five hours; about seven on Paid), so there an orphan goes within about three
-		// rotations — some fifteen hours.
+		// 1000-product catalog measured one pass in about 350 ticks on Workers Free
+		// (about six hours; 7 ticks on Paid), and an orphan in it went after about 900
+		// ticks: three passes, up to about eighteen hours.
 		expect(firstPass, "the first pass never ended").not.toBeNull();
 		expect(firstPass!).toBeLessThanOrEqual(20);
 		expect(doneAt, "the orphans were never struck out").not.toBeNull();

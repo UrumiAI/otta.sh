@@ -554,12 +554,10 @@ export const ORPHAN_STRIKES = 3;
 export const ORPHAN_READS_PER_STRIKE = 3;
 
 /**
- * The mass-disappearance breaker's floor: a page is abandoned when at least this
- * many of its reads, AND more than half of them, come back missing. Three, so a
- * merchant who deleted a couple of products whose hooks were both lost is not taken
- * for an outage; half, because the page holds only LIVE rows — the hook's own
- * tombstones never reach it — so a page that is mostly missing is a CMS that cannot
- * see, not a merchant who deleted most of a catalog without a single hook landing.
+ * The mass-disappearance breaker's floor: a page is abandoned only when at least this
+ * many of its rows miss on the first read (and more than
+ * `ORPHAN_FIRST_LOOK_MISS_SHARE` of them). Three, so a merchant who deleted a couple of
+ * products whose hooks were both lost is not taken for an outage.
  */
 export const ORPHAN_MASS_MIN_NULLS = 3;
 
@@ -571,11 +569,13 @@ export const ORPHAN_MASS_MIN_NULLS = 3;
  * reads is an outage, not a merchant: rows reach this leg only when a delete hook
  * was lost, so real orphans are a few to a catalog, never a third of a page.
  *
- * What it costs: a genuine backlog of orphans dense enough to trip it (three or more
- * on one page, and over 30% of it) WAITS — the page is abandoned, its strikes wiped,
- * on every run while the density holds. That is the safe direction; the rows stay
- * live and the error line says why on every run. A single orphan on a page of one,
- * two or three rows never trips it: three first-look misses are the floor.
+ * What it costs: a genuine block of orphans dense enough to trip it (three or more
+ * on one page, and over 30% of it — a bulk delete whose hooks were all lost) is
+ * NEVER swept automatically. The page is abandoned, its strikes wiped, and the walk
+ * moves on past it, so everything after it is still swept; the error line names the
+ * page's range on every pass, for a human to soft-delete. That is the safe
+ * direction. A single orphan on a page of one, two or three rows never trips it:
+ * three first-look misses are the floor.
  */
 export const ORPHAN_FIRST_LOOK_MISS_SHARE = 0.3;
 
@@ -599,7 +599,9 @@ export const ORPHAN_MAX_READ_FAILURES = 3;
 
 /** The suspect set's bounds: at most this many entries (a missing read beyond it is
  *  not marked this pass — the safe direction), each forgotten if not re-confirmed
- *  within `ORPHAN_SUSPECT_TTL_MS`. 200 entries keep the one kv value near 15 KB. */
+ *  within its lifetime: `ORPHAN_SUSPECT_TTL_MS` at least, four full passes when a
+ *  pass takes longer (`orphanMarkTtlMs`). 200 entries keep the one kv value near
+ *  15 KB. */
 export const ORPHAN_MAX_SUSPECTS = 200;
 export const ORPHAN_SUSPECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -3020,13 +3022,14 @@ async function releaseOrphanedRedemptions(
  *
  *  1. THE CIRCUIT BREAKER, once per run before any row is read: the CMS must
  *     positively LIST at least one product (`content.list(products, limit 1)`).
- *  2. THE MASS-DISAPPEARANCE BREAKERS, per page: when at least
+ *  2. THE MASS-DISAPPEARANCE BREAKER, per page: when at least
  *     `ORPHAN_MASS_MIN_NULLS` rows, and more than `ORPHAN_FIRST_LOOK_MISS_SHARE` of the
- *     page's rows, miss on their FIRST read — or more than half are still missing
- *     after their re-reads — it is far likelier an outage than real deletions: rows the
- *     hook DID tombstone are not live and never reach this page. It needs three rows read, so
- *     on the Workers Free preset's first pass (pages of one or two rows) it fires only
- *     on a second pass; the other gates are what cover Free.
+ *     page's rows, miss on their FIRST read, it is far likelier an outage than real
+ *     deletions: rows the hook DID tombstone are not live and never reach this page.
+ *     The page is abandoned and the walk moves PAST it (so a dense block of real
+ *     orphans cannot stall the walk; it is left for a human). It needs three rows
+ *     read, so on the Workers Free preset's first pass (pages of one or two rows) it
+ *     fires only on a second pass; the other gates are what cover Free.
  *  3. THE CANARY: a missing row counts only in a QUALIFYING run — one that read some
  *     OTHER document successfully. When nothing on the page was found, the run reads
  *     the document the circuit breaker listed; a `null` there is the CMS lying.
@@ -3038,9 +3041,12 @@ async function releaseOrphanedRedemptions(
  *  6. The GRACE window: a row younger than `PRODUCT_ORPHAN_GRACE_MS` is not read.
  *
  * A breaker that trips (1, 2, or a canary read `null`) is direct evidence the CMS is
- * not answering truthfully, so EVERY suspect's strikes are wiped with it: strikes
- * gathered while it was failing are not trusted. The run then judges nothing, keeps
- * its cursor, and logs an anomaly. (So a store whose every CMS product is gone while
+ * not answering truthfully, so strikes gathered while it was failing are wiped with
+ * it: ALL of them for 1 and the canary; for 2, the page's own and every strike from
+ * the last cadence (a dense block of real orphans trips its page every pass, and a
+ * global wipe there would starve the rest of the catalog). The run then judges
+ * nothing and logs an anomaly; it keeps its cursor for 1 and the canary, and moves
+ * past the page for 2. (So a store whose every CMS product is gone while
  * live commerce rows remain is never swept — the safe direction, and a state the
  * delete hook makes rare.)
  *
@@ -3098,9 +3104,26 @@ async function softDeleteOrphanedProducts(
 	};
 	const anomalies: string[] = [];
 	/** A breaker tripped: wipe every strike, keep the cursor, judge nothing. */
-	const outage = async (line: string): Promise<{ count: number; anomalies: string[] }> => {
-		const wiped = Object.keys(state.suspects).length;
-		state.suspects = {};
+	/**
+	 * A breaker tripped: judge nothing, and wipe strikes. `scope` says which: `all` for
+	 * the CMS-wide trips (the list, the canary); for a PAGE trip, the strikes of that
+	 * page's rows and every strike recorded within the last cadence (the window an
+	 * outage that tripped this page could have spoiled). Not all of them: a dense block
+	 * of real orphans trips its page on EVERY pass, and a global wipe each time would
+	 * keep every other orphan in the catalog from ever reaching its third strike.
+	 */
+	const outage = async (
+		line: string,
+		scope: "all" | { readonly pageIds: ReadonlySet<string> } = "all",
+	): Promise<{ count: number; anomalies: string[] }> => {
+		let wiped = 0;
+		for (const [id, mark] of Object.entries(state.suspects)) {
+			const recent = nowMs - Date.parse(mark.at) < ORPHAN_CONFIRM_AFTER_MS;
+			if (scope === "all" || scope.pageIds.has(id) || recent) {
+				delete state.suspects[id];
+				wiped++;
+			}
+		}
 		const said = wiped > 0 ? `${line}; ${String(wiped)} suspect(s) cleared` : line;
 		console.error(`[otta] cron sweep product-orphans: ${said}`);
 		anomalies.push(said);
@@ -3141,11 +3164,12 @@ async function softDeleteOrphanedProducts(
 	}
 	if (rows.length === 0) {
 		// The end of the catalog: wrap, and the pass is done.
-		state.at = null;
-		state.id = null;
+		finishPass(state, nowMs);
 		await save();
 		return legResult(0, false);
 	}
+	// A pass begins at the top of the catalog.
+	if (state.at === null && state.passStartedAt === null) state.passStartedAt = nowIso;
 
 	// GATE 1 — can the CMS see any product at all?
 	let listed: string[] = [];
@@ -3238,32 +3262,46 @@ async function softDeleteOrphanedProducts(
 		if (!read.found && listed.includes(read.item.data.productId)) read.found = true;
 	}
 
-	// GATE 2 — a mass disappearance is an outage until proven otherwise. Two views of
-	// it: the FIRST-LOOK miss rate (the reads before any re-read — what an intermittently
-	// failing CMS shows), and the rows still missing after their re-reads.
+	// GATE 2 — a mass disappearance is an outage until proven otherwise, judged on the
+	// FIRST-LOOK miss rate: the reads before any re-read, which is what an
+	// intermittently failing CMS shows. (A miss that survives its re-reads missed on
+	// the first look too, so no separate count of final misses could trip first.)
 	const firstLookMisses = judged.filter((read) => read.firstLookMissed === true).length;
 	if (
 		firstLookMisses >= ORPHAN_MASS_MIN_NULLS &&
 		firstLookMisses > ORPHAN_FIRST_LOOK_MISS_SHARE * judged.length
 	) {
+		// The page is ABANDONED and the walk MOVES ON past it — nothing judged, nothing
+		// marked, every strike wiped. Keeping the cursor here would refetch the same page
+		// forever if the misses are real (a dense block of orphans: a bulk delete whose
+		// hooks were lost), and nothing after it would ever be read again. Such a block
+		// is therefore never swept automatically; the error line names it for a human.
+		const first = reads[0]?.item.data;
+		const last = reads.at(-1)?.item.data;
+		const range =
+			first === undefined || last === undefined
+				? "an empty page"
+				: `products ${first.productId} (created ${first.createdAt}) to ${last.productId}` +
+					` (created ${last.createdAt})`;
 		const r = await outage(
 			`${String(firstLookMisses)} of ${String(judged.length)} products read on this page missed on` +
-				" the first look — a CMS failing that many reads is an outage, so the page was" +
-				" abandoned: nothing marked, nothing deleted",
+				" the first look — an outage, or a dense block of deleted products; the page was" +
+				` abandoned (nothing marked, nothing deleted) and the walk moved past it: ${range}.` +
+				" If those products really were deleted, soft-delete them by hand",
+			{ pageIds: new Set(reads.map((read) => read.item.data.productId)) },
 		);
+		if (last !== undefined) {
+			state.at = last.createdAt;
+			state.id = last.productId;
+		}
+		const endOfPage = reads.length === rows.length && !page.hasMore;
+		if (endOfPage) finishPass(state, nowMs);
+		else budget.stopped = true;
+		await save();
 		if (pendingError !== undefined) throw pendingError;
-		return legResult(0, false, r.anomalies);
+		return legResult(0, !endOfPage, r.anomalies);
 	}
 	const nulls = judged.filter((read) => !read.found).length;
-	if (nulls >= ORPHAN_MASS_MIN_NULLS && nulls * 2 > judged.length) {
-		const r = await outage(
-			`${String(nulls)} of ${String(judged.length)} products read on this page are missing from` +
-				" the CMS — far likelier an outage than real deletions, so the page was abandoned:" +
-				" nothing marked, nothing deleted",
-		);
-		if (pendingError !== undefined) throw pendingError;
-		return legResult(0, false, r.anomalies);
-	}
 
 	// GATE 3 — the canary. A miss counts only in a run that found some other document.
 	let qualifies = judged.some((read) => read.found);
@@ -3275,7 +3313,10 @@ async function softDeleteOrphanedProducts(
 		} catch (err) {
 			if (isSweepQueryCeilingError(err)) throw err;
 			// A canary that cannot be read proves nothing either way: this run judges no
-			// miss, and no strike is wiped for it.
+			// miss, and no strike is wiped for it — but it is said.
+			const line = `the canary read of listed product ${canaryId} failed, so no miss on this page was judged`;
+			console.error(`[otta] cron sweep product-orphans: ${line}:`, err);
+			anomalies.push(line);
 		}
 		if (canary === false) {
 			const r = await outage(
@@ -3357,15 +3398,36 @@ async function softDeleteOrphanedProducts(
 	}
 
 	const reachedEnd = !stopped && !page.hasMore;
-	if (reachedEnd) {
-		state.at = null;
-		state.id = null;
-	} else {
-		budget.stopped = true;
-	}
+	if (reachedEnd) finishPass(state, nowMs);
+	else budget.stopped = true;
 	await save();
 	if (pendingError !== undefined) throw pendingError;
 	return legResult(deleted, !reachedEnd, anomalies);
+}
+
+/** The end of the catalog: wrap the cursor, and record how long the pass took (what
+ *  the strikes' lifetime is derived from — `orphanMarkTtlMs`). */
+function finishPass(state: OrphanState, nowMs: number): void {
+	state.at = null;
+	state.id = null;
+	if (state.passStartedAt !== null) {
+		const took = nowMs - Date.parse(state.passStartedAt);
+		if (Number.isFinite(took) && took >= 0) state.lastPassMs = took;
+	}
+	state.passStartedAt = null;
+}
+
+/**
+ * How long a strike (or a read-failure streak) survives without renewal: at least
+ * `ORPHAN_SUSPECT_TTL_MS`, and FOUR times the last full pass. A strike is renewed only
+ * when the walk comes round to its row again — once a pass, plus the rest between
+ * passes — so on a catalog whose pass outlasts the floor (about ten thousand products
+ * on the Workers Free preset), a fixed seven days would expire every strike before
+ * the third, and no orphan would ever be tombstoned. Four passes cover the three
+ * strikes with room for a slow pass. Still bounded by `ORPHAN_MAX_SUSPECTS`.
+ */
+function orphanMarkTtlMs(state: Pick<OrphanState, "lastPassMs">): number {
+	return Math.max(ORPHAN_SUSPECT_TTL_MS, 4 * (state.lastPassMs ?? 0));
 }
 
 /** One row's record in `product-orphans`' state: how many times, and when last. */
@@ -3381,14 +3443,25 @@ interface OrphanState {
 	id: string | null;
 	suspects: Record<string, OrphanMark>;
 	failures: Record<string, OrphanMark>;
+	/** When the pass now under way began (null between passes). */
+	passStartedAt: string | null;
+	/** How long the last COMPLETE pass took, ms — what `orphanMarkTtlMs` scales by. */
+	lastPassMs: number | null;
 }
 
 /** A lost or garbled state costs a re-read and restarts every strike — the safe
  *  direction: nothing is tombstoned on the strength of a lost record. Entries past
- *  `ORPHAN_SUSPECT_TTL_MS`, and any beyond `ORPHAN_MAX_SUSPECTS` per map, are dropped
- *  here, which is what keeps the document bounded. */
+ *  their lifetime (`orphanMarkTtlMs`), and any beyond `ORPHAN_MAX_SUSPECTS` per map,
+ *  are dropped here, which is what keeps the document bounded. */
 function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
-	const state: OrphanState = { at: null, id: null, suspects: {}, failures: {} };
+	const state: OrphanState = {
+		at: null,
+		id: null,
+		suspects: {},
+		failures: {},
+		passStartedAt: null,
+		lastPassMs: null,
+	};
 	if (raw === null || raw === "") return state;
 	try {
 		const parsed: unknown = JSON.parse(raw);
@@ -3398,15 +3471,26 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 			state.at = value.at;
 			state.id = value.id;
 		}
-		state.suspects = parseMarks(value.suspects, nowMs);
-		state.failures = parseMarks(value.failures, nowMs);
+		if (typeof value.passStartedAt === "string" && !Number.isNaN(Date.parse(value.passStartedAt))) {
+			state.passStartedAt = value.passStartedAt;
+		}
+		if (
+			typeof value.lastPassMs === "number" &&
+			Number.isFinite(value.lastPassMs) &&
+			value.lastPassMs >= 0
+		) {
+			state.lastPassMs = value.lastPassMs;
+		}
+		const ttlMs = orphanMarkTtlMs(state);
+		state.suspects = parseMarks(value.suspects, nowMs, ttlMs);
+		state.failures = parseMarks(value.failures, nowMs, ttlMs);
 		return state;
 	} catch {
 		return state;
 	}
 }
 
-function parseMarks(raw: unknown, nowMs: number): Record<string, OrphanMark> {
+function parseMarks(raw: unknown, nowMs: number, ttlMs: number): Record<string, OrphanMark> {
 	const marks: Record<string, OrphanMark> = {};
 	if (typeof raw !== "object" || raw === null) return marks;
 	for (const [id, mark] of Object.entries(raw as Record<string, unknown>)) {
@@ -3415,7 +3499,7 @@ function parseMarks(raw: unknown, nowMs: number): Record<string, OrphanMark> {
 		const { n, at } = mark as { n?: unknown; at?: unknown };
 		if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || typeof at !== "string") continue;
 		const ms = Date.parse(at);
-		if (Number.isNaN(ms) || ms > nowMs || nowMs - ms > ORPHAN_SUSPECT_TTL_MS) continue;
+		if (Number.isNaN(ms) || ms > nowMs || nowMs - ms > ttlMs) continue;
 		marks[id] = { n, at };
 	}
 	return marks;

@@ -443,32 +443,53 @@ the budget carries on next tick until its pass is done. `product-orphans` soft-d
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
-sandboxed path EmDash's bridge answers `null` for any D1 error. So a run first checks that the
-CMS lists at least one product, and judges nothing otherwise. A page is abandoned as an outage when
-at least three, and more than 30%, of the products read on it miss on the FIRST read (before any
-re-read), or when more than half are still missing after their re-reads. Those breakers need
-three rows read, so on the Workers Free preset's first pass (pages of one or two rows) it fires
-only on a second pass; there the other gates do the work. A missing document is re-read twice on
-the spot, and counts as a strike only in a run that read some other document successfully (if
-nothing on the page was found, the run reads the product the list returned; a `null` there is
-treated as an outage). The row is tombstoned on the third strike, each from a run at least
-fifteen minutes after the last, and any read that finds the document wipes its strikes. Every
-breaker trip wipes all strikes. On top of that: at most five tombstones a minute, a failed read
-never counts, and rows younger than fifteen minutes are not read. Each of those stops logs a
-`cron sweep product-orphans` error line. A pass over a 1000-product catalog takes about 280
-ticks (under five hours) on the Workers Free preset when the store is otherwise idle, and about 7
-on Paid; an orphan is tombstoned on the third pass that finds it, so up to about three rotations
-on Free. The leg has no deadline, so it is never promoted ahead of other legs by aging. **The
-residual risk on a sandboxed host:** a CMS database failing reads at random is
+sandboxed path EmDash's bridge answers `null` for any D1 error. The gates, in order:
+
+- **The CMS must list at least one product** in each run, or the run judges nothing.
+- **A page is abandoned as an outage** when at least three, and more than 30%, of the products
+  read on it miss on the FIRST read (before any re-read). The walk then moves past that page.
+  The breaker needs three rows read, so on the Workers Free preset's first pass (pages of one or
+  two rows) it fires only on a second pass; there the other gates do the work.
+- **A missing document is re-read twice on the spot.** It counts as a strike only in a run that
+  read some other document successfully. If nothing on the page was found, the run reads the
+  product the list returned, and a `null` there is treated as an outage.
+- **The row is tombstoned on the third strike,** each strike from a run at least fifteen minutes
+  after the last. Any read that finds the document wipes its strikes.
+- **Breaker trips wipe strikes.** A list or canary trip wipes all of them; a page trip wipes that
+  page's and any from the last fifteen minutes.
+- **Strikes expire** after seven days, or four full passes when a pass takes longer, so a
+  catalog whose pass outlasts a week (roughly 30,000 products on Free) still reaches the third
+  strike.
+- **Limits:** at most five tombstones a minute, a failed read never counts, and rows younger than
+  fifteen minutes are not read.
+
+Each of those stops logs a `cron sweep product-orphans` error line. Measured on an otherwise
+idle store, a pass over a 1000-product catalog takes about 350 ticks (about six hours) on the
+Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third pass that finds
+it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
+to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
+by aging.
+
+**A dense block of real orphans is never swept automatically and needs a human.** This is three
+or more, and over 30% of one page: for example, a bulk delete of an import whose hooks were all
+lost. Its page is abandoned on every pass, the walk moves past it (so everything after it is
+still swept), and the error line names the page's range. Soft-delete those products by hand. (A
+later refinement could treat the same set of misses, recurring across runs while other reads on
+the page succeed, as real deletion.)
+
+**The residual risk on a sandboxed host:** a CMS database failing reads at random is
 indistinguishable from deletions. A seeded simulation (40 live products, 360 one-minute ticks,
 every product read failing to `null` independently, with and without the list failing at the
 same rate) tombstoned no live product at any failure rate up to 70%, on either preset. That is
-one seed, not a proof. The tombstone is final, so a live product ever struck out that way sells
-again only once it is duplicated in the CMS (a new id, and its pricing re-entered). **While CMS
-reads are failing, real orphans WAIT:** every breaker trip wipes the strikes gathered so far, so
-under sustained failures (and on Workers Free, even under a list that fails one time in twenty) an
-orphan may not be tombstoned for hours. That is the safe direction. A dense backlog of real
-orphans (three or more, and over 30%, of one page) also waits, logged on every run. The outbox, the two expiry legs, the
+one seed and one independent-failure model, not a proof. The tombstone is final, so a live
+product ever struck out that way sells again only once it is duplicated in the CMS (a new id,
+and its pricing re-entered).
+
+**While CMS reads are failing, real orphans WAIT.** Every list or canary trip wipes the strikes
+gathered so far, so under sustained failures (and on Workers Free, even under a list that fails
+one time in twenty) an orphan may not be tombstoned for hours. That is the safe direction.
+
+The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.
