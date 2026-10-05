@@ -543,6 +543,8 @@ export function refundOrderContract(
 				ok: true,
 				changed: true,
 				fullyRefunded: true,
+				// A plain refund has nothing to finish beyond itself (#364).
+				followUp: null,
 			});
 			const row = await h.orderStore.getRefundByIdempotencyKey(key);
 			expect(row).toMatchObject({

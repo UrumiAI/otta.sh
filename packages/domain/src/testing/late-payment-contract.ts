@@ -11,6 +11,7 @@ import {
 	retryLatePaymentRefunds,
 } from "../orders/late-payment.js";
 import type { Order } from "../orders/model.js";
+import { resolveUnverifiedRefund } from "../orders/resolve-unverified-refund.js";
 import { settleOrder } from "../orders/settle-order.js";
 import type { OrderNoticeInput, OrderStore } from "../ports/order-store.js";
 import type { PaymentGateway, RefundInput, RefundResult } from "../ports/payment-gateway.js";
@@ -718,6 +719,103 @@ export function latePaymentContract(
 			expect(
 				await h.settleDeps.orderStore.getCapturedPayments(orderId("ord-late-legacy")),
 			).toHaveLength(1);
+		});
+
+		// -- a late-payment refund whose outcome was unknown, resolved by a person (#364)
+
+		/** An expired order whose automatic late-payment refund timed out: the row is
+		 *  held `unverified` and the order flagged "needs checking". */
+		async function unverifiedLateRefund(h: LatePaymentHarness, n: string) {
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			const s = await seedExpiredOrder(h, n);
+			const store = h.settleDeps.orderStore;
+			const now = h.settleDeps.clock.now().toISOString();
+			gateway.setRefundResult({ ok: false, reason: "UNVERIFIED" });
+			await settleOrder(h.settleDeps, gateway, succeeded(gateway, s, `evt_${n}`));
+			expect((await store.listRefunds(s.order.id)).map((r) => r.status)).toEqual(["unverified"]);
+			expect((await state(h, s.order.id)).reconciliationFlag).toContain("needs checking");
+			await drainRows(store, s.order.id, now);
+			return { s, store, now, gateway, key: latePaymentRefundKey(s.intentId) };
+		}
+
+		test("CONFIRMING an unverified late-payment refund finishes it as the provider's success would: flag resolved, one late-payment notice, no second provider call", async () => {
+			const h = await makeHarness();
+			const { s, store, now, gateway, key } = await unverifiedLateRefund(h, "unv-confirm");
+			const cmd = {
+				orderId: s.order.id,
+				refundKey: key,
+				outcome: "confirmed" as const,
+				resolvedBy: "ops@shop",
+			};
+
+			expect(await resolveUnverifiedRefund({ orderStore: store }, cmd)).toMatchObject({
+				ok: true,
+				changed: true,
+				followUp: { purpose: "late-payment", outcome: "finished" },
+			});
+			const after = await state(h, s.order.id);
+			expect(after.state).toBe("expired");
+			expect(after.reconciliationFlag).toBeNull();
+			expect(after.reconciliationResolution?.outcome).toBe("refunded");
+			// The person who checked the provider resolved it — not the automatic path.
+			expect(after.reconciliationResolution?.resolvedBy).toBe("ops@shop");
+			expect(after.reconciliationResolution?.reason).toContain("confirmed at the provider");
+			expect(await latePayment(h, s.order.id)).toBe("refunded");
+			expect(await store.listRefundRetriesDue("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			const refunds = await store.listRefunds(s.order.id);
+			const rows = await drainRows(store, s.order.id, now);
+			expect(rows.map((r) => r.notice)).toEqual([
+				{
+					kind: "late-payment-refunded",
+					amount: TOTAL_CENTS,
+					currency: USD,
+					refundId: refunds[0]?.id,
+				},
+			]);
+			expect(gateway.refundCalls).toHaveLength(1);
+
+			expect(await resolveUnverifiedRefund({ orderStore: store }, cmd)).toMatchObject({
+				ok: true,
+				changed: false,
+			});
+			expect(await drainRows(store, s.order.id, now), "no second email").toEqual([]);
+		});
+
+		test("'It didn't happen' on a late-payment refund leaves it flagged to refund by hand, never 'nothing charged', and emails nobody", async () => {
+			const h = await makeHarness();
+			const { s, store, now, key } = await unverifiedLateRefund(h, "unv-void");
+
+			expect(
+				await resolveUnverifiedRefund(
+					{ orderStore: store },
+					{ orderId: s.order.id, refundKey: key, outcome: "voided", resolvedBy: "ops@shop" },
+				),
+			).toMatchObject({
+				ok: true,
+				changed: true,
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: true },
+			});
+			const flag = (await state(h, s.order.id)).reconciliationFlag ?? "";
+			expect(flag).toContain("did not happen");
+			expect(flag).toContain("refund it manually");
+			expect(await latePayment(h, s.order.id)).toBe("refund_pending");
+			expect(await drainRows(store, s.order.id, now)).toEqual([]);
+		});
+
+		test("'It didn't happen' over an UNRELATED open flag leaves that flag and says it wrote none", async () => {
+			const h = await makeHarness();
+			const { s, store, key } = await unverifiedLateRefund(h, "unv-void-other");
+			await store.flagReconciliation(s.order.id, "an unrelated anomaly");
+			expect(
+				await resolveUnverifiedRefund(
+					{ orderStore: store },
+					{ orderId: s.order.id, refundKey: key, outcome: "voided", resolvedBy: "ops@shop" },
+				),
+			).toMatchObject({
+				ok: true,
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: false },
+			});
+			expect((await state(h, s.order.id)).reconciliationFlag).toBe("an unrelated anomaly");
 		});
 	});
 }

@@ -297,7 +297,9 @@ export {
 } from "./orders/transition.js";
 export {
 	resolveUnverifiedRefund,
+	type ResolveFollowUp,
 	type ResolveUnverifiedRefundCommand,
+	type ResolveUnverifiedRefundDeps,
 	type ResolveUnverifiedRefundResult,
 } from "./orders/resolve-unverified-refund.js";
 export {
