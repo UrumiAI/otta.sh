@@ -51,7 +51,13 @@ function fillPercent(html: string): number {
  * not "an empty string".
  */
 function markupOnly(html: string): string {
-	return html.replace(/<script[^>]*><\/script[^>]*>/gi, "").trim();
+	// Until nothing changes, so a removal can't splice a new tag together.
+	let text = html;
+	for (let prev = ""; prev !== text;) {
+		prev = text;
+		text = text.replace(/<script\b[^>]*><\/script[^>]*>/gi, "");
+	}
+	return text.trim();
 }
 
 describe("HoldRibbon — the three states", () => {
