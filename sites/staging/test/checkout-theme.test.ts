@@ -188,7 +188,8 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 				new RegExp(`<(?:input|select)(?![^>]*type="hidden")[^>]*?name="${name}"[\\s\\S]*?>`).exec(
 					VIEW.slice(VIEW.indexOf('<fieldset class="checkout-group">')),
 				)?.[0] ?? "";
-			expect(field, name).toContain("aria-required={summary.addressRequired}");
+			// Omitted — never `aria-required="false"` — when the address is optional.
+			expect(field, name).toContain('aria-required={summary.addressRequired ? "true" : undefined}');
 		}
 	});
 

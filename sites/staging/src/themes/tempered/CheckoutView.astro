@@ -459,7 +459,7 @@ const {
 											type="text"
 											id="address-name"
 											name="name"
-											aria-required={summary.addressRequired}
+											aria-required={summary.addressRequired ? "true" : undefined}
 											autocomplete="name"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.name}
 											value={addressValues.name}
@@ -480,7 +480,7 @@ const {
 											type="text"
 											id="address-line1"
 											name="line1"
-											aria-required={summary.addressRequired}
+											aria-required={summary.addressRequired ? "true" : undefined}
 											autocomplete="address-line1"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line1}
 											value={addressValues.line1}
@@ -521,7 +521,7 @@ const {
 											type="text"
 											id="address-city"
 											name="city"
-											aria-required={summary.addressRequired}
+											aria-required={summary.addressRequired ? "true" : undefined}
 											autocomplete="address-level2"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.city}
 											value={addressValues.city}
@@ -542,7 +542,7 @@ const {
 											type="text"
 											id="address-postalCode"
 											name="postalCode"
-											aria-required={summary.addressRequired}
+											aria-required={summary.addressRequired ? "true" : undefined}
 											autocomplete="postal-code"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.postalCode}
 											value={addressValues.postalCode}
@@ -564,7 +564,7 @@ const {
 												<select
 													id="address-country"
 													name="country"
-													aria-required={summary.addressRequired}
+													aria-required={summary.addressRequired ? "true" : undefined}
 													autocomplete="country"
 													aria-invalid={fieldErrors.country !== undefined}
 													aria-describedby={fieldErrors.country !== undefined ? "country-error" : undefined}
