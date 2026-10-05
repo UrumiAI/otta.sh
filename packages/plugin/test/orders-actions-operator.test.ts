@@ -337,6 +337,7 @@ describe("resolving an unverified refund (review round 2)", () => {
 					purpose: "cancellation",
 					outcome: "cancelled",
 					cancelledNow: true,
+					restock: true,
 					restockedUnits: 2,
 					restockSkipped: [],
 				},
@@ -358,7 +359,13 @@ describe("resolving an unverified refund (review round 2)", () => {
 				changed: true,
 				fullyRefunded: false,
 				email: "sent",
-				followUp: { purpose: "cancellation", outcome: "not_cancelled", state: "shipped" },
+				followUp: {
+					purpose: "cancellation",
+					outcome: "not_cancelled",
+					state: "shipped",
+					flagged: true,
+					refundEmailQueued: true,
+				},
 			}).client,
 			"orders:resolve-refund-confirmed",
 			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
@@ -367,7 +374,11 @@ describe("resolving an unverified refund (review round 2)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Refund confirmed — order not cancelled");
 		expect(result.notice?.description).toContain("the order is shipped");
-		expect(result.notice?.description).toContain("contact the buyer");
+		expect(result.notice?.description).toContain("The order is flagged.");
+		expect(result.notice?.description).toContain("Contact the buyer");
+		// Already shipped: "before it ships" would be false.
+		expect(result.notice?.description).not.toContain("before it ships");
+		expect(result.notice?.description).toContain("Buyer emailed about the refund.");
 	});
 
 	test("a cancellation refund that didn't happen tells the operator to cancel again", async () => {
@@ -422,7 +433,7 @@ describe("resolving an unverified refund (review round 2)", () => {
 				ok: true,
 				changed: true,
 				fullyRefunded: false,
-				followUp: { purpose: "late-payment", outcome: "refund_manually" },
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: true },
 			}).client,
 			"orders:resolve-refund-voided",
 			{ orderId: ORDER_ID, refundKey: "late-payment-refund:pi_1" },
@@ -430,6 +441,107 @@ describe("resolving an unverified refund (review round 2)", () => {
 		);
 		expect(manual.notice?.description).toContain("still held");
 		expect(manual.notice?.description).toContain("refund it from Money → Refunds");
+	});
+
+	// Review round 1.
+	test("a confirm REPLAY whose cancel still did not finish says to cancel again, not 'already resolved'", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: false,
+				fullyRefunded: false,
+				followUp: { purpose: "cancellation", outcome: "cancel_again" },
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("Refund confirmed — finish the cancellation");
+	});
+
+	test("an order not cancelled that could not be flagged says so, and a refund email already sent is not claimed again", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: false,
+				fullyRefunded: false,
+				followUp: {
+					purpose: "cancellation",
+					outcome: "not_cancelled",
+					state: "processing",
+					flagged: false,
+					refundEmailQueued: false,
+				},
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.description).not.toContain("The order is flagged");
+		expect(result.notice?.description).toContain("could not be flagged");
+		expect(result.notice?.description).toContain("before it ships");
+		expect(result.notice?.description).not.toMatch(/emailed/i);
+	});
+
+	test("an order cancelled another way says the buyer gets a separate refund email", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				email: "sent",
+				followUp: {
+					purpose: "cancellation",
+					outcome: "already_cancelled",
+					refundEmailQueued: true,
+				},
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("Refund confirmed — order was already cancelled");
+		expect(result.notice?.description).not.toContain("is finished");
+		expect(result.notice?.description).toContain("The buyer has been emailed.");
+	});
+
+	test("a confirmed cancellation that declined Return to stock says nothing was returned", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				email: "sent",
+				followUp: {
+					purpose: "cancellation",
+					outcome: "cancelled",
+					cancelledNow: true,
+					restock: false,
+					restockedUnits: 0,
+					restockSkipped: [],
+				},
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.description).toContain("Nothing was returned to stock.");
+	});
+
+	test("a late payment marked not refunded over another open flag does not claim it flagged the order", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: false },
+			}).client,
+			"orders:resolve-refund-voided",
+			{ orderId: ORDER_ID, refundKey: "late-payment-refund:pi_1" },
+			OPERATOR,
+		);
+		expect(result.notice?.description).not.toContain("The order is flagged");
+		expect(result.notice?.description).toContain("another open flag");
 	});
 
 	test("a replay says it was already resolved; a row no longer waiting says so", async () => {

@@ -279,6 +279,7 @@ describe("an admin write sends its email at once, in order", () => {
 				purpose: "cancellation",
 				outcome: "cancelled",
 				cancelledNow: true,
+				restock: true,
 				restockedUnits: 0,
 				restockSkipped: [],
 			},

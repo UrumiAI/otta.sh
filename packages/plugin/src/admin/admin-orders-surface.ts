@@ -298,22 +298,46 @@ export type RefundOrderResult =
 /** What became of the thing a resolved refund was FOR (#364) — the domain's
  *  `ResolveFollowUp` on the wire. Absent for a plain refund.
  *  - `cancellation`/`cancelled` — the cancellation it belonged to is finished.
- *  - `cancellation`/`not_cancelled` — the order had moved on (`state`); flagged.
+ *  - `cancellation`/`already_cancelled` — cancelled elsewhere without this refund
+ *    on its record; the buyer gets the refund's own email.
+ *  - `cancellation`/`not_cancelled` — the order had moved on (`state`); flagged
+ *    unless `flagged` says otherwise.
  *  - `cancellation`/`cancel_again` — Cancel order again finishes it (no second refund).
  *  - `late-payment`/`finished` — the late payment is refunded and its buyer told.
- *  - `late-payment`/`refund_manually` — still held; flagged to refund by hand. */
+ *  - `late-payment`/`refund_manually` — still held; to refund by hand (`flagged`). */
 export type ResolveFollowUpWire =
 	| {
 			purpose: "cancellation";
 			outcome: "cancelled";
 			/** True ⇒ THIS answer cancelled it (a replay finds it already cancelled). */
 			cancelledNow: boolean;
+			/** The cancellation's restock choice. */
+			restock: boolean;
 			restockedUnits: number;
 			restockSkipped: { sku: string; quantity: number; reason: string }[];
 	  }
-	| { purpose: "cancellation"; outcome: "not_cancelled"; state: string | null }
+	| {
+			purpose: "cancellation";
+			outcome: "already_cancelled";
+			/** This answer enqueued the refund's own email (else it was already sent). */
+			refundEmailQueued: boolean;
+	  }
+	| {
+			purpose: "cancellation";
+			outcome: "not_cancelled";
+			state: string | null;
+			/** The order carries a flag naming this cancellation. */
+			flagged: boolean;
+			refundEmailQueued: boolean;
+	  }
 	| { purpose: "cancellation"; outcome: "cancel_again" }
-	| { purpose: "late-payment"; outcome: "finished" | "refund_manually" };
+	| { purpose: "late-payment"; outcome: "finished" }
+	| {
+			purpose: "late-payment";
+			outcome: "refund_manually";
+			/** False ⇒ an unrelated open flag kept it from flagging the order. */
+			flagged: boolean;
+	  };
 
 /** {@link AdminOrdersSurface.resolveUnverifiedRefund}'s answer. */
 export type ResolveUnverifiedRefundResult =

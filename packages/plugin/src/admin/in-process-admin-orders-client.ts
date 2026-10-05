@@ -931,10 +931,16 @@ function emailOfResolve(
 ): { state: OrderState; notice?: undefined } | { state?: undefined; notice: OrderNotice } | null {
 	const followUp = res.followUp;
 	if (followUp?.purpose === "cancellation") {
-		if (followUp.outcome === "cancelled") {
-			return followUp.cancelledNow ? { state: "cancelled" } : null;
+		switch (followUp.outcome) {
+			case "cancelled":
+				return followUp.cancelledNow ? { state: "cancelled" } : null;
+			case "already_cancelled":
+			case "not_cancelled":
+				// Only when THIS answer enqueued it — on any pass, replays included.
+				return followUp.refundEmailQueued ? { notice: "refund-issued" } : null;
+			case "cancel_again":
+				return null;
 		}
-		return followUp.outcome === "not_cancelled" && res.changed ? { notice: "refund-issued" } : null;
 	}
 	if (followUp?.purpose === "late-payment") {
 		return followUp.outcome === "finished" && res.changed
@@ -955,13 +961,14 @@ function toFollowUpWire(followUp: ResolveFollowUp | null): ResolveFollowUpWire |
 				purpose: "cancellation",
 				outcome: "cancelled",
 				cancelledNow: followUp.cancelledNow,
+				restock: followUp.restock,
 				restockedUnits: followUp.restockedUnits,
 				restockSkipped: followUp.restockSkipped.map((skip) => ({ ...skip })),
 			};
+		case "already_cancelled":
 		case "not_cancelled":
-			return { purpose: "cancellation", outcome: "not_cancelled", state: followUp.state };
 		case "cancel_again":
-			return { purpose: "cancellation", outcome: "cancel_again" };
+			return { ...followUp };
 	}
 }
 
