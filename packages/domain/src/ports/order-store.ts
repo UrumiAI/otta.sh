@@ -11,6 +11,7 @@ import type {
 import type {
 	CancellationReason,
 	CancellationRefund,
+	CancellationRestockPending,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
@@ -397,6 +398,38 @@ export interface OrderStore {
 	 */
 	cancelOrder(input: CancelOrderInput): Promise<CancelOrderStoreResult>;
 
+	/**
+	 * Close the restock a cancellation recorded as pending on its flip
+	 * (`OrderCancellation.restockPending`, issue #364): clear the marker and record
+	 * `restocked`. Called AFTER the units went back through the inventory's keyed
+	 * `restock`, by the cancellation itself, its replay, or the sweep.
+	 *
+	 * Guarded on the marker's own key, so it is idempotent and never clears a marker
+	 * it did not finish: a second call (or a racing replay) is `completed:false`.
+	 * Touches only the cancellation envelope — never lines, totals or state. An adapter
+	 * that indexes outstanding cross-aggregate work (the document store's
+	 * `holdsPendingAt`) re-derives that index in the same write.
+	 */
+	completeCancellationRestock(
+		input: CompleteCancellationRestockInput,
+	): Promise<CompleteCancellationRestockResult>;
+
+	/**
+	 * Count one more failed attempt at a cancellation's pending restock
+	 * (`restockPending.failures`), guarded on the marker's key like
+	 * `completeCancellationRestock`. Returns the new count, or 0 when no marker is
+	 * pending under that key. Touches only the cancellation envelope.
+	 *
+	 * `retryAfterMs > 0` stamps `restockPending.retryAt` that far past the store's
+	 * clock (the back-off); an adapter that indexes outstanding work re-derives the
+	 * index from it, so the restock moves behind newer work but is still retried.
+	 */
+	recordCancellationRestockFailure(
+		orderId: OrderId,
+		idempotencyKey: string,
+		opts?: { retryAfterMs?: number },
+	): Promise<number>;
+
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 
 	/**
@@ -673,6 +706,27 @@ export interface CancelOrderInput {
 	/** Whether the cancellation restocked the order's units, recorded verbatim
 	 *  (`OrderCancellation.restocked`). Absent ⇒ `false`. */
 	restocked?: boolean;
+	/** The restock the cancellation will do once this flip lands, recorded verbatim
+	 *  (`OrderCancellation.restockPending`) so a replay or the sweep can finish it.
+	 *  Absent ⇒ `null` (nothing owed). */
+	restockPending?: CancellationRestockPending | null;
+}
+
+/** Close a cancellation's pending restock (`completeCancellationRestock`). */
+export interface CompleteCancellationRestockInput {
+	orderId: OrderId;
+	/** The key the pending restock was recorded under; a marker under any other key
+	 *  is left alone. */
+	idempotencyKey: string;
+	/** Whether any unit came back — ORed into `OrderCancellation.restocked`. */
+	restocked: boolean;
+}
+
+/** `completed:false` ⇒ nothing was pending under that key (already closed, never
+ *  recorded, or the order is gone). `order` is the current row, or null. */
+export interface CompleteCancellationRestockResult {
+	completed: boolean;
+	order: Order | null;
 }
 
 /** `cancelled:false` ⇒ the guarded `fromState → cancelled` flip matched 0 rows

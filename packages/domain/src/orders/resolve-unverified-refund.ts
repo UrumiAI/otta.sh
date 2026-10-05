@@ -85,6 +85,9 @@ export type ResolveFollowUp =
 			restock: boolean;
 			restockedUnits: number;
 			restockSkipped: RestockSkip[];
+			/** The flip landed but its restock did not finish: the units are not all
+			 *  back yet, and the sweep (or a replay) returns them. */
+			restockPending: boolean;
 	  }
 	| {
 			purpose: "cancellation";
@@ -310,6 +313,7 @@ async function resumeCancellation(
 			restock,
 			restockedUnits: res.restockedUnits,
 			restockSkipped: res.restockSkipped,
+			restockPending: res.restockPending,
 		};
 	}
 	if (res.reason === "CANCEL_LOST_AFTER_REFUND") {

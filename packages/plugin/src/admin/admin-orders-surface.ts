@@ -315,6 +315,8 @@ export type ResolveFollowUpWire =
 			restock: boolean;
 			restockedUnits: number;
 			restockSkipped: { sku: string; quantity: number; reason: string }[];
+			/** The restock after the flip is still owed; the sweep finishes it. */
+			restockPending: boolean;
 	  }
 	| {
 			purpose: "cancellation";
@@ -397,6 +399,8 @@ export interface TimelineEntryWire {
 	/** cancellation: what it refunded (minor units), and whether it restocked */
 	refund?: { amount: number; currency: string } | null;
 	restocked?: boolean;
+	/** cancellation: present (true) only while its restock is still owed */
+	restockPending?: true;
 	/** refund: one ledger row that moved, or is moving, money */
 	amount?: number;
 	currency?: string;
@@ -491,6 +495,10 @@ export type CancelOrderResult =
 			refund?: { amountCents: number; currency: string } | null;
 			/** Units THIS call returned to stock (0 on a replay or when declined). */
 			restockedUnits?: number;
+			/** The order is cancelled but its units are NOT all back yet: the restock
+			 *  after the flip failed, and the sweep finishes it (issue #364). The
+			 *  console must not say they were returned. */
+			restockPending?: boolean;
 			/** Lines the restock could not return, and why (`UNKNOWN_SKU`,
 			 *  `HOLD_RELEASED`, `HOLD_UNKNOWN`) — reported so the console can say so. */
 			restockSkipped?: { sku: string; quantity: number; reason: string }[];

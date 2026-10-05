@@ -244,6 +244,30 @@ test("History names who made each status move, and states refunds and a cancella
 	expect(cancelText).toMatch(/returned to stock/);
 });
 
+test("History says a cancellation's restock is pending until the items are back", async () => {
+	const view = await show(
+		withTimeline(detailFor("cancelled"), [
+			{
+				kind: "cancellation",
+				at: "2026-03-04T10:30:00.000Z",
+				reason: "customer_request",
+				detail: null,
+				cancelledBy: "ops@example.test",
+				refund: null,
+				restocked: false,
+				restockPending: true,
+			},
+		]),
+	);
+	await fire(tab(view, "history"), "click");
+	const rows = bodyRows(table(view, "detail-timeline")).map((row) =>
+		[...row.cells].map((c) => c.textContent ?? ""),
+	);
+	const cancelText = rows.find((r) => r.includes("Cancelled"))?.join(" ") ?? "";
+	expect(cancelText).toContain("restock pending");
+	expect(cancelText).not.toMatch(/returned to stock/);
+});
+
 // ── the coupon, the tracking link ────────────────────────────────────────────
 
 test("the Discount row names the coupon the order was priced with", async () => {

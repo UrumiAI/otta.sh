@@ -17,6 +17,8 @@ import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
+	CompleteCancellationRestockInput,
+	CompleteCancellationRestockResult,
 	CapturedPayment,
 	ClaimEmailForOrderOptions,
 	CreateOrderInput,
@@ -51,6 +53,8 @@ import type {
 	ResolveReconciliationStoreResult,
 } from "../ports/order-store.js";
 import type {
+	CancellationRestockPending,
+	OrderCancellation,
 	Order,
 	OrderAddress,
 	OrderLine,
@@ -748,6 +752,7 @@ export class InMemoryOrderStore implements OrderStore {
 			cancelledAt: now,
 			refund: input.refund ?? null,
 			restocked: input.restocked ?? false,
+			...copyRestockPending(input.restockPending),
 		};
 		stored.order.updatedAt = now;
 		// Same-"transaction" state-change audit as the real adapter — the actor is
@@ -758,6 +763,53 @@ export class InMemoryOrderStore implements OrderStore {
 		// carries the reason.
 		if (input.enqueueEmail) this.#enqueue(input.orderId, "cancelled");
 		return { cancelled: true, order: this.#clone(stored.order) };
+	}
+
+	async completeCancellationRestock(
+		input: CompleteCancellationRestockInput,
+	): Promise<CompleteCancellationRestockResult> {
+		// Guarded on the marker's own key, like the document store's compare-and-set:
+		// a second call, or a marker recorded under another key, changes nothing.
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) return { completed: false, order: null };
+		const cancellation = stored.order.cancellation;
+		const pending = cancellation?.restockPending ?? null;
+		if (
+			cancellation === null ||
+			pending === null ||
+			pending.idempotencyKey !== input.idempotencyKey
+		) {
+			return { completed: false, order: this.#clone(stored.order) };
+		}
+		stored.order.cancellation = closeRestockPending(cancellation, input.restocked);
+		stored.order.updatedAt = this.#clock.now().toISOString();
+		return { completed: true, order: this.#clone(stored.order) };
+	}
+
+	async recordCancellationRestockFailure(
+		orderId: OrderId,
+		idempotencyKey: string,
+		opts: { retryAfterMs?: number } = {},
+	): Promise<number> {
+		const stored = this.#orders.get(orderId);
+		const cancellation = stored?.order.cancellation ?? null;
+		const pending = cancellation?.restockPending ?? null;
+		if (stored === undefined || cancellation === null || pending === null) return 0;
+		if (pending.idempotencyKey !== idempotencyKey) return 0;
+		const failures = (pending.failures ?? 0) + 1;
+		const now = this.#clock.now();
+		const wait = opts.retryAfterMs ?? 0;
+		stored.order.cancellation = {
+			...cancellation,
+			restockPending: {
+				...pending,
+				lineIds: [...pending.lineIds],
+				failures,
+				...(wait > 0 ? { retryAt: new Date(now.getTime() + wait).toISOString() } : {}),
+			},
+		};
+		stored.order.updatedAt = now.toISOString();
+		return failures;
 	}
 
 	// -- Phase 5: state machine + outbox --------------------------------------
@@ -1224,4 +1276,27 @@ function refundNotice(refund: RefundRecord): OrderNoticeInput {
 		currency: refund.currency,
 		refundId: refund.id,
 	};
+}
+
+/** The envelope field for a cancellation's pending restock: a private copy (never
+ *  sharing an array with the caller), or NOTHING when none is owed — absent reads
+ *  as "nothing owed", so a cancellation that owes no restock keeps its old shape. */
+function copyRestockPending(pending: CancellationRestockPending | null | undefined): {
+	restockPending?: CancellationRestockPending;
+} {
+	return pending === undefined || pending === null
+		? {}
+		: {
+				restockPending: { idempotencyKey: pending.idempotencyKey, lineIds: [...pending.lineIds] },
+			};
+}
+
+/** The cancellation with its pending restock closed: the marker dropped, and
+ *  `restocked` set once any unit came back. */
+function closeRestockPending(
+	cancellation: OrderCancellation,
+	restocked: boolean,
+): OrderCancellation {
+	const { restockPending: _closed, ...rest } = cancellation;
+	return { ...rest, restocked: cancellation.restocked === true || restocked };
 }

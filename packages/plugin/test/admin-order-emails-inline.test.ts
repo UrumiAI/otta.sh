@@ -282,6 +282,7 @@ describe("an admin write sends its email at once, in order", () => {
 				restock: true,
 				restockedUnits: 0,
 				restockSkipped: [],
+				restockPending: false,
 			},
 		});
 		expect((await harness.stores.orderStore.getById(id))?.state).toBe("cancelled");

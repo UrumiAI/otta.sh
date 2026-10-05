@@ -181,6 +181,8 @@ export interface TimelineEntry {
 	/** cancellation: what it refunded, and whether it returned the units to stock. */
 	readonly refund?: { readonly amount: number; readonly currency: string } | null;
 	readonly restocked?: boolean | null;
+	/** cancellation: true only while its restock is still owed (issue #364). */
+	readonly restockPending?: boolean | null;
 }
 
 export interface OrderTimeline {

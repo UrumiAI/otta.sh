@@ -265,7 +265,9 @@ cancel-with-refund amendment (QA T1-4).
   exactly once unless the operator unticks it. It closes an open commit bracket before restocking,
   so the units cannot also be released. The oversell concern above is met in two ways: the units
   return through the same exactly-once stock-movement ledger a manual restock uses, and a hold
-  that was released, or whose record is gone, is never restocked.
+  that was released, or whose record is gone, is never restocked. Since 2026-10-05 (issue #364)
+  the restock runs only after the cancel flip lands, so an order that ships first is never
+  restocked; see ADR-0026's amendment of that date.
 - **A `cancellation` row never drives `→ refunded`.** It consumes ceiling capacity like any other
   row, but the cancellation closes the order. A refund that fails refuses the cancel.
 - **Refund purposes.** A ledger row records why the money went back: `refund` (an admin refund in

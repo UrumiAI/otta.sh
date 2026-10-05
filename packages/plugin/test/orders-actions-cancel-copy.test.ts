@@ -105,6 +105,41 @@ describe("the cancel notices when the money and the order part ways", () => {
 		expect(description).not.toContain("Nothing was returned to stock");
 	});
 
+	test("a cancel whose restock is still pending says the items are not back yet, never that they are", async () => {
+		// Issue #364: the restock runs after the flip; when it fails the order is
+		// cancelled and refunded, and the sweep returns the units later.
+		const result = await cancel({
+			ok: true,
+			cancelled: true,
+			refund: { amountCents: 2400, currency: "USD" },
+			restockedUnits: 0,
+			restockSkipped: [],
+			restockPending: true,
+		});
+		expect(result.notice?.title).toBe("Order cancelled and refunded");
+		const description = String(result.notice?.description);
+		expect(description).toContain(
+			"The items are not back in stock yet; Otta will return them automatically.",
+		);
+		expect(description).not.toContain("returned to stock.");
+	});
+
+	test("a restock that stopped PART-WAY says how many came back and that the rest will follow", async () => {
+		const result = await cancel({
+			ok: true,
+			cancelled: true,
+			refund: { amountCents: 2400, currency: "USD" },
+			restockedUnits: 2,
+			restockSkipped: [],
+			restockPending: true,
+		});
+		const description = String(result.notice?.description);
+		expect(description).toContain(
+			"2 items returned to stock so far; the rest are not back yet and Otta will return them automatically.",
+		);
+		expect(description).not.toContain("The items are not back in stock yet");
+	});
+
 	test("a busy store after the refund says so, and that clicking again will not refund twice", async () => {
 		const result = await cancel({
 			ok: false,

@@ -59,6 +59,8 @@ export type OrderTimelineEntry =
 			refund: CancellationRefund | null;
 			/** Whether it returned the order's sold units to stock. */
 			restocked: boolean;
+			/** Present (true) only while its restock is still owed (issue #364). */
+			restockPending?: true;
 	  }
 	/** A refund on the order's ledger — recorded, or still in flight (reserved /
 	 *  unverified). A voided attempt moved no money and is not an entry (QA2). */
@@ -171,6 +173,7 @@ export async function getOrderTimeline(
 			cancelledBy: c.cancelledBy,
 			refund: c.refund ?? null,
 			restocked: c.restocked === true,
+			...((c.restockPending ?? null) !== null ? { restockPending: true as const } : {}),
 		});
 	}
 	// The refunds ledger (QA2): every row that moved, or is moving, money.

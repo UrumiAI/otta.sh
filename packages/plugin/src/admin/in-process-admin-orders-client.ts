@@ -533,11 +533,14 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 						: { amountCents: res.refund.amount, currency: res.refund.currency },
 				restockedUnits: res.restockedUnits,
 				restockSkipped: res.restockSkipped.map((skip) => ({ ...skip })),
+				// Only when it is so — like `email`, absent means nothing to say.
+				...(res.restockPending ? { restockPending: true } : {}),
 			};
 		}
 		switch (res.reason) {
 			case "CANCEL_LOST_AFTER_REFUND": {
-				// The refund (and restock) happened, so the console must say what moved —
+				// The refund happened (the restock waits for a flip that landed, so none
+				// did), so the console must say what moved —
 				// and the refund's own notice goes out NOW, like any other write's email.
 				const lostRefundId = res.refundId;
 				const email =
@@ -563,8 +566,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				};
 			}
 			case "CANCEL_INCOMPLETE_AFTER_REFUND":
-				// The refund happened; the restock or the flip then failed. A retry finishes
-				// it — the console says so, with the money that moved.
+				// The refund happened; closing a commit bracket or the flip then failed. A
+				// retry finishes it — the console says so, with the money that moved.
 				return {
 					ok: false,
 					status: 409,
@@ -964,6 +967,7 @@ function toFollowUpWire(followUp: ResolveFollowUp | null): ResolveFollowUpWire |
 				restock: followUp.restock,
 				restockedUnits: followUp.restockedUnits,
 				restockSkipped: followUp.restockSkipped.map((skip) => ({ ...skip })),
+				restockPending: followUp.restockPending,
 			};
 		case "already_cancelled":
 		case "not_cancelled":
@@ -1205,14 +1209,16 @@ function requireOrderState(field: string, value: string): OrderState {
 	return value as OrderState;
 }
 
-const RECONCILIATION_OUTCOMES = [
+/** The outcomes an OPERATOR may choose. `restocked` is Otta's own, written when a
+ *  cancellation's stuck restock lands (ADR-0026), so it is not offered here. */
+const RECONCILIATION_OUTCOMES: readonly string[] = [
 	"refunded",
 	"fulfilled",
 	"written_off",
-] as const satisfies readonly ReconciliationOutcome[];
+] satisfies readonly ReconciliationOutcome[];
 
 function requireReconciliationOutcome(value: string): ReconciliationOutcome {
-	if (!RECONCILIATION_OUTCOMES.includes(value as ReconciliationOutcome)) {
+	if (!RECONCILIATION_OUTCOMES.includes(value)) {
 		throw new CommerceInputError("outcome", "must be a known reconciliation outcome");
 	}
 	return value as ReconciliationOutcome;

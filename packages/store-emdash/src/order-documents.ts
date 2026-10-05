@@ -555,15 +555,15 @@ export interface OrderDoc {
 	refunds: RefundEntryDoc[];
 	/**
 	 * DECLARED INDEX. The earliest `recordedAt` over the hold intents that still owe
-	 * per-id work, or `null` when none do — the only way the sweeper can FIND an
-	 * order whose cross-aggregate bracket tore.
+	 * per-id work — and over a cancellation's pending restock (issue #364), stamped
+	 * at its `cancelledAt` — or `null` when none do: the only way the sweeper can FIND
+	 * an order whose cross-aggregate bracket tore.
 	 *
 	 * It is the same device `carts.holdExpiresAt` is, for the same reason: the filter
-	 * algebra has no OR and cannot reach inside a field, so "any of these three
-	 * intents is outstanding" has to be one indexed scalar. It is recomputed from the
-	 * document's own three intents on every write that touches one
-	 * ({@link computeHoldsPendingAt}), never incrementally, so it cannot drift from
-	 * what it summarizes.
+	 * algebra has no OR and cannot reach inside a field, so "any of these intents is
+	 * outstanding" has to be one indexed scalar. It is recomputed from the document's
+	 * own intents on every write that touches one ({@link computeHoldsPendingAt}),
+	 * never incrementally, so it cannot drift from what it summarizes.
 	 */
 	holdsPendingAt: string | null;
 	/** The adoption intent recorded at creation; see {@link HoldIntentDoc}. */
@@ -812,18 +812,30 @@ export function isOutstanding(intent: HoldIntentDoc | null): boolean {
 
 /**
  * Recompute {@link OrderDoc.holdsPendingAt} from the document's own intents: the
- * earliest `recordedAt` among those still outstanding, else `null`.
+ * earliest `recordedAt` among those still outstanding, else `null`. A cancellation
+ * whose restock is still owed (`cancellation.restockPending`, issue #364) counts as
+ * one more outstanding intent, recorded at its `cancelledAt` (or, once it has been
+ * backed off, its `retryAt`) — so the hold-intent sweep leg finds it with the same
+ * scan.
  *
  * Derived, never incremented, so the indexed scalar the sweeper scans cannot
- * disagree with the three fields it summarizes.
+ * disagree with the fields it summarizes.
  */
 export function computeHoldsPendingAt(
-	doc: Pick<OrderDoc, "holdsAdopted" | "holdsCommitted" | "holdsReleased">,
+	doc: Pick<OrderDoc, "holdsAdopted" | "holdsCommitted" | "holdsReleased" | "cancellation">,
 ): string | null {
 	let earliest: string | null = null;
 	for (const intent of [doc.holdsAdopted, doc.holdsCommitted, doc.holdsReleased]) {
 		if (!isOutstanding(intent) || intent === null) continue;
 		if (earliest === null || intent.recordedAt < earliest) earliest = intent.recordedAt;
+	}
+	const cancellation = doc.cancellation ?? null;
+	const restock = cancellation?.restockPending ?? null;
+	if (cancellation !== null && restock !== null) {
+		// A flagged restock that keeps failing waits out its back-off (`retryAt`), so it
+		// sorts behind newer work instead of heading every scan.
+		const at = restock.retryAt ?? cancellation.cancelledAt;
+		if (earliest === null || at < earliest) earliest = at;
 	}
 	return earliest;
 }

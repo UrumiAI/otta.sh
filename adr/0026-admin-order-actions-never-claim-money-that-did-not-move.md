@@ -327,3 +327,93 @@ JPY 0, USD 2, BHD 3).
   that flag first.
 - The admin order read now reads the order's ledger (the same one document) to compute its
   offers.
+
+## Amended 2026-10-05 — a cancellation restocks only after its flip lands
+
+Issue #364 (should-fix 1), following #357. The cancel-with-refund amendment put the restock
+BEFORE the flip and accepted the cost: "in the race where the order ships between the restock and
+the flip, units that just shipped are counted back into stock". That cost was larger than it
+read. Admin A cancels a `processing` order while admin B records its fulfilment; A's restock
+commits, then B's `processing → shipped` wins. The same happens when the flip throws
+(`CANCEL_INCOMPLETE_AFTER_REFUND`). Either way the shipped units are back on sale and can be sold
+twice, and the flag asks a person to correct a count that the next buyer may already have used.
+
+**The new order of the legs.**
+
+1. **Refund**, unchanged.
+2. **Close the commit brackets, then flip.** Every open `adopted` hold is still committed before
+   the flip, whatever the checkbox says, so the flip's release returns nothing. Committing moves
+   no stock, so it is safe if the flip then loses: the units are sold, and now shipped. The flip
+   records the restock it owes on the cancellation, `restockPending: { idempotencyKey, lineIds }`
+   (the lines a restock may return: physical, and not skipped as `HOLD_RELEASED`/`HOLD_UNKNOWN`).
+   It records nothing when the operator unticked Return to stock or no line can take it.
+   `restocked` is written `false` here.
+3. **Restock after the flip**, each owed line under `<key>:restock:<lineId>` (the same keys as
+   before), then `completeCancellationRestock` clears the marker and sets `restocked`. It is
+   guarded on the marker's own key, so a second caller changes nothing.
+
+**When the restock after the flip fails**, the order is cancelled and refunded and its units are
+still owed. That is an honest success: `ok: true, restockPending: true`. It is not
+`CANCEL_INCOMPLETE_AFTER_REFUND`, because there is nothing left to click. The console says "The
+items are not back in stock yet; Otta will return them automatically." and never that they were
+returned. History shows the cancellation without "items returned to stock" until they are.
+
+**Who finishes it.**
+- **The sweep.** The document store counts a pending restock in `holdsPendingAt` (stamped at
+  `cancelledAt`), the index the `hold-intents` leg already walks (ADR-0019's sweeper concern 3).
+  The leg calls the domain's `finishCancellationRestock` after the three hold completers, inside
+  the same per-row budget estimate (`holdIntentCost` adds the restock's calls). A failure is that
+  row's anomaly only: the marker stays and the next tick retries. A line whose sku has no inventory
+  row is flagged on the order, because nobody else will see it.
+- **A replay.** `cancelOrderWithRefund` on an order already cancelled with a reason finishes any
+  pending restock before reporting the cancellation on file.
+
+Both use the key the FLIP recorded, never the caller's, so a replay under another key, or a
+replay racing the sweep, returns the units once. A completion never re-commits a hold: the brackets
+were closed before the flip, and a committed reservation may since have been pruned.
+
+**Consequences.**
+- A concurrent fulfilment that wins the flip leaves the stock exactly as it was:
+  `CANCEL_LOST_AFTER_REFUND` now always carries `restockedUnits: 0`, and its flag says "restocked
+  nothing". The earlier accepted cost above no longer applies.
+- `CANCEL_INCOMPLETE_AFTER_REFUND` now means a bracket commit or the flip failed, and nothing was
+  restocked. The retry restocks once.
+- The first attempt's restock choice is still kept (it is on the refund row), so a retry after a
+  crash at the flip restocks as the first attempt chose.
+- Between the flip and the restock the order reads `cancelled` with its units not yet back. For a
+  failed restock that window lasts until the next sweep tick that reaches the order.
+- A cancellation that owes no restock stores no `restockPending` field, so its envelope is the
+  same shape as before.
+
+**A restock that keeps failing is not silent.** Each failed sweep attempt is counted on the marker
+(`restockPending.failures`, `recordCancellationRestockFailure`). At
+`CANCELLATION_RESTOCK_FLAG_AFTER` = **3** consecutive failures the order is flagged: "a
+cancellation (key …): items could not be returned to stock: <why>. Otta keeps retrying; this
+clears once they are back". The flag is written once (not when it is already the order's flag),
+the sweep keeps retrying, and the attempt that lands clears it by compare-and-clear on its exact
+text, as the cancel clears its own "did not finish" flag. Three is small on purpose: the sweep
+runs every minute, so the operator hears within minutes, and one busy tick does not page anyone.
+
+**Review round 1 (2026-10-05).**
+- **One path.** The cancel right after its flip, a replay and the sweep all run the restock
+  through one helper (`runOwedRestock`), so whichever lands it clears the stuck-restock flag. The
+  clear is a compare-and-clear on that flag's own text, resolved with a new outcome,
+  **`restocked`** (written by Otta only; not offered to an operator).
+- **Back-off once flagged.** From the flagging failure on, each failure stamps
+  `restockPending.retryAt` = now + `cancellationRestockBackoffMs(failures)`: 5 minutes
+  (`CANCELLATION_RESTOCK_BACKOFF_MS`), doubling per further failure, capped at 6 hours
+  (`CANCELLATION_RESTOCK_BACKOFF_MAX_MS`). The document store derives `holdsPendingAt` from
+  `retryAt`, so a restock that cannot land leaves the head of the `hold-intents` scan to newer
+  work, and is still retried when its wait is over. The leg also skips a restock whose `retryAt`
+  is still ahead when another intent brought the order into the scan.
+- **Never over another flag.** The stuck-restock flag, and the leg's "no inventory row" flag, are
+  written only when the order has no flag or (for the former) its own. Otherwise the text is
+  returned (`flagSkipped`) and reported as a sweep anomaly.
+- **Part-way failures are counted.** The restock stops at the first line that throws and reports
+  the units of the lines before it, which are back (their keys are spent). The console then says
+  "N items returned to stock so far; the rest are not back yet and Otta will return them
+  automatically."
+
+**History says so.** While the marker is present, the cancellation's History entry reads
+"restock pending" (`restockPending: true` on the timeline entry, absent otherwise), and "items
+returned to stock" once they are.
