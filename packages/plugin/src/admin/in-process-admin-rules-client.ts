@@ -685,9 +685,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * End a coupon NOW — `expiresAt` := the stores' own clock (the one checkout's
 	 * `validateCoupon` is handed), never the caller's wall time.
 	 *
-	 * Instants are compared PARSED (`Date.parse`), never as strings: the window
-	 * fields are free text up to 64 chars, and `…12:00:00Z` sorts after
-	 * `…12:00:00.500Z` as a string while being the earlier instant.
+	 * Instants are compared PARSED, never as strings: the window fields are free
+	 * text up to 64 chars, and `…12:00:00Z` sorts after `…12:00:00.500Z` as a string
+	 * while being the earlier instant. Parsed by `parseCouponInstant`, the reader
+	 * checkout uses (issue #364) — not `Date.parse`, which rolls an impossible date
+	 * over (`2026-09-31` → 1 October) and reads a zoneless one as host-local time,
+	 * so retire could disagree with checkout about whether a coupon had ended.
 	 *
 	 * A start still in the future is DROPPED — `[future, now)` is an inverted window
 	 * that would read `scheduled` for a coupon the operator just ended. Every other
@@ -702,16 +705,18 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (current === null) return { ok: false, reason: "not_found" };
 		const now = this.#stores.clock.now();
 		const at = now.getTime();
-		if (current.expiresAt !== null && Date.parse(current.expiresAt) <= at) {
+		// An UNREADABLE bound is handled by design. The window fields are free text
+		// (≤64 chars; older rows predate the write check), so a stored bound may not
+		// parse. An unreadable EXPIRY reads as not-yet-ended, so retire replaces it
+		// with a real instant (which is what the operator asked for); an unreadable
+		// START is not "in the future", so it is kept as stored — retire changes only
+		// the bound it must. Checkout already treats either as "not active".
+		const expires = current.expiresAt === null ? null : parseCouponInstant(current.expiresAt);
+		if (expires !== null && expires <= at) {
 			return { ok: false, reason: "already_ended" };
 		}
-		// NaN IS HANDLED BY DESIGN, not by accident. The window fields are free text
-		// (≤64 chars, never instant-parsed on write), so a stored bound may not parse.
-		// `NaN <= at` and `NaN > at` are both false: an unparseable EXPIRY reads as
-		// not-yet-ended, so retire replaces it with a real instant (which is what the
-		// operator asked for); an unparseable START is not "in the future", so it is
-		// kept as stored — retire changes only the bound it must.
-		const futureStart = current.startsAt !== null && Date.parse(current.startsAt) > at;
+		const starts = current.startsAt === null ? null : parseCouponInstant(current.startsAt);
+		const futureStart = starts !== null && starts > at;
 		const retiredAt = now.toISOString();
 		const res = await this.#stores.couponStore.update(couponId, {
 			amountCents: current.amountCents,

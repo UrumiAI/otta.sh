@@ -19,6 +19,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Notice from "../../../components/Notice.astro";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
+	ensureResumeClientKey,
 	orderPathFor,
 	RESUME_EMAIL_ERRORS,
 	resumeEmailGate,
@@ -58,6 +59,9 @@ const gate = resumeEmailGate(result, new Date());
 if (gate === "order_page") return Astro.redirect(orderPath, 303);
 const notFound = gate === "not_found";
 if (notFound) Astro.response.status = 404;
+/* The form's attempts are throttled per browser as well as per order (issue
+   #364): give this browser its resume key before it can post one. */
+if (!notFound) ensureResumeClientKey(Astro.cookies);
 const notFoundMessage = cartErrorMessage("ORDER_NOT_FOUND");
 ---
 

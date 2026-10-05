@@ -24,7 +24,12 @@
  * have no render harness in this package.
  */
 import type { OrderResumeRouteResult, OrderRouteResult } from "@otta-sh/plugin";
-import { checkoutStashTotal, type CheckoutStash } from "./checkout-cookie.js";
+import {
+	checkoutStashTotal,
+	type CheckoutStash,
+	type CookieReader,
+	type CookieWriter,
+} from "./checkout-cookie.js";
 import { isOrderPayable } from "./pay-guard.js";
 
 export const RESUME_PATH = "/checkout/resume";
@@ -40,6 +45,40 @@ export const RESUME_EMAIL_PATH = "/checkout/resume/email";
 
 /** The tokens that page explains — one generic sentence each, no more. */
 export const RESUME_EMAIL_ERRORS: ReadonlySet<string> = new Set(["EMAIL_MISMATCH", "THROTTLED"]);
+
+/**
+ * This browser's RESUME KEY (issue #364): an opaque random id the email page gives
+ * a browser once, sent with each email attempt as `clientKey`. Not a proof — the
+ * plugin uses it only to throttle email guesses per DEVICE of an order (5 per 15
+ * minutes) as well as per order (20), so a stranger holding the order link who
+ * spends five wrong guesses no longer locks the real buyer out. A browser without
+ * one (cookies blocked or cleared) shares the order's no-device window.
+ * httpOnly, `SameSite=Strict` (the POST comes from our own page), `/checkout` only.
+ */
+export const RESUME_CLIENT_COOKIE_NAME = "otta_resume_client";
+const RESUME_CLIENT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const RESUME_CLIENT_PATTERN = /^[0-9a-f-]{36}$/;
+
+/** The resume key this site wrote, or undefined (absent, or not one of ours). */
+export function readResumeClientKey(cookies: CookieReader): string | undefined {
+	const value = cookies.get(RESUME_CLIENT_COOKIE_NAME)?.value;
+	return value !== undefined && RESUME_CLIENT_PATTERN.test(value) ? value : undefined;
+}
+
+/** This browser's resume key, minting and setting one the first time. */
+export function ensureResumeClientKey(cookies: CookieReader & CookieWriter): string {
+	const existing = readResumeClientKey(cookies);
+	if (existing !== undefined) return existing;
+	const minted = crypto.randomUUID();
+	cookies.set(RESUME_CLIENT_COOKIE_NAME, minted, {
+		httpOnly: true,
+		secure: true,
+		sameSite: "strict",
+		path: "/checkout",
+		maxAge: RESUME_CLIENT_MAX_AGE_SECONDS,
+	});
+	return minted;
+}
 
 export function resumeEmailPath(orderId: string, error?: string): string {
 	const query = new URLSearchParams({ order: orderId });

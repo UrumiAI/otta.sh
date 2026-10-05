@@ -81,7 +81,8 @@ export interface OrderStore {
 	 * pay it; `cancelDueIntents` withdraws it first. An intent whose cancel failed and
 	 * was rescheduled is not due until its retry, so a provider outage never holds an
 	 * order. `limit` then counts the orders LISTED, not the ones read: the store keeps
-	 * reading past excluded ones (within its page bound).
+	 * reading past excluded ones (within its page bound, or `scanLimit` orders read
+	 * when the caller sets one).
 	 */
 	listExpirable(now: string, options?: OrderExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
@@ -117,6 +118,12 @@ export interface OrderStore {
 	/**
 	 * Orders holding at least one UNRESOLVED intent whose `cancelDueAt <= now`,
 	 * earliest first, at most `limit` — the intent-cancel sweep's batch.
+	 *
+	 * INVARIANT (issue #364): this predicate and {@link listExpirable}'s
+	 * `excludeIntentDue` are the SAME predicate. Every order the expiry leaves out
+	 * for a payable intent must be listed here, so the cancel leg withdraws (or
+	 * reschedules, or resolves) it and the order becomes expirable. If they drifted,
+	 * an excluded order nobody lists would never expire. `orderExpiryContract` pins it.
 	 */
 	listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]>;
 	/**
@@ -299,8 +306,23 @@ export interface OrderStore {
 	 * one from being handed to a human.
 	 */
 	listRefundRetriesStale(cutoff: string, limit: number): Promise<OrderId[]>;
-	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
-	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
+	/**
+	 * Flag an order for manual reconciliation (§5 loud anomaly); idempotent.
+	 * Answers whether the flag was written (`false` for an unknown order).
+	 *
+	 * With no `guard` it is last-writer-wins on the field (ADR-0019 §7.13): an
+	 * anomaly must always be recordable. With `guard` it is a COMPARE-AND-SET on
+	 * the flag itself — written only while the order's live flag still equals
+	 * `guard.expectedFlag` (`null` = only while unflagged), atomically with the
+	 * check — for a caller that decided to write from a flag it read EARLIER: a
+	 * flag written in between is never overwritten, and the call answers `false`
+	 * (issue #364).
+	 */
+	flagReconciliation(
+		orderId: OrderId,
+		detail: string,
+		guard?: ReconciliationFlagGuard,
+	): Promise<boolean>;
 	/**
 	 * Resolve an open reconciliation flag (admin-UX Increment 1). A **guarded
 	 * flip**, following `transition`'s fromState-EQUALITY precedent: `UPDATE
@@ -585,6 +607,12 @@ export interface OrderStore {
 	 * queue.
 	 */
 	releaseEmailClaim(id: string, options?: ReleaseEmailClaimOptions): Promise<void>;
+}
+
+/** The compare-and-set guard of {@link OrderStore.flagReconciliation}: the flag
+ *  the caller read, which must still be the live one for the write to apply. */
+export interface ReconciliationFlagGuard {
+	expectedFlag: string | null;
 }
 
 /** The store-level resolve command. `outcome`/`reason`/`resolvedBy` are already
@@ -1382,4 +1410,14 @@ export interface ExpiredOrder {
 export interface OrderExpiryListOptions extends ExpiryListOptions {
 	/** Leave out orders whose payment intent is due and not yet withdrawn. */
 	readonly excludeIntentDue?: boolean;
+	/**
+	 * Read at most this many lapsed pending orders — listed or left out — oldest
+	 * deadline first, then answer with what was listed (issue #364). Reaching it is
+	 * an answer, never an error: the caller asked for a bounded look. An order the
+	 * walk did not reach is not listed, so it is never expired unchecked; it is read
+	 * on a later call, once the orders ahead of it have been withdrawn and expired.
+	 * Without it, `excludeIntentDue` can read through a whole backlog of abandoned
+	 * checkouts to fill `limit`. Positive integer.
+	 */
+	readonly scanLimit?: number;
 }

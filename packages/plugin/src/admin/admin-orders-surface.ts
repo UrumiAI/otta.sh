@@ -295,6 +295,52 @@ export type RefundOrderResult =
 	  }
 	| { ok: false; status: number; reason?: string };
 
+/** What became of the thing a resolved refund was FOR (#364) — the domain's
+ *  `ResolveFollowUp` on the wire. Absent for a plain refund.
+ *  - `cancellation`/`cancelled` — the cancellation it belonged to is finished.
+ *  - `cancellation`/`already_cancelled` — cancelled elsewhere without this refund
+ *    on its record; the buyer gets the refund's own email.
+ *  - `cancellation`/`not_cancelled` — the order had moved on (`state`); flagged
+ *    unless `flagged` says otherwise.
+ *  - `cancellation`/`cancel_again` — Cancel order again finishes it (no second refund).
+ *  - `late-payment`/`finished` — the late payment is refunded and its buyer told.
+ *  - `late-payment`/`refund_manually` — still held; to refund by hand (`flagged`). */
+export type ResolveFollowUpWire =
+	| {
+			purpose: "cancellation";
+			outcome: "cancelled";
+			/** True ⇒ THIS answer cancelled it (a replay finds it already cancelled). */
+			cancelledNow: boolean;
+			/** The cancellation's restock choice. */
+			restock: boolean;
+			restockedUnits: number;
+			restockSkipped: { sku: string; quantity: number; reason: string }[];
+			/** The restock after the flip is still owed; the sweep finishes it. */
+			restockPending: boolean;
+	  }
+	| {
+			purpose: "cancellation";
+			outcome: "already_cancelled";
+			/** This answer enqueued the refund's own email (else it was already sent). */
+			refundEmailQueued: boolean;
+	  }
+	| {
+			purpose: "cancellation";
+			outcome: "not_cancelled";
+			state: string | null;
+			/** The order carries a flag naming this cancellation. */
+			flagged: boolean;
+			refundEmailQueued: boolean;
+	  }
+	| { purpose: "cancellation"; outcome: "cancel_again" }
+	| { purpose: "late-payment"; outcome: "finished" }
+	| {
+			purpose: "late-payment";
+			outcome: "refund_manually";
+			/** False ⇒ an unrelated open flag kept it from flagging the order. */
+			flagged: boolean;
+	  };
+
 /** {@link AdminOrdersSurface.resolveUnverifiedRefund}'s answer. */
 export type ResolveUnverifiedRefundResult =
 	| {
@@ -302,8 +348,10 @@ export type ResolveUnverifiedRefundResult =
 			/** False ⇒ the same answer was already recorded (a replay). */
 			changed: boolean;
 			fullyRefunded: boolean;
-			/** The refund email a confirmation sent — absent for a void or a replay. */
+			/** The email the answer sent: the refund's own, or the one what it was for
+			 *  sends (the cancelled email, the late-payment notice). Absent when none. */
 			email?: InlineEmailStatus;
+			followUp?: ResolveFollowUpWire;
 	  }
 	| { ok: false; status: number; reason?: string };
 

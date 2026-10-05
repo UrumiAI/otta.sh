@@ -526,6 +526,14 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
  *  the page), its reservations' liveness reads, and a heal write for a dead one. */
 const LIST_CANDIDATE_CALLS = 3;
 
+/**
+ * How many lapsed pending orders the expiry's due check reads at most, listed or
+ * left out for a still-payable intent (issue #364). One host page: the check is
+ * costed as one query, and a page is one query whatever its size. Behind a longer
+ * run of payable orders the rest wait for a later tick; never expired unchecked.
+ */
+const EXPIRY_SCAN_ORDERS = 100;
+
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
  *  listed candidate (it lists `batch + 1`). */
 function expireHoldsEntry(expiryBatch: number): number {
@@ -1290,11 +1298,19 @@ export async function runCommerceSweeps(
 	// (first in every tick) withdraws the intent, and the expiry takes the order on
 	// the same tick or a later one. `expiryLimit + 1`, so a longer backlog still reads
 	// as not drained.
+	//
+	// The look is BOUNDED (issue #364): at most `EXPIRY_SCAN_ORDERS` lapsed orders are
+	// read, listed or left out. Under a backlog of abandoned checkouts whose intents
+	// are still due, filling the bite used to walk the whole backlog a small page at
+	// a time — a dozen queries for 150 orders, charged to a check costed as one. An
+	// order the look did not reach is not listed, so it is never expired unchecked;
+	// it is read on a later tick, once `cancel-intents` has withdrawn the ones ahead.
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
 		(expirable ??= stores.orderStore.listExpirable(nowIso, {
 			limit: expiryLimit + 1,
 			excludeIntentDue: true,
+			scanLimit: Math.max(expiryLimit + 1, EXPIRY_SCAN_ORDERS),
 		}));
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
@@ -1393,7 +1409,11 @@ export async function runCommerceSweeps(
 			"cancel-intents",
 			async (legBudget) => {
 				// Late-payment PREVENTION, in its own leg — never inside `expire-orders`, so
-				// a provider's latency or outage can never slow the stock release — and FIRST
+				// a provider call is never made inside the expiry. The expiry still WAITS on
+				// this leg for any order whose intent is due (QA3 N1), and since issue #364
+				// its look is bounded (`EXPIRY_SCAN_ORDERS`): an order with no due intent
+				// queued behind that many payable ones waits for this leg's throughput, so
+				// provider latency can delay its stock release by a tick or more — and FIRST
 				// in every tick: an intent due at its order's hold deadline is withdrawn
 				// before the expiry (or anything else) can spend the tick, so a backlog of
 				// lapsed orders never leaves one payable. Each unit admitted by the tick's

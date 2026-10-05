@@ -76,6 +76,7 @@ import type {
 	AdminOrdersSurface,
 	InlineEmailStatus,
 	RefundsSummaryWire,
+	ResolveFollowUpWire,
 	TransitionRefusal,
 } from "./admin-orders-surface.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
@@ -189,6 +190,15 @@ const UNREADABLE: Notice = {
 	variant: "error",
 	title: "That action could not be read",
 	description: "Nothing was changed. Reload the order and try again.",
+};
+
+/** A paid order's cancel that carries no Return-to-stock choice: a tab opened
+ *  before the box existed (issue #364). Refused, never guessed. */
+const STALE_CANCEL_PAGE: Notice = {
+	variant: "error",
+	title: "Nothing was cancelled — this page is out of date",
+	description:
+		"This page was opened before the Return to stock choice was added, so it can’t say whether the items should go back on sale. Nothing was refunded or restocked. Reload the order and cancel again.",
 };
 
 /**
@@ -648,10 +658,18 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 			description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
 		});
 	}
-	// "Return the items to stock" — ticked unless the operator untick it (damaged
-	// goods). ABSENT means ticked: the decision's default, and what a tab rendered
-	// before the box existed meant by cancelling.
-	const restock = readString(payload["restock"]) !== "false";
+	// "Return the items to stock" — the operator's explicit choice, sent with every
+	// cancel of a paid order. A PENDING order's cancel releases its held stock
+	// whatever the box says, so the page sends none. On any other order an ABSENT
+	// (or unreadable) value is not defaulted either way (issue #364): it comes from
+	// a tab rendered before the box existed, whose operator was never asked, and
+	// both guesses are wrong for someone (restocking damaged goods, or keeping
+	// returned ones off sale). Refuse it and ask for a reload.
+	const restockField = readString(payload["restock"]);
+	if (observedState !== "pending" && restockField !== "true" && restockField !== "false") {
+		return applied(STALE_CANCEL_PAGE);
+	}
+	const restock = restockField !== "false";
 	// The key is the CANCELLATION's, and the refund and restock legs derive theirs
 	// from it (`<key>:refund`, `<key>:restock:<line>`), so a double-click or a retry
 	// after a failure replays one cancellation rather than refunding twice.
@@ -1124,6 +1142,12 @@ function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersA
 						: "Nothing was changed — that refund could not be found on this order. Reload and try again.",
 			});
 		}
+		// What the refund was FOR, finished or not (#364): a cancellation, a late payment.
+		const followUp =
+			result.followUp === undefined
+				? null
+				: followUpNotice(outcome, result.changed, result.followUp, result.email);
+		if (followUp !== null) return applied(followUp);
 		if (!result.changed) {
 			return applied({
 				variant: "default",
@@ -1147,6 +1171,98 @@ function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersA
 			}.${emailSentence(result.email)}`,
 		});
 	};
+}
+
+/**
+ * The notice for a resolved refund that belonged to something larger (#364) — a
+ * cancellation or a late payment — saying what became of THAT. `null` falls back
+ * to the plain refund copy (a replay with nothing new to say).
+ */
+function followUpNotice(
+	outcome: "confirmed" | "voided",
+	changed: boolean,
+	followUp: ResolveFollowUpWire,
+	email: InlineEmailStatus | undefined,
+): Notice | null {
+	if (followUp.purpose === "late-payment") {
+		if (!changed) return null;
+		if (followUp.outcome === "finished") {
+			return {
+				variant: "default",
+				title: "Refund confirmed",
+				description: `The late payment is recorded as refunded by your payment provider, and its flag is resolved.${emailSentence(email)}`,
+			};
+		}
+		return {
+			variant: "default",
+			title: "Marked as not refunded",
+			description: followUp.flagged
+				? "The automatic refund is recorded as never issued, so the late payment is still held. The order is flagged: refund it from Money → Refunds."
+				: "The automatic refund is recorded as never issued, so the late payment is still held: refund it from Money → Refunds. The order already had another open flag, which was left as it is.",
+		};
+	}
+	switch (followUp.outcome) {
+		case "cancelled": {
+			if (!changed && !followUp.cancelledNow) return null;
+			const head =
+				"The refund is recorded as issued by your payment provider, and the cancellation it was for is finished." +
+				restockSentence(followUp.restock, followUp.restockedUnits, followUp.restockPending) +
+				emailSentence(email);
+			return {
+				variant: "default",
+				title: "Refund confirmed and order cancelled",
+				description: fit(
+					head + skippedSentence(followUp.restockSkipped, BANNER_BUDGET - head.length),
+					BANNER_BUDGET,
+				),
+			};
+		}
+		case "already_cancelled":
+			return {
+				variant: "default",
+				title: "Refund confirmed — order was already cancelled",
+				description: `The refund is recorded as issued by your payment provider. The order had already been cancelled another way, without this refund on its record, so the buyer gets a separate refund email.${followUp.refundEmailQueued ? emailSentence(email) : " That email was already sent."}`,
+			};
+		case "not_cancelled": {
+			const state = followUp.state ?? "past cancelling";
+			const gone =
+				followUp.state === "shipped" ||
+				followUp.state === "delivered" ||
+				followUp.state === "completed";
+			const next = gone
+				? "Contact the buyer; do not refund it again unchecked."
+				: "Contact the buyer before it ships or is refunded again.";
+			const flag = followUp.flagged
+				? ` The order is flagged. ${next}`
+				: ` The order could not be flagged. ${next}`;
+			return {
+				variant: "error",
+				title: "Refund confirmed — order not cancelled",
+				description: fit(
+					`The refund is recorded, but the order is ${state}, so the cancellation it was for could not finish.${flag}${followUp.refundEmailQueued ? lostEmailSentence(email) : ""}`,
+					BANNER_BUDGET,
+				),
+			};
+		}
+		case "cancel_again":
+			if (outcome === "voided") {
+				if (!changed) return null;
+				return {
+					variant: "default",
+					title: "Marked as not refunded",
+					description:
+						"The refund is recorded as never issued; no money moved and the buyer was not emailed. The order is still paid: click Cancel order again to refund and cancel it.",
+				};
+			}
+			// Whatever `changed` says: a replay whose cancel still did not finish has
+			// the same next step.
+			return {
+				variant: "default",
+				title: "Refund confirmed — finish the cancellation",
+				description:
+					"The refund is recorded as issued by your payment provider, but the cancellation it was for has not finished. Click Cancel order again to finish it; it will not refund twice.",
+			};
+	}
 }
 
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's

@@ -40,7 +40,10 @@ import type { AdminOrdersSurface } from "../../src/admin/admin-orders-surface.js
 import type { AdminProductsSurface } from "../../src/admin/admin-products-surface.js";
 import type { AdminRulesSurface } from "../../src/admin/admin-rules-surface.js";
 import type { ReportingSettingsSurface } from "../../src/admin/reporting-settings-surface.js";
-import { RESUME_EMAIL_MAX_ATTEMPTS } from "../../src/commerce/resume-proof.js";
+import {
+	RESUME_EMAIL_MAX_ATTEMPTS,
+	RESUME_EMAIL_ORDER_MAX_ATTEMPTS,
+} from "../../src/commerce/resume-proof.js";
 import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/commerce-client.js";
 
 // ── The tier interface ────────────────────────────────────────────────────
@@ -401,6 +404,9 @@ export interface CommerceClientTier {
 	 *  names. The in-process tier declares it (it composes a fake Stripe gateway),
 	 *  so the checkout-replay, lapsed-hold and refund cases run there. */
 	readonly payments?: CommerceClientTierPayments;
+	/** How many attempt-throttle documents the tier's store holds — so a case can
+	 *  show a refused guess wrote nothing. Optional: the cases that need it skip. */
+	readonly throttleDocuments?: () => Promise<number>;
 	arrange: CommerceClientTierArrange;
 }
 
@@ -2550,26 +2556,93 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		);
 
 		test.skipIf(tier.payments === undefined)(
-			`email attempts are THROTTLED per order after ${RESUME_EMAIL_MAX_ATTEMPTS} — even the right one, until the window passes (SKIPPED where the tier composes no payment gateway)`,
+			`email attempts are THROTTLED per DEVICE after ${RESUME_EMAIL_MAX_ATTEMPTS} — even the right one — while the real buyer's device still resumes (SKIPPED where the tier composes no payment gateway)`,
 			async () => {
 				const placed = await placeResumable("throttle", "t@example.test");
 				const other = await placeResumable("throttle2", "t2@example.test");
 				for (let i = 0; i < RESUME_EMAIL_MAX_ATTEMPTS; i++) {
 					expect(
-						await client.resumeOrderPayment(placed.orderId, { email: `guess${i}@example.test` }),
+						await client.resumeOrderPayment(placed.orderId, {
+							email: `guess${i}@example.test`,
+							clientKey: "device-guesser",
+						}),
 					).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+				}
+				expect(
+					await client.resumeOrderPayment(placed.orderId, {
+						email: "t@example.test",
+						clientKey: "device-guesser",
+					}),
+				).toEqual({ ok: false, reason: "THROTTLED" });
+				// Issue #364: five wrong guesses no longer lock the real buyer out.
+				const buyer = await client.resumeOrderPayment(placed.orderId, {
+					email: "t@example.test",
+					clientKey: "device-buyer",
+				});
+				expect(buyer.ok, JSON.stringify(buyer)).toBe(true);
+				// Requests that name no device share ONE window per order.
+				for (let i = 0; i < RESUME_EMAIL_MAX_ATTEMPTS; i++) {
+					await client.resumeOrderPayment(placed.orderId, { email: `anon${i}@example.test` });
 				}
 				expect(
 					await client.resumeOrderPayment(placed.orderId, { email: "t@example.test" }),
 				).toEqual({ ok: false, reason: "THROTTLED" });
-				// Per ORDER: another order's window is untouched.
+				// Per ORDER: another order's windows are untouched.
 				const elsewhere = await client.resumeOrderPayment(other.orderId, {
 					email: "t2@example.test",
+					clientKey: "device-guesser",
 				});
 				expect(elsewhere.ok).toBe(true);
 				// The cart is still proof: the throttle is on email guesses only.
 				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
 				expect(byCart.ok).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			`guessing from many devices is still stopped: ${RESUME_EMAIL_ORDER_MAX_ATTEMPTS} email attempts per order, from any devices, close the email route for every device (SKIPPED where the tier composes no payment gateway)`,
+			async () => {
+				const placed = await placeResumable("throttle3", "t3@example.test");
+				for (let i = 0; i < RESUME_EMAIL_ORDER_MAX_ATTEMPTS; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: `guess${i}@example.test`,
+							clientKey: `device-${i}`,
+						}),
+					).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+				}
+				expect(
+					await client.resumeOrderPayment(placed.orderId, {
+						email: "t3@example.test",
+						clientKey: "device-fresh",
+					}),
+				).toEqual({ ok: false, reason: "THROTTLED" });
+				// The cart and the owning session are possession proofs, never throttled.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined || tier.throttleDocuments === undefined)(
+			"once the order's cap is spent, a guess under a NEW device key is refused and writes nothing — device windows stay bounded per order (SKIPPED where the tier cannot count throttle documents)",
+			async () => {
+				const placed = await placeResumable("throttle4", "t4@example.test");
+				for (let i = 0; i < RESUME_EMAIL_ORDER_MAX_ATTEMPTS; i++) {
+					await client.resumeOrderPayment(placed.orderId, {
+						email: `guess${i}@example.test`,
+						clientKey: `spent-${i}`,
+					});
+				}
+				const before = await tier.throttleDocuments!();
+				for (let i = 0; i < 5; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: "t4@example.test",
+							clientKey: `fresh-${i}`,
+						}),
+					).toEqual({ ok: false, reason: "THROTTLED" });
+				}
+				expect(await tier.throttleDocuments!()).toBe(before);
 			},
 		);
 

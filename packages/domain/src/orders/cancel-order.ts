@@ -962,6 +962,23 @@ async function refundForCancellation(
 		}
 		const ceiling = computeRefundCeiling(sumCapturedPayments(payments), order.totals.total);
 		amount = Math.max(0, ceiling - sumRefunds(refunds));
+		// Nothing left to refund because a cancellation's refund is ALREADY recorded on
+		// this order under another key (a person confirmed it after a timeout, then the
+		// cancel was retried with a different key, #364): carry that refund, so the
+		// envelope and the cancelled email say the money went back. Nothing is issued.
+		const settled = refunds.filter((r) => r.status === "recorded" && r.purpose === "cancellation");
+		const first = settled[0];
+		if (amount === 0 && first !== undefined) {
+			return {
+				ok: true,
+				refund: {
+					amount: cents(settled.reduce((sum, r) => sum + r.amount, 0)),
+					currency: first.currency,
+				},
+				refundId: first.id,
+				restock: cmd.restock,
+			};
+		}
 		// One gateway refund targets ONE capture, so a remainder spread over several
 		// captures would be rejected by the provider attempt after attempt. Refused
 		// up front instead, with its own reason.
@@ -973,6 +990,17 @@ async function refundForCancellation(
 	// a retry with the box flipped does not contradict units already moved.
 	const restock = mine?.restock ?? cmd.restock;
 	if (amount === 0) return { ok: true, refund: null, refundId: null, restock };
+	// A refund this cancellation already SETTLED (an earlier attempt finished it, or
+	// a person confirmed it at the provider after a timeout — `resolveUnverifiedRefund`,
+	// #364) needs no gateway and no provider call: the cancel carries on from it.
+	if (mine !== null && mine.status === "recorded") {
+		return {
+			ok: true,
+			refund: { amount: mine.amount, currency: mine.currency },
+			refundId: mine.id,
+			restock,
+		};
+	}
 	if (gateway === null || !gateway.refundable) {
 		return { ok: false, failure: { ok: false, reason: "REFUND_NOT_AUTOMATIC" } };
 	}

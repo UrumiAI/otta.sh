@@ -21,7 +21,7 @@ const PAY = readFileSync(path.join(SRC, "pages/checkout/pay.astro"), "utf8");
 const VIEW = readFileSync(path.join(SRC, "themes/tempered/PayView.astro"), "utf8");
 
 /** The page's script blocks: the inline Stripe one and the bundled module. */
-const scripts = [...PAY.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => ({
+const scripts = [...PAY.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script[^>]*>/gi)].map((m) => ({
 	attrs: m[1] ?? "",
 	body: m[2] ?? "",
 }));

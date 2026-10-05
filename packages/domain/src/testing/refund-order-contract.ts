@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -543,6 +543,8 @@ export function refundOrderContract(
 				ok: true,
 				changed: true,
 				fullyRefunded: true,
+				// A plain refund has nothing to finish beyond itself (#364).
+				followUp: null,
 			});
 			const row = await h.orderStore.getRefundByIdempotencyKey(key);
 			expect(row).toMatchObject({
@@ -737,6 +739,42 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-preflight-flagged"),
 			});
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe("an earlier anomaly");
+		});
+
+		test("a PROVIDER_ALREADY_REFUNDED never overwrites a flag written WHILE the provider was being asked (issue #364)", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-preflight-race", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: cents(1000), captured: cents(1000) },
+			});
+			// The order was unflagged when the refund read it; an anomaly lands on it
+			// during the provider round trip.
+			const racing = Object.assign(Object.create(gw) as FakePaymentGateway, {
+				async refund(input: Parameters<FakePaymentGateway["refund"]>[0]) {
+					await h.orderStore.flagReconciliation(id, "an anomaly raised meanwhile");
+					return gw.refund(input);
+				},
+			});
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			const res = await refundOrder({ orderStore: h.orderStore }, racing, {
+				orderId: id,
+				amount: cents(500),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-preflight-race"),
+			});
+			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
+				"an anomaly raised meanwhile",
+			);
+			// The refused write is not dropped silently: it is logged, naming the order.
+			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
+				true,
+			);
+			warn.mockRestore();
 		});
 
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {

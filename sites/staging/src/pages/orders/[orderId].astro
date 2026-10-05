@@ -52,7 +52,6 @@ import Storefront from "../../layouts/Storefront.astro";
 import {
 	ACCOUNT_HOME_PATH,
 	ACCOUNT_LOGIN_PATH,
-	currentSessionToken,
 	orderRefundedNote,
 	sessionOwnsOrder,
 } from "../../lib/account.js";
@@ -222,8 +221,8 @@ const deadEnd = state === "expired" || state === "cancelled" || state === "faile
    link line can point straight there instead of at sign-in. Asked of the plugin
    through the session's own order read — the public order carries no email — and
    only once the poll has stopped: a polling page reloads every few seconds, and
-   the answer changes nothing it shows. A render that may carry it is private. */
-if (currentSessionToken(Astro.cookies) !== undefined) keepPrivate(Astro);
+   the answer changes nothing it shows. The render is private already
+   (keepPrivate, above, for every request). */
 const ownsOrder =
 	order !== null &&
 	!shouldPoll &&

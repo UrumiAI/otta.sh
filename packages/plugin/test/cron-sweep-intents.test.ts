@@ -119,3 +119,46 @@ describe("cancel-intents and the expiry, on the Workers Free preset", () => {
 		}
 	}, 120_000);
 });
+
+describe("the expiry's due check under a backlog of abandoned checkouts (issue #364)", () => {
+	test("it reads a bounded number of orders, not the whole backlog, and still expires nothing payable", async () => {
+		// 150 lapsed orders, every one still holding a payable intent: more than one
+		// tick's cancel-intents bite can withdraw, so most are still due when the
+		// expiry looks. Its due check used to walk all of them, a page at a time.
+		const ids: OrderId[] = [];
+		for (let i = 0; i < 150; i++) {
+			ids.push(await lapsedWithIntent(`bk${String(i).padStart(3, "0")}`, i));
+		}
+		const expiryQueries: number[] = [];
+		const watched: StorageAccess = {};
+		for (const [name, collection] of Object.entries(storage)) {
+			watched[name] = new Proxy(collection, {
+				get(target, prop, receiver) {
+					const value: unknown = Reflect.get(target, prop, receiver);
+					if (prop !== "query" || typeof value !== "function") return value;
+					return (opts: { where?: Record<string, unknown>; limit?: number }) => {
+						if (opts.where?.["state"] === "pending" && "holdExpiresAt" in opts.where) {
+							expiryQueries.push(opts.limit ?? 0);
+						}
+						return (value as (o: unknown) => unknown).call(target, opts);
+					};
+				},
+			});
+		}
+		const stripe = new FakePaymentGateway({ id: "stripe" });
+		await runCommerceSweeps(
+			sweepContext(watched, undefined, { [BACKGROUND_WORK_KEY]: FREE }),
+			SWEEP_TASK_NAME,
+			{
+				cursors: memoryCursors(),
+				emailSender: recordingSender([]),
+				gateways: { stripe },
+				now: NOW,
+			},
+		);
+		// One look of at most 100 orders: one query on a host page of 100.
+		expect(expiryQueries.length, JSON.stringify(expiryQueries)).toBeLessThanOrEqual(1);
+		expect(expiryQueries.every((rows) => rows <= 100)).toBe(true);
+		expect(await deadWithPayableIntent(ids)).toEqual([]);
+	}, 300_000);
+});

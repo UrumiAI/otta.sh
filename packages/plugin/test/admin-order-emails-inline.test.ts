@@ -22,6 +22,7 @@ import {
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
+	latePaymentRefundKey,
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
@@ -242,6 +243,114 @@ describe("an admin write sends its email at once, in order", () => {
 				resolvedBy: "ops",
 			}),
 		).toEqual({ ok: false, status: 409, reason: "NOT_UNVERIFIED" });
+	});
+
+	// #364: confirming a refund finishes what it was FOR, and sends THAT email now.
+	test("confirming a cancellation's timed-out refund finishes the cancel and sends the cancelled email now — not a refund email", async () => {
+		const id = await seedPaid("ord-unv-cxl");
+		const sender = new FakeEmailSender();
+		const orders = adminClient({ emailSender: sender });
+		gateways.stripe.setRefundResult({ ok: false, reason: "UNVERIFIED" });
+		try {
+			expect(
+				await orders.cancelOrder(
+					id,
+					{ reason: "customer_request", cancelledBy: "ops" },
+					{ idempotencyKey: `admin-cancel:${id}` },
+				),
+			).toMatchObject({ ok: false, reason: "REFUND_FAILED" });
+		} finally {
+			gateways.stripe.clearRefundResult();
+		}
+		const calls = gateways.stripe.refundCalls.length;
+
+		expect(
+			await orders.resolveUnverifiedRefund(id, {
+				refundKey: `admin-cancel:${id}:refund`,
+				outcome: "confirmed",
+				resolvedBy: "ops@example.test",
+			}),
+		).toEqual({
+			ok: true,
+			changed: true,
+			fullyRefunded: false,
+			email: "sent",
+			followUp: {
+				purpose: "cancellation",
+				outcome: "cancelled",
+				cancelledNow: true,
+				restock: true,
+				restockedUnits: 0,
+				restockSkipped: [],
+				restockPending: false,
+			},
+		});
+		expect((await harness.stores.orderStore.getById(id))?.state).toBe("cancelled");
+		expect(sender.countByTemplate("order-cancelled", id)).toBe(1);
+		expect(sender.countByTemplate("order-refund-issued", id)).toBe(0);
+		expect(gateways.stripe.refundCalls.length, "no second provider call").toBe(calls);
+	});
+
+	test("confirming a late payment's timed-out refund sends its late-payment notice now", async () => {
+		const oid = toOrderId("ord-unv-late");
+		await harness.stores.orderStore.createFromCart({
+			orderId: oid,
+			cartId: null,
+			currency: USD,
+			idempotencyKey: toIdempotencyKey("seed-ord-unv-late"),
+			holdExpiresAt: FAR,
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+			lines: [],
+			totals: { subtotal: cents(1500), total: cents(1500), currency: USD },
+		});
+		await harness.stores.orderStore.transition({
+			orderId: oid,
+			fromState: "pending",
+			toState: "expired",
+			idempotencyKey: toIdempotencyKey("expire-ord-unv-late"),
+			enqueueEmail: false,
+		});
+		await harness.stores.orderStore.recordPayment({
+			orderId: oid,
+			gateway: "stripe",
+			providerRef: "pi_late",
+			amount: cents(1500),
+			currency: USD,
+			status: "succeeded",
+		});
+		const key = latePaymentRefundKey("pi_late");
+		await harness.stores.orderStore.reserveRefund({
+			orderId: oid,
+			amount: cents(1500),
+			currency: USD,
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: null,
+			reason: "payment arrived after the order was expired",
+			refundedBy: "otta:auto-refund",
+			idempotencyKey: key,
+			purpose: "late-payment",
+		});
+		await harness.stores.orderStore.markRefundUnverified(key);
+		const sender = new FakeEmailSender();
+		const orders = adminClient({ emailSender: sender });
+
+		expect(
+			await orders.resolveUnverifiedRefund(oid, {
+				refundKey: key,
+				outcome: "confirmed",
+				resolvedBy: "ops",
+			}),
+		).toEqual({
+			ok: true,
+			changed: true,
+			fullyRefunded: false,
+			email: "sent",
+			followUp: { purpose: "late-payment", outcome: "finished" },
+		});
+		expect(sender.countByTemplate("order-late-payment-refunded", oid)).toBe(1);
+		expect(sender.countByTemplate("order-refund-issued", oid)).toBe(0);
 	});
 
 	test("fulfilment sends the shipped email with its tracking", async () => {
