@@ -13,6 +13,7 @@ import type {
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import type { Order } from "./model.js";
+import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
 	flagAmount,
 	isProviderRefundFlag,
@@ -266,19 +267,10 @@ export async function refundOrder(
 	known?: OrderLedger,
 ): Promise<RefundOrderOutcome> {
 	const outcome = await refundOnLedger(deps, gateway, cmd, known);
-	if (outcome.ok) await revokeIfFullyRefunded(deps, outcome.order);
+	if (outcome.ok && outcome.order.state === "refunded") {
+		await revokeOrderEntitlements(deps.entitlementStore, outcome.order);
+	}
 	return outcome;
-}
-
-/**
- * Revoke a `refunded` order's entitlements — see {@link refundOrder}'s
- * "Revocation" paragraph. Entitlements are granted per DIGITAL line only
- * (`settleOrder`), so an order with none has nothing to revoke and costs no read.
- */
-async function revokeIfFullyRefunded(deps: RefundOrderDeps, order: Order): Promise<void> {
-	if (deps.entitlementStore === undefined || order.state !== "refunded") return;
-	if (!order.lines.some((line) => line.fulfillmentKind === "digital")) return;
-	await deps.entitlementStore.revokeByOrder(order.id);
 }
 
 /** The ledger protocol itself — everything {@link refundOrder} documents except

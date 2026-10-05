@@ -336,7 +336,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
 		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
-			{ orderStore: this.#stores.orderStore },
+			// Mark refunded revokes the order's download access (issue #376).
+			{ orderStore: this.#stores.orderStore, entitlementStore: this.#stores.entitlementStore },
 			{
 				orderId: toOrderId(orderId),
 				toState: target,
@@ -508,6 +509,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				clock: this.#stores.clock,
 				// A busy store after the refund reads "the store was busy", not "did not finish".
 				isRetryable: isRetryableStorageBusy,
+				// The cancellation's refund is the whole remainder: it revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
 			},
 			gateway,
 			{
@@ -797,6 +800,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				// A confirmed CANCELLATION refund resumes its cancel, which restocks (#364).
 				inventoryStore: this.#stores.inventory,
+				// A confirm that returns the money in full revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
 				isRetryable: isRetryableStorageBusy,
 			},
 			{
