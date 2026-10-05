@@ -32,11 +32,8 @@ import {
 const LOGIN_PATH = "/account/login";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006):
-	// without it a cross-site form could make a shopper's browser mail links on
-	// anyone's behalf.
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot make a shopper's browser mail links on anyone's behalf.
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const raw = form.get("email");

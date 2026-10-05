@@ -85,9 +85,8 @@ async function resumeFromLink(context: APIContext): Promise<Response> {
 }
 
 async function resumeWithEmail(context: APIContext): Promise<Response> {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006):
-	// a cross-site form must not spend this order's guesses.
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot spend this order's guesses.
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const orderId = formString(form.get("order")) ?? "";

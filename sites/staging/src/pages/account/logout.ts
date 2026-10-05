@@ -14,10 +14,8 @@ import { routeDispatcher } from "../../lib/cart-actions.js";
 import { dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006):
-	// a cross-site form must not be able to sign a customer out.
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot sign a customer out.
 	const sessionToken = currentSessionToken(context.cookies);
 	if (sessionToken !== undefined) {
 		const result = await dispatchOttaRoute<AccountLogoutResult>(

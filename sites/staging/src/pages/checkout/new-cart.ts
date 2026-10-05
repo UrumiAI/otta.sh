@@ -43,10 +43,8 @@ import { clearCheckoutDraft } from "../../lib/checkout-draft.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006):
-	// a forged POST must not be able to bin someone's cart, or cancel its order.
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot bin someone's cart or cancel its order.
 	const cartId = context.cookies.get(CART_COOKIE_NAME)?.value;
 	if (cartId !== undefined && cartId.length > 0) {
 		const abandoned = await dispatchOttaRoute<OrderAbandonRouteResult>(

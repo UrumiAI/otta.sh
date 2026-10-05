@@ -204,10 +204,8 @@ function blankRequiredFields(form: FormData, zoned: boolean): FieldErrors {
 export const POST: APIRoute = async (context) => withoutReferrer(await place(context));
 
 async function place(context: APIContext): Promise<Response> {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006),
-	// before the body is read: without it a cross-site form could create a real order.
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// before this reads the body, so a forged form cannot create a real order.
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 

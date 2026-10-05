@@ -23,9 +23,7 @@ import {
 } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006).
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const lineId = formString(form.get("lineId"));

@@ -44,11 +44,9 @@ function sameSitePath(target: string): string {
 }
 
 export const POST: APIRoute = async (context) => {
-	// CSRF: a cross-site POST never gets here — src/middleware.ts refuses it
-	// first (lib/origin-guard.ts, ADR-0006).
-	// Here it also stops LOGIN CSRF: a cross-site form carrying the attacker's own
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
+	// Here that also stops LOGIN CSRF: a forged form carrying the attacker's own
 	// link would otherwise sign the victim into the attacker's account.
-
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const challengeId = formString(form.get("challenge"));

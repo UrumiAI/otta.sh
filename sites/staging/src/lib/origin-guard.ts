@@ -62,20 +62,6 @@ export const ORIGIN_GUARD_EXEMPT_ROUTES: ReadonlyMap<string, string> = new Map([
 	],
 ]);
 
-/**
- * Headers each endpoint's own refusal carried before the guard moved here,
- * so a refused request gets byte-for-byte the answer it got before. Those
- * endpoints wrap EVERY response they send, the 403 included:
- *  - `/checkout/place`, `/checkout/new-cart`: `withoutReferrer`;
- *  - `/checkout/resume`: `privateResponse` then `withoutReferrer`.
- * Every other route's refusal is the bare 403.
- */
-const REFUSAL_HEADERS: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
-	["/checkout/place", { "Referrer-Policy": "no-referrer" }],
-	["/checkout/new-cart", { "Referrer-Policy": "no-referrer" }],
-	["/checkout/resume", { "Cache-Control": PRIVATE_NO_STORE, "Referrer-Policy": "no-referrer" }],
-]);
-
 /** The refusal's body: the same words every endpoint sent. */
 export const CROSS_ORIGIN_REFUSAL_BODY = "Cross-origin form submissions are forbidden";
 
@@ -101,14 +87,20 @@ export function originGuardApplies(
 	return !ORIGIN_GUARD_EXEMPT_ROUTES.has(routePattern);
 }
 
-/** The 403 for a refused request to `routePattern` — a fresh, mutable
- *  `Response` every time. */
-export function crossOriginRefusal(routePattern: string): Response {
-	const response = new Response(CROSS_ORIGIN_REFUSAL_BODY, { status: 403 });
-	for (const [name, value] of Object.entries(REFUSAL_HEADERS.get(routePattern) ?? {})) {
-		response.headers.set(name, value);
-	}
-	return response;
+/**
+ * The 403 for every refused request — a fresh, mutable `Response` each time.
+ * It always carries the strictest headers any endpoint used to wrap its own
+ * refusal in: `Referrer-Policy: no-referrer` (the next page learns nothing of
+ * this URL) and `Cache-Control: private, no-store` (no cache keeps it). One
+ * answer for every route, so nothing here mirrors an endpoint's wrappers from
+ * a distance and can drift from them; the routes that used to send a bare 403
+ * only gain the two headers.
+ */
+export function crossOriginRefusal(): Response {
+	return new Response(CROSS_ORIGIN_REFUSAL_BODY, {
+		status: 403,
+		headers: { "Cache-Control": PRIVATE_NO_STORE, "Referrer-Policy": "no-referrer" },
+	});
 }
 
 /** The middleware's whole check: the refusal for a guarded cross-origin
@@ -119,5 +111,5 @@ export function rejectCrossOrigin(
 	const { request, url, routePattern } = context;
 	if (!originGuardApplies(request.method, url.pathname, routePattern)) return null;
 	if (!isForbiddenCrossOrigin(request.headers.get("origin"), url.origin)) return null;
-	return crossOriginRefusal(routePattern);
+	return crossOriginRefusal();
 }

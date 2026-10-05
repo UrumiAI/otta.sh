@@ -3,12 +3,12 @@
  * storefront route (issue #376 part 3; ADR-0006's CSRF section).
  *
  * It used to be a `rejectCrossOrigin(context)` call each endpoint made first.
- * Moving it must change nothing a browser can observe, so this suite pins:
+ * This suite pins:
  *  - a TABLE over every non-GET route under `src/pages`, discovered from the
  *    source, saying guarded or exempt — a new write route that is in neither
  *    column fails here, so the choice is always explicit;
- *  - a guarded route's cross-origin refusal is byte-for-byte the one its
- *    endpoint sent (status, body, every header), and the endpoint never runs;
+ *  - every cross-origin refusal is ONE answer (status, body, every header) —
+ *    the strictest any endpoint used to send — and the endpoint never runs;
  *  - same-origin and Origin-less requests pass straight through, as before;
  *  - the Stripe webhook is never refused, whatever Origin a proxy adds;
  *  - GET/HEAD/OPTIONS and everything under `/_` (EmDash's admin and API, which
@@ -39,11 +39,13 @@ type Handler = (ctx: unknown, next: () => Promise<Response>) => Promise<Response
 const runMiddleware = onRequest as unknown as Handler;
 
 /** A request as Astro hands it to the middleware. `routePattern` is the route
- *  Astro matched; it defaults to the path (true for every static route here). */
+ *  Astro matched — always given explicitly, never derived from the path, since
+ *  the path may be a trailing-slash or percent-encoded spelling of it. */
 function context(
 	method: string,
 	pathname: string,
-	opts: { origin?: string | null; routePattern?: string; cookies?: Record<string, string> } = {},
+	routePattern: string,
+	opts: { origin?: string | null; cookies?: Record<string, string> } = {},
 ) {
 	const url = new URL(pathname, SITE);
 	const headers: Record<string, string> = {};
@@ -52,7 +54,7 @@ function context(
 	return {
 		request: new Request(url, { method, headers }),
 		url,
-		routePattern: opts.routePattern ?? url.pathname,
+		routePattern,
 		cookies: {
 			get: (name: string) => (name in jar ? { value: jar[name] } : undefined),
 			set: vi.fn(),
@@ -69,36 +71,50 @@ function endpoint() {
 	return next;
 }
 
-/** Every response header, lower-cased and sorted — "byte-identical" means this
- *  list, the status and the body all match. */
+/** Every response header, lower-cased and sorted. */
 function headerList(response: Response): Array<[string, string]> {
 	return [...response.headers.entries()].toSorted(([a], [b]) => a.localeCompare(b));
 }
 
 // ── the route table ────────────────────────────────────────────────────────
 
-/** What each endpoint's own refusal was before the move: `rejectCrossOrigin`'s
- *  bare 403 (`text/plain;charset=UTF-8`), plus the headers the three checkout
- *  endpoints wrap EVERY response in (`withoutReferrer`; resume also
- *  `privateResponse`). */
-const BARE: Array<[string, string]> = [["content-type", "text/plain;charset=UTF-8"]];
-const NO_REFERRER: Array<[string, string]> = [...BARE, ["referrer-policy", "no-referrer"]];
-const RESUME: Array<[string, string]> = [["cache-control", PRIVATE_NO_STORE], ...NO_REFERRER];
+/** The one refusal's headers, for every route: the body's type, plus the
+ *  strictest pair any endpoint used to wrap its own refusal in. */
+const REFUSAL_HEADERS: Array<[string, string]> = [
+	["cache-control", PRIVATE_NO_STORE],
+	["content-type", "text/plain;charset=UTF-8"],
+	["referrer-policy", "no-referrer"],
+];
 
-/** Every non-GET route the site serves, and what the middleware does with a
- *  cross-origin request to it. */
-const GUARDED: ReadonlyMap<string, Array<[string, string]>> = new Map([
-	["/account/login/request", BARE],
-	["/account/logout", BARE],
-	["/account/verify/confirm", BARE],
-	["/cart/add", BARE],
-	["/cart/remove", BARE],
-	["/cart/update", BARE],
-	["/checkout/new-cart", NO_REFERRER],
-	["/checkout/place", NO_REFERRER],
-	["/checkout/resume", RESUME],
-]);
+/** Every non-GET route the site serves that the middleware guards (each a
+ *  static route, so its pattern is its path). */
+const GUARDED: readonly string[] = [
+	"/account/login/request",
+	"/account/logout",
+	"/account/verify/confirm",
+	"/cart/add",
+	"/cart/remove",
+	"/cart/update",
+	"/checkout/new-cart",
+	"/checkout/place",
+	"/checkout/resume",
+];
 const EXEMPT: readonly string[] = ["/webhooks/stripe"];
+
+/** Endpoint files Astro serves from `src/pages`. */
+const ENDPOINT_FILE = /\.(ts|mts|js|mjs)$/;
+
+/** Does this endpoint source export a handler for a non-GET method? Catches a
+ *  declaration (`export const POST`, `export async function DELETE`), `ALL`,
+ *  and a re-export (`export { handler as POST }`, `export { PUT } from "…"`). */
+function exportsWriteHandler(source: string): boolean {
+	const method = String.raw`(POST|PUT|PATCH|DELETE|ALL)`;
+	const declared = new RegExp(
+		String.raw`export\s+(const|let|var|(async\s+)?function\*?)\s+${method}\b`,
+	);
+	const reexported = new RegExp(String.raw`export\s*\{[^}]*\b${method}\b[^}]*\}`);
+	return declared.test(source) || reexported.test(source);
+}
 
 /** The routes under src/pages that export a non-GET handler, read from source. */
 function writeRoutes(): string[] {
@@ -111,12 +127,10 @@ function writeRoutes(): string[] {
 				walk(full);
 				continue;
 			}
-			const source = readFileSync(full, "utf8");
-			if (!/export (const|async function|function) (POST|PUT|PATCH|DELETE|ALL)\b/.test(source)) {
-				continue;
-			}
+			if (!ENDPOINT_FILE.test(entry.name)) continue;
+			if (!exportsWriteHandler(readFileSync(full, "utf8"))) continue;
 			const route = `/${path.relative(pages, full)}`
-				.replace(/\.(ts|js|astro)$/, "")
+				.replace(ENDPOINT_FILE, "")
 				.replace(/\/index$/, "");
 			routes.push(route === "" ? "/" : route);
 		}
@@ -127,8 +141,25 @@ function writeRoutes(): string[] {
 
 describe("the route table covers every write route the site serves", () => {
 	test("each non-GET route is listed as guarded or exempt — never neither, never both", () => {
-		expect(writeRoutes()).toEqual([...GUARDED.keys(), ...EXEMPT].toSorted());
-		for (const route of EXEMPT) expect(GUARDED.has(route)).toBe(false);
+		expect(writeRoutes()).toEqual([...GUARDED, ...EXEMPT].toSorted());
+		for (const route of EXEMPT) expect(GUARDED).not.toContain(route);
+	});
+
+	test.each([
+		["export const POST: APIRoute = async () => r;", true],
+		["export async function DELETE(context) {}", true],
+		["export function PATCH() {}", true],
+		["export const ALL: APIRoute = () => r;", true],
+		["export let PUT = () => r;", true],
+		["export { handler as POST };", true],
+		["export { GET, POST } from './shared.js';", true],
+		["export {\n\tupdate as PUT,\n};", true],
+		["export const GET: APIRoute = () => r;", false],
+		["export { handler as GET };", false],
+		["const POST = 1; // not exported", false],
+		["export const POSTAGE = 1;", false],
+	])("the detector reads %j as a write handler: %s", (source, expected) => {
+		expect(exportsWriteHandler(source)).toBe(expected);
 	});
 
 	test("the exemption list in the code is exactly the table's", () => {
@@ -136,44 +167,38 @@ describe("the route table covers every write route the site serves", () => {
 	});
 });
 
-describe("a guarded route refuses a cross-origin write exactly as its endpoint did", () => {
-	test.each([...GUARDED.entries()])(
-		"cross-origin POST %s → the same 403, and the endpoint never runs",
-		async (route, headers) => {
+describe("a guarded route refuses a cross-origin write before its endpoint runs", () => {
+	test.each(GUARDED)(
+		"cross-origin POST %s → the one 403, and the endpoint never runs",
+		async (route) => {
 			const next = endpoint();
-			const response = await runMiddleware(context("POST", route, { origin: EVIL }), next);
+			const response = await runMiddleware(context("POST", route, route, { origin: EVIL }), next);
 			expect(response.status).toBe(403);
 			expect(await response.text()).toBe(CROSS_ORIGIN_REFUSAL_BODY);
-			expect(headerList(response)).toEqual(headers);
+			expect(headerList(response)).toEqual(REFUSAL_HEADERS);
 			expect(next).not.toHaveBeenCalled();
 		},
 	);
 
-	test.each([...GUARDED.keys()])(
-		"Origin: null (an opaque origin) on %s is refused",
-		async (route) => {
-			const next = endpoint();
-			const response = await runMiddleware(context("POST", route, { origin: "null" }), next);
-			expect(response.status).toBe(403);
-			expect(next).not.toHaveBeenCalled();
-		},
-	);
+	test.each(GUARDED)("Origin: null (an opaque origin) on %s is refused", async (route) => {
+		const next = endpoint();
+		const response = await runMiddleware(context("POST", route, route, { origin: "null" }), next);
+		expect(response.status).toBe(403);
+		expect(next).not.toHaveBeenCalled();
+	});
 
-	test.each([...GUARDED.keys()])(
-		"a same-origin POST %s reaches the endpoint untouched",
-		async (route) => {
-			const next = endpoint();
-			const response = await runMiddleware(context("POST", route, { origin: SITE }), next);
-			expect(response.status).toBe(299);
-			expect(next).toHaveBeenCalledOnce();
-		},
-	);
+	test.each(GUARDED)("a same-origin POST %s reaches the endpoint untouched", async (route) => {
+		const next = endpoint();
+		const response = await runMiddleware(context("POST", route, route, { origin: SITE }), next);
+		expect(response.status).toBe(299);
+		expect(next).toHaveBeenCalledOnce();
+	});
 
-	test.each([...GUARDED.keys()])(
+	test.each(GUARDED)(
 		"a POST %s with NO Origin reaches the endpoint (curl / server-to-server, as before)",
 		async (route) => {
 			const next = endpoint();
-			const response = await runMiddleware(context("POST", route, { origin: null }), next);
+			const response = await runMiddleware(context("POST", route, route, { origin: null }), next);
 			expect(response.status).toBe(299);
 			expect(next).toHaveBeenCalledOnce();
 		},
@@ -186,11 +211,11 @@ describe("a guarded route refuses a cross-origin write exactly as its endpoint d
 		] as const) {
 			const next = endpoint();
 			const response = await runMiddleware(
-				context("POST", pathname, { origin: EVIL, routePattern }),
+				context("POST", pathname, routePattern, { origin: EVIL }),
 				next,
 			);
 			expect(response.status).toBe(403);
-			expect(headerList(response)).toEqual(NO_REFERRER);
+			expect(headerList(response)).toEqual(REFUSAL_HEADERS);
 			expect(next).not.toHaveBeenCalled();
 		}
 	});
@@ -202,7 +227,10 @@ describe("a guarded route refuses a cross-origin write exactly as its endpoint d
 			"http://evil.localhost:4321",
 		]) {
 			const next = endpoint();
-			const response = await runMiddleware(context("POST", "/cart/add", { origin }), next);
+			const response = await runMiddleware(
+				context("POST", "/cart/add", "/cart/add", { origin }),
+				next,
+			);
 			expect(response.status).toBe(403);
 			expect(next).not.toHaveBeenCalled();
 		}
@@ -215,11 +243,11 @@ describe("default-deny: a write route nobody listed is guarded too", () => {
 		async (method) => {
 			const next = endpoint();
 			const response = await runMiddleware(
-				context(method, "/some/future-endpoint", { origin: EVIL }),
+				context(method, "/some/future-endpoint", "/some/future-endpoint", { origin: EVIL }),
 				next,
 			);
 			expect(response.status).toBe(403);
-			expect(headerList(response)).toEqual(BARE);
+			expect(headerList(response)).toEqual(REFUSAL_HEADERS);
 			expect(next).not.toHaveBeenCalled();
 		},
 	);
@@ -228,7 +256,10 @@ describe("default-deny: a write route nobody listed is guarded too", () => {
 describe("exempt: the Stripe webhook is never origin-checked", () => {
 	test("Stripe's own delivery (no Origin) reaches the endpoint", async () => {
 		const next = endpoint();
-		const response = await runMiddleware(context("POST", "/webhooks/stripe"), next);
+		const response = await runMiddleware(
+			context("POST", "/webhooks/stripe", "/webhooks/stripe"),
+			next,
+		);
 		expect(response.status).toBe(299);
 		expect(next).toHaveBeenCalledOnce();
 	});
@@ -237,7 +268,7 @@ describe("exempt: the Stripe webhook is never origin-checked", () => {
 		for (const pathname of ["/webhooks/stripe", "/webhooks/stripe/"]) {
 			const next = endpoint();
 			const response = await runMiddleware(
-				context("POST", pathname, { origin: EVIL, routePattern: "/webhooks/stripe" }),
+				context("POST", pathname, "/webhooks/stripe", { origin: EVIL }),
 				next,
 			);
 			expect(response.status).toBe(299);
@@ -252,7 +283,7 @@ describe("what the check never touches", () => {
 		async (method) => {
 			for (const route of ["/checkout/resume", "/cart", "/products"]) {
 				const next = endpoint();
-				const response = await runMiddleware(context(method, route, { origin: EVIL }), next);
+				const response = await runMiddleware(context(method, route, route, { origin: EVIL }), next);
 				expect(response.status).toBe(299);
 				expect(next).toHaveBeenCalledOnce();
 			}
@@ -271,7 +302,7 @@ describe("what the check never touches", () => {
 	])("a cross-origin POST %s is left to EmDash / Astro", async (pathname, routePattern) => {
 		const next = endpoint();
 		const response = await runMiddleware(
-			context("POST", pathname, { origin: EVIL, routePattern }),
+			context("POST", pathname, routePattern, { origin: EVIL }),
 			next,
 		);
 		expect(response.status).toBe(299);

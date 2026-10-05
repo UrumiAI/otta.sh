@@ -6,7 +6,7 @@
  * THE ORIGIN CHECK (CSRF, ADR-0006; issue #376). Every non-safe request to a
  * storefront route is refused with a 403 when it carries a present-but-foreign
  * `Origin` — before any endpoint runs, reads a body or touches a cookie. The
- * rule, its exemptions (`/_*`, the Stripe webhook) and the refusal each route
+ * rule, its exemptions (`/_*`, the Stripe webhook) and the one refusal it
  * answers with live in `lib/origin-guard.ts`. It used to be a call each
  * endpoint made first; here it is default-deny, so a new endpoint cannot ship
  * unguarded by forgetting it.
