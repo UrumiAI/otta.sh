@@ -814,8 +814,9 @@ export function isOutstanding(intent: HoldIntentDoc | null): boolean {
  * Recompute {@link OrderDoc.holdsPendingAt} from the document's own intents: the
  * earliest `recordedAt` among those still outstanding, else `null`. A cancellation
  * whose restock is still owed (`cancellation.restockPending`, issue #364) counts as
- * one more outstanding intent, recorded at its `cancelledAt` — so the hold-intent
- * sweep leg finds it with the same scan.
+ * one more outstanding intent, recorded at its `cancelledAt` (or, once it has been
+ * backed off, its `retryAt`) — so the hold-intent sweep leg finds it with the same
+ * scan.
  *
  * Derived, never incremented, so the indexed scalar the sweeper scans cannot
  * disagree with the fields it summarizes.
@@ -829,8 +830,11 @@ export function computeHoldsPendingAt(
 		if (earliest === null || intent.recordedAt < earliest) earliest = intent.recordedAt;
 	}
 	const cancellation = doc.cancellation ?? null;
-	if (cancellation !== null && (cancellation.restockPending ?? null) !== null) {
-		const at = cancellation.cancelledAt;
+	const restock = cancellation?.restockPending ?? null;
+	if (cancellation !== null && restock !== null) {
+		// A flagged restock that keeps failing waits out its back-off (`retryAt`), so it
+		// sorts behind newer work instead of heading every scan.
+		const at = restock.retryAt ?? cancellation.cancelledAt;
 		if (earliest === null || at < earliest) earliest = at;
 	}
 	return earliest;

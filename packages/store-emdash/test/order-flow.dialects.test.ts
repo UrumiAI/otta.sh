@@ -621,8 +621,8 @@ describeEachDialect("order flow", (ctx) => {
 			recordFulfillment: (i) => h.store.recordFulfillment(i),
 			cancelOrder: (i) => h.store.cancelOrder(i),
 			completeCancellationRestock: (i) => h.store.completeCancellationRestock(i),
-			recordCancellationRestockFailure: (id, key) =>
-				h.store.recordCancellationRestockFailure(id, key),
+			recordCancellationRestockFailure: (id, key, opts) =>
+				h.store.recordCancellationRestockFailure(id, key, opts),
 			transition: (i) => h.store.transition(i),
 			listForCustomer: (c) => h.store.listForCustomer(c),
 			listEventsForOrder: (id) => h.store.listEventsForOrder(id),

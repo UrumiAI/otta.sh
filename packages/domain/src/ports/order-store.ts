@@ -397,8 +397,16 @@ export interface OrderStore {
 	 * (`restockPending.failures`), guarded on the marker's key like
 	 * `completeCancellationRestock`. Returns the new count, or 0 when no marker is
 	 * pending under that key. Touches only the cancellation envelope.
+	 *
+	 * `retryAfterMs > 0` stamps `restockPending.retryAt` that far past the store's
+	 * clock (the back-off); an adapter that indexes outstanding work re-derives the
+	 * index from it, so the restock moves behind newer work but is still retried.
 	 */
-	recordCancellationRestockFailure(orderId: OrderId, idempotencyKey: string): Promise<number>;
+	recordCancellationRestockFailure(
+		orderId: OrderId,
+		idempotencyKey: string,
+		opts?: { retryAfterMs?: number },
+	): Promise<number>;
 
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 

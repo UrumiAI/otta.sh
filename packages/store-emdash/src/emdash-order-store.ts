@@ -1290,9 +1290,11 @@ export class EmdashOrderStore implements OrderStore {
 	async recordCancellationRestockFailure(
 		orderId: OrderId,
 		idempotencyKey: string,
+		opts: { retryAfterMs?: number } = {},
 	): Promise<number> {
-		// The same key guard as the completion. The marker stays, so `holdsPendingAt`
-		// is unchanged and the sweep keeps finding the order.
+		// The same key guard as the completion. The marker stays, so the sweep keeps
+		// finding the order — at `retryAt` when a back-off is asked for, which
+		// `holdsPendingAt` is re-derived from, so a stuck restock moves behind newer work.
 		return this.#casOrder<number>("recordCancellationRestockFailure", async () => {
 			const current = await this.#orders.getVersioned(orderId);
 			if (current === null) return casDone(0);
@@ -1303,14 +1305,23 @@ export class EmdashOrderStore implements OrderStore {
 				return casDone(0);
 			}
 			const failures = (pending.failures ?? 0) + 1;
-			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+			const now = this.#clock.now();
+			const wait = opts.retryAfterMs ?? 0;
+			const next: OrderDoc = {
 				...doc,
 				cancellation: {
 					...cancellation,
-					restockPending: { ...pending, lineIds: [...pending.lineIds], failures },
+					restockPending: {
+						...pending,
+						lineIds: [...pending.lineIds],
+						failures,
+						...(wait > 0 ? { retryAt: new Date(now.getTime() + wait).toISOString() } : {}),
+					},
 				},
-				updatedAt: this.#clock.now().toISOString(),
-			});
+				updatedAt: now.toISOString(),
+			};
+			next.holdsPendingAt = computeHoldsPendingAt(next);
+			const written = await this.#orders.compareAndSet(orderId, current.revision, next);
 			return written.applied ? casDone(failures) : CAS_RETRY;
 		});
 	}

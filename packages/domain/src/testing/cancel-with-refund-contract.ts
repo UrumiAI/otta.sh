@@ -66,11 +66,15 @@ async function seedOrder(
 		noInventory?: boolean;
 		/** Record a SECOND capture of this many cents. */
 		secondCaptureCents?: number;
+		/** Add a second physical line of {@link QTY} units, sku `<sku>-B`, for free (the
+		 *  totals stay one line's). */
+		secondLine?: boolean;
 	} = {},
 ): Promise<OrderId> {
 	const oid = toOrderId(id);
 	const gateway = opts.gateway ?? "stripe";
 	if (opts.noInventory !== true) await h.inventoryStore.seedOnHand(skuOf(id), ON_HAND);
+	if (opts.secondLine === true) await h.inventoryStore.seedOnHand(`${skuOf(id)}-B`, ON_HAND);
 	let reservationId: ReturnType<typeof reservationIdOf> | null = null;
 	if (opts.hold !== undefined) {
 		// A real checkout hold: reserved (the units leave on-hand), then adopted by the
@@ -108,6 +112,20 @@ async function seedOrder(
 				// owes them is a restock.
 				reservationId,
 			},
+			...(opts.secondLine === true
+				? [
+						{
+							productId: productId("p-cxl-b"),
+							sku: sku(`${skuOf(id)}-B`),
+							title: "Widget B",
+							unitPrice: cents(0),
+							currency: USD,
+							quantity: QTY,
+							fulfillmentKind: "physical" as const,
+							reservationId: null,
+						},
+					]
+				: []),
 		],
 		totals: { subtotal: cents(TOTAL_CENTS), total: cents(TOTAL_CENTS), currency: USD },
 	});
@@ -215,6 +233,32 @@ function alwaysFailing(store: InventoryStore, method: "restock", error: Error): 
 			return typeof value === "function" ? (value as Function).bind(target) : value;
 		},
 	});
+}
+
+/** The inventory store whose `restock` of `failSku` always throws — one line of a
+ *  multi-line order that cannot go back while the others can. */
+function restockFailsFor(store: InventoryStore, failSku: string): InventoryStore {
+	return new Proxy(store, {
+		get(target, prop, receiver) {
+			if (prop === "restock") {
+				return async (...args: Parameters<InventoryStore["restock"]>) => {
+					if (args[0] === failSku) throw new Error(`restock of ${failSku} failed`);
+					return target.restock(...args);
+				};
+			}
+			const value: unknown = Reflect.get(target, prop, receiver);
+			return typeof value === "function" ? (value as Function).bind(target) : value;
+		},
+	});
+}
+
+/** Fail the restock CANCELLATION_RESTOCK_FLAG_AFTER times through the sweep's entry
+ *  point, so the order carries the stuck-restock flag. */
+async function stickRestock(h: CancelWithRefundHarness, id: OrderId): Promise<void> {
+	const broken = alwaysFailing(h.inventoryStore, "restock", new Error("stock row locked"));
+	for (let n = 0; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
+		await finishCancellationRestock({ orderStore: h.orderStore, inventoryStore: broken }, id);
+	}
 }
 
 /** Every email the order's outbox holds, drained through the real dispatcher. */
@@ -566,20 +610,146 @@ export function cancelWithRefundContract(
 			).toMatchObject({ finished: true, restockedUnits: QTY, failure: null });
 			const done = await h.orderStore.getById(id);
 			expect(done?.reconciliationFlag).toBeNull();
+			// Resolved as what happened — a restock — not as a refund.
+			expect(done?.reconciliationResolution?.outcome).toBe("restocked");
 			expect(done?.cancellation?.restocked).toBe(true);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+		});
+
+		test("a REPLAY that finishes a stuck restock clears its flag too — never left with false text", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-stuck-replay");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			await stickRestock(h, id);
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toContain(
+				"items could not be returned to stock",
+			);
+			expect(await cancelWith(h, gw, id)).toMatchObject({
+				ok: true,
+				cancelled: false,
+				restockedUnits: QTY,
+				restockPending: false,
+			});
+			const done = await h.orderStore.getById(id);
+			expect(done?.reconciliationFlag).toBeNull();
+			expect(done?.reconciliationResolution?.outcome).toBe("restocked");
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+		});
+
+		test("an UNRELATED flag already on the order is never overwritten by the stuck-restock flag", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-stuck-foreign");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			await h.orderStore.flagReconciliation(id, "settle: commit lost for reservation r-1");
+			const broken = alwaysFailing(h.inventoryStore, "restock", new Error("stock row locked"));
+			const results = [];
+			for (let n = 0; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
+				results.push(
+					await finishCancellationRestock({ orderStore: h.orderStore, inventoryStore: broken }, id),
+				);
+			}
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
+				"settle: commit lost for reservation r-1",
+			);
+			// What it would have said is handed back, so the sweep can report it.
+			expect(results.at(-1)?.flagSkipped).toContain("items could not be returned to stock");
+			// Landing later does not clear the foreign flag either.
+			await finishCancellationRestock(h, id);
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
+				"settle: commit lost for reservation r-1",
+			);
+		});
+
+		test("a restock that fails PART-WAY reports the units that did come back, and a replay returns only the rest", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-partial-restock", { secondLine: true });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await cancelWith(h, gw, id, {
+				inventoryStore: restockFailsFor(h.inventoryStore, `${skuOf(id)}-B`),
+			});
+			expect(res).toMatchObject({
+				ok: true,
+				cancelled: true,
+				restockedUnits: QTY,
+				restockPending: true,
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect(await h.inventoryStore.getOnHand(`${skuOf(id)}-B`)).toBe(ON_HAND);
+			await cancelWith(h, gw, id);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect(await h.inventoryStore.getOnHand(`${skuOf(id)}-B`)).toBe(ON_HAND + QTY);
+		});
+
+		test("a same-key REPLAY racing the sweep returns the units once", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-race-same-key");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			await Promise.all([finishCancellationRestock(h, id), cancelWith(h, gw, id)]);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect((await h.orderStore.getById(id))?.cancellation?.restockPending ?? null).toBeNull();
+		});
+
+		test("the marker's writes under the WRONG key change nothing", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-wrong-key");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			const before = (await h.orderStore.getById(id))?.cancellation?.restockPending;
+			expect(
+				await h.orderStore.completeCancellationRestock({
+					orderId: id,
+					idempotencyKey: "not-the-key",
+					restocked: true,
+				}),
+			).toMatchObject({ completed: false });
+			expect(await h.orderStore.recordCancellationRestockFailure(id, "not-the-key")).toBe(0);
+			const after = await h.orderStore.getById(id);
+			expect(after?.cancellation?.restockPending).toEqual(before);
+			expect(after?.cancellation?.restocked).toBe(false);
+		});
+
+		test("a cancellation recorded with no restockPending field (an older order) owes nothing", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-old-shape");
+			// The store's own cancel without the field — what every cancellation before
+			// issue #364 looks like.
+			await h.orderStore.cancelOrder({
+				orderId: id,
+				fromState: "paid",
+				reason: "customer_request",
+				detail: null,
+				cancelledBy: "admin@shop",
+				idempotencyKey: idempotencyKey(`old:${id}`),
+				enqueueEmail: false,
+				refund: null,
+				restocked: true,
+			});
+			const old = await h.orderStore.getById(id);
+			expect(old?.cancellation).not.toHaveProperty("restockPending");
+			expect(await finishCancellationRestock(h, id)).toMatchObject({
+				finished: false,
+				restockedUnits: 0,
+			});
+			expect(
+				await cancelWith(h, new FakePaymentGateway({ id: "stripe" }), id, { key: `old:${id}` }),
+			).toMatchObject({ ok: true, cancelled: false, restockedUnits: 0, restockPending: false });
+			expect(await h.orderStore.recordCancellationRestockFailure(id, `old:${id}`)).toBe(0);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 		});
 
 		test("the completer does nothing for an order with no pending restock", async () => {
 			const h = await makeHarness();
 			const paid = await seedOrder(h, "cxl-nothing-owed");
-			expect(await finishCancellationRestock(h, paid)).toEqual({
+			expect(await finishCancellationRestock(h, paid)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],
 				failure: null,
 			});
-			expect(await finishCancellationRestock(h, toOrderId("cxl-none"))).toEqual({
+			expect(await finishCancellationRestock(h, toOrderId("cxl-none"))).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],

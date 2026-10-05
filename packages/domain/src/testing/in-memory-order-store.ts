@@ -774,6 +774,7 @@ export class InMemoryOrderStore implements OrderStore {
 	async recordCancellationRestockFailure(
 		orderId: OrderId,
 		idempotencyKey: string,
+		opts: { retryAfterMs?: number } = {},
 	): Promise<number> {
 		const stored = this.#orders.get(orderId);
 		const cancellation = stored?.order.cancellation ?? null;
@@ -781,11 +782,18 @@ export class InMemoryOrderStore implements OrderStore {
 		if (stored === undefined || cancellation === null || pending === null) return 0;
 		if (pending.idempotencyKey !== idempotencyKey) return 0;
 		const failures = (pending.failures ?? 0) + 1;
+		const now = this.#clock.now();
+		const wait = opts.retryAfterMs ?? 0;
 		stored.order.cancellation = {
 			...cancellation,
-			restockPending: { ...pending, lineIds: [...pending.lineIds], failures },
+			restockPending: {
+				...pending,
+				lineIds: [...pending.lineIds],
+				failures,
+				...(wait > 0 ? { retryAt: new Date(now.getTime() + wait).toISOString() } : {}),
+			},
 		};
-		stored.order.updatedAt = this.#clock.now().toISOString();
+		stored.order.updatedAt = now.toISOString();
 		return failures;
 	}
 

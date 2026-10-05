@@ -1144,14 +1144,16 @@ function requireOrderState(field: string, value: string): OrderState {
 	return value as OrderState;
 }
 
-const RECONCILIATION_OUTCOMES = [
+/** The outcomes an OPERATOR may choose. `restocked` is Otta's own, written when a
+ *  cancellation's stuck restock lands (ADR-0026), so it is not offered here. */
+const RECONCILIATION_OUTCOMES: readonly string[] = [
 	"refunded",
 	"fulfilled",
 	"written_off",
-] as const satisfies readonly ReconciliationOutcome[];
+] satisfies readonly ReconciliationOutcome[];
 
 function requireReconciliationOutcome(value: string): ReconciliationOutcome {
-	if (!RECONCILIATION_OUTCOMES.includes(value as ReconciliationOutcome)) {
+	if (!RECONCILIATION_OUTCOMES.includes(value)) {
 		throw new CommerceInputError("outcome", "must be a known reconciliation outcome");
 	}
 	return value as ReconciliationOutcome;

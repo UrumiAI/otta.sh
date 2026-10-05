@@ -65,7 +65,9 @@ export type OrderNotice = "late-payment-refunded" | "refund-issued";
  * honored as-is (stock re-sourced), `written_off` means the loss/false-alarm was
  * accepted. The order's state machine + line snapshots are untouched either way.
  */
-export type ReconciliationOutcome = "refunded" | "fulfilled" | "written_off";
+/** `restocked`: a cancellation's stuck restock landed (issue #364) — written by
+ *  Otta itself when it clears its own flag; not an operator choice. */
+export type ReconciliationOutcome = "refunded" | "fulfilled" | "written_off" | "restocked";
 
 /**
  * The audit record written when an admin resolves an order's reconciliation flag
@@ -152,6 +154,9 @@ export interface CancellationRestockPending {
 	/** Consecutive sweep attempts that failed to finish it. ABSENT ⇒ 0. At
 	 *  `CANCELLATION_RESTOCK_FLAG_AFTER` the order is flagged for the operator. */
 	failures?: number;
+	/** ISO-8601 instant before which the sweep does not retry it — the back-off a
+	 *  flagged restock earns (`cancellationRestockBackoffMs`). ABSENT ⇒ due now. */
+	retryAt?: string;
 }
 
 /** The refund a cancellation issued — integer minor units in the order's currency. */
