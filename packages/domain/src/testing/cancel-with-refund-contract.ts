@@ -9,7 +9,11 @@ import {
 } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
-import { cancelOrderWithRefund, finishCancellationRestock } from "../orders/cancel-order.js";
+import {
+	CANCELLATION_RESTOCK_FLAG_AFTER,
+	cancelOrderWithRefund,
+	finishCancellationRestock,
+} from "../orders/cancel-order.js";
 import { refundOrder } from "../orders/refund-order.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import type { Clock } from "../ports/clock.js";
@@ -188,6 +192,22 @@ function failingOnce(
 			if (prop === method && !failed) {
 				return async () => {
 					failed = true;
+					throw error;
+				};
+			}
+			const value: unknown = Reflect.get(target, prop, receiver);
+			return typeof value === "function" ? (value as Function).bind(target) : value;
+		},
+	});
+}
+
+/** The inventory store with `method` failing EVERY time — a restock that stays
+ *  broken across sweep ticks. */
+function alwaysFailing(store: InventoryStore, method: "restock", error: Error): InventoryStore {
+	return new Proxy(store, {
+		get(target, prop, receiver) {
+			if (prop === method) {
+				return async () => {
 					throw error;
 				};
 			}
@@ -496,6 +516,60 @@ export function cancelWithRefundContract(
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 		});
 
+		test("a restock that keeps failing flags the order ONCE after a few attempts, keeps retrying, and clears its flag when it lands", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-restock-stuck");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			const broken = alwaysFailing(h.inventoryStore, "restock", new Error("stock row locked"));
+			let flagWrites = 0;
+			const counting = new Proxy(h.orderStore, {
+				get(target, prop, receiver) {
+					if (prop === "flagReconciliation") {
+						return async (orderId: OrderId, detail: string) => {
+							flagWrites++;
+							return target.flagReconciliation(orderId, detail);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? (value as Function).bind(target) : value;
+				},
+			});
+			const attempt = () =>
+				finishCancellationRestock({ orderStore: counting, inventoryStore: broken }, id);
+
+			// Below the threshold: retried quietly.
+			for (let n = 1; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
+				expect(await attempt()).toMatchObject({ finished: false, failure: "stock row locked" });
+				expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+			}
+			// At the threshold: the operator is told, with the reason.
+			await attempt();
+			const flagged = await h.orderStore.getById(id);
+			expect(flagged?.reconciliationFlag).toContain(
+				"items could not be returned to stock: stock row locked",
+			);
+			expect(flagWrites).toBe(1);
+			// Still retried, still owed — but the flag is not written again.
+			await attempt();
+			await attempt();
+			expect(flagWrites).toBe(1);
+			expect((await h.orderStore.getById(id))?.cancellation?.restockPending).toBeDefined();
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
+
+			// The inventory recovers: the units come back once and the flag clears itself.
+			expect(
+				await finishCancellationRestock(
+					{ orderStore: h.orderStore, inventoryStore: h.inventoryStore },
+					id,
+				),
+			).toMatchObject({ finished: true, restockedUnits: QTY, failure: null });
+			const done = await h.orderStore.getById(id);
+			expect(done?.reconciliationFlag).toBeNull();
+			expect(done?.cancellation?.restocked).toBe(true);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+		});
+
 		test("the completer does nothing for an order with no pending restock", async () => {
 			const h = await makeHarness();
 			const paid = await seedOrder(h, "cxl-nothing-owed");
@@ -503,11 +577,13 @@ export function cancelWithRefundContract(
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],
+				failure: null,
 			});
 			expect(await finishCancellationRestock(h, toOrderId("cxl-none"))).toEqual({
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],
+				failure: null,
 			});
 			expect(await h.inventoryStore.getOnHand(skuOf(paid))).toBe(ON_HAND);
 		});

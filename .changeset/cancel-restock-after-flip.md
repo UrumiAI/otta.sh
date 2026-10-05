@@ -2,6 +2,7 @@
 "@otta-sh/domain": minor
 "@otta-sh/store-emdash": minor
 "@otta-sh/plugin": patch
+"@otta-sh/admin-react": patch
 ---
 
 Cancelling a paid order restocks only after the cancel lands (issue #364; ADR-0026's
@@ -24,3 +25,10 @@ restock and the cancel (or a cancel that failed) had its shipped units counted b
   The cancel notice says "The items are not back in stock yet; Otta will return them
   automatically." when the restock is still pending, and the cancel result carries
   `restockPending: true` then.
+- **A stuck restock is flagged.** After `CANCELLATION_RESTOCK_FLAG_AFTER` (3) consecutive failed
+  sweep attempts the order is flagged once ("items could not be returned to stock: <why>"); the
+  flag clears itself when the restock lands. `OrderStore` gains
+  `recordCancellationRestockFailure(orderId, key)`, and `finishCancellationRestock` now returns
+  `failure` instead of throwing.
+- **History** shows "restock pending" on the cancellation while the units are still owed
+  (`restockPending: true` on the timeline entry), in the React admin too.

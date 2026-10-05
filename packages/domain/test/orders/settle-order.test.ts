@@ -343,6 +343,8 @@ describe("settleOrder", () => {
 			recordFulfillment: (i) => h.orderStore.recordFulfillment(i),
 			cancelOrder: (i) => h.orderStore.cancelOrder(i),
 			completeCancellationRestock: (i) => h.orderStore.completeCancellationRestock(i),
+			recordCancellationRestockFailure: (id, key) =>
+				h.orderStore.recordCancellationRestockFailure(id, key),
 			transition: (i) => h.orderStore.transition(i),
 			listForCustomer: (c) => h.orderStore.listForCustomer(c),
 			listEventsForOrder: (id) => h.orderStore.listEventsForOrder(id),

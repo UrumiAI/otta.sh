@@ -149,6 +149,9 @@ export interface OrderCancellation {
 export interface CancellationRestockPending {
 	idempotencyKey: string;
 	lineIds: string[];
+	/** Consecutive sweep attempts that failed to finish it. ABSENT ⇒ 0. At
+	 *  `CANCELLATION_RESTOCK_FLAG_AFTER` the order is flagged for the operator. */
+	failures?: number;
 }
 
 /** The refund a cancellation issued — integer minor units in the order's currency. */

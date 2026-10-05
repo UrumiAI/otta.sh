@@ -771,6 +771,24 @@ export class InMemoryOrderStore implements OrderStore {
 		return { completed: true, order: this.#clone(stored.order) };
 	}
 
+	async recordCancellationRestockFailure(
+		orderId: OrderId,
+		idempotencyKey: string,
+	): Promise<number> {
+		const stored = this.#orders.get(orderId);
+		const cancellation = stored?.order.cancellation ?? null;
+		const pending = cancellation?.restockPending ?? null;
+		if (stored === undefined || cancellation === null || pending === null) return 0;
+		if (pending.idempotencyKey !== idempotencyKey) return 0;
+		const failures = (pending.failures ?? 0) + 1;
+		stored.order.cancellation = {
+			...cancellation,
+			restockPending: { ...pending, lineIds: [...pending.lineIds], failures },
+		};
+		stored.order.updatedAt = this.#clock.now().toISOString();
+		return failures;
+	}
+
 	// -- Phase 5: state machine + outbox --------------------------------------
 
 	async transition(input: OrderTransitionInput): Promise<OrderTransitionResult> {

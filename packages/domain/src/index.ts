@@ -423,6 +423,7 @@ export {
 } from "./orders/record-fulfillment.js";
 export {
 	cancelOrder,
+	CANCELLATION_RESTOCK_FLAG_AFTER,
 	cancelOrderWithRefund,
 	finishCancellationRestock,
 	type FinishCancellationRestockDeps,

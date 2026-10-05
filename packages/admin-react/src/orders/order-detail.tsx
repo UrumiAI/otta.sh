@@ -329,7 +329,11 @@ function timelineDetail(entry: TimelineEntry, reasonLabels: ReadonlyMap<string, 
 			entry.refund != null
 				? `refunded ${formatAmount(entry.refund.amount, entry.refund.currency)}`
 				: "",
-			entry.restocked === true ? "items returned to stock" : "",
+			entry.restockPending === true
+				? "restock pending"
+				: entry.restocked === true
+					? "items returned to stock"
+					: "",
 		].filter((part) => part.length > 0);
 		return parts.length > 0 ? parts.join(" · ") : "—";
 	}

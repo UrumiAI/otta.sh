@@ -351,6 +351,8 @@ export interface TimelineEntryWire {
 	/** cancellation: what it refunded (minor units), and whether it restocked */
 	refund?: { amount: number; currency: string } | null;
 	restocked?: boolean;
+	/** cancellation: present (true) only while its restock is still owed */
+	restockPending?: true;
 	/** refund: one ledger row that moved, or is moving, money */
 	amount?: number;
 	currency?: string;

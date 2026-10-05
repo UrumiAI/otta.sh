@@ -349,3 +349,16 @@ were closed before the flip, and a committed reservation may since have been pru
   failed restock that window lasts until the next sweep tick that reaches the order.
 - A cancellation that owes no restock stores no `restockPending` field, so its envelope is the
   same shape as before.
+
+**A restock that keeps failing is not silent.** Each failed sweep attempt is counted on the marker
+(`restockPending.failures`, `recordCancellationRestockFailure`). At
+`CANCELLATION_RESTOCK_FLAG_AFTER` = **3** consecutive failures the order is flagged: "a
+cancellation (key …): items could not be returned to stock: <why>. Otta keeps retrying; this
+clears once they are back". The flag is written once (not when it is already the order's flag),
+the sweep keeps retrying, and the attempt that lands clears it by compare-and-clear on its exact
+text, as the cancel clears its own "did not finish" flag. Three is small on purpose: the sweep
+runs every minute, so the operator hears within minutes, and one busy tick does not page anyone.
+
+**History says so.** While the marker is present, the cancellation's History entry reads
+"restock pending" (`restockPending: true` on the timeline entry, absent otherwise), and "items
+returned to stock" once they are.

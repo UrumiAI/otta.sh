@@ -2425,7 +2425,7 @@ async function completeHoldIntents(
 
 /**
  * Finish one cancelled order's pending restock (issue #364). True when this call
- * closed it, false when a racing caller did, "failed" when it threw — logged here,
+ * closed it, false when a racing caller did, "failed" when it failed or threw — logged here,
  * and the order stays in `holdsPendingAt` for the next tick. Lines it could not
  * return (a deleted sku) are flagged on the order: the operator who cancelled it has
  * long since left the page.
@@ -2439,6 +2439,14 @@ async function finishRestockOwed(
 			{ orderStore: stores.orderStore, inventoryStore: stores.inventory },
 			orderId,
 		);
+		if (res.failure !== null) {
+			// Counted on the order, which is flagged after a few in a row (the domain's
+			// CANCELLATION_RESTOCK_FLAG_AFTER); this tick only logs it.
+			console.error(`[otta] cron sweep: the pending restock of cancelled order ${orderId} failed`, {
+				error: res.failure,
+			});
+			return "failed";
+		}
 		if (res.restockSkipped.length > 0) {
 			const lines = res.restockSkipped
 				.map((skip) => `${skip.sku} ×${String(skip.quantity)}`)

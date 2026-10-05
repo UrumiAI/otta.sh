@@ -1287,6 +1287,34 @@ export class EmdashOrderStore implements OrderStore {
 		return { completed, order: await this.getById(input.orderId) };
 	}
 
+	async recordCancellationRestockFailure(
+		orderId: OrderId,
+		idempotencyKey: string,
+	): Promise<number> {
+		// The same key guard as the completion. The marker stays, so `holdsPendingAt`
+		// is unchanged and the sweep keeps finding the order.
+		return this.#casOrder<number>("recordCancellationRestockFailure", async () => {
+			const current = await this.#orders.getVersioned(orderId);
+			if (current === null) return casDone(0);
+			const doc = normalizeOrderDoc(current.value);
+			const cancellation = doc.cancellation;
+			const pending = cancellation?.restockPending ?? null;
+			if (cancellation === null || pending === null || pending.idempotencyKey !== idempotencyKey) {
+				return casDone(0);
+			}
+			const failures = (pending.failures ?? 0) + 1;
+			const written = await this.#orders.compareAndSet(orderId, current.revision, {
+				...doc,
+				cancellation: {
+					...cancellation,
+					restockPending: { ...pending, lineIds: [...pending.lineIds], failures },
+				},
+				updatedAt: this.#clock.now().toISOString(),
+			});
+			return written.applied ? casDone(failures) : CAS_RETRY;
+		});
+	}
+
 	// -- lists, search, counts, the customer view, guest linking ---------------
 
 	/**

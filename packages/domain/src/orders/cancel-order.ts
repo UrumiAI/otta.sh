@@ -378,6 +378,20 @@ async function restockOwed(
 	return { restockedUnits, restockSkipped };
 }
 
+/**
+ * How many CONSECUTIVE failed sweep attempts at a cancellation's pending restock
+ * are retried quietly before the order is flagged for the operator (ADR-0026's
+ * 2026-10-05 amendment). The sweep keeps retrying after the flag; the flag is
+ * written once and clears itself when the restock lands.
+ */
+export const CANCELLATION_RESTOCK_FLAG_AFTER = 3;
+
+/** The prefix of the flag a stuck cancellation restock leaves, so its completion can
+ *  recognise (and clear) exactly that flag. */
+function restockFlagPrefix(key: string): string {
+	return `a cancellation (key ${key}): items could not be returned to stock`;
+}
+
 export interface FinishCancellationRestockDeps {
 	orderStore: OrderStore;
 	inventoryStore: InventoryStore;
@@ -389,14 +403,21 @@ export interface FinishCancellationRestockOutcome {
 	finished: boolean;
 	restockedUnits: number;
 	restockSkipped: RestockSkip[];
+	/** Why this attempt failed, or null. A failure leaves the restock owed. */
+	failure: string | null;
 }
 
 /**
- * Finish a cancelled order's pending restock (issue #364) — the sweep's entry point,
- * and what a replay of {@link cancelOrderWithRefund} runs. A no-op for an order that
- * is not cancelled or owes nothing. Exactly-once under any interleaving: the units
- * move under the keys the flip recorded, and the marker is cleared compare-and-set
- * on its own key.
+ * Finish a cancelled order's pending restock (issue #364) — the sweep's entry point.
+ * A no-op for an order that is not cancelled or owes nothing. Exactly-once under any
+ * interleaving: the units move under the keys the flip recorded, and the marker is
+ * cleared compare-and-set on its own key.
+ *
+ * A failure is returned, never thrown, and counted on the marker. At
+ * {@link CANCELLATION_RESTOCK_FLAG_AFTER} consecutive failures the order is flagged
+ * ("items could not be returned to stock: <why>"), once; later attempts keep trying
+ * without writing it again. The attempt that lands clears that flag
+ * (compare-and-clear on its exact text, as the cancel clears its own).
  */
 export async function finishCancellationRestock(
 	deps: FinishCancellationRestockDeps,
@@ -405,17 +426,52 @@ export async function finishCancellationRestock(
 	const order = await deps.orderStore.getById(orderId);
 	const pending = order?.cancellation?.restockPending ?? null;
 	if (order === null || order.state !== "cancelled" || pending === null) {
-		return { finished: false, restockedUnits: 0, restockSkipped: [] };
+		return { finished: false, restockedUnits: 0, restockSkipped: [], failure: null };
 	}
-	// Throws what the inventory or the store throws; the marker then stays for the
-	// next attempt.
-	const moved = await restockOwed(deps.inventoryStore, order, pending);
-	const closed = await deps.orderStore.completeCancellationRestock({
-		orderId: order.id,
-		idempotencyKey: pending.idempotencyKey,
-		restocked: moved.restockedUnits > 0,
-	});
-	return { finished: closed.completed, ...moved };
+	const nothing = { finished: false, restockedUnits: 0, restockSkipped: [] };
+	let moved: { restockedUnits: number; restockSkipped: RestockSkip[] };
+	let closed: { completed: boolean; order: Order | null };
+	try {
+		moved = await restockOwed(deps.inventoryStore, order, pending);
+		closed = await deps.orderStore.completeCancellationRestock({
+			orderId: order.id,
+			idempotencyKey: pending.idempotencyKey,
+			restocked: moved.restockedUnits > 0,
+		});
+	} catch (err) {
+		const why = err instanceof Error ? err.message : String(err);
+		await bestEffort(async () => {
+			const failures = await deps.orderStore.recordCancellationRestockFailure(
+				order.id,
+				pending.idempotencyKey,
+			);
+			const prefix = restockFlagPrefix(pending.idempotencyKey);
+			if (
+				failures >= CANCELLATION_RESTOCK_FLAG_AFTER &&
+				!(order.reconciliationFlag ?? "").startsWith(prefix)
+			) {
+				await deps.orderStore.flagReconciliation(
+					order.id,
+					`${prefix}: ${why}. Otta keeps retrying; this clears once they are back`,
+				);
+			}
+		});
+		return { ...nothing, failure: why };
+	}
+	const stale = closed.order?.reconciliationFlag ?? null;
+	if (stale !== null && stale.startsWith(restockFlagPrefix(pending.idempotencyKey))) {
+		await bestEffort(() =>
+			deps.orderStore.resolveReconciliation({
+				orderId: order.id,
+				expectedFlag: stale,
+				outcome: "refunded",
+				reason: "The cancellation's restock finished on a later attempt.",
+				resolvedBy: "otta",
+				idempotencyKey: toIdempotencyKey(`${pending.idempotencyKey}:resolve-restock`),
+			}),
+		);
+	}
+	return { finished: closed.completed, ...moved, failure: null };
 }
 
 /** How many definitively-rejected (`voided`) refund attempts one cancellation may

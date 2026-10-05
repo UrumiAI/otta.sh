@@ -392,6 +392,14 @@ export interface OrderStore {
 		input: CompleteCancellationRestockInput,
 	): Promise<CompleteCancellationRestockResult>;
 
+	/**
+	 * Count one more failed attempt at a cancellation's pending restock
+	 * (`restockPending.failures`), guarded on the marker's key like
+	 * `completeCancellationRestock`. Returns the new count, or 0 when no marker is
+	 * pending under that key. Touches only the cancellation envelope.
+	 */
+	recordCancellationRestockFailure(orderId: OrderId, idempotencyKey: string): Promise<number>;
+
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 
 	/**

@@ -334,6 +334,41 @@ export function orderTimelineContract(
 			});
 		});
 
+		test("a cancellation whose restock is still owed says so, then reads as restocked once it lands", async () => {
+			const h = await makeHarness();
+			const id = orderId("ord-tl-restock");
+			await h.orderStore.createFromCart(pendingInput("ord-tl-restock", "key-tl-restock"));
+			await h.orderStore.markPaid(id);
+			await h.orderStore.cancelOrder({
+				orderId: id,
+				fromState: "paid",
+				reason: "customer_request",
+				detail: null,
+				cancelledBy: "ops@shop",
+				idempotencyKey: idempotencyKey(`c:${id}`),
+				enqueueEmail: false,
+				refund: null,
+				restocked: false,
+				restockPending: { idempotencyKey: `c:${id}`, lineIds: ["l-1"] },
+			});
+			const deps = { orderStore: h.orderStore, orderNotesStore: h.orderNotesStore };
+			const pending = (await getOrderTimeline(deps, id))?.entries.find(
+				(e) => e.kind === "cancellation",
+			);
+			expect(pending).toMatchObject({ restocked: false, restockPending: true });
+
+			await h.orderStore.completeCancellationRestock({
+				orderId: id,
+				idempotencyKey: `c:${id}`,
+				restocked: true,
+			});
+			const landed = (await getOrderTimeline(deps, id))?.entries.find(
+				(e) => e.kind === "cancellation",
+			);
+			expect(landed).toMatchObject({ restocked: true });
+			expect(landed).not.toHaveProperty("restockPending");
+		});
+
 		test("a historical order (no events) still yields a partial timeline and degrades gracefully", async () => {
 			const h = await makeHarness();
 			const id = orderId("ord-hist");
