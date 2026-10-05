@@ -21,6 +21,17 @@
 			}
 		},
 		{
+			"files": ["packages/plugin/src/email/dev-login-capture.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__OTTA_DEV_LOGIN_CAPTURE__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/plugin/src/payments/stripe-wiring.ts"],
 			"rules": {
 				"no-underscore-dangle": [

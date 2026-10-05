@@ -15,6 +15,7 @@ import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { devLoginCaptureIntegration } from "./src/lib/e2e-login-capture.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
@@ -210,11 +211,18 @@ export default defineConfig({
 			},
 		},
 	],
-	// The last one bakes `__OTTA_DEV_STRIPE_OFFLINE__` — `true` only under
-	// `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's order seed
-	// (issue #378). An integration because only a hook can see the command; see
-	// src/lib/e2e-stripe-offline.ts.
-	integrations: [react(), emdash(buildEmdashOptions(egress)), devStripeOfflineIntegration()],
+	// The last two bake the e2e defines, each `true` only under `astro dev` with
+	// its variable set to 1 (issue #378 and its follow-up):
+	// `__OTTA_DEV_STRIPE_OFFLINE__` (OTTA_E2E_STRIPE_OFFLINE) for the order seed,
+	// and `__OTTA_DEV_LOGIN_CAPTURE__` (OTTA_E2E_LOGIN_CAPTURE) for the signed-in
+	// account specs. Integrations because only a hook can see the command; see
+	// src/lib/e2e-stripe-offline.ts and src/lib/e2e-login-capture.ts.
+	integrations: [
+		react(),
+		emdash(buildEmdashOptions(egress)),
+		devStripeOfflineIntegration(),
+		devLoginCaptureIntegration(),
+	],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The

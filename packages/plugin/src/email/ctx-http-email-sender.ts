@@ -52,6 +52,7 @@ import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { PluginContext } from "../types.js";
+import { DevLoginCaptureSender, devLoginCaptureEnabled } from "./dev-login-capture.js";
 import {
 	orderPageUrl,
 	STORE_DISPLAY_NAME_KEY,
@@ -357,11 +358,22 @@ export function emailSenderConfigured(egress: EmailSenderEgress): boolean {
  */
 export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
 
-/** {@link makeEmailSender} with the login ceiling. */
-export function makeLoginEmailSender(
+/**
+ * {@link makeEmailSender} with the login ceiling.
+ *
+ * ONE DEV-ONLY EXCEPTION: where there would be NO sender (no email API URL in
+ * this bundle) and the dev login-link capture is armed, the link is kept in kv
+ * for the e2e harness instead (`dev-login-capture.ts`, which explains both of
+ * its gates). A configured provider always wins, and order emails never take
+ * this path: only the login sender is built here.
+ */
+export async function makeLoginEmailSender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
 ): Promise<EmailSender | undefined> {
+	if (!emailSenderConfigured(egress) && devLoginCaptureEnabled()) {
+		return new DevLoginCaptureSender(ctx.kv);
+	}
 	return makeEmailSender(ctx, egress, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
 }
 

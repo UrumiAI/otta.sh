@@ -252,6 +252,14 @@ export {
 	type CtxHttpEmailSenderOptions,
 	type EmailSenderEgress,
 } from "./email/ctx-http-email-sender.js";
+// The dev-only login-link capture's kv key (e2e follow-up to issue #378):
+// exported so the e2e harness names the row it reads by the plugin's own
+// spelling. The sender itself is not exported; only `makeLoginEmailSender` arms it.
+export {
+	DEV_LOGIN_CAPTURE_KEY_PREFIX,
+	devLoginCaptureKey,
+	type CapturedLoginLink,
+} from "./email/dev-login-capture.js";
 export {
 	DEFAULT_X402_ACCEPTS,
 	wireX402Gateway,
