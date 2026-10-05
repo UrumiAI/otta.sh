@@ -3083,11 +3083,11 @@ async function softDeleteOrphanedProducts(
 	 */
 	const outage = async (
 		line: string,
-		scope: "all" | { readonly pageIds: ReadonlySet<string> } = "all",
+		scope: "all" | { readonly readIds: ReadonlySet<string> } = "all",
 	): Promise<{ count: number; anomalies: string[] }> => {
 		let wiped = 0;
 		for (const id of Object.keys(state.suspects)) {
-			if (scope === "all" || scope.pageIds.has(id)) {
+			if (scope === "all" || scope.readIds.has(id)) {
 				delete state.suspects[id];
 				wiped++;
 			}
@@ -3162,7 +3162,8 @@ async function softDeleteOrphanedProducts(
 	type Read = {
 		item: { data: ProductCommerceDoc };
 		found: boolean;
-		/** A look missed and a later look FOUND the document: proof of a flaky read. */
+		/** A look missed and a later look FOUND the document, or every look missed and the
+		 *  gate-1 list returned it: proof of a flaky read. */
 		contradicted?: boolean;
 		steppedPast?: boolean;
 	};
@@ -3225,9 +3226,14 @@ async function softDeleteOrphanedProducts(
 	}
 	const judged = reads.filter((read) => read.steppedPast !== true);
 	// A row whose id the gate-1 list just RETURNED counts as found, whatever its `get`s
-	// said: the list is a successful read of that very document in this run.
+	// said: the list is a successful read of that very document in this run. And when
+	// its gets all missed, the two reads disagree — a get-vs-list CONTRADICTION, the
+	// same proof of a lying host as a re-read that overturns a miss (gate 2).
 	for (const read of judged) {
-		if (!read.found && listed.includes(read.item.data.productId)) read.found = true;
+		if (!read.found && listed.includes(read.item.data.productId)) {
+			read.found = true;
+			read.contradicted = true;
+		}
 	}
 
 	// GATE 2 — FLAKINESS, told apart from deletion by the reads themselves. A row that
@@ -3238,24 +3244,22 @@ async function softDeleteOrphanedProducts(
 	// (judged found or not judged at all — never struck). A dense block of REAL orphans
 	// has no contradiction in it, so it is judged like any other rows: three strikes
 	// over three passes, under the per-tick cap.
-	const contradicted = judged.filter((read) => read.contradicted === true).length;
-	if (contradicted > 0) {
-		const first = reads[0]?.item.data;
-		const last = reads.at(-1)?.item.data;
-		const range =
-			first === undefined || last === undefined
-				? "an empty page"
-				: `products ${first.productId} to ${last.productId}`;
+	const contradicted = judged.filter((read) => read.contradicted === true);
+	// A contradicted row is one the run read, so `reads` is not empty here.
+	const firstRead = reads[0];
+	const lastRead = reads.at(-1);
+	if (contradicted.length > 0 && firstRead !== undefined && lastRead !== undefined) {
+		const first = firstRead.item.data;
+		const last = lastRead.item.data;
 		const r = await outage(
-			`${String(contradicted)} of ${String(judged.length)} products read on this page were missing` +
-				" and then found on a re-read — the CMS is answering missing for documents that exist," +
-				` so nothing on the page was judged (${range}), and the walk moved past it`,
-			{ pageIds: new Set(reads.map((read) => read.item.data.productId)) },
+			`${String(contradicted.length)} of ${String(judged.length)} products read on this page were` +
+				" missing and then found (on a re-read, or in the CMS's own list) — the CMS is answering" +
+				" missing for documents that exist, so nothing on the page was judged" +
+				` (products ${first.productId} to ${last.productId}), and the walk moved past it`,
+			{ readIds: new Set(reads.map((read) => read.item.data.productId)) },
 		);
-		if (last !== undefined) {
-			state.at = last.createdAt;
-			state.id = last.productId;
-		}
+		state.at = last.createdAt;
+		state.id = last.productId;
 		const endOfPage = reads.length === rows.length && !page.hasMore;
 		if (endOfPage) finishPass(state, nowMs);
 		else budget.stopped = true;

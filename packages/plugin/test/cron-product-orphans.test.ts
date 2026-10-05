@@ -418,11 +418,31 @@ describe("a CMS that cannot be seen judges nothing, and wipes every strike", () 
 		const flaky = orphanLeg(await tick(cms, cursors, CADENCE));
 		expect(flaky).toMatchObject({ ok: true, count: 0 });
 		expect(flaky.anomalies?.join("\n")).toMatch(
-			/1 of 3 products read on this page were missing and then found on a re-read/,
+			/1 of 3 products read on this page were missing and then found/,
 		);
 		// p-fk0's strike is wiped, not raised to two, and nothing was tombstoned.
 		expect((await orphanState(cursors)).suspects).toEqual({});
 		for (const id of ids) expect(await lifecycleOf(id), id).toBe("live");
+	});
+
+	test("a get-vs-list contradiction — every get of a row missed, but the CMS's own list just returned it — is flakiness too: the row counts as found, the run strikes nothing", async () => {
+		await product("p-lx0");
+		await product("listed", new Date(CREATED.getTime() + 1000));
+		const cms = fakeCms({ mode: "bridge", gone: ["p-lx0"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-lx0": 1 });
+
+		// Every get of `listed` now misses, while the list still returns it.
+		cms.gone.add("listed");
+		const flaky = orphanLeg(await tick(cms, cursors, CADENCE));
+		expect(flaky).toMatchObject({ ok: true, count: 0 });
+		expect(flaky.anomalies?.join("\n")).toMatch(
+			/1 of 2 products read on this page were missing and then found \(on a re-read, or in the CMS's own list\)/,
+		);
+		expect((await orphanState(cursors)).suspects).toEqual({});
+		expect(await lifecycleOf("listed")).toBe("live");
+		expect(await lifecycleOf("p-lx0")).toBe("live");
 	});
 
 	test("a flaky run wipes only the strikes of rows it READ: an orphan struck on another page keeps its strikes", async () => {
@@ -450,7 +470,7 @@ describe("a CMS that cannot be seen judges nothing, and wipes every strike", () 
 		expect(flicker.done).toBe(true);
 		const state = await orphanState(cursors);
 		expect(strikesOf(state)["p-pg0"]).toBe(2);
-		expect(errors.some((line) => line.includes("missing and then found on a re-read"))).toBe(true);
+		expect(errors.some((line) => line.includes("missing and then found"))).toBe(true);
 	});
 });
 
@@ -701,7 +721,7 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 
 	test(`at most ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones a tick — second pass included — logged when the cap is hit; the rest go on the next tick`, async () => {
 		const gone = Array.from({ length: 7 }, (_, i) => `p-cap-g${String(i)}`);
-		// Enough found rows that seven misses stay under the first-look breaker's 30%.
+		// Twenty live rows beside the seven orphans, all on one page.
 		const kept = Array.from({ length: 20 }, (_, i) => `p-cap-k${String(i)}`);
 		for (const [i, id] of [...gone, ...kept].entries()) {
 			await product(id, new Date(CREATED.getTime() + i * 1000));

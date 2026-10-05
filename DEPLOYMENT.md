@@ -485,7 +485,9 @@ live product across 128 seeded cases:
 - 250 live products with p straddling 0.2–0.35, at 0.5 and 0.9, and in twenty-minute bursts
   (0.6/0.25, 0.9/0.3), three seeds, both presets.
 
-That is seeded PRNGs and one independent-failure model, not a proof. The tombstone is final, so
+That is seeded PRNGs and one independent-failure model, not a proof. A host that returned `null`
+for one specific live document on every read, while other reads succeeded, would be
+indistinguishable from a deletion; nothing in EmDash 0.38 is known to do this. The tombstone is final, so
 a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
 id, and its pricing re-entered).
 
