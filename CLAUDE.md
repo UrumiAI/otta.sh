@@ -59,7 +59,7 @@ pnpm test:d1                                   # T3 — real D1 in workerd (mini
 `pnpm test:d1` runs `packages/store-emdash/vitest.d1.config.ts`, a **separate vitest project** under
 the Cloudflare workers pool — it is not part of the root `vitest run`. It needs no Cloudflare
 account, token or remote database; the D1 is the local miniflare simulator. In CI it is the `d1`
-job: nightly, on demand, and as the **release gate** on any PR into `main` and the `main` push that
+job: on demand, and as the **release gate** on any PR into `main` and the `main` push that
 follows. Per-increment PRs into an integration branch do not run it.
 
 Before a PR: **tests pass, lint clean, formatted, changeset added** if a published package
