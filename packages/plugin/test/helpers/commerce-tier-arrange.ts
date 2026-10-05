@@ -51,7 +51,7 @@ export interface CommerceTierSeedPorts {
  *  the tier. */
 export type SharedTierSeeders = Pick<
 	CommerceClientTierArrange,
-	"order" | "address" | "shippingMethod" | "coupon" | "taxClass"
+	"order" | "settle" | "address" | "shippingMethod" | "coupon" | "taxClass"
 >;
 
 /**
@@ -121,6 +121,14 @@ export function sharedTierSeeders(ports: CommerceTierSeedPorts): SharedTierSeede
 				});
 			}
 			return spec.orderId;
+		},
+
+		async settle(orderId) {
+			// The provider's confirmation, as the settle path applies it — the only way an
+			// order becomes paid now that no admin may mark one paid by hand (ADR-0026).
+			if (!(await ports.orderStore.markPaid(toOrderId(orderId)))) {
+				throw new Error(`arrange.settle: ${orderId} could not be marked paid`);
+			}
 		},
 
 		async address(session, spec) {

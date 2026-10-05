@@ -106,7 +106,7 @@ const MAX_TOP_PRODUCTS_LIMIT = 1000;
  *  `int4`'s maximum, because the threshold is compared against an `integer`
  *  on-hand column on the other dialect. Refusing MORE than the other transport
  *  refuses is a divergence too, so the bound is the wire's, to the digit. */
-const MAX_LOW_STOCK_THRESHOLD = 2_147_483_647;
+export const MAX_LOW_STOCK_THRESHOLD = 2_147_483_647;
 
 /** The intervals `reportRevenueQuery` enumerates. */
 const REPORT_INTERVALS = ["day", "week", "month"] as const satisfies readonly ReportInterval[];

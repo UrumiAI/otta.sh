@@ -25,18 +25,24 @@ import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../layouts/Storefront.astro";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../lib/products.js";
+import { exactCount, shopLinkLabel, tapeRows, TAPE_FETCH_LIMIT } from "../lib/tape.js";
 import {
-	exactCount,
-	shopLinkLabel,
 	storeDescription,
 	storeThesis,
 	storeTitle,
-	tapeRows,
-	TAPE_FETCH_LIMIT,
 	type StoreSettings,
-} from "../lib/tape.js";
+} from "../lib/store-settings.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../lib/otta-api.js";
+import { currentSessionToken } from "../lib/account.js";
+import { keepPrivate } from "../lib/no-store.js";
 import type { HomeModel } from "../themes/contract.js";
+
+/* Sign-out lands here with `?signed-out=1` (QA2 A5): one line saying it worked —
+   only when no session is left, so a crafted link cannot tell a signed-in shopper
+   they are signed out. That render is never cached for anyone else. */
+if (Astro.url.searchParams.has("signed-out")) keepPrivate(Astro);
+const signedOut =
+	Astro.url.searchParams.get("signed-out") === "1" && currentSessionToken(Astro.cookies) === undefined;
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -124,6 +130,12 @@ const cards: HomeModel["cards"] =
 				image: product.images?.[0] ?? null,
 				price: product.purchasable && product.price !== null ? product.price.formatted : null,
 				priceNote: undefined,
+				/* The plugin decided it is a sale; a was-price needs a live price
+				   to sit beside. Same rule as the shop's cards. */
+				was:
+					product.purchasable && product.price !== null
+						? (product.compareAtPrice?.formatted ?? null)
+						: null,
 				availability: product.availability,
 			}));
 
@@ -152,6 +164,7 @@ const model: HomeModel = {
 	rows,
 	count,
 	cards,
+	notice: signedOut ? "You're signed out." : null,
 };
 ---
 

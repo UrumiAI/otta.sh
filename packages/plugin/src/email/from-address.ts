@@ -91,3 +91,20 @@ export function isDeliverableFromAddress(value: string): boolean {
 	if (NON_DELIVERABLE_TLDS.has(tld)) return false;
 	return !NON_DELIVERABLE_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`));
 }
+
+/**
+ * The display name of a From address — `Goa Coffee <orders@goa.coffee>` →
+ * `Goa Coffee` — or `undefined` for a bare address or an empty name. A quoted
+ * name is unquoted (`\"` and `\\` unescaped). The emails fall back to it when
+ * "Store display name" is unset (QA2 U-3): the From line already says who the
+ * mail is from, so the body may too.
+ */
+export function fromDisplayName(from: string): string | undefined {
+	const match = /^\s*(.*?)\s*<[^<>]*>\s*$/su.exec(from);
+	if (match === null) return undefined;
+	let name = match[1] ?? "";
+	const quoted = /^"((?:[^"\\]|\\.)*)"$/su.exec(name);
+	if (quoted !== null) name = (quoted[1] ?? "").replace(/\\(.)/gsu, "$1");
+	name = name.trim();
+	return name.length > 0 ? name : undefined;
+}

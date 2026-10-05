@@ -20,6 +20,15 @@
   `REMOVE_STOCK_INVALID_QTY` field-level refusal and the `remove-draft`/`remove-staged` render
   state with it. Neither had a reachable caller. The stale-watermark refusal is again
   unchanged and still binding. See "Amended 2026-08-03, second" at the end of this record.
+- Amended: 2026-10-02 — **Decision 3's stale-watermark refusal, for Pricing & inventory stock
+  movements, and the stock row of the console's F-2a key rule.** A movement is now keyed on a
+  nonce minted fresh per click; the only re-send is an explicit Retry after a lost answer, and
+  the store marks a ledger echo as `replayed` so it is never reported as a fresh move. A
+  REMOVAL's watermark is judged in the inventory store's compare-and-set after the idempotency
+  ledger, rather than re-read in the plugin before the write, and a stale
+  count is a terminal `STALE_ON_HAND`. A RESTOCK is still not pinned to any count. The refusal
+  is still binding on the movement it always guarded: only its tier moved. See "Amended
+  2026-10-02" at the end of this record.
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
   each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of
@@ -467,3 +476,125 @@ is not permission to ship a staged removal without them.
   The Pricing & inventory write path is proven in the workerd sandbox on its new module, and
   the retired screen's suite loses only assertions about a rendering that no longer exists.
 - Reports and Coupons remain unruled; Tax, Shipping and Settings remain Block Kit permanently.
+
+## Amended 2026-10-02 — stock movements: per-click key with explicit retry; a removal's watermark is judged in the store
+
+Everything above is left as written. This block changes how Decision 3's stale-watermark refusal
+is enforced for Pricing & inventory **stock movements only**, and replaces the stock-movement row
+of F-2a (`docs/admin/ADMIN-CONSOLE.md`), which no ADR had recorded. Edits keep their
+`expectedUpdatedAt` watermark and content-hash key. Every Orders key is unchanged.
+
+### Why
+
+End-to-end QA in the admin found stock moves being **silently dropped**. Under F-2a a movement's
+key was `${productId}:${direction}:${onHandAtRender}:${qty}`. One tab: Add 2 (7 → 9), Remove 2
+(→ 7), Add 2. The third Add derived the first one's key, the ledger replayed it, and the count
+stayed at 7 while the card said "Added 2 — now 7 in stock". Two tabs both showing 4 and both
+adding 3 collided the same way, and the count ended at 7 instead of 10.
+
+F-2a's argument holds for refunds, because `refundedSoFarCents` only ever rises, so a watermark
+never repeats. On-hand goes down as well as up and returns to earlier values, so for stock,
+"same content plus same watermark" does not mean "same decision". Only the caller knows which
+submits are one decision.
+
+### The decision
+
+- **The key is per intent.** Every Add/Remove click mints a FRESH nonce (`mintMovementNonce`,
+  128 random bits), sent in the action payload. The key is
+  `${productId}:${direction}:nonce:${nonce}`. A nonce that is present but malformed is refused
+  as unreadable; it is never quietly turned into the old key. This is a nonce in the write
+  payload, so for this one write it is a deliberate exception to F-2a's "no nonce" rule and to
+  X-28.
+- **Retry is explicit, and it is the only re-send.** A response can be lost after the write
+  landed: the request never came back, came back 5xx, or came back 2xx with an unreadable
+  answer (an *indeterminate* failure). Then, and only then, the console holds that move and its
+  nonce, and the page notice reads "The change may have been applied — check the count before
+  trying again", with a **Retry this change** action. Each Retry click re-sends the held move
+  once, with the same nonce, so the ledger answers it.
+  - **Not inferred from resemblance.** A later click that looks like the lost one is not its
+    retry: the operator may have checked the count and decided to add the same amount again.
+    Re-sending the held nonce for it would drop that genuine move as a replay. So a click
+    always mints fresh.
+  - **When the hold is dropped:**
+    - when it is retried (sent once per Retry click);
+    - when a new stock move is *dispatched* on the product (opening a confirm and pressing
+      Deny is looking, not deciding, and keeps it);
+    - when any other outcome replaces the notice;
+    - when the screen is left or reloaded;
+    - after 10 minutes, counted from the *original* loss. A Retry that is lost again is held
+      again under the first hold time, so retrying never restarts the clock, and a Retry
+      past it sends nothing and says to check the count.
+  - **Never persisted.** The hold lives in memory, inside the notice that offers it. A reload
+    therefore has nothing to re-send (the copy already says to check the count), and a
+    duplicated tab, which copies session storage, cannot inherit a move to re-send. Deny on
+    the confirm holds nothing.
+  - **Definitive answers hold nothing:** an applied movement, a refusal the plugin explains,
+    the plugin's own `{ok:false}`, and a 4xx.
+- **A replay is reported as one (defence in depth).** The store marks a success answered from
+  its ledger `replayed: true` (`StockMovementApplied`). The plugin carries it through and maps
+  it to "Already applied — This change was already applied — stock is now N", with N re-read
+  live. It is never a fresh "Added N" for a call that moved nothing.
+- **A RESTOCK carries no watermark.** It is a commutative increment keyed only by its nonce, so
+  two tabs that both saw 4 and each add 3 end at **10**: two clicks, two decisions, both
+  applied, each told the count it produced. Pinning an add to the observed count would buy
+  nothing. It would also refuse an honest "Add 10" whenever a shopper checked out in between,
+  because `onHand` is the AVAILABLE count, which every reserve, release and hold expiry moves.
+  This is the restock's behaviour before this change, now with a key that cannot collide.
+- **A REMOVAL keeps its watermark, now judged atomically.** The on-hand the operator saw travels
+  as the domain's `expectedOnHand` (`InventoryStore.removeStock` only). The store records it on
+  the movement claim and compares it inside the inventory document's compare-and-set, AFTER the
+  ledger. A first attempt against a moved count is a terminal `STALE_ON_HAND` carrying the live
+  count; it moves nothing and uses up the key, the same discipline as `INSUFFICIENT_STOCK`. A
+  retry of an applied removal echoes its success although the count has since moved. The
+  plugin's old re-read before the write is gone: it ran before the ledger, so it told a retry of
+  an applied removal that "stock changed". Two tabs removing against the same count: the second
+  is refused, naming the real count.
+- **The success message reports the count the movement itself produced.**
+
+### Consequences
+
+- **Checkout traffic can cause removal conflicts — accepted.** The watermark is the available
+  count, so a reservation landing between the operator's look and the removal makes the removal
+  stale with no other admin involved. That matches the behaviour before this change (the
+  re-read had the same exposure); it is now atomic rather than check-then-write. The copy says
+  so: "Stock changed to N (orders or another change) — nothing was removed; check and try
+  again." A removal is the movement that can strand or misjudge units, so a refusal naming the
+  live count is the safe answer.
+- **A gradual deploy has one window.** A worker still running the previous release ignores the
+  `expectedOnHand` member of a movement claim. If it completes a PENDING pinned claim (a
+  removal whose claim landed and whose compare-and-set had not yet run), it applies it
+  unconditionally, as that release always did. Conversely, a claim written by the previous
+  release carries no watermark, and this release honours it as recorded: an applied claim
+  echoes its answer, and a pending one completes unconditionally.
+- **The no-nonce fallback lasts one release, with known limits.** A caller that sends no nonce,
+  such as a tab rendered by the previous release, keeps F-2a's key, so its double-submit still
+  dedupes; a removal's watermark is still judged. A `replayed` answer there may be a
+  double-submit, or a different later move of the same shape that derived an earlier one's key
+  (Add 2, Remove 2, Add 2). Nothing, not even the live count (which a sale can move), tells the
+  two apart reliably. So it always reads "This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again." It is never reported as done; "Already applied — stock
+  is now N" is kept for the nonce path, where a replay is the decision's own Retry. Two old
+  tabs that send byte-identical payloads still cannot be told from one
+  double-submit; that ambiguity is the reason for the nonce. A stale
+  old tab's restock with a different payload applies, as it always did. **In the next release
+  the fallback is removed and the nonce becomes mandatory.**
+- **For callers:** every `products:restock` / `products:remove-stock` sender must mint a fresh
+  nonce per click, and re-send one only as an explicit retry of a move whose answer was lost.
+  On main that is the React product detail (`mintMovementNonce`, and `HeldRetry` in
+  `product-detail.tsx`) and the staging demo seed (a fresh nonce per seeded product). The Pricing & stock
+  cards in the product editor (`pricing-cards.tsx`, the only live stock UI once ADR-0014's
+  2026-10-01 amendment retired the Products page) do the same: a fresh nonce per Add/Remove
+  click, `HeldMove` for the explicit Retry, with the same ten-minute hold from the original
+  loss. They compose their own receipt ("Added 2 — now 9 in stock"), so the plugin's action
+  result also carries `replayed: true` on a ledger answer, and the cards read "Already applied —
+  now N in stock" from it rather than from the notice's sentence.
+- **For the domain port:** `removeStock` takes an optional `{ expectedOnHand }` and its result
+  gains `STALE_ON_HAND`, so an exhaustive switch over it needs a new case. Both results'
+  success member gains an optional `replayed: true`, which is never stored. `restock`'s
+  signature is unchanged. A key reused with a different watermark, or recorded with one and replayed
+  without, is a `StockMovementMismatchError`. The plugin's exported `StockRemovalResult` gains
+  `stale_on_hand` for the same reason.
+- **What is NOT changed:** Decision 3's stale-watermark refusal remains binding on removals. It
+  is enforced at the store instead of re-read in the plugin. An absent or unparseable watermark
+  still refuses fail-closed before anything is sent. The guarded decrement and the
+  no-negative-stock contract are unchanged. The sandbox suites remain the contract gate, and
+  the race cases for the pinned removal run against Postgres in CI.

@@ -9,6 +9,14 @@ export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	foldCouponCode,
+	isCouponCodeConflictError,
+	isCouponIdCollisionError,
+} from "./pricing/coupon-code.js";
+export {
+	parseCouponInstant,
 	validateCoupon,
 	type CouponValidationContext,
 	type CouponValidationFailure,
@@ -24,11 +32,13 @@ export {
 } from "./pricing/quote.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
+export { CURRENCY_CODES, isIsoCurrencyCode } from "./pricing/iso-4217.js";
 export {
 	isCodeShapedRegion,
 	normalizeCountryCode,
 	normalizeSubdivision,
 	parseZoneRegions,
+	REGION_CODE_PATTERN,
 	validateZoneRegionsInput,
 	type NormalizeSubdivisionResult,
 	type ValidateZoneRegionsResult,
@@ -133,6 +143,7 @@ export {
 	ReservationNotFoundError,
 	ReservationNotHeldError,
 	StockMovementMismatchError,
+	assertStockMovementOptions,
 	type AdoptInput,
 	type AdoptManyInput,
 	type AdoptManyResult,
@@ -141,6 +152,9 @@ export {
 	type InventoryStore,
 	type ReserveResult,
 	type RestockResult,
+	type StaleOnHandResult,
+	type StockMovementApplied,
+	type StockMovementOptions,
 	type StockRemovalResult,
 } from "./ports/inventory-store.js";
 export type {
@@ -151,6 +165,8 @@ export type {
 	CreateOrderLineInput,
 	CreateOrderResult,
 	CreateOrderTotalsInput,
+	ExpiredOrder,
+	OrderExpiryListOptions,
 	OrderCustomerKey,
 	OrderEvent,
 	OrderEventKind,
@@ -163,21 +179,40 @@ export type {
 	OrderSummary,
 	OrderTransitionInput,
 	OrderTransitionResult,
+	OrderLedger,
+	RefundRetry,
+	RefundRetrySchedule,
+	OrderNoticeInput,
 	OutboxEmail,
+	ReleaseEmailClaimOptions,
+	PaymentIntentCancelOutcome,
+	PaymentIntentCancelUpdate,
+	PaymentIntentRecord,
+	ClaimEmailForOrderOptions,
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordPaymentIntentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
 	FinalizeRefundInput,
 	FinalizeRefundStoreResult,
 	RefundKind,
+	RefundPurpose,
 	RefundRecord,
 	RefundStatus,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
-export type { EmailSender, EmailTemplate, SendEmailInput } from "./ports/email-sender.js";
+export {
+	EmailSendTimeoutError,
+	type EmailSendTimeoutLike,
+	isCutShortEmailTimeout,
+	isEmailSendTimeoutError,
+	type EmailSender,
+	type EmailTemplate,
+	type SendEmailInput,
+} from "./ports/email-sender.js";
 export type {
 	CreateCustomerInput,
 	CustomerStore,
@@ -192,15 +227,18 @@ export type { Session, SessionStore, SessionSummary } from "./ports/session-stor
 export type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
+	PruneChallengesOptions,
 	VerifyChallengeResult,
 } from "./ports/credential-verifier.js";
 export type { Address, AddressKind, Customer } from "./customers/model.js";
 export { DuplicateCustomerEmailError, type LoginFailure } from "./customers/errors.js";
 export {
+	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
 	legalNextStates,
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
+	ORDER_NOTICE_EMAIL_TEMPLATE,
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
 // Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
@@ -209,7 +247,13 @@ export {
 // plugin's `CtxHttpEmailSender` over `ctx.http` (INC-C5). It is a PURE function
 // of a template + explicit data — no IO, no store reach-back — so it does not
 // widen the domain's purity contract by one byte.
-export { customerSafeCancellationCopy, renderEmail, type RenderedEmail } from "./email/render.js";
+export {
+	customerSafeCancellationCopy,
+	EMAIL_NOT_CALCULATED_LABEL,
+	renderEmail,
+	type EmailRenderContext,
+	type RenderedEmail,
+} from "./email/render.js";
 // The shopper-facing name of an order (its products, never its id) — one pure
 // function shared by the order emails and, through `@otta-sh/plugin`, the
 // storefront, so the two cannot spell the same order differently.
@@ -219,16 +263,47 @@ export {
 	orderLabel,
 	type OrderLabelLine,
 } from "./orders/order-label.js";
+// What an order's total is called ("Paid" / "Total") and what the ledger shows
+// refunded — shared by the order emails and, through `@otta-sh/plugin`, the
+// storefront's order pages.
+export { orderTotalLabel, recordedRefundTotal } from "./orders/order-total-label.js";
 export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
+	dispatchOrderEmailsForOrder,
+	MAX_UNCOUNTED_TIMEOUTS,
+	TIMEOUT_BACKOFF_BASE_MS,
+	TIMEOUT_BACKOFF_MAX_MS,
+	TIMEOUT_FAILURE_REASON,
+	timeoutBackoffMs,
+	UNTRIED_RETRY_MS,
+	adminNextStates,
+	manualPaymentAllowed,
+	markRefundedAllowed,
+	markRefundedRefusal,
 	transitionOrder,
+	transitionOrderAsAdmin,
+	unrefundedCapturedCents,
+	type RefundLedgerFacts,
+	type TransitionOrderAsAdminFailure,
+	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
+	type DispatchOrderEmailsForOrderOptions,
 	type DispatchOrderEmailsOptions,
 	type TransitionOrderCommand,
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
+export {
+	resolveUnverifiedRefund,
+	type ResolveUnverifiedRefundCommand,
+	type ResolveUnverifiedRefundResult,
+} from "./orders/resolve-unverified-refund.js";
+export {
+	PROVIDER_PARTLY_REFUNDED_FLAG_PREFIX,
+	PROVIDER_REFUNDED_FLAG_PREFIX,
+	providerRefundedFlag,
+} from "./orders/provider-refunded-flag.js";
 export {
 	requestLogin,
 	verifyLogin,
@@ -258,6 +333,8 @@ export type {
 } from "./ports/payment-event-store.js";
 export {
 	PaymentIntentError,
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -274,12 +351,14 @@ export {
 } from "./ports/payment-gateway.js";
 export type {
 	CancellationReason,
+	CancellationRefund,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
 	OrderCancellation,
 	OrderFulfillment,
 	OrderLine,
+	OrderNotice,
 	OrderTotals,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -341,6 +420,12 @@ export {
 } from "./orders/record-fulfillment.js";
 export {
 	cancelOrder,
+	cancelOrderWithRefund,
+	type RestockSkip,
+	type CancelOrderWithRefundCommand,
+	type CancelOrderWithRefundDeps,
+	type CancelOrderWithRefundFailure,
+	type CancelOrderWithRefundOutcome,
 	type CancelOrderCommand,
 	type CancelOrderDeps,
 	type CancelOrderFailure,
@@ -360,7 +445,41 @@ export {
 	type OrderTimelineDeps,
 	type OrderTimelineEntry,
 } from "./orders/order-timeline.js";
-export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export {
+	expireOrders,
+	expireOrdersBatch,
+	type ExpireOrdersBatchOptions,
+	type ExpireOrdersDeps,
+} from "./orders/expire-orders.js";
+export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export {
+	cancelDueIntents,
+	DEFAULT_INTENT_CANCEL_BATCH,
+	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
+	type CancelDueIntentsDeps,
+	type CancelDueIntentsOptions,
+} from "./orders/cancel-due-intents.js";
+export {
+	classifyLatePayment,
+	escalateStaleLateRefunds,
+	isUnpaidTerminalState,
+	LATE_REFUND_GIVE_UP_MS,
+	lateRefundRetryDelayMs,
+	LATE_PAYMENT_REFUNDED_BY,
+	latePaymentRefundKey,
+	leftPendingUnpaid,
+	providerRefOfLateRefundKey,
+	readOrderWithLatePayment,
+	refundLatePayment,
+	retryLatePaymentRefunds,
+	type LateCapture,
+	type LatePaymentAnomaly,
+	type LatePaymentDeps,
+	type LatePaymentOutcome,
+	type LatePaymentStatus,
+	type LazyGateways,
+	type RetryLatePaymentRefundsOptions,
+} from "./orders/late-payment.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
@@ -421,6 +540,7 @@ export {
 	type ClaimMutationInput,
 	type ClaimMutationResult,
 	type ExpiredHold,
+	type ExpiryListOptions,
 	type RecordedCartMutation,
 	type ReservationLifecycle,
 	type UpsertLineInput,
@@ -430,6 +550,7 @@ export {
 	createCart,
 	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
+	expireHoldsBatch,
 	getCart,
 	removeLine,
 	replaceSpentCart,
@@ -471,3 +592,4 @@ export {
 	MAX_HOLD_TTL_MINUTES,
 	updateSettings,
 } from "./settings/use-cases.js";
+export type { AttemptThrottle } from "./ports/attempt-throttle.js";

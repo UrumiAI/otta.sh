@@ -48,6 +48,21 @@ export const NOT_APPLICABLE_LABEL = "—";
 export interface CheckoutLineView {
 	lineId: string;
 	sku: string;
+	/**
+	 * The product's name as the ORDER records it: on a live review, the
+	 * commerce row's title cache — the very string `createOrderFromCart` will
+	 * snapshot; on a locked review, the order's own snapshot. So the last
+	 * summary before paying names each line with what the receipt will say.
+	 * `null` when the store cannot name the line (no productId, no title cached
+	 * yet, or a degraded lookup) — the theme then lets the sku stand alone
+	 * rather than inventing a name.
+	 *
+	 * NOT the cart page's name. `/cart` names a line from its own CMS read; this
+	 * is the commerce row's copy of that title, which the CMS sync refreshes on
+	 * save/publish. Right after a rename the two can differ briefly — the
+	 * checkout then shows what the order will actually record.
+	 */
+	title: string | null;
 	qty: number;
 	/** null when the line is not priceable (no productId, unsynced commerce,
 	 *  inactive, currency mismatch, or a degraded lookup) — never a fabricated
@@ -134,12 +149,18 @@ export function buildCheckoutTotals(
 export function buildCheckoutLines(
 	lines: CartLineWire[],
 	pricing: CartPricingWire,
+	/** productId → the commerce row's title cache, off the same batch read the
+	 *  pricing join made. REQUIRED, so a caller cannot forget the names and ship
+	 *  a SKU-only review again; a degraded lookup passes an empty map, and then
+	 *  every title is null. */
+	titles: ReadonlyMap<string, string | null>,
 ): CheckoutLineView[] {
 	return lines.map((line) => {
 		const priced = pricing.lines.find((p) => p.lineId === line.lineId) ?? null;
 		return {
 			lineId: line.lineId,
 			sku: line.sku,
+			title: line.productId === null ? null : (titles.get(line.productId) ?? null),
 			qty: line.qty,
 			unitPrice: priced?.unitPrice ?? null,
 			lineTotal: priced?.lineTotal ?? null,
@@ -160,6 +181,7 @@ export function buildOrderLines(order: PublicOrderWire, locale: string): Checkou
 		return {
 			lineId: `${order.id}:${String(index)}`,
 			sku: line.sku,
+			title: line.title,
 			qty: line.quantity,
 			unitPrice: money(line.unitPriceCents, code, locale),
 			lineTotal: money(line.unitPriceCents * line.quantity, code, locale),
@@ -216,6 +238,12 @@ export interface PublicOrderView {
 		shippedAt: string;
 	} | null;
 	cancellation: { reason: string; cancelledAt: string } | null;
+	/** {@link PublicOrderWire.latePayment}, passed through: the page chooses its
+	 *  "was anything charged?" sentence from it. */
+	latePayment: PublicOrderWire["latePayment"];
+	/** {@link PublicOrderWire.refundedCents}, passed through: the page states
+	 *  "Refunded $X" from it, and nothing when it is 0 (QA2 X3). */
+	refundedCents: number;
 }
 
 /**
@@ -231,9 +259,12 @@ export interface PublicOrderView {
  *
  * Backward-compatible: a snapshot is only ever written together with a method,
  * so every older order that carries a zone also carries a method.
+ *
+ * Exported for the account's order page (QA U-5), whose wire carries the same two
+ * ids, so "Not calculated" is decided by ONE rule wherever an order is shown.
  */
 export function orderTotalsFlags(
-	totals: PublicOrderWire["totals"],
+	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId">,
 ): Pick<CheckoutTotalsOptions, "shippingSelected" | "taxZoneSelected"> {
 	return {
 		shippingSelected: totals.shippingMethodId !== null,
@@ -268,6 +299,8 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		}),
 		fulfillment: order.fulfillment,
 		cancellation: order.cancellation,
+		latePayment: order.latePayment,
+		refundedCents: order.refundedCents,
 	};
 }
 

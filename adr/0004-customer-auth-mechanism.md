@@ -123,3 +123,48 @@ unchanged. What changed is **when** the proof it already relies on is used.
 - **Revisit** if the credential mechanism stops proving email ownership (this ADR's own
   trigger), if a second session-minting path or an email-change flow is added, or if listing
   cost shows up (the claim could then move to a sweep keyed by verified email).
+
+## Amended 2026-10-02 — the sign-in page may say a link was probably not sent, from the browser's own count
+
+QA U-12: past the per-address cap the request no-ops and answers exactly as a sent one (above —
+the throttle is not an oracle), so the sign-in page said "A sign-in link is on its way" for a
+fourth request whose link never left. The decision above is unchanged: the plugin's answer stays
+identical for every address, and the site never asks it which arm ran.
+
+- **The site counts the BROWSER, not the address.** `POST /account/login/request` records each
+  request that reached the plugin in a short-lived `otta_login_requests` cookie (HttpOnly,
+  `path=/account/login`, 15 minutes, timestamps only — never an address; at most four kept).
+  When this browser has asked more than the cap's worth (3) inside the window, it lands on
+  `?sent=many`, whose notice says the request **may not** have sent a new link and to use the
+  newest one or wait. A refused form, BUSY or an outage is not counted.
+- **Why this is not an oracle.** The count is decided before, and regardless of, the plugin's
+  answer, and it is the same for every address: four requests for four different addresses get
+  the "many" notice too. It reveals nothing a browser did not already know about itself — not
+  whether an address has an account, nor whether it is throttled.
+- **The ordinary notice states the cap** ("we send at most 3 links to an address every 15
+  minutes"). It is true of every address, and it is the only honest explanation available for a
+  link that never arrives because someone else filled the address's window (the lockout above;
+  per-IP limiting at the gateway remains the fix).
+- **Limits.** A browser that clears its cookies, or several browsers, are each counted alone; the
+  notice then errs towards the ordinary one, which now names the cap. The cap and window are
+  mirrored in the site (`lib/account.ts`) only to word the notices; the plugin enforces them.
+
+## Amended 2026-10-03 — the account's order page offers what the order page does
+
+QA round 2 (X1, A2–A7, U-3). Identity and ownership rules above are unchanged.
+
+- **The owner's order read carries the delivery address and the tracking**
+  (`AccountOrderWire.shippingAddress`, without the contact fields; `fulfillment` as the public
+  read trims it). Only the owner's read has the address; the public read still omits it. The
+  account's order page shows both, links the order's public page, and offers "Complete payment"
+  through the same page-owned resume path while the order can be paid (the session is the second
+  factor the resume already accepts).
+- **Rows are told apart by time, never by id.** List rows and the order page state when the
+  order was placed to the minute ("Oct 2, 2026, 14:05 UTC"), beside the item summary
+  (`orderLabel`). No part of the order id is shown to a shopper — the store owner's rule stands.
+- **Pages name the signed-in email** (the account pages are private). Sign-out lands on
+  `/?signed-out=1`, which says "You're signed out." only when no session cookie is left, and that
+  render is private. Signed in, the sign-in page hides its form behind "Use a different email".
+- **The sign-in email names the store** from "Store display name", else from the From address's
+  display name; a bare From address still gives none. Its link is an inline-styled button with
+  the URL kept as the fallback.

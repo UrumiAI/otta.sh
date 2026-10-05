@@ -29,7 +29,8 @@ export interface PaymentGateway {
 	 * failure this port models as a typed throw rather than a result union, so the
 	 * happy-path signature stays a plain handle for the three call sites that only
 	 * ever succeed. `createOrderFromCart` catches it BY TYPE and maps it to
-	 * `PAYMENT_INTENT_FAILED`; anything else propagates (bugs are never swallowed).
+	 * `PAYMENT_INTENT_FAILED` (or, for an `inFlight` one, `PAYMENT_INTENT_IN_FLIGHT`);
+	 * anything else propagates (bugs are never swallowed).
 	 */
 	createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle>;
 	/**
@@ -52,7 +53,62 @@ export interface PaymentGateway {
 	 * records a manual, out-of-band refund instead.
 	 */
 	refund(input: RefundInput): Promise<RefundResult>;
+	/**
+	 * Withdraw a payment the buyer has NOT completed, so it can no longer be paid
+	 * — the mirror of `createIntent`, called by the intent-cancel sweep
+	 * (`cancelDueIntents`) once an unpaid order's time to pay has run out — at its
+	 * hold deadline, or at once when it is cancelled unpaid.
+	 *
+	 * WHY THIS EXISTS. An expired order's PaymentIntent used to stay live: a buyer
+	 * who kept the pay page (or its cookie) open past the hold could still pay it,
+	 * and the money landed on an order whose stock had already gone back on sale.
+	 * Cancelling the intent at the provider closes that window at the source.
+	 *
+	 * BEST-EFFORT BY CONTRACT. It never runs inside the expiry or the cancel
+	 * itself — the sweep drains due intents in its own bounded leg — and a failure
+	 * only reschedules it. A cancel that loses the race to a buyer paying at that
+	 * instant is not an error either: the provider reports the intent
+	 * `not_cancellable`, the payment succeeds, and `settleOrder`'s late-payment
+	 * path refunds it. Prevention narrows the window; the refund is what makes the
+	 * window safe.
+	 *
+	 * Stripe calls `POST /v1/payment_intents/{id}/cancel` with our
+	 * `idempotencyKey` as its native `Idempotency-Key`, under a short timeout. A
+	 * gateway that holds no standing intent to withdraw (x402's stateless
+	 * page-gate challenge), or no credential to call the provider with, answers
+	 * `UNSUPPORTED`.
+	 */
+	cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult>;
 }
+
+/** Withdraw one payment intent the order minted (see `cancelIntent`). */
+export interface CancelIntentInput {
+	orderId: OrderId;
+	/** The provider's intent id, as `createIntent` returned it and
+	 *  `OrderStore.recordPaymentIntent` recorded it (`pi_…` for Stripe). */
+	intentId: string;
+	/** Every command carries one (CLAUDE.md); passed to the provider as its
+	 *  native idempotency key so a re-swept cancel re-calls nothing. */
+	idempotencyKey: IdempotencyKey;
+}
+
+/**
+ * The normalized result of a `cancelIntent` attempt.
+ *  - `cancelled` — the provider withdrew the intent; it can no longer be paid.
+ *  - `not_cancellable` — the intent SUCCEEDED: the buyer paid at the instant it
+ *    was withdrawn. Its webhook settles a still-pending order normally (its stock
+ *    was still held) or takes the late-payment refund path on a dead one. An
+ *    adapter reports this only once it has seen the success — an intent that is
+ *    still payable must be `RETRYABLE`, never this (QA2 M1b).
+ *  - `UNSUPPORTED` — the gateway has no standing intent or no credential: a
+ *    capability statement, never retried and not worth an operator's attention.
+ *  - `RETRYABLE` / `TERMINAL` — the provider could not be reached / refused. The
+ *    sweep retries a RETRYABLE one a bounded number of times and gives up on a
+ *    TERMINAL one; either way the late-payment refund is the backstop.
+ */
+export type CancelIntentResult =
+	| { ok: true; outcome: "cancelled" | "not_cancellable" }
+	| { ok: false; reason: "UNSUPPORTED" | "RETRYABLE" | "TERMINAL" };
 
 export interface RefundInput {
 	orderId: OrderId;
@@ -92,11 +148,26 @@ export interface RefundInput {
  */
 export type RefundResult =
 	| { ok: true; refundRef: string; amount: Cents; currency: Currency }
-	| { ok: false; reason: RefundFailureReason };
+	| {
+			ok: false;
+			reason: RefundFailureReason;
+			/**
+			 * On `PROVIDER_ALREADY_REFUNDED`: the provider's own figures from the
+			 * pre-flight read — what it shows refunded, and what it captured, in the
+			 * payment's minor units. They tell a payment refunded IN FULL outside Otta
+			 * from a partial dashboard refund the requested amount would over-run.
+			 * Absent when the adapter cannot say.
+			 */
+			provider?: { refunded: number; captured: number };
+	  };
 
 export type RefundFailureReason =
 	| "UNSUPPORTED"
 	| "PROVIDER_ALREADY_REFUNDED"
+	/** The CALLER's own guard declined to start the issuing call (it had no time
+	 *  for a whole one): nothing was issued, and it is not the provider's failure —
+	 *  retry under the same key, and do not count it as an attempt. */
+	| "NOT_STARTED"
 	| "RETRYABLE"
 	| "TERMINAL"
 	| "UNVERIFIED";
@@ -190,6 +261,16 @@ export interface PaymentIntentErrorInput {
 	providerStatus?: number;
 	/** Provider error code (e.g. Stripe `error.code`) — LOGS ONLY. */
 	providerCode?: string;
+	/**
+	 * True when the provider refused ONLY because a request with the same
+	 * idempotency key is still being processed (a double-submitted checkout).
+	 * Not a failed payment: the same key, asked again shortly, returns the first
+	 * request's result. The one field the domain branches on — it answers
+	 * `PAYMENT_INTENT_IN_FLIGHT` instead of `PAYMENT_INTENT_FAILED`, so a caller
+	 * can say "busy, try again" rather than "we couldn't start a payment".
+	 * Defaults to false. Implies `retryable`.
+	 */
+	inFlight?: boolean;
 	message?: string;
 }
 
@@ -200,10 +281,12 @@ export interface PaymentIntentErrorInput {
  * shape mirrors the `ReservationCommitLostError` precedent: a typed throw the
  * use-case catches by class, never a stringly-matched message.
  *
- * ALL THREE fields are DIAGNOSTIC today: the domain branches on none of them —
- * every `PaymentIntentError` maps to the same `PAYMENT_INTENT_FAILED`, and
- * `retryable` / `providerStatus` / `providerCode` are LOGGED at the catch site so
- * an operator can tell "Stripe was down" from "the card was declined".
+ * `retryable` / `providerStatus` / `providerCode` are DIAGNOSTIC: the domain
+ * branches on none of them, and they are LOGGED at the catch site so an operator
+ * can tell "Stripe was down" from "the card was declined". The one exception is
+ * `inFlight` (a same-key request still being processed), which maps to its own
+ * `PAYMENT_INTENT_IN_FLIGHT`; every other `PaymentIntentError` is
+ * `PAYMENT_INTENT_FAILED`.
  * `retryable` is the field a future caller-driven retry would branch on; it is
  * not load-bearing yet. **Adapter contract: no credential (a Bearer key, a
  * signing secret) may ever reach `message`, `cause`, or any enumerable field of
@@ -214,6 +297,7 @@ export class PaymentIntentError extends Error {
 	readonly retryable: boolean;
 	readonly providerStatus: number | undefined;
 	readonly providerCode: string | undefined;
+	readonly inFlight: boolean;
 
 	constructor(input: PaymentIntentErrorInput) {
 		super(
@@ -229,6 +313,7 @@ export class PaymentIntentError extends Error {
 		this.retryable = input.retryable;
 		this.providerStatus = input.providerStatus;
 		this.providerCode = input.providerCode;
+		this.inFlight = input.inFlight === true;
 	}
 }
 

@@ -294,7 +294,7 @@ export interface PluginContext {
 	storage?: StorageAccess;
 	/**
 	 * Scheduled-task registration — the OTHER capability-free surface (plan §D5,
-	 * the fifteen-minute cron row). There is no `cron` capability string in the host's
+	 * the cron row; the sweep task is due every minute, see `cron/index.ts`). There is no `cron` capability string in the host's
 	 * vocabulary any more than there is a `storage` one; the only gate is whether
 	 * the runtime wired a cron executor at all.
 	 *
@@ -312,9 +312,23 @@ export interface SandboxedRequest {
 	headers: Record<string, string>;
 }
 
+/**
+ * The signed-in caller the host names on a PRIVATE route (EmDash's
+ * `toRouteCallerInfo`: `routeCtx.user`, absent on a public route). The admin
+ * console's writes record it as who made them.
+ */
+export interface RouteCaller {
+	id?: string;
+	email?: string | null;
+	name?: string | null;
+	role?: unknown;
+}
+
 export interface SandboxedRouteContext<TInput = unknown> {
 	input: TInput;
 	request: SandboxedRequest;
+	/** The authenticated caller — private routes only. */
+	user?: RouteCaller;
 }
 
 export type RouteHandler<TInput = unknown> = (
@@ -340,7 +354,11 @@ export interface SandboxedPluginHooks {
 	 * declared hook name against its own list, on which `cron` carries no required
 	 * capability, so a `format: "standard"` plugin may declare it as it stands.
 	 */
-	cron?: { handler: HookHandler<CronEvent> };
+	cron?: {
+		handler: HookHandler<CronEvent>;
+		/** Ms the host waits for the hook before failing it (host default: 5000). */
+		timeout?: number;
+	};
 	/** Where the sweep task is REGISTERED (`ctx.cron.schedule`), mirroring the
 	 *  host's own bundled plugins. See `cron/index.ts` for why the tick re-affirms
 	 *  it too. */

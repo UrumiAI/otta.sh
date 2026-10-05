@@ -5,6 +5,7 @@ import {
 	normalizeCountryCode,
 	normalizeSubdivision,
 	parseZoneRegions,
+	REGION_CODE_PATTERN,
 	validateZoneRegionsInput,
 } from "../../src/pricing/region-codes.js";
 
@@ -175,5 +176,19 @@ describe("validateZoneRegionsInput — strict, for the admin's writes", () => {
 			ok: false,
 			invalid: ["UK", "United States", "US-XX"],
 		});
+	});
+});
+
+describe("REGION_CODE_PATTERN — the shape rule, for a form field's pattern", () => {
+	test("the pattern IS the shape rule: anchored, it accepts exactly what isCodeShapedRegion does", () => {
+		const anchored = new RegExp(`^(?:${REGION_CODE_PATTERN})$`);
+		for (const code of ["CA", "ca", "US-CA", "us-ca", "D13", "GB-ENG", "1", "XX"]) {
+			expect(anchored.test(code), code).toBe(true);
+			expect(isCodeShapedRegion(code), code).toBe(true);
+		}
+		for (const code of ["", "California", "US-CALI", "U-CA", "C A", "ABCD"]) {
+			expect(anchored.test(code), code).toBe(false);
+			expect(isCodeShapedRegion(code), code).toBe(false);
+		}
 	});
 });

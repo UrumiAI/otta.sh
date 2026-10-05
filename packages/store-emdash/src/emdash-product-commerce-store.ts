@@ -415,7 +415,14 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (doc.lifecycle !== "live") continue;
 			const { sku, price } = doc;
 			if (sku === null || price === null) continue;
-			sellable.push({ productId: doc.productId, sku, price, active: doc.active });
+			sellable.push({
+				productId: doc.productId,
+				sku,
+				price,
+				title: doc.title,
+				compareAtPrice: doc.compareAtPrice,
+				active: doc.active,
+			});
 		}
 		const stock = this.#stockReader();
 		return Promise.all(

@@ -20,7 +20,8 @@
  *    lost — the same no-personal-data-in-URLs trade-off `place.ts` documents.
  *    The coupon field sits FIRST on the page for that reason.
  *
- * Codes are trimmed and never case-folded: coupon lookup is case-sensitive.
+ * Codes are trimmed and never case-folded here: the plugin's coupon lookup
+ * ignores case (ADR-0025), and the code is echoed as the buyer typed it.
  *
  * #305 part 2 (ADR-0021) adds the DESTINATION and the shipping METHOD, by the
  * same GET: the delivery form submits `?country=US&region=CA&method=<id>`. Only
@@ -217,4 +218,79 @@ export function placeFailurePath(token: string, selection: CheckoutUrlSelection)
 		shippingMethodId: dropMethod ? undefined : selection.shippingMethodId,
 		error: token,
 	});
+}
+
+/**
+ * The delivery fields the details form posts (QA U-1). They belong to the place
+ * form (`form="checkout-place"`) under names of their own — `deliveryCountry`,
+ * `deliveryRegion`, `deliveryMethod` — beside the priced echo (`country`,
+ * `region`, `shippingMethodId`) and the destination the options were priced for
+ * (`fromCountry`, `fromRegion`).
+ */
+export interface DeliveryFields {
+	country?: string | undefined;
+	region?: string | undefined;
+	method?: string | undefined;
+	fromCountry?: string | undefined;
+	fromRegion?: string | undefined;
+}
+
+/** Bounded like the inputs that produce them; anything longer was not typed there. */
+const DELIVERY_FIELD_MAX = 32;
+
+function bounded(value: string | undefined): string | undefined {
+	const trimmed = (value ?? "").trim();
+	return trimmed.length > 0 && trimmed.length <= DELIVERY_FIELD_MAX ? trimmed : undefined;
+}
+
+/**
+ * Where "Update delivery" goes: exactly the `/checkout?…` the old GET form
+ * produced (coupon, country, region, method, fromCountry, fromRegion), so the
+ * review's own readers — the shape checks, the refused-region notice, the method
+ * dropped on a changed destination — apply unchanged. Only coarse codes and an
+ * opaque method id: no personal data reaches the URL.
+ */
+export function deliveryUpdatePath(fields: DeliveryFields, couponCode: string | undefined): string {
+	const params = new URLSearchParams();
+	const put = (key: string, value: string | undefined): void => {
+		if (value !== undefined) params.set(key, value);
+	};
+	const country = bounded(fields.country)?.toUpperCase();
+	put(COUPON_PARAM, couponCode);
+	put(COUNTRY_PARAM, country !== undefined && COUNTRY_SHAPE.test(country) ? country : undefined);
+	put(REGION_PARAM, bounded(fields.region));
+	const method = bounded(fields.method);
+	put(METHOD_PARAM, method !== undefined && METHOD_ID.test(method) ? method : undefined);
+	put(FROM_COUNTRY_PARAM, bounded(fields.fromCountry)?.toUpperCase());
+	put(FROM_REGION_PARAM, bounded(fields.fromRegion));
+	const query = params.toString();
+	return query.length > 0 ? `/checkout?${query}` : "/checkout";
+}
+
+/**
+ * Do the posted delivery fields differ from what the totals were priced with?
+ * A different country, region (compared as codes: `ca`, `CA`, `US-CA` are one)
+ * or a different method radio. Absent delivery fields (no delivery block on the
+ * page) never differ.
+ */
+export function deliveryDiffers(
+	fields: DeliveryFields,
+	priced: {
+		country?: string | undefined;
+		region?: string | undefined;
+		method?: string | undefined;
+	},
+): boolean {
+	const country = bounded(fields.country)?.toUpperCase();
+	if (country === undefined) return false;
+	const pricedCountry = (priced.country ?? "").trim().toUpperCase();
+	if (country !== pricedCountry) return true;
+	if (
+		comparableRegion(country, fields.region ?? null) !==
+		comparableRegion(country, priced.region ?? null)
+	) {
+		return true;
+	}
+	const method = bounded(fields.method);
+	return method !== undefined && method !== priced.method;
 }

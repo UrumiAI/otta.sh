@@ -7,7 +7,9 @@
  * become an upstream round trip, let alone an order.
  */
 import { describe, expect, test } from "vitest";
+import { ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 import {
+	exceedsAddressBounds,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -229,6 +231,28 @@ describe("parseCheckoutPlaceInput", () => {
 					shippingAddress: { ...ADDRESS, city: bogus },
 				}),
 			).toBeNull();
+		},
+	);
+
+	// The parser's bounds ARE the domain's (no literal copies to drift): a field
+	// exactly at ORDER_ADDRESS_MAX_LENGTHS passes the length check, one over is
+	// flagged by exceedsAddressBounds — which the place route answers as
+	// INVALID_SHIPPING_ADDRESS rather than INVALID_INPUT (QA U-6).
+	test.each(["name", "line1", "line2", "city", "postalCode", "phone", "email"] as const)(
+		"exceedsAddressBounds flags %s one over the domain's bound, and only then",
+		(field) => {
+			const max = ORDER_ADDRESS_MAX_LENGTHS[field];
+			expect(exceedsAddressBounds({ ...ADDRESS, [field]: "x".repeat(max) })).toBe(false);
+			expect(exceedsAddressBounds({ ...ADDRESS, [field]: "x".repeat(max + 1) })).toBe(true);
+			// Measured after trimming, as the domain measures it.
+			expect(exceedsAddressBounds({ ...ADDRESS, [field]: ` ${"x".repeat(max)} ` })).toBe(false);
+		},
+	);
+
+	test.each([null, "a string", 42, [], { city: 7 }])(
+		"exceedsAddressBounds is false for anything that is not an over-long address (%p)",
+		(value) => {
+			expect(exceedsAddressBounds(value)).toBe(false);
 		},
 	);
 

@@ -4,7 +4,13 @@
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
   "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).
+- Amended: 2026-10-02 — `/checkout/pay` reads the order's state before mounting the card form,
+  and decision 5's use of the redirect parameters covers a lapsed pending order; see
+  "Amended 2026-10-02" at the end of this record.
 
+- Amended: 2026-10-02 (second) — the order page resumes a pending order's payment on any
+  device through `/checkout/resume`, and a refused checkout keeps the typed values in a
+  first-party draft cookie; see "Amended 2026-10-02 (second)" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -231,3 +237,183 @@ plugin's storefront surface (ADR-0003). Neither `@otta-sh/service` nor `@otta-sh
   new plugin dependency — worth doing only if a non-two-decimal catalog is ever planned.
 - Stripe expires idempotency keys after ~24 h, so a retry past that window mints a second
   PaymentIntent. Both carry the same `metadata[order_id]` and settlement dedupes on event id.
+
+## Amended 2026-10-02 — the pay page checks the order can still be paid
+
+**What changed and why.** `/checkout/pay` rendered the card form from the `otta_checkout` stash
+alone and made no commerce call. The stash outlives the order's hold, and a client secret stays
+payable at Stripe until something withdraws it — so a buyer who kept the tab open could pay an
+order that had already **expired**, for stock already back on sale (ADR-0022's 2026-10-02
+amendment, which also adds the server-side prevention and the automatic refund).
+
+**The amendment.**
+
+- `/checkout/pay` now makes exactly one commerce call, a READ: the same public, capability-scoped
+  `storefront/order` route the confirmation page uses. An order that is not `pending`, or whose
+  `holdExpiresAt` has passed, or that the read says does not exist, is redirected (303) to its
+  confirmation page instead of getting a form (`sites/staging/src/lib/pay-guard.ts`). An
+  UNKNOWN answer — dispatch failed, BUSY, a render-guard failure — still renders the form: the
+  server cancels an expired order's intent and refunds a payment that lands anyway, so the page
+  is defence in depth and must not turn a storage hiccup into a checkout outage. The amount on
+  the button still comes from the stash, never from this read.
+- Decision 5 is widened by one clause: the redirect parameters still only choose how a `pending`
+  order is presented, and that now includes a pending order **past its hold**. Arriving without
+  them, it says "The time to pay has run out. If you already paid, this page will update — if
+  the order has already expired by then, it will be refunded." — it claims nothing about stock
+  or charges,
+  because the order is still pending, and nothing about who refunds, because on some paths a
+  person does — keeps the bounded poll, and offers the door out
+  instead of a resume link (the pay page would refuse it, so "resume" would be a loop until the
+  sweep runs). Arriving with them, it still gets "payment submitted" and the poll, because a
+  just-paid pending order may still settle. They are still never rendered, forwarded, or
+  trusted to decide that anything is paid.
+- The guard's read costs one document read (the plugin reads the order and its ledgers
+  together). The `latePayment` derivation riding on it does no I/O and short-circuits for a
+  `pending` order — the only state the guard lets through — so the guard pays nothing for it.
+
+## Amended 2026-10-02 (second) — resuming payment from the order page, and keeping typed values
+
+**What changed and why (QA U-2, U-1, U-14).** The order page's "Complete payment" linked to
+`/checkout`, which rebuilds the pay step from the CART cookie: a dead end on another device or
+once that cookie had rotated. Where it worked, the locked review showed an empty, editable email
+that the replayed order silently ignored. Separately, every refused place 303'd back to an empty
+form, because the redirect may carry no personal data (decision 6's reasoning).
+
+**The amendment.**
+
+- **Resume.** `GET /checkout/resume?order=<id>` asks the plugin's public `storefront/order/resume`
+  for the order's OWN PaymentIntent: the plugin replays the order's original checkout on its own
+  idempotency key (its cart, its buyer), so it is the same order and, at Stripe, the same intent —
+  never a second of either. It answers only for a `pending` order strictly before its hold
+  deadline (the pay guard's rule), and asks the provider nothing otherwise. The endpoint writes the
+  ordinary `otta_checkout` stash and 303s to `/checkout/pay`, whose guard is unchanged. It is a
+  GET because the order page is `no-referrer` (a POST from it would carry `Origin: null`); it sends
+  the cart and session cookies as the proof, and goes to the email page when neither holds. The GET
+  is safe to repeat, and a cross-site navigation (`Sec-Fetch-Site: cross-site`) is sent to the
+  order page without dispatching, so another site cannot make a browser write the stash.
+- **What authorises a resume: the order id PLUS a second factor.** The id alone is the order
+  page's bearer capability, and order links sit in mailboxes and browser histories; the client
+  secret a resume hands out can retrieve the PaymentIntent with the publishable key — including
+  the `shipping` block (name and address) the Stripe adapter sets for physical goods, which the
+  public order does not show. So that widening is now gated by possession of one of:
+  - **the cart** the order was made from (this browser's cart cookie), or
+  - **a signed-in session** whose customer owns the order (the session cookie), or
+  - **the order's email**, typed on a small private page (`/checkout/resume/email`) and POSTed
+    from it to `/checkout/resume` — same origin, so the origin guard admits it and still refuses
+    a cross-site form. The plugin compares it with the order's buyer server-side, trimmed and
+    case-folded, through SHA-256 digests with no early exit; a wrong one gets one generic
+    sentence ("That email doesn't match this order."). Guesses are throttled per order — 5 per
+    15 minutes, counting every email attempt — by the sign-in throttle's own slot window
+    (`login_challenge_claims`, `liveSlots`), offered as the `AttemptThrottle` port and
+    `EmdashAttemptThrottle` adapter.
+
+  One consequence, stated: anyone holding the order link can SPEND an order's 5 email tries,
+  locking the email route for up to 15 minutes. The cart and owning-session routes still work
+  through it, and the buyer can always start a new checkout — which creates a SECOND order, while
+  the throttled one keeps holding its stock until its own hold expires.
+
+  The plugin enforces this itself (`storefront/order/resume` is public), not only the site. The
+  id alone answers `PROOF_REQUIRED` and asks the provider nothing. What the order link already
+  implies — whether the order exists and whether it can still be paid — is answered before the
+  proof; nothing else is.
+- **The order's email** is shown read-only, as a hint (`j•••@g•••.com`): enough for the buyer to
+  recognise, no more than the link should reveal. The locked review no longer renders an email
+  field or a place form at all; its "Continue to payment" is a link to the resume path, and it
+  shows no stale place-time `?error=`.
+- **Typed values.** A refused place writes the typed fields to `otta_checkout_draft` (httpOnly,
+  Secure, `SameSite=Strict`, `Path=/checkout`, 15 minutes; whitelisted fields only, never the key
+  or a client secret), and the review reads them back with the refused field marked. The URL still
+  carries only the error token and the non-personal selection. Applying or removing a coupon now
+  posts the details form for the same reason.
+- **The deadline.** The pay page states the order's own hold deadline from the read its guard
+  already makes — relative minutes plus a time with its zone ("until 2:32 pm UTC").
+
+## Amended 2026-10-02 (third) — the confirmation page's poll runs only after Stripe's redirect, and adds no history
+
+**What changed and why.** QA U-13: the bounded poll counted its hops in the URL (`?p=1…8`), so
+every hop was a new URL and a new history entry — eight Backs to leave the page — and it ran for
+every `pending` order, including one simply awaiting payment, where nothing is about to change.
+
+**The amendment.** Decision 2 stands: the page still carries **zero** client JavaScript.
+
+- The poll runs only while a change is expected: a `pending` order the buyer has just paid for
+  (Stripe's redirect parameters present — decision 5's one use of them, which now also picks
+  whether the page polls). An order awaiting payment, or past its hold, does not poll; it offers
+  "Check again", and its copy no longer promises that the page will update.
+- Each hop is `<meta http-equiv="refresh" content="4">` with **no `url=`**. It reloads the same
+  URL, which browsers handle as a replacement of the current history entry, not a new one (the
+  HTML standard's same-URL rule; checked in Chromium, where `history.length` stays put across
+  hops). Reloading the same URL also keeps the redirect parameters across hops, so every hop
+  shows the "confirming" copy; the page still never renders, forwards or trusts them.
+- With the URL fixed, the hop count lives in a short-lived cookie (`otta_order_poll`:
+  `<orderId>/<payment_intent id>:<hop>`, HttpOnly, `SameSite=Lax`, `path=/orders/`, 2 minutes),
+  still bounded to 8 hops. Keyed on the intent id (never the client secret) so a second return
+  from Stripe within those two minutes gets its full run. "Check again" links to `""` — the same URL — for the same reasons.
+- Superseded wording: the 2026-10-02 amendment above says a lapsed pending order "keeps the
+  bounded poll" and "this page will update". It no longer polls; its copy now reads "If you
+  already paid, check again in a minute — if the order has expired by then, your payment will be
+  refunded."
+
+## Amended 2026-10-03 — the pay page keeps its own deadline; the return page tells the truth about a late payment
+
+**What changed and why (QA2 M1c, M3).** A pay tab left open past the hold kept a live Pay button
+and "reserved for 14 more minutes", and a click charged the buyer for an order that was expiring.
+And a buyer sent back by Stripe with `redirect_status=succeeded` on an order that had already
+expired read "Nothing was charged." — the webhook had not recorded the payment yet.
+
+**The amendment.** Decision 2 stands: `/checkout/pay` is still the only page with client
+JavaScript, and the confirmation page still carries none.
+
+- **The pay page closes itself at its deadline.** The page passes its script the order's
+  `holdExpiresAt` and the server's "now" at render (`data-pay-deadline`, `data-pay-server-now`
+  on the mount), from the read the guard already makes. A second, BUNDLED module script on the
+  same page (`lib/pay-deadline.ts`, tested with a fake clock) measures only the time elapsed
+  since load, so a wrong browser clock cannot move the deadline; re-checks on visibility, focus
+  and pageshow, since a background tab's timer cannot be trusted; and at the deadline disables
+  Pay, hides the hold sentence (`data-pay-hold`, the view's hook), and shows a page-rendered,
+  hidden-until-then notice: "The time to pay has run out." with a link to the order. A submit
+  after the deadline is stopped in the capture phase on the document, before Stripe's handler
+  runs, and the inline handler refuses on the form's closed flag as well — it never re-enables
+  Pay once closed. A payment already under way at the deadline is left alone. An unreadable
+  deadline closes nothing: the server-side withdrawal and refund remain the backstop.
+  The notice's `role="alert"` region is in the DOM from first render with only its body
+  hidden, so closing is announced (WCAG 4.1.3), and focus moves to its "View your order"
+  link if it was in the payment form. A confirm Stripe refuses because the intent was
+  withdrawn (`payment_intent_unexpected_state`, or a canceled intent) closes the page the
+  same way instead of showing Stripe's own message.
+- **Decision 5 is widened by one more clause.** `redirect_status` is now read, in the page
+  frontmatter only, for one further copy choice: on an `expired`, `cancelled` or `failed` order
+  whose ledger does not yet show a late payment, a `succeeded` or `processing` return says "Your
+  payment arrived after this order expired, so it will be refunded — once it is, it can take
+  5–10 days to appear", instead of "Nothing was charged". The page then runs the same bounded,
+  same-URL poll as a just-paid pending order, until the refund is on the ledger (`latePayment:
+  refunded`), and offers "Check again" when the poll ends first. A declined or abandoned return
+  keeps "Nothing was charged"; a `processing` return promises the refund only if the payment
+  goes through. The parameters are still never rendered or forwarded, and still
+  decide nothing about the order's state.
+
+## Amended 2026-10-03 (second) — a second tab is told which email the order has; the order page states refunds
+
+QA round 2 (X2, X3, N7, U-14). The decisions above are unchanged; these are what the pages now
+say.
+
+- **A second checkout tab.** The place key is stable per cart, so a second tab's submit replays
+  the order the first tab placed, which keeps the email it was placed with. The place route now
+  answers `buyerRefHint` (the order's email, masked) and `emailMatches`. When the typed email is
+  not the order's, `/checkout/place` does not go on to the pay page: it stashes the order as any
+  place does and returns to the locked review with `ORDER_PLACED_OTHER_EMAIL`, which names the
+  masked address and offers "Continue to payment" or "Start a new cart". The hint comes from the
+  stash place just wrote, and only when it is the locked order's; otherwise the sentence names no
+  address. A normal place stashes the hint too, so the fresh pay page states where the
+  confirmation goes, as the resume path already did.
+- **Refunds on the order page.** The public order read carries `refundedCents`: the order's
+  RECORDED refunds, from the same single ledger read as `latePayment`. The page prints "Refunded
+  $X" under the total by the account page's own rule (`orderRefundedNote`), and nothing when the
+  ledger shows none, so a refund made outside Otta ("Mark refunded", ADR-0026) is the status
+  alone. The figure is a sum the buyer was already told by email; no provider reference or
+  reconciliation detail reaches the page.
+- **The resume email page** reads the order first: an id that names no order gets the order
+  page's 404 and sentence and no form; an order that cannot be paid now goes to its own page.
+- **The header's cart count** is read on `/checkout` and `/orders/<id>` too (only the pay page is
+  left out). Both pages are already private; the read is a server-side dispatch, so nothing
+  reaches the order page's URL or a Referer.

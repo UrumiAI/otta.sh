@@ -73,6 +73,14 @@ export interface CheckoutStash {
 	 * it never blocks the payment on a missing label.
 	 */
 	total?: CheckoutStashTotal;
+	/**
+	 * The order's email as a hint (`j•••@g•••.com`), shown read-only on the pay
+	 * page (QA U-2). Set by a RESUMED payment, whose page names the email the
+	 * order keeps — never an input. Absent on a stash the place endpoint wrote:
+	 * that buyer typed the address one page ago. A label, like `total`: never a
+	 * reason to refuse the stash.
+	 */
+	emailHint?: string;
 }
 
 export interface CookieSetOptions {
@@ -109,6 +117,10 @@ export function setCheckoutCookie(cookies: CookieWriter, stash: CheckoutStash): 
 }
 
 const STASH_CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
+/** A hint is a few characters and a top-level domain; anything longer was not
+ *  written by the resume endpoint. */
+const EMAIL_HINT_MAX = 100;
 
 /**
  * The total, or undefined — and the asymmetry with the two fields above is the
@@ -153,12 +165,15 @@ export function readCheckoutStash(cookies: CookieReader): CheckoutStash | null {
 		return null;
 	}
 	if (typeof parsed !== "object" || parsed === null) return null;
-	const { orderId, clientSecret, total } = parsed as Record<string, unknown>;
+	const { orderId, clientSecret, total, emailHint } = parsed as Record<string, unknown>;
 	if (typeof orderId !== "string" || orderId.length === 0) return null;
 	if (typeof clientSecret !== "string" || clientSecret.length === 0) return null;
 	const stash: CheckoutStash = { orderId, clientSecret };
 	const parsedTotal = checkoutStashTotal(total);
 	if (parsedTotal !== undefined) stash.total = parsedTotal;
+	if (typeof emailHint === "string" && emailHint.length > 0 && emailHint.length <= EMAIL_HINT_MAX) {
+		stash.emailHint = emailHint;
+	}
 	return stash;
 }
 

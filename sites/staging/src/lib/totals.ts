@@ -48,6 +48,13 @@ export interface SumRow {
 	 * way — see `NOT_APPLIED_LABEL`.
 	 */
 	fallback?: string;
+	/**
+	 * A code that names the row — the applied coupon on the discount row — printed
+	 * after the label as its own element, in the spelling given. The label is
+	 * styled as an uppercase eyebrow, and a code inside it was re-spelled
+	 * ("qa2admin2" read "QA2ADMIN2" while the emails said "qa2admin2", QA round 2).
+	 */
+	code?: string;
 }
 
 /** Was this amount calculated at all? The view model says so; nothing here

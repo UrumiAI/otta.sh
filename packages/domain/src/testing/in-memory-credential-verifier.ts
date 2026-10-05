@@ -4,6 +4,7 @@ import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
+	PruneChallengesOptions,
 	VerifyChallengeResult,
 } from "../ports/credential-verifier.js";
 import type { CustomerStore } from "../ports/customer-store.js";
@@ -75,10 +76,11 @@ export class InMemoryCredentialVerifier implements CustomerCredentialVerifier {
 		return { ok: true, challengeId: id, token };
 	}
 
-	async pruneChallenges(now: string): Promise<number> {
+	async pruneChallenges(now: string, options: PruneChallengesOptions = {}): Promise<number> {
 		let pruned = 0;
 		for (const [id, c] of this.#challenges) {
 			if (c.consumedAt !== null || c.expiresAt <= now) {
+				if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 				this.#challenges.delete(id);
 				pruned++;
 			}

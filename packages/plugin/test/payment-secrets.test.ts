@@ -414,7 +414,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		for (const [, , , value] of CASES) expect(whole).not.toContain(value);
 	});
 
-	test("the rendered secret fields are plain, always-empty text_inputs (INC-09 discipline)", async () => {
+	test("the rendered secret fields are always-empty password inputs (INC-09 discipline, U-8 secret_input)", async () => {
 		const seed = Object.fromEntries(CASES.map(([, , kvKey, value]) => [kvKey, value]));
 		const { ctx } = makeCtx(seed);
 		const res = await createSettingsFormHandler()(
@@ -425,7 +425,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		for (const [, fieldId] of CASES) {
 			const found = fields.find((f) => f["action_id"] === fieldId);
 			expect(found, `no rendered field for ${fieldId}`).toBeDefined();
-			expect(found?.["type"]).toBe("text_input");
+			expect(found?.["type"]).toBe("secret_input");
 			expect(found).not.toHaveProperty("initial_value");
 			expect(found).not.toHaveProperty("has_value");
 		}

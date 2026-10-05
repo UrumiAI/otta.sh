@@ -13,12 +13,15 @@
  * isolate — module state — and a file is the unit vitest gives a fresh module
  * graph to.
  */
+import { EmailSendTimeoutError } from "@otta-sh/domain";
+import { DEFAULT_CHALLENGE_TTL_MS } from "@otta-sh/store-emdash";
 import { FakeEmailSender } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
+import { LOGIN_LINK_TTL_MS } from "../src/storefront/login-link.js";
 
 /** The operator's configured sign-in page (`settings:loginLinkUrl`). */
 const VERIFY = "https://shop.example.test/account/verify";
@@ -66,8 +69,12 @@ describe("requestLoginLink sends the magic link", () => {
 		// Idempotency-keyed on the challenge, so a provider can dedupe a retried send.
 		expect(sent?.idempotencyKey).toBe(`login:${challenge}`);
 		// The token travels only inside the link — not as a loose field a template
-		// or a provider log could print on its own.
-		expect(Object.keys(sent?.data ?? {})).toEqual(["loginUrl"]);
+		// or a provider log could print on its own. Beside it, only the lifetime
+		// the email states (QA U-3): the challenge TTL the verifier enforces.
+		expect(Object.keys(sent?.data ?? {})).toEqual(["loginUrl", "expiresInMinutes"]);
+		expect(sent?.data["expiresInMinutes"]).toBe(LOGIN_LINK_TTL_MS / 60_000);
+		expect(LOGIN_LINK_TTL_MS).toBe(DEFAULT_CHALLENGE_TTL_MS);
+		expect(sent?.data["expiresInMinutes"]).toBe(15);
 	});
 
 	test("the emailed link redeems once, and a known address gets exactly one email too", async () => {
@@ -176,6 +183,43 @@ describe("requestLoginLink on a deployment with NO email configured", () => {
 			expect(harness.egressAttempts()).toBe(0);
 		} finally {
 			warns.mockRestore();
+		}
+	});
+});
+
+/**
+ * The login send's catch is GENERIC — any error from the sender is logged by
+ * message and swallowed into the same answer — so the sweep's timeout error type
+ * (`EmailSendTimeoutError`, which the sender now raises for its own abort) needs
+ * no special case here. Pinned, because a catch that matched the old abort error
+ * by name would let this one escape as a 500.
+ */
+describe("requestLoginLink with a login send that TIMES OUT", () => {
+	let harness: InProcessCommerceHarness;
+	const timingOut = {
+		async send(): Promise<void> {
+			throw new EmailSendTimeoutError(3000);
+		},
+	};
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce({ emailSender: timingOut });
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("answers the same generic success and logs the timeout by message only", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(
+				await harness.client.requestLoginLink("slow@example.test", { verifyPageUrl: VERIFY }),
+			).toEqual({ ok: true });
+			expect(errors).toHaveBeenCalled();
+			expect(JSON.stringify(errors.mock.calls)).toContain("email send abandoned after 3000 ms");
+			expect(JSON.stringify(errors.mock.calls)).not.toMatch(/token=|\/account\/verify/);
+		} finally {
+			errors.mockRestore();
 		}
 	});
 });

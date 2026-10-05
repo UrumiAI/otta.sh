@@ -102,9 +102,10 @@ describe("Storefront shell — a dead content store costs the chrome, not the re
 	test("the title falls back exactly where an unset setting already falls back", () => {
 		// A failed read lands on `{}`, so it takes the SAME path an absent
 		// `settings.title` already takes rather than growing a second rule (and a
-		// second string) for the store's name.
+		// second string) for the store's name. That one rule is `storeTitle` —
+		// the home page's own — whose `{}` answer is "Otta" (tape.test.ts).
 		expect(shellFrontmatter).toMatch(/settings: \{ title\?: string; tagline\?: string \} = \{\}/);
-		expect(shellFrontmatter).toContain('settings.title ?? "Otta"');
+		expect(shellFrontmatter).toContain("const siteTitle = storeTitle(settings);");
 	});
 
 	test("the nav falls back to this site's own routes, and ONLY on a thrown read", () => {
@@ -155,9 +156,10 @@ describe("the chrome — prop contract (shell) and markup (every theme)", () => 
 	);
 
 	test("the cart nav item carries a live count from the page's own cart read", () => {
-		// The count is a PROP, not a commerce call in the shell: a call here
-		// would put the service on the critical path of every page (including
-		// the home page, which by construction makes none).
+		// The count is a PROP first. The shell reads one itself only for a theme
+		// that opts into the shopper's state AND a request carrying a cart cookie
+		// (chrome-shopper-state.test.ts) — a visitor with no cart costs no
+		// commerce call, so the home page still makes none for them.
 		expect(shell).toMatch(/cartCount\?:\s*number \| null/);
 		expect(temperedMarkup).toContain("chrome.cartCount");
 	});

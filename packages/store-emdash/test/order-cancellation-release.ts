@@ -21,6 +21,44 @@ import type { OrderHarness } from "./order-harness.js";
 
 /** Register the case against a factory for a fresh full order harness. */
 export function cancellationReleaseCase(makeHarness: () => OrderHarness): void {
+	test("cancelling a PENDING order through cancelOrder releases its adopted holds", async () => {
+		// The admin's one way to cancel (ADR-0026: a bare `→ cancelled` is refused,
+		// because only expiry's flip records a release intent). cancelOrder records it,
+		// so an unpaid order's held units go back to stock.
+		const full = makeHarness();
+		await full.seedPhysical({
+			productId: "p-cx-pend",
+			sku: "SKU-CX-PEND",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 5,
+		});
+		const cartId = await full.cartWith([
+			{ sku: "SKU-CX-PEND", productId: "p-cx-pend", qty: 2, kind: "physical" },
+		]);
+		const created = await createOrderFromCart(full.createDeps, {
+			cartId,
+			idempotencyKey: idempotencyKey("key-cx-pend"),
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+		});
+		if (!created.ok) throw new Error(created.reason);
+		expect(await full.onHand("SKU-CX-PEND"), "the checkout holds the units").toBe(3);
+
+		const res = await cancelOrder(
+			{ orderStore: full.store },
+			{
+				orderId: created.order.id,
+				reason: "customer_request",
+				cancelledBy: "ops",
+				idempotencyKey: idempotencyKey("cx-pend"),
+			},
+		);
+		expect(res.ok && res.cancelled).toBe(true);
+		expect(await full.onHand("SKU-CX-PEND"), "the held units are back").toBe(5);
+		expect((await full.orders.get(created.order.id))?.holdsReleased?.completedAt).not.toBeNull();
+	});
+
 	test("cancelling a PAID order completes the release without returning committed units", async () => {
 		const full = makeHarness();
 		await full.seedPhysical({

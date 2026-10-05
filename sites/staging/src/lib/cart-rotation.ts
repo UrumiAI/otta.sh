@@ -9,10 +9,12 @@
  * in progress.
  *
  * THE RULE (`isSpentCart`): the cart named THIS order, and the order is no longer
- * `pending`. Only a pending order can still take a payment, and the cart is how
- * that payment is resumed — `/orders/<id>`'s "Complete payment" goes through
- * `/checkout`, which rebuilds its form from this cookie (see `cart/index.astro`'s
- * note on why it deletes nothing). So a pending order's cart is KEPT, and so is
+ * `pending`. Only a pending order can still take a payment, and this browser's
+ * way back to it from the cart is the cart — `/cart` links "Return to this
+ * checkout", whose locked review is built from this cookie (see
+ * `cart/index.astro`'s note on why it deletes nothing). The order page's
+ * "Complete payment" no longer needs it (`/checkout/resume`, QA U-2). So a
+ * pending order's cart is KEPT, and so is
  * any cart this site cannot read or that names no order: not knowing is not proof
  * that nothing is in flight. Those keep the existing way out (the cart page's
  * panel), which the product page's notice now links to.

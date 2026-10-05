@@ -95,3 +95,20 @@ document.
   current day's figures provisional until it is reconciled; orders, stock and payments are unaffected.
 - Readers must accept two stored shapes (and the hybrid) indefinitely, since migrations are
   forward-only and a document that is never written again is never migrated.
+
+## Amended 2026-10-03 — no claim pre-read; the scheduled heal is bounded per tick
+
+1. **`recordOrderEvent` no longer reads the claim before creating it.** The create-if-absent claim
+   is the once-only gate on its own. The pre-read spared a REDELIVERY one call while costing every
+   first delivery — every order transition, the expiry sweep's included — one more. A first
+   delivery is now four calls (the day read, the claim, the delta, the diagnostic stamp). A spent
+   event costs the day read and a refused claim, and moves no counter. The epoch is still read
+   before the claim is made, so the argument above is unchanged.
+2. **The sweep's heal of a closed day is bounded by the tick's budget** (ADR-0019's amendment of
+   this date). Each day is reconciled with `maxReconcilePages` sized to the calls the leg has left.
+   A first heal that runs out while absorbing keeps every claim it absorbed — absorbed claims are
+   skipped next time — and resumes next tick. Before, one `reconcile` absorbed a whole day's live
+   claims at two calls each, and QA logged that as a 334-query tick on a 30-query budget. The
+   absorb-before-commit order is unchanged. A day cut short has absorbed claims whose counters are
+   not yet recomputed: the same under-count residue a failed attempt leaves, healed by the run that
+   finishes the day.

@@ -43,6 +43,16 @@ export type CreateOrderFailure =
 	 */
 	| "PAYMENT_INTENT_FAILED"
 	/**
+	 * The gateway's `createIntent` was refused only because a request with the
+	 * SAME key is still being processed (`PaymentIntentError.inFlight`) — a
+	 * double-submitted checkout. Everything about the order is exactly as for
+	 * `PAYMENT_INTENT_FAILED` (the pending row stays; a same-key retry re-issues
+	 * the intent), but nothing failed: the right answer to the buyer is "busy,
+	 * try again in a moment", which a retry then satisfies with the first
+	 * request's intent.
+	 */
+	| "PAYMENT_INTENT_IN_FLIGHT"
+	/**
 	 * The `idempotencyKey` already names an order minted from a DIFFERENT cart
 	 * (issue #133) — e.g. a stale or second tab submitting the old cart's
 	 * `checkout:<cartId>` key while the cart cookie now names a new cart. A key
@@ -76,4 +86,14 @@ export type SettleFailure =
 	 * receipt aimed at a second order, and it must be terminally refused before any
 	 * state moves. Recorded as the `RECEIPT_REBOUND` anomaly.
 	 */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/**
+	 * A verified success landed on a never-paid `expired`/`cancelled` order and
+	 * its automatic refund hit a TRANSIENT gateway failure (network / 5xx — the
+	 * refund was definitely not issued). Nothing is lost: the payment is
+	 * recorded, the refund reservation is KEPT and the order is flagged. This is a
+	 * failure only so the transport answers "retry" (Stripe redelivers on a
+	 * non-2xx): the redelivery re-drives settle, which resumes the SAME reserved
+	 * refund under the SAME idempotency key — so retrying can never refund twice.
+	 */
+	| "LATE_PAYMENT_REFUND_RETRYABLE";

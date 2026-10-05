@@ -3,7 +3,8 @@
 - Status: accepted — second-expert concurrence **with conditions**, all three incorporated in the
   2026-07-23 amendment: (1) refund-time provider pre-flight (never issue blind), (2) ceiling bound
   to `min(Σ captured, total)`, (3) the Stripe-stub → first-live-API reality stated and scoped
-- Date: 2026-07-22 (amended 2026-07-23 per review of PR #77)
+- Date: 2026-07-22 (amended 2026-07-23 per review of PR #77; amended 2026-10-02 — late
+  payments on never-paid dead orders are refunded automatically, see the end of this record)
 - Refines: ADR-0001/0002 (pluggable payments; `PaymentGateway` port). Relates to Phase 4 settle
   (`settle-order.ts`), the order state machine (`state-machine.ts`), the reconciliation
   disposition (`resolve-reconciliation.ts` / #61), and the timeline/audit spine (#65).
@@ -220,3 +221,53 @@ race** — a concurrent dashboard refund landing between the `amount_refunded` r
 `charge.refunded` or a Stripe-side atomic guard closes it); and (b) the **manual/x402 leg has no
 provider to pre-flight** — the ledger's `Σ` for manual refunds is only as truthful as the admin
 recording them, so the honest-record path can under- or over-count with no external check.
+
+## Amended 2026-10-02 — one automatic refund: a late payment on a never-paid dead order
+
+The rejected alternative "**Auto-refund on a settle anomaly** (amount mismatch, lost hold) …
+refunds are always an admin-initiated, audited act" is **narrowed, not reversed**. It still holds
+for every anomaly on a LIVE order — an amount mismatch, a lost hold under a paid order — because
+those need judgement: the merchant may fulfil, re-source or write off, and money should not move
+before someone decides.
+
+It no longer holds for one case that needs no judgement: a verified success that lands on an
+order which provably left `pending` unpaid — `expired` or `failed`, or `cancelled` with the
+`pending → cancelled` flip in its audit (ADR-0022's 2026-10-02 amendment). Nothing can be bought with that money — the stock was released and the
+order cannot revive — so the only open question is how quickly it goes back, and leaving it in
+the reconciliation queue left the buyer out of pocket while the order page told them nothing was
+charged. `settleOrder` now refunds it through this ADR's own machinery, unchanged:
+`refundOrder`'s reserve-before-issue protocol, the Stripe pre-flight, the native
+`Idempotency-Key`. Two small, additive changes support it:
+
+- `RefundOrderCommand.providerRef` (optional) targets a SPECIFIC captured payment rather than the
+  order's first — the late payment is the money being returned, and an order can carry more
+  than one capture.
+- The refund is still audited exactly as this record requires: a ledger row keyed
+  `late-payment-refund:{providerRef}`, `refundedBy: "otta:auto-refund"`, the settle anomaly
+  recorded once, and a reconciliation flag set before the provider call and resolved (outcome
+  `refunded`) only after the ledger row is finalized; a failure rewords the flag by what a
+  human should do (retrying / verify at the provider / refund manually). The order's state
+  does not move — the
+  ledger's full-refund flip is guarded on `isLegalOrderTransition`, and a dead state has no
+  outbound move.
+
+A gateway that cannot refund (`refundable: false`) still gets the manual flag — the capability
+flag is honoured exactly as before.
+
+## Amended 2026-10-02 — a cancellation refunds through this ledger, and restocks
+
+Recorded in full in [ADR-0026](./0026-admin-order-actions-never-claim-money-that-did-not-move.md)'s
+cancel-with-refund amendment (QA T1-4).
+
+- **"No inventory restock" no longer holds for a cancellation.** A refund on its own still
+  restocks nothing. Cancelling a paid order (`cancelOrderWithRefund`), however, refunds the
+  remainder through THIS ledger with `purpose: "cancellation"`, then restocks each physical line
+  exactly once unless the operator unticks it. It closes an open commit bracket before restocking,
+  so the units cannot also be released. The oversell concern above is met in two ways: the units
+  return through the same exactly-once stock-movement ledger a manual restock uses, and a hold
+  that was released, or whose record is gone, is never restocked.
+- **A `cancellation` row never drives `→ refunded`.** It consumes ceiling capacity like any other
+  row, but the cancellation closes the order. A refund that fails refuses the cancel.
+- **Refund purposes.** A ledger row records why the money went back: `refund` (an admin refund in
+  its own right — the only purpose that can drive `→ refunded`), `cancellation` (above), or
+  `late-payment` (the automatic refund of the amendment before this one).

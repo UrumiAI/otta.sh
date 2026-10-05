@@ -109,6 +109,13 @@ async function settle<T>(
 	return answers;
 }
 
+/** A stock answer with the ledger's `replayed` marker removed, for comparing the
+ *  answers same-key racers got (one first-hand, the rest replays). */
+function withoutReplayed(result: StockRemovalResult): StockRemovalResult {
+	if (!result.ok) return result;
+	return { ok: true, onHand: result.onHand };
+}
+
 describe.skipIf(!PG_ENABLED)("restock / removeStock concurrency [postgres]", () => {
 	let storage: StorageAccess;
 	let close: (() => Promise<void>) | undefined;
@@ -302,17 +309,23 @@ describe.skipIf(!PG_ENABLED)("restock / removeStock concurrency [postgres]", () 
 
 			// Exactly-once: every racer resolves to the SAME recorded result and the +7
 			// lands ONCE (3 → 10), never N times.
-			const first = results[0];
-			if (first === undefined) throw new Error("no results");
-			for (const r of results) expect(r).toEqual(first);
-			expect(first).toEqual({ ok: true, onHand: 10 });
+			// Every racer gets the same answer, and AT MOST ONE got it first-hand: the
+			// rest were answered by the ledger and say so (`replayed`). (A contention
+			// failure after the applier's write can leave every answer a replay.)
+			for (const r of results) expect(withoutReplayed(r)).toEqual({ ok: true, onHand: 10 });
+			const fresh = results.filter((r) => !(r.ok && r.replayed === true));
+			expect(fresh.length, `loop ${String(loop)}: one call moved the units`).toBeLessThanOrEqual(1);
 			expect(await store.getOnHand(sku), `loop ${String(loop)}: added once`).toBe(10);
 
 			// One claim document for the key, ending `applied` with that same answer —
 			// the document-model equivalent of the SQL ledger's single row.
 			const claim = await movements.get(stockClaimId(key));
 			if (claim?.kind !== "stock") throw new Error(`loop ${String(loop)}: missing claim`);
-			expect(claim.applied?.result, `loop ${String(loop)}: recorded answer`).toEqual(first);
+			// The flag is never stored: the record is the fresh answer.
+			expect(claim.applied?.result, `loop ${String(loop)}: recorded answer`).toEqual({
+				ok: true,
+				onHand: 10,
+			});
 			const doc = await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(sku);
 			expect(
 				(doc?.appliedMovements ?? []).filter((entry) => entry.key === key),
@@ -408,12 +421,135 @@ describe.skipIf(!PG_ENABLED)("restock / removeStock concurrency [postgres]", () 
 				`loop ${String(loop)}`,
 			);
 
-			const first = results[0];
-			if (first === undefined) throw new Error("no results");
-			for (const r of results) expect(r).toEqual(first);
-			expect(first).toEqual({ ok: true, onHand: 6 });
+			for (const r of results) expect(withoutReplayed(r)).toEqual({ ok: true, onHand: 6 });
+			const fresh = results.filter((r) => !(r.ok && r.replayed === true));
+			expect(fresh.length, `loop ${String(loop)}: one call moved the units`).toBeLessThanOrEqual(1);
 			// Removed ONCE (10 → 6), never N times, never negative.
 			expect(await store.getOnHand(sku), `loop ${String(loop)}: removed once`).toBe(6);
+		}
+	}, 300_000);
+
+	// -- removeStock's watermark (`expectedOnHand`) under real concurrency -------
+	//
+	// The watermark is judged on the same read the decrement's compare-and-set is
+	// conditioned on. These cases are what make "atomic" a measured claim rather
+	// than a reading of the code: under a real race, at most one removal can see
+	// the count its operator saw, and none may apply against a count nobody saw.
+
+	it("N watermarked removals pinned to the SAME count race: exactly one applies, the rest are STALE_ON_HAND, and the count is right", async () => {
+		const N = 24;
+		const LOOPS = 10;
+		const metrics = measure("removeStock pinned N24 same watermark");
+		const store = makeStore(metrics);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const sku = `SKU-RM-PIN-${String(loop)}`;
+			await seed(sku, 10);
+			const contendedBefore = metrics.contentionFailures;
+			const results = await settle<StockRemovalResult>(
+				metrics,
+				Array.from({ length: N }, (_unused, i) =>
+					store.removeStock(sku, 4, idempotencyKey(`pin-${String(loop)}-${String(i)}`), {
+						expectedOnHand: 10,
+					}),
+				),
+				`loop ${String(loop)}`,
+			);
+			const contendedHere = metrics.contentionFailures - contendedBefore;
+
+			const ok = results.filter((r) => r.ok);
+			const stale = results.filter((r) => !r.ok && r.reason === "STALE_ON_HAND");
+			// Never two: a second success would be a removal against 6 by an operator
+			// who saw 10.
+			expect(ok.length, `loop ${String(loop)}: at most one applies`).toBeLessThanOrEqual(1);
+			// Everyone else is a clean STALE carrying the live count — never
+			// INSUFFICIENT_STOCK, never a second decrement.
+			expect(ok.length + stale.length, `loop ${String(loop)}: every loser is STALE`).toBe(
+				results.length,
+			);
+			for (const r of stale) expect(r).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 6 });
+			// A contention failure writes nothing, so with none the winner must exist.
+			if (contendedHere === 0) expect(ok).toEqual([{ ok: true, onHand: 6 }]);
+			expect(await store.getOnHand(sku), `loop ${String(loop)}: count`).toBe(10 - 4 * ok.length);
+		}
+		expect(metrics.contentionFailures).toBeLessThanOrEqual(REMOVAL_CONTENTION_CEILING);
+	}, 300_000);
+
+	it("a watermarked removal racing reservations never applies against a count that was not live", async () => {
+		const INITIAL = 12;
+		const M = 20;
+		const LOOPS = 10;
+		const metrics = measure("removeStock pinned vs reserve M20");
+		const store = makeStore(metrics);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const sku = `SKU-RM-PIN-RV-${String(loop)}`;
+			await seed(sku, INITIAL);
+			const removalCall = store.removeStock(sku, 3, idempotencyKey(`pin-rv-rm-${String(loop)}`), {
+				expectedOnHand: INITIAL,
+			});
+			const reserveCalls = Array.from({ length: M }, (_unused, i) =>
+				store.reserve(sku, 1, idempotencyKey(`pin-rv-${String(loop)}-${String(i)}`)),
+			);
+			const [removal, reserves] = await Promise.all([
+				settle<StockRemovalResult>(metrics, [removalCall], `loop ${String(loop)} removal`),
+				settle<ReserveResult>(metrics, reserveCalls, `loop ${String(loop)} reserves`),
+			]);
+
+			const okReserves = reserves.filter((r) => r.ok).length;
+			const answer = removal[0];
+			let removed = 0;
+			if (answer !== undefined && answer.ok) {
+				// It applied ⇒ it applied against EXACTLY the count the operator saw,
+				// i.e. before any reservation landed.
+				expect(answer.onHand, `loop ${String(loop)}: applied against the live count`).toBe(
+					INITIAL - 3,
+				);
+				removed = 3;
+			} else if (answer !== undefined) {
+				// Refused ⇒ refused as STALE, naming a count a sale had already moved.
+				expect(answer).toMatchObject({ ok: false, reason: "STALE_ON_HAND" });
+				if (!answer.ok && answer.reason === "STALE_ON_HAND") {
+					expect(answer.onHand).toBeLessThan(INITIAL);
+				}
+			}
+			// Exact conservation, never negative, never oversold.
+			expect(okReserves + removed, `loop ${String(loop)}: no oversell`).toBeLessThanOrEqual(
+				INITIAL,
+			);
+			expect(await store.getOnHand(sku), `loop ${String(loop)}: conservation`).toBe(
+				INITIAL - removed - okReserves,
+			);
+		}
+	}, 300_000);
+
+	it("N restocks under DISTINCT keys race: every one applies — an add is commutative and takes no watermark", async () => {
+		// The two-tabs case at scale: N operators who each saw the same count and
+		// each add 3 end at initial + 3N, not at initial + 3.
+		const N = 16;
+		const LOOPS = 8;
+		const metrics = measure("restock distinct-key N16");
+		const store = makeStore(metrics);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const sku = `SKU-RS-MANY-${String(loop)}`;
+			await seed(sku, 4);
+			const results = await settle<StockRemovalResult>(
+				metrics,
+				Array.from({ length: N }, (_unused, i) =>
+					store.restock(sku, 3, idempotencyKey(`many-rs-${String(loop)}-${String(i)}`)),
+				),
+				`loop ${String(loop)}`,
+			);
+			// Every answered restock applied, and each reports a distinct resulting
+			// count: no two landed on the same read.
+			expect(results.every((r) => r.ok)).toBe(true);
+			const counts = results.map((r) => (r.ok ? r.onHand : -1));
+			expect(new Set(counts).size, `loop ${String(loop)}: distinct results`).toBe(results.length);
+			// A contention failure wrote nothing, so the count is exact in the answers.
+			expect(await store.getOnHand(sku), `loop ${String(loop)}: all applied`).toBe(
+				4 + 3 * results.length,
+			);
 		}
 	}, 300_000);
 });

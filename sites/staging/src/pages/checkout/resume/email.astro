@@ -1,0 +1,136 @@
+---
+/**
+ * GET /checkout/resume/email?order=<id> — the second factor for resuming an
+ * order's payment on a device that holds neither the order's cart nor its
+ * owner's session (QA U-2; `lib/checkout-resume.ts`).
+ *
+ * One field: the email the order was placed with. It POSTs to
+ * `/checkout/resume` FROM THIS PAGE — same origin, so the origin guard admits it
+ * and still refuses a cross-site form — and the plugin compares it with the
+ * order's buyer, throttling guesses per order. A wrong one comes back here with
+ * ONE generic sentence; the typed address is never echoed and never in a URL.
+ *
+ * Page-owned markup in the shell's slot, like the 404 page: there is nothing a
+ * theme needs to vary on a one-field form, and the page owns the path it posts
+ * to. Zero client JS.
+ */
+import { BUYER_REF_MAX, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Notice from "../../../components/Notice.astro";
+import Storefront from "../../../layouts/Storefront.astro";
+import {
+	orderPathFor,
+	RESUME_EMAIL_ERRORS,
+	resumeEmailGate,
+} from "../../../lib/checkout-resume.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+import { keepPrivate } from "../../../lib/no-store.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
+
+/* One buyer's order, and a form for their email: never stored by a shared cache.
+   Called FIRST, so no branch goes out without it. */
+keepPrivate(Astro);
+/* The order id is in this URL: no Referer carries it to another origin.
+   `same-origin`, not `no-referrer`, so this page's own POST still carries an
+   Origin the guard accepts. */
+Astro.response.headers.set("Referrer-Policy", "same-origin");
+
+const orderId = Astro.url.searchParams.get("order")?.trim() ?? "";
+if (orderId.length === 0) return Astro.redirect("/cart", 303);
+
+const error = Astro.url.searchParams.get("error");
+const errorMessage = error !== null && RESUME_EMAIL_ERRORS.has(error) ? cartErrorMessage(error) : null;
+const orderPath = orderPathFor(orderId);
+
+/* The order this page would resume, read as the order page reads it (QA2 N7): an
+   id that names no order is the order page's 404 — the same sentence, and no
+   form — and one that cannot be paid now goes to its own page, which says why. */
+const result = await dispatchOttaRoute<OrderRouteResult>(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	STOREFRONT_ORDER_ROUTE,
+	{ orderId },
+	Astro.url,
+);
+/* BUSY (already retried once): the form still renders — the resume re-checks —
+   but as the 503 + Retry-After every page answers a busy read with. */
+if (isBusyResult(result)) markBusy(Astro.response);
+const gate = resumeEmailGate(result, new Date());
+if (gate === "order_page") return Astro.redirect(orderPath, 303);
+const notFound = gate === "not_found";
+if (notFound) Astro.response.status = 404;
+const notFoundMessage = cartErrorMessage("ORDER_NOT_FOUND");
+---
+
+<Storefront title={notFound ? "Order" : "Confirm your email"}>
+	<meta name="referrer" content="same-origin" slot="head" />
+	{notFound ? (
+		<div class="resume">
+			<h1 class="resume-title">Order</h1>
+			<Notice>{notFoundMessage}</Notice>
+			<p class="resume-back"><a href="/products">Browse products</a></p>
+		</div>
+	) : (
+	<div class="resume">
+		<h1 class="resume-title">Confirm your email</h1>
+		<p class="resume-copy">
+			To pay for this order on this device, enter the email address it was placed with.
+		</p>
+		{errorMessage !== null && (
+			<div id="resume-error">
+				<Notice>{errorMessage}</Notice>
+			</div>
+		)}
+		<form method="POST" action="/checkout/resume" class="resume-form">
+			<input type="hidden" name="order" value={orderId} />
+			<label class="u-label" for="resume-email">Email</label>
+			<input
+				type="email"
+				id="resume-email"
+				name="email"
+				required
+				autocomplete="email"
+				maxlength={BUYER_REF_MAX}
+				aria-invalid={errorMessage !== null}
+				aria-describedby={errorMessage !== null ? "resume-error" : undefined}
+			/>
+			<div>
+				<button type="submit" class="u-btn">Continue to payment</button>
+			</div>
+		</form>
+		<p class="resume-back"><a href={orderPath}>Back to your order</a></p>
+	</div>
+	)}
+</Storefront>
+
+<style>
+	.resume {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		max-width: 28rem;
+		padding-block: 2rem;
+	}
+	.resume-title {
+		margin: 0;
+		font-family: var(--u-display);
+	}
+	.resume-copy,
+	.resume-back {
+		margin: 0;
+		color: var(--u-mute);
+	}
+	.resume-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.resume-form input[type="email"] {
+		width: 100%;
+		padding: 0.625rem 0.75rem;
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		background: var(--u-surface);
+		color: var(--u-ink);
+		font: inherit;
+	}
+</style>

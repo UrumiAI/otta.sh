@@ -3,12 +3,13 @@ import {
 	createCart,
 	currency,
 	expireHolds,
+	expireHoldsBatch,
 	getCart,
 	idempotencyKey,
 	sku,
 	updateLine,
 } from "@otta-sh/domain";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
 
 const USD = currency("USD");
@@ -108,5 +109,71 @@ describe("hold expiry (fake)", () => {
 		expect(await expireHolds(h.deps)).toBe(0);
 		expect(await h.onHand("SKU-1")).toBe(3); // still held
 		expect(h.inventory.reservationState(raw.reservationId)).toBe("held");
+	});
+});
+
+// The scheduled sweep runs inside a host hook with a hard timeout, so one call
+// must be able to take a BOUNDED bite of an expiry backlog and say whether it
+// finished — the remainder is the next tick's, never a reason to blow the hook.
+describe("bounded hold expiry (fake)", () => {
+	async function threeExpiredHolds() {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 9);
+		for (const n of [1, 2, 3]) {
+			const cartId = await createCart(h.deps, USD);
+			const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey(`b${n}`));
+			if (!add.ok) throw new Error("add must succeed");
+		}
+		expect(await h.onHand("SKU-1")).toBe(6);
+		h.advance(PAST_TTL_MS);
+		return h;
+	}
+
+	test("a limit caps the flips per call and the backlog drains over several calls", async () => {
+		const h = await threeExpiredHolds();
+		expect(await expireHoldsBatch(h.deps, undefined, { limit: 2 })).toEqual({
+			count: 2,
+			drained: false,
+		});
+		expect(await h.onHand("SKU-1")).toBe(8);
+		expect(await expireHoldsBatch(h.deps, undefined, { limit: 2 })).toEqual({
+			count: 1,
+			drained: true,
+		});
+		expect(await h.onHand("SKU-1")).toBe(9);
+	});
+
+	test("shouldContinue is asked before every flip, and a stop leaves the rest untouched", async () => {
+		const h = await threeExpiredHolds();
+		let asked = 0;
+		const result = await expireHoldsBatch(h.deps, undefined, {
+			shouldContinue: () => asked++ < 1,
+		});
+		expect(result).toEqual({ count: 1, drained: false });
+		expect(await h.onHand("SKU-1")).toBe(7);
+	});
+
+	test("an empty backlog is drained, and expireHolds still returns the plain count", async () => {
+		const h = await threeExpiredHolds();
+		expect(await expireHolds(h.deps)).toBe(3);
+		expect(await expireHoldsBatch(h.deps)).toEqual({ count: 0, drained: true });
+	});
+	test("the LIST is bounded too: a limited call asks the store for one more than its limit, never the whole backlog", async () => {
+		const h = await threeExpiredHolds();
+		const listExpired = vi.spyOn(h.deps.cartStore, "listExpired");
+		expect(await expireHoldsBatch(h.deps, undefined, { limit: 1 })).toEqual({
+			count: 1,
+			drained: false,
+		});
+		// limit + 1: the extra row is what tells "exactly drained" from "more left".
+		expect(listExpired.mock.calls.map((call) => call[2])).toEqual([{ limit: 2 }]);
+	});
+
+	test("a non-positive or non-integer limit is a caller bug, refused loudly", async () => {
+		const h = await threeExpiredHolds();
+		for (const limit of [0, -1, Number.NaN, 1.5]) {
+			await expect(expireHoldsBatch(h.deps, undefined, { limit })).rejects.toThrow(RangeError);
+		}
+		expect(await h.onHand("SKU-1")).toBe(6); // nothing touched
 	});
 });

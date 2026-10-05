@@ -72,8 +72,23 @@ export function isAccountLink(url: string): boolean {
 	return path === "/account" || path.startsWith("/account/");
 }
 
+/**
+ * The theme's Account entry when the shopper IS signed in (QA U-12: the header
+ * looked the same signed in and out). It names no one: the email never reaches
+ * the chrome, so even a page that must stay private carries no address in its
+ * header.
+ */
+export const ACCOUNT_NAV_SIGNED_IN_LABEL = "Your account";
+
 /** The menu plus the account entry — unless the operator's menu already links
- *  into /account, in which case theirs stands and no duplicate is added. */
-export function withAccountLink(items: readonly NavItem[]): readonly NavItem[] {
-	return items.some((item) => isAccountLink(item.url)) ? items : [...items, ACCOUNT_NAV_ITEM];
+ *  into /account, in which case theirs stands, in the operator's own words, and
+ *  no duplicate is added. `signedIn` (known only for a request carrying a live
+ *  session) relabels the theme's own entry; signed out or unknown, it stays the
+ *  neutral "Account". */
+export function withAccountLink(items: readonly NavItem[], signedIn = false): readonly NavItem[] {
+	if (items.some((item) => isAccountLink(item.url))) return items;
+	return [
+		...items,
+		signedIn ? { ...ACCOUNT_NAV_ITEM, label: ACCOUNT_NAV_SIGNED_IN_LABEL } : ACCOUNT_NAV_ITEM,
+	];
 }

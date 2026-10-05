@@ -13,9 +13,12 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
-import type { CheckoutFailureReason } from "@otta-sh/plugin";
+import { CART_LINE_MAX_QTY, type CheckoutFailureReason } from "@otta-sh/plugin";
 
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
+
+const STALE_CHECKOUT_PAGE =
+	"This checkout page was out of date — please review your order and place it again.";
 
 /**
  * #305 part 1 — the buyer's selection, refused at the summary or at place.
@@ -28,8 +31,7 @@ const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
  * method are checked, so nothing was charged.
  */
 const SELECTION_MESSAGES = {
-	COUPON_NOT_FOUND:
-		"We couldn't find that coupon code — check it and try again (codes are case-sensitive).",
+	COUPON_NOT_FOUND: "We couldn't find that coupon code — check the spelling and try again.",
 	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
 	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
 	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",
@@ -56,7 +58,18 @@ const SELECTION_MESSAGES = {
 >;
 
 const MESSAGES: Record<string, string> = {
-	OUT_OF_STOCK: "Sorry, that item is out of stock.",
+	// About the QUANTITY, deliberately: an add that outruns the stock is refused
+	// OUT_OF_STOCK while the page still — truthfully — says In stock, and "that
+	// item is out of stock" then contradicted it (QA U-6). This sentence is true
+	// for that case and for a sold-out item alike. The available count is not
+	// named because the OUT_OF_STOCK refusal does not carry one.
+	OUT_OF_STOCK: "Sorry, we don't have enough of that in stock — try a smaller quantity.",
+	// The site's own (cart/add.ts): ONE unit refused OUT_OF_STOCK — there is no
+	// smaller quantity to try (QA2 F).
+	SOLD_OUT: "Sorry, this item is sold out.",
+	// Built from the plugin's own cap, so the number cannot drift. "At a time":
+	// the cap is per request, and an add can still take a line past it.
+	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
 	CART_NOT_FOUND: "Your cart could not be found — it may have expired.",
 	LINE_NOT_FOUND: "That cart item could not be found — it may have already been removed.",
 	CART_CHECKED_OUT: "This cart has already been checked out.",
@@ -74,6 +87,11 @@ const MESSAGES: Record<string, string> = {
 	// with the shopper's request and nothing was lost — the store is just
 	// momentarily busy, and trying again in a few seconds will work.
 	BUSY: "We're a little busy right now — please try again in a few seconds.",
+	// QA2 X4: "Start a new cart" could not confirm it cancelled the cart's unpaid
+	// order (busy, unreachable), so it cleared nothing — saying it had would be the
+	// lie the control used to tell.
+	NEW_CART_NOT_CLEARED:
+		"We couldn't start a new cart just now, so nothing was changed — please try again in a few seconds.",
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",
@@ -101,13 +119,27 @@ const MESSAGES: Record<string, string> = {
 	// Issue #133: a stale/second tab placed with the key of a cart that was
 	// already ordered. The redirect back to /checkout re-renders the form with
 	// the CURRENT cart's key, so placing again simply works.
-	IDEMPOTENCY_KEY_REUSED:
-		"This checkout page was out of date — please review your order and place it again.",
+	IDEMPOTENCY_KEY_REUSED: STALE_CHECKOUT_PAGE,
+	// The site's own (QA T1-10): the form's key names a cart the cookie does not
+	// — the page was reviewed for another cart. Same fact, same remedy.
+	CHECKOUT_STALE: STALE_CHECKOUT_PAGE,
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
 	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
+	/* Resuming a payment with the order's email (QA U-2): one generic sentence
+	   for a wrong address — it says nothing the order link does not already. */
+	EMAIL_MISMATCH: "That email doesn't match this order.",
+	THROTTLED:
+		"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
+	/* An explicit Apply of the code already applied: re-rendered, never placed. */
+	COUPON_ALREADY_APPLIED: "That code is already applied.",
+	/* QA2 X2: another tab already placed this cart's order, with another email.
+	   The locked review says WHICH (masked, `checkout-review.ts`); this is the
+	   sentence for a review that is no longer locked to it. */
+	ORDER_PLACED_OTHER_EMAIL:
+		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 	...SELECTION_MESSAGES,

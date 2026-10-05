@@ -495,7 +495,14 @@ test("Add stock is one click; it sends the count the merchant saw and reports th
 		{
 			type: "otta_console_act",
 			action_id: "products:restock",
-			value: { productId: "p_tee", onHand: "24", qty: "5" },
+			// The nonce is the move's idempotency key, minted for this click
+			// (`mintMovementNonce`: 128 random bits as hex).
+			value: {
+				productId: "p_tee",
+				onHand: "24",
+				qty: "5",
+				nonce: expect.stringMatching(HEX_NONCE),
+			},
 		},
 	]);
 	expect(c.textContent).toContain("Added 5 — now 29 in stock");
@@ -515,6 +522,46 @@ test("Remove asks first, and never offers to take more than there is", async () 
 	expect(dialog?.textContent).toContain("Remove 2 from stock?");
 	expect(dialog?.textContent).toContain("You'll have 1 left.");
 	expect(writes()).toEqual([]);
+});
+
+// QA round 2: Add 100,000,000 applied with no confirm, while Remove always asks.
+test("a very large Add asks first, says what the count becomes, and adds only on Yes", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act")
+			return Promise.resolve(json({ ok: true, notice: null }));
+		return Promise.resolve(detail({ onHand: 24 }));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "100000000");
+	await fire(button(c, "Add"), "click");
+	const dialog = c.querySelector('[data-testid="otta-confirm"]');
+	expect(dialog?.textContent).toContain("Add 100,000,000 to stock?");
+	expect(dialog?.textContent).toContain("You'll have 100,000,024");
+	expect(writes()).toEqual([]);
+
+	await fire(c.querySelector('[data-testid="otta-confirm-yes"]')!, "click");
+	await flush();
+	expect(writes()).toEqual([
+		expect.objectContaining({
+			action_id: "products:restock",
+			value: expect.objectContaining({ qty: "100000000", onHand: "24" }),
+		}),
+	]);
+});
+
+test("an ordinary Add (up to 10,000) is still one click", async () => {
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act")
+			return Promise.resolve(json({ ok: true, notice: null }));
+		return Promise.resolve(detail({}));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "10000");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(writes()).toHaveLength(1);
 });
 
 test("a field changed elsewhere since the merchant started stops the save, and says so", async () => {
@@ -555,4 +602,635 @@ test("a read that fails says why and offers to try again", async () => {
 	await fire(button(c, "Try again"), "click");
 	await flush();
 	expect(input(c, "Price").value).toBe("32.00");
+});
+
+// -- stock moves: one click, one nonce; Retry is the only re-send -------------
+//
+// QA T1-2: Add 2, Remove 2, Add 2 had its third move refused, because a move was
+// keyed on what it looked like (`productId:direction:onHand:qty`). The cards now
+// send a nonce minted per click, and re-send one only through an explicit
+// "Retry this change" after an answer was lost (ADR-0015, amended 2026-10-02).
+
+const HEX_NONCE = /^[0-9a-f]{32}$/;
+
+type Step = "ok" | "lose-after" | "lose-before" | "refuse" | "pending";
+
+/**
+ * A store behind the cards that behaves like the plugin's ledger: a move applies
+ * once per nonce, and a nonce it has seen is answered as a replay. Each write
+ * takes the next scripted step: `lose-after` applies the move and then loses the
+ * answer, `lose-before` loses the request before anything ran, `refuse` is the
+ * plugin's own definitive `{ok:false}`.
+ */
+function stockServer(
+	start: number,
+	steps: Step[] = [],
+): { onHand: () => number; release: () => Promise<void> } {
+	let onHand = start;
+	let release: (() => void) | null = null;
+	const seen = new Set<string>();
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") return Promise.resolve(detail({ onHand }));
+		const step = steps.shift() ?? "ok";
+		if (step === "lose-before") return Promise.reject(new TypeError("Failed to fetch"));
+		if (step === "refuse") {
+			return Promise.resolve(
+				json({ ok: false, title: "Nothing was changed", description: "Refused." }),
+			);
+		}
+		const value = body["value"] as Record<string, string>;
+		if (step === "pending") {
+			// Applied when released, like a slow request that lands.
+			return new Promise<Response>((resolve) => {
+				release = () => {
+					onHand += Number(value["qty"]) * (body["action_id"] === "products:restock" ? 1 : -1);
+					resolve(
+						json({
+							ok: true,
+							notice: { variant: "default", title: "Stock added", description: "" },
+						}),
+					);
+				};
+			});
+		}
+		const nonce = value["nonce"] ?? "";
+		const replayed = seen.has(nonce);
+		if (!replayed) {
+			seen.add(nonce);
+			const qty = Number(value["qty"]);
+			onHand += body["action_id"] === "products:restock" ? qty : -qty;
+		}
+		if (step === "lose-after") return Promise.reject(new TypeError("Failed to fetch"));
+		return Promise.resolve(
+			json(
+				replayed
+					? {
+							ok: true,
+							notice: {
+								variant: "default",
+								title: "Already applied",
+								description: `This change was already applied — stock is now ${String(onHand)}.`,
+							},
+							replayed: true,
+						}
+					: { ok: true, notice: { variant: "default", title: "Stock added", description: "" } },
+			),
+		);
+	});
+	return {
+		onHand: () => onHand,
+		release: async () => {
+			await React.act(async () => {
+				release?.();
+			});
+			await flush();
+		},
+	};
+}
+
+function nonces(): unknown[] {
+	return writes().map((w) => (w["value"] as Record<string, unknown>)["nonce"]);
+}
+
+async function add(c: HTMLElement, qty: string): Promise<void> {
+	await type(input(c, "Add or remove stock"), qty);
+	await fire(button(c, "Add"), "click");
+	await flush();
+}
+
+async function remove(c: HTMLElement, qty: string): Promise<void> {
+	await type(input(c, "Add or remove stock"), qty);
+	await fire(button(c, "Remove"), "click");
+	const yes = c.querySelector('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	await fire(yes, "click");
+	await flush();
+}
+
+const retryButton = (c: HTMLElement): HTMLButtonElement | null =>
+	c.querySelector('[data-testid="otta-stock-retry"]');
+
+async function retry(c: HTMLElement): Promise<void> {
+	const b = retryButton(c);
+	if (b === null) throw new Error("no Retry offered");
+	await fire(b, "click");
+	await flush();
+}
+
+const heldText = (c: HTMLElement): string =>
+	c.querySelector('[data-testid="otta-stock-held"] [role="alert"]')?.textContent ?? "";
+
+/** Enter in the quantity: the cards' keyboard Add, reachable while a confirm is
+ *  open in a DOM without modal inertness. */
+async function pressEnterInQty(c: HTMLElement): Promise<void> {
+	const field = input(c, "Add or remove stock");
+	await React.act(async () => {
+		field.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+		);
+	});
+	await flush();
+}
+
+const onHandShown = (c: HTMLElement): string | null | undefined =>
+	c.querySelector('[data-testid="otta-on-hand"]')?.textContent;
+
+test("Add 2, Remove 2, Add 2: every click is its own move with its own nonce, and all three land", async () => {
+	const server = stockServer(7);
+	const c = await mountPanel();
+	await add(c, "2");
+	expect(c.textContent).toContain("Added 2 — now 9 in stock");
+	await remove(c, "2");
+	expect(c.textContent).toContain("Removed 2 — now 7 in stock");
+	await add(c, "2");
+	expect(c.textContent).toContain("Added 2 — now 9 in stock");
+	expect(onHandShown(c)).toBe("9");
+	expect(server.onHand()).toBe(9);
+	const sentNonces = nonces();
+	expect(sentNonces).toHaveLength(3);
+	for (const n of sentNonces) expect(n).toMatch(HEX_NONCE);
+	expect(new Set(sentNonces).size).toBe(3);
+});
+
+test("the same Add twice in a row is two moves: a nonce is never reused after a success", async () => {
+	const server = stockServer(24);
+	const c = await mountPanel();
+	await add(c, "5");
+	await add(c, "5");
+	expect(server.onHand()).toBe(34);
+	expect(c.textContent).toContain("Added 5 — now 34 in stock");
+	expect(new Set(nonces()).size).toBe(2);
+});
+
+test("a re-render does not mint a nonce: only a click does", async () => {
+	stockServer(24);
+	const c = await mountPanel();
+	await flush();
+	expect(writes()).toEqual([]);
+	await add(c, "1");
+	expect(writes()).toHaveLength(1);
+});
+
+test("a double click on Add sends ONE move", async () => {
+	const server = stockServer(24);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "5");
+	const addButton = button(c, "Add");
+	// Two clicks inside one task, before React can re-render the button disabled.
+	await React.act(async () => {
+		addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+	});
+	await flush();
+	expect(writes()).toHaveLength(1);
+	expect(server.onHand()).toBe(29);
+});
+
+test("a LOST answer says the change may have landed and offers Retry, which re-sends the SAME nonce once", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(heldText(c)).toContain(
+		"Add 5 — the change may have been applied; check the count before trying again.",
+	);
+	expect(c.textContent).not.toContain("Added 5");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
+
+	await retry(c);
+	const moves = writes();
+	expect(moves).toHaveLength(2);
+	expect(moves[1]).toEqual(moves[0]); // the same move, the same nonce
+	expect(server.onHand()).toBe(29); // applied once
+	// The ledger answered: it is reported as already applied, never a fresh add.
+	expect(c.textContent).toContain("Already applied — now 29 in stock");
+	expect(c.textContent).not.toContain("Added 5");
+	expect(retryButton(c)).toBeNull(); // spent
+});
+
+test("a Retry of a move that never ran applies it, once", async () => {
+	const server = stockServer(24, ["lose-before"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	await retry(c);
+	expect(server.onHand()).toBe(29);
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(nonces()[1]).toBe(nonces()[0]);
+});
+
+test("a NEW click after a lost answer is a new move with a fresh nonce, and the Retry goes", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(retryButton(c)).not.toBeNull();
+	await add(c, "5");
+	const keys = nonces();
+	expect(keys).toHaveLength(2);
+	expect(keys[1]).not.toBe(keys[0]);
+	expect(server.onHand()).toBe(34);
+	expect(retryButton(c)).toBeNull();
+});
+
+test("Cancel on the remove confirm keeps the Retry; confirming a removal replaces it", async () => {
+	stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	const deny = c.querySelector('[data-testid="otta-confirm-deny"]');
+	if (deny === null) throw new Error("no remove confirm");
+	await fire(deny, "click");
+	expect(retryButton(c)).not.toBeNull(); // looking is not deciding
+	await remove(c, "2");
+	expect(retryButton(c)).toBeNull();
+	expect(new Set(nonces()).size).toBe(2);
+});
+
+test("a definitive refusal offers no Retry — nothing ran", async () => {
+	stockServer(24, ["refuse"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(c.textContent).toContain("Nothing was changed");
+	expect(retryButton(c)).toBeNull();
+});
+
+test("a held Retry expires ten minutes after the ORIGINAL loss, even when a Retry is lost again", async () => {
+	stockServer(24, ["lose-after", "lose-after"]);
+	const base = Date.now();
+	let offset = 0;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => base + offset);
+	try {
+		const c = await mountPanel();
+		await add(c, "5"); // lost at +0
+		offset = 6 * 60_000;
+		await retry(c); // lost again at +6 min: still held, from +0
+		expect(retryButton(c)).not.toBeNull();
+		offset = 11 * 60_000;
+		await retry(c); // +11 min since the original loss: too old
+		expect(writes()).toHaveLength(2);
+		expect(c.textContent).toContain(
+			"This change is too old to retry safely — check the count before trying again.",
+		);
+		expect(retryButton(c)).toBeNull();
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("the held Retry names the move it re-sends, and sends THAT move, whatever is typed now", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5");
+	const first = writes()[0];
+	await type(input(c, "Add or remove stock"), "3");
+	expect(heldText(c)).toContain("Add 5 —");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
+	// The Retry button sits outside the announced text.
+	expect(c.querySelector('[role="alert"] [data-testid="otta-stock-retry"]')).toBeNull();
+	await retry(c);
+	const moves = writes();
+	expect(moves).toHaveLength(2);
+	const retried = moves[1]?.["value"] as Record<string, string>;
+	expect(retried["qty"]).toBe("5");
+	expect(moves[1]).toEqual(first);
+	expect(server.onHand()).toBe(29);
+});
+
+test("a held removal is named as one", async () => {
+	stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await remove(c, "2");
+	expect(heldText(c)).toContain("Remove 2 — the change may have been applied");
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: remove 2");
+});
+
+test("a LOST answer re-reads the count, so the next move is judged against the server's", async () => {
+	const server = stockServer(24, ["lose-after"]);
+	const c = await mountPanel();
+	await add(c, "5"); // landed; only the answer was lost
+	expect(onHandShown(c)).toBe("29");
+	expect(retryButton(c)).not.toBeNull(); // the re-read keeps the Retry
+	expect(c.textContent).not.toContain("Added 5"); // and is not a receipt
+	await remove(c, "2");
+	// The removal's watermark is the re-read count, not the stale 24.
+	const removal = writes()[1]?.["value"] as Record<string, string>;
+	expect(removal["onHand"]).toBe("29");
+	expect(server.onHand()).toBe(27);
+});
+
+const confirmOpen = (c: HTMLElement): boolean =>
+	c.querySelector<HTMLDialogElement>('[data-testid="otta-confirm"]')?.open === true;
+
+test("a re-read that moves the count while the remove confirm is open closes it and says so — nothing is removed", async () => {
+	stockServer(24);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	expect(confirmOpen(c)).toBe(true);
+	expect(c.querySelector('[data-testid="otta-confirm-text"]')?.textContent).toContain(
+		"You'll have 22 left.",
+	);
+	// A move lands while the dialog is open, and the cards re-read 26: the
+	// dialog's "22 left" is no longer true, so it is not left standing.
+	await pressEnterInQty(c);
+	expect(onHandShown(c)).toBe("26");
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain(
+		"Stock changed to 26 while you were deciding — nothing was removed; check and try again.",
+	);
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:restock"]);
+});
+
+test("a confirm left open by a lost answer that moved nothing still sends the count it showed", async () => {
+	stockServer(24, ["lose-before"]);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c); // lost before it ran; the re-read still says 24
+	expect(confirmOpen(c)).toBe(true);
+	const yes = c.querySelector('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	await fire(yes, "click");
+	await flush();
+	const removal = writes()[1]?.["value"] as Record<string, string>;
+	expect(removal["qty"]).toBe("2");
+	expect(removal["onHand"]).toBe("24");
+});
+
+test("the remove confirm cannot be pressed while another move is in flight, says why politely, and closes when that move changes the count", async () => {
+	const server = stockServer(24, ["pending"]);
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c); // an Add, still in flight
+	const yes = c.querySelector<HTMLButtonElement>('[data-testid="otta-confirm-yes"]');
+	if (yes === null) throw new Error("no remove confirm");
+	expect(yes.disabled).toBe(true);
+	const status = c.querySelector('[data-testid="otta-confirm-status"]');
+	expect(status?.getAttribute("aria-live")).toBe("polite");
+	expect(status?.textContent).toContain("Another stock change is still running");
+	await server.release();
+	expect(server.onHand()).toBe(26);
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain("Added 2 — now 26 in stock");
+	expect(c.textContent).toContain("Stock changed to 26 while you were deciding");
+	expect(writes().map((w) => w["action_id"])).toEqual(["products:restock"]);
+});
+
+test("a STALE re-read that resolves after a Retry succeeded cannot print the receipt or release the buttons — only the Retry's own re-read does", async () => {
+	// R1 is the re-read after the lost answer; R2 the one after the Retry. R1
+	// resolves (with the pre-Retry count) after the Retry's answer is in but
+	// before R2 runs.
+	let onHand = 24;
+	let writesSeen = 0;
+	let releaseWrite: (() => void) | null = null;
+	let releaseRead: (() => void) | null = null;
+	let holdNextRead = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") {
+			if (holdNextRead) {
+				holdNextRead = false;
+				const snapshot = onHand;
+				return new Promise<Response>((resolve) => {
+					releaseRead = () => {
+						resolve(detail({ onHand: snapshot }));
+					};
+				});
+			}
+			return Promise.resolve(detail({ onHand }));
+		}
+		writesSeen += 1;
+		if (writesSeen === 1) return Promise.reject(new TypeError("Failed to fetch"));
+		return new Promise<Response>((resolve) => {
+			releaseWrite = () => {
+				onHand += 5;
+				resolve(
+					json({ ok: true, notice: { variant: "default", title: "Stock added", description: "" } }),
+				);
+			};
+		});
+	});
+	const c = await mountPanel();
+	holdNextRead = true;
+	await add(c, "5"); // lost before it ran; R1 is now pending with 24
+	expect(releaseRead).not.toBeNull();
+	await retry(c); // the Retry's write is pending
+	await React.act(async () => {
+		releaseWrite?.();
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+		releaseRead?.();
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+	});
+	await flush();
+	expect(c.textContent).not.toContain("now 24 in stock");
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(onHandShown(c)).toBe("29");
+});
+
+test("if the re-read after a lost answer fails, the held move and its Retry stay on the failure view", async () => {
+	let onHand = 24;
+	let failReads = false;
+	let wrote = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			wrote += 1;
+			if (wrote === 1) {
+				onHand += 5; // landed; the answer is lost
+				failReads = true;
+				return Promise.reject(new TypeError("Failed to fetch"));
+			}
+			return Promise.resolve(
+				json({
+					ok: true,
+					notice: { variant: "default", title: "Already applied", description: "" },
+					replayed: true,
+				}),
+			);
+		}
+		if (failReads) {
+			return Promise.resolve(
+				json({ ok: false, title: "Products are unavailable", description: "Try again." }),
+			);
+		}
+		return Promise.resolve(detail({ onHand }));
+	});
+	const c = await mountPanel();
+	await add(c, "5");
+	expect(c.textContent).toContain("Products are unavailable");
+	expect(heldText(c)).toContain(
+		"Add 5 — the change may have been applied; check the count before trying again.",
+	);
+	expect(retryButton(c)?.textContent?.trim()).toBe("Retry: add 5");
+	failReads = false;
+	await retry(c);
+	expect(writes()).toHaveLength(2);
+	expect(writes()[1]).toEqual(writes()[0]);
+	expect(c.textContent).toContain("Already applied — now 29 in stock");
+});
+
+// -- a newer re-read includes the move: the receipt never waits forever -----
+
+/**
+ * A server whose writes are released by hand, per action, and whose next read
+ * can be held or failed. `products:save` answers "Saved"; a stock write applies
+ * its quantity when released.
+ */
+function manualServer(start: number) {
+	let onHand = start;
+	const pendingWrites = new Map<string, () => void>();
+	let heldRead: (() => void) | null = null;
+	let holdNextRead = false;
+	let failNextRead = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] !== "otta_console_act") {
+			if (failNextRead) {
+				failNextRead = false;
+				return Promise.resolve(
+					json({ ok: false, title: "Products are unavailable", description: "Try again." }),
+				);
+			}
+			if (holdNextRead) {
+				holdNextRead = false;
+				const snapshot = onHand;
+				return new Promise<Response>((resolve) => {
+					heldRead = () => {
+						resolve(detail({ onHand: snapshot }));
+					};
+				});
+			}
+			return Promise.resolve(detail({ onHand }));
+		}
+		const actionId = String(body["action_id"]);
+		const value = body["value"] as Record<string, string>;
+		return new Promise<Response>((resolve) => {
+			pendingWrites.set(actionId, () => {
+				if (actionId === "products:restock") onHand += Number(value["qty"]);
+				resolve(
+					json({
+						ok: true,
+						notice: {
+							variant: "default",
+							title: actionId === "products:save" ? "Saved" : "Stock added",
+							description: "",
+						},
+					}),
+				);
+			});
+		});
+	});
+	return {
+		holdNextRead: () => {
+			holdNextRead = true;
+		},
+		failNextRead: () => {
+			failNextRead = true;
+		},
+		/** Resolve a pending write inside the current act, letting its answer run. */
+		releaseWrite: async (actionId: string) => {
+			pendingWrites.get(actionId)?.();
+			pendingWrites.delete(actionId);
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+		},
+		releaseHeldRead: () => {
+			heldRead?.();
+			heldRead = null;
+		},
+	};
+}
+
+/** Edit the price, start an Add of 5 (in flight), then press Save (in flight). */
+async function addThenSave(c: HTMLElement): Promise<void> {
+	await type(input(c, "Price"), "30");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+}
+
+const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+test("a Save's re-read that OVERTAKES the Add's own re-read still prints the Add's receipt, once, and releases the buttons", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	server.holdNextRead(); // the Add's own re-read will hang
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+	});
+	await flush();
+	expect(button(c, "Add").disabled).toBe(true); // waiting for a re-read
+	await React.act(async () => {
+		await server.releaseWrite("products:save"); // a newer re-read, which includes the Add
+	});
+	await flush();
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(button(c, "Add").disabled).toBe(false);
+	expect(button(c, "Remove").disabled).toBe(false);
+	// The overtaken read landing late changes nothing.
+	await React.act(async () => {
+		server.releaseHeldRead();
+	});
+	await flush();
+	expect(occurrences(c.textContent ?? "", "Added 5 — now")).toBe(1);
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+});
+
+test("an Add's and a Save's re-reads asked for in ONE batch still print the receipt and release the buttons", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+		await server.releaseWrite("products:save");
+	});
+	await flush();
+	expect(c.textContent).toContain("Added 5 — now 29 in stock");
+	expect(button(c, "Add").disabled).toBe(false);
+});
+
+test("a NEWER re-read that fails releases the stock buttons, and Try again brings them back usable", async () => {
+	const server = manualServer(24);
+	const c = await mountPanel();
+	await addThenSave(c);
+	server.holdNextRead(); // the Add's own re-read hangs
+	await React.act(async () => {
+		await server.releaseWrite("products:restock");
+	});
+	await flush();
+	server.failNextRead(); // the Save's newer re-read fails
+	await React.act(async () => {
+		await server.releaseWrite("products:save");
+	});
+	await flush();
+	expect(c.textContent).toContain("Products are unavailable");
+	await fire(button(c, "Try again"), "click");
+	await flush();
+	expect(onHandShown(c)).toBe("29");
+	expect(button(c, "Add").disabled).toBe(false);
+	expect(button(c, "Remove").disabled).toBe(false);
+});
+
+test("a remove confirm on a count that can no longer be read says so, never 'changed to 0'", async () => {
+	let onHand: number | null = 24;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			onHand = null; // the inventory record is gone by the re-read
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		return Promise.resolve(detail({ onHand }));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	await pressEnterInQty(c);
+	expect(confirmOpen(c)).toBe(false);
+	expect(c.textContent).toContain(
+		"Stock could not be read — nothing was removed; check and try again.",
+	);
+	expect(c.textContent).not.toContain("changed to 0");
 });

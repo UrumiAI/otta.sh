@@ -15,7 +15,13 @@
 import { ACCOUNT_ORDERS_ROUTE, orderLabel, type AccountOrdersResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import { currentSessionToken, orderMoney, orderStateLabel } from "../../../lib/account.js";
+import {
+	accountOrderStatus,
+	currentSessionToken,
+	orderMoney,
+	signedInEmail,
+} from "../../../lib/account.js";
+import { orderPlacedAt } from "../../../lib/account-order.js";
 import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
@@ -44,6 +50,9 @@ if (orders === null) Astro.response.status = 503;
 const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
+/* The plugin lists newest first (`listCustomerOrders`); each row says what the
+   order page says about that order, and when it was placed (QA U-5). */
+const now = new Date();
 const rows =
 	orders?.map((order) => {
 		const items = order.lines.reduce((sum, line) => sum + line.quantity, 0);
@@ -52,7 +61,10 @@ const rows =
 			   stays where a machine reads it — the href. */
 			label: orderLabel(order.lines),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
-			state: orderStateLabel(order.state),
+			state: accountOrderStatus(order, now),
+			/* To the minute: two orders of the same thing on one day must not
+			   read alike (QA2 A2). Never any part of the id. */
+			placed: orderPlacedAt(order.createdAt),
 			items: items === 1 ? "1 item" : `${items} items`,
 			total: orderMoney(order.totals.totalCents, order.totals.currency),
 		};
@@ -62,7 +74,19 @@ const model: AccountOrdersModel = {
 	/* BUSY is the page's to say: the view only ever sees the sentence. */
 	errorMessage: orders === null ? cartErrorMessage(busy ? "BUSY" : "SERVICE_UNAVAILABLE") : null,
 	rows,
+	/* Who is signed in, named on this private page (QA2 A7). */
+	signedInAs:
+		orders !== null
+			? await signedInEmail(getPublicPluginApiRouteHandler(Astro.locals), Astro.cookies, Astro.url)
+			: null,
 };
 ---
 
-<Storefront view="accountOrders" model={model} title="Your orders" />
+{/* A list came back, so the session is live: the header can say so without
+    asking again. Unknown (busy, unavailable) ⇒ the shell decides. */}
+<Storefront
+	view="accountOrders"
+	model={model}
+	title="Your orders"
+	signedIn={orders !== null ? true : undefined}
+/>

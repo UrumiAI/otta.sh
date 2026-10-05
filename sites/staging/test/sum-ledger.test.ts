@@ -14,6 +14,9 @@ import {
 	type CheckoutAmountView,
 } from "@otta-sh/plugin";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, test } from "vitest";
 import Ledger from "../src/components/Ledger.astro";
 import { UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
@@ -216,7 +219,7 @@ describe("Ledger — the receipt names what was bought (title)", () => {
 		expect(html.indexOf("Otta Tee")).toBeLessThan(html.indexOf("OTTA-TEE-01"));
 	});
 
-	test("a row WITHOUT one is unchanged — a cart line has no title to show", async () => {
+	test("a row WITHOUT one is unchanged — a line the store cannot name shows its SKU alone", async () => {
 		const html = await ledger({ rows: [{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }] });
 		expect(html).toContain("OTTA-TEE-01");
 		expect(html).not.toContain('class="title"');
@@ -301,5 +304,26 @@ describe("Ledger — a bare em dash never reaches the money column either (§7)"
 		});
 		expect(html.toLowerCase()).not.toContain("free");
 		expect(html).not.toContain("0.00");
+	});
+});
+
+describe("a coupon code keeps its spelling (QA round 2)", () => {
+	test("the code is its own element, out of the label's uppercase", async () => {
+		const html = await container.renderToString(Sum, {
+			props: {
+				rows: [{ label: "Discount", code: "qa2admin2", amount: money("$3.00") }],
+				total: money("$7.00"),
+			},
+		});
+		expect(html).toMatch(/<span class="[^"]*\bcode\b[^"]*"[^>]*>qa2admin2<\/span>/);
+		expect(html).not.toContain("QA2ADMIN2");
+	});
+
+	test("its style undoes the label's text-transform", () => {
+		const source = readFileSync(
+			path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/components/Sum.astro"),
+			"utf8",
+		);
+		expect(source).toMatch(/\.code\s*\{[^}]*text-transform:\s*none/);
 	});
 });

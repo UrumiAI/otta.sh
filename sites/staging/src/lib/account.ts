@@ -14,6 +14,8 @@ import {
 	cents,
 	currency,
 	formatMoney,
+	LOGIN_LINK_MAX_ACTIVE,
+	LOGIN_LINK_TTL_MS,
 	SESSION_COOKIE_NAME,
 	type AccountMeResult,
 	type AccountOrderResult,
@@ -21,6 +23,8 @@ import {
 } from "@otta-sh/plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
+import { SITE_LOCALE } from "./site-locale.js";
+import { isOrderPayable } from "./pay-guard.js";
 
 /** The one notice a link request ends on, whatever the plugin knows about the
  *  address — the page must not become an account oracle (ADR-0004). It must
@@ -28,9 +32,86 @@ import { dispatchOttaRoute } from "./otta-api.js";
  *  it creates the account), so an "if an account exists" hedge would tell a
  *  first-time shopper they get nothing, while the sign-in page tells them the
  *  same link signs them up. The view leads it with "Check your inbox.", so it
- *  must not open with those words again. */
+ *  must not open with those words again. It states the per-address cap, which is
+ *  true of every address and the one honest explanation for a link that never
+ *  comes (QA U-12). */
 export const LOGIN_LINK_SENT_COPY =
-	"A sign-in link is on its way. It works once and expires in 15 minutes. If it doesn't arrive, check the address and request another.";
+	"A sign-in link is on its way. It works once and expires in 15 minutes. If it doesn't arrive, check the address — we send at most 3 links to an address every 15 minutes.";
+
+/**
+ * The plugin's per-address cap (ADR-0004: at most 3 unconsumed links per address,
+ * each live for 15 minutes; past it a request sends nothing and answers exactly as
+ * a sent one does) — the verifier's own constants, re-exported by the plugin, so
+ * the notices cannot drift from them (account.test.ts pins the copy to them).
+ * Used here only to bound this browser's own count; the plugin enforces the cap.
+ */
+export const LOGIN_LINK_CAP = LOGIN_LINK_MAX_ACTIVE;
+export const LOGIN_LINK_WINDOW_MS = LOGIN_LINK_TTL_MS;
+
+/**
+ * The notice for a browser that has itself asked for more than
+ * {@link LOGIN_LINK_CAP} links inside the window (QA U-12: the fourth request was
+ * silently dropped while the page said the link was on its way).
+ *
+ * NOT AN ORACLE. It is decided by THIS BROWSER's own request count (a cookie
+ * holding nothing but timestamps), never by the plugin's answer, which stays
+ * identical for every address (ADR-0004). So it reads the same whatever address
+ * was typed — a new one, a known one, four different ones — and says only what is
+ * true of any of them: past the cap, a request may not send.
+ */
+export const LOGIN_LINK_MANY_COPY =
+	"You've asked for several links in the last 15 minutes. We send at most 3 links to an address in that time, so this request may not have sent a new one. Use the newest link you received, or try again in 15 minutes.";
+
+/** This browser's recent link requests: timestamps only, never an address. */
+export const LOGIN_REQUESTS_COOKIE_NAME = "otta_login_requests";
+
+/** The requests a cookie value records inside the window, oldest first. Anything
+ *  unreadable is dropped — the count can only err towards the ordinary notice. */
+export function recentLoginRequests(raw: string | undefined, now: number): number[] {
+	if (raw === undefined || raw.length === 0) return [];
+	return raw
+		.split(".")
+		.filter((part) => /^\d{1,15}$/.test(part))
+		.map(Number)
+		.filter((at) => at <= now && now - at < LOGIN_LINK_WINDOW_MS)
+		.toSorted((a, b) => a - b);
+}
+
+/**
+ * Record one more request from this browser and say which notice it gets:
+ * `"many"` once this browser has asked more than {@link LOGIN_LINK_CAP} times in
+ * the window, else `"1"` (the ordinary notice). Keeps at most CAP + 1 entries, so
+ * the cookie stays a few dozen bytes however often the button is pressed.
+ */
+export function recordLoginRequest(
+	cookies: Pick<SessionCookieJar, "get"> & {
+		set(
+			name: string,
+			value: string,
+			options: {
+				httpOnly: boolean;
+				secure: boolean;
+				sameSite: "lax";
+				path: string;
+				maxAge: number;
+			},
+		): void;
+	},
+	now: number,
+): "1" | "many" {
+	const recent = [
+		...recentLoginRequests(cookies.get(LOGIN_REQUESTS_COOKIE_NAME)?.value, now),
+		now,
+	].slice(-(LOGIN_LINK_CAP + 1));
+	cookies.set(LOGIN_REQUESTS_COOKIE_NAME, recent.map(String).join("."), {
+		httpOnly: true,
+		secure: true,
+		sameSite: "lax",
+		path: ACCOUNT_LOGIN_PATH,
+		maxAge: LOGIN_LINK_WINDOW_MS / 1000,
+	});
+	return recent.length > LOGIN_LINK_CAP ? "many" : "1";
+}
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
  *  never be stored by a shared cache, nor replayed from the back/forward cache
@@ -170,7 +251,7 @@ export function verifyFailureToken(reason: "EXPIRED" | "INVALID" | "CONSUMED"): 
  */
 export function orderMoney(amountCents: number, currencyCode: string): string {
 	try {
-		return formatMoney(cents(amountCents), currency(currencyCode), "en-US");
+		return formatMoney(cents(amountCents), currency(currencyCode), SITE_LOCALE);
 	} catch {
 		return "—";
 	}
@@ -185,12 +266,59 @@ const STATE_LABELS: Record<string, string> = {
 	completed: "Completed",
 	cancelled: "Cancelled",
 	refunded: "Refunded",
-	expired: "Expired",
-	failed: "Payment failed",
+	expired: "Payment not completed — expired",
+	failed: "Payment didn't go through",
 };
 
-/** The order's state in words. An unknown state still reads, rather than
- *  leaking a snake_case token. */
-export function orderStateLabel(state: string): string {
-	return STATE_LABELS[state] ?? state.replaceAll("_", " ");
+/**
+ * The order's status in the account's words — the same facts the public order
+ * page states (`lib/order-stamp.ts`), in a phrase short enough for a list row
+ * (QA U-5: an unpaid, a declined and an expired order all read "Awaiting
+ * payment").
+ *
+ * A `pending` order is awaiting payment only while it can still BE paid
+ * (`isOrderPayable`, the pay page's own rule): a declined card leaves an order
+ * pending and payable (ADR-0022), so that is honestly still "Awaiting payment";
+ * past its hold the pay page refuses it, and the sweep is about to expire it, so
+ * it says the time ran out — as the order page does. An unknown state still
+ * reads, rather than leaking a snake_case token.
+ */
+export function accountOrderStatus(
+	order: { state: string; holdExpiresAt: string },
+	now: Date,
+): string {
+	if (order.state === "pending" && !isOrderPayable(order, now)) {
+		return "Payment not completed — time ran out";
+	}
+	return STATE_LABELS[order.state] ?? order.state.replaceAll("_", " ");
+}
+
+/**
+ * The refunded figure on the account's order page, as its own line beside the
+ * paid total — only where the order's ledger shows recorded refunds
+ * (`AccountOrderWire.refundedCents`). `null` for none, which includes a refund
+ * made outside Otta ("Mark refunded", ADR-0026): the order's status then says
+ * "Refunded", and the page invents no amount for it.
+ */
+export function orderRefundedNote(refundedCents: number, currencyCode: string): string | null {
+	return refundedCents > 0 ? `Refunded ${orderMoney(refundedCents, currencyCode)}` : null;
+}
+
+const PLACED_ON = new Intl.DateTimeFormat(SITE_LOCALE, {
+	month: "short",
+	day: "numeric",
+	year: "numeric",
+	timeZone: "UTC",
+});
+
+/**
+ * When an order was placed, as a calendar date ("Oct 2, 2026") plus the instant
+ * for a `<time datetime>`. In UTC, like every other time this server renders
+ * (`lib/hold.ts`): it cannot know the shopper's zone. `null` for an unreadable
+ * date — no date beats a wrong one.
+ */
+export function orderPlacedOn(iso: string): { text: string; iso: string } | null {
+	const instant = Date.parse(iso);
+	if (!Number.isFinite(instant)) return null;
+	return { text: PLACED_ON.format(instant), iso };
 }

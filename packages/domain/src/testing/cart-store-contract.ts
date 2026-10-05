@@ -54,6 +54,26 @@ export function cartStoreContract(
 			expect(new Set([first, other, unkeyed]).size).toBe(3);
 		});
 
+		// The storefront header asks this on every uncached page a shopper with a cart
+		// loads (QA U-14), so it must be the cart's own document and nothing else: the
+		// state and the summed quantities, with no hold resolution and no writes.
+		test("units(): the cart's state and summed quantities, agreeing with get(); null for an unknown cart", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-UNITS-A", 10);
+			await h.seedStock("SKU-UNITS-B", 10);
+			const cartId = await createCart(h.deps, USD);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: 0 });
+			await addLine(h.deps, cartId, sku("SKU-UNITS-A"), null, 2, idempotencyKey("k-units-a"));
+			await addLine(h.deps, cartId, sku("SKU-UNITS-B"), null, 3, idempotencyKey("k-units-b"));
+			const read = await h.deps.cartStore.get(cartId);
+			const summed = read?.lines.reduce((sum, line) => sum + line.qty, 0);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: summed });
+			expect(summed).toBe(5);
+			await h.deps.cartStore.checkout(cartId, brandOrderId("ord-units-1"));
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "checked_out", units: 5 });
+			expect(await h.deps.cartStore.units("cart-units-never-minted")).toBeNull();
+		});
+
 		test("concurrent keyed creates converge on one cart", async () => {
 			const h = await makeHarness();
 			const key = idempotencyKey("rotate:cart-spent-race");
@@ -107,6 +127,71 @@ export function cartStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 			const cart = await getCart(h.deps, cartId);
 			expect(cart?.lines).toHaveLength(0);
+		});
+
+		// ── an add DECIDED out of stock retires its claim (QA U-16) ─────────
+		// The add claims its key before it reserves, so a crash between the two
+		// leaves a marker the sweep can follow to a dangling hold. An add whose
+		// reserve was decided OUT_OF_STOCK has no hold and never will (the reserve
+		// key is once-only), yet its claim stayed outstanding forever: on the
+		// document store it pinned the cart's sweep deadline in the past and was
+		// re-read on every tick. The use-case now retires it with `abandonClaim`.
+		// What must NOT change is the replay: the same key still answers
+		// OUT_OF_STOCK, writes no line and moves no stock.
+
+		test("an out-of-stock add's same-key replay still answers OUT_OF_STOCK and moves nothing", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 3);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			expect(first).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(replay).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(3);
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			// The probe that catches an adapter whose abandonClaim does nothing: the
+			// claim reads back RETIRED — still not completed, so replays resume.
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("k1"))).toMatchObject({
+				kind: "add",
+				completed: false,
+				abandoned: true,
+			});
+
+			// A fresh key for a quantity that fits is unaffected.
+			const fits = await addLine(h.deps, cartId, sku("SKU-1"), null, 3, idempotencyKey("k2"));
+			expect(fits.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(0);
+		});
+
+		test("abandonClaim never touches a COMPLETED add — its replay still returns the line", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 5);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			await h.deps.cartStore.abandonClaim(cartId, idempotencyKey("k1"));
+
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			expect(replay.ok).toBe(true);
+			if (!replay.ok) return;
+			expect(replay.line.lineId).toBe(first.line.lineId);
+			expect(await h.onHand("SKU-1")).toBe(3);
+			const recorded = await h.deps.cartStore.recordedMutation(idempotencyKey("k1"));
+			expect(recorded?.completed).toBe(true);
+			expect(recorded?.abandoned).not.toBe(true);
+		});
+
+		test("abandonClaim of an unknown key, or on an unknown cart, is a quiet no-op", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			await expect(
+				h.deps.cartStore.abandonClaim(cartId, idempotencyKey("never-claimed")),
+			).resolves.toBeUndefined();
+			await expect(
+				h.deps.cartStore.abandonClaim("no-such-cart", idempotencyKey("k1")),
+			).resolves.toBeUndefined();
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("never-claimed"))).toBeNull();
 		});
 
 		test("add is idempotent — a replayed add returns the same line and decrements once", async () => {
@@ -341,6 +426,111 @@ export function cartStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(5); // returned exactly once
 			const cart = await getCart(h.deps, cartId);
 			expect(cart?.lines).toHaveLength(0);
+		});
+
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpired honours a limit, returning at most that many lapsed holds", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 9);
+			for (const n of [1, 2, 3]) {
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku("SKU-1"),
+					null,
+					1,
+					idempotencyKey(`lim-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 10 })).toHaveLength(3);
+			await expect(h.deps.cartStore.listExpired(now, now, { limit: 0 })).rejects.toThrow(
+				RangeError,
+			);
+			// Listing is read-only: nothing was released by it.
+			expect(await h.onHand("SKU-1")).toBe(6);
+		});
+
+		/** One cart per sku, one unit each, every hold lapsed by `PAST_TTL_MS`. */
+		async function lapsedCarts(h: CartStoreHarness, skus: readonly string[], tag: string) {
+			const reservations: string[] = [];
+			for (const [n, name] of skus.entries()) {
+				await h.seedStock(name, 5);
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`${tag}-${String(n)}`),
+				);
+				if (!add.ok || add.line.reservationId === null) throw new Error("seed add must succeed");
+				reservations.push(add.line.reservationId);
+			}
+			return reservations;
+		}
+
+		// HEAD-OF-LINE. A lapsed line whose reservation is no longer held (released
+		// behind the cart's back, say) can never be expired. Listed under a small
+		// limit, a couple of those would fill every bite forever and no live hold
+		// behind them would ever be reached — so the list must not offer them.
+		test("an unexpirable lapsed hold is not listed, so it cannot starve the expirable ones behind it", async () => {
+			const h = await makeHarness();
+			const [deadA, deadB, live] = await lapsedCarts(h, ["SKU-DA", "SKU-DB", "SKU-LIVE"], "hol");
+			await h.deps.inventoryStore.release(deadA!);
+			await h.deps.inventoryStore.release(deadB!);
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 1 })).toEqual([
+				{ reservationId: live },
+			]);
+			const all = await h.deps.cartStore.listExpired(now, now);
+			expect(all.map((hold) => hold.reservationId)).toEqual([live]);
+		});
+
+		// The list itself must be stoppable: under a tight per-tick query budget a
+		// run of candidates that yield nothing would otherwise be read in full.
+		test("listExpired asks shouldContinue before each candidate, and stops when told", async () => {
+			const h = await makeHarness();
+			await lapsedCarts(h, ["SKU-S1", "SKU-S2", "SKU-S3"], "stop");
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { shouldContinue: () => false })).toEqual(
+				[],
+			);
+			let allowed = 1;
+			const one = await h.deps.cartStore.listExpired(now, now, {
+				shouldContinue: () => allowed-- > 0,
+			});
+			expect(one).toHaveLength(1);
+		});
+
+		test("a multi-line cart counts each of its holds against the limit", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			for (const [n, name] of ["SKU-M1", "SKU-M2", "SKU-M3"].entries()) {
+				await h.seedStock(name, 5);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`multi-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
 		});
 
 		// ── the cart's `order_id` (issue #132) ───────────────────────────────

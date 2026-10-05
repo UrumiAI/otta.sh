@@ -84,6 +84,18 @@ export interface InventoryStore {
 	// loud lost-hold anomaly stays `commit`'s.
 	releaseAdopted(reservationId: string, orderId: string): Promise<void>;
 
+	// Additive (QA2 M2 — sweep budget): the BATCHED counterpart of
+	// `releaseAdopted`, for an order releasing every hold it adopted at once (the
+	// expiry and cancel paths). Per-id semantics are `releaseAdopted`'s,
+	// byte-for-byte: only a hold THIS order adopted is released and its units
+	// returned; an unknown id, another order's hold, a still cart-`held` hold or
+	// an already-terminal one is a silent no-op, never a throw. Duplicate ids are
+	// collapsed and an empty list is a no-op with no round trip. Grouped by SKU,
+	// one guarded write per SKU rather than per id; not atomic across SKUs, and
+	// every per-SKU write is idempotent, so a partial application is safe to
+	// re-run to completion.
+	releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void>;
+
 	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
 	// stock write, NOT part of the reserve/commit/release authority path.
 	// `INSERT … ON CONFLICT (sku) DO NOTHING` shape: seeding a new sku creates
@@ -218,6 +230,12 @@ export interface InventoryStore {
 	// uniqueness is independent); reuse is only rejected WITHIN a ledger — for the
 	// stock-movements ledger, when the recorded (sku, direction, qty) differs
 	// (`StockMovementMismatchError`).
+	//
+	// NO WATERMARK, deliberately (contrast `removeStock`). `on_hand` is the
+	// AVAILABLE count, which every reserve, release and hold expiry moves, so a
+	// restock pinned to the count an operator saw would fail as stale through an
+	// ordinary sale — and it would buy nothing, because an add is commutative:
+	// two operators who each add 3 to 4 end at 10 whichever lands first.
 	restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult>;
 
 	// Additive (admin-UX Increment 2, merchant stock removal): REMOVE `qty` units
@@ -238,19 +256,80 @@ export interface InventoryStore {
 	// consume the key (stays recorded, replays deterministically — the R2
 	// counterpart to `reserve`'s consumed OUT_OF_STOCK). An `UNKNOWN_SKU` does NOT
 	// consume the key (claim rolls back), exactly as `restock`.
-	removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult>;
+	//
+	// WATERMARK (`options.expectedOnHand`, optional): the on-hand the caller's
+	// decision was taken against. When present, the removal applies ONLY if the
+	// live on-hand still equals it, checked in the SAME write as the decrement; a
+	// mismatch is a terminal `STALE_ON_HAND` carrying the live count, which moves
+	// nothing and consumes the key exactly as `INSUFFICIENT_STOCK` does, and is
+	// judged before that guard. It is checked AFTER the ledger, never before: a
+	// replay of an applied key echoes its recorded result although the count has
+	// since moved (it moved because of that very removal). Because `on_hand` is
+	// the AVAILABLE count, checkout traffic (reserve/release/expiry) also makes a
+	// watermark stale — accepted: a removal is the movement that can strand
+	// units, and a refusal naming the live count is the safe answer.
+	//
+	// KEY REUSE: a key recorded with one watermark and replayed with another, or
+	// recorded with one and replayed without, is a mis-keyed caller
+	// (`StockMovementMismatchError`). A key recorded WITHOUT a watermark (a claim
+	// written before watermarks existed) is honoured whatever the replay carries:
+	// the recorded intent wins, so an applied claim echoes its answer, and a
+	// claim still pending completes as recorded — unconditionally. Every removal
+	// the admin writes from this release on is pinned, so an unpinned removal
+	// claim can only come from a previous release (or from a caller that omits
+	// the option, whose removal is unconditional by its own choice).
+	removeStock(
+		sku: string,
+		qty: number,
+		key: IdempotencyKey,
+		options?: StockMovementOptions,
+	): Promise<StockRemovalResult>;
 }
 
-/** Outcome of {@link InventoryStore.restock}. `onHand` is the resulting count
- *  AFTER the units were added (recorded in the ledger, so a replay echoes it). */
-export type RestockResult = { ok: true; onHand: number } | { ok: false; reason: "UNKNOWN_SKU" };
+/** Optional preconditions on a `removeStock` (see the port doc). */
+export interface StockMovementOptions {
+	/** The on-hand the movement was decided against: a non-negative integer. */
+	readonly expectedOnHand?: number;
+}
+
+/** The watermark is a COUNT: a non-negative integer, or absent. A fractional or
+ *  negative one is a caller bug, never a value that could ever match — so it
+ *  throws rather than answering a STALE_ON_HAND that would read as a race.
+ *  Shared by the use-cases and every adapter (defense-in-depth, like `qty`). */
+export function assertStockMovementOptions(
+	method: string,
+	options: StockMovementOptions | undefined,
+): void {
+	const expected = options?.expectedOnHand;
+	if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0)) {
+		throw new RangeError(
+			`${method}() requires a non-negative integer expectedOnHand, got ${String(expected)}`,
+		);
+	}
+}
+
+/** The removal was decided against an on-hand that is no longer true. `onHand`
+ *  is the live count it was refused against. Terminal: the key is consumed. */
+export type StaleOnHandResult = { ok: false; reason: "STALE_ON_HAND"; onHand: number };
+
+/** A successful stock movement. `onHand` is the count the movement produced
+ *  (recorded in the ledger, so a replay echoes it). `replayed: true` says the
+ *  answer came FROM THE LEDGER — this call moved nothing, an earlier call with
+ *  the same key did — so a caller can say "already applied" rather than report
+ *  a fresh movement. Absent on the call that actually moved the units. Only a
+ *  success carries it: a replayed refusal reads as the refusal it was. */
+export type StockMovementApplied = { ok: true; onHand: number; replayed?: true };
+
+/** Outcome of {@link InventoryStore.restock}. */
+export type RestockResult = StockMovementApplied | { ok: false; reason: "UNKNOWN_SKU" };
 
 /** Outcome of {@link InventoryStore.removeStock}. On success `onHand` is the
  *  count after removal; on `INSUFFICIENT_STOCK` it is the current count (fewer
  *  than `qty` units are available to remove). `UNKNOWN_SKU` carries no count. */
 export type StockRemovalResult =
-	| { ok: true; onHand: number }
+	| StockMovementApplied
 	| { ok: false; reason: "INSUFFICIENT_STOCK"; onHand: number }
+	| StaleOnHandResult
 	| { ok: false; reason: "UNKNOWN_SKU" };
 
 export type ReserveResult =
@@ -302,9 +381,12 @@ export type CommitManyResult = { lost: string[] };
  * the order for manual reconciliation; it is never swallowed.
  */
 export class ReservationCommitLostError extends Error {
+	/** The state the reservation was in — `released` means its units went back. */
+	readonly state: string;
 	constructor(reservationId: string, state: string) {
 		super(`cannot commit reservation ${reservationId}: it is ${state}, not held/adopted/committed`);
 		this.name = "ReservationCommitLostError";
+		this.state = state;
 	}
 }
 

@@ -17,8 +17,13 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
-import { isCodeShapedRegion } from "@otta-sh/domain";
-import { COUNTRY_SHAPE, COUPON_CODE_MAX, isIdToken } from "../commerce/commerce-input.js";
+import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import {
+	BUYER_REF_MAX,
+	COUNTRY_SHAPE,
+	COUPON_CODE_MAX,
+	isIdToken,
+} from "../commerce/commerce-input.js";
 import type {
 	DestinationRequestWire,
 	ShippingAddressWire,
@@ -26,21 +31,36 @@ import type {
 import { MAX_SESSION_TOKEN_LENGTH } from "./account-routes.js";
 import { sanitizeLocale } from "./route-input.js";
 
-/** `checkoutBody.buyerRef` — `z.string().min(1).max(320)`. */
-const BUYER_REF_MAX = 320;
-
-/** `shippingAddressBody`'s bounds, verbatim. `undefined` max ⇒ optional field. */
+/** The ship-to's fields: which are required, and each one's bound — the
+ *  DOMAIN's own (`ORDER_ADDRESS_MAX_LENGTHS`), never a copied literal. */
 const ADDRESS_FIELDS = {
-	name: { max: 200, required: true },
-	line1: { max: 200, required: true },
-	line2: { max: 200, required: false },
-	city: { max: 120, required: true },
-	region: { max: 120, required: false },
-	postalCode: { max: 32, required: true },
-	country: { max: 100, required: true },
-	email: { max: 320, required: false },
-	phone: { max: 64, required: false },
+	name: { max: ORDER_ADDRESS_MAX_LENGTHS.name, required: true },
+	line1: { max: ORDER_ADDRESS_MAX_LENGTHS.line1, required: true },
+	line2: { max: ORDER_ADDRESS_MAX_LENGTHS.line2, required: false },
+	city: { max: ORDER_ADDRESS_MAX_LENGTHS.city, required: true },
+	region: { max: ORDER_ADDRESS_MAX_LENGTHS.region, required: false },
+	postalCode: { max: ORDER_ADDRESS_MAX_LENGTHS.postalCode, required: true },
+	country: { max: ORDER_ADDRESS_MAX_LENGTHS.country, required: true },
+	email: { max: ORDER_ADDRESS_MAX_LENGTHS.email, required: false },
+	phone: { max: ORDER_ADDRESS_MAX_LENGTHS.phone, required: false },
 } as const satisfies Record<keyof ShippingAddressWire, { max: number; required: boolean }>;
+
+/**
+ * Is this a ship-to with a field over its bound (measured after trimming, as the
+ * domain measures it)? The place route answers that as the typed
+ * INVALID_SHIPPING_ADDRESS — the buyer's street name was too long — instead of
+ * the INVALID_INPUT a structurally broken body gets (QA U-6). False for
+ * anything that is not an object, and for non-string fields (those are
+ * INVALID_INPUT).
+ */
+export function exceedsAddressBounds(value: unknown): boolean {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const raw = value as Record<string, unknown>;
+	return Object.entries(ADDRESS_FIELDS).some(([field, spec]) => {
+		const provided = raw[field];
+		return typeof provided === "string" && provided.trim().length > spec.max;
+	});
+}
 
 /**
  * What the buyer chose to price the cart WITH (#305). Shared by the summary and
@@ -52,7 +72,8 @@ const ADDRESS_FIELDS = {
  * Neither parser reads it; PR 2 derives it from the ship-to address.
  */
 export interface CheckoutSelection {
-	/** Trimmed, case KEPT — coupon lookup is case-sensitive. */
+	/** Trimmed, case kept as typed — the lookup folds case (ADR-0025), and the
+	 *  applied code comes back in the merchant's own spelling. */
 	couponCode?: string;
 	shippingMethodId?: string;
 	/**

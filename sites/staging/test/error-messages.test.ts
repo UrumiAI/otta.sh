@@ -48,6 +48,8 @@ const KNOWN_TOKENS = [
 	"CURRENCY_MISMATCH",
 	"PAYMENT_INTENT_FAILED",
 	"IDEMPOTENCY_KEY_REUSED",
+	// The site's own: a review page placed for a cart the cookie no longer names.
+	"CHECKOUT_STALE",
 	"INVALID_SHIPPING_ADDRESS",
 	"INVALID_EMAIL",
 	"ORDER_NOT_FOUND",
@@ -104,6 +106,11 @@ describe("cartErrorMessage", () => {
 		expect(message).not.toMatch(/charged|refund/i);
 	});
 
+	test("CHECKOUT_STALE says the page was out of date and to review again — it blames nobody", () => {
+		expect(cartErrorMessage("CHECKOUT_STALE")).toBe(cartErrorMessage("IDEMPOTENCY_KEY_REUSED"));
+		expect(cartErrorMessage("CHECKOUT_STALE")).toMatch(/out of date/i);
+	});
+
 	test("INVALID_EMAIL is specific enough to act on", () => {
 		const message = cartErrorMessage("INVALID_EMAIL");
 		expect(message).toMatch(/email/i);
@@ -132,10 +139,10 @@ describe("cartErrorMessage", () => {
 		expect(new Set(coupon).size).toBe(coupon.length);
 	});
 
-	test("COUPON_NOT_FOUND tells the buyer to check the code, and that case matters", () => {
+	test("COUPON_NOT_FOUND tells the buyer to check the code — and never that case matters: lookup ignores it (ADR-0025)", () => {
 		const message = cartErrorMessage("COUPON_NOT_FOUND");
 		expect(message).toMatch(/check/i);
-		expect(message).toMatch(/case-sensitive/i);
+		expect(message).not.toMatch(/(?<!n't |not )case-sensitive/i);
 	});
 
 	test("SHIPPING_ZONE_NOT_MATCHED says plainly that the store does not ship there", () => {

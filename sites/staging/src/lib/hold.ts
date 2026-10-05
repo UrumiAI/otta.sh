@@ -42,9 +42,13 @@ export const HOLD_WINDOW_SECONDS = 900;
  * minutes" — a sentence a shopper can plan around, or none.
  */
 export function holdNote(minutes: number | undefined): string {
-	const lead = "Adding this holds one in stock";
+	/* Quantity-agnostic on purpose. It read "Adding this holds one in stock",
+	   printed beside a quantity field the shopper can set to 3 — and the hold
+	   covers whatever quantity is added. So the note names the window, never a
+	   count of units. */
+	const lead = "We'll hold what you add";
 	if (minutes === undefined || !Number.isInteger(minutes) || minutes <= 0) {
-		return `${lead} for you while you check out.`;
+		return `${lead} while you check out.`;
 	}
 	if (minutes % 60 === 0) {
 		const hours = minutes / 60;
@@ -69,9 +73,14 @@ export const HOLD_LABELS: Record<HoldState, string> = {
 
 /** What to do once a hold has lapsed. §6: the released state carries a line
  *  telling the shopper the next move — a dead end without a door is not a
- *  designed state. */
+ *  designed state.
+ *
+ *  It must agree with what a RELOAD shows (QA U-14): the cart read releases and
+ *  DROPS a lapsed line before the page sees it, so the line this note sits on
+ *  is gone on the next load. It used to say "Update the quantity to hold it
+ *  again" — a control the reload then took away. */
 export const HOLD_RELEASED_NEXT_STEP =
-	"Stock went back on sale. Update the quantity to hold it again.";
+	"Stock went back on sale. This item leaves your cart when the page reloads — add it again to hold it.";
 
 export interface HoldView {
 	state: HoldState;
@@ -202,4 +211,44 @@ export function isFreshHold(
 	if (view === null || view.state === "released") return false;
 	const age = windowSeconds - view.secondsLeft;
 	return age >= 0 && age <= graceSeconds;
+}
+
+/**
+ * The pay page's reservation line (QA U-14): how long the ORDER is still held,
+ * from its own `holdExpiresAt`.
+ *
+ * Two halves, because the page does not tick. The RELATIVE figure ("12 more
+ * minutes") is true in every time zone at the moment the page loads; the
+ * ABSOLUTE time carries its zone ("until 2:32 pm UTC") and stays true after —
+ * never a bare clock time a shopper in another zone would misread. Minutes round
+ * DOWN: the line never promises more time than there is. `null` once the
+ * deadline has passed (the pay guard sends that order to its page anyway) or
+ * when the deadline cannot be read.
+ */
+export interface PayHoldCopy {
+	/** "Your order is reserved for 12 more minutes". */
+	lead: string;
+	/** "2:32 pm UTC". */
+	until: string;
+	/** The deadline as an ISO instant, for `<time datetime>`. */
+	iso: string;
+}
+
+export function payHoldCopy(holdExpiresAt: string, now: Date): PayHoldCopy | null {
+	const deadline = Date.parse(holdExpiresAt);
+	if (!Number.isFinite(deadline)) return null;
+	const left = deadline - now.getTime();
+	if (left <= 0) return null;
+	const until = wallClock(holdExpiresAt);
+	if (until === null) return null;
+	const minutes = Math.floor(left / 60_000);
+	const span =
+		minutes < 1
+			? "less than a minute more"
+			: `${String(minutes)} more ${minutes === 1 ? "minute" : "minutes"}`;
+	return {
+		lead: `Your order is reserved for ${span}`,
+		until,
+		iso: new Date(deadline).toISOString(),
+	};
 }

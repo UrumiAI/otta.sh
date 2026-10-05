@@ -19,6 +19,8 @@ import {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_LIST_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type RenderBusy,
 } from "@otta-sh/plugin";
@@ -157,6 +159,20 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Routes that replay a key of their OWN, so a repeat converges whatever the
+ * caller sent. `storefront/order/resume` (QA U-2) replays the order's original
+ * checkout on the order's own idempotency key: the same order, and at Stripe the
+ * same PaymentIntent. One cost, stated: a retried EMAIL attempt may take a second
+ * slot of that order's guess window — over-refusal, bounded by the window.
+ */
+const REPLAYING_ROUTES: ReadonlySet<string> = new Set([
+	STOREFRONT_ORDER_RESUME_ROUTE,
+	// QA2 X4: the cancel runs under a key derived from the order, and a cancelled
+	// order answers "nothing to cancel" — a repeat converges.
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+]);
+
+/**
  * May a BUSY answer to this call be retried automatically? An ALLOWLIST: a
  * route is retried only when it is named here, and every other route —
  * including any added later — defaults to NO retry.
@@ -165,6 +181,7 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
  * route may have committed earlier steps. So a blind replay is safe only when
  * repeating the whole call provably cannot double anything:
  *  - a read route ({@link READ_ROUTES}); or
+ *  - a route that replays its own key ({@link REPLAYING_ROUTES}); or
  *  - a keyed cart-line mutation ({@link KEYED_REPLAY_ROUTES}) that actually
  *    carries its key — without one there is nothing to converge on.
  *
@@ -180,7 +197,7 @@ const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
  * The caller of an unlisted route sees BUSY and answers 503.
  */
 function isRetrySafe(route: string, input: unknown): boolean {
-	if (READ_ROUTES.has(route)) return true;
+	if (READ_ROUTES.has(route) || REPLAYING_ROUTES.has(route)) return true;
 	if (!KEYED_REPLAY_ROUTES.has(route)) return false;
 	if (typeof input !== "object" || input === null) return false;
 	const key = (input as { idempotencyKey?: unknown }).idempotencyKey;
@@ -264,6 +281,33 @@ async function dispatchOnce<TResult>(
 		console.error(`[site-staging] otta route ${route} dispatch failed:`, error);
 		return null;
 	}
+}
+
+/**
+ * The request's form body, or `null` when it is not one.
+ *
+ * `request.formData()` THROWS on anything but a well-formed urlencoded or
+ * multipart body — JSON, no Content-Type, a truncated multipart, no body at
+ * all — and every form endpoint used to await it bare, so a curl, a bot or a
+ * broken client became an unhandled exception and the host's 500 (QA U-6).
+ * That is the caller's mistake, not ours: the endpoint answers
+ * {@link notAFormResponse} instead. Call it AFTER `rejectCrossOrigin`, as the
+ * endpoints read the body.
+ */
+export async function readFormBody(request: Request): Promise<FormData | null> {
+	try {
+		return await request.formData();
+	} catch {
+		return null;
+	}
+}
+
+/** The 400 a form endpoint answers when {@link readFormBody} found no form. */
+export function notAFormResponse(): Response {
+	return new Response("Bad request: expected a form submission", {
+		status: 400,
+		headers: { "Content-Type": "text/plain; charset=utf-8" },
+	});
 }
 
 /** FormData value → trimmed non-empty string, else undefined. */

@@ -120,7 +120,7 @@ const NEVER_CAPTURED: RefundsSummary = {
 	refundable: true,
 };
 
-function detailFor(state: string, refunds: RefundsSummary = CAPTURED): DetailPayload {
+function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): DetailPayload {
 	return {
 		ok: true,
 		order: {
@@ -824,7 +824,7 @@ test("a voided attempt is not listed as a refund, and an in-flight one is labell
 	);
 });
 
-test("the ledger shows the provider's refund id from the wire's refundRef, and the idempotency key to match it by", async () => {
+test("the ledger shows the provider's refund id from the wire's refundRef, and an UNKNOWN-outcome row's idempotency key to match it by", async () => {
 	const wired: RefundsSummary = {
 		...CAPTURED,
 		refunds: [
@@ -858,11 +858,39 @@ test("the ledger shows the provider's refund id from the wire's refundRef, and t
 	expect(refColumn).toBeGreaterThan(-1);
 	expect(keyColumn).toBeGreaterThan(-1);
 	expect(cellIn(ledger, 0, refColumn).textContent).toBe("re_3PwireRef");
-	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("admin-refund:7e4ce728:500000:0");
+	// A settled refund is matched by its provider id; its key is plumbing (QA:
+	// "the refunds table shows idempotency keys") and is not printed.
+	expect(cellIn(ledger, 0, keyColumn).textContent).toBe("—");
 	// An unknown-outcome row has no provider id — its KEY is how it is found in the
 	// provider's request log.
 	expect(cellIn(ledger, 1, refColumn).textContent).toBe("—");
 	expect(cellIn(ledger, 1, keyColumn).textContent).toBe("admin-refund:7e4ce728:200000:500000");
+});
+
+test("a ledger of SETTLED refunds carries no idempotency-key column at all", async () => {
+	// The key exists for one job — finding an unknown-outcome refund in the
+	// provider's request log (the unverified note says so). With nothing unknown,
+	// a column of `admin-refund:7e4ce728:500000:0` strings is noise in a money table.
+	const settled: RefundsSummary = {
+		...CAPTURED,
+		refunds: [
+			{
+				amountCents: REFUNDED_CENTS,
+				currency: CUR,
+				refundRef: "re_3PwireRef",
+				idempotencyKey: "admin-refund:7e4ce728:500000:0",
+				refundedBy: "ops@example.test",
+				createdAt: "2026-03-04T11:00:00.000Z",
+				status: "recorded",
+			},
+		],
+	};
+	const view = await show(detailFor("paid", settled));
+	await fire(tab(view, "money"), "click");
+	const ledger = table(view, "detail-refund-ledger");
+	const headers = [...ledger.querySelectorAll("thead th")].map((th) => th.textContent);
+	expect(headers).not.toContain("Idempotency key");
+	expect(ledger.textContent).not.toContain("admin-refund:");
 });
 
 test("the refund confirm sends the FINALIZED total as its watermark", async () => {
@@ -884,4 +912,164 @@ test("the refund confirm sends the FINALIZED total as its watermark", async () =
 	expect((sent?.["value"] as Record<string, string> | undefined)?.["refundedSoFarCents"]).toBe(
 		String(FINALIZED_CENTS),
 	);
+});
+
+// ── T1-3 / T1-6: the status buttons are the server's, and Mark refunded is bookkeeping ──
+
+test("the status buttons are exactly the transitions the server offers — no Mark paid it withheld", async () => {
+	// The plugin withholds `paid` for an order its payment provider settles
+	// (`adminNextStates`), so a pending card order arrives with `expired` alone and the
+	// screen must not invent the rest.
+	const view = await show({ ...detailFor("pending", NEVER_CAPTURED), transitions: ["expired"] });
+	await fire(tab(view, "fulfilment"), "click");
+	expect(view.container.querySelector('[data-testid="transition-paid"]')).toBeNull();
+	expect(one(view, '[data-testid="transition-expired"]').textContent).toContain("Mark expired");
+});
+
+test("Mark refunded asks first, and its confirm says no money moves and the buyer is not emailed", async () => {
+	const view = await show({ ...detailFor("paid"), transitions: ["processing", "refunded"] });
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="transition-refunded"]'), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(text).toContain("does not move money");
+	expect(text).toContain("does not email the buyer");
+});
+
+// ── T1-4: cancelling a paid order refunds it, and the screen says so ─────────
+
+const CANCEL_VOCABULARY: Vocabulary = {
+	...VOCABULARY,
+	cancellationReasons: [{ value: "customer_request", label: "Customer requested it" }],
+	oneClickCancellationReasons: [{ value: "customer_request", label: "Customer requested it" }],
+};
+
+/** Click the one-click cancel and confirm it; the body the console posted. */
+async function confirmCancel(view: Mounted): Promise<Record<string, string> | undefined> {
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	apiFetch.mockClear();
+	apiFetch.mockResolvedValue(
+		new Response(JSON.stringify({ data: { ok: true, notice: null } }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-yes"]'), "click");
+	const sent = apiFetch.mock.calls
+		.map((call) => JSON.parse(String(call[1]?.body ?? "{}")) as Record<string, unknown>)
+		.find((body) => body["action_id"] === "orders:cancel-customer_request");
+	return sent?.["value"] as Record<string, string> | undefined;
+}
+
+test("a PAID order's cancel states the refund by amount and offers Return to stock, ticked", async () => {
+	const view = await show({ ...detailFor("paid"), vocabulary: CANCEL_VOCABULARY });
+	await fire(tab(view, "fulfilment"), "click");
+	const remaining = formatAmount(TOTAL_CENTS - REFUNDED_CENTS, CUR);
+	const banner = one(view, '[data-testid="cancel-banner"]').textContent ?? "";
+	expect(banner).toContain(`refunds ${remaining} to the buyer’s original payment method`);
+	expect(banner).toContain("returns the items to stock");
+	expect(banner).not.toContain("held stock");
+	const box = one<HTMLInputElement>(view, '[data-testid="cancel-restock"]');
+	expect(box.checked).toBe(true);
+
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toBe(
+		`Cancel this order as “Customer requested it”? This is permanent — ${remaining} is refunded to the buyer, and the items go back to stock.`,
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-deny"]'), "click");
+	const value = await confirmCancel(view);
+	expect(value).toMatchObject({ reason: "customer_request", state: "paid", restock: "true" });
+});
+
+test("unticking Return to stock changes the confirm and posts restock false", async () => {
+	const view = await show({ ...detailFor("paid"), vocabulary: CANCEL_VOCABULARY });
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLInputElement>(view, '[data-testid="cancel-restock"]'), "click");
+	expect(one<HTMLInputElement>(view, '[data-testid="cancel-restock"]').checked).toBe(false);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toContain(
+		"nothing goes back to stock",
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-deny"]'), "click");
+	expect(await confirmCancel(view)).toMatchObject({ restock: "false" });
+});
+
+test("a PENDING order's cancel releases held stock, refunds nothing and offers no restock box", async () => {
+	const view = await show({
+		...detailFor("pending", NEVER_CAPTURED),
+		vocabulary: CANCEL_VOCABULARY,
+	});
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="cancel-banner"]').textContent).toContain(
+		"releases the held stock",
+	);
+	expect(view.container.querySelector('[data-testid="cancel-restock"]')).toBeNull();
+	const value = await confirmCancel(view);
+	expect(value).toMatchObject({ state: "pending" });
+	expect(value?.["restock"]).toBeUndefined();
+});
+
+test("a paid order whose refund Otta cannot issue offers no cancel control, only what to do instead", async () => {
+	const view = await show({
+		...detailFor("paid", { ...CAPTURED, refundable: false }),
+		vocabulary: CANCEL_VOCABULARY,
+	});
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="cancel-banner"]').textContent).toContain("Money → Refunds");
+	expect(view.container.querySelector('[data-testid="cancel-customer_request"]')).toBeNull();
+	expect(view.container.querySelector('[data-testid="cancel-with-note"]')).toBeNull();
+});
+
+test("a PAID order whose refund ledger failed to load offers no cancel — the amount is unknown, not zero", async () => {
+	const view = await show({ ...detailFor("paid", null), vocabulary: CANCEL_VOCABULARY });
+	await fire(tab(view, "fulfilment"), "click");
+	const banner = one(view, '[data-testid="cancel-banner"]').textContent ?? "";
+	expect(banner).toContain("couldn’t be loaded");
+	expect(banner).not.toContain("nothing is refunded");
+	expect(view.container.querySelector('[data-testid="cancel-customer_request"]')).toBeNull();
+});
+
+test("the Cancel group is offered only on an order that can still be cancelled", async () => {
+	// Shipped, delivered, completed, refunded and cancelled orders cannot be cancelled,
+	// so the group (whose every control the server would refuse) is not rendered.
+	for (const state of ["shipped", "delivered", "completed", "refunded", "cancelled"]) {
+		const view = await show({ ...detailFor(state), vocabulary: CANCEL_VOCABULARY });
+		await fire(tab(view, "fulfilment"), "click");
+		expect(view.container.querySelector('[data-testid="detail-cancel"]'), state).toBeNull();
+	}
+	for (const state of ["pending", "paid", "processing"]) {
+		const view = await show({ ...detailFor(state), vocabulary: CANCEL_VOCABULARY });
+		await fire(tab(view, "fulfilment"), "click");
+		expect(view.container.querySelector('[data-testid="detail-cancel"]'), state).not.toBeNull();
+	}
+});
+
+test("an invalid refund amount marks its input without a shorthand/longhand style collision", async () => {
+	// QA's console: "Removing a style property during rerender (borderColor) when a
+	// conflicting property is set (border)". The invalid style spread `inputStyle`
+	// (shorthand `border`) and then set the longhand `borderColor`; clearing the
+	// error removed the longhand under a live shorthand, which React warns can
+	// leave the wrong border painted. The invalid state now sets the SAME
+	// shorthand, so nothing is ever removed from under it.
+	const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const view = await show(detailFor("paid", CAPTURED));
+		await fire(tab(view, "money"), "click");
+		await fire(one<HTMLButtonElement>(view, '[data-testid="refund-partial-submit"]'), "click");
+		const input = one<HTMLInputElement>(view, '[data-testid="refund-amount"]');
+		expect(input.getAttribute("aria-invalid")).toBe("true");
+		expect(input.style.border).toContain("solid");
+
+		await React.act(async () => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "12");
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(input.getAttribute("aria-invalid")).toBeNull();
+
+		const collisions = errors.mock.calls.filter((call) =>
+			call.some((arg) => /style property during rerender/.test(String(arg))),
+		);
+		expect(collisions).toEqual([]);
+	} finally {
+		errors.mockRestore();
+	}
 });

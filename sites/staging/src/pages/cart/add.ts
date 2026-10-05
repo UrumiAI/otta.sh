@@ -10,6 +10,7 @@
  * missing key is a 400, mirroring the plugin route's own input guard.
  */
 import {
+	CART_LINE_MAX_QTY,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type CartLineMutationRouteResult,
@@ -24,6 +25,7 @@ import {
 	failureToken,
 	PRODUCT_NOT_FOUND,
 	PRODUCT_UNAVAILABLE,
+	QTY_TOO_LARGE,
 	routeDispatcher,
 	seeOther,
 	SERVICE_UNAVAILABLE,
@@ -37,6 +39,8 @@ import {
 	formPositiveInt,
 	formString,
 	isBusyResult,
+	notAFormResponse,
+	readFormBody,
 	safeReturnPath,
 } from "../../lib/otta-api.js";
 
@@ -46,7 +50,8 @@ export const POST: APIRoute = async (context) => {
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 
-	const form = await context.request.formData();
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const sku = formString(form.get("sku"));
 	// The CMS content id (join key to product_commerce) minted into the PDP
 	// add-to-cart slot — forwarded so the cart line is priceable/quotable/
@@ -74,6 +79,11 @@ export const POST: APIRoute = async (context) => {
 			{ status: 400 },
 		);
 	}
+
+	// Over the cap: the plugin refuses it as QTY_TOO_LARGE anyway, so answer that
+	// here, before `ensureCartId` can mint a cart for an add that cannot succeed
+	// (QA U-6). The copy names the limit.
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, returnTo, QTY_TOO_LARGE);
 
 	const handler = routeDispatcher(context);
 
@@ -207,7 +217,10 @@ export const POST: APIRoute = async (context) => {
 		// A stale cookie pointing at a vanished cart: drop it so the next
 		// add mints a fresh cart instead of failing forever.
 		if (token === "CART_NOT_FOUND") clearCartCookie(context);
-		return seeOther(context, returnTo, token);
+		// One unit refused is a sold-out item: "try a smaller quantity" would send
+		// the shopper looking for a quantity below 1 (QA2 F). More than one keeps
+		// the quantity sentence, which is true either way.
+		return seeOther(context, returnTo, token === "OUT_OF_STOCK" && qty === 1 ? "SOLD_OUT" : token);
 	}
 
 	return seeOther(context, "/cart");

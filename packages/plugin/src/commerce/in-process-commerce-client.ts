@@ -49,6 +49,8 @@
 import {
 	activateProductCommerce,
 	addLine,
+	cancelDueIntents,
+	cancelOrder,
 	cents,
 	checkoutOwner,
 	computeQuote,
@@ -82,6 +84,8 @@ import {
 	updateProductVariantFields,
 	upsertProductCommerce,
 	upsertProductVariant,
+	recordedRefundTotal,
+	classifyLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
@@ -90,6 +94,7 @@ import {
 	type CartLine,
 	type CreateOrderDeps,
 	type FulfillmentKind,
+	type LatePaymentStatus,
 	type Money,
 	type Order,
 	type PaymentGateway,
@@ -104,7 +109,10 @@ import {
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
+	AbandonCartOrderResult,
 	AddressWire,
+	AccountOrderAddressWire,
+	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
 	CartResult,
@@ -126,7 +134,10 @@ import type {
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
+	ShopperStateWire,
 	QuoteResult,
+	ResumeOrderPaymentResult,
+	ResumeProof,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
@@ -134,17 +145,22 @@ import type {
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
-import { loginLinkUrl } from "../storefront/login-link.js";
+import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
+import { buyerRefHint } from "./buyer-ref-hint.js";
+import { emailMatchesBuyer, resumeThrottleKey } from "./resume-proof.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
 	COUPON_CODE_MAX,
+	isIdToken,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
 	requireBoundedText,
 	requireCurrencyCode,
 	requireDestination,
+	LOGIN_TOKEN_MAX,
+	BUYER_REF_MAX,
 	requireIdToken,
 	requireIdempotencyKey,
 	requireMoney,
@@ -188,7 +204,22 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * success, and the client logs that once.
 	 */
 	resolveEmailSender?: () => Promise<EmailSender | undefined>;
+	/**
+	 * The gateways "Start a new cart" withdraws an abandoned order's intent through
+	 * (QA2 X4), resolved LAZILY — only when an order was actually cancelled — and
+	 * built for a SHORT, fixed provider bound ({@link ABANDON_CANCEL_CALL_MS}), not
+	 * checkout's. Absent ⇒ no in-request withdrawal; the sweep does it.
+	 */
+	resolveWithdrawGateways?: () => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>;
 }
+
+/** The provider bound for the in-request intent withdrawal: fixed, never
+ *  clipped — a cancel gets all of it or is not started (the sweep's rule). */
+export const ABANDON_CANCEL_CALL_MS = 1_500;
+/** The whole in-request withdrawal's budget, measured from the start of the
+ *  abandon: the cancel is started only while a whole {@link ABANDON_CANCEL_CALL_MS}
+ *  still fits, so the shopper's redirect waits at most this long for it. */
+export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
 
 /**
  * Server-side notices that are logged ONCE per isolate rather than once per
@@ -209,6 +240,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
 	readonly #resolveEmailSender: (() => Promise<EmailSender | undefined>) | undefined;
+	readonly #resolveWithdrawGateways:
+		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
+		| undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -223,6 +257,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#resolveEmailSender = options.resolveEmailSender;
+		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -538,6 +573,33 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
+	 * The header's facts in at most two document reads (see the port). Deliberately
+	 * NOT `getCart`: that expires lapsed holds (writes) and the route around it
+	 * joins live prices, and its store read looks up every line's reservation — the
+	 * header needs none of it, and pays for this on every uncached page. Lines whose
+	 * hold lapsed are still lines of the cart until something touches it, so the
+	 * count is the cart as stored (`CartStore.units`).
+	 */
+	async getShopperState(input: {
+		cartId?: string;
+		sessionToken?: string;
+	}): Promise<ShopperStateWire> {
+		const { cartId, sessionToken } = input;
+		const [cart, customerId] = await Promise.all([
+			cartId !== undefined && cartId.length > 0 && isIdToken(cartId)
+				? this.#stores.cartStore.units(cartId)
+				: Promise.resolve(null),
+			sessionToken !== undefined && sessionToken.length > 0
+				? this.#stores.sessionStore.validate(sessionToken)
+				: Promise.resolve(null),
+		]);
+		return {
+			cart: cart === null ? null : { state: cart.state, count: cart.units },
+			signedIn: customerId !== null,
+		};
+	}
+
+	/**
 	 * The add, with the SKU GUARD in front of it — the one piece of this surface
 	 * that is not a bare use-case call, and a security check rather than framing,
 	 * so it lives wherever the add lives.
@@ -708,8 +770,12 @@ export class InProcessCommerceClient implements CommerceClient {
 				to: address,
 				template: "customer-login-link",
 				// The link ONLY: the token travels nowhere a template or a provider
-				// log could print it on its own.
-				data: { loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token) },
+				// log could print it on its own. Beside it, the lifetime the email
+				// states — the TTL the verifier was built with (QA U-3).
+				data: {
+					loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token),
+					expiresInMinutes: Math.round(LOGIN_LINK_TTL_MS / 60_000),
+				},
 				// The challenge, not the token: one challenge is one email, so a
 				// retried send dedupes provider-side.
 				idempotencyKey: `login:${issued.challengeId}`,
@@ -727,7 +793,7 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
 		requireIdToken("challengeId", challengeId);
-		requireBoundedText("token", token, 1, 400);
+		requireBoundedText("token", token, 1, LOGIN_TOKEN_MAX);
 		const result = await verifyLogin(
 			{
 				credentialVerifier: this.#stores.credentialVerifier,
@@ -788,16 +854,36 @@ export class InProcessCommerceClient implements CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null || order.customerId !== customerId) {
+		// ONE ledger read, as the public order read makes: the late-payment status
+		// (so the account's order page says what the public page says about money on
+		// a dead order) and the recorded refunds (its refunded figure) both come
+		// off it.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null || ledger.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
-		return { ok: true, order: serializeOrderSummary(order) };
+		return {
+			ok: true,
+			order: {
+				...serializeOrderSummary(ledger.order),
+				latePayment: classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				refundedCents: recordedRefundTotal(ledger.refunds),
+				// The owner's own page (QA2 X1): the tracking as the public read trims
+				// it, and the ship-to — which the public read never carries.
+				fulfillment: publicFulfillment(ledger.order),
+				shippingAddress: accountOrderAddress(ledger.order),
+			},
+		};
 	}
 
 	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
@@ -967,7 +1053,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
 		requireIdempotencyKey(idempotencyKey);
-		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
+		requireBoundedText("buyerRef", input.buyerRef, 1, BUYER_REF_MAX);
 		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
@@ -1004,8 +1090,15 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return {
 			ok: true,
-			order: serializePublicOrder(result.order),
+			// A checkout's reply describes the order it just placed (or replayed);
+			// whatever `latePayment` would say, the place route projects only id and
+			// state out of it, so it is not worth three reads on the hot path.
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
+			// A same-key replay is the order ANOTHER tab placed, with the email it
+			// was placed with (QA2 X2): masked, and whether it is this request's.
+			buyerRefHint: buyerRefHint(result.order.buyerRef),
+			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
 	}
 
@@ -1039,9 +1132,158 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  the public whitelist and never the operator's view. */
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
 		requireIdToken("orderId", orderId);
+		// ONE read of the order aggregate — the order and the ledgers its
+		// `latePayment` status and its recorded refunds (QA2 X3) are derived from,
+		// as the account's order read makes. On a live order (every poll of a
+		// pending confirmation page, the pay page's guard) the derivation is pure;
+		// nothing is read twice.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			order: serializePublicOrder(
+				ledger.order,
+				classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				recordedRefundTotal(ledger.refunds),
+			),
+		};
+	}
+
+	/**
+	 * Resume a pending order's payment from its id plus a second factor (cart,
+	 * owning session or email; the id alone is PROOF_REQUIRED) — see the port. The
+	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
+	 * short-circuit: its cart, its key, its buyer, its method. That path returns
+	 * the original order, re-snapshots nothing, and asks the gateway for the
+	 * intent under the SAME key with the SAME body (`intentInputFor`), which is
+	 * what makes Stripe hand back the same PaymentIntent rather than a second one.
+	 *
+	 * The caller must hold a second factor beside the id (`proof`): the order's
+	 * cart, a session owning it, or its email — see the port.
+	 *
+	 * Payability is decided BEFORE the replay, on the order as stored, by the pay
+	 * page's own rule (`pending`, strictly before `holdExpiresAt`), so a lapsed or
+	 * settled order never reaches the provider. The replay's own answer is checked
+	 * again: an order that left pending in between comes back with no client
+	 * action, and that is not payable either.
+	 */
+	async resumeOrderPayment(
+		orderId: string,
+		proof: ResumeProof = {},
+	): Promise<ResumeOrderPaymentResult> {
+		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
 		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		return { ok: true, order: serializePublicOrder(order) };
+		const deadline = Date.parse(order.holdExpiresAt);
+		if (
+			order.state !== "pending" ||
+			!Number.isFinite(deadline) ||
+			deadline <= this.#stores.clock.now().getTime() ||
+			order.cartId === null ||
+			order.paymentMethod === null
+		) {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
+		// possession proofs and cost no throttle slot; an email is a guess, so
+		// every one takes a slot of this order's window BEFORE it is compared.
+		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
+		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
+			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
+			proven = customerId !== null && customerId === order.customerId;
+		}
+		if (!proven && proof.email !== undefined) {
+			if (!(await this.#stores.resumeThrottle.admit(resumeThrottleKey(order.id)))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {
+				return { ok: false, reason: "EMAIL_MISMATCH" };
+			}
+			proven = true;
+		}
+		if (!proven) return { ok: false, reason: "PROOF_REQUIRED" };
+		const result = await createOrderFromCart(this.#createOrderDeps, {
+			cartId: order.cartId,
+			idempotencyKey: order.idempotencyKey,
+			buyerRef: order.buyerRef,
+			paymentMethod: order.paymentMethod,
+		});
+		if (!result.ok) return { ok: false, reason: result.reason };
+		if (result.order.state !== "pending" || result.intent.clientAction.kind === "none") {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		return {
+			ok: true,
+			order: serializePublicOrder(result.order, "none", 0),
+			intent: serializeIntent(result.intent),
+			buyerRefHint: buyerRefHint(order.buyerRef),
+		};
+	}
+
+	/**
+	 * "Start a new cart" (QA2 X4) — see the port. The cart is the proof: its
+	 * order is read through the cart row's own `orderId`, never from the caller.
+	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
+	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 */
+	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
+		requireIdToken("cartId", cartId);
+		const startedAt = Date.now();
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null || cart.orderId === null) {
+			return { ok: true, cancelled: false, orderId: null };
+		}
+		const orderId = toOrderId(cart.orderId);
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order === null || order.state !== "pending") {
+			return { ok: true, cancelled: false, orderId: cart.orderId };
+		}
+		const res = await cancelOrder(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId,
+				reason: "customer_request",
+				detail: "Started a new cart",
+				cancelledBy: "shopper",
+				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
+			},
+		);
+		const cancelled = res.ok && res.cancelled;
+		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
+		return { ok: true, cancelled, orderId: cart.orderId };
+	}
+
+	/**
+	 * Withdraw a just-cancelled order's PaymentIntent at the provider IN the
+	 * request, so a tab still open on it stops being payable now rather than on
+	 * the sweep's next tick. BEST-EFFORT and BOUNDED: the cancel made it due at
+	 * once, and this is the sweep's own drain (`cancelDueIntents`) run for that one
+	 * order — same keys, same bookkeeping — so a definite answer is recorded and
+	 * the sweep never asks again, a RETRYABLE one is rescheduled for the sweep
+	 * exactly as there, and a cancel that would not fit whole in
+	 * {@link ABANDON_WITHDRAW_BUDGET_MS} is not started at all (still due,
+	 * uncounted). Never throws: the cancellation already stands.
+	 */
+	async #withdrawIntentsNow(orderId: ReturnType<typeof toOrderId>, startedAt: number) {
+		const resolve = this.#resolveWithdrawGateways;
+		if (resolve === undefined) return;
+		const remainingMs = () => ABANDON_WITHDRAW_BUDGET_MS - (Date.now() - startedAt);
+		try {
+			await cancelDueIntents(
+				{ orderStore: this.#stores.orderStore, clock: this.#stores.clock, gateways: resolve },
+				{ due: [orderId], limit: 1, canStartCancel: () => remainingMs() >= ABANDON_CANCEL_CALL_MS },
+			);
+		} catch (err) {
+			console.error(
+				`[otta] withdrawing the payment intent of abandoned order ${orderId} failed; the sweep will`,
+				{ error: err instanceof Error ? err.message : String(err) },
+			);
+		}
 	}
 
 	/**
@@ -1135,6 +1377,11 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 		productId: view.productId,
 		sku: view.sku,
 		price: { amount: view.price.amount, currency: view.price.currency },
+		title: view.title,
+		compareAtPrice:
+			view.compareAtPrice === null
+				? null
+				: { amount: view.compareAtPrice.amount, currency: view.compareAtPrice.currency },
 		inStock: view.inStock,
 		active: view.active,
 	};
@@ -1217,6 +1464,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -1224,6 +1472,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			// The same evidence the public wire carries (`serializePublicOrder`), so
+			// the account pages apply the order page's "Not calculated" rule.
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 	};
@@ -1238,7 +1491,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
  * guest may legitimately read — carrier and tracking, the cancellation reason —
  * never the staff identity, the audit witness or the free-text detail.
  */
-function serializePublicOrder(order: Order): PublicOrderWire {
+function serializePublicOrder(
+	order: Order,
+	latePayment: LatePaymentStatus,
+	refundedCents: number,
+): PublicOrderWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1258,20 +1515,48 @@ function serializePublicOrder(order: Order): PublicOrderWire {
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
-		fulfillment:
-			order.fulfillment === null
-				? null
-				: {
-						carrier: order.fulfillment.carrier,
-						trackingNumber: order.fulfillment.trackingNumber,
-						trackingUrl: order.fulfillment.trackingUrl,
-						shippedAt: order.fulfillment.shippedAt,
-					},
+		fulfillment: publicFulfillment(order),
 		cancellation:
 			order.cancellation === null
 				? null
 				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
+		latePayment,
+		refundedCents,
 	};
+}
+
+/** The fulfilment trimmed to what a buyer may read: carrier and tracking, never
+ *  who recorded it. */
+function publicFulfillment(order: Order): PublicOrderWire["fulfillment"] {
+	return order.fulfillment === null
+		? null
+		: {
+				carrier: order.fulfillment.carrier,
+				trackingNumber: order.fulfillment.trackingNumber,
+				trackingUrl: order.fulfillment.trackingUrl,
+				shippedAt: order.fulfillment.shippedAt,
+			};
+}
+
+/** The ship-to for its OWNER's page: where it goes, without the contact fields
+ *  (email, phone) captured beside it. */
+function accountOrderAddress(order: Order): AccountOrderAddressWire | null {
+	const address = order.shippingAddress;
+	if (address === null) return null;
+	return {
+		name: address.name,
+		line1: address.line1,
+		line2: address.line2,
+		city: address.city,
+		region: address.region,
+		postalCode: address.postalCode,
+		country: address.country,
+	};
+}
+
+/** The same mailbox, as the resume proof compares one: trimmed, case-folded. */
+function sameBuyerRef(stored: string, typed: string): boolean {
+	return stored.trim().toLowerCase() === typed.trim().toLowerCase();
 }
 
 /** The chosen shipping zone, read off the totals' method snapshot (an opaque value

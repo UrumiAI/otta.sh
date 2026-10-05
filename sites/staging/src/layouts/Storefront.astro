@@ -16,11 +16,19 @@
  * PROP from a page that already read the cart, so the shell never puts commerce
  * on the critical path of a page that would otherwise make no commerce call.
  *
- * THE ONE OPT-IN EXCEPTION is a theme whose chrome draws the cart's LINES
- * (`ThemeModule.chrome.cartLines` — e.g. a bag drawer or a bag strip). For those themes only, and only off the checkout flow, the shell
- * makes one guarded cart read (`lib/bag.ts`) that FAILS SOFT: an unreadable or
- * BUSY read becomes an "unreadable" bag, never an error page and never a 503.
- * Every other theme pays nothing.
+ * THE OPT-IN EXCEPTIONS are a theme whose chrome draws the cart's LINES
+ * (`ThemeModule.chrome.cartLines` — e.g. a bag drawer or a bag strip), and one
+ * whose chrome draws the SHOPPER'S STATE (`chrome.shopperState`: the cart count
+ * and "Your account" on every page — QA U-12, U-14; Tempered opts in). For
+ * those themes only — the bag off the checkout flow, the shopper's state off the
+ * pay page — the shell makes one guarded
+ * read: the cart's lines (`lib/bag.ts`), or for `shopperState` ONE dispatch of
+ * the lean `storefront/shopper-state` route for the count and a yes/no on the
+ * session — never who (`lib/chrome-state.ts`). Each read happens ONLY when the request
+ * carries the cookie it depends on — a visitor with neither cookie costs no
+ * commerce call and gets the neutral header — and each FAILS SOFT: no answer
+ * becomes an error page or a 503. The middleware keeps every page rendered with
+ * such state private and out of the route cache. Every other theme pays nothing.
  */
 import { getMenu, getSiteSettings } from "emdash";
 import SafeJsonLd from "../components/SafeJsonLd.astro";
@@ -47,15 +55,20 @@ import type {
 } from "../themes/contract.js";
 import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
 import { readBag } from "../lib/bag.js";
+import { chromeCartCount, readShopperState } from "../lib/chrome-state.js";
+import { documentTitle } from "../lib/document-title.js";
+import { storeTitle } from "../lib/store-settings.js";
 import { activeTheme } from "../themes/resolve.js";
 
 interface ShellProps {
 	title: string;
 	description?: string | null;
 	/**
-	 * Units in the cart, for the nav badge. `null`/omitted renders the nav
-	 * item bare — "no cart read on this page" and "an empty cart" are
-	 * different facts and must not both render as `(0)`.
+	 * Units in the cart, for the nav badge. `null`/omitted means "this page read
+	 * no cart". The badge itself follows ONE rule on every page
+	 * (`chromeCartCount`): drawn only when the cart has something in it, so an
+	 * empty cart and an unread one both show the bare link (review, QA U-14:
+	 * /cart said "(0)" while every other page said nothing).
 	 */
 	cartCount?: number | null;
 	/**
@@ -71,6 +84,13 @@ interface ShellProps {
 	 * nothing when it does not, because then the button names no amount either.
 	 */
 	currency?: string | null;
+	/**
+	 * Whether the shopper is signed in, from a page that already asked (the
+	 * account pages, the sign-in page) — saves the shell asking again. Omitted ⇒
+	 * the shell asks, for a theme that draws it and a request with a session
+	 * cookie. Never the email: the chrome only ever learns yes or no.
+	 */
+	signedIn?: boolean;
 }
 
 /** Discriminated on `view`: a themed view takes its model; no `view` takes the slot. */
@@ -147,12 +167,6 @@ try {
 	console.error("[site-staging] layout menu read threw:", error);
 	navItems = FALLBACK_MENU_ITEMS;
 }
-const chromeNav = withAccountLink(navItems).map((item) => ({
-	label: item.label,
-	url: item.url,
-	isCart: isCartLink(item.url),
-}));
-
 const themeId = await themeIdPending;
 const theme = themeFor(themeId);
 
@@ -166,21 +180,61 @@ const theme = themeFor(themeId);
  * read is awaited, so the two run together.
  */
 const BAGLESS_VIEWS: ReadonlySet<string> = new Set(["cart", "checkout", "pay", "order"]);
+const hasCartLink = withAccountLink(navItems).some((item) => isCartLink(item.url));
 const drawsBag =
-	theme.chrome?.cartLines === true &&
-	!BAGLESS_VIEWS.has(props.view ?? "") &&
-	chromeNav.some((item) => item.isCart);
+	theme.chrome?.cartLines === true && !BAGLESS_VIEWS.has(props.view ?? "") && hasCartLink;
 const bagPending = drawsBag
 	? readBag({ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url })
 	: null;
 
+/**
+ * The shopper's state, for a theme whose chrome draws it (the note at the top).
+ * Everywhere but `/checkout/pay`, the payment path, which keeps its header to the
+ * one job it has. `/checkout` and `/orders/<id>` get the count too (QA2 U-14):
+ * both are private pages already, and this is a server-side dispatch — nothing
+ * here reaches a URL or a Referer, so the order page's `no-referrer` and Stripe's
+ * parameters in its URL are untouched; on the order page a cart that became the
+ * order is terminal and draws no badge. `/cart` passes its own count. Each read
+ * is made only for a request carrying its cookie (no cookie ⇒ no dispatch),
+ * started here so both run alongside the settings read. The middleware has
+ * already made such a response private.
+ */
+const SHOPPERLESS_VIEWS: ReadonlySet<string> = new Set(["pay"]);
+const drawsShopper =
+	theme.chrome?.shopperState === true && !SHOPPERLESS_VIEWS.has(props.view ?? "");
+/* ONE lean dispatch for whatever the page did not already supply (lib/chrome-state.ts). */
+const shopperPending = drawsShopper
+	? readShopperState(
+			{ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url },
+			{
+				count:
+					pageCount === null && bagPending === null && props.view !== "cart" && hasCartLink,
+				signedIn: props.signedIn === undefined,
+			},
+		)
+	: null;
+
 await settingsRead;
-const siteTitle = settings.title ?? "Otta";
-const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+/* The store's name by the ONE rule the home page also titles itself with
+   (`storeTitle`: a blank or padded setting reads as unset, "Otta" as the
+   fallback), so the shell and the home page cannot disagree about it. */
+const siteTitle = storeTitle(settings);
+const fullTitle = documentTitle(title, siteTitle);
 
 const bag = bagPending === null ? null : await bagPending;
-/* The page's own count wins; the bag's read fills it in where the page read none. */
-const cartCount = pageCount ?? bag?.count ?? null;
+const shopper = shopperPending === null ? null : await shopperPending;
+/* The page's own count wins; the bag's or the header's read fills it in where
+   the page read none. One badge rule for every page, /cart included: no badge
+   for an empty cart. */
+const cartCount = chromeCartCount(pageCount ?? bag?.count ?? shopper?.cartCount ?? null);
+/* Yes or no — the route never says who, so no email can reach the chrome. */
+const signedIn = props.signedIn ?? shopper?.signedIn ?? false;
+
+const chromeNav = withAccountLink(navItems, signedIn).map((item) => ({
+	label: item.label,
+	url: item.url,
+	isCart: isCartLink(item.url),
+}));
 
 const chrome: ChromeModel = {
 	siteTitle,
@@ -190,6 +244,7 @@ const chrome: ChromeModel = {
 	cartCount,
 	cartCountLabel: cartCount === null ? null : cartCountLabel(cartCount),
 	currency,
+	signedIn,
 	themeId,
 	bag,
 };

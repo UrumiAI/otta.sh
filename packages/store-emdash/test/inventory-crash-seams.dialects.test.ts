@@ -537,10 +537,15 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 			// moved — and every replay would return a result the shelf never saw.
 			expect((await ringOf("SKU-F1")).filter((entry) => entry.key === key)).toHaveLength(1);
 
+			// Answered from the ring witness, and SAID to be: this call moved nothing.
 			const replay = await makeStore().restock("SKU-F1", 7, key);
-			expect(replay).toEqual({ ok: true, onHand: 17 });
+			expect(replay).toEqual({ ok: true, onHand: 17, replayed: true });
 			expect(await onHand("SKU-F1")).toBe(17); // nothing applied twice
-			expect((await movements().get(stockClaimId(key)))?.applied?.result).toEqual(replay);
+			// The flag is never stored: the recorded answer is the fresh one.
+			expect((await movements().get(stockClaimId(key)))?.applied?.result).toEqual({
+				ok: true,
+				onHand: 17,
+			});
 			// A second replay is the recorded answer, read from the claim document.
 			expect(await makeStore().restock("SKU-F1", 7, key)).toEqual(replay);
 			expect(await onHand("SKU-F1")).toBe(17);
@@ -562,9 +567,12 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 			expect((await ringOf("SKU-F2")).filter((entry) => entry.key === key)).toHaveLength(1);
 
 			const replay = await makeStore().removeStock("SKU-F2", 4, key);
-			expect(replay).toEqual({ ok: true, onHand: 6 });
+			expect(replay).toEqual({ ok: true, onHand: 6, replayed: true });
 			expect(await onHand("SKU-F2")).toBe(6);
-			expect((await movements().get(stockClaimId(key)))?.applied?.result).toEqual(replay);
+			expect((await movements().get(stockClaimId(key)))?.applied?.result).toEqual({
+				ok: true,
+				onHand: 6,
+			});
 		});
 
 		it("adjust: the replay is answered by the hold's own witness and moves nothing twice", async () => {
@@ -640,7 +648,11 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 			expect(await onHand("SKU-F4")).toBe(24);
 			// It is at least self-limiting: the claim is now applied, so a THIRD
 			// replay returns the recorded answer and moves nothing.
-			expect(await makeStore().restock("SKU-F4", 7, key)).toEqual(reapplied);
+			// The re-application above was a real movement (no flag); this is a replay.
+			expect(await makeStore().restock("SKU-F4", 7, key)).toEqual({
+				...reapplied,
+				replayed: true,
+			});
 			expect(await onHand("SKU-F4")).toBe(24);
 		});
 
@@ -672,6 +684,78 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 			// It refused rather than moved: the shelf is untouched by the refusal.
 			expect(await onHand("SKU-F5")).toBe(15);
 			expect((await movements().get(adjustClaimId(key)))?.applied).toBeUndefined();
+		});
+	});
+
+	// -- (h2) a stock claim written by the release before removal watermarks ---
+
+	describe("(h2) a stock-movement claim written before watermarks existed, met by a watermarked replay", () => {
+		// The claim document is exactly what the previous release wrote: no
+		// `expectedOnHand` member. The recorded intent wins — the watermark a replay
+		// now carries is not part of what was claimed, so it is never judged.
+		const legacyClaim = (
+			sku: string,
+			qty: number,
+		): Extract<MovementClaimDoc, { kind: "stock" }> => ({
+			kind: "stock",
+			sku,
+			direction: "removal",
+			qty,
+			createdAt: NOW,
+		});
+
+		it("PENDING: the replay completes the movement as recorded — unconditionally, once", async () => {
+			await seed("SKU-H2A", 10);
+			const key = idempotencyKey("k-h2a");
+			await movements().compareAndSet(stockClaimId(key), null, legacyClaim("SKU-H2A", 4));
+
+			// A watermark that would be STALE (the count is 10, not 3) — and the
+			// removal still applies, because the claim it completes carried none.
+			const replay = await makeStore().removeStock("SKU-H2A", 4, key, { expectedOnHand: 3 });
+			expect(replay).toEqual({ ok: true, onHand: 6 });
+			expect(await onHand("SKU-H2A")).toBe(6);
+			expect((await movements().get(stockClaimId(key)))?.applied?.result).toEqual(replay);
+
+			// And it stays one movement: completing the pending claim WAS the
+			// movement (no flag); this is its replay.
+			expect(await makeStore().removeStock("SKU-H2A", 4, key, { expectedOnHand: 3 })).toEqual({
+				...replay,
+				replayed: true,
+			});
+			expect(await onHand("SKU-H2A")).toBe(6);
+		});
+
+		it("APPLIED: the replay echoes the recorded answer and moves nothing", async () => {
+			await seed("SKU-H2B", 6);
+			const key = idempotencyKey("k-h2b");
+			await movements().compareAndSet(stockClaimId(key), null, {
+				...legacyClaim("SKU-H2B", 4),
+				applied: { result: { ok: true, onHand: 6 }, appliedAt: NOW },
+			});
+
+			expect(await makeStore().removeStock("SKU-H2B", 4, key, { expectedOnHand: 6 })).toEqual({
+				ok: true,
+				onHand: 6,
+				replayed: true,
+			});
+			expect(await onHand("SKU-H2B")).toBe(6);
+		});
+
+		it("a PINNED claim left pending by a crash is judged on its RECORDED watermark when replayed", async () => {
+			// Window (a) for a watermarked removal: the claim landed, the inventory
+			// compare-and-set never ran, and a sale moved the count meanwhile. The
+			// replay must not apply against a count the operator never saw.
+			await seed("SKU-H2C", 10);
+			const key = idempotencyKey("k-h2c");
+			await movements().compareAndSet(stockClaimId(key), null, {
+				...legacyClaim("SKU-H2C", 4),
+				expectedOnHand: 10,
+			});
+			expect((await makeStore().reserve("SKU-H2C", 2, idempotencyKey("k-h2c-sale"))).ok).toBe(true);
+
+			const replay = await makeStore().removeStock("SKU-H2C", 4, key, { expectedOnHand: 10 });
+			expect(replay).toEqual({ ok: false, reason: "STALE_ON_HAND", onHand: 8 });
+			expect(await onHand("SKU-H2C")).toBe(8);
 		});
 	});
 

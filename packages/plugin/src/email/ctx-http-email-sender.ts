@@ -42,10 +42,24 @@
  * for a message the provider refused. The error names WHY — see
  * {@link describeProviderError}.
  */
-import { renderEmail, type EmailSender, type SendEmailInput } from "@otta-sh/domain";
+import {
+	EmailSendTimeoutError,
+	renderEmail,
+	type EmailSender,
+	type SendEmailInput,
+} from "@otta-sh/domain";
 import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import { resolveLoginLinkUrl } from "../storefront/login-link.js";
+import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { PluginContext } from "../types.js";
-import { isDeliverableFromAddress } from "./from-address.js";
+import {
+	orderPageUrl,
+	STORE_DISPLAY_NAME_KEY,
+	storefrontEmailMoney,
+	storefrontOriginOf,
+	storeNameFrom,
+} from "./email-render-context.js";
+import { fromDisplayName, isDeliverableFromAddress } from "./from-address.js";
 
 /**
  * The from-address, in READABLE kv — the in-process equivalent of the service's
@@ -71,8 +85,15 @@ export interface CtxHttpEmailSenderOptions {
 	from: string;
 	apiKey?: string | undefined;
 	/** Per-request timeout, via `AbortSignal.timeout`. Defaults to
-	 *  {@link DEFAULT_EMAIL_TIMEOUT_MS}. */
-	requestTimeoutMs?: number | undefined;
+	 *  {@link DEFAULT_EMAIL_TIMEOUT_MS}. A FUNCTION is asked at each send — the cron
+	 *  sweep passes one, so each request is aborted at what is left of the tick when
+	 *  that send starts rather than at a figure fixed long before it. */
+	requestTimeoutMs?: number | (() => number) | undefined;
+	/** The store's name ("Store display name"), for the sign-in email. */
+	storeName?: string | undefined;
+	/** The storefront's public origin (`storefrontOriginOf`), for the order page
+	 *  link in order emails. Absent ⇒ order emails carry no link. */
+	storefrontOrigin?: string | undefined;
 }
 
 /**
@@ -86,6 +107,12 @@ export interface CtxHttpEmailSenderOptions {
  * therefore hold the `order-emails` leg open and starve every sweep leg queued
  * behind it. The abort converts the hang into the throw the dispatcher already
  * knows how to handle, and — as with a non-2xx — the row stays unsent.
+ *
+ * THIRTY SECONDS IS NOT THE CRON'S CEILING, though. It is the fallback for a
+ * caller that sets none; the cron sweep runs inside a host hook abandoned after
+ * 5 s, so it passes its own, far shorter, per-send timeout
+ * (`SWEEP_EMAIL_SEND_TIMEOUT_MS` in `cron/sweeps.ts`) — a 30 s send there would
+ * outlive the hook, leave its row leased, and be re-sent when the lease lapsed.
  */
 export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
 
@@ -95,7 +122,9 @@ export class CtxHttpEmailSender implements EmailSender {
 	readonly #apiUrl: string;
 	readonly #from: string;
 	readonly #apiKey: string | undefined;
-	readonly #timeoutMs: number;
+	readonly #timeoutMs: number | (() => number);
+	readonly #storeName: string | undefined;
+	readonly #storefrontOrigin: string | undefined;
 
 	constructor(options: CtxHttpEmailSenderOptions) {
 		this.#fetch = options.fetch;
@@ -103,10 +132,26 @@ export class CtxHttpEmailSender implements EmailSender {
 		this.#from = options.from;
 		this.#apiKey = options.apiKey;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
+		this.#storeName = options.storeName;
+		this.#storefrontOrigin = options.storefrontOrigin;
 	}
 
 	async send(input: SendEmailInput): Promise<void> {
-		const rendered = renderEmail(input.template, input.data);
+		// Money as the storefront formats it, the store's name, and — for an order
+		// email — the order's page (QA U-3). See `email-render-context.ts`.
+		const orderId = input.data["orderId"];
+		const rendered = renderEmail(input.template, input.data, {
+			formatMoney: storefrontEmailMoney,
+			locale: STOREFRONT_LOCALE,
+			storeName: this.#storeName,
+			orderPageUrl:
+				input.template !== "customer-login-link" &&
+				typeof orderId === "string" &&
+				orderId.length > 0 &&
+				this.#storefrontOrigin !== undefined
+					? orderPageUrl(this.#storefrontOrigin, orderId)
+					: undefined,
+		});
 		const headers: Record<string, string> = {
 			"content-type": "application/json",
 			// The outbox row id. See this module's head comment — removing this line
@@ -116,6 +161,8 @@ export class CtxHttpEmailSender implements EmailSender {
 		if (this.#apiKey !== undefined && this.#apiKey.length > 0) {
 			headers["authorization"] = `Bearer ${this.#apiKey}`;
 		}
+		const timeoutMs = typeof this.#timeoutMs === "function" ? this.#timeoutMs() : this.#timeoutMs;
+		const signal = AbortSignal.timeout(timeoutMs);
 		const res = await this.#fetch(this.#apiUrl, {
 			method: "POST",
 			headers,
@@ -131,7 +178,16 @@ export class CtxHttpEmailSender implements EmailSender {
 			}),
 			// A hung provider must never hold the cron tick open — see
 			// {@link DEFAULT_EMAIL_TIMEOUT_MS}.
-			signal: AbortSignal.timeout(this.#timeoutMs),
+			signal,
+		}).catch((err: unknown) => {
+			// Our OWN abort is a TIMEOUT, not a provider failure: the dispatcher hands
+			// the row back without counting the attempt (`EmailSendTimeoutError`).
+			// Judged by OUR signal having fired, not by the error's name — a transport
+			// may reject a timeout-abort as a DOMException "TimeoutError", an
+			// "AbortError", or a plain error, and the sweep's own timer fires at the same
+			// moment, so whichever wins must read as the same timeout.
+			if (signal.aborted) throw new EmailSendTimeoutError(timeoutMs);
+			throw err;
 		});
 		if (!res.ok) {
 			const detail = await describeProviderError(res, input.to);
@@ -236,26 +292,35 @@ export interface EmailSenderEgress {
  * which is what makes the cron sweep's `order-emails` leg report `skipped`
  * instead of draining the outbox into nowhere.
  *
- * Both kv reads are fail-soft (`readWriteOnlySecret` already swallows a rejection
- * to `undefined`): a kv outage must degrade to an
- * unauthenticated send against the documented default from-address, never take
- * down the tick that was about to drain the outbox.
+ * Every kv read is fail-soft (`readWriteOnlySecret` and `resolveLoginLinkUrl`
+ * already swallow a rejection to `undefined`): a kv outage must degrade to an
+ * unauthenticated send against the documented default from-address — with no
+ * store name and no order link — never take down the tick that was about to
+ * drain the outbox.
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
-	options: { requestTimeoutMs?: number } = {},
+	options: { requestTimeoutMs?: number | (() => number) } = {},
 ): Promise<EmailSender | undefined> {
 	const apiUrl = egress.apiUrl;
-	if (apiUrl === undefined || apiUrl.length === 0) return undefined;
-	const [apiKey, from] = await Promise.all([
+	if (apiUrl === undefined || !emailSenderConfigured(egress)) return undefined;
+	const [apiKey, from, storeName, signInPageUrl] = await Promise.all([
 		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
 		readEmailFrom(ctx),
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
+		// Already fail-soft: unset, invalid or unreadable ⇒ undefined ⇒ no link.
+		resolveLoginLinkUrl(ctx),
 	]);
 	return new CtxHttpEmailSender({
 		fetch: ctx.http.fetch,
 		apiUrl,
 		from,
+		// "Store display name", else the From address's own display name (QA2
+		// U-3): an unset field left the sign-in email nameless though its From
+		// line named the store.
+		storeName: storeName ?? fromDisplayName(from),
+		storefrontOrigin: storefrontOriginOf(signInPageUrl),
 		...(apiKey !== undefined ? { apiKey } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
@@ -264,10 +329,25 @@ export async function makeEmailSender(
 }
 
 /**
+ * Whether {@link makeEmailSender} would build a sender for this egress — the same
+ * predicate, without its kv reads. A caller that only wants to pay for the sender
+ * once there is something to send (the settle routes' inline dispatch) asks this
+ * first, so "unconfigured" is decided before anything is claimed.
+ */
+export function emailSenderConfigured(egress: EmailSenderEgress): boolean {
+	return egress.apiUrl !== undefined && egress.apiUrl.length > 0;
+}
+
+/**
  * The ceiling on the LOGIN email's send (issue #306 review).
  *
- * The order emails ride the cron tick and can afford {@link DEFAULT_EMAIL_TIMEOUT_MS}.
- * The login email cannot: it is awaited inline on the login-request route, and a
+ * Neither the login email nor the cron tick's order emails can afford
+ * {@link DEFAULT_EMAIL_TIMEOUT_MS}: the tick runs inside a host hook with a 5 s
+ * timeout and caps each send itself (`SWEEP_EMAIL_SEND_TIMEOUT_MS` in
+ * `cron/sweeps.ts`), and the settle routes' INLINE attempt at a just-paid order's
+ * email caps each send at `ORDER_EMAIL_INLINE_TIMEOUT_MS`, defined as this constant
+ * (`send-order-emails-now.ts`). The login email cannot for its own reason: it is
+ * awaited inline on the login-request route, and a
  * THROTTLED request skips the send altogether. With a 30 s ceiling a slow provider
  * would make a sent request seconds slower than a throttled one — the latency
  * itself would say which it was. Bounding the send keeps that gap small; it does

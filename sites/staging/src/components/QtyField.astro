@@ -32,6 +32,7 @@
  * Increment 4's cart needs two of these: `form` (each row's input sits outside
  * its own `<form>`) and `disabled` (a line mid-update).
  */
+import { CART_LINE_MAX_QTY } from "@otta-sh/plugin";
 import type { HTMLAttributes } from "astro/types";
 import { restProps } from "../lib/rest-props.js";
 
@@ -47,7 +48,9 @@ interface Props extends HTMLAttributes<"label"> {
 	min?: number;
 	/** `sm` is the cart's inline row; `md` the PDP's buy row. */
 	size?: "sm" | "md";
-	/** ↓ Routed to the `<input>`, not the `<label>`. See the note above. */
+	/** ↓ Routed to the `<input>`, not the `<label>`. See the note above.
+	 *  Defaults to the plugin's cart quantity cap: a larger quantity is refused
+	 *  at the server anyway, so the field says so before it is submitted. */
 	max?: number;
 	disabled?: boolean;
 	/** The `<form>` this field belongs to, when it sits outside that form. */
@@ -65,7 +68,7 @@ const {
 	// `aria-describedby` are already on HTMLAttributes<"label">, so they are
 	// destructured rather than re-declared above.
 	id,
-	max,
+	max = CART_LINE_MAX_QTY,
 	disabled,
 	form,
 	"aria-describedby": describedBy,

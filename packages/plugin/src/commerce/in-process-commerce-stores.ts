@@ -39,6 +39,7 @@
 
 import type {
 	AddressStore,
+	AttemptThrottle,
 	Clock,
 	CouponStore,
 	CustomerCredentialVerifier,
@@ -50,6 +51,7 @@ import type {
 } from "@otta-sh/domain";
 import {
 	EmdashAddressStore,
+	EmdashAttemptThrottle,
 	EmdashCartStore,
 	EmdashCouponStore,
 	EmdashCredentialVerifier,
@@ -68,8 +70,10 @@ import {
 	systemClock,
 	uuidIdGen,
 } from "@otta-sh/store-emdash";
+import { RESUME_EMAIL_MAX_ATTEMPTS, RESUME_EMAIL_WINDOW_MS } from "./resume-proof.js";
 import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
 import type { PluginContext, StorageAccess as PluginStorageAccess } from "../types.js";
+import { LOGIN_LINK_TTL_MS } from "../storefront/login-link.js";
 
 /** Test-facing overrides. A deploy passes none of them. */
 export interface InProcessCommerceStoresOptions {
@@ -101,6 +105,9 @@ export interface InProcessCommerceStores {
 	readonly addressStore: AddressStore;
 	readonly sessionStore: SessionStore;
 	readonly credentialVerifier: CustomerCredentialVerifier;
+	/** Email guesses on an order link's resume (QA U-2): the sign-in throttle's
+	 *  slot window, keyed per order. */
+	readonly resumeThrottle: AttemptThrottle;
 	readonly reportingStore: EmdashReportingStore;
 	readonly settingsStore: EmdashSettingsStore;
 }
@@ -181,6 +188,15 @@ export function createInProcessCommerceStores(
 			customerStore,
 			idGen,
 			clock,
+			// The lifetime the sign-in email states (`LOGIN_LINK_TTL_MS`).
+			ttlMs: LOGIN_LINK_TTL_MS,
+		}),
+		resumeThrottle: new EmdashAttemptThrottle({
+			storage,
+			clock,
+			idGen,
+			windowMs: RESUME_EMAIL_WINDOW_MS,
+			maxAttempts: RESUME_EMAIL_MAX_ATTEMPTS,
 		}),
 		reportingStore,
 		settingsStore: new EmdashSettingsStore({ storage, clock }),

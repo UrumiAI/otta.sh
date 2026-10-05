@@ -25,7 +25,8 @@ interface Props {
 	model: PayModel;
 }
 
-const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
+const { paymentConfigured, notConfiguredLead, orderPath, emailHint, holdNote } =
+	Astro.props.model;
 ---
 
 {/* Wrapped rather than given a class: a view cannot style a component's root
@@ -50,6 +51,27 @@ const { paymentConfigured, notConfiguredLead, orderPath } = Astro.props.model;
 					site.
 				</span>
 			</p>
+
+			{/* How long the order is held (QA U-14): relative, true in every zone
+			    when the page loads, and the deadline WITH its zone. `data-pay-hold`
+			    is the page script's hook (QA2 M1c): at the deadline it hides this
+			    sentence and shows the page's "time to pay has run out" notice. */}
+			{holdNote !== null && (
+				<p class="pay-hold" data-pay-hold>
+					{holdNote.lead}, until <time datetime={holdNote.iso}>{holdNote.until}</time>. After
+					that the items go back on sale and this order can't be paid.
+				</p>
+			)}
+
+			{/* Read-only, never an input: the order keeps the email it was placed
+			    with (QA U-2). A hint, because this step can be reached from the
+			    order's link alone. */}
+			{emailHint !== null && (
+				<p class="pay-email">
+					Order confirmation goes to <span class="u-mono">{emailHint}</span>, the email this
+					order was placed with. It can't be changed now.
+				</p>
+			)}
 
 			<slot name="payment" />
 		</div>

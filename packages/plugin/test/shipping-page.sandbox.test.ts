@@ -425,17 +425,10 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
-	test("creating a zone with a duplicate id refuses with a GENERIC error banner and writes nothing", async () => {
-		// THE MECHANISM CHANGED AND THE GUARANTEE DID NOT. A duplicate used to be a
-		// 500 the HTTP client mapped to `{ok:false}`, which the screen dressed as
-		// its own "Zone not created". In-process the store REJECTS with a collision
-		// error, which the scaffold's custom-action net catches — so the operator
-		// gets the engine's "outcome unknown, re-check the record" banner instead of
-		// the screen's copy, and the draft is not carried back. A REGRESSION IN
-		// COPY, not in safety: still an error, still no raw status or path, and the
-		// registry is provably unchanged. (Recovering the screen's own copy would
-		// need the client to catch the collision and answer `{ok:false}` — a `src/`
-		// change, not a test one.)
+	test("creating a zone with a duplicate id says the ID is taken — never 'outcome unknown' — and keeps the typing", async () => {
+		// The store refuses a duplicate id before writing anything, and the client
+		// answers that as the create's `{ok:false, status: 409}` arm — so the
+		// screen's own copy renders, on the create screen, with the draft back.
 		await seedShipping();
 		const blocks = await submitForm("shipping:create-zone", {
 			id: "us",
@@ -444,9 +437,34 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		});
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
+		expect(String(banner?.title)).toBe("Zone not created");
+		expect(String(banner?.description)).toMatch(/a zone with the ID "us" already exists/i);
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|409|500|outcome unknown/i);
+		expect(formInitialValues(blocks, "shipping:create-zone")).toMatchObject({
+			id: "us",
+			name: "United States again",
+		});
 		expect((await shippingRules.getZone("us"))?.name).toBe("United States");
 		expect((await shippingRules.listZones()).filter((z) => z.id === "us")).toHaveLength(1);
+	});
+
+	test("a zone ID with a space is refused ON the create screen, in words, with the typing kept — nothing is written", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "QA JP!",
+			name: "Japan",
+			regions: "JP",
+		});
+		const banner = bannerOf(blocks);
+		expect(String(banner?.title)).toBe("Zone not created");
+		expect(String(banner?.description)).toMatch(/can't contain spaces/i);
+		expect(String(banner?.description)).not.toMatch(/outcome unknown|ASCII/i);
+		expect(formInitialValues(blocks, "shipping:create-zone")).toEqual({
+			id: "QA JP!",
+			name: "Japan",
+			regions: "JP",
+		});
+		expect(await shippingRules.getZone("QA JP!")).toBeNull();
 	});
 
 	test("the create screen carries the F-8 line about regions — ISO codes, exact, most specific wins (ADR-0021); the page context stays terse", async () => {
@@ -531,6 +549,100 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect((await shippingRules.getZone("ca"))?.regions).toEqual(["CA", "MX"]);
 		expect(bannerOf(created)?.variant).toBe("default");
 		expect(formFor(created, "shipping:create-zone")).toBeUndefined();
+	});
+});
+
+describe("admin Shipping console — the first zone turns on address matching (ADR-0021 §4)", () => {
+	// QA: creating ONE zone (Japan) silently made checkout refuse every other
+	// country ("We don't ship to this address"). ADR-0021 decided that — a store
+	// with zones refuses addresses no zone lists — but nothing on the screen said
+	// so, before or after.
+	test("whenever zones exist, the landing states which destinations checkout ships to and that every other address is refused", async () => {
+		await seedShipping({
+			zones: [
+				{ id: "jp", name: "Japan", regions: ["JP"] },
+				{ id: "west", name: "US West", regions: ["US-CA", "US-OR"] },
+			],
+			methods: [],
+			rates: [],
+		});
+		const blocks = await loadZones();
+		const coverage = findBlocks(blocks, "banner").find((b) => b.block_id === "ship:coverage");
+		expect(coverage, "a coverage banner").toBeDefined();
+		expect(coverage?.variant).toBe("alert");
+		expect(String(coverage?.title)).toMatch(/only ships to addresses your zones list/i);
+		expect(String(coverage?.description)).toMatch(/We don't ship to this address/);
+		expect(String(coverage?.description)).toContain("JP, US-CA, US-OR");
+		expect(String(coverage?.description).length).toBeLessThanOrEqual(240);
+	});
+
+	test("with no zones there is nothing to warn about on the landing", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const blocks = await loadZones();
+		expect(findBlocks(blocks, "banner").some((b) => b.block_id === "ship:coverage")).toBe(false);
+	});
+
+	test("the FIRST zone's create screen warns and requires an acknowledgement; without it nothing is written and the typing is kept", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const screen = await openNewZoneScreen();
+		const warning = findBlocks(screen, "banner").find((b) => b.block_id === "ship:first-zone");
+		expect(String(warning?.title)).toMatch(/first zone/i);
+		const form = formFor(screen, "shipping:create-zone");
+		const ack = ((form?.fields ?? []) as Array<Record<string, unknown>>).find(
+			(f) => f.action_id === "ackFirstZone",
+		);
+		expect(ack?.type).toBe("toggle");
+		expect(ack?.initial_value).toBe(false); // F-6b/X-24: a toggle must declare one
+
+		const refused = await submitForm(
+			"shipping:create-zone",
+			{ id: "jp", name: "Japan", regions: "JP", ackFirstZone: false },
+			form?.block_id,
+		);
+		expect(String(bannerOf(refused)?.title)).toBe("Zone not created");
+		expect(String(bannerOf(refused)?.description)).toMatch(/confirm/i);
+		expect(formInitialValues(refused, "shipping:create-zone")).toMatchObject({
+			id: "jp",
+			name: "Japan",
+			regions: "JP",
+		});
+		expect(await shippingRules.getZone("jp")).toBeNull();
+
+		const created = await submitForm(
+			"shipping:create-zone",
+			{ id: "jp", name: "Japan", regions: "JP", ackFirstZone: true },
+			formFor(refused, "shipping:create-zone")?.block_id,
+		);
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect((await shippingRules.getZone("jp"))?.regions).toEqual(["JP"]);
+	});
+
+	test("deleting the LAST zone warns that checkout will ship anywhere again; deleting one of several does not", async () => {
+		// The mirror of the first-zone warning: removing the only zone switches
+		// checkout back to "no zones" — no address check, no shipping, no tax.
+		await seedShipping({
+			zones: [{ id: "jp", name: "Japan", regions: ["JP"] }],
+			methods: [],
+			rates: [],
+		});
+		const only = buttons(groupBlocks(await loadZones(), "ship:zone:jp")).find(
+			(b) => b.action_id === "shipping:delete-zone",
+		);
+		expect(String(confirmOf(only).text)).toMatch(/only zone.*ship.*anywhere again/i);
+		expect(String(confirmOf(only).text).length).toBeLessThanOrEqual(200);
+
+		await seedShipping();
+		const oneOfTwo = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+			(b) => b.action_id === "shipping:delete-zone",
+		);
+		expect(String(confirmOf(oneOfTwo).text)).not.toMatch(/anywhere again/i);
+	});
+
+	test("once a zone exists, later zones need no acknowledgement", async () => {
+		await seedShipping();
+		const screen = await openNewZoneScreen();
+		expect(findBlocks(screen, "banner").some((b) => b.block_id === "ship:first-zone")).toBe(false);
+		expect(fieldIds(formFor(screen, "shipping:create-zone"))).not.toContain("ackFirstZone");
 	});
 });
 
@@ -815,15 +927,25 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(copy).toContain('"Flat rate" always charges its rate');
 		expect(copy).toContain('"Free shipping" charges nothing above its threshold');
 
-		// The SELECT still submits the enum the domain expects — humanizing the
-		// copy must not touch the protocol, and the stored row still spells it.
+		// A `select` trigger renders the option VALUE, not its label (R-17a), so
+		// the values themselves are words — QA saw `flat_rate` in the trigger. The
+		// action maps the word back to the enum, so the domain and the stored row
+		// still spell `flat_rate`.
 		const createForm = formFor(await openNewMethodScreen(blocks), "shipping:create-method");
-		const typeOptions = field(createForm, "type")?.options as Array<{
-			value: string;
-			label: string;
-		}>;
-		expect(typeOptions.map((o) => o.value)).toEqual(["flat_rate", "free_shipping"]);
+		const typeField = field(createForm, "type");
+		const typeOptions = typeField?.options as Array<{ value: string; label: string }>;
+		expect(typeOptions.map((o) => o.value)).toEqual(["Flat rate", "Free shipping"]);
+		expect(typeField?.initial_value).toBe("Flat rate");
 		expect((await shippingRules.getMethod("standard"))?.type).toBe("flat_rate");
+		const edit = field(formFor(blocks, "shipping:save-method"), "type");
+		expect(edit?.initial_value).toBe("Flat rate");
+
+		await submitForm(
+			"shipping:create-method",
+			{ id: "free", name: "Free over $50", type: "Free shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("free_shipping");
 	});
 
 	test("a zone with no methods yet shows the `empty` block, never a fail-closed banner", async () => {
@@ -881,6 +1003,40 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		});
 	});
 
+	test("switching a free-shipping method to FLAT RATE says its thresholds stop applying", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [{ methodId: "free", currency: "USD", amountCents: 499, minSubtotalCents: 5000 }],
+		});
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:free"),
+			"shipping:save-method",
+		);
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Free over $50", type: "Flat rate" },
+			editForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("free"))?.type).toBe("flat_rate");
+		expect(String(bannerOf(blocks)?.title)).toBe("Saved as flat rate");
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/if any of this method's rates had a free-shipping threshold/i,
+		);
+		expect(String(bannerOf(blocks)?.description)).toMatch(/threshold/i);
+	});
+
+	test("the bare enum values a form rendered before the word values still submit", async () => {
+		await seedShipping();
+		const methods = await openPath(["us"]);
+		const createForm = formFor(await openNewMethodScreen(methods), "shipping:create-method");
+		await submitForm(
+			"shipping:create-method",
+			{ id: "legacy-free", name: "Legacy", type: "free_shipping" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("legacy-free"))?.type).toBe("free_shipping");
+	});
+
 	test("create-method carries the zoneId invisibly (no visible field) and writes the method UNDER that zone, then reloads the methods level", async () => {
 		await seedShipping();
 		const createForm = formFor(
@@ -929,7 +1085,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(formInitialValues(refused, "shipping:create-method")).toEqual({
 			id: "bogus",
 			name: "Bogus",
-			type: "flat_rate",
+			type: "Flat rate",
 		});
 	});
 
@@ -1181,6 +1337,51 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
+	test("a currency-SHAPED code that is not an ISO-4217 currency (XYZ) is refused — nothing is written", async () => {
+		// QA saved an "XYZ" rate: three letters passes the shape check, and a rate
+		// in a currency no cart is ever in is a price nobody is quoted.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "xyz", amount: "4.99", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("XYZ"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+	});
+
+	test("a free-shipping threshold on a FLAT-RATE method is refused with the reason — the domain would never apply it", async () => {
+		// `shippingCost` charges a flat rate's amount whatever the subtotal; only a
+		// free_shipping method reads `minSubtotalCents`. QA saved one anyway and the
+		// console said "Rate created", promising free shipping that never happens.
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "35.00" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+		expect(String(bannerOf(blocks)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+	});
+
+	test("a free-shipping method still takes its threshold", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [],
+		});
+		const createForm = formFor(await openPath(["us", "free"]), "shipping:create-rate");
+		await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "50.00" },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getRate("free", toCurrency("USD")))?.minSubtotalCents).toBe(5000);
+	});
+
 	test("an invalid currency code is caught at the plugin boundary — nothing is written", async () => {
 		await seedShipping();
 		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
@@ -1227,6 +1428,35 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 			amountCents: 599,
 			minSubtotalCents: null,
 		});
+	});
+
+	test("saving an existing flat-rate rate that carries a LEGACY threshold asks for it to be blanked; blanking it saves", async () => {
+		// The fixture's `standard` is a flat-rate method whose USD rate was stored
+		// with a $35 threshold before the rule — the edit form prefills it.
+		await seedShipping();
+		const editForm = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		expect(field(editForm, "minSubtotal")?.initial_value).toBe("35.00");
+		const untouched = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "35.00" },
+			editForm?.block_id,
+		);
+		expect(String(bannerOf(untouched)?.description)).toMatch(
+			/flat-rate method always charges its rate/i,
+		);
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents).toBe(
+			3500,
+		);
+
+		const blanked = await submitForm(
+			"shipping:save-rate",
+			{ amount: "4.99", minSubtotal: "" },
+			formFor(untouched, "shipping:save-rate")?.block_id ?? editForm?.block_id,
+		);
+		expect(bannerOf(blanked)?.variant).toBe("default");
+		expect(
+			(await shippingRules.getRate("standard", toCurrency("USD")))?.minSubtotalCents,
+		).toBeNull();
 	});
 
 	test("a concurrent-edit conflict loses the CAS: the fresh rate is reloaded with a re-apply warning, never a clobber", async () => {

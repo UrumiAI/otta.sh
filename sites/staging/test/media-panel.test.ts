@@ -6,6 +6,7 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import MediaPanel from "../src/components/MediaPanel.astro";
+import { buildCoil } from "../src/lib/coil.js";
 
 let container: AstroContainer;
 
@@ -18,6 +19,10 @@ const render = (props: Record<string, unknown>): Promise<string> =>
 
 /** The coil's `d` attribute out of a rendered panel. */
 const coilPathOf = (html: string): string | undefined => /d="([^"]+)"/.exec(html)?.[1];
+
+/** The tint token a rendered panel applies. */
+const tintOf = (html: string): string | undefined =>
+	/--coil-tint: var\((--u-tint-\w+)\)/.exec(html)?.[1];
 
 describe("MediaPanel — the coil", () => {
 	test("draws a generated coil on the neutral panel when there is no image", async () => {
@@ -88,25 +93,15 @@ describe("MediaPanel — a real image replaces the coil entirely (§5)", () => {
 	});
 });
 
-describe("MediaPanel — the tint cycles by position (§5)", () => {
-	test("an index takes the tint off the position, so a short catalog shows all three", async () => {
-		const tints = await Promise.all(
-			[0, 1, 2].map(async (index) => {
-				const html = await render({ slug: `p-${index}`, index });
-				return /--coil-tint: var\((--u-tint-\w+)\)/.exec(html)?.[1];
-			}),
-		);
-		expect(new Set(tints).size).toBe(3);
-	});
-
-	test("the same product keeps its DRAWING wherever it lands in the list", async () => {
-		const first = coilPathOf(await render({ slug: "otta-mug", index: 0 }));
-		const third = coilPathOf(await render({ slug: "otta-mug", index: 2 }));
-		expect(first).toBe(third);
-	});
-
-	test("with no index the tint still comes from the slug — a PDP has no list", async () => {
-		expect(await render({ slug: "otta-mug" })).toMatch(/--coil-tint: var\(--u-tint-\w+\)/);
+describe("MediaPanel — the product's tint, on every page (§5)", () => {
+	test("the tint is the product's own — the one its slug keys — so a card, a product page and a cart line agree", async () => {
+		// A list position used to recolour the card (QA: the Tee blue-grey in the
+		// grid, tan on its page). The panel now takes no position to recolour by.
+		for (const slug of ["otta-tee", "otta-mug", "otta-stickers"]) {
+			const html = await render({ slug });
+			expect(tintOf(html)).toBe(buildCoil(slug).tint);
+			expect(coilPathOf(html)).toBe(buildCoil(slug).path);
+		}
 	});
 });
 

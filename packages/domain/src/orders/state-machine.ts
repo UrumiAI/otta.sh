@@ -1,5 +1,5 @@
 import type { EmailTemplate } from "../ports/email-sender.js";
-import type { OrderState } from "./model.js";
+import type { OrderNotice, OrderState } from "./model.js";
 
 /**
  * The order state machine (Phase 5 §5) as a single exported map — the domain
@@ -66,4 +66,21 @@ export const ORDER_EMAIL_TEMPLATE_FOR_STATE = {
  *  state has no customer-facing email (`pending`, `failed`). */
 export function emailTemplateForState(to: OrderState): EmailTemplate | null {
 	return (ORDER_EMAIL_TEMPLATE_FOR_STATE as Partial<Record<OrderState, EmailTemplate>>)[to] ?? null;
+}
+
+/**
+ * The email each NON-transition notice renders (see `OrderNotice`). A sibling of
+ * {@link ORDER_EMAIL_TEMPLATE_FOR_STATE} rather than a row in it: a notice is not
+ * entered, it is enqueued alongside whatever state the order is already in, and
+ * the dispatcher must never confuse "the order expired" with "a payment that
+ * arrived after it expired came back to you".
+ */
+export const ORDER_NOTICE_EMAIL_TEMPLATE = {
+	"late-payment-refunded": "order-late-payment-refunded",
+	"refund-issued": "order-refund-issued",
+} as const satisfies Record<OrderNotice, EmailTemplate>;
+
+/** The template a notice outbox row renders. Total over `OrderNotice`. */
+export function emailTemplateForNotice(notice: OrderNotice): EmailTemplate {
+	return ORDER_NOTICE_EMAIL_TEMPLATE[notice];
 }

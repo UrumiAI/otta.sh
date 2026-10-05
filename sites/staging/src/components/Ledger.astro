@@ -23,14 +23,16 @@
  * has to guess at three of the four. So every cell EXCEPT the title carries a
  * visually-hidden name: the title is the one thing that names itself.
  *
- * `title` is OPTIONAL, and the split is deliberate. On `/checkout` the row is
- * still a cart line — the wire carries no title, and the shopper picked those
- * items a moment ago — so the SKU stands alone. On `/orders/<id>` the same
- * block is a RECEIPT, and the title is the purchase-time snapshot the order
- * froze (CLAUDE.md: "orders snapshot price + title at purchase time"); a
- * receipt reading only `OTTA-TEE-01 1 $25.00` has lost the one thing a buyer
- * opens it to check. So a row that HAS a title leads with it, in the body face,
- * and drops the SKU beneath in mono as the reference you quote in an email.
+ * `title` is OPTIONAL, and present whenever the store can name the line. On
+ * `/orders/<id>` the block is a RECEIPT and the title is the purchase-time
+ * snapshot the order froze (CLAUDE.md: "orders snapshot price + title at
+ * purchase time"). On `/checkout` it is the title the order WILL snapshot —
+ * the review once omitted it on the grounds that the shopper had just picked
+ * the items, and QA read the result, `OTTA-STICKERS 1 $6.00`, as the last
+ * summary before paying naming nothing a shopper recognises. A row that HAS a
+ * title leads with it, in the body face, and drops the SKU beneath in mono as
+ * the reference you quote in an email; a row without one (a line the store
+ * cannot name) lets the SKU stand alone rather than invent a name.
  */
 import type { HTMLAttributes } from "astro/types";
 import { restProps } from "../lib/rest-props.js";

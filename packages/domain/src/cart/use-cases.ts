@@ -16,6 +16,12 @@ import {
 import type { Clock } from "../ports/clock.js";
 import type { OrderStore } from "../ports/order-store.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
+import {
+	listLimitFor,
+	mayContinue,
+	type SweepBatchOptions,
+	type SweepBatchResult,
+} from "../sweep/batch.js";
 
 /**
  * IO-free cart orchestration over `CartStore` + `InventoryStore` + `Clock`
@@ -156,8 +162,9 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
 /**
  * Add `{sku, qty}` to a cart. Ledger-first: a completed replay returns the
  * recorded line; otherwise claim the key, reserve via the atomic inventory port,
- * then complete the line. `OUT_OF_STOCK` writes **no** line (the claim stays
- * incomplete; a replay resumes and re-reads reserve's recorded `failed` state).
+ * then complete the line. `OUT_OF_STOCK` writes **no** line and RETIRES the
+ * claim (`abandonClaim`): it stays incomplete, so a replay resumes and re-reads
+ * reserve's recorded `failed` state, but it is no longer the sweep's work.
  * The pre-reserve claim marks the hold cart-originated so a crash between
  * reserve and the line write leaves a hold the sweep can identify and reap.
  *
@@ -214,7 +221,24 @@ export async function addLine(
 	}
 
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
-	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
+	if (!reserved.ok) {
+		// Decided: no hold exists under this key, and none ever will (the reserve
+		// key is once-only). Retire the claim so it is not swept forever (QA U-16);
+		// a same-key replay still resumes here and answers OUT_OF_STOCK again.
+		// BEST-EFFORT: the answer is already decided and the retirement only spares
+		// the sweep a read, so a failed write (contention, a fault) is logged and
+		// the shopper still gets OUT_OF_STOCK — never a 500 or a BUSY for it. An
+		// unretired claim is exactly the pre-fix state, which the sweep tolerates.
+		try {
+			await deps.cartStore.abandonClaim(cartId, key);
+		} catch (err) {
+			console.warn(
+				"[domain] addLine: could not retire an out-of-stock claim:",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		return { ok: false, reason: "OUT_OF_STOCK" };
+	}
 
 	try {
 		const line = await deps.cartStore.upsertLine({
@@ -356,17 +380,35 @@ export async function removeLine(
  * actually reclaimed (flips won).
  */
 export async function expireHolds(deps: CartDeps, at?: Date): Promise<number> {
+	return (await expireHoldsBatch(deps, at)).count;
+}
+
+/**
+ * `expireHolds`, bounded: at most `limit` holds attempted, each only while
+ * `shouldContinue` allows, reporting whether the expired set was `drained`. The
+ * scheduled sweep calls this so a hold backlog drains over several ticks instead
+ * of overrunning the host's hook timeout (see `sweep/batch.ts`). A hold not
+ * reached is still expired-and-listed next time; the guarded flip is unchanged.
+ */
+export async function expireHoldsBatch(
+	deps: CartDeps,
+	at?: Date,
+	options: SweepBatchOptions = {},
+): Promise<SweepBatchResult> {
 	const now = at ?? deps.clock.now();
 	const nowIso = now.toISOString();
 	const cutoff = cutoffIso(deps, now);
 
-	const expired = await deps.cartStore.listExpired(nowIso, cutoff);
+	const expired = await deps.cartStore.listExpired(nowIso, cutoff, listLimitFor(options));
 	let reclaimed = 0;
+	let attempted = 0;
 	for (const hold of expired) {
+		if (!mayContinue(options, attempted)) return { count: reclaimed, drained: false };
+		attempted++;
 		const won = await deps.cartStore.expireHold(hold.reservationId, nowIso, cutoff);
 		if (won) reclaimed++;
 	}
-	return reclaimed;
+	return { count: reclaimed, drained: true };
 }
 
 type ActiveCartGuard = { ok: true; cart: Cart } | { ok: false; reason: CartFailure };

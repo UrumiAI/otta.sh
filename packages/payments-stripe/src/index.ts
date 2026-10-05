@@ -3,6 +3,8 @@ import {
 	currency as toCurrency,
 	orderId as toOrderId,
 	PaymentIntentError,
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type Clock,
 	type ConfirmationResult,
@@ -194,6 +196,42 @@ export interface StripePaymentGatewayOptions {
 	/** Injectable `fetch` for the DEFAULT http transport (used only when
 	 *  `transport` is omitted and `secretKey` is set). Defaults to the global. */
 	fetch?: typeof fetch;
+	/**
+	 * The pauses before each replay of a create that Stripe answered 409
+	 * `idempotency_key_in_use` — a same-key request still in flight. Defaults to
+	 * {@link DEFAULT_IN_FLIGHT_BACKOFF_MS}. Test seam; production omits it.
+	 */
+	inFlightBackoffMs?: readonly number[];
+	/** Injectable pause for {@link inFlightBackoffMs} (tests record it rather
+	 *  than wait). Defaults to a `setTimeout` promise. The elapsed-time cap
+	 *  ({@link IN_FLIGHT_BUDGET_MS}) reads `clock`. */
+	sleep?: (ms: number) => Promise<void>;
+	/**
+	 * Per-request timeout for the DEFAULT http transport (ignored when `transport`
+	 * is injected). Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. A caller that
+	 * runs inside someone else's deadline passes a shorter one: the settle webhook
+	 * refunds a late payment inside Stripe's own delivery, and Stripe treats a
+	 * delivery that has not answered in ~10 s as failed and sends it again. A
+	 * FUNCTION is asked at each call: a cron leg passes "what my budget has left",
+	 * so every call is bounded by the time actually remaining when it starts.
+	 */
+	requestTimeoutMs?: number | (() => number);
+	/**
+	 * A FIXED bound for the refund CREATE alone, overriding `requestTimeoutMs` for
+	 * that one call. A create that times out is AMBIGUOUS (Stripe may have
+	 * processed it), and lands as "verify in Stripe" — so a caller with a shrinking
+	 * budget must never hand the create a sliver of time: it either gives the create
+	 * this full bound or does not start it (`beforeRefundCreate`).
+	 */
+	refundCreateTimeoutMs?: number;
+	/**
+	 * Asked AFTER the refund pre-flight and BEFORE the create. `false` ⇒ the create
+	 * is not started and the refund answers `NOT_STARTED` — truthfully: nothing was
+	 * issued, nothing failed at Stripe, and the caller's reservation stays
+	 * `reserved` for a later retry under the same key. For a caller whose time may
+	 * have run out during the pre-flight.
+	 */
+	beforeRefundCreate?: () => boolean;
 	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
 	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
 	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
@@ -203,7 +241,7 @@ export interface StripePaymentGatewayOptions {
 }
 
 /**
- * The outbound Stripe transport the live paths drive (ADR-0008). Three calls, all
+ * The outbound Stripe transport the live paths drive (ADR-0008). Four calls, all
  * requiring the real `secretKey`:
  *  - `createPaymentIntent` — `POST /v1/payment_intents`, the money-IN call
  *    `createIntent` makes once a `secretKey` is configured.
@@ -212,6 +250,8 @@ export interface StripePaymentGatewayOptions {
  *    fail closed on divergence BEFORE issuing anything.
  *  - `createRefund` — `POST /v1/refunds`, passing our `idempotencyKey` as Stripe's
  *    native `Idempotency-Key`.
+ *  - `cancelPaymentIntent` — `POST /v1/payment_intents/{id}/cancel`, withdrawing an
+ *    expired order's unpaid intent (optional on the seam; see its doc).
  *
  * Every method returns a NORMALIZED result with an explicit error CLASS — never a
  * thrown Stripe SDK error — so the adapter maps a clean taxonomy (retryable /
@@ -239,7 +279,39 @@ export interface StripeTransport {
 	createPaymentIntent(
 		input: StripeCreatePaymentIntentInput,
 	): Promise<StripeCreatePaymentIntentResult>;
+	/**
+	 * Withdraw an unpaid PaymentIntent — `POST /v1/payment_intents/{id}/cancel`
+	 * with `cancellation_reason=abandoned`, our `idempotencyKey` as Stripe's
+	 * native `Idempotency-Key`. Late-payment PREVENTION: an expired order's intent
+	 * must stop being payable.
+	 *
+	 * OPTIONAL on the interface, deliberately: it is the transport TEST SEAM's
+	 * newest verb, and a seam implementation written before it existed must keep
+	 * compiling and keep working. The gateway treats an absent method exactly like
+	 * an absent credential — `UNSUPPORTED`, never a throw — and the default
+	 * {@link createStripeHttpTransport} always provides it.
+	 */
+	cancelPaymentIntent?(input: {
+		intentId: string;
+		idempotencyKey: string;
+		secretKey: string;
+	}): Promise<StripeCancelPaymentIntentResult>;
 }
+
+/**
+ * A `cancelPaymentIntent` result. `not_cancellable` means the intent SUCCEEDED —
+ * the buyer paid at the instant it was withdrawn; the settle path accepts it while
+ * the order is still pending, or refunds it on a dead order. It is reported only
+ * after reading the intent: Stripe's `payment_intent_unexpected_state` alone does not
+ * say which state the intent is in, so the transport reads it — an intent already
+ * cancelled is `cancelled`, one still payable or in flight is `retryable`. Failures
+ * are only `retryable` / `terminal`:
+ * cancelling moves no money and the native key dedupes a replay, so there is no
+ * ambiguous class.
+ */
+export type StripeCancelPaymentIntentResult =
+	| { ok: true; outcome: "cancelled" | "not_cancellable" }
+	| { ok: false; class: "retryable" | "terminal" };
 
 /**
  * A recipient in STRIPE's own vocabulary — the adapter's translation of the
@@ -329,6 +401,51 @@ export type StripeCreatePaymentIntentResult =
  * how settlement maps back to the order — so the offline handle is sufficient for
  * the verified-settlement contract.
  */
+/**
+ * How long `createIntent` waits for a same-key request that is still in flight
+ * before replaying it: up to four replays, 3 s of pauses in all — and no replay
+ * started past {@link IN_FLIGHT_BUDGET_MS} of ELAPSED time, round trips included.
+ *
+ * WHY THIS EXISTS. A buyer who double-clicks "Continue to payment" sends two
+ * places with the same `checkout:<cartId>` key ~100 ms apart. Both reach Stripe
+ * with the same `Idempotency-Key`, and Stripe answers the second 409
+ * `idempotency_key_in_use` while the first is still being processed. That is not
+ * a failed payment — it is "ask again in a moment": once the first request
+ * lands, a replay of the identical body returns the SAME intent. Surfacing it
+ * as `PAYMENT_INTENT_FAILED` told a buyer who had done nothing wrong that their
+ * payment could not start.
+ *
+ * WHY BOUNDED, AND THIS SHORT. A PaymentIntent create normally completes in
+ * well under a second, so 3 s covers the overlap a double-click produces with
+ * room for a slow Stripe. The wait runs inside the buyer's checkout request (and
+ * a Worker's), so it is capped on elapsed time as well as on the sleeps: slow
+ * replies must not stretch it. Past it the error is thrown with `inFlight: true`,
+ * which the domain answers as PAYMENT_INTENT_IN_FLIGHT and the storefront as
+ * "busy, try again in a few seconds" — a retry replays the same key.
+ */
+export const DEFAULT_IN_FLIGHT_BACKOFF_MS: readonly number[] = [250, 500, 1000, 1250];
+
+/** The elapsed-time ceiling on waiting out an in-flight same-key request: no
+ *  replay STARTS once this much time has passed since the first attempt began
+ *  (so the last one can end past it by at most one round trip). 3 s of pauses
+ *  plus room for the round trips between them; a slower Stripe gets fewer
+ *  replays, never a longer checkout request. */
+export const IN_FLIGHT_BUDGET_MS = 3500;
+
+/** Stripe's code for "a request with this Idempotency-Key is still being
+ *  processed" — the ONLY 409 that a replay is guaranteed to resolve. */
+const IDEMPOTENCY_KEY_IN_USE = "idempotency_key_in_use";
+
+function isInFlightReplay(result: StripeCreatePaymentIntentResult): boolean {
+	return !result.ok && result.status === 409 && result.code === IDEMPOTENCY_KEY_IN_USE;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
 export class StripePaymentGateway implements PaymentGateway {
 	readonly id = "stripe" as const;
 	/** True iff a `secretKey` is configured (ADR-0008): the refund path needs it
@@ -340,6 +457,9 @@ export class StripePaymentGateway implements PaymentGateway {
 	readonly #transport: StripeTransport | undefined;
 	readonly #toleranceSeconds: number;
 	readonly #clock: Clock;
+	readonly #inFlightBackoffMs: readonly number[];
+	readonly #sleep: (ms: number) => Promise<void>;
+	readonly #beforeRefundCreate: (() => boolean) | undefined;
 
 	constructor(options: StripePaymentGatewayOptions) {
 		if (options.webhookSecret.length === 0) {
@@ -358,11 +478,22 @@ export class StripePaymentGateway implements PaymentGateway {
 		this.#transport =
 			options.transport ??
 			(secretKey !== undefined
-				? createStripeHttpTransport({ fetch: options.fetch ?? globalThis.fetch })
+				? createStripeHttpTransport({
+						fetch: options.fetch ?? globalThis.fetch,
+						...(options.requestTimeoutMs !== undefined
+							? { requestTimeoutMs: options.requestTimeoutMs }
+							: {}),
+						...(options.refundCreateTimeoutMs !== undefined
+							? { createRefundTimeoutMs: options.refundCreateTimeoutMs }
+							: {}),
+					})
 				: undefined);
 		this.refundable = secretKey !== undefined && this.#transport !== undefined;
 		this.#toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
 		this.#clock = options.clock ?? { now: () => new Date() };
+		this.#inFlightBackoffMs = options.inFlightBackoffMs ?? DEFAULT_IN_FLIGHT_BACKOFF_MS;
+		this.#sleep = options.sleep ?? defaultSleep;
+		this.#beforeRefundCreate = options.beforeRefundCreate;
 	}
 
 	/**
@@ -398,7 +529,18 @@ export class StripePaymentGateway implements PaymentGateway {
 		}
 		const { amountRefunded, amountCaptured } = pre.view;
 		if (amountRefunded > input.priorRefunded || amountRefunded + input.amount > amountCaptured) {
-			return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+			// The figures go back with the refusal: they are what tells the domain a
+			// payment refunded IN FULL in the dashboard from a partial one.
+			return {
+				ok: false,
+				reason: "PROVIDER_ALREADY_REFUNDED",
+				provider: { refunded: amountRefunded, captured: amountCaptured },
+			};
+		}
+		// Out of time for a WHOLE create: issue nothing, and say it was NOT STARTED —
+		// the caller's choice, not a provider failure, so it costs no attempt.
+		if (this.#beforeRefundCreate !== undefined && !this.#beforeRefundCreate()) {
+			return { ok: false, reason: "NOT_STARTED" };
 		}
 		const created = await this.#transport.createRefund({
 			providerRef: input.providerRef,
@@ -419,6 +561,28 @@ export class StripePaymentGateway implements PaymentGateway {
 	}
 
 	/**
+	 * Withdraw an unpaid PaymentIntent (late-payment prevention; see the port's
+	 * `cancelIntent`). Live only: without a `secretKey` every intent this adapter
+	 * ever minted is the OFFLINE deterministic handle, which Stripe has never heard
+	 * of — so the honest answer is `UNSUPPORTED`, never a call that would 404.
+	 * `not_cancellable` passes straight through as a success: an intent that
+	 * already succeeded is the late-payment refund path's job, not an error here.
+	 */
+	async cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult> {
+		const cancel = this.#transport?.cancelPaymentIntent;
+		if (this.#secretKey === undefined || this.#transport === undefined || cancel === undefined) {
+			return { ok: false, reason: "UNSUPPORTED" };
+		}
+		const res = await cancel.call(this.#transport, {
+			intentId: input.intentId,
+			idempotencyKey: input.idempotencyKey,
+			secretKey: this.#secretKey,
+		});
+		if (res.ok) return { ok: true, outcome: res.outcome };
+		return { ok: false, reason: res.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
+	}
+
+	/**
 	 * Begin payment. With a `secretKey` configured this is a LIVE
 	 * `POST /v1/payment_intents` through the transport seam; without one it is the
 	 * unchanged OFFLINE deterministic handle (dev/test/e2e, byte-identical to what
@@ -426,7 +590,12 @@ export class StripePaymentGateway implements PaymentGateway {
 	 *
 	 * A live failure throws the domain's gateway-agnostic {@link PaymentIntentError}
 	 * (`retryable` = network / 5xx / 429 / 409), which `createOrderFromCart` maps
-	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error.
+	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error. One
+	 * failure is waited out first rather than surfaced: a 409
+	 * `idempotency_key_in_use` (a same-key request still in flight — a
+	 * double-click) is replayed with a short bounded backoff, which returns the
+	 * first request's intent ({@link DEFAULT_IN_FLIGHT_BACKOFF_MS}); one still in
+	 * flight after that is thrown with `inFlight: true`.
 	 *
 	 * **Every live intent carries a `description`** rendered from the domain's
 	 * structured lines by {@link formatStripeIntentDescription}, plus `shipping`
@@ -469,7 +638,7 @@ export class StripePaymentGateway implements PaymentGateway {
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
-			const created = await this.#transport.createPaymentIntent({
+			const request: StripeCreatePaymentIntentInput = {
 				orderId: input.orderId,
 				// Integer minor units, straight through — no float math, ever. Sound only
 				// because every non-exponent-2 currency was rejected above.
@@ -484,11 +653,29 @@ export class StripePaymentGateway implements PaymentGateway {
 					lines: input.lines,
 				}),
 				...(shipping !== undefined ? { shipping } : {}),
-			});
+			};
+			// The SAME request object is replayed, so every attempt serializes a
+			// byte-identical body — Stripe refuses a same-key replay whose
+			// parameters differ. Only `idempotency_key_in_use` is waited out (see
+			// DEFAULT_IN_FLIGHT_BACKOFF_MS); every other failure surfaces at once.
+			const startedAt = this.#clock.now().getTime();
+			let created = await this.#transport.createPaymentIntent(request);
+			for (const pause of this.#inFlightBackoffMs) {
+				if (!isInFlightReplay(created)) break;
+				const elapsed = this.#clock.now().getTime() - startedAt;
+				if (elapsed + pause > IN_FLIGHT_BUDGET_MS) break;
+				await this.#sleep(pause);
+				created = await this.#transport.createPaymentIntent(request);
+			}
 			if (!created.ok) {
+				const inFlight = isInFlightReplay(created);
 				throw new PaymentIntentError({
 					gateway: this.id,
-					retryable: created.class === "retryable",
+					retryable: inFlight || created.class === "retryable",
+					// Still in flight after the budget: not a failed payment. The domain
+					// answers it PAYMENT_INTENT_IN_FLIGHT, which the place route turns
+					// into "busy, try again" rather than "we couldn't start a payment".
+					...(inFlight ? { inFlight: true } : {}),
 					...(created.status !== undefined ? { providerStatus: created.status } : {}),
 					...(created.code !== undefined ? { providerCode: created.code } : {}),
 				});
@@ -700,6 +887,12 @@ const STRIPE_API_BASE = "https://api.stripe.com";
  *  refund. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Wall-clock bound on a PaymentIntent CANCEL — short on purpose. A cancel is
+ *  best-effort prevention drained by a cron leg: a stall must cost that leg a few
+ *  seconds, not the 30 s a buyer-facing call is allowed, and a timeout is just a
+ *  transient failure the sweep retries on a later tick. */
+export const DEFAULT_CANCEL_TIMEOUT_MS = 3_000;
+
 /**
  * The Stripe API version pinned on every live call via the `Stripe-Version`
  * header, so a change to the account's default version can never move a response
@@ -726,7 +919,13 @@ export interface StripeHttpTransportOptions {
 	 *  `createRefund`. Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. A timeout
 	 *  classifies exactly like a network error on the same call — `retryable` on
 	 *  the intent create and the read, `ambiguous` on the refund create. */
-	requestTimeoutMs?: number;
+	requestTimeoutMs?: number | (() => number);
+	/** A FIXED timeout for `createRefund` alone (see the gateway's
+	 *  `refundCreateTimeoutMs`). Default: `requestTimeoutMs`. */
+	createRefundTimeoutMs?: number;
+	/** Timeout for `cancelPaymentIntent` alone — capped, at each call, by
+	 *  `requestTimeoutMs`. Defaults to {@link DEFAULT_CANCEL_TIMEOUT_MS}. */
+	cancelTimeoutMs?: number;
 }
 
 /**
@@ -748,7 +947,63 @@ export interface StripeHttpTransportOptions {
 export function createStripeHttpTransport(options: StripeHttpTransportOptions): StripeTransport {
 	const doFetch = options.fetch;
 	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
-	const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	// Asked per call, so a caller with a shrinking budget bounds each call by what
+	// is left when it starts; never below 1 ms (a zero means "no timeout" to some
+	// runtimes, which is the opposite of what a caller out of time wants).
+	const requested = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const timeoutOf = (): number =>
+		Math.max(1, typeof requested === "function" ? requested() : requested);
+	const createRefundTimeoutOf = (): number =>
+		options.createRefundTimeoutMs !== undefined
+			? Math.max(1, options.createRefundTimeoutMs)
+			: timeoutOf();
+	const cancelCapMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
+	const cancelTimeoutOf = (): number => Math.min(cancelCapMs, timeoutOf());
+
+	/**
+	 * After Stripe refused a cancel with `payment_intent_unexpected_state`: read the
+	 * intent (`GET /v1/payment_intents/{id}`, inside what is left of the cancel's own
+	 * deadline) and map its status. Stripe cancels from `requires_payment_method`,
+	 * `requires_confirmation`, `requires_action`, `requires_capture` and, rarely,
+	 * `processing` (https://docs.stripe.com/api/payment_intents/cancel):
+	 *  - `succeeded` ⇒ `not_cancellable` — the buyer paid; the webhook settles it
+	 *    (or refunds it, if the order is already dead).
+	 *  - `canceled` ⇒ `cancelled` — it can no longer be paid, whoever withdrew it.
+	 *  - any cancellable or in-flight status ⇒ `retryable` — still payable (or about
+	 *    to settle), so the sweep must ask again, under a fresh key: Stripe replays a
+	 *    saved result for a reused one.
+	 *  - a failed, late or unreadable read ⇒ `retryable` — unknown is never "done".
+	 */
+	const classifyUncancellable = async (
+		intentId: string,
+		secretKey: string,
+		deadline: number,
+	): Promise<StripeCancelPaymentIntentResult> => {
+		const left = deadline - Date.now();
+		if (left <= 0) return { ok: false, class: "retryable" };
+		let status: unknown;
+		try {
+			const res = await doFetch(`${base}/v1/payment_intents/${encodeURIComponent(intentId)}`, {
+				method: "GET",
+				headers: stripeHeaders(secretKey),
+				signal: AbortSignal.timeout(left),
+			});
+			if (!res.ok) return { ok: false, class: "retryable" };
+			const body: unknown = await res.json();
+			status =
+				typeof body === "object" && body !== null
+					? (body as { status?: unknown }).status
+					: undefined;
+		} catch {
+			return { ok: false, class: "retryable" };
+		}
+		if (status === "succeeded") return { ok: true, outcome: "not_cancellable" };
+		if (status === "canceled") return { ok: true, outcome: "cancelled" };
+		console.warn(
+			`[otta] Stripe refused to cancel payment intent ${intentId} while it was ${typeof status === "string" ? status : "unreadable"}; the sweep will try again`,
+		);
+		return { ok: false, class: "retryable" };
+	};
 
 	return {
 		async createPaymentIntent({
@@ -793,7 +1048,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					},
 					body: form.toString(),
 					// A hung Stripe must never hang a Worker checkout.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(timeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout. Unlike a refund create this is NOT
@@ -840,7 +1095,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					method: "GET",
 					headers: stripeHeaders(secretKey),
 					// A hung Stripe must never hang the operator's refund.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(timeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout — the read issued nothing.
@@ -889,7 +1144,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					body: form.toString(),
 					// Bounded like the other calls — but see the catch: a timed-out
 					// refund POST is NOT a clean failure.
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: AbortSignal.timeout(createRefundTimeoutOf()),
 				});
 			} catch {
 				// Network error / abort-timeout — the POST may have reached Stripe before
@@ -918,6 +1173,61 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			const refund = createdRefundOf(body);
 			if (refund === null) return { ok: false, class: "ambiguous" };
 			return { ok: true, ...refund };
+		},
+
+		async cancelPaymentIntent({
+			intentId,
+			idempotencyKey,
+			secretKey,
+		}): Promise<StripeCancelPaymentIntentResult> {
+			// ONE deadline for the whole call — the cancel and, when Stripe refuses it,
+			// the read that decides what the refusal means — so the cron leg's bound
+			// holds however many requests it takes.
+			const deadline = Date.now() + cancelTimeoutOf();
+			const form = new URLSearchParams();
+			// `abandoned` is Stripe's own reason for "the buyer never completed it" —
+			// what an expired checkout is — and it is what the merchant's dashboard shows.
+			form.set("cancellation_reason", "abandoned");
+			let res: Response;
+			try {
+				// The id is PATH-ESCAPED: it is ours (recorded at checkout), but a value
+				// that reached a URL path unescaped could retarget the POST to another
+				// endpoint under the same secret key.
+				res = await doFetch(`${base}/v1/payment_intents/${encodeURIComponent(intentId)}/cancel`, {
+					method: "POST",
+					headers: {
+						...stripeHeaders(secretKey),
+						"content-type": "application/x-www-form-urlencoded",
+						// Stripe's NATIVE idempotency — a re-swept cancel re-calls nothing.
+						"idempotency-key": idempotencyKey,
+					},
+					body: form.toString(),
+					// SHORT, and shorter than the other calls: a cancel is best-effort
+					// prevention run by a cron leg, a stall must cost the leg seconds, not
+					// half a minute, and a timeout is simply retried on a later tick.
+					signal: AbortSignal.timeout(cancelTimeoutOf()),
+				});
+			} catch {
+				// Network error / abort-timeout. Retryable, never ambiguous: whatever
+				// Stripe did, no money moved, and a same-key retry is answered from its
+				// idempotency cache.
+				return { ok: false, class: "retryable" };
+			}
+			if (res.ok) return { ok: true, outcome: "cancelled" };
+			if (res.status >= 500 || res.status === 429 || res.status === 409) {
+				return { ok: false, class: "retryable" };
+			}
+			// `payment_intent_unexpected_state` says only that the intent is not in a
+			// state Stripe will cancel FROM right now. That covers an intent that
+			// already succeeded (the race prevention may lose — the payment landed and
+			// settle owns it) or was already cancelled, but QA2 M1b saw it on intents
+			// that were still payable — and giving up on the code alone left them
+			// payable. So READ the intent and decide from its status; never report
+			// "nothing to cancel" without having seen a final state.
+			if ((await stripeErrorCode(res)) === "payment_intent_unexpected_state") {
+				return await classifyUncancellable(intentId, secretKey, deadline);
+			}
+			return { ok: false, class: "terminal" };
 		},
 	};
 }

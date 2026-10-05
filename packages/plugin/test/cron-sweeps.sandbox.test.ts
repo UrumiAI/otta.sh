@@ -1,5 +1,5 @@
 /**
- * INC-C4 — the `cron` hook and its nine sweep legs, driven inside REAL workerd.
+ * INC-C4 — the `cron` hook and its sweep legs, driven inside REAL workerd.
  *
  * WHY THE SANDBOX AND NOT A UNIT TEST. The sweeps are the plugin's only
  * unattended code path: nobody is watching when they run, and "it worked in
@@ -67,9 +67,11 @@ import {
 } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
+	MAINTENANCE_LEGS,
 	runCommerceSweeps,
 	SWEEP_LEGS,
 	SWEEP_SCHEDULE,
+	SWEEP_STATE_KV_KEY,
 	SWEEP_TASK_NAME,
 } from "../src/cron/index.js";
 import type {
@@ -187,6 +189,9 @@ beforeAll(async () => {
 		// commerce-service host, which INC-D3a retired along with the service.)
 		allowedHosts: ["no-egress.invalid"],
 		storage: true,
+		// The real plugin, with the harness-only kv window this suite needs to clear
+		// the cadence stamp (see `src/cron/testing/sweep-entry.ts`).
+		entry: "cron/testing/sweep-entry.ts",
 	});
 }, 180_000);
 
@@ -252,10 +257,19 @@ describe("the cron hook", () => {
 		expect(outcome.result).toEqual({ task: "someone-elses-task", skipped: true });
 	}, 120_000);
 
-	test("one tick drives all nine legs, and a leg never starves the others", async () => {
+	test("one tick drives every leg, and a leg never starves the others", async () => {
 		const summary = await tick();
 		expect(summary.task).toBe(SWEEP_TASK_NAME);
 		expect(summary.legs.map((entry) => entry.leg)).toEqual([...SWEEP_LEGS]);
+		// The isolate's FIRST sweep: nothing is stamped yet, so no scan is `notDue`.
+		// (Whether each one also FITS this tick's budget is deliberately not asserted:
+		// that depends on this machine's speed, and a deferral is not a failure.)
+		for (const entry of summary.legs) {
+			expect({ leg: entry.leg, notDue: entry.notDue }).toEqual({
+				leg: entry.leg,
+				notDue: undefined,
+			});
+		}
 		// Every leg reports for itself. A failing one is a row here, not a rejected
 		// hook — which is the whole point of the per-leg try/catch.
 		for (const entry of summary.legs) {
@@ -263,6 +277,77 @@ describe("the cron hook", () => {
 				leg: entry.leg,
 				ok: true,
 				error: undefined,
+			});
+		}
+	}, 120_000);
+});
+
+describe("the tick's query budget, inside the isolate (QA2 M2)", () => {
+	test("every leg reports its own calls, and they add up to the tick's total", async () => {
+		const summary = await tick();
+		let sum = summary.budget.overheadQueries;
+		for (const entry of summary.legs) sum += entry.queries;
+		expect(sum).toBe(summary.budget.queriesUsed);
+		expect(summary.budget.queriesUsed).toBeLessThanOrEqual(summary.budget.queries);
+	}, 120_000);
+
+	test("a pile of expired sign-in challenges is pruned a bite per tick, never past the Free budget", async () => {
+		// The shape of QA's 334-query tick: one leg whose work is a call per row, with
+		// nothing between the rows to stop it. Through the real hook, on the default
+		// (Workers Free) budget, every tick stays inside it and the pile still drains.
+		const challenges = collectionOf<Record<string, unknown>>(storage, "login_challenges");
+		const expired = new Date(Date.now() - HOUR_MS).toISOString();
+		for (let i = 0; i < 60; i++) {
+			await challenges.put(`sweep-pile-${String(i)}`, {
+				challengeId: `sweep-pile-${String(i)}`,
+				email: `pile${String(i)}@example.test`,
+				emailLower: `pile${String(i)}@example.test`,
+				tokenHash: "x",
+				createdAt: expired,
+				expiresAt: expired,
+				consumedAt: null,
+				consumed: "no",
+			});
+		}
+		let pruned = 0;
+		for (let i = 0; i < 30 && pruned < 60; i++) {
+			// (Counts any other expired challenge the suite left, too.)
+			// The prune is on the slow cadence: clear the stamp so each tick may run it.
+			await clearSweepState();
+			const summary = await tick();
+			expect(summary.budget.queries).toBe(30);
+			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(30);
+			pruned += leg(summary, "prune-challenges").count;
+		}
+		for (let i = 0; i < 60; i++) {
+			expect(await challenges.get(`sweep-pile-${String(i)}`), `pile ${String(i)}`).toBeNull();
+		}
+	}, 180_000);
+});
+
+describe("the tick's cadence, inside the isolate", () => {
+	test("the scans are stamped in the isolate's kv: once each has run, a tick a moment later runs only the every-tick legs", async () => {
+		// Through the same boot-scoped `ctx.kv` the deployment's cursors live in —
+		// the stamp has to survive from one hook invocation to the next for the
+		// cadence to mean anything. Ticks repeat until every scan has COMPLETED once,
+		// because a scan the budget deferred or cut short is (rightly) not stamped.
+		await clearSweepState();
+		const completed = new Set<SweepLeg>();
+		for (let i = 0; i < 10 && completed.size < MAINTENANCE_LEGS.length; i++) {
+			for (const entry of (await tick()).legs) {
+				const finished =
+					entry.ok && entry.deferred !== true && entry.incomplete !== true && entry.notDue !== true;
+				if (MAINTENANCE_LEGS.includes(entry.leg) && finished) completed.add(entry.leg);
+			}
+		}
+		expect([...completed].toSorted()).toEqual([...MAINTENANCE_LEGS].toSorted());
+		const summary = await tick();
+		for (const entry of summary.legs) {
+			const maintenance = MAINTENANCE_LEGS.includes(entry.leg);
+			expect({ leg: entry.leg, ok: entry.ok, notDue: entry.notDue }).toEqual({
+				leg: entry.leg,
+				ok: true,
+				notDue: maintenance ? true : undefined,
 			});
 		}
 	}, 120_000);
@@ -312,7 +397,11 @@ describe("the four ported sweeps", () => {
 			holdExpiresAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
 		});
 
-		await tick();
+		// Until the tick has nothing deferred or left over: the expiry records a
+		// release intent that `hold-intents` completes, and on a budgeted tick that
+		// completion may land a tick later. Idempotency is asserted AFTER the work
+		// is done, against a further tick that must change nothing.
+		await tickUntilSettled();
 		const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
 		const expired = await orders.get(placed.id);
 		expect(expired?.state).toBe("expired");
@@ -353,12 +442,17 @@ describe("the four ported sweeps", () => {
 		await stores().orderStore.markPaid(toOrderId(placed.id));
 
 		const ctx = { http: { fetch: notReached }, kv: kvStub(), storage } as unknown as PluginContext;
-		const first = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, { emailSender });
+		// No query cap: this pins the drain, and the shared store's outbox may hold
+		// rows from earlier cases that a Free-sized tick would spread over minutes.
+		const first = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			emailSender,
+			queryBudget: 100_000,
+		});
 		expect(leg(first, "order-emails").skipped).toBeUndefined();
 		expect(sent.length).toBeGreaterThanOrEqual(1);
 
 		const drained = sent.length;
-		await runCommerceSweeps(ctx, SWEEP_TASK_NAME, { emailSender });
+		await runCommerceSweeps(ctx, SWEEP_TASK_NAME, { emailSender, queryBudget: 100_000 });
 		// The row was marked sent, so a second run re-sends nothing.
 		expect(sent.length).toBe(drained);
 	}, 180_000);
@@ -377,6 +471,9 @@ describe("the four ported sweeps", () => {
 		const issued = await verifier.issueChallenge(toEmail(`${suffix}@example.test`));
 		expect(issued.ok).toBe(true);
 
+		// On the slow cadence since QA2 M2 (housekeeping): due again, as a fresh
+		// isolate's first tick would find it.
+		await clearSweepState();
 		const first = leg(await tick(), "prune-challenges");
 		expect(first.count).toBeGreaterThanOrEqual(1);
 		const second = leg(await tick(), "prune-challenges");
@@ -422,14 +519,17 @@ describe("the five new sweepers, each from an injected partial state", () => {
 			},
 		});
 
-		await tick();
+		// THROUGH THE ISOLATE: this is a maintenance leg on the fifteen-minute
+		// cadence, so its stamp is cleared first — through the isolate's own kv —
+		// and the tick repeats if the budget deferred or cut it short.
+		await tickUntilRan("sku-transfers");
 		// The units arrived, and the stamp that was accounting for them is gone —
 		// conserved at every seam, which is the invariant the carry exists to keep.
 		expect(await s.inventory.getOnHand(toSku(toSkuName))).toBe(7);
 		expect((await inventory.get(fromSku))?.transferOut).toBeUndefined();
 		expect((await products.get(productId))?.pendingRenames).toBeUndefined();
 
-		await tick();
+		await tickUntilRan("sku-transfers");
 		// Two ticks, ONE carry: the token guards both the credit and the clear.
 		expect(await s.inventory.getOnHand(toSku(toSkuName))).toBe(7);
 	}, 180_000);
@@ -449,11 +549,14 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		// perfectly valid everywhere else.
 		expect(await pointers.delete(pointerId)).toBe(true);
 
-		await tick();
+		// THROUGH THE ISOLATE: this is a maintenance leg on the fifteen-minute
+		// cadence, so its stamp is cleared first — through the isolate's own kv —
+		// and the tick repeats if the budget deferred or cut it short.
+		await tickUntilRan("order-sku-index");
 		const healed = await pointers.get(pointerId);
 		expect(healed).toMatchObject({ sku: placed.sku.toLowerCase(), orderId: placed.id });
 
-		await tick();
+		await tickUntilRan("order-sku-index");
 		// Create-if-absent only: the second tick reads the pointer and writes nothing,
 		// so the healed document is byte-identical.
 		expect(await pointers.get(pointerId)).toEqual(healed);
@@ -644,7 +747,10 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		});
 		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
 
-		await tick();
+		// THROUGH THE ISOLATE: this is a maintenance leg on the fifteen-minute
+		// cadence, so its stamp is cleared first — through the isolate's own kv —
+		// and the tick repeats if the budget deferred or cut it short.
+		await tickUntilRan("coupon-orphans");
 		// The orphan is gone from the reconciliation read…
 		const remaining = await s.couponStore.listRedemptionsCreatedBefore(new Date().toISOString());
 		expect(remaining.map((entry) => entry.couponId)).not.toContain(couponId);
@@ -658,7 +764,7 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		});
 		expect(afterRelease).toMatchObject({ ok: true });
 
-		await tick();
+		await tickUntilRan("coupon-orphans");
 		// Two ticks, ONE release: the fresh redemption above is inside the grace
 		// window, so the sweep leaves it exactly where it is.
 		const stillHeld = await s.couponStore.listRedemptionsCreatedBefore(
@@ -785,6 +891,38 @@ describe("the five new sweepers, each from an injected partial state", () => {
 	}, 180_000);
 });
 
+/** Forget the cadence stamps, through the ISOLATE's own kv — the store the
+ *  deployment keeps them in. The sweep's cursors are left alone. */
+async function clearSweepState(): Promise<void> {
+	const res = await sandbox.rawFetch(`/kv/${encodeURIComponent(SWEEP_STATE_KV_KEY)}`, {
+		method: "DELETE",
+	});
+	if (!res.ok) throw new Error(`could not clear the sweep state: ${String(res.status)}`);
+}
+
+/** Tick until `name` runs to the end — its stamp cleared ONCE, as a fresh
+ *  isolate's would be, then riding out ticks whose budget deferred it or cut it
+ *  short (not a failure). Clearing on every tick would make all four scans due
+ *  every time, and the last of them would never be reached — a starvation the
+ *  real cadence does not have, because a scan that completes is stamped. */
+async function tickUntilRan(name: SweepLeg): Promise<SweepLegOutcome> {
+	await clearSweepState();
+	for (let i = 0; i < 12; i++) {
+		const found = leg(await tick(), name);
+		if (found.deferred !== true && found.notDue !== true && found.incomplete !== true) return found;
+	}
+	throw new Error(`${name} never ran to the end in 12 ticks`);
+}
+
+/** Tick until a tick leaves nothing deferred or unfinished. */
+async function tickUntilSettled(): Promise<void> {
+	for (let i = 0; i < 12; i++) {
+		const summary = await tick();
+		if (summary.legs.every((entry) => entry.deferred !== true && entry.incomplete !== true)) return;
+	}
+	throw new Error("the sweep never settled in 12 ticks");
+}
+
 /** `ctx.http` is never reached by a sweep — every leg is storage-only — so the
  *  in-process case's context says so instead of offering a usable fetch. */
 function notReached(): never {
@@ -811,7 +949,9 @@ async function cronTasks(): Promise<Array<{ name: string; schedule: string }>> {
  */
 async function sweepInProcess(options: CommerceSweepOptions = {}): Promise<CommerceSweepSummary> {
 	const ctx = { http: { fetch: notReached }, kv: kvStub(), storage } as unknown as PluginContext;
-	return await runCommerceSweeps(ctx, SWEEP_TASK_NAME, options);
+	// No query cap: these cases pin a leg's LOGIC, and the per-tick query budget
+	// (pinned in `cron-sweep-budget.test.ts`) would only spread it over ticks.
+	return await runCommerceSweeps(ctx, SWEEP_TASK_NAME, { queryBudget: 100_000, ...options });
 }
 
 /** A cursor store with no history: what a first run, or a run after a cursor was
