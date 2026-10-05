@@ -873,11 +873,20 @@ export function OrderDetail({
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
-	// Whether THIS order's buyer emails are shown in full (issue #377). Keyed by
-	// the order id rather than a bare boolean so a detail that is handed another
-	// order without remounting starts masked again. Never persisted.
-	const [revealedFor, setRevealedFor] = React.useState<string | null>(null);
-	const emailValueId = `${React.useId()}-buyer`;
+	// Whether THIS order's buyer emails are shown in full (issue #377). Never
+	// persisted, and never remembered across orders: the state carries the
+	// order id it was set for, and a different `orderId` resets it DURING
+	// RENDER (React's "adjust state when a prop changes" pattern) rather than
+	// in an effect — so A revealed, then B, then back to A without a remount
+	// paints A masked from its first frame, with no one-frame flash an effect
+	// would allow.
+	const [reveal, setReveal] = React.useState({ orderId, revealed: false });
+	if (reveal.orderId !== orderId) setReveal({ orderId, revealed: false });
+	const idBase = React.useId();
+	const emailValueId = `${idBase}-buyer`;
+	const accountEmailId = `${idBase}-account-email`;
+	const contactEmailId = `${idBase}-contact-email`;
+	const shipEmailId = `${idBase}-ship-email`;
 
 	// Form drafts. They live beside the record rather than inside it because a
 	// re-fetch after a write must not blank a field the operator is still typing
@@ -976,7 +985,7 @@ export function OrderDetail({
 	// its hint until the operator presses Show email, and the full address is
 	// not rendered anywhere in the document until then. `shownEmail` is the one
 	// gate every buyer address on this screen goes through.
-	const revealed = revealedFor === order.id;
+	const revealed = reveal.revealed && reveal.orderId === orderId && order.id === orderId;
 	const recipient = shownEmail(buyerReferenceText(order.buyerRef), revealed);
 	// The toggle is offered when there is an address on the order to reveal —
 	// the reference itself, the account's email or the ship-to's — and not
@@ -1126,8 +1135,16 @@ export function OrderDetail({
 				{hasMaskedEmail && (
 					<RevealToggle
 						revealed={revealed}
-						onToggle={() => setRevealedFor(revealed ? null : order.id)}
-						controls={emailValueId}
+						onToggle={() => setReveal({ orderId, revealed: !revealed })}
+						// Every value this toggle discloses that is MOUNTED right now:
+						// the Customer group lives on the Order tab and the ship-to on
+						// Fulfilment, and an id that resolves to nothing is noise to
+						// assistive technology.
+						controls={[
+							emailValueId,
+							...(tab === 0 && detail.customer !== null ? [accountEmailId, contactEmailId] : []),
+							...(tab === 1 && order.shippingAddress?.email != null ? [shipEmailId] : []),
+						].join(" ")}
 						what="email for this order's buyer"
 						showLabel="Show email"
 						hideLabel="Hide email"
@@ -1300,18 +1317,29 @@ export function OrderDetail({
 							) : (
 								<Group
 									testId="detail-customer"
-									label={`Customer — ${shownEmail(
-										detail.customer.identity.email ?? detail.customer.identity.buyerRef,
-										revealed,
-									)}${
-										detail.customer.identity.linkage === "claimed"
-											? ""
-											: ` (${detail.customer.identity.linkage})`
-									}`}
+									label={
+										<>
+											Customer —{" "}
+											<span id={accountEmailId}>
+												{shownEmail(
+													detail.customer.identity.email ?? detail.customer.identity.buyerRef,
+													revealed,
+												)}
+											</span>
+											{detail.customer.identity.linkage === "claimed"
+												? ""
+												: ` (${detail.customer.identity.linkage})`}
+										</>
+									}
 								>
 									<Fields
 										entries={[
-											["Contact email", shownEmail(detail.customer.identity.buyerRef, revealed)],
+											[
+												"Contact email",
+												<span id={contactEmailId}>
+													{shownEmail(detail.customer.identity.buyerRef, revealed)}
+												</span>,
+											],
 											["Orders placed", String(detail.customer.orderCount)],
 											["Name", detail.customer.identity.name ?? "—"],
 											[
@@ -1374,9 +1402,13 @@ export function OrderDetail({
 										["Postal code", order.shippingAddress.postalCode ?? "—"],
 										[
 											"Email",
-											order.shippingAddress.email != null
-												? shownEmail(order.shippingAddress.email, revealed)
-												: "—",
+											order.shippingAddress.email != null ? (
+												<span id={shipEmailId}>
+													{shownEmail(order.shippingAddress.email, revealed)}
+												</span>
+											) : (
+												"—"
+											),
 										],
 									]}
 								/>

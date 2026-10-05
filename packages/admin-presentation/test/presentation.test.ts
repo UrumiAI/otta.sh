@@ -1493,9 +1493,43 @@ describe("maskBuyerEmail — the resume flow's hint, applied to an email-shaped 
 		// nothing a screenshot could leak.
 		expect(maskBuyerEmail("guest_checkout_772")).toBeNull();
 		expect(maskBuyerEmail("0x52908400098527886E0F7030069857D2E4169EE7")).toBeNull();
-		expect(maskBuyerEmail("@nolocal.com")).toBeNull();
-		expect(maskBuyerEmail("nodomain@")).toBeNull();
-		expect(maskBuyerEmail("no-tld@localhost")).toBeNull();
+	});
+
+	/**
+	 * NEAR-EMAILS ARE STILL ADDRESSES (review of #377). `buyerRef` is bounded by
+	 * length only (`checkout-route-input.ts`), so a headless caller can store a
+	 * value the resume flow's hint refuses (`•••`) or one whose "TLD" is free
+	 * text. Anything with an `@` in it is masked here; when the hint is not
+	 * clean, the console falls back to `<first char>•••@•••`, which carries no
+	 * part of the domain at all. `buyerRefHint` itself is not touched.
+	 */
+	test.each([
+		["jane@localhost", "j•••@•••"],
+		["jane@gmail.com.", "j•••@•••"],
+		["jane@gmail", "j•••@•••"],
+		["jane@gmail.com, phone 555-1234", "j•••@•••"],
+		["@nolocal.com", "•••@•••"],
+		["nodomain@", "n•••@•••"],
+	])("a near-email %s is masked to the safe fallback %s", (value, masked) => {
+		expect(maskBuyerEmail(value)).toBe(masked);
+	});
+
+	test("the near-email fallback carries none of the domain or trailing text", () => {
+		const masked = maskBuyerEmail("jane@gmail.com, phone 555-1234") ?? "";
+		expect(masked).not.toContain("555");
+		expect(masked).not.toContain("phone");
+		expect(masked).not.toContain("com");
+	});
+
+	test("a well-formed address keeps the resume flow's hint — the control for the fallback cases", () => {
+		expect(maskBuyerEmail("jane@gmail.com")).toBe("j•••@g•••.com");
+		expect(maskBuyerEmail("jane@gmail.com")).toBe(buyerRefHint("jane@gmail.com"));
+		expect(maskBuyerEmail("x@mail.example.co.uk")).toBe("x•••@m•••.uk");
+	});
+
+	test("the resume flow's own hint is unchanged for the same near-emails", () => {
+		expect(buyerRefHint("jane@localhost")).toBe("•••");
+		expect(buyerRefHint("jane@gmail.com, phone 555-1234")).toBe("j•••@g•••.com, phone 555-1234");
 	});
 
 	test("absent, blank and whitespace-only have nothing to mask either", () => {

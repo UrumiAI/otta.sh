@@ -183,10 +183,28 @@ export function buyerReferenceText(buyerRef: string | null | undefined): string 
  * flow hides such a value entirely (`•••`) because its audience is whoever
  * holds a bearer link; this audience is the store's admin, and hiding an
  * opaque handle from them would cost the key and protect no address.
+ *
+ * BUT ANYTHING WITH AN `@` IS AN ADDRESS HERE (review of #377). The checkout
+ * route bounds `buyerRef` by length only, so a headless caller can store
+ * `jane@localhost`, `jane@gmail` or `jane@gmail.com.` — which the hint refuses
+ * (`•••`) and which would then have printed IN FULL — or
+ * `jane@gmail.com, phone 555-1234`, whose "last label" is free text the hint
+ * would carry straight through. The hint is used only when it is clean: well
+ * formed AND its last segment a plain label. Anything else falls back to
+ * `j•••@•••`, which keeps nothing of the domain. `buyerRefHint` itself is
+ * deliberately unchanged: the resume flow's output is a contract of its own.
  */
 export function maskBuyerEmail(value: string | null | undefined): string | null {
 	const printed = buyerReferenceText(value);
-	if (printed === ABSENT) return null;
+	if (printed === ABSENT || !printed.includes("@")) return null;
 	const hint = buyerRefHint(printed);
-	return hint === BUYER_REF_HINT_HIDDEN ? null : hint;
+	if (hint !== BUYER_REF_HINT_HIDDEN && PLAIN_LABEL.test(hint.slice(hint.lastIndexOf(".") + 1))) {
+		return hint;
+	}
+	const first = [...printed][0];
+	return `${first === "@" ? "" : first}${BUYER_REF_HINT_HIDDEN}@${BUYER_REF_HINT_HIDDEN}`;
 }
+
+/** What a hint's last segment must look like to be printed: one DNS-style
+ *  label of a plausible TLD's length. See {@link maskBuyerEmail}. */
+const PLAIN_LABEL = /^[A-Za-z0-9-]{1,24}$/;

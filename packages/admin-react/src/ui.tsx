@@ -853,7 +853,9 @@ export function Group({
 	children,
 	testId,
 }: {
-	label: string;
+	/** Usually a string; a node when part of the title must be addressable —
+	 *  the detail's Customer title carries a masked email a toggle controls. */
+	label: React.ReactNode;
 	defaultOpen?: boolean;
 	children: React.ReactNode;
 	testId?: string;

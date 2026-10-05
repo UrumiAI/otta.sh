@@ -453,7 +453,7 @@ test("the detail toggle is a real button outside the heading, so the h1 names th
 	expect(toggle.className).toContain("otta-btn");
 	expect(toggle.className).toContain("otta-focusable");
 	expect(heading(container).contains(toggle)).toBe(false);
-	const controls = toggle.getAttribute("aria-controls") ?? "";
+	const controls = (toggle.getAttribute("aria-controls") ?? "").split(" ")[0] ?? "";
 	expect(heading(container).querySelector(`[id="${controls}"]`)?.textContent).toBe(MASKED);
 
 	toggle.focus();
@@ -524,4 +524,58 @@ test("revealing is not remembered: a fresh mount of the same order is masked aga
 	const again = await showDetail(detail(EMAIL));
 	expect(heading(again).textContent).toContain(MASKED);
 	expect(heading(again).textContent).not.toContain(EMAIL);
+});
+
+async function settle(): Promise<void> {
+	await React.act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+test("moving to another order and back WITHOUT a remount masks the first order again", async () => {
+	const OTHER_ID = "9a1b2c3d";
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body ?? "{}")) as { orderId?: string };
+		const base = detail(EMAIL);
+		const payload =
+			body.orderId === OTHER_ID ? { ...base, order: { ...base.order, id: OTHER_ID } } : base;
+		return Promise.resolve(
+			new Response(JSON.stringify({ data: payload }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+	});
+	mounted = await mount(<OrderDetail orderId={ORDER_ID} onBack={() => undefined} />);
+	await settle();
+	await fire(detailToggle(mounted.container), "click");
+	expect(heading(mounted.container).textContent).toContain(EMAIL);
+
+	await mounted.rerender(<OrderDetail orderId={OTHER_ID} onBack={() => undefined} />);
+	await settle();
+	expect(heading(mounted.container).textContent).toContain(MASKED);
+
+	await mounted.rerender(<OrderDetail orderId={ORDER_ID} onBack={() => undefined} />);
+	// Masked from the very first paint back on A, not only after its re-read.
+	expect(heading(mounted.container).textContent).not.toContain(EMAIL);
+	await settle();
+	expect(heading(mounted.container).textContent).toContain(MASKED);
+	expect(heading(mounted.container).textContent).not.toContain(EMAIL);
+	expect(detailToggle(mounted.container).getAttribute("aria-expanded")).toBe("false");
+});
+
+test("the detail toggle names every mounted element it discloses in aria-controls", async () => {
+	const container = await showDetail(detail(EMAIL, { verified: true }));
+	const ids = (detailToggle(container).getAttribute("aria-controls") ?? "").split(/\s+/);
+	const texts = ids.map((id) => document.getElementById(id)?.textContent);
+	// Heading value, Customer group title value, Contact email value — the
+	// Shipping email is on the Fulfilment tab and not mounted, so not named.
+	expect(texts).toEqual([MASKED, buyerRefHint(ACCOUNT_EMAIL), MASKED]);
+
+	await openTab(container, "fulfilment");
+	const after = (detailToggle(container).getAttribute("aria-controls") ?? "").split(/\s+/);
+	expect(after.map((id) => document.getElementById(id)?.textContent)).toEqual([
+		MASKED,
+		buyerRefHint(SHIP_EMAIL),
+	]);
 });
