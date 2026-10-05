@@ -1761,9 +1761,95 @@ export function productCommerceStoreContract(
 				productId: p1,
 				sku: "SKU-B1",
 				price: { amount: 1999, currency: "USD" },
+				// No sync has carried a title yet — null, never "" or the sku.
+				title: null,
+				// No was-price set — null, never a zero amount.
+				compareAtPrice: null,
 				inStock: true,
 				active: false, // afterPublish deferred — unpublished until it lands
 			});
+		});
+
+		test("listCommerceByIds carries the title cache — the name an order line will snapshot", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bt1");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-BT1"),
+					price: money(cents(600), currency("USD")),
+					title: "Otta Stickers",
+				},
+				idempotencyKey("k1"),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.title).toBe("Otta Stickers");
+		});
+
+		test("listCommerceByIds carries the compare-at (was) price as STORED — the store reports it, the storefront decides whether it is a sale", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc1");
+			const seeded = await seedEditable(h, "prod-bc1", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(2000), currency("USD")) },
+				idempotencyKey("was-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.price).toEqual({ amount: 1200, currency: "USD" });
+			expect(view?.compareAtPrice).toEqual({ amount: 2000, currency: "USD" });
+		});
+
+		test("listCommerceByIds reports a compare-at at or below the price VERBATIM — a price rise is data, not an error", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc3");
+			const seeded = await seedEditable(h, "prod-bc3", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(900), currency("USD")) },
+				idempotencyKey("was-low-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// Not dropped, not clamped: whether it reads as a sale is decided
+			// downstream, so the store must not decide it here.
+			expect(view?.compareAtPrice).toEqual({ amount: 900, currency: "USD" });
+		});
+
+		test("the catalog view's public key set is exactly this — the admin-only unit cost can never ride it", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc2");
+			const seeded = await seedEditable(h, "prod-bc2");
+			await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					unitCost: money(cents(300), currency("USD")),
+					compareAtPrice: money(cents(2000), currency("USD")),
+				},
+				idempotencyKey("cost-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// An exact set, not a `not.toHaveProperty("unitCost")`: a new field on
+			// this storefront-reachable view must be added here on purpose.
+			expect(Object.keys(view ?? {}).toSorted()).toEqual([
+				"active",
+				"compareAtPrice",
+				"inStock",
+				"price",
+				"productId",
+				"sku",
+				"title",
+			]);
 		});
 
 		test("listCommerceByIds computes inStock via the store's own inventory join: on_hand > 0 ⇒ true; 0 or no inventory row ⇒ false", async () => {

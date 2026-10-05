@@ -301,13 +301,12 @@ if (productIds.length > 0) {
  * already made, and a second, narrower view model would be a second place for
  * the title-or-SKU fallback rule to drift.
  */
-const lineViews = lines.map((line, index) => {
+const lineViews = lines.map((line) => {
 	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
 	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
 	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted, pricingDegraded);
 	return {
 		line,
-		index,
 		/** The display-face name, or null when this store cannot name the line. */
 		title: content?.title ?? null,
 		/** What a screen reader calls the line — never null, so every control on

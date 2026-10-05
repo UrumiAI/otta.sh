@@ -16,8 +16,8 @@
  *     must not have quietly changed what it posts.
  *
  * What is NOT here: the tape's rows, the catalog counts and the headline
- * fallbacks. Those moved to `src/lib/tape.ts` and are covered BEHAVIOURALLY in
- * `tape.test.ts` — a grep for `slice(0, TAPE_ROWS)` proved a line existed, not
+ * fallbacks. Those moved to `src/lib/tape.ts` and `src/lib/store-settings.ts`
+ * and are covered BEHAVIOURALLY in `tape.test.ts` / `store-settings.test.ts` — a grep for `slice(0, TAPE_ROWS)` proved a line existed, not
  * that a seventh product was dropped.
  *
  * Rendered behaviour (layout, focus rings, the dark palette) is verified in a
@@ -256,7 +256,7 @@ describe("§8 — the home hero and its degraded rule", () => {
 			expect(frontmatter, `${call} is read outside a try/catch`).toMatch(guard);
 		}
 		// And a thrown settings read must not become a placeholder name: the
-		// fallback is `{}`, which `storeThesis` already resolves (see tape.ts).
+		// fallback is `{}`, which `storeThesis` already resolves (see store-settings.ts).
 		expect(HOME).toMatch(/let settings: StoreSettings = \{\}/);
 		// The collection's non-throwing arm is inspected too, not just awaited.
 		expect(HOME).toContain("collection.error === undefined");
@@ -298,8 +298,8 @@ describe("§8 — the home hero and its degraded rule", () => {
 });
 
 describe("the catalog grid", () => {
-	test("cards get their grid position, so the coil tints cycle (§5)", () => {
-		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,200}index=\{index\}/);
+	test("cards are NOT tinted by grid position — a product wears one colour on every page (§5)", () => {
+		expect(SHOP_VIEW).not.toMatch(/index=\{index\}/);
 	});
 
 	test("a card with no live price gets `null`, not a figure and not a zero", () => {
@@ -311,6 +311,23 @@ describe("the catalog grid", () => {
 		expect(PLP).toContain("purchasable: false");
 		expect(PLP).toMatch(/degradedNotice:\s*view === null && items\.length > 0/);
 		expect(SHOP_VIEW).toContain("<Notice");
+	});
+
+	test("a card on sale carries its was-price — only beside a live price, off the view model's own decision", () => {
+		// The plugin decides what is a sale (`compareAtPrice` is null unless it is
+		// above the price); the page only refuses to hand over a was-price for a
+		// card that has no price to strike it beside.
+		expect(PLP).toMatch(
+			/was:\s*product\.purchasable && product\.price !== null\s*\?\s*\(product\.compareAtPrice\?\.formatted \?\? null\)\s*:\s*null/,
+		);
+		expect(HOME).toMatch(
+			/was:\s*product\.purchasable && product\.price !== null\s*\?\s*\(product\.compareAtPrice\?\.formatted \?\? null\)\s*:\s*null/,
+		);
+		expect(SHOP_VIEW).toMatch(/<ProductCard[\s\S]{0,500}was=\{card\.was\}/);
+	});
+
+	test("the PDP page hands the view the plugin's was-price (the view's rendering: product-view.test.ts)", () => {
+		expect(PDP).toMatch(/compareAtFormatted:\s*product\.compareAtPrice\?\.formatted \?\? null/);
 	});
 
 	test("a degraded card says the price is UNKNOWN, not that the product is retired", () => {
@@ -451,7 +468,7 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(/holdNote: holdNote\(cartHoldMinutes\)/);
 		expect(PDP_VIEW).toMatch(/<p class="pdp-hold-note">\s*\{model\.purchase\.holdNote\}/);
 		for (const source of [PDP, PDP_VIEW]) {
-			expect(source).not.toContain("holds one in stock for 15 minutes");
+			expect(source).not.toContain("for 15 minutes");
 			expect(source).not.toContain("CART_HOLD_TTL_MS");
 		}
 	});

@@ -167,13 +167,13 @@ Build these in `src/components/`. Each renders one view-model field group and no
 |---|---|
 | `MediaPanel` | Neutral `--u-panel` ground + one generated coil. See §5 |
 | `ProductCard` | Media, title, description, foot. Foot uses `margin-top: auto` so feet align across a row regardless of description length |
-| `PriceTag` | Mono, tabular. Struck + muted when sold out |
+| `PriceTag` | Mono, tabular. Struck + muted when sold out. Takes an optional `was` — the compare-at price — and then sets it first, struck, muted and a step smaller, beside the price ("was $20.00, now $12.00"), with visually-hidden "Was" / "Now" — the component's own copy — because a strike is not announced. Mute, never a tempering colour: a sale is not a store state. **Sold out wins:** a sold-out price is already struck, so `was` is dropped rather than drawing two crossed-out figures. The product page's spec ledger, every product card and the home tape pass it |
 | `StockRule` | A short 2px rule + mono caps. Solid when in stock, dashed when sold out. **Not** a coloured badge. **Words, not a figure** — see below |
 | `HoldRibbon` | §6 — the signature |
 | `HoldClock` | §6's countdown SCRIPT, split from `HoldRibbon` (which is markup only) so a theme's cart view can draw the ribbon while `/cart` renders the one script (ADR-0012's single pair) |
 | `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
 | `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring |
-| `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. `/checkout` omits it — the row is still a cart line, the wire carries no title, and the shopper picked the thing a moment ago. `/orders/<id>` passes it, because there the same block is a **receipt** and the title is the purchase-time snapshot the order froze |
+| `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. Both ledgers pass it whenever the store can name the line: `/orders/<id>`, where the block is a **receipt** and the title is the purchase-time snapshot the order froze, and `/checkout`, where it is the title the order *will* snapshot (`CheckoutLineView.title`). The review used to omit it — "the shopper picked the thing a moment ago" — and QA read the result, `OTTA-STICKERS 1 $6.00`, as the last summary before paying naming nothing a shopper recognises. Only a line the store cannot name shows the SKU alone. The review's name is the order's copy of the title; `/cart` reads the CMS title itself, so just after a rename the two pages can briefly differ — the review shows what the order will record |
 | `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline; optionally an `Order` row naming the order by its products (`orderLabel`), never its id |
 | `Notice` | Degraded/error. Dashed bronze rules top and bottom, a dashed mark, **no filled background** |
 | `QtyField` | Mono numeric input |
@@ -203,8 +203,16 @@ A fresh install must look intentional with zero images. Each product gets a **co
 Archimedean spiral swept as a ribbon that tapers to a point at its inner end, drawn on the
 neutral panel, in one of `--u-tint-violet` / `--u-tint-straw` / `--u-tint-blue`.
 
-Generate it — do not hand-author path data. Centre, turn count, rotation and outer radius all
-key off the product slug so each one crops differently instead of repeating like a logo.
+Generate it — do not hand-author path data. Centre, turn count, rotation, outer radius **and
+tint** all key off the product slug so each one crops differently instead of repeating like a
+logo — and so a product wears the same coil on its card, its page and its cart line. The tint
+once cycled by grid position (every three cards showed all three), which left the product page
+and the cart, with no grid, on the slug's hash: QA found the Tee blue-grey in the shop and tan on
+its own page. One product in two colours a click apart is the worse failure; the price is that a
+small catalog can repeat a tint (the three-product seed draws two straw coils), and the
+geometry still tells two products apart.
+**Decided, not drift:** the user approved fixed-per-product tints on 2026-10-02, superseding
+the position cycling added by the reviewer revision in `70973ef` — do not restore it.
 Reference implementation is in the mockup's `coilPath()`. It must:
 
 - be `aria-hidden` (it carries no information);
@@ -248,6 +256,10 @@ becomes a static filled track at 40% opacity.
 ## 7. Money rules
 
 - Never invent a money string. Render `price.formatted` / `.label` from the view model.
+- **A was-price is the plugin's decision, not the theme's.** `compareAtPrice` arrives only
+  when it is above the price, in the same currency, on a product for sale; a store may keep a
+  lower "was" during a price rise, and striking it would claim a discount nobody is giving. A
+  page passes it only beside a live price, and the theme never compares two figures itself.
 - **"Not calculated" is not zero.** `totals.shipping.label` and `totals.tax.label` can mean
   *this store has not configured it*. That renders as muted mono prose — `Not calculated` —
   and **never** as `$0.00`, `—` alone, or "Free shipping". When `totalExcludesUncalculated`
@@ -263,7 +275,7 @@ Compare each against the matching frame in the mockup.
 
 | Page | Shape |
 |---|---|
-| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK as mono rows. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
+| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK rows. The ITEM cell is the product's **name**, in the body face and linked to its page (straw underline on hover, like a card title), with the SKU beneath it in muted mono as the reference — the `Ledger`'s pattern. The mockup's SKU-only, unlinked ITEM column read as a stock sheet rather than a shelf, and a shelf on the front door should be a way in. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
 | `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
@@ -278,6 +290,12 @@ list's links and the account order heading all print `orderLabel` ("Otta Tee and
 the id stays in URLs only. This changed the theme contract (`src/themes/contract.ts`), which
 breaks a theme written against the old one: `AccountOrderRow` and `AccountOrderModel.order`
 lost `id` (now `label`), and `OrderModel` gained `orderLabel`.
+
+**The PDP's hold note departs from the mockup on purpose.** The mockup reads "Adding this holds
+one in stock for 15 minutes." under a quantity field the shopper can set to 3, and the hold covers
+whatever quantity is added. The page says "We'll hold what you add for 15 minutes." — the store's
+effective window, still a number (§10), and no unit count to get wrong (`lib/hold.ts`'s
+`holdNote`).
 
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page
 shipped it; both halves were wrong at once. The item count sums units while the held count

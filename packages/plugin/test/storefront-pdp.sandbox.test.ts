@@ -266,6 +266,42 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect(product["slots"]).toEqual({ addToCart: null });
 	});
 
+	test("a compare-at price set in the admin reaches the storefront as the struck was-price (only above the price)", async () => {
+		// The admin stores a compare-at price, and no storefront read carried
+		// it: the catalog view had no was-price on it. Written through
+		// the admin's own guarded edit, read back through the public route.
+		await seedProduct({
+			id: "pdp-prod-sale",
+			sku: "SKU-PDP-SALE",
+			amount: 1200,
+			currency: "USD",
+			onHand: 5,
+		});
+		const commerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
+		const seeded = await commerce.getByProductId(toProductId("pdp-prod-sale"));
+		const edit = await commerce.updateCommerceFields(
+			{
+				productId: toProductId("pdp-prod-sale"),
+				compareAtPrice: { amount: cents(2000), currency: currency("USD") },
+			},
+			idempotencyKey("was-pdp-prod-sale"),
+			seeded!.updatedAt.toISOString(),
+		);
+		expect(edit.ok).toBe(true);
+
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-sale" },
+			locale: "en-US",
+		});
+		const product = result["product"] as Record<string, unknown>;
+		expect(product["price"]).toMatchObject({ formatted: "$12.00" });
+		expect(product["compareAtPrice"]).toEqual({
+			amount: 2000,
+			currency: "USD",
+			formatted: "$20.00",
+		});
+	});
+
 	test("out-of-stock is a coarse display state: price still renders, availability flips, JSON-LD says OutOfStock", async () => {
 		// A real inventory row holding zero — `inStock` is the store's own join
 		// over that row now, not a boolean a service put on the wire.

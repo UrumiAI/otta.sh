@@ -162,6 +162,16 @@ describe("the /checkout page keeps the decisions the review prints", () => {
 		expect(REVIEW).toContain("STRIPE_PUBLISHABLE_KEY");
 		expect(REVIEW).toContain("paymentConfigured");
 	});
+
+	test("the order ledger names each line — the last summary before paying is not a list of SKUs", () => {
+		// QA: "Your order" read `OTTA-STICKERS 1 $6.00`. The summary's line now
+		// carries the title the order will snapshot; the row hands it to the
+		// Ledger, which leads with it and keeps the SKU beneath as the reference.
+		const rows = splitAstro(REVIEW).frontmatter.match(/const ledgerRows = [\s\S]*?\n\}\)\);/)?.[0];
+		expect(rows).toBeDefined();
+		expect(rows).toMatch(/line\.title/);
+		expect(rows).toMatch(/sku: line\.sku/);
+	});
 });
 
 describe.each(ORDER_VIEWS)("the confirmation's panels — %s", (_label, { source: VIEW }) => {
@@ -637,9 +647,9 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 	test("the receipt names what was bought, not only its SKU", () => {
 		// CLAUDE.md: orders snapshot price AND title at purchase time. A receipt
 		// reading `OTTA-TEE-01 1 $25.00` has lost the thing a buyer opens it to
-		// check. /checkout stays SKU-only — a cart line has no title to show.
+		// check. (/checkout names its lines too now — pinned with the review's
+		// own decisions above.)
 		expect(ORDER).toMatch(/title: line\.title/);
-		expect(REVIEW).not.toMatch(/title: line\.title/);
 	});
 
 	test("the total reads Paid once the order settled, by MAP not comparison", () => {
