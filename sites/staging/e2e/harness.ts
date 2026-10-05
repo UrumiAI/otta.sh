@@ -502,6 +502,24 @@ export async function skipWithoutPlaceButton(testInfo: TestInfo, reason: string)
 }
 
 /**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when the dev server did not
+ * capture the sign-in link a signed-in spec asked for.
+ *
+ * ITS OWN MESSAGE: the site is up and the request went through, so neither
+ * "no site" nor "no orders" is the cause. The capture is off — the server was
+ * started without `OTTA_E2E_LOGIN_CAPTURE=1`, or with an email provider, which
+ * always wins (`sites/staging/e2e/login-link-capture.ts`). `reason` is the
+ * reader's own explanation.
+ */
+export async function skipWithoutLoginCapture(testInfo: TestInfo, reason: string): Promise<void> {
+	const how =
+		`the sign-in link could not be read back (${reason}). Start the dev server with ` +
+		"OTTA_E2E_LOGIN_CAPTURE=1 (playwright.config.ts does, when it boots the stack).";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
  * Close EmDash's first-login welcome dialog, if this run drew one.
  *
  * The dev-bypass account is created on first use, and EmDash greets a

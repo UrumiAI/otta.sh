@@ -5,16 +5,13 @@
  * product page → add to cart → checkout → place → pay step → (paid) → order
  * page → "your orders" → sign-in.
  *
- * WHERE THE JOURNEY STOPS, AND WHY. A signed-in /account/orders needs the
- * magic link from the sign-in email, and the plugin's email egress goes
- * through EmDash's `ctx.http`, which refuses non-public addresses — so a
- * loopback stub can never receive the mail, on a laptop or in CI (see
- * account-login.spec.ts). The signed-in half — the link, the session, the
- * order listed under it — is proven in the workerd sandbox suite
- * (`packages/plugin/test/account-routes.sandbox.test.ts`). This spec drives
- * everything up to that boundary, in the browser: the order page's pointer to
- * the account, the Account entry in the header, and the sign-in request for
- * the address the order was placed with.
+ * WHERE THE JOURNEY STOPS. At the sign-in request for the address the order
+ * was placed with: this spec covers the guest side (the order page's pointer
+ * to the account, the Account entry in the header, the request itself). The
+ * signed-in side — opening the emailed link, the order listed and opened under
+ * the session, sign-out, and another address seeing none of it — is
+ * `account-signed-in.spec.ts`, which reads the link the dev server captured
+ * instead of mailing (`OTTA_E2E_LOGIN_CAPTURE=1`).
  *
  * HOW THE ORDER GETS PAID. The stack runs the dev-only offline Stripe gateway
  * (`OTTA_E2E_STRIPE_OFFLINE=1`, set by `playwright.config.ts` when it boots the

@@ -123,9 +123,12 @@ jobs:
   # The Playwright e2e suite (issue #378): the React admin console and the
   # storefront journeys, in a real browser, against a dev server the config
   # boots itself (`OTTA_E2E_START_STACK=1`). Everything is local: a fresh
-  # `.wrangler` state, the miniflare D1, and the plugin's DEV-ONLY offline Stripe
-  # gateway (`OTTA_E2E_STRIPE_OFFLINE=1`, set by playwright.config.ts on the
-  # server it boots). No Stripe account, secret or network service is involved.
+  # `.wrangler` state, the miniflare D1, and the plugin's two DEV-ONLY e2e arms,
+  # both set by playwright.config.ts on the server it boots: the offline Stripe
+  # gateway (`OTTA_E2E_STRIPE_OFFLINE=1`) and the login-link capture
+  # (`OTTA_E2E_LOGIN_CAPTURE=1`, which keeps the sign-in link in the local D1 for
+  # the signed-in account specs). No Stripe account, email provider, secret or
+  # network service is involved.
   #
   # `OTTA_E2E_SEED=1` has the global setup seed the fresh stack once (content,
   # priced catalog, paid orders), and `OTTA_E2E_REQUIRE_SITE=1` turns every

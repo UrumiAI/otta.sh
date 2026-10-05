@@ -131,6 +131,15 @@ in-process leniency.
     `astro build` refuses to run with it set. **Never expose such a dev server publicly:** with
     the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
     anyone in as admin. Bind it to loopback.
+  - **`OTTA_E2E_LOGIN_CAPTURE=1`** (follow-up to #378) arms a dev-only login-link capture, so the
+    e2e suite can sign a shopper in through the real UI. The sign-in email cannot reach a local
+    mailbox (`ctx.http` refuses loopback), so when no email provider is configured the plugin
+    writes the link to its own kv instead of mailing it, and the harness reads it from the dev
+    server's local D1 file (`sites/staging/e2e/login-link-capture.ts`). No route serves it. Same
+    two gates as the offline gateway: the site bakes `__OTTA_DEV_LOGIN_CAPTURE__` as `true` only
+    under `astro dev` with the variable set (`astro build` refuses it), and the plugin also
+    requires `import.meta.env.DEV`. A configured email provider always wins, and order emails
+    never take this path. `playwright.config.ts` sets both variables on the stack it boots.
 - **oxfmt** formatting — **tabs**, run regularly.
 - **oxlint** type-aware for linting; keep it clean.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,

@@ -12,6 +12,8 @@ import {
 	assertLoopbackSite,
 	E2E_WEBHOOK_SECRET,
 	pickPurchasable,
+	placeOrder,
+	provisionLoginLinkUrl,
 	seedPaidOrders,
 	stripeSecretKeyIsSet,
 	type CatalogRow,
@@ -222,5 +224,57 @@ describe("seedPaidOrders", () => {
 		expect(placed).toEqual(["order-new"]);
 		expect(webhooks).toHaveLength(1);
 		expect(webhooks[0]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+	});
+});
+
+/**
+ * The signed-in account specs' two needs (e2e follow-up to #378): a sign-in
+ * page for the emailed link to point at, and an order placed for THEIR address
+ * rather than the seed's shared buyer.
+ */
+describe("provisionLoginLinkUrl", () => {
+	test("saves ONLY the sign-in page address, as this site's /account/verify", async () => {
+		const { deps, requests } = fakeSite(() => ({ toast: { type: "success", message: "saved" } }));
+		await provisionLoginLinkUrl(deps);
+		expect(requests).toHaveLength(1);
+		// Only `loginLinkUrl` is submitted: the settings handler leaves an ABSENT
+		// field alone, so the from-address and x402 settings are not touched.
+		expect(requests[0]?.body).toEqual({
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "http://127.0.0.1:4610/account/verify" },
+		});
+	});
+
+	test("a save the form refused is an error, not a silent pass", async () => {
+		const { deps } = fakeSite(() => ({ toast: { type: "error", message: "Nothing was saved." } }));
+		await expect(provisionLoginLinkUrl(deps)).rejects.toThrow(/sign-in page address was not saved/);
+	});
+});
+
+describe("placeOrder", () => {
+	test("places for the buyer it is given, and for the seed's buyer otherwise", async () => {
+		const buyers: unknown[] = [];
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+			if (url.endsWith("/storefront/cart/create")) return reply({ ok: true, cartId: "cart-1" });
+			if (url.endsWith("/storefront/cart/lines/add")) return reply({ ok: true });
+			if (url.endsWith("/storefront/checkout/place")) {
+				buyers.push(body["buyerRef"]);
+				return reply({ ok: true, orderId: "order-1" });
+			}
+			throw new Error(`unexpected request to ${url}`);
+		}) as typeof fetch;
+		const deps: SeedOrdersDeps = {
+			siteUrl: "http://127.0.0.1:4610",
+			authHeaders: {},
+			webhookSecret: E2E_WEBHOOK_SECRET,
+			fetchImpl,
+		};
+		const product = { productId: "p-1", sku: "OTTA-MUG", currency: "USD" };
+		expect(await placeOrder(deps, product, "a@example.test")).toBe("order-1");
+		await placeOrder(deps, product);
+		expect(buyers).toEqual(["a@example.test", "e2e-orders@example.test"]);
 	});
 });

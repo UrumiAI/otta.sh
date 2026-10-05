@@ -267,6 +267,30 @@ export async function provisionWebhookSecret(deps: SeedOrdersDeps): Promise<void
 	}
 }
 
+/**
+ * Point the emailed sign-in link at THIS site's `/account/verify` (the
+ * `settings:loginLinkUrl` field). Without it the plugin sends no link at all,
+ * so the signed-in account specs could not sign anyone in. Only that field is
+ * submitted: the settings handler leaves an absent field untouched, so the
+ * from-address and the x402 settings keep whatever they had. `http:` is
+ * accepted here only because the site is loopback (`isSavableLoginLinkUrl`).
+ */
+export async function provisionLoginLinkUrl(deps: SeedOrdersDeps): Promise<void> {
+	const saved = await admin(
+		deps,
+		{
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: `${deps.siteUrl}/account/verify` },
+		},
+		"saving the sign-in page address",
+	);
+	const toast = (saved as { toast?: { type?: unknown; message?: unknown } } | null)?.toast;
+	if (toast?.type !== "success") {
+		throw new Error(`the sign-in page address was not saved: ${JSON.stringify(toast ?? saved)}`);
+	}
+}
+
 /** The first purchasable product, read through the products console. */
 export async function findPurchasable(deps: SeedOrdersDeps): Promise<Purchasable> {
 	const data = ok<{ products: CatalogRow[] }>(
@@ -287,8 +311,13 @@ export async function findPurchasable(deps: SeedOrdersDeps): Promise<Purchasable
 	return picked;
 }
 
-/** Place one order for `product` as a guest shopper and return its id. */
-export async function placeOrder(deps: SeedOrdersDeps, product: Purchasable): Promise<string> {
+/** Place one order for `product` as a guest shopper and return its id. The
+ *  buyer is the seed's shared address unless a spec names its own. */
+export async function placeOrder(
+	deps: SeedOrdersDeps,
+	product: Purchasable,
+	buyer: string = E2E_BUYER,
+): Promise<string> {
 	const cart = ok<{ cartId: string }>(
 		await storefront(deps, STOREFRONT_CART_CREATE_ROUTE, { currency: product.currency }),
 		"creating a cart",
@@ -306,7 +335,7 @@ export async function placeOrder(deps: SeedOrdersDeps, product: Purchasable): Pr
 	const placed = ok<{ orderId: string }>(
 		await storefront(deps, STOREFRONT_CHECKOUT_PLACE_ROUTE, {
 			cartId: cart.cartId,
-			buyerRef: E2E_BUYER,
+			buyerRef: buyer,
 			idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 			shippingAddress: {
 				name: "E2E Shopper",

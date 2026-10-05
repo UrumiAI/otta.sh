@@ -90,6 +90,13 @@ const stack: WebServer[] = [
 			// dev`, and `astro build` refuses to run with it set
 			// (sites/staging/src/lib/e2e-stripe-offline.ts).
 			OTTA_E2E_STRIPE_OFFLINE: "1",
+			// Arms the plugin's dev-only login-link capture (e2e follow-up to #378):
+			// with no email provider, the sign-in link is kept in the local D1
+			// instead of mailed, where `account-signed-in.spec.ts` reads it back
+			// (sites/staging/e2e/login-link-capture.ts). Like the offline gateway it
+			// only works under `astro dev`, and `astro build` refuses it
+			// (sites/staging/src/lib/e2e-login-capture.ts).
+			OTTA_E2E_LOGIN_CAPTURE: "1",
 			// /checkout offers no place button without a publishable key (by design:
 			// no order may hold stock against a payment that cannot happen). A
 			// placeholder is enough, because the specs block js.stripe.com and the

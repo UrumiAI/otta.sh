@@ -14,14 +14,15 @@
  *  2. The verify form's POST is not refused as cross-origin. A made-up
  *     challenge is redeemed and fails as an INVALID link. The point is that it
  *     reached the plugin at all rather than dying at the guard.
- * The full request → email → verify → orders → logout journey is NOT browsable
- * locally. The plugin's email egress goes through EmDash's `ctx.http`, which
- * refuses non-public IP addresses ("URLs targeting non-public IP addresses are
- * not allowed", measured against `astro dev`), so a loopback stub can never
- * receive the mail and there is no token to follow. That journey, including the
- * captured email, single use, the cookie flags and logout, is proven in the
- * workerd sandbox suite (`packages/plugin/test/account-routes.sandbox.test.ts`).
- * The site endpoints are proven in `sites/staging/test/account.test.ts`.
+ * The full request → email → verify → orders → logout journey is
+ * `account-signed-in.spec.ts`. The plugin's email egress goes through EmDash's
+ * `ctx.http`, which refuses non-public IP addresses ("URLs targeting non-public
+ * IP addresses are not allowed", measured against `astro dev`), so a loopback
+ * stub can never receive the mail; that spec instead reads the link a dev
+ * server started with `OTTA_E2E_LOGIN_CAPTURE=1` kept rather than mailed. The
+ * same journey, with the cookie flags, is proven in the workerd sandbox suite
+ * (`packages/plugin/test/account-routes.sandbox.test.ts`), and the site
+ * endpoints in `sites/staging/test/account.test.ts`.
  */
 import { expect, skipWithoutSite, test } from "./harness.js";
 
