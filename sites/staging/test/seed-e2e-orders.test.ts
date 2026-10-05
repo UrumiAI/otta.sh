@@ -120,6 +120,11 @@ function fakeSite(answer: (body: Record<string, unknown>) => unknown): {
 	};
 }
 
+/** An em-dash success envelope around `data`. */
+function reply(data: unknown): Response {
+	return new Response(JSON.stringify({ success: true, data }), { status: 200 });
+}
+
 describe("seedPaidOrders", () => {
 	test("a re-run against a seeded stack reads once and writes NOTHING", async () => {
 		const { deps, requests } = fakeSite(() => ({
@@ -146,5 +151,76 @@ describe("seedPaidOrders", () => {
 			"otta_console_read",
 			"page_load",
 		]);
+	});
+
+	test("a PARTIAL top-up places exactly the shortfall: 1 paid of 2 ⇒ one order, paid once", async () => {
+		const placed: string[] = [];
+		const webhooks: string[] = [];
+		let paid = false;
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url.endsWith("/webhooks/stripe")) {
+				// The signed bytes are not JSON-parsed here: only the signature
+				// header and the fact of the call matter to this test.
+				webhooks.push(new Headers(init?.headers).get("stripe-signature") ?? "");
+				paid = true;
+				return new Response("{}", { status: 200 });
+			}
+			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+			if (url.endsWith("/storefront/cart/create")) return reply({ ok: true, cartId: "cart-1" });
+			if (url.endsWith("/storefront/cart/lines/add")) return reply({ ok: true });
+			if (url.endsWith("/storefront/checkout/place")) {
+				expect(body["idempotencyKey"]).toBe("checkout:cart-1");
+				placed.push("order-new");
+				return reply({ ok: true, orderId: "order-new" });
+			}
+			if (body["resource"] === "orders.list") {
+				return reply({ ok: true, orders: [{ id: "order-old" }] });
+			}
+			if (body["type"] === "page_load") return reply(settingsPage("Stripe secret key — not set"));
+			if (body["action_id"] === "save-stripe-webhook-secret") {
+				return reply({ toast: { type: "success", message: "saved" } });
+			}
+			if (body["resource"] === "products.list") {
+				return reply({
+					ok: true,
+					products: [
+						{
+							productId: "p-1",
+							sku: "OTTA-MUG",
+							priceCents: 1800,
+							currency: "USD",
+							active: true,
+							onHand: 5,
+							deletedAt: null,
+						},
+					],
+				});
+			}
+			if (body["resource"] === "orders.detail") {
+				return reply({
+					ok: true,
+					order: {
+						state: paid ? "paid" : "pending",
+						totals: { totalCents: 1800, currency: "USD" },
+					},
+				});
+			}
+			throw new Error(`unexpected request to ${url}: ${JSON.stringify(body)}`);
+		}) as typeof fetch;
+
+		const count = await seedPaidOrders(
+			{
+				siteUrl: "http://127.0.0.1:4610",
+				authHeaders: { Cookie: "session=x" },
+				webhookSecret: E2E_WEBHOOK_SECRET,
+				fetchImpl,
+			},
+			2,
+		);
+		expect(count).toBe(1);
+		expect(placed).toEqual(["order-new"]);
+		expect(webhooks).toHaveLength(1);
+		expect(webhooks[0]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
 	});
 });

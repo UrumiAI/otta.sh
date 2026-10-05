@@ -26,6 +26,7 @@
  * worktree's server on the port it returns after the first answer; the
  * per-screen specs then skip (or fail) as before.
  */
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import {
 	cmsAuthHeaders,
@@ -90,7 +91,9 @@ async function warmConsole(deadline: number): Promise<void> {
 	const browser = await chromium.launch();
 	try {
 		const page = await browser.newPage();
-		await page.goto(`${E2E_BASE_URL}${DEV_BYPASS_SIGNIN_PATH}`);
+		await page.goto(`${E2E_BASE_URL}${DEV_BYPASS_SIGNIN_PATH}`, {
+			timeout: Math.max(1_000, deadline - Date.now()),
+		});
 		await page.goto(`${E2E_BASE_URL}${consoleScreenUrl("/orders")}`, {
 			timeout: Math.max(1_000, deadline - Date.now()),
 		});
@@ -128,7 +131,9 @@ async function applyCmsSeed(): Promise<void> {
  *  wrong place. */
 async function priceCatalog(): Promise<void> {
 	const authHeaders = await cmsAuthHeaders(E2E_BASE_URL);
-	const seedPath = new URL("../seed/seed.json", import.meta.url).pathname;
+	// `fileURLToPath`, not `.pathname`: the latter stays percent-encoded, so a
+	// checkout path with a space or a non-ASCII character would not be found.
+	const seedPath = fileURLToPath(new URL("../seed/seed.json", import.meta.url));
 	const rows = demoRows(
 		seededProductSlugs(seedPath),
 		await fetchCmsProducts(E2E_BASE_URL, authHeaders),
@@ -166,7 +171,20 @@ export default async function globalSetup(): Promise<void> {
 		// Warm FIRST, then ask whose server it is: the ownership probe has a short
 		// timeout of its own, and a cold server would fail it.
 		await untilAnswers("/", deadline);
-		if (!(await siteIsUp())) return;
+		if (!(await siteIsUp())) {
+			// Something answers, but it is not this worktree's dev server. A run
+			// that asked for seeding or for a site must not go on to skip (or fail)
+			// spec by spec with a message about the wrong cause.
+			if (E2E_SEEDS || E2E_REQUIRES_SITE) {
+				throw new Error(
+					`setup: the server at ${E2E_BASE_URL} answers but is not this worktree's dev ` +
+						`server (it refused the /@fs ownership probe). Stop it or point ` +
+						`OTTA_E2E_BASE_URL at this worktree's server; OTTA_E2E_SEED=1 / ` +
+						`OTTA_E2E_REQUIRE_SITE=1 will not seed or grade another tree.`,
+				);
+			}
+			return;
+		}
 		for (const path of WARM_UP_PATHS) await untilAnswers(path, deadline);
 		if (E2E_SEEDS) {
 			await applyCmsSeed();

@@ -34,14 +34,16 @@
  * unpayable `pi_<orderId>` handle and makes no network call — when, and only
  * when, BOTH of these hold:
  *
- *  - the site baked `__OTTA_DEV_STRIPE_OFFLINE__` as the literal `true`. The
- *    staging site bakes it only under `astro dev` with
+ *  - THE PRIMARY GATE: the site baked `__OTTA_DEV_STRIPE_OFFLINE__` as the
+ *    literal `true`. The staging site bakes it only under `astro dev` with
  *    `OTTA_E2E_STRIPE_OFFLINE=1`, and REFUSES to build with that variable set
- *    (`sites/staging/src/lib/e2e-stripe-offline.ts`);
- *  - the bundle is a Vite DEV build (`import.meta.env.DEV`). Vite folds that to
- *    `false` in a production build, and a non-Vite bundle (the published
- *    `dist`, the workerd sandbox) has no `import.meta.env` at all — both read
- *    as off. So no deployed build can arm it, whatever its defines say.
+ *    (`sites/staging/src/lib/e2e-stripe-offline.ts`). A site that never bakes
+ *    it can never arm this path.
+ *  - DEFENCE IN DEPTH: `import.meta.env.DEV` is `true`. The published `dist`
+ *    keeps the expression as written (`import.meta.env?.DEV`) and the
+ *    CONSUMER's bundler rewrites it: Vite folds it to `false` in any build with
+ *    `NODE_ENV=production`, and a bundle that never rewrites it (no Vite, the
+ *    workerd sandbox) has no `import.meta.env` and reads it as off.
  *
  * The webhook secret is still required: the order is marked paid only by a
  * signed `payment_intent.succeeded`, verified by the same HMAC as production.
