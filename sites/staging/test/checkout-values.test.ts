@@ -250,8 +250,8 @@ describe("field errors — shown only for the error the URL names", () => {
 		expect(fieldErrorCopy("city", "missing")).toBe(
 			"Fill this in, or leave the whole address blank.",
 		);
-		// When the address is REQUIRED (a zoned delivery, or an India Stripe account —
-		// issue #382) "leave the whole address blank" is not an option the page has.
+		// When the address is REQUIRED (the page passes this for an India Stripe
+		// account — issue #382) "leave the whole address blank" is not an option.
 		expect(fieldErrorCopy("city", "missing", { addressRequired: true })).toBe("Fill this in.");
 		expect(fieldErrorCopy("line1", "too_long")).toBe(
 			`Too long — use at most ${ORDER_ADDRESS_MAX_LENGTHS.line1} characters.`,

@@ -168,7 +168,8 @@ export function draftAddressValues(draft: CheckoutDraft | null): Record<DraftAdd
 }
 
 /** How the page asks for the address: `addressRequired` when it may not be left
- *  blank (a zoned delivery, or an India-based Stripe account — issue #382). */
+ *  blank. The checkout page sets it for an India-based Stripe account (issue
+ *  #382); a zoned delivery does not pass it yet, so its copy is unchanged. */
 export interface FieldErrorContext {
 	addressRequired?: boolean;
 }
