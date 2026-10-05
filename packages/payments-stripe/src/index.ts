@@ -323,6 +323,8 @@ export interface StripeTransport {
 
 /** The wire input for `POST /v1/customers` (issue #382). */
 export interface StripeCreateCustomerInput {
+	/** The order the Customer is for — sent as `metadata[order_id]`. */
+	orderId: string;
 	name: string;
 	/** The billing address, in Stripe's vocabulary (`state`, upper-cased
 	 *  country) — the same translation as the intent's `shipping`. */
@@ -702,13 +704,27 @@ export class StripePaymentGateway implements PaymentGateway {
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
-			// Issue #382: an account that needs the buyer's Customer gets it first —
-			// from the SAME address snapshot `shipping` is built from, under a key
-			// derived from the order, so a replay names the same Customer.
-			const customer =
-				shipping !== undefined && (await this.#needsCustomer())
-					? await this.#createCustomer(input.orderId, shipping, this.#secretKey, this.#transport)
-					: undefined;
+			// Issue #382: the order's Customer. Decided ONCE per order: a replay hands
+			// back what the first intent recorded (`customerRef` — an id to name
+			// again, or `null` for none) and nothing is re-read or re-created, so the
+			// same-key request stays byte-identical even if the account's cached
+			// country moved, or Stripe pruned the Customer's own key. Only the
+			// first intent decides: an account that needs a Customer gets one, from
+			// the SAME address snapshot `shipping` is built from.
+			let customerRef: string | null;
+			if (input.customerRef !== undefined) {
+				customerRef = input.customerRef;
+			} else if (shipping !== undefined && (await this.#needsCustomer())) {
+				customerRef = await this.#createCustomer(
+					input.orderId,
+					shipping,
+					this.#secretKey,
+					this.#transport,
+				);
+			} else {
+				customerRef = null;
+			}
+			const customer = customerRef ?? undefined;
 			const request: StripeCreatePaymentIntentInput = {
 				orderId: input.orderId,
 				// Integer minor units, straight through — no float math, ever. Sound only
@@ -756,6 +772,8 @@ export class StripePaymentGateway implements PaymentGateway {
 				gateway: this.id,
 				intentId: created.intentId,
 				clientAction: { kind: "stripe_client_secret", clientSecret: created.clientSecret },
+				// Recorded with the intent; every replay of the order hands it back.
+				customerRef,
 			};
 		}
 		const intentId = `pi_${input.orderId}`;
@@ -803,6 +821,7 @@ export class StripePaymentGateway implements PaymentGateway {
 		}
 		const { name, ...address } = shipping;
 		const request: StripeCreateCustomerInput = {
+			orderId: forOrder,
 			name,
 			address,
 			idempotencyKey: `${STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX}${forOrder}`,
@@ -1230,6 +1249,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 		},
 
 		async createCustomer({
+			orderId,
 			name,
 			address,
 			idempotencyKey,
@@ -1245,6 +1265,8 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			if (address.state !== undefined) form.set("address[state]", address.state);
 			form.set("address[postal_code]", address.postalCode);
 			form.set("address[country]", address.country);
+			// Which order this Customer was created for — one Customer per order.
+			form.set("metadata[order_id]", orderId);
 			let res: Response;
 			try {
 				res = await doFetch(`${base}/v1/customers`, {

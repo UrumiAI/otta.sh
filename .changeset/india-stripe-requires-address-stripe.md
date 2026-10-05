@@ -20,3 +20,11 @@ India-based Stripe accounts (issue #382):
   network/5xx/429/409, terminal on other 4xx), before any intent is asked for. The
   transport seam gains an optional `createCustomer`. With the option absent or `false`,
   no Customer is created and the intent body is unchanged.
+
+  The Customer also carries `metadata[order_id]`. It is decided **once per order**:
+  `createIntent` returns the decision as the handle's `customerRef` (`cus_…`, or `null` for
+  none), the domain records it with the intent, and a replay passes it back as
+  `CreateIntentInput.customerRef`. The gateway then names that Customer again (or none)
+  without asking `customerRequired` and without creating another, so the same-key intent
+  body stays byte-identical even if the account's cached country changed or Stripe pruned
+  the Customer's key. Every live intent now returns a `customerRef`.

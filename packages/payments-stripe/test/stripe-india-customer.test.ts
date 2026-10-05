@@ -128,7 +128,10 @@ describe("an account that needs a Customer (India)", () => {
 			["address[state]", "WB"],
 			["address[postal_code]", "700016"],
 			["address[country]", "IN"],
+			["metadata[order_id]", "ord-in-1"],
 		]);
+		// The decision goes back with the handle, to be recorded with the intent.
+		expect(handle.customerRef).toBe("cus_1");
 
 		const intent = stub.calls[1]!;
 		expect(intent.form.get("customer")).toBe("cus_1");
@@ -150,7 +153,7 @@ describe("an account that needs a Customer (India)", () => {
 		expect(keys).not.toContain("address[state]");
 	});
 
-	test("a replay of the same order — resume, double submit — reuses the Customer and sends a byte-identical intent", async () => {
+	test("an UNRECORDED retry (the first intent failed, so nothing was recorded) finds the same Customer by its key", async () => {
 		const stub = stripeStub();
 		const gw = gateway(stub.fetch, async () => true);
 		await gw.createIntent(input());
@@ -166,15 +169,73 @@ describe("an account that needs a Customer (India)", () => {
 			stub.calls[0]!.headers.get("idempotency-key"),
 		);
 		expect(stub.calls[3]!.raw).toBe(stub.calls[1]!.raw);
-		expect(stub.calls[3]!.form.get("customer")).toBe("cus_1");
+	});
+
+	describe("a REPLAY hands back the recorded decision — nothing is re-read or re-created", () => {
+		test("a recorded Customer is named again with NO Customer call — even if Stripe pruned its key, or the cache now reads unknown", async () => {
+			// The stub hands out a NEW id for any second create (as after Stripe pruned
+			// `otta-cus-<orderId>`): a create on the replay would change the body.
+			let creates = 0;
+			const stub = stripeStub((call) => {
+				if (call.path !== "/v1/customers") return undefined;
+				creates += 1;
+				return { status: 200, body: { id: `cus_${String(creates)}` } };
+			});
+			let india = true;
+			const gw = gateway(stub.fetch, async () => india);
+			const first = await gw.createIntent(input());
+			expect(first.customerRef).toBe("cus_1");
+
+			india = false; // the cache now reads unknown / not checked
+			const replay = await gw.createIntent(input({ customerRef: "cus_1" }));
+			expect(replay.customerRef).toBe("cus_1");
+			expect(stub.calls.map(route)).toEqual([
+				"POST /v1/customers",
+				"POST /v1/payment_intents",
+				"POST /v1/payment_intents",
+			]);
+			expect(stub.calls[2]!.raw).toBe(stub.calls[1]!.raw);
+		});
+
+		test("a recorded 'none' stays none — even if the account is now known to be in India", async () => {
+			const stub = stripeStub();
+			let india = false;
+			const gw = gateway(stub.fetch, async () => india);
+			const first = await gw.createIntent(input());
+			expect(first.customerRef).toBeNull();
+
+			india = true; // the merchant opened Settings mid-order: the country is now IN
+			const replay = await gw.createIntent(input({ customerRef: null }));
+			expect(replay.customerRef).toBeNull();
+			expect(stub.calls.map(route)).toEqual([
+				"POST /v1/payment_intents",
+				"POST /v1/payment_intents",
+			]);
+			expect(stub.calls[1]!.raw).toBe(stub.calls[0]!.raw);
+			expect(stub.calls[1]!.form.has("customer")).toBe(false);
+		});
+
+		test("the resolver is not even asked on a replay", async () => {
+			const stub = stripeStub();
+			let asked = 0;
+			const gw = gateway(stub.fetch, async () => {
+				asked += 1;
+				return true;
+			});
+			await gw.createIntent(input({ customerRef: "cus_9" }));
+			await gw.createIntent(input({ customerRef: null }));
+			expect(asked).toBe(0);
+			expect(stub.calls[0]!.form.get("customer")).toBe("cus_9");
+		});
 	});
 
 	test("an order with no address gets no Customer (nothing to put on one)", async () => {
 		const stub = stripeStub();
 		const { shipTo: _omitted, ...withoutShipTo } = input();
-		await gateway(stub.fetch, async () => true).createIntent(withoutShipTo);
+		const handle = await gateway(stub.fetch, async () => true).createIntent(withoutShipTo);
 		expect(stub.calls.map(route)).toEqual(["POST /v1/payment_intents"]);
 		expect(stub.calls[0]!.form.has("customer")).toBe(false);
+		expect(handle.customerRef).toBeNull();
 	});
 
 	describe("a Customer create that fails is a failed intent create — and no intent is asked for", () => {

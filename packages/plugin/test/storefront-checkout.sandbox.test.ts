@@ -2523,6 +2523,97 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			expect(stripe.requests[0]!.form.has("customer")).toBe(false);
 		});
 
+		/**
+		 * Review round 2 (F1/F2): the Customer decision is the ORDER's — made on its
+		 * first intent, recorded with it, and handed back on every replay — so
+		 * nothing that moves afterwards (the cached country, a pruned Customer key)
+		 * can change the same-key intent body Stripe already holds.
+		 */
+		describe("the Customer decision is recorded with the order's first intent", () => {
+			/** Answer `GET /v1/account` with `account` from now on, and re-save the key
+			 *  so the cache takes it — then clear the requests. */
+			async function accountAnswers(
+				account: { status: number; body: unknown },
+				rest: StripeResponder = stripeLikeResponder(),
+			): Promise<void> {
+				stripe.respondWith((req) =>
+					req.method === "GET" && req.path === "/v1/account" ? account : rest(req),
+				);
+				await resaveSecretKey();
+				stripe.requests.length = 0;
+			}
+			const IN_ACCOUNT = { status: 200, body: { id: "acct_in", country: "IN" } };
+			const US_ACCOUNT = { status: 200, body: { id: "acct_us", country: "US" } };
+
+			afterEach(async () => {
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			});
+
+			test("the country flips to IN after the first intent: the replay sends a byte-identical body, still with no Customer", async () => {
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(US_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const first = stripe.requests[0]!;
+
+				await accountAnswers(IN_ACCOUNT, stripeLike); // the merchant opened Settings
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(first.form.toString());
+				expect(stripe.requests[0]!.form.has("customer")).toBe(false);
+			});
+
+			test("after an intent WITH a Customer the cache reads unknown: the replay still names the Customer", async () => {
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const intent = stripe.requests[1]!;
+				expect(intent.form.get("customer")).toBe("cus_stub_1");
+
+				// Stripe unreachable at the next Settings save: the country is unknown.
+				await accountAnswers({ status: 503, body: {} }, stripeLike);
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(intent.form.toString());
+			});
+
+			test("a resume after Stripe would have pruned the Customer's key: no second create — the recorded id is reused", async () => {
+				// A Customer create that ignores its key hands out a NEW id each time —
+				// what a create after Stripe pruned `otta-cus-<orderId>` would do.
+				let creates = 0;
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(IN_ACCOUNT, (req) => {
+					if (req.path !== "/v1/customers") return stripeLike(req);
+					creates += 1;
+					return { status: 200, body: { id: `cus_fresh_${String(creates)}` } };
+				});
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const intent = stripe.requests[1]!;
+				expect(intent.form.get("customer")).toBe("cus_fresh_1");
+				stripe.requests.length = 0;
+
+				const resumed = resultOf(
+					await stripeBoot.invokeRoute("storefront/order/resume", {
+						orderId: placed["orderId"],
+						cartId,
+					}),
+				);
+				expect(resumed).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(creates).toBe(1);
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(intent.form.toString());
+			});
+		});
+
 		describe("an India account", () => {
 			beforeEach(async () => {
 				const stripeLike = stripeLikeResponder();
@@ -2581,6 +2672,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 					["address[city]", "Kolkata"],
 					["address[postal_code]", "700016"],
 					["address[country]", "IN"],
+					["metadata[order_id]", String(placed["orderId"])],
 				]);
 				expect(intent.form.get("customer")).toBe("cus_stub_1");
 				expect(intent.form.get("description")).toBe("2 × Bamboo Water Bottle");
@@ -2590,16 +2682,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				expect(intent.form.get("shipping[address][postal_code]")).toBe("700016");
 				expect(intent.form.get("shipping[address][country]")).toBe("IN");
 
-				// The locked review's retry: same key, no address. Same Customer, and a
-				// byte-identical intent body (Stripe would refuse a drifted one).
+				// The locked review's retry: same key, no address. The RECORDED Customer is
+				// named again — no second Customer call — and the intent body is
+				// byte-identical (Stripe would refuse a drifted one).
 				const replay = await placeCart(cartId);
 				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
-				expect(stripe.requests).toHaveLength(4);
-				expect(stripe.requests[2]!.form.toString()).toBe(customer.form.toString());
-				expect(stripe.requests[2]!.headers["idempotency-key"]).toBe(
-					customer.headers["idempotency-key"],
-				);
-				expect(stripe.requests[3]!.form.toString()).toBe(intent.form.toString());
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/payment_intents",
+					"/v1/payment_intents",
+				]);
+				expect(stripe.requests[2]!.form.toString()).toBe(intent.form.toString());
 			});
 
 			test("the Customer create failing is a typed PAYMENT_INTENT_FAILED; the order stays payable, and a retry completes it", async () => {
