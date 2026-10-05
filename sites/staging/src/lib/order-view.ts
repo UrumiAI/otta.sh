@@ -6,7 +6,7 @@
  * Pure, and here rather than in the pages because `.astro` has no render harness
  * in this package (issue #40): the rules are unit-tested (`order-view.test.ts`).
  */
-import type { CheckoutTotalsView } from "@otta-sh/plugin";
+import type { CheckoutTotalsView, OrderRouteResult } from "@otta-sh/plugin";
 import type { SumRow } from "./totals.js";
 
 /** The states in which the order was paid — the tracker's "Payment done". */
@@ -67,4 +67,49 @@ export function orderProgress(state: string): OrderProgress | null {
 	if (state === "pending") return { current: "payment", halted: false };
 	if (state === "expired" || state === "failed") return { current: "payment", halted: true };
 	return null;
+}
+
+/**
+ * What the public order page (`/orders/<id>`) answers for its one order read: the
+ * HTTP status, and the error token whose copy the page prints when there is no
+ * order. The status is the machine-readable half of that sentence, so the two
+ * are decided together (issue #381):
+ *
+ *  - an order → 200;
+ *  - no such order (`ORDER_NOT_FOUND`, or a malformed call — `INVALID_INPUT`,
+ *    which names no order either) → 404 and "could not be found". One sentence
+ *    for both, so the 404 says nothing about whether an order exists beyond what
+ *    the id itself is: the capability IS the id (ADR-0010 §2);
+ *  - BUSY (storage contention, already retried once by the dispatch) → 503 and
+ *    the busy copy. The page adds #338's short `Retry-After` through `markBusy`;
+ *  - a fault — `RENDER_FAILED` (the plugin's render guard caught a throw: a
+ *    storage error, a defect, a malformed record), or a dispatch that answered
+ *    nothing at all → 503 and the generic "try again shortly". It used to be a
+ *    404, which told a crawler, a proxy and monitoring that a live order's
+ *    address names nothing. No `Retry-After`: unlike BUSY, the page cannot know
+ *    the fault is transient, so it names no time — as the account's order pages
+ *    answer the same `RENDER_FAILED` (`account/orders/`).
+ *
+ * The switch is exhaustive on purpose: a new failure the route can return has to
+ * be placed in one of these arms before the site compiles.
+ */
+export function orderReadOutcome(result: OrderRouteResult | null): {
+	status: 200 | 404 | 503;
+	failure: "ORDER_NOT_FOUND" | "BUSY" | "SERVICE_UNAVAILABLE" | null;
+} {
+	if (result === null) return { status: 503, failure: "SERVICE_UNAVAILABLE" };
+	if (result.ok) return { status: 200, failure: null };
+	if ("reason" in result) return { status: 404, failure: "ORDER_NOT_FOUND" };
+	switch (result.error) {
+		case "INVALID_INPUT":
+			return { status: 404, failure: "ORDER_NOT_FOUND" };
+		case "BUSY":
+			return { status: 503, failure: "BUSY" };
+		case "RENDER_FAILED":
+			return { status: 503, failure: "SERVICE_UNAVAILABLE" };
+		default: {
+			const unhandled: never = result;
+			return unhandled;
+		}
+	}
 }

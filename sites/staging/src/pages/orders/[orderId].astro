@@ -69,8 +69,8 @@ import {
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
 import { orderStamp } from "../../lib/order-stamp.js";
-import { orderProgress, orderSumRows } from "../../lib/order-view.js";
-import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
+import { orderProgress, orderReadOutcome, orderSumRows } from "../../lib/order-view.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import { isOrderPayable } from "../../lib/pay-guard.js";
 import type { OrderModel } from "../../themes/contract.js";
 
@@ -98,7 +98,11 @@ const result =
 			);
 
 const order = result !== null && result.ok ? result.order : null;
-if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+/* 404 only for an order that does not exist; a fault (RENDER_FAILED, or no answer
+   at all) is a 503 — never "not found" for a live order's address (issue #381).
+   `lib/order-view.ts` decides the status and the failure copy together. */
+const outcome = orderReadOutcome(result);
+Astro.response.status = outcome.status;
 
 /* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
    spent: it can never produce another order. If the cart cookie still names it,
@@ -287,18 +291,15 @@ const label =
 
 /**
  * The model. Everything the view prints is decided above — including the
- * failure sentence, so BUSY / not-found / unavailable stay the page's call.
+ * failure sentence (`orderReadOutcome`), so BUSY / not-found / unavailable stay
+ * the page's call, and each matches the status the page answers with.
  * `returnedFromStripe` is NOT in it: only the copy it chose is.
  */
 const model: OrderModel = {
 	order,
 	stamp,
 	orderLabel: label,
-	failureMessage: busy
-		? cartErrorMessage(BUSY)
-		: result !== null && !result.ok && "reason" in result
-			? cartErrorMessage(result.reason)
-			: cartErrorMessage("SERVICE_UNAVAILABLE"),
+	failureMessage: cartErrorMessage(outcome.failure ?? "SERVICE_UNAVAILABLE"),
 	/* The tracker never says Payment is completed on an order nobody paid. */
 	progress: state === null ? null : orderProgress(state),
 	shouldPoll,
