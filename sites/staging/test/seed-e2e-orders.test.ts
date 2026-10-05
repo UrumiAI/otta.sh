@@ -12,6 +12,7 @@ import {
 	assertLoopbackSite,
 	E2E_WEBHOOK_SECRET,
 	pickPurchasable,
+	orderLineTitles,
 	placeOrder,
 	provisionLoginLinkUrl,
 	seedPaidOrders,
@@ -276,5 +277,20 @@ describe("placeOrder", () => {
 		expect(await placeOrder(deps, product, "a@example.test")).toBe("order-1");
 		await placeOrder(deps, product);
 		expect(buyers).toEqual(["a@example.test", "e2e-orders@example.test"]);
+	});
+});
+
+describe("orderLineTitles", () => {
+	test("reads the order's snapshotted line titles through the Orders console", async () => {
+		const { deps, requests } = fakeSite(() => ({
+			ok: true,
+			order: {
+				state: "paid",
+				totals: { totalCents: 1800, currency: "USD" },
+				lines: [{ title: "Otta Mug" }, { title: "" }, { title: 7 }],
+			},
+		}));
+		expect(await orderLineTitles(deps, "order-1")).toEqual(["Otta Mug"]);
+		expect(requests[0]?.body).toMatchObject({ resource: "orders.detail", orderId: "order-1" });
 	});
 });

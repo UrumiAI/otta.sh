@@ -140,6 +140,8 @@ in-process leniency.
     under `astro dev` with the variable set (`astro build` refuses it), and the plugin also
     requires `import.meta.env.DEV`. A configured email provider always wins, and order emails
     never take this path. `playwright.config.ts` sets both variables on the stack it boots.
+    The signed-in specs call `provisionLoginLinkUrl`, which **overwrites the local stack's
+    sign-in page address** (`settings:loginLinkUrl`) with that site's `/account/verify`.
 - **oxfmt** formatting — **tabs**, run regularly.
 - **oxlint** type-aware for linting; keep it clean.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,

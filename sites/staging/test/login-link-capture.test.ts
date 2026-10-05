@@ -16,6 +16,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+	CaptureLayoutError,
 	capturedLoginLinkOptionName,
 	readCapturedLoginLink,
 	waitForCapturedLoginLink,
@@ -67,11 +68,36 @@ describe("readCapturedLoginLink", () => {
 		);
 	});
 
-	test("nothing captured, no state directory, or a malformed row ⇒ undefined", () => {
+	test("nothing captured for the address, or a malformed row ⇒ undefined", () => {
+		d1File("abc123.sqlite", {});
 		expect(readCapturedLoginLink(EMAIL, { dir })).toBeUndefined();
-		expect(readCapturedLoginLink(EMAIL, { dir: join(dir, "missing") })).toBeUndefined();
-		d1File("abc123.sqlite", { [NAME]: { loginUrl: 42 } });
+		d1File("def456.sqlite", { [NAME]: { loginUrl: 42 } });
 		expect(readCapturedLoginLink(EMAIL, { dir })).toBeUndefined();
+	});
+
+	test("a missing D1 directory is a LAYOUT error, naming the directory", () => {
+		const missing = join(dir, "missing");
+		expect(() => readCapturedLoginLink(EMAIL, { dir: missing })).toThrow(CaptureLayoutError);
+		expect(() => readCapturedLoginLink(EMAIL, { dir: missing })).toThrow(missing);
+	});
+
+	test("no file with an `options` table is a LAYOUT error, listing what was found", () => {
+		expect(() => readCapturedLoginLink(EMAIL, { dir })).toThrow(/no database files/);
+		new Database(join(dir, "metadata.sqlite")).close();
+		const other = new Database(join(dir, "abc.sqlite"));
+		other.exec("CREATE TABLE settings (k TEXT)");
+		other.close();
+		let message = "";
+		try {
+			readCapturedLoginLink(EMAIL, { dir });
+		} catch (err) {
+			expect(err).toBeInstanceOf(CaptureLayoutError);
+			message = (err as Error).message;
+		}
+		expect(message).toContain(dir);
+		expect(message).toContain("abc.sqlite (tables: settings)");
+		// miniflare's own file is not a D1 database and is not listed.
+		expect(message).not.toContain("metadata.sqlite");
 	});
 
 	test("the newest capture wins across files, and one older than `since` is refused", () => {
@@ -90,12 +116,29 @@ describe("readCapturedLoginLink", () => {
 
 describe("waitForCapturedLoginLink", () => {
 	test("gives up after its timeout, naming the variable that arms the capture", async () => {
+		d1File("abc.sqlite", {});
 		await expect(
 			waitForCapturedLoginLink(EMAIL, { dir, since: 0, timeoutMs: 300 }),
 		).rejects.toThrow(/OTTA_E2E_LOGIN_CAPTURE=1/);
 	});
 
+	test("the timeout message carries what went wrong reading, not just 'not armed'", async () => {
+		d1File("abc.sqlite", { [NAME]: { loginUrl: 42 } });
+		await expect(
+			waitForCapturedLoginLink(EMAIL, { dir, since: 0, timeoutMs: 300 }),
+		).rejects.toThrow(/Unexpected while reading: abc\.sqlite: the .* row is not a captured link/);
+	});
+
+	test("a layout error does not wait out the timeout", async () => {
+		const started = Date.now();
+		await expect(
+			waitForCapturedLoginLink(EMAIL, { dir, since: 0, timeoutMs: 5_000 }),
+		).rejects.toBeInstanceOf(CaptureLayoutError);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+
 	test("returns the link once it lands", async () => {
+		d1File("first.sqlite", {});
 		setTimeout(() => {
 			d1File("abc.sqlite", {
 				[NAME]: { loginUrl: "http://127.0.0.1/late", capturedAt: new Date().toISOString() },

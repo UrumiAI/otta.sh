@@ -356,6 +356,8 @@ export async function placeOrder(
 interface OrderDetail {
 	state: string;
 	totals: { totalCents: number; currency: string };
+	/** Each line's title as snapshotted at purchase. */
+	lines?: Array<{ title?: unknown }>;
 }
 
 async function readOrder(deps: SeedOrdersDeps, orderId: string): Promise<OrderDetail> {
@@ -368,6 +370,15 @@ async function readOrder(deps: SeedOrdersDeps, orderId: string): Promise<OrderDe
 		`reading order ${orderId}`,
 	);
 	return data.order;
+}
+
+/** The titles an order's lines were bought under, read through the Orders
+ *  console — what a page showing that order would name it by. */
+export async function orderLineTitles(deps: SeedOrdersDeps, orderId: string): Promise<string[]> {
+	const order = await readOrder(deps, orderId);
+	return (order.lines ?? []).flatMap((line) =>
+		typeof line.title === "string" && line.title.length > 0 ? [line.title] : [],
+	);
 }
 
 /** Pay one placed order the way Stripe would: a signed success, through the

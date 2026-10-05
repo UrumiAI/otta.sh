@@ -257,6 +257,7 @@ export {
 // spelling. The sender itself is not exported; only `makeLoginEmailSender` arms it.
 export {
 	DEV_LOGIN_CAPTURE_KEY_PREFIX,
+	DEV_LOGIN_CAPTURE_MAX_ROWS,
 	devLoginCaptureKey,
 	type CapturedLoginLink,
 } from "./email/dev-login-capture.js";

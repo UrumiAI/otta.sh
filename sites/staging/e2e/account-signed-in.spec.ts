@@ -35,6 +35,7 @@ import { cmsAuthHeaders } from "../scripts/seed-demo-commerce.js";
 import {
 	E2E_WEBHOOK_SECRET,
 	findPurchasable,
+	orderLineTitles,
 	placeOrder,
 	provisionLoginLinkUrl,
 	provisionWebhookSecret,
@@ -49,7 +50,11 @@ import {
 	skipWithoutSite,
 	test,
 } from "./harness.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 import { waitForCapturedLoginLink } from "./login-link-capture.js";
+
+/** The street every spec order ships to (`placeOrder`'s address). */
+const SHIP_STREET = "1 Test Street";
 
 /** A fresh address per run (and per role), lower-case like the store keeps it.
  *  `.test` is reserved (RFC 2606): nothing sent to it can reach anyone. */
@@ -57,8 +62,12 @@ function freshEmail(role: string): string {
 	return `e2e-account-${role}-${String(Date.now())}@example.test`;
 }
 
-/** Point sign-in links at this site, and place a PAID order for `email`. */
-async function paidOrderFor(testInfo: TestInfo, email: string): Promise<string> {
+/** Point sign-in links at this site, and place a PAID order for `email`.
+ *  Returns its id and the titles its lines were bought under. */
+async function paidOrderFor(
+	testInfo: TestInfo,
+	email: string,
+): Promise<{ orderId: string; titles: string[] }> {
 	const deps: SeedOrdersDeps = {
 		siteUrl: E2E_BASE_URL,
 		authHeaders: await cmsAuthHeaders(E2E_BASE_URL),
@@ -71,7 +80,9 @@ async function paidOrderFor(testInfo: TestInfo, email: string): Promise<string> 
 	if (product === null) throw new Error("unreachable: skipped");
 	const orderId = await placeOrder(deps, product, email);
 	expect(await settleOrder(deps, orderId)).toBe("paid");
-	return orderId;
+	const titles = await orderLineTitles(deps, orderId);
+	expect(titles.length, `order ${orderId} has no line titles`).toBeGreaterThan(0);
+	return { orderId, titles };
 }
 
 /**
@@ -124,7 +135,7 @@ test.describe("the signed-in account, in the browser", () => {
 	}, testInfo) => {
 		await skipWithoutSite(testInfo);
 		const email = freshEmail("owner");
-		const orderId = await paidOrderFor(testInfo, email);
+		const { orderId, titles } = await paidOrderFor(testInfo, email);
 		const link = await signIn(page, testInfo, email);
 
 		// ── /account/orders lists the order, and only it ───────────────────────
@@ -143,6 +154,13 @@ test.describe("the signed-in account, in the browser", () => {
 		await expect(page.locator(".account-order-state")).toContainText("Paid");
 		await expect(page.getByText(`Signed in as ${email}`)).toBeVisible();
 		await expect(page.locator(`a.account-order-link[href="/orders/${orderId}"]`)).toBeVisible();
+		// The owner sees what the second spec proves another address does NOT:
+		// the products, the totals and the delivery address.
+		for (const title of titles) {
+			await expect(page.locator(".account-order-panel").getByText(title).first()).toBeVisible();
+		}
+		await expect(page.getByRole("heading", { name: "Totals" })).toBeVisible();
+		await expect(page.locator(".account-order-address")).toContainText(SHIP_STREET);
 
 		// ── Sign out ───────────────────────────────────────────────────────────
 		await page.getByRole("link", { name: "← Your orders" }).click();
@@ -170,7 +188,7 @@ test.describe("the signed-in account, in the browser", () => {
 	test("a second address cannot see the first address's order", async ({ page }, testInfo) => {
 		await skipWithoutSite(testInfo);
 		const owner = freshEmail("first");
-		const orderId = await paidOrderFor(testInfo, owner);
+		const { orderId, titles } = await paidOrderFor(testInfo, owner);
 		const other = freshEmail("second");
 		await signIn(page, testInfo, other);
 
@@ -180,13 +198,22 @@ test.describe("the signed-in account, in the browser", () => {
 		await expect(page.locator(".account-orders-empty")).toBeVisible();
 		await expect(page.locator(`a[href="${orderHref}"]`)).toHaveCount(0);
 
-		// Not by its own account URL either: NOT FOUND for this session, with the
-		// order's name, state and link nowhere on the page.
+		// Not by its own account URL either: NOT FOUND for this session, saying
+		// so in the not-found words, and with nothing of the order on the page —
+		// not its products, state, items or totals, delivery address, or link.
 		const res = await page.goto(orderHref);
 		expect(res?.status()).toBe(404);
 		await expect(page).toHaveURL(new RegExp(`${orderHref}$`));
-		await expect(page.locator(".account-order-notice-slot")).toBeVisible();
+		await expect(page.locator(".account-order-notice-slot")).toContainText(
+			cartErrorMessage("ORDER_NOT_FOUND"),
+		);
+		await expect(page.locator("h1.account-order-title")).toHaveText("Order");
+		for (const title of titles) await expect(page.getByText(title)).toHaveCount(0);
 		await expect(page.locator(".account-order-state")).toHaveCount(0);
+		await expect(page.locator(".account-order-panel")).toHaveCount(0);
+		await expect(page.getByRole("heading", { name: "Totals" })).toHaveCount(0);
+		await expect(page.locator(".account-order-address")).toHaveCount(0);
+		await expect(page.getByText(SHIP_STREET)).toHaveCount(0);
 		await expect(page.locator(`a[href^="/orders/${orderId}"]`)).toHaveCount(0);
 	});
 });

@@ -13,7 +13,10 @@
  * `customer-login-link` template and nothing else, writes the link to the
  * plugin's OWN kv under {@link devLoginCaptureKey} (the lower-cased recipient).
  * It refuses every other template, so an order email can never be swallowed
- * by it. `makeLoginEmailSender` returns it ONLY where it would otherwise have
+ * by it. Rows do not pile up across runs: each capture prunes all but the
+ * newest {@link DEV_LOGIN_CAPTURE_MAX_ROWS}, from INSIDE the server, so the
+ * harness never has to write to a database file workerd holds open.
+ * `makeLoginEmailSender` returns it ONLY where it would otherwise have
  * returned "no sender" (the bundle has no email API URL) — a configured
  * provider always wins, exactly as a configured Stripe secret key beats the
  * offline gateway.
@@ -34,7 +37,7 @@
  *    can never arm this path.
  *  - DEFENCE IN DEPTH: `import.meta.env.DEV` is `true`. The published `dist`
  *    keeps the expression and the CONSUMER's bundler rewrites it: Vite folds it
- *    to `false` in any build with `NODE_ENV=production`, and a bundle that never
+ *    to `false` in production mode (`astro build`), and a bundle that never
  *    rewrites it (no Vite, the workerd sandbox) reads it as off.
  */
 import type { EmailSender, SendEmailInput } from "@otta-sh/domain";
@@ -72,6 +75,11 @@ export function devLoginCaptureKey(recipient: string): string {
 	return `${DEV_LOGIN_CAPTURE_KEY_PREFIX}${recipient.toLowerCase()}`;
 }
 
+/** How many captured links a stack keeps. Each spec signs in with a fresh
+ *  address, so without a cap a long-lived local stack would gain rows forever;
+ *  a few runs' worth is plenty for a reader that wants the newest. */
+export const DEV_LOGIN_CAPTURE_MAX_ROWS = 20;
+
 /** What is stored: the link, and when, so a reader can refuse an older one. */
 export interface CapturedLoginLink {
 	loginUrl: string;
@@ -98,7 +106,39 @@ export class DevLoginCaptureSender implements EmailSender {
 		if (typeof loginUrl !== "string" || loginUrl.length === 0) {
 			throw new Error("the dev login-link capture got no loginUrl");
 		}
+		const key = devLoginCaptureKey(input.to);
 		const captured: CapturedLoginLink = { loginUrl, capturedAt: new Date().toISOString() };
-		await this.#kv.set(devLoginCaptureKey(input.to), captured);
+		await this.#kv.set(key, captured);
+		// Best effort: a prune that fails leaves a few extra rows, which is no
+		// reason to report the link (already saved) as unsent.
+		try {
+			await this.#prune(key);
+		} catch (err) {
+			console.warn(
+				"[otta] dev login-link capture: pruning old captures failed:",
+				err instanceof Error ? err.message : "unknown error",
+			);
+		}
 	}
+
+	/** Keep the newest {@link DEV_LOGIN_CAPTURE_MAX_ROWS} captures. The one just
+	 *  written always stays, whatever its stamp; unreadable stamps go first. */
+	async #prune(keep: string): Promise<void> {
+		const others = (await this.#kv.list(DEV_LOGIN_CAPTURE_KEY_PREFIX))
+			.filter(({ key }) => key.startsWith(DEV_LOGIN_CAPTURE_KEY_PREFIX) && key !== keep)
+			.map(({ key, value }) => ({ key, at: capturedAtOf(value) }))
+			.toSorted((a, b) => b.at - a.at);
+		for (const stale of others.slice(DEV_LOGIN_CAPTURE_MAX_ROWS - 1)) {
+			await this.#kv.delete(stale.key);
+		}
+	}
+}
+
+/** A capture's stamp in epoch ms; 0 (oldest) for anything unreadable. */
+function capturedAtOf(value: unknown): number {
+	const at =
+		value !== null && typeof value === "object"
+			? Date.parse(String((value as { capturedAt?: unknown }).capturedAt))
+			: Number.NaN;
+	return Number.isFinite(at) ? at : 0;
 }

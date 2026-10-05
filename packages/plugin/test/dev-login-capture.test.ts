@@ -19,6 +19,7 @@ import {
 } from "../src/email/ctx-http-email-sender.js";
 import {
 	DEV_LOGIN_CAPTURE_KEY_PREFIX,
+	DEV_LOGIN_CAPTURE_MAX_ROWS,
 	devLoginCaptureEnabled,
 	devLoginCaptureKey,
 } from "../src/email/dev-login-capture.js";
@@ -140,6 +141,32 @@ describe("the dev-only login-link capture", () => {
 			/loginUrl/,
 		);
 		expect(captured(kv)).toHaveLength(0);
+	});
+
+	test("rows do not accumulate: past the cap the OLDEST captures are pruned, never the new one", async () => {
+		vi.stubGlobal(DEFINE, true);
+		const { ctx, kv } = makeCtx();
+		// Older captures already in kv, stamped in the past, plus an unrelated key
+		// the prune must not touch.
+		for (let n = 0; n < DEV_LOGIN_CAPTURE_MAX_ROWS + 5; n++) {
+			kv.set(devLoginCaptureKey(`old-${String(n)}@example.test`), {
+				loginUrl: `${LINK}&n=${String(n)}`,
+				capturedAt: new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString(),
+			});
+		}
+		kv.set("settings:loginLinkUrl", "http://127.0.0.1:4650/account/verify");
+		const sender = await makeLoginEmailSender(ctx, {});
+		await sender?.send(loginInput);
+		const rows = captured(kv);
+		expect(rows).toHaveLength(DEV_LOGIN_CAPTURE_MAX_ROWS);
+		const keys = rows.map(([key]) => key);
+		expect(keys).toContain(devLoginCaptureKey("shopper@example.test"));
+		// The newest of the old ones survive; the oldest went first.
+		expect(keys).toContain(
+			devLoginCaptureKey(`old-${String(DEV_LOGIN_CAPTURE_MAX_ROWS + 4)}@example.test`),
+		);
+		expect(keys).not.toContain(devLoginCaptureKey("old-0@example.test"));
+		expect(kv.get("settings:loginLinkUrl")).toBe("http://127.0.0.1:4650/account/verify");
 	});
 
 	test("the kv key is pinned: the e2e harness reads it by this exact name", () => {
