@@ -14,8 +14,7 @@
  *  - the exact response headers, Range (206 / 416) and HEAD.
  * The fake bucket records every key it is asked for, which is what turns "a
  * `../` sku never reaches R2" from a claim into an assertion. The browser pass
- * (`_patches/.../download-e2e.mjs`) drives the real gate: buy, download, refund,
- * 404.
+ * recorded on the PR drives the real gate: buy, download, refund, 404.
  */
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
