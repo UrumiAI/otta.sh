@@ -110,14 +110,19 @@ async function warmConsole(deadline: number): Promise<void> {
 			"warm-up: the budget ran out before the console was loaded.",
 		);
 		while (Date.now() < deadline) {
-			const attempt = Math.max(1_000, Math.min(CONSOLE_ATTEMPT_MS, deadline - Date.now()));
+			// One attempt's goto AND wait share its budget, and no attempt outlives
+			// the overall deadline.
+			const attemptEnds = Math.min(Date.now() + CONSOLE_ATTEMPT_MS, deadline);
+			const left = (): number => Math.max(1_000, attemptEnds - Date.now());
 			try {
-				await page.goto(`${E2E_BASE_URL}${consoleScreenUrl("/orders")}`, { timeout: attempt });
-				await page.getByTestId("orders-intro").waitFor({ timeout: attempt });
+				await page.goto(`${E2E_BASE_URL}${consoleScreenUrl("/orders")}`, { timeout: left() });
+				await page.getByTestId("orders-intro").waitFor({ timeout: left() });
 				lastError = undefined;
 				break;
 			} catch (err) {
 				lastError = err;
+				// A refused or instantly failing navigation must not spin.
+				await new Promise((resolve) => setTimeout(resolve, 1_500));
 			}
 		}
 		if (lastError !== undefined) throw lastError;
