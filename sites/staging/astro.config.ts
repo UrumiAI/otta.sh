@@ -15,6 +15,7 @@ import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
@@ -209,7 +210,11 @@ export default defineConfig({
 			},
 		},
 	],
-	integrations: [react(), emdash(buildEmdashOptions(egress))],
+	// The last one bakes `__OTTA_DEV_STRIPE_OFFLINE__` — `true` only under
+	// `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's order seed
+	// (issue #378). An integration because only a hook can see the command; see
+	// src/lib/e2e-stripe-offline.ts.
+	integrations: [react(), emdash(buildEmdashOptions(egress)), devStripeOfflineIntegration()],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
