@@ -239,6 +239,55 @@ export function orderExpiryContract(
 			expect(await stateOf(h, payable.order.id)).toBe("expired");
 		});
 
+		test("`scanLimit` bounds the orders READ, listed or left out: a backlog of payable orders never walks the whole index, and an order not read is not listed (issue #364)", async () => {
+			const h = await makeHarness();
+			const store = h.expireDeps.orderStore;
+			const base = h.settleDeps.clock.now().getTime();
+			// Lines-free orders (no holds) with DISTINCT deadlines, so the oldest-first
+			// order of the walk is fixed: three abandoned checkouts whose intents are
+			// due, then one order with nothing payable.
+			const seed = async (n: string, minutes: number, intent: boolean): Promise<OrderId> => {
+				const created = await store.createFromCart({
+					orderId: orderId(`ord-expiry-scan-${n}`),
+					cartId: null,
+					currency: USD,
+					idempotencyKey: idempotencyKey(`expiry-scan-${n}`),
+					holdExpiresAt: new Date(base + minutes * 60_000).toISOString(),
+					buyerRef: `buyer-scan-${n}@example.com`,
+					paymentMethod: "stripe",
+					lines: [],
+					totals: { subtotal: cents(0), total: cents(0), currency: USD },
+				});
+				if (intent) {
+					await store.recordPaymentIntent({
+						orderId: created.order.id,
+						gateway: "stripe",
+						intentId: `pi_scan_${n}`,
+					});
+				}
+				return created.order.id;
+			};
+			const a = await seed("a", 1, true);
+			const b = await seed("b", 2, true);
+			await seed("c", 3, true);
+			const plain = await seed("d", 4, false);
+			const at = new Date(base + 10 * 60_000).toISOString();
+
+			// Three payable orders fill a three-row scan: the plain one behind them is
+			// not read this time, so it is not listed — never expired unchecked.
+			expect(
+				await store.listExpirable(at, { excludeIntentDue: true, limit: 2, scanLimit: 3 }),
+			).toEqual([]);
+			// A scan that reaches it lists it.
+			expect(
+				await store.listExpirable(at, { excludeIntentDue: true, limit: 2, scanLimit: 4 }),
+			).toEqual([plain]);
+			// It bounds a plain listing too, oldest deadline first.
+			expect(await store.listExpirable(at, { scanLimit: 2 })).toEqual([a, b]);
+			// Reaching the bound is an answer, not an error.
+			expect(await store.listExpirable(at, { excludeIntentDue: true, scanLimit: 1 })).toEqual([]);
+		});
+
 		test("a cancel that failed and was rescheduled does not hold the order: it is not due until its retry", async () => {
 			const h = await makeHarness();
 			const store = h.expireDeps.orderStore;

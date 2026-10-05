@@ -248,9 +248,13 @@ export class InMemoryOrderStore implements OrderStore {
 		const candidates = [...this.#orders.values()]
 			.filter((stored) => stored.order.state === "pending" && stored.order.holdExpiresAt <= now)
 			.toSorted((a, b) => (a.order.holdExpiresAt < b.order.holdExpiresAt ? -1 : 1));
+		assertSweepLimit(options.scanLimit);
 		const out: OrderId[] = [];
+		let scanned = 0;
 		for (const stored of candidates) {
 			if (options.limit !== undefined && out.length >= options.limit) break;
+			if (options.scanLimit !== undefined && scanned >= options.scanLimit) break;
+			scanned++;
 			if (options.excludeIntentDue === true && this.#hasIntentDue(stored.order.id, now)) continue;
 			out.push(stored.order.id);
 		}

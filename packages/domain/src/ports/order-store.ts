@@ -80,7 +80,8 @@ export interface OrderStore {
 	 * pay it; `cancelDueIntents` withdraws it first. An intent whose cancel failed and
 	 * was rescheduled is not due until its retry, so a provider outage never holds an
 	 * order. `limit` then counts the orders LISTED, not the ones read: the store keeps
-	 * reading past excluded ones (within its page bound).
+	 * reading past excluded ones (within its page bound, or `scanLimit` orders read
+	 * when the caller sets one).
 	 */
 	listExpirable(now: string, options?: OrderExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
@@ -1349,4 +1350,14 @@ export interface ExpiredOrder {
 export interface OrderExpiryListOptions extends ExpiryListOptions {
 	/** Leave out orders whose payment intent is due and not yet withdrawn. */
 	readonly excludeIntentDue?: boolean;
+	/**
+	 * Read at most this many lapsed pending orders — listed or left out — oldest
+	 * deadline first, then answer with what was listed (issue #364). Reaching it is
+	 * an answer, never an error: the caller asked for a bounded look. An order the
+	 * walk did not reach is not listed, so it is never expired unchecked; it is read
+	 * on a later call, once the orders ahead of it have been withdrawn and expired.
+	 * Without it, `excludeIntentDue` can read through a whole backlog of abandoned
+	 * checkouts to fill `limit`. Positive integer.
+	 */
+	readonly scanLimit?: number;
 }

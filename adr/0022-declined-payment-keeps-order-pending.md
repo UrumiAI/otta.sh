@@ -10,9 +10,9 @@
   itself is narrowed — the order's PaymentIntent is withdrawn once it is due, and the pay page
   refuses an order that can no longer be paid. See the two "Amended 2026-10-02" sections at the
   end of this record.
-- Amended: 2026-10-05 — a late payment Otta cannot refund says "refund it in Stripe", and the
-  delayed-webhook case (a buyer who paid in time is refunded) is recorded as accepted. See the
-  last section.
+- Amended: 2026-10-05 — a late payment Otta cannot refund says "refund it in Stripe"; the
+  delayed-webhook case (a buyer who paid in time is refunded) is recorded as accepted; and the
+  expiry's due check reads a bounded number of orders. See the last section.
 
 ## Context
 
@@ -414,3 +414,16 @@ Two edges of the first block, found reviewing the QA stack (#357). Neither chang
    already resolved as `refunded` with the reason "Payment arrived after the order was expired;
    refunded automatically". Nothing waits on them. A merchant who wants the sale can ask the
    buyer to order again.
+
+3. **The expiry's due check reads a bounded number of orders.** Leaving out orders whose intent
+   is still payable (the 2026-10-03 block's QA3 N1) made the expiry list read past them to fill
+   its bite. Under a backlog of abandoned Stripe checkouts — more due intents than one tick's
+   `cancel-intents` bite withdraws — that walked the whole backlog a small page at a time (13
+   queries for 150 orders on the Free preset), inside a due check the sweep budget costs as one.
+   `OrderStore.listExpirable` now takes `scanLimit`, the most lapsed orders it reads, listed or
+   left out; reaching it is an answer, not an error. The sweep passes 100 (one host page). The
+   bound is conservative by construction: an order the look did not reach is not listed, so it
+   is never expired before its intents are checked. It is reached on a later tick, as
+   `cancel-intents` withdraws the payable orders ahead of it (oldest deadline first, both legs).
+   `orderExpiryContract` pins the bound on every adapter; `cron-sweep-intents` pins the query
+   count and that nothing payable expires.
