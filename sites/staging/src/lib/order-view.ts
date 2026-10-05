@@ -69,6 +69,9 @@ export function orderProgress(state: string): OrderProgress | null {
 	return null;
 }
 
+/** A fault, and the fail-safe answer for anything off the route's contract. */
+const UNAVAILABLE = { status: 503, failure: "SERVICE_UNAVAILABLE" } as const;
+
 /**
  * What the public order page (`/orders/<id>`) answers for its one order read: the
  * HTTP status, and the error token whose copy the page prints when there is no
@@ -90,26 +93,40 @@ export function orderProgress(state: string): OrderProgress | null {
  *    the fault is transient, so it names no time — as the account's order pages
  *    answer the same `RENDER_FAILED` (`account/orders/`).
  *
- * The switch is exhaustive on purpose: a new failure the route can return has to
- * be placed in one of these arms before the site compiles.
+ * Both switches (`reason`, then `error`) are exhaustive on purpose: a new
+ * failure the route can return has to be placed in one of these arms before the
+ * site compiles. At runtime, an answer off the contract (an unknown token, a
+ * bare `{ ok: false }`) fails safe to the fault's 503 — never a 200, and never a
+ * 404 that would call a live order's address empty.
  */
 export function orderReadOutcome(result: OrderRouteResult | null): {
 	status: 200 | 404 | 503;
 	failure: "ORDER_NOT_FOUND" | "BUSY" | "SERVICE_UNAVAILABLE" | null;
 } {
-	if (result === null) return { status: 503, failure: "SERVICE_UNAVAILABLE" };
+	if (result === null) return UNAVAILABLE;
 	if (result.ok) return { status: 200, failure: null };
-	if ("reason" in result) return { status: 404, failure: "ORDER_NOT_FOUND" };
+	if ("reason" in result) {
+		switch (result.reason) {
+			case "ORDER_NOT_FOUND":
+				return { status: 404, failure: "ORDER_NOT_FOUND" };
+			default: {
+				const unplaced: never = result.reason;
+				void unplaced;
+				return UNAVAILABLE;
+			}
+		}
+	}
 	switch (result.error) {
 		case "INVALID_INPUT":
 			return { status: 404, failure: "ORDER_NOT_FOUND" };
 		case "BUSY":
 			return { status: 503, failure: "BUSY" };
 		case "RENDER_FAILED":
-			return { status: 503, failure: "SERVICE_UNAVAILABLE" };
+			return UNAVAILABLE;
 		default: {
-			const unhandled: never = result;
-			return unhandled;
+			const unplaced: never = result;
+			void unplaced;
+			return UNAVAILABLE;
 		}
 	}
 }

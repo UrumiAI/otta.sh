@@ -29,6 +29,25 @@ const NOT_FOUND: OrderRouteResult = { ok: false, reason: "ORDER_NOT_FOUND" };
 const INVALID: OrderRouteResult = { ok: false, error: "INVALID_INPUT" };
 const RENDER_FAILED: OrderRouteResult = { ok: false, error: "RENDER_FAILED" };
 const BUSY_RESULT: OrderRouteResult = { ok: false, error: "BUSY", retryable: true };
+/** Shapes the route's type does not allow — what a future plugin, or a broken
+ *  envelope, could still hand the page at runtime. */
+const OFF_CONTRACT = [
+	{ ok: false, error: "SOMETHING_NEW" },
+	{ ok: false, reason: "SOMETHING_NEW" },
+	{ ok: false },
+] as unknown as OrderRouteResult[];
+
+/** The frontmatter's CODE: the pins are about what runs, not the prose that
+ *  explains it (comments here name 404 and 503 freely). A `//` line comment is
+ *  only one at the start of a line or after whitespace, so a URL is left alone. */
+const codeOf = (source: string): string =>
+	source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+
+/** The ONE place the page sets its status is `orderReadOutcome`'s answer; BUSY's
+ *  503 + Retry-After is `markBusy`'s. No status literal of the page's own. */
+const statusSetters = (code: string): number =>
+	code.match(/Astro\.response\.status\s*=/g)?.length ?? 0;
+const statusLiterals = (code: string): string[] => code.match(/\b(?:404|503)\b/g) ?? [];
 
 describe("orderReadOutcome — the order page's status and failure copy", () => {
 	test("a found order is a 200 with no failure copy", () => {
@@ -61,6 +80,13 @@ describe("orderReadOutcome — the order page's status and failure copy", () => 
 		expect(orderReadOutcome(BUSY_RESULT)).toEqual({ status: 503, failure: "BUSY" });
 	});
 
+	test.each(OFF_CONTRACT.map((result) => [JSON.stringify(result), result] as const))(
+		"an answer off the route's contract (%s) fails safe to the fault's 503 — never 200 or 404",
+		(_label, result) => {
+			expect(orderReadOutcome(result)).toEqual({ status: 503, failure: "SERVICE_UNAVAILABLE" });
+		},
+	);
+
 	test("the copy matches the status: a 404 never says 'unavailable', a 503 never says 'not found'", () => {
 		const notFoundCopy = cartErrorMessage("ORDER_NOT_FOUND");
 		for (const result of [NOT_FOUND, INVALID]) {
@@ -68,7 +94,7 @@ describe("orderReadOutcome — the order page's status and failure copy", () => 
 			expect(status).toBe(404);
 			expect(cartErrorMessage(failure ?? "")).toBe(notFoundCopy);
 		}
-		for (const result of [RENDER_FAILED, BUSY_RESULT, null]) {
+		for (const result of [RENDER_FAILED, BUSY_RESULT, null, ...OFF_CONTRACT]) {
 			const { status, failure } = orderReadOutcome(result);
 			expect(status).toBe(503);
 			expect(cartErrorMessage(failure ?? "")).not.toBe(notFoundCopy);
@@ -84,6 +110,23 @@ describe("the order page is wired to it", () => {
 		expect(frontmatter).toMatch(/failureMessage:[^,]*outcome\.failure/);
 		// The pre-#381 rule: any `!result.ok` became a 404.
 		expect(frontmatter).not.toMatch(/!result\.ok \? 404/);
+	});
+
+	test("the status is set exactly once, and never from a literal 404 or 503", () => {
+		const code = codeOf(frontmatter);
+		expect(statusSetters(code)).toBe(1);
+		expect(statusLiterals(code)).toEqual([]);
+	});
+
+	test("those pins catch a second, page-own 404 (the review's mutation)", () => {
+		const mutated = frontmatter.replace(
+			"Astro.response.status = outcome.status;",
+			"Astro.response.status = outcome.status;\nif (order === null && !busy) Astro.response.status = 404;",
+		);
+		expect(mutated).not.toBe(frontmatter);
+		const code = codeOf(mutated);
+		expect(statusSetters(code)).not.toBe(1);
+		expect(statusLiterals(code)).not.toEqual([]);
 	});
 
 	test("BUSY still adds Retry-After on top of the 503 (#338); a fault does not", () => {
