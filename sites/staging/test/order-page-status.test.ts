@@ -48,6 +48,18 @@ const codeOf = (source: string): string =>
 const statusSetters = (code: string): number =>
 	code.match(/Astro\.response\.status\s*=/g)?.length ?? 0;
 const statusLiterals = (code: string): string[] => code.match(/\b(?:404|503)\b/g) ?? [];
+/** BUSY's 503 + Retry-After is ONE call, and only BUSY reaches it. */
+const busyMarks = (code: string): number => code.match(/markBusy\(/g)?.length ?? 0;
+const BUSY_GATED_MARK = /if \(busy\) markBusy\(Astro\.response\)/;
+/** Every pin over the frontmatter's code, as one verdict per pin (true = holds). */
+const pinsOver = (code: string) => ({
+	// Also guards the stripper: a future `/*` inside a string must not swallow it.
+	setterPresent: code.includes("Astro.response.status = outcome.status"),
+	oneSetter: statusSetters(code) === 1,
+	noLiterals: statusLiterals(code).length === 0,
+	oneBusyMark: busyMarks(code) === 1,
+	busyGated: BUSY_GATED_MARK.test(code),
+});
 
 describe("orderReadOutcome — the order page's status and failure copy", () => {
 	test("a found order is a 200 with no failure copy", () => {
@@ -112,21 +124,49 @@ describe("the order page is wired to it", () => {
 		expect(frontmatter).not.toMatch(/!result\.ok \? 404/);
 	});
 
-	test("the status is set exactly once, and never from a literal 404 or 503", () => {
-		const code = codeOf(frontmatter);
-		expect(statusSetters(code)).toBe(1);
-		expect(statusLiterals(code)).toEqual([]);
+	test("the status is set exactly once, from the outcome, and BUSY is marked exactly once, behind `if (busy)`", () => {
+		expect(pinsOver(codeOf(frontmatter))).toEqual({
+			setterPresent: true,
+			oneSetter: true,
+			noLiterals: true,
+			oneBusyMark: true,
+			busyGated: true,
+		});
 	});
 
-	test("those pins catch a second, page-own 404 (the review's mutation)", () => {
-		const mutated = frontmatter.replace(
-			"Astro.response.status = outcome.status;",
-			"Astro.response.status = outcome.status;\nif (order === null && !busy) Astro.response.status = 404;",
-		);
-		expect(mutated).not.toBe(frontmatter);
-		const code = codeOf(mutated);
-		expect(statusSetters(code)).not.toBe(1);
-		expect(statusLiterals(code)).not.toEqual([]);
+	/** Review mutants: each must break at least the pins named beside it. */
+	const MUTANTS = [
+		{
+			name: "a second, page-own 404",
+			from: "Astro.response.status = outcome.status;",
+			to: "Astro.response.status = outcome.status;\nif (order === null && !busy) Astro.response.status = 404;",
+			breaks: ["oneSetter", "noLiterals"],
+		},
+		{
+			name: "markBusy for every missing order (a fault gets Retry-After)",
+			from: "if (busy) markBusy(Astro.response);",
+			to: "if (order === null) markBusy(Astro.response);",
+			breaks: ["busyGated"],
+		},
+		{
+			name: "a second, ungated markBusy beside the BUSY one",
+			from: "if (busy) markBusy(Astro.response);",
+			to: "if (busy) markBusy(Astro.response);\nif (order === null) markBusy(Astro.response);",
+			breaks: ["oneBusyMark"],
+		},
+		{
+			name: "the setter replaced by a literal",
+			from: "Astro.response.status = outcome.status;",
+			to: "Astro.response.status = 404;",
+			breaks: ["setterPresent", "noLiterals"],
+		},
+	] as const;
+
+	test.each(MUTANTS)("the pins catch: $name", ({ from, to, breaks }) => {
+		const mutated = frontmatter.replace(from, to);
+		expect(mutated, "the mutant applies").not.toBe(frontmatter);
+		const pins = pinsOver(codeOf(mutated));
+		for (const pin of breaks) expect(pins[pin], pin).toBe(false);
 	});
 
 	test("BUSY still adds Retry-After on top of the 503 (#338); a fault does not", () => {
