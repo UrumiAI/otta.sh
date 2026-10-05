@@ -191,6 +191,15 @@ const UNREADABLE: Notice = {
 	description: "Nothing was changed. Reload the order and try again.",
 };
 
+/** A paid order's cancel that carries no Return-to-stock choice: a tab opened
+ *  before the box existed (issue #364). Refused, never guessed. */
+const STALE_CANCEL_PAGE: Notice = {
+	variant: "error",
+	title: "Nothing was cancelled — this page is out of date",
+	description:
+		"This page was opened before the Return to stock choice was added, so it can’t say whether the items should go back on sale. Nothing was refunded or restocked. Reload the order and cancel again.",
+};
+
 /**
  * A MISSING WATERMARK IS AN UNREADABLE PAYLOAD, NOT A REASON TO SKIP DA-3a.
  *
@@ -648,10 +657,18 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 			description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
 		});
 	}
-	// "Return the items to stock" — ticked unless the operator untick it (damaged
-	// goods). ABSENT means ticked: the decision's default, and what a tab rendered
-	// before the box existed meant by cancelling.
-	const restock = readString(payload["restock"]) !== "false";
+	// "Return the items to stock" — the operator's explicit choice, sent with every
+	// cancel of a paid order. A PENDING order's cancel releases its held stock
+	// whatever the box says, so the page sends none. On any other order an ABSENT
+	// (or unreadable) value is not defaulted either way (issue #364): it comes from
+	// a tab rendered before the box existed, whose operator was never asked, and
+	// both guesses are wrong for someone (restocking damaged goods, or keeping
+	// returned ones off sale). Refuse it and ask for a reload.
+	const restockField = readString(payload["restock"]);
+	if (observedState !== "pending" && restockField !== "true" && restockField !== "false") {
+		return applied(STALE_CANCEL_PAGE);
+	}
+	const restock = restockField !== "false";
 	// The key is the CANCELLATION's, and the refund and restock legs derive theirs
 	// from it (`<key>:refund`, `<key>:restock:<line>`), so a double-click or a retry
 	// after a failure replays one cancellation rather than refunding twice.

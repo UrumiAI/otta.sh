@@ -168,7 +168,7 @@ describe("refunds and cancels are recorded by the operator", () => {
 		await act(
 			client,
 			"orders:cancel-customer_request",
-			{ orderId: ORDER_ID, reason: "customer_request", state: "paid" },
+			{ orderId: ORDER_ID, reason: "customer_request", state: "paid", restock: "true" },
 			OPERATOR,
 		);
 		expect(calls.cancel[0]).toEqual([

@@ -111,7 +111,7 @@ const WRITES: ReadonlyArray<{
 		name: "a cancel",
 		state: "paid",
 		actionId: "orders:cancel-customer_request",
-		payload: { orderId: ORDER_ID, reason: "customer_request", state: "paid" },
+		payload: { orderId: ORDER_ID, reason: "customer_request", state: "paid", restock: "true" },
 	},
 	{
 		name: "a partial refund",
@@ -195,6 +195,7 @@ describe("each admin write's notice states what became of the buyer's email", ()
 			orderId: ORDER_ID,
 			reason: "customer_request",
 			state: "paid",
+			restock: "true",
 		});
 		const description = String(result.notice?.description);
 		expect(description).toContain(QUEUED);

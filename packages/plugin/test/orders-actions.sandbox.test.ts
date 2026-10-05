@@ -679,6 +679,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 			orderId: id,
 			reason: "out_of_stock",
 			state: "paid",
+			restock: "true",
 		});
 		expect(result.notice?.title).toBe("Order cancelled");
 		const order = await readOrder(id);
@@ -765,6 +766,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 			orderId: id,
 			reason: "fraud_suspected",
 			state: "shipped",
+			restock: "true",
 		});
 		// The write was ATTEMPTED, so this is an outcome to read rather than an input
 		// to correct — a prefilled retry would promise something no longer possible.
