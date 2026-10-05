@@ -39,7 +39,13 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
-import { CART_LINE_MAX_QTY, isBoundedProductId, isIdToken } from "../commerce/commerce-input.js";
+import {
+	CART_LINE_MAX_QTY,
+	isBoundedProductId,
+	isIdempotencyKeyText,
+	isIdToken,
+	isSkuText,
+} from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type {
@@ -185,10 +191,6 @@ export type CartLineRemoveRouteResult =
 	| { ok: false; reason: CartFailureReason }
 	| RenderGuardFailure;
 
-function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
-}
-
 /**
  * A cart or line id the client will take: the client bounds both as opaque id
  * tokens (`requireIdToken`) by THROWING, which renderGuard would log and answer as
@@ -198,6 +200,28 @@ function isNonEmptyString(value: unknown): value is string {
  */
 function isCartIdToken(value: unknown): value is string {
 	return typeof value === "string" && isIdToken(value);
+}
+
+/**
+ * The client's own rules for the fields that are NOT id tokens, as type guards —
+ * each one the predicate the client's `require*` is built on, so the route and
+ * the client cannot drift (#379). Every one of them refuses U+0000, which
+ * Postgres cannot store: let through, a NUL failed the first store read on that
+ * dialect as RENDER_FAILED.
+ */
+function isSku(value: unknown): value is string {
+	return typeof value === "string" && isSkuText(value);
+}
+
+function isAddProductId(value: unknown): value is string {
+	return typeof value === "string" && isBoundedProductId(value);
+}
+
+/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, no U+0000. A real caller's key is a
+ *  form-minted UUID; past the ceiling the store's document-id and value caps
+ *  threw. */
+function isIdempotencyKey(value: unknown): value is string {
+	return typeof value === "string" && isIdempotencyKeyText(value);
 }
 
 function isPositiveInt(value: unknown): value is number {
@@ -339,19 +363,21 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			//
 			// Each field is held to exactly the client's own bound for it, so none can
 			// reach its throw (issue #379): `cartId` is an id token; `productId` is 1–200
-			// characters with NO charset rule (`isBoundedProductId` — a CMS ULID fits
+			// characters with no U+0000 and NO charset rule beyond that (a CMS ULID fits
 			// either way, but the client accepts more, and refusing more here would be a
-			// divergence too); `sku` is only non-empty, because that is all the admin,
-			// the domain's `sku()` and the client ever ask of one — an id-token rule here
-			// would make a saved sku such as "Blend 250g" un-addable, and a sku that
-			// matches nothing is already the typed SKU_MISMATCH, never a throw.
+			// divergence too); `sku` is non-empty with no U+0000 and nothing else,
+			// because that is all the admin, the domain's `sku()` and the client ask of
+			// one — an id-token rule here would make a saved sku such as "Blend 250g"
+			// un-addable. A storable sku or product id that matches nothing is the typed
+			// SKU_MISMATCH. U+0000 is the exception that made "no charset rule" unsafe:
+			// Postgres cannot store it, so it failed the first store read as
+			// RENDER_FAILED there (SQLite hid it) — and is refused here instead.
 			if (
 				!isCartIdToken(cartId) ||
-				!isNonEmptyString(sku) ||
-				(productId !== undefined &&
-					(typeof productId !== "string" || !isBoundedProductId(productId))) ||
+				!isSku(sku) ||
+				(productId !== undefined && !isAddProductId(productId)) ||
 				!isPositiveInt(qty) ||
-				!isNonEmptyString(idempotencyKey)
+				!isIdempotencyKey(idempotencyKey)
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
@@ -379,7 +405,7 @@ export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateR
 				!isCartIdToken(cartId) ||
 				!isCartIdToken(lineId) ||
 				!isPositiveInt(qty) ||
-				!isNonEmptyString(idempotencyKey)
+				!isIdempotencyKey(idempotencyKey)
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
@@ -401,7 +427,7 @@ export function createCartLineRemoveRouteHandler(): RouteHandler<CartLineRemoveR
 	return (routeCtx, ctx): Promise<CartLineRemoveRouteResult> =>
 		renderGuard(STOREFRONT_CART_LINE_REMOVE_ROUTE, async () => {
 			const { cartId, lineId, idempotencyKey } = routeCtx.input;
-			if (!isCartIdToken(cartId) || !isCartIdToken(lineId) || !isNonEmptyString(idempotencyKey)) {
+			if (!isCartIdToken(cartId) || !isCartIdToken(lineId) || !isIdempotencyKey(idempotencyKey)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
 			const client = await makeCommerceClient(ctx);

@@ -43,7 +43,7 @@
 import { email as toEmail } from "@otta-sh/domain";
 import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { isCommerceInputError } from "../src/commerce/commerce-input.js";
+import { IDEMPOTENCY_KEY_MAX, isCommerceInputError } from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
@@ -368,6 +368,39 @@ describe("in-process commerce refuses malformed shopper input before any store c
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 1.5, "q-2"), "qty");
 		await expectRefusal(client.addCartLine(cartId, "SKU-Q", null, 10_001, "q-3"), "qty");
 		await expectRefusal(client.getCart("has a space"), "cartId");
+	});
+
+	// U+0000 can never be stored by Postgres (`invalid byte sequence for encoding
+	// "UTF8"`), so it is a refusal here — on every dialect — never a store throw
+	// that only one dialect shows (#379).
+	test("U+0000 is refused in a sku, an add's product id and an idempotency key", async () => {
+		const cartId = (await client.createCart("USD")).cartId;
+		await expectRefusal(client.addCartLine(cartId, "S\u0000KU", null, 1, "nul-1"), "sku");
+		await expectRefusal(client.addCartLine(cartId, "SKU", "p\u0000id", 1, "nul-2"), "productId");
+		await expectRefusal(client.addCartLine(cartId, "SKU", null, 1, "k\u0000ey"), "idempotencyKey");
+		await expectRefusal(
+			client.upsertProductCommerce("prod-nul", { sku: "S\u0000KU" }, "nul-3"),
+			"sku",
+		);
+	});
+
+	test("an idempotency key over the ceiling is refused", async () => {
+		const cartId = (await client.createCart("USD")).cartId;
+		await expectRefusal(
+			client.addCartLine(cartId, "SKU", null, 1, "k".repeat(IDEMPOTENCY_KEY_MAX + 1)),
+			"idempotencyKey",
+		);
+	});
+
+	test("the admin's sku edit refuses U+0000 as an invalid field, like an empty sku", async () => {
+		const products = new InProcessAdminProductsClient(harness.ctx, { clock: harness.clock });
+		expect(
+			await products.updateProduct(
+				"prod-nul",
+				{ sku: "S\u0000KU", expectedUpdatedAt: "2026-09-14T00:00:00.000Z" },
+				"nul-admin",
+			),
+		).toEqual({ ok: false, reason: "invalid", field: null });
 	});
 
 	test("nothing reached for egress while refusing any of it", () => {

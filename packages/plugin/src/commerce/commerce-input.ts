@@ -46,7 +46,7 @@
  *  - `qty` — a positive integer no greater than 10,000 (the shopper-facing cap,
  *    far tighter than the raw inventory primitive's);
  *  - `sku` — non-empty, and at most 200 characters where the entitlement check
- *    bounded it;
+ *    bounded it; never carrying U+0000 (an addition — see below);
  *  - `buyerRef` — 1 to 320 characters; `couponCode` — 1 to 200; the login token —
  *    1 to 400; the shipping address — the per-field bounds the address schema
  *    pins, which the domain then re-validates and trims;
@@ -54,6 +54,12 @@
  *    schema allowed null), never floats;
  *  - the idempotency key — non-empty, which is what every write route demanded of
  *    the header.
+ *
+ * ADDED, not mirrored (#379), because the wire's absence of a rule was a bug the
+ * in-process store makes visible: U+0000 is refused in a `sku`, the cart add's
+ * `productId` and an idempotency key, since Postgres cannot store it and a NUL
+ * failed the first store read there as a throw; and an idempotency key is capped
+ * at {@link IDEMPOTENCY_KEY_MAX}, since it becomes part of a document id.
  *
  * NOT mirrored, and why: the email on a login request is validated but never
  * REPORTED on — that surface answers identically whatever it is handed, so a
@@ -98,6 +104,26 @@ export const LOGIN_TOKEN_MAX = 400;
  *  `z.string().min(1).max(320)`. Exported so the place route's parser and a
  *  storefront's email field use this one number. */
 export const BUYER_REF_MAX = 320;
+
+/**
+ * An idempotency key's ceiling. No earlier bound existed to reuse — the wire only
+ * ever demanded a non-empty header — so this is chosen against both ends:
+ *
+ *  - what real callers send, all far below it: a `crypto.randomUUID()` from the
+ *    site's forms (36 characters), `checkout:<cartId>`, `login:<challengeId>`,
+ *    `admin-refund:<orderId>:<amount>:<observed>`, and the sync hooks'
+ *    `<collection>:<id>:<updatedAt>:<version>`;
+ *  - what the store can hold. The key becomes part of a document id, and a
+ *    document id is at most 1,024 characters (the host's `assertStorageKey`).
+ *    Some ids prefix it — `adjust:<key>` on a cart line's quantity change,
+ *    `<couponId>:<key>` on a coupon redemption, with a coupon id of up to 200 —
+ *    so a key near 1,024 throws there (a 1,018-character key already does, on
+ *    update). Half the id ceiling leaves every such prefix room.
+ *
+ * Past it the store threw — on the id length, or on the 1 MiB value cap for a
+ * megabyte-sized key — and the route answered RENDER_FAILED instead of a refusal.
+ */
+export const IDEMPOTENCY_KEY_MAX = 512;
 
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
@@ -156,6 +182,18 @@ export function requireProductId(value: string): string {
 	return value;
 }
 
+/**
+ * Whether `value` is free of U+0000 — the one character Postgres `text` can never
+ * hold. A NUL that reaches a store read there fails as `invalid byte sequence for
+ * encoding "UTF8": 0x00`, a throw (RENDER_FAILED), not an answer; SQLite stores it
+ * happily, so only one dialect shows the bug. Nothing legitimate is refused: no
+ * value carrying it could ever have been saved. The id-token charset already
+ * excludes it; this is for the fields that have no charset rule.
+ */
+function isStorableText(value: string): boolean {
+	return !value.includes("\u0000");
+}
+
 /** {@link requireBoundedProductId}'s ceiling. */
 const BOUNDED_PRODUCT_ID_MAX = 200;
 
@@ -167,15 +205,18 @@ const BOUNDED_PRODUCT_ID_MAX = 200;
  * that refuses MORE is still a divergence.
  */
 export function requireBoundedProductId(value: string): string {
-	return requireBoundedText("productId", value, 1, BOUNDED_PRODUCT_ID_MAX);
+	requireBoundedText("productId", value, 1, BOUNDED_PRODUCT_ID_MAX);
+	if (!isStorableText(value)) fail("productId", "must not contain U+0000");
+	return value;
 }
 
-/** `requireBoundedProductId`'s rule as a predicate — length only, NO charset —
+/** `requireBoundedProductId`'s rule as a predicate — length, and no U+0000, but
+ *  NO charset —
  *  for the cart add route, which must answer an over-long product id as its own
  *  INVALID_INPUT rather than let this client throw. One definition, so the two
  *  cannot drift; and not {@link isIdToken}, which would refuse ids this accepts. */
 export function isBoundedProductId(value: string): boolean {
-	return value.length > 0 && value.length <= BOUNDED_PRODUCT_ID_MAX;
+	return value.length > 0 && value.length <= BOUNDED_PRODUCT_ID_MAX && isStorableText(value);
 }
 
 /** A variant key: non-empty after trimming. The key is opaque CMS text, so no
@@ -194,13 +235,31 @@ export function requireWatermark(field: string, value: string): string {
 	return value;
 }
 
+/** `requireIdempotencyKey`'s rule as a predicate, for a route that must answer a
+ *  bad key as its own INVALID_INPUT rather than let this client throw. */
+export function isIdempotencyKeyText(value: string): boolean {
+	return value.length > 0 && value.length <= IDEMPOTENCY_KEY_MAX && isStorableText(value);
+}
+
 export function requireIdempotencyKey(value: string): string {
 	if (value.length === 0) fail("idempotencyKey", "must not be empty");
+	if (value.length > IDEMPOTENCY_KEY_MAX) {
+		fail("idempotencyKey", `must be at most ${String(IDEMPOTENCY_KEY_MAX)} characters`);
+	}
+	if (!isStorableText(value)) fail("idempotencyKey", "must not contain U+0000");
 	return value;
+}
+
+/** `requireSku`'s rule (without the optional ceiling) as a predicate: non-empty
+ *  and storable, and nothing else — the admin saves any such sku, so a route that
+ *  asked more would refuse a product the store sells. */
+export function isSkuText(value: string): boolean {
+	return value.length > 0 && isStorableText(value);
 }
 
 export function requireSku(value: string, max?: number): string {
 	if (value.length === 0) fail("sku", "must not be empty");
+	if (!isStorableText(value)) fail("sku", "must not contain U+0000");
 	if (max !== undefined && value.length > max) {
 		fail("sku", `must be at most ${String(max)} characters`);
 	}
