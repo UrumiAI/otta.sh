@@ -14,7 +14,7 @@
  *
  * Everything here runs over a fake `fetch`; no request leaves the machine.
  */
-import { renderEmail } from "@otta-sh/domain";
+import { EmailSendTimeoutError, isEmailSendTimeoutError, renderEmail } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	CtxHttpEmailSender,
@@ -22,13 +22,18 @@ import {
 	emailSendingConfigured,
 	makeEmailSender,
 	makeLoginEmailSender,
+	resolveEmailTransport,
 } from "../src/email/ctx-http-email-sender.js";
 import { storefrontEmailMoney } from "../src/email/email-render-context.js";
-import { EMAIL_PROVIDER_KEY, SMTP2GO_REGION_KEY } from "../src/email/email-provider.js";
-import { EmailProviderError } from "../src/email/http-email-sender.js";
+import {
+	EMAIL_PROVIDER_KEY,
+	providerDedupesRetries,
+	SMTP2GO_REGION_KEY,
+} from "../src/email/email-provider.js";
+import { countTimeoutsAsAttempts, EmailProviderError } from "../src/email/http-email-sender.js";
 import { Smtp2goEmailSender } from "../src/email/smtp2go-email-sender.js";
 import { SMTP2GO_API_HOSTS } from "../src/manifest.js";
-import { EMAIL_API_KEY_KEY } from "../src/payment-secrets.js";
+import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import { STOREFRONT_LOCALE } from "../src/storefront/route-input.js";
 import type { PluginContext } from "../src/types.js";
 
@@ -133,10 +138,10 @@ describe("Smtp2goEmailSender — SMTP2GO's send API, exactly", () => {
 			subject: rendered.subject,
 			html_body: rendered.html,
 			text_body: rendered.text,
-			// The outbox row id, for finding the message in SMTP2GO's activity log.
-			// A correlation header only: SMTP2GO does not dedupe on it.
-			custom_headers: [{ header: "X-Otta-Id", value: input.idempotencyKey }],
 		});
+		// No custom header: a recipient can read every header, and SMTP2GO's own
+		// email_id / request_id identify the message in its activity log.
+		expect(String(call?.init?.body)).not.toContain(input.idempotencyKey);
 	});
 
 	test("an unset key sends no key header — SMTP2GO then refuses it, the honest failure", async () => {
@@ -237,6 +242,51 @@ describe("Smtp2goEmailSender — a refused send throws, says why, and never echo
 		expect(((await failure(401, authEcho)) as Error).message).not.toContain(FAKE_KEY);
 	});
 
+	test("a long failure list still yields its reason: the body is parsed whole, the detail is cut", async () => {
+		const body = JSON.stringify({
+			request_id: "r-long",
+			data: {
+				succeeded: 0,
+				failed: 1,
+				failures: [
+					"Sender domain not verified",
+					...Array.from({ length: 300 }, () => "y".repeat(40)),
+				],
+			},
+		});
+		expect(body.length).toBeGreaterThan(4096);
+		const err = await failure(200, body);
+		expect(err).toMatchObject({ kind: "refused" });
+		expect((err as Error).message).toContain("Sender domain not verified");
+	});
+
+	test("bidi controls in a provider message become spaces, so they cannot reorder a log line", async () => {
+		const bidi = [
+			"\u202a",
+			"\u202b",
+			"\u202c",
+			"\u202d",
+			"\u202e",
+			"\u2066",
+			"\u2067",
+			"\u2068",
+			"\u2069",
+			"\u200e",
+			"\u200f",
+		].map((escaped) => JSON.parse(`"${escaped}"`) as string);
+		const body = JSON.stringify({
+			data: { succeeded: 0, failed: 1, failures: [`bad${bidi.join("")}sender`] },
+		});
+		const message = ((await failure(200, body)) as Error).message;
+		for (const char of bidi) expect(message).not.toContain(char);
+		expect(message).toContain("bad");
+	});
+
+	test("SMTP2GO's request_id is carried for finding the request in its logs", async () => {
+		const err = await failure(200, UNVERIFIED_SENDER_BODY);
+		expect((err as Error).message).toContain("c0ffee00-0000-4000-8000-000000000000");
+	});
+
 	test("a verbose failure list is bounded", async () => {
 		const body = JSON.stringify({
 			data: { succeeded: 0, failed: 1, failures: ["x".repeat(5000)] },
@@ -272,15 +322,19 @@ describe("Smtp2goEmailSender — the same timeout and abort behaviour as the Res
 });
 
 /** A fake ctx over a Map kv and a recording fetch. */
-function makeCtx(seed: Record<string, unknown>, status = 200, body = OK_BODY) {
+function makeCtx(
+	seed: Record<string, unknown>,
+	options: { status?: number; body?: string; failingKeys?: ReadonlySet<string> } = {},
+) {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const reads: string[] = [];
-	const { fetch, calls } = recordingFetch(status, body);
+	const { fetch, calls } = recordingFetch(options.status ?? 200, options.body ?? OK_BODY);
 	const ctx: PluginContext = {
 		http: { fetch },
 		kv: {
 			async get<T>(k: string): Promise<T | null> {
 				reads.push(k);
+				if (options.failingKeys?.has(k) === true) throw new Error(`kv unavailable: ${k}`);
 				return kv.has(k) ? (kv.get(k) as T) : null;
 			},
 			async set(k: string, v: unknown): Promise<void> {
@@ -294,14 +348,15 @@ function makeCtx(seed: Record<string, unknown>, status = 200, body = OK_BODY) {
 			},
 		},
 	};
-	return { ctx, calls, reads };
+	return { ctx, calls, reads, kv };
 }
 
 const RESEND_URL = "https://api.resend.com/emails";
+const RESEND_KEY = "re_testkey_123456";
 
-describe("makeEmailSender — the provider setting picks the sender", () => {
+describe("makeEmailSender — the provider setting picks the sender, and each provider its own key", () => {
 	test("no provider saved: the Resend-shaped sender, exactly as before", async () => {
-		const { ctx } = makeCtx({ [EMAIL_API_KEY_KEY]: "re_testkey_123456" });
+		const { ctx } = makeCtx({ [EMAIL_API_KEY_KEY]: RESEND_KEY });
 		const built = await makeEmailSender(ctx, { apiUrl: RESEND_URL });
 		expect(built).toBeInstanceOf(CtxHttpEmailSender);
 	});
@@ -311,11 +366,12 @@ describe("makeEmailSender — the provider setting picks the sender", () => {
 		expect(await makeEmailSender(ctx, { apiUrl: RESEND_URL })).toBeInstanceOf(CtxHttpEmailSender);
 	});
 
-	test("provider smtp2go: the SMTP2GO sender, with the stored key, from-address and region", async () => {
+	test("provider smtp2go: the SMTP2GO sender, with SMTP2GO's own key, the from-address and region", async () => {
 		const { ctx, calls } = makeCtx({
 			[EMAIL_PROVIDER_KEY]: "smtp2go",
 			[SMTP2GO_REGION_KEY]: "eu",
-			[EMAIL_API_KEY_KEY]: FAKE_KEY,
+			[SMTP2GO_API_KEY_KEY]: FAKE_KEY,
+			[EMAIL_API_KEY_KEY]: RESEND_KEY,
 			[EMAIL_FROM_KEY]: "Shop <orders@shop.test>",
 		});
 		const built = await makeEmailSender(ctx, { apiUrl: RESEND_URL });
@@ -324,11 +380,82 @@ describe("makeEmailSender — the provider setting picks the sender", () => {
 		expect(calls[0]?.url).toBe("https://eu-api.smtp2go.com/v3/email/send");
 		const headers = calls[0]?.init?.headers as Record<string, string>;
 		expect(headers["X-Smtp2go-Api-Key"]).toBe(FAKE_KEY);
+		expect(JSON.stringify(calls[0]?.init)).not.toContain(RESEND_KEY);
 		expect(JSON.parse(String(calls[0]?.init?.body))["sender"]).toBe("Shop <orders@shop.test>");
 	});
 
+	test("switching back and forth never sends one provider's key to the other", async () => {
+		const { ctx, calls, kv } = makeCtx({
+			[EMAIL_API_KEY_KEY]: RESEND_KEY,
+			[SMTP2GO_API_KEY_KEY]: FAKE_KEY,
+		});
+		for (const provider of ["resend", "smtp2go", "resend", "smtp2go"]) {
+			kv.set(EMAIL_PROVIDER_KEY, provider);
+			const built = await makeEmailSender(ctx, { apiUrl: RESEND_URL });
+			await built?.send(input);
+		}
+		expect(calls).toHaveLength(4);
+		for (const call of calls) {
+			const wire = JSON.stringify(call.init);
+			const headers = (call.init?.headers ?? {}) as Record<string, string>;
+			if (call.url === RESEND_URL) {
+				expect(headers["authorization"]).toBe(`Bearer ${RESEND_KEY}`);
+				expect(wire).not.toContain(FAKE_KEY);
+			} else {
+				expect(new URL(call.url).hostname).toBe("api.smtp2go.com");
+				expect(headers["X-Smtp2go-Api-Key"]).toBe(FAKE_KEY);
+				expect(wire).not.toContain(RESEND_KEY);
+			}
+		}
+	});
+
+	test("SMTP2GO chosen but its own key not saved: no sender — the Resend key is never borrowed", async () => {
+		const { ctx, calls } = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[EMAIL_API_KEY_KEY]: RESEND_KEY,
+		});
+		expect(await makeEmailSender(ctx, { apiUrl: RESEND_URL })).toBeUndefined();
+		expect(await emailSendingConfigured(ctx, { apiUrl: RESEND_URL })).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a provider read that FAILS is unconfigured, never a fall-back to Resend", async () => {
+		const { ctx, calls } = makeCtx(
+			{ [SMTP2GO_API_KEY_KEY]: FAKE_KEY, [EMAIL_API_KEY_KEY]: RESEND_KEY },
+			{ failingKeys: new Set([EMAIL_PROVIDER_KEY]) },
+		);
+		expect(await makeEmailSender(ctx, { apiUrl: RESEND_URL })).toBeUndefined();
+		expect(await emailSendingConfigured(ctx, { apiUrl: RESEND_URL })).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("an SMTP2GO key read that fails is unconfigured too", async () => {
+		const { ctx } = makeCtx(
+			{ [EMAIL_PROVIDER_KEY]: "smtp2go" },
+			{ failingKeys: new Set([SMTP2GO_API_KEY_KEY]) },
+		);
+		expect(await makeEmailSender(ctx, {})).toBeUndefined();
+	});
+
+	test("an unknown stored provider is unconfigured; an unknown region reads as global", async () => {
+		const { ctx, calls } = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "carrier-pigeon",
+			[EMAIL_API_KEY_KEY]: RESEND_KEY,
+		});
+		expect(await makeEmailSender(ctx, { apiUrl: RESEND_URL })).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		const second = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[SMTP2GO_REGION_KEY]: "mars",
+			[SMTP2GO_API_KEY_KEY]: FAKE_KEY,
+		});
+		const built = await makeEmailSender(second.ctx, {});
+		await built?.send(input);
+		expect(second.calls[0]?.url).toBe("https://api.smtp2go.com/v3/email/send");
+	});
+
 	test("smtp2go needs no build-time email URL: its hosts are always granted", async () => {
-		const { ctx } = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go" });
+		const { ctx } = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go", [SMTP2GO_API_KEY_KEY]: FAKE_KEY });
 		expect(await makeEmailSender(ctx, { apiUrl: undefined })).toBeInstanceOf(Smtp2goEmailSender);
 		expect(await makeLoginEmailSender(ctx, {})).toBeInstanceOf(Smtp2goEmailSender);
 	});
@@ -337,32 +464,93 @@ describe("makeEmailSender — the provider setting picks the sender", () => {
 		const { ctx } = makeCtx({ [EMAIL_PROVIDER_KEY]: "resend" });
 		expect(await makeEmailSender(ctx, { apiUrl: undefined })).toBeUndefined();
 	});
-
-	test("an unknown stored provider or region falls back to the defaults", async () => {
-		const { ctx, calls } = makeCtx({ [EMAIL_PROVIDER_KEY]: "carrier-pigeon" });
-		expect(await makeEmailSender(ctx, { apiUrl: RESEND_URL })).toBeInstanceOf(CtxHttpEmailSender);
-		const second = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go", [SMTP2GO_REGION_KEY]: "mars" });
-		const built = await makeEmailSender(second.ctx, {});
-		await built?.send(input);
-		expect(second.calls[0]?.url).toBe("https://api.smtp2go.com/v3/email/send");
-		expect(calls).toHaveLength(0);
-	});
 });
 
-describe("emailSendingConfigured — can this store send at all", () => {
-	test("a build-time email URL is enough, and costs no kv read", async () => {
+describe("resolveEmailTransport / emailSendingConfigured — can this store send at all", () => {
+	test("Resend: the provider choice is read once, the region never", async () => {
 		const { ctx, reads } = makeCtx({});
-		expect(await emailSendingConfigured(ctx, { apiUrl: RESEND_URL })).toBe(true);
-		expect(reads).toEqual([]);
+		expect(await resolveEmailTransport(ctx, { apiUrl: RESEND_URL })).toEqual({
+			provider: "resend",
+			apiUrl: RESEND_URL,
+		});
+		expect(reads).toEqual([EMAIL_PROVIDER_KEY]);
 	});
 
-	test("no URL: configured only when SMTP2GO is the chosen provider", async () => {
+	test("SMTP2GO: the choice, then its key and region", async () => {
+		const { ctx, reads } = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[SMTP2GO_API_KEY_KEY]: FAKE_KEY,
+			[SMTP2GO_REGION_KEY]: "au",
+		});
+		expect(await resolveEmailTransport(ctx, {})).toEqual({
+			provider: "smtp2go",
+			apiKey: FAKE_KEY,
+			region: "au",
+		});
+		expect(reads.toSorted()).toEqual(
+			[EMAIL_PROVIDER_KEY, SMTP2GO_API_KEY_KEY, SMTP2GO_REGION_KEY].toSorted(),
+		);
+	});
+
+	test("a resolved transport is reused: building the sender does not read the choice again", async () => {
+		const { ctx, reads } = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[SMTP2GO_API_KEY_KEY]: FAKE_KEY,
+		});
+		const transport = await resolveEmailTransport(ctx, {});
+		reads.length = 0;
+		await makeEmailSender(ctx, {}, { transport });
+		expect(reads).not.toContain(EMAIL_PROVIDER_KEY);
+		expect(reads).not.toContain(SMTP2GO_API_KEY_KEY);
+		expect(reads).not.toContain(SMTP2GO_REGION_KEY);
+	});
+
+	test("no URL: configured only when SMTP2GO is chosen AND its key is saved", async () => {
 		expect(await emailSendingConfigured(makeCtx({}).ctx, {})).toBe(false);
 		expect(await emailSendingConfigured(makeCtx({ [EMAIL_PROVIDER_KEY]: "resend" }).ctx, {})).toBe(
 			false,
 		);
 		expect(await emailSendingConfigured(makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go" }).ctx, {})).toBe(
-			true,
+			false,
 		);
+		expect(
+			await emailSendingConfigured(
+				makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go", [SMTP2GO_API_KEY_KEY]: FAKE_KEY }).ctx,
+				{},
+			),
+		).toBe(true);
+	});
+});
+
+describe("countTimeoutsAsAttempts — no idempotency key, so a timeout is a counted attempt", () => {
+	test("a timeout (ours or the caller's) becomes a plain, counted failure", async () => {
+		for (const timeout of [
+			new EmailSendTimeoutError(20),
+			new EmailSendTimeoutError(20, { cutShort: true }),
+		]) {
+			const wrapped = countTimeoutsAsAttempts({
+				send: () => Promise.reject(timeout),
+			});
+			const err = await wrapped.send(input).then(
+				() => undefined,
+				(e: unknown) => e,
+			);
+			expect(isEmailSendTimeoutError(err)).toBe(false);
+			expect(err).toMatchObject({ kind: "ambiguous" });
+		}
+	});
+
+	test("anything else passes through untouched", async () => {
+		const boom = new Error("connection reset");
+		const wrapped = countTimeoutsAsAttempts({ send: () => Promise.reject(boom) });
+		await expect(wrapped.send(input)).rejects.toBe(boom);
+		await expect(
+			countTimeoutsAsAttempts({ send: async () => {} }).send(input),
+		).resolves.toBeUndefined();
+	});
+
+	test("only SMTP2GO needs it: Resend dedupes on its Idempotency-Key", () => {
+		expect(providerDedupesRetries("resend")).toBe(true);
+		expect(providerDedupesRetries("smtp2go")).toBe(false);
 	});
 });

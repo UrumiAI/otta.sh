@@ -9,18 +9,21 @@
  *    (`Smtp2goEmailSender`). Its hosts are granted in every build
  *    (`SMTP2GO_API_HOSTS` in `manifest.ts`), so it needs no build-time URL.
  *
- * THE KEY IS THE SAME SECRET SLOT for both, `settings:emailApiKey`: a store
- * sends through one provider at a time, and the slot is "the active
- * provider's key". See ADR-0005's 2026-10-05 amendment for why it is not a
- * second slot.
+ * EACH PROVIDER HAS ITS OWN KEY SLOT (write-only, `payment-secrets.ts`):
+ * Resend keeps `settings:emailApiKey`, SMTP2GO has `settings:emailSmtp2goApiKey`.
+ * The sender only ever reads the chosen provider's slot, so a provider switch
+ * can never send one provider's live key to the other. See ADR-0005's
+ * 2026-10-05 amendment.
  *
  * Readable, not write-only: an operator has to see which provider and region
  * the store uses. Two flat string keys, like the other `settings:*` values, so
  * they fold into one structured `settings:email` document later without a
  * second migration of meaning.
  *
- * FAIL-SOFT: an unset, unreadable or unknown stored value reads as the default
- * — an unknown one is logged once — so a kv blip never stops mail.
+ * FAIL-CLOSED ON THE PROVIDER: unset means the default (Resend), but a read
+ * that FAILS, or an unknown stored value, means "no provider" — never a guess,
+ * because a guess would hand the wrong provider a key. The region is fail-soft:
+ * unset, unreadable or unknown reads as Global.
  */
 import { SMTP2GO_API_HOSTS } from "../manifest.js";
 import type { PluginContext } from "../types.js";
@@ -53,33 +56,54 @@ export function smtp2goSendUrl(region: Smtp2goRegion): string {
 	return `https://${SMTP2GO_API_HOSTS[region]}/v3/email/send`;
 }
 
-/** The store's provider choice, never a throw. */
-export async function readEmailProvider(ctx: PluginContext): Promise<EmailProviderId> {
-	return readChoice(ctx, EMAIL_PROVIDER_KEY, isEmailProviderId, DEFAULT_EMAIL_PROVIDER);
+/**
+ * Whether the provider dedupes a retried send itself. Resend does (its
+ * `Idempotency-Key`, the outbox row id); SMTP2GO defines no idempotency key.
+ * For one that does not, a timeout is counted as an attempt
+ * (`countTimeoutsAsAttempts`), so a provider that is slow but accepting cannot
+ * be handed the same email over and over.
+ */
+export function providerDedupesRetries(provider: EmailProviderId): boolean {
+	return provider === "resend";
 }
 
-/** The store's SMTP2GO region, never a throw. */
-export async function readSmtp2goRegion(ctx: PluginContext): Promise<Smtp2goRegion> {
-	return readChoice(ctx, SMTP2GO_REGION_KEY, isSmtp2goRegion, DEFAULT_SMTP2GO_REGION);
-}
-
-async function readChoice<T extends string>(
-	ctx: PluginContext,
-	key: string,
-	valid: (value: unknown) => value is T,
-	fallback: T,
-): Promise<T> {
+/**
+ * The store's provider choice: the default when unset, `undefined` when the read
+ * fails or the stored value is unknown. Never a throw.
+ */
+export async function readEmailProvider(ctx: PluginContext): Promise<EmailProviderId | undefined> {
 	let value: unknown;
 	try {
-		value = await ctx.kv.get<unknown>(key);
+		value = await ctx.kv.get<unknown>(EMAIL_PROVIDER_KEY);
 	} catch {
-		return fallback;
+		return undefined;
 	}
-	if (value === null || value === undefined || value === "") return fallback;
-	if (valid(value)) return value;
-	// Only the Settings save writes this key, and it refuses unknown values; one
-	// written another way is used as the default, and said once. The message
-	// names the key, never the value.
-	warnOnce(`email-choice-${key}`, `[otta] ${key} holds an unknown value; using "${fallback}"`);
-	return fallback;
+	if (value === null || value === undefined || value === "") return DEFAULT_EMAIL_PROVIDER;
+	if (isEmailProviderId(value)) return value;
+	// Only the Settings save writes this key, and it refuses unknown values. One
+	// written another way sends nothing rather than guess. Names the key, never
+	// the value.
+	warnOnce(
+		"email-provider-unknown",
+		`[otta] ${EMAIL_PROVIDER_KEY} holds an unknown value; email is not sent until a provider is saved in Settings`,
+	);
+	return undefined;
+}
+
+/** The store's SMTP2GO region, never a throw: unset, unreadable or unknown is
+ *  Global (each region's host only accepts an SMTP2GO key). */
+export async function readSmtp2goRegion(ctx: PluginContext): Promise<Smtp2goRegion> {
+	let value: unknown;
+	try {
+		value = await ctx.kv.get<unknown>(SMTP2GO_REGION_KEY);
+	} catch {
+		return DEFAULT_SMTP2GO_REGION;
+	}
+	if (value === null || value === undefined || value === "") return DEFAULT_SMTP2GO_REGION;
+	if (isSmtp2goRegion(value)) return value;
+	warnOnce(
+		"email-smtp2go-region-unknown",
+		`[otta] ${SMTP2GO_REGION_KEY} holds an unknown value; using "${DEFAULT_SMTP2GO_REGION}"`,
+	);
+	return DEFAULT_SMTP2GO_REGION;
 }

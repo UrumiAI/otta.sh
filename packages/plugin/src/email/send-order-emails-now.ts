@@ -26,9 +26,12 @@
  *    the work is awaited inline;
  *  - its timeouts are CUT SHORT — an inline send gets less than the sweep's full
  *    allowance, so a timeout is released uncounted for the cron and never recorded
- *    against the provider;
- *  - it is CHEAP when there is nothing to do — the sender (two kv reads) is built
- *    only once a row has been claimed, so a replay costs one read of the order;
+ *    against the provider. EXCEPT for a provider with no idempotency key
+ *    (SMTP2GO), where a timeout is a counted attempt: it may have been delivered,
+ *    and an uncounted retry would deliver it again;
+ *  - it is CHEAP when there is nothing to do — the provider choice is read (one kv
+ *    read, three for SMTP2GO) and the sender (its other kv reads) is built only
+ *    once a row has been claimed, so a replay costs that and one read of the order;
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
  *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
  *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
@@ -65,11 +68,14 @@ import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {
-	emailSendingConfigured,
+	type EmailSenderEgress,
+	type EmailTransport,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
-	type EmailSenderEgress,
+	resolveEmailTransport,
 } from "./ctx-http-email-sender.js";
+import { providerDedupesRetries } from "./email-provider.js";
+import { countTimeoutsAsAttempts } from "./http-email-sender.js";
 
 /**
  * The ceiling on ONE inline send — DEFINED as the login email's ceiling, for the
@@ -164,9 +170,11 @@ export async function sendOrderEmailsNow(
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
 	// as well, so a "the cron sweep will deliver it" line below would be false.
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
-	// A build-time URL answers this with no kv read; without one, the store's
-	// provider choice does (SMTP2GO needs no URL).
-	if (options.emailSender === undefined && !(await emailSendingConfigured(ctx, egress))) {
+	// The store's provider, resolved ONCE (one kv read for Resend, three for
+	// SMTP2GO) and handed to the sender build so it is not read again.
+	const transport =
+		options.emailSender === undefined ? await resolveEmailTransport(ctx, egress) : undefined;
+	if (options.emailSender === undefined && transport === undefined) {
 		return { configured: false, sent: [] };
 	}
 	const sent: OutboxEmail[] = [];
@@ -187,9 +195,15 @@ export async function sendOrderEmailsNow(
 	const sendTimeoutMs = (): number =>
 		Math.max(1, Math.min(ORDER_EMAIL_INLINE_TIMEOUT_MS, waitEndsAt - deadline.now()));
 
-	const emailSender = cutShortTimeouts(
-		options.emailSender ?? lazySender(ctx, egress, sendTimeoutMs),
+	const inline = cutShortTimeouts(
+		options.emailSender ?? lazySender(ctx, egress, sendTimeoutMs, transport),
 	);
+	// No idempotency key (SMTP2GO): a timeout is a COUNTED attempt, so a slow but
+	// accepting provider is not re-sent the same email every time.
+	const emailSender =
+		transport !== undefined && !providerDedupesRetries(transport.provider)
+			? countTimeoutsAsAttempts(inline)
+			: inline;
 
 	// Flipped by the deadline: the drain asks before every claim, so once the request
 	// stops waiting nothing NEW is claimed by the abandoned work.
@@ -246,8 +260,8 @@ export async function sendOrderEmailsNow(
 
 /**
  * The context's sender, built on FIRST SEND rather than up front — so a replay with
- * nothing due never pays its two kv reads. The caller has already established that
- * this context can send (`emailSendingConfigured`, the decision
+ * nothing due never pays its kv reads. The caller has already established that
+ * this context can send (`resolveEmailTransport`, the decision
  * `makeEmailSender` makes), so a row is never claimed for a sender that cannot
  * exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
@@ -256,13 +270,17 @@ function lazySender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
 	timeoutMs: () => number,
+	transport: EmailTransport | undefined,
 ): EmailSender {
 	let built: Promise<EmailSender | undefined> | undefined;
 	return {
 		async send(input) {
-			built ??= makeEmailSender(ctx, egress, { requestTimeoutMs: timeoutMs });
+			built ??= makeEmailSender(ctx, egress, {
+				requestTimeoutMs: timeoutMs,
+				...(transport !== undefined ? { transport } : {}),
+			});
 			const sender = await built;
-			// Unreachable while `emailSendingConfigured` and `makeEmailSender` agree; a
+			// Unreachable while `resolveEmailTransport` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
 			await sender.send(input);

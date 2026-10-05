@@ -15,14 +15,15 @@
 import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
 import { describe, expect, test } from "vitest";
 import {
+	CLEAR_PAYMENT_SECRET_ACTION,
 	createSettingsFormHandler,
 	SAVE_PAYMENT_SETTINGS_ACTION,
 } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import { EMAIL_FROM_KEY } from "../src/email/ctx-http-email-sender.js";
 import { EMAIL_PROVIDER_KEY, SMTP2GO_REGION_KEY } from "../src/email/email-provider.js";
-import { checkEmailApiKey } from "../src/payment-secret-shapes.js";
-import { EMAIL_API_KEY_KEY } from "../src/payment-secrets.js";
+import { checkEmailApiKey, checkSmtp2goApiKey } from "../src/payment-secret-shapes.js";
+import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import { contextTexts, field, findBlocks, formFor, type LooseBlock } from "./helpers/blocks.js";
@@ -83,11 +84,11 @@ function save(ctx: PluginContext, values: Record<string, string>): Promise<Outco
 	return invoke(ctx, { type: "form_submit", action_id: SAVE_PAYMENT_SETTINGS_ACTION, values });
 }
 
-function saveEmailKey(ctx: PluginContext, value: string): Promise<Outcome> {
+function saveSmtp2goKey(ctx: PluginContext, value: string): Promise<Outcome> {
 	return invoke(ctx, {
 		type: "form_submit",
-		action_id: "save-email-api-key",
-		values: { emailApiKey: value },
+		action_id: "save-smtp2go-api-key",
+		values: { smtp2goApiKey: value },
 	});
 }
 
@@ -183,48 +184,96 @@ describe("Settings: the email provider fields", () => {
 	});
 });
 
-describe("Settings: the email key follows the chosen provider", () => {
-	test("SMTP2GO's key shape: api- then letters and digits", () => {
-		const url = "https://api.resend.com/emails";
-		expect(checkEmailApiKey(SMTP2GO_KEY, url, "smtp2go")).toEqual({ ok: true, value: SMTP2GO_KEY });
-		const resendKey = checkEmailApiKey("re_0123456789abcdef", url, "smtp2go");
+describe("Settings: each provider has its own key field", () => {
+	test("SMTP2GO's key shape: api- then letters, digits, _ and -", () => {
+		expect(checkSmtp2goApiKey(SMTP2GO_KEY)).toEqual({ ok: true, value: SMTP2GO_KEY });
+		expect(checkSmtp2goApiKey("api-abc_DEF-123456").ok).toBe(true);
+		const resendKey = checkSmtp2goApiKey("re_0123456789abcdef");
 		expect(resendKey.ok).toBe(false);
 		if (!resendKey.ok) expect(resendKey.problem).toContain("api-");
-		expect(checkEmailApiKey("api-has space", url, "smtp2go").ok).toBe(false);
+		expect(checkSmtp2goApiKey("api-has space").ok).toBe(false);
 	});
 
-	test("Resend's check is unchanged, and an SMTP2GO key there says to choose SMTP2GO first", () => {
+	test("the Resend check is unchanged, and an SMTP2GO key there is pointed to its own field", () => {
 		const url = "https://api.resend.com/emails";
 		expect(checkEmailApiKey("re_0123456789abcdef", url).ok).toBe(true);
 		const smtp = checkEmailApiKey(SMTP2GO_KEY, url);
 		expect(smtp.ok).toBe(false);
 		if (!smtp.ok) {
 			expect(smtp.problem).toContain("re_");
-			expect(smtp.problem).toContain("SMTP2GO");
+			expect(smtp.problem).toContain("SMTP2GO API key field");
 		}
 	});
 
-	test("with SMTP2GO saved, an SMTP2GO key is stored in the one email key slot", async () => {
-		const { ctx, kv } = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go" });
-		const outcome = await saveEmailKey(ctx, `  ${SMTP2GO_KEY}\n`);
+	test("the SMTP2GO key is saved in ITS slot, never the Resend one", async () => {
+		const { ctx, kv } = makeCtx({ [EMAIL_API_KEY_KEY]: "re_0123456789abcdef" });
+		const outcome = await saveSmtp2goKey(ctx, `  ${SMTP2GO_KEY}\n`);
 		expect(errorBanner(outcome.blocks)).toBeUndefined();
-		expect(kv.get(EMAIL_API_KEY_KEY)).toBe(SMTP2GO_KEY);
+		expect(kv.get(SMTP2GO_API_KEY_KEY)).toBe(SMTP2GO_KEY);
+		expect(kv.get(EMAIL_API_KEY_KEY)).toBe("re_0123456789abcdef");
+		// Write-only: the value is never rendered back.
+		expect(JSON.stringify(outcome.blocks)).not.toContain(SMTP2GO_KEY);
 	});
 
-	test("with SMTP2GO saved, a key of another shape is refused and never echoed", async () => {
-		const { ctx, kv } = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go" });
-		const outcome = await saveEmailKey(ctx, "re_0123456789abcdef");
-		const text = JSON.stringify(outcome.blocks);
+	test("a key of another shape in the SMTP2GO field is refused and never echoed", async () => {
+		const { ctx, kv } = makeCtx();
+		const outcome = await saveSmtp2goKey(ctx, "re_0123456789abcdef");
 		expect(JSON.stringify(errorBanner(outcome.blocks))).toContain("Nothing was saved");
-		expect(text).not.toContain("re_0123456789abcdef");
-		expect(kv.has(EMAIL_API_KEY_KEY)).toBe(false);
+		expect(JSON.stringify(outcome.blocks)).not.toContain("re_0123456789abcdef");
+		expect(kv.has(SMTP2GO_API_KEY_KEY)).toBe(false);
 	});
 
-	test("the key's help text names SMTP2GO once it is chosen", async () => {
-		const { ctx } = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go" });
-		const { blocks } = await invoke(ctx, { type: "page_load" });
-		expect(contextTexts(blocks).some((t) => t.includes("SMTP2GO API key"))).toBe(true);
-		const keyForm = formFor(blocks, "save-email-api-key");
-		expect(String(field(keyForm, "emailApiKey")?.placeholder)).toContain("api-");
+	test("the SMTP2GO key can be removed on its own", async () => {
+		const { ctx, kv } = makeCtx({
+			[SMTP2GO_API_KEY_KEY]: SMTP2GO_KEY,
+			[EMAIL_API_KEY_KEY]: "re_0123456789abcdef",
+		});
+		const outcome = await invoke(ctx, {
+			type: "block_action",
+			action_id: CLEAR_PAYMENT_SECRET_ACTION,
+			value: { secret: "smtp2goApiKey" },
+		});
+		expect(errorBanner(outcome.blocks)).toBeUndefined();
+		expect(kv.has(SMTP2GO_API_KEY_KEY)).toBe(false);
+		expect(kv.get(EMAIL_API_KEY_KEY)).toBe("re_0123456789abcdef");
+	});
+
+	test("both key fields render, each with its own help, and the group label follows the chosen provider", async () => {
+		const smtp = makeCtx({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[EMAIL_API_KEY_KEY]: "re_0123456789abcdef",
+		});
+		const { blocks } = await invoke(smtp.ctx, { type: "page_load" });
+		expect(
+			String(field(formFor(blocks, "save-smtp2go-api-key"), "smtp2goApiKey")?.placeholder),
+		).toContain("api-");
+		expect(formFor(blocks, "save-email-api-key")).toBeDefined();
+		expect(contextTexts(blocks).some((t) => t.includes("SMTP2GO API key allowed to send"))).toBe(
+			true,
+		);
+		// SMTP2GO chosen, only the Resend key saved: email is NOT set up.
+		const label = String(
+			findBlocks(blocks, "accordion").find((b) => b.block_id === "settings:payments")?.label,
+		);
+		expect(label).toContain("no email");
+
+		const both = makeCtx({ [EMAIL_PROVIDER_KEY]: "smtp2go", [SMTP2GO_API_KEY_KEY]: SMTP2GO_KEY });
+		const again = await invoke(both.ctx, { type: "page_load" });
+		const label2 = String(
+			findBlocks(again.blocks, "accordion").find((b) => b.block_id === "settings:payments")?.label,
+		);
+		expect(label2).toContain("email set");
+	});
+
+	test("the Resend radio says it covers a Resend-compatible build URL", async () => {
+		const { ctx } = makeCtx();
+		const form = settingsForm((await invoke(ctx, { type: "page_load" })).blocks);
+		const options = field(form, "emailProvider")?.options as Array<{
+			value: string;
+			label: string;
+		}>;
+		expect(options.find((o) => o.value === "resend")?.label).toBe(
+			"Resend (or a Resend-compatible URL set at build time)",
+		);
 	});
 });

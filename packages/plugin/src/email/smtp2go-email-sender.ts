@@ -3,10 +3,11 @@
  *
  * THE REQUEST (checked against the live API, 2026-10-05):
  *  - the key in `X-Smtp2go-Api-Key`;
- *  - JSON `{ sender, to: [..], subject, html_body, text_body, custom_headers }`,
- *    where `sender` is the from-address as saved ("Name <addr>" or a bare
- *    address) and `custom_headers` carries `X-Otta-Id`: the outbox row id, so
- *    a message can be found in SMTP2GO's activity log.
+ *  - JSON `{ sender, to: [..], subject, html_body, text_body }`, where `sender`
+ *    is the from-address as saved ("Name <addr>" or a bare address). No custom
+ *    header carries the outbox row id: every recipient can read a message's
+ *    headers. SMTP2GO's own `request_id` (quoted in a refusal) and `email_id`
+ *    find a message in its activity log.
  *
  * THE RESPONSE. Success is a 200 with `data.succeeded: 1`. A REFUSED send can
  * ALSO be a 200 — `data.failed: 1` with the reason in `data.failures` (an
@@ -15,11 +16,12 @@
  * when `data.succeeded` is at least 1 and `data.failed` is 0. Other errors use
  * non-2xx statuses with `{ data: { error_code, error } }`.
  *
- * NO IDEMPOTENCY KEY. SMTP2GO defines none, and `X-Otta-Id` is a header on the
- * MESSAGE, not a dedupe key. "Effectively once" therefore rests on the outbox's
+ * NO IDEMPOTENCY KEY. SMTP2GO defines none, so "once" rests on the outbox's
  * claim alone: a send the provider accepted but whose answer we lost (a timeout
  * after acceptance, a tick that dies before the row is marked) is sent again.
- * That is the outbox's at-least-once contract, written down in ADR-0005.
+ * That is the outbox's at-least-once contract, written down in ADR-0005. To keep
+ * it bounded, a timeout on this provider is a COUNTED attempt
+ * (`countTimeoutsAsAttempts`), so duplicates stop at the row's `maxAttempts`.
  */
 import { smtp2goSendUrl, type Smtp2goRegion } from "./email-provider.js";
 import {
@@ -57,7 +59,6 @@ export class Smtp2goEmailSender extends HttpEmailSender {
 				subject: message.subject,
 				html_body: message.html,
 				text_body: message.text,
-				custom_headers: [{ header: "X-Otta-Id", value: message.ottaId }],
 			}),
 		};
 	}
@@ -85,10 +86,11 @@ export class Smtp2goEmailSender extends HttpEmailSender {
 		if (typeof succeeded === "number" && succeeded >= 1 && failed === 0) return;
 		const failures = Array.isArray(data["failures"]) ? (data["failures"] as unknown[]) : [];
 		const detail = sanitizeProviderDetail(failures, this.redactions(message));
+		const requestId = sanitizeProviderDetail([(parsed as { request_id?: unknown }).request_id], []);
 		throw new EmailProviderError(
 			"refused",
 			res.status,
-			`email transport failed: SMTP2GO did not send the message${detail === undefined ? "" : `: ${detail}`}`,
+			`email transport failed: SMTP2GO did not send the message${requestId === undefined ? "" : ` (request ${requestId})`}${detail === undefined ? "" : `: ${detail}`}`,
 		);
 	}
 }

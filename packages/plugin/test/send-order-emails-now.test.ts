@@ -38,6 +38,7 @@ import {
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
 import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-http-email-sender.js";
 import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
+import { SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -120,14 +121,16 @@ describe("constants", () => {
 });
 
 describe("a replay costs one order read: the sender is built lazily", () => {
-	test("nothing due ⇒ no kv read, no egress — only the claim's read of the order", async () => {
+	test("nothing due ⇒ one kv read (the provider choice), no egress — and the claim's read of the order", async () => {
 		const id = await seedOrder("ord-noop", false); // pending: no outbox row
 		const kvGet = vi.spyOn(harness.ctx.kv, "get");
 		const getVersioned = vi.spyOn(harness.ctx.storage!["orders"]!, "getVersioned");
 
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: { apiUrl: MAIL_URL } });
 
-		expect(kvGet).not.toHaveBeenCalled();
+		// Which provider is decided before anything is claimed; the sender's own reads
+		// wait for a claimed row.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
 		expect(getVersioned).toHaveBeenCalledTimes(1);
 		expect(harness.egressAttempts()).toBe(0);
 	});
@@ -156,6 +159,7 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		const id = await seedOrder("ord-smtp2go", true);
 		const before = harness.egressAttempts();
 		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
+		await harness.ctx.kv.set(SMTP2GO_API_KEY_KEY, "api-0123456789ABCDEF0123456789ABCDEF");
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
 			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
@@ -165,6 +169,21 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 			expect(await cronView(id)).toMatchObject({ attempts: 2 });
 		} finally {
 			// kv outlives `harness.reset()`.
+			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
+			await harness.ctx.kv.delete(SMTP2GO_API_KEY_KEY);
+		}
+	});
+
+	test("SMTP2GO chosen without its own key ⇒ unconfigured: nothing claimed, no attempt spent", async () => {
+		const id = await seedOrder("ord-smtp2go-nokey", true);
+		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
+		try {
+			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
+				egress: { apiUrl: MAIL_URL },
+			});
+			expect(result.configured).toBe(false);
+			expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
+		} finally {
 			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
 		}
 	});

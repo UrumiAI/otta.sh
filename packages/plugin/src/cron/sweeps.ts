@@ -182,7 +182,15 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
-import { emailSendingConfigured, makeEmailSender } from "../email/ctx-http-email-sender.js";
+import {
+	EMAIL_SENDER_BUILD_READS,
+	EMAIL_TRANSPORT_RESOLVE_READS,
+	type EmailTransport,
+	makeEmailSender,
+	resolveEmailTransport,
+} from "../email/ctx-http-email-sender.js";
+import { providerDedupesRetries } from "../email/email-provider.js";
+import { countTimeoutsAsAttempts } from "../email/http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
 	boundedRefundStripeOptions,
@@ -302,8 +310,10 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * the provider call (`headroom`), and allowed past the ceiling once the call has
  * happened (`allowCommit`), so an action is never repeated for want of its record.
  *  - An email, from just before the send: the refund-total and recipient reads (two),
- *    building the sender (two kv reads, the first send), the request (one), and
- *    marking it sent (three: the read, the write, the locator) — eight.
+ *    building the sender (up to `EMAIL_SENDER_BUILD_READS` kv reads, four, on the
+ *    first send), the request (one), and marking it sent (three: the read, the
+ *    write, the locator) — ten. `cron-leg-costs.test.ts` measures it with the
+ *    REAL sender construction for both providers.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
  *    give-up flag (two) — six; its record is the last four.
@@ -312,8 +322,8 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * re-driven under the SAME idempotency key, which Stripe answers with the refund it
  * already made — no second refund.
  */
-const EMAIL_SEND_AND_RECORD_CALLS = 8;
 const EMAIL_RECORD_CALLS = 3;
+export const EMAIL_SEND_AND_RECORD_CALLS = 2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_RECORD_CALLS;
 const CANCEL_CALL_AND_RECORD_CALLS = 6;
 const CANCEL_RECORD_CALLS = 4;
 
@@ -403,12 +413,15 @@ export function legStartCalls(leg: SweepLeg, queryBudget: number): number {
  * out is the sweep's doing, not the provider's: it is handed back due at once,
  * with no backoff and no timeout recorded.
  *
- * A send that times out is NOT a failed attempt (`EmailSendTimeoutError`): the
+ * A send that times out is NOT a failed attempt (`EmailSendTimeoutError`) on a
+ * provider that dedupes retries (Resend's `Idempotency-Key`): the
  * row is handed back uncounted, with a forward backoff (one minute, doubling to
  * fifteen) so it falls behind the other due rows; after ten such timeouts the
  * sweep reports it (`console.error`) and further timeouts count as attempts, so a
  * provider that never answers in time does eventually park the row, with the
- * reason "provider kept timing out".
+ * reason "provider kept timing out". On a provider WITHOUT an idempotency key
+ * (SMTP2GO) every timeout is a counted attempt instead (`countTimeoutsAsAttempts`):
+ * the provider may have delivered, so duplicates stop at the row's `maxAttempts`.
  */
 export const SWEEP_EMAIL_SEND_TIMEOUT_MS = 5_000;
 
@@ -484,11 +497,13 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 	{
 		// The claim (its page, the read and the write: three), the order read, and then
 		// EMAIL_SEND_AND_RECORD_CALLS: the
-		// reads before the send, building the real sender (two kv reads, the first
-		// send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
+		// reads before the send, building the real sender (up to four kv reads, the
+		// first send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
 		// check; 8 counted only an injected sender, and the ceiling then fell after the
 		// send — the duplicate emails of N2.
-		"order-emails": { entry: 0, unit: 12 },
+		// entry: resolving the store's email provider once per tick (one kv read for
+		// Resend, three for SMTP2GO: `EMAIL_TRANSPORT_RESOLVE_READS`).
+		"order-emails": { entry: EMAIL_TRANSPORT_RESOLVE_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
 		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
@@ -1142,16 +1157,19 @@ export async function runCommerceSweeps(
 
 	// ── the legs ──────────────────────────────────────────────────────────────
 
-	// Whether this deployment can send at all: an unwired outbox reports `skipped`
-	// without asking the store anything. A build-time email URL answers it with no
-	// read; without one, the store's provider choice does (one kv read: SMTP2GO
-	// needs no URL, its hosts are always granted).
-	const canSendEmail = async (): Promise<boolean> =>
-		options.emailSender !== undefined ||
-		options.emailSenderFactory !== undefined ||
-		(await emailSendingConfigured(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }));
+	// An injected sender (a suite) needs no provider. Otherwise the store's email
+	// provider is resolved ONCE per tick, at the leg's start, through the counted
+	// context — the leg's `entry` cost in `LEG_QUERY_COSTS`, which its gate keeps
+	// room for — and handed to the sender build so it is not read again.
+	// Unresolvable (no URL for Resend, no SMTP2GO key, a failed or unknown provider
+	// read) ⇒ `skipped`: nothing is claimed, so no attempt is spent.
+	const injectedSender =
+		options.emailSender !== undefined || options.emailSenderFactory !== undefined;
 	const orderEmailsLeg = async (): Promise<void> => {
-		if (!(await canSendEmail())) {
+		const transport = injectedSender
+			? undefined
+			: await resolveEmailTransport(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl });
+		if (!injectedSender && transport === undefined) {
 			const outcome = { leg: "order-emails" as const, ok: true, count: 0, skipped: true };
 			record(outcome);
 			reached.add("order-emails");
@@ -1161,8 +1179,15 @@ export async function runCommerceSweeps(
 		await run(
 			"order-emails",
 			async (legBudget) => {
-				const provider = outboxSender(ctx, options, legBudget);
-				if (provider === undefined) return { count: 0, skipped: true };
+				const outbox = outboxSender(ctx, options, legBudget, transport);
+				if (outbox === undefined) return { count: 0, skipped: true };
+				// No idempotency key (SMTP2GO): a timeout — the sender's or the sweep's
+				// own timer — is a COUNTED attempt, so a slow but accepting provider is
+				// not re-sent the same email on every tick. Outermost, over the timer.
+				const provider =
+					transport !== undefined && !providerDedupesRetries(transport.provider)
+						? countTimeoutsAsAttempts(outbox)
+						: outbox;
 				// A delivered email is RECORDED, whatever the ceiling says (QA3 N2).
 				const emailSender: EmailSender = {
 					async send(input) {
@@ -1842,14 +1867,20 @@ function outboxSender(
 	ctx: PluginContext,
 	options: CommerceSweepOptions,
 	legBudget: LegBudget,
+	transport: EmailTransport | undefined,
 ): EmailSender | undefined {
 	if (options.emailSender !== undefined) return options.emailSender;
 	const apiUrl = IN_PROCESS_EGRESS_URLS.emailApiUrl;
-	// Reached only once the leg has established that this context can send
-	// (`emailSendingConfigured`); `makeEmailSender` makes the same decision.
+	// Reached only once the leg has resolved the store's transport; the build reuses
+	// it rather than reading the provider again.
 	const factory =
 		options.emailSenderFactory ??
-		((requestTimeoutMs: () => number) => makeEmailSender(ctx, { apiUrl }, { requestTimeoutMs }));
+		((requestTimeoutMs: () => number) =>
+			makeEmailSender(
+				ctx,
+				{ apiUrl },
+				{ requestTimeoutMs, ...(transport !== undefined ? { transport } : {}) },
+			));
 	const timeoutMs = (): number =>
 		Math.max(1, Math.min(SWEEP_EMAIL_SEND_TIMEOUT_MS, legBudget.remainingMs()));
 	let built: Promise<EmailSender | undefined> | undefined;

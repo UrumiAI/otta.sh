@@ -26,7 +26,7 @@ import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps } from "../src/cron/sweeps.js";
 import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
 import { IN_PROCESS_EGRESS_URLS } from "../src/manifest.js";
-import { EMAIL_API_KEY_KEY } from "../src/payment-secrets.js";
+import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
 import { adapters, memoryCursors, sweepContext } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
@@ -106,11 +106,24 @@ describe("order-emails leg: the provider choice decides whether a URL-less build
 		expect(urls).toEqual([]);
 	});
 
+	test("SMTP2GO chosen with only the Resend key saved: skipped, and that key never leaves", async () => {
+		const { ctx, urls } = ctxWith({
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[EMAIL_API_KEY_KEY]: "re_0123456789abcdef",
+		});
+		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors: memoryCursors(),
+			queryBudget: 100_000,
+		});
+		expect(emailLeg(summary)).toMatchObject({ count: 0, skipped: true });
+		expect(urls).toEqual([]);
+	});
+
 	test("no URL and SMTP2GO chosen: the leg runs and sends through SMTP2GO", async () => {
 		await paidOrder(`ord-smtp2go-${crypto.randomUUID()}`);
 		const { ctx, urls } = ctxWith({
 			[EMAIL_PROVIDER_KEY]: "smtp2go",
-			[EMAIL_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
+			[SMTP2GO_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
 		});
 		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
 			cursors: memoryCursors(),
@@ -122,4 +135,37 @@ describe("order-emails leg: the provider choice decides whether a URL-less build
 		expect(urls.length).toBeGreaterThanOrEqual(1);
 		expect(urls.every((url) => url === "https://api.smtp2go.com/v3/email/send")).toBe(true);
 	});
+});
+
+describe("order-emails leg on SMTP2GO: a timeout is a counted attempt (no idempotency key)", () => {
+	test("a hung SMTP2GO send spends one of the row's attempts instead of coming back uncounted", async () => {
+		const id = `ord-smtp2go-hang-${crypto.randomUUID()}`;
+		await paidOrder(id);
+		const base = sweepContext(storage, undefined, {
+			[EMAIL_PROVIDER_KEY]: "smtp2go",
+			[SMTP2GO_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
+		});
+		const ctx: PluginContext = {
+			...base,
+			http: {
+				fetch: (_url: string, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+					}),
+			},
+		};
+		await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors: memoryCursors(),
+			queryBudget: 100_000,
+		});
+		const { orderStore } = adapters(storage);
+		const row = await orderStore.claimNextEmailForOrder(
+			toOrderId(id),
+			"2099-01-01T00:00:00.000Z",
+			"2099-01-01T00:00:00.000Z",
+		);
+		// Claimed once by the tick (counted), and once more here: two. An uncounted
+		// timeout would have left it at one, free to be re-sent without bound.
+		expect(row).toMatchObject({ attempts: 2, timeouts: 0 });
+	}, 30_000);
 });

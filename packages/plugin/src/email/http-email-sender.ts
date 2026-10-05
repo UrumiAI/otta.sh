@@ -22,6 +22,7 @@
  */
 import {
 	EmailSendTimeoutError,
+	isEmailSendTimeoutError,
 	renderEmail,
 	type EmailSender,
 	type EmailTemplate,
@@ -219,9 +220,10 @@ export abstract class HttpEmailSender implements EmailSender {
 			signal,
 		}).catch(asTimeout);
 		// Reading the body is bounded by the same signal (`readProviderJson` turns
-		// an unreadable body into "said nothing"). A body cut off by our timeout
-		// after a 2xx therefore reads as `ambiguous`, not as a timeout: the
-		// provider answered, so the attempt counts.
+		// an unreadable body into "said nothing"). A provider whose 2xx must be
+		// READ to know the outcome (SMTP2GO) therefore reports a body cut off by
+		// our timeout as `ambiguous`, not as a timeout: the provider answered, it
+		// may have sent, and the attempt counts.
 		await this.checkResponse(res, message);
 	}
 
@@ -237,18 +239,22 @@ export abstract class HttpEmailSender implements EmailSender {
 /** The ceiling on how much of a provider's error message reaches a log line. */
 const PROVIDER_ERROR_MAX_CHARS = 200;
 
-/** The error body is parsed from at most its first this-many characters.
- *  A provider's error object is well under 1 KiB; anything past this is not
- *  one, and the error path must not parse megabytes an intermediary chose to
+/** The body is parsed only when it is at most this many characters. Room for a
+ *  long SMTP2GO `failures` list (whose reason must survive: only the DETAIL is
+ *  cut, to {@link PROVIDER_ERROR_MAX_CHARS}); anything longer is not a provider
+ *  answer, and the error path must not parse megabytes an intermediary chose to
  *  send. (The body is still read whole — `ctx.http.fetch` offers no bounded
  *  read — and the request's abort signal bounds how long that read can take.) */
-const PROVIDER_ERROR_MAX_BODY_CHARS = 4096;
+const PROVIDER_BODY_MAX_CHARS = 64 * 1024;
 
-/** C0 and C1 controls, DEL, and the Unicode line/paragraph separators — what a
- *  provider message must not smuggle into a log line (a CR/LF, NEL or U+2028
- *  there forges a second, fake log entry in a viewer that breaks on it). */
+/** C0 and C1 controls, DEL, the Unicode line/paragraph separators, and the
+ *  bidi controls (LRM/RLM U+200E–200F, embeddings and overrides U+202A–202E,
+ *  isolates U+2066–2069) — what a provider message must not smuggle into a log
+ *  line: a CR/LF, NEL or U+2028 there forges a second, fake log entry in a
+ *  viewer that breaks on it, and a bidi control makes the line read in an order
+ *  other than the one it is stored in. */
 // oxlint-disable-next-line no-control-regex -- matching control characters IS the point
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/gu;
 
 /** A value to strip from provider text, and what to put in its place. */
 export interface Redaction {
@@ -257,15 +263,16 @@ export interface Redaction {
 }
 
 /**
- * A provider's response body as JSON, parsed from at most its first
- * {@link PROVIDER_ERROR_MAX_BODY_CHARS} characters, or `undefined` when it is
- * not JSON (an HTML gateway page, an empty body) or cannot be read at all.
+ * A provider's response body as JSON, or `undefined` when it is longer than
+ * {@link PROVIDER_BODY_MAX_CHARS}, is not JSON (an HTML gateway page, an empty
+ * body) or cannot be read at all — including a read our own timeout aborted.
  * Never throws: a body that cannot be read is the same as one that says
  * nothing, and the caller decides what that means for its status.
  */
 export async function readProviderJson(res: Response): Promise<unknown> {
 	try {
-		return JSON.parse((await res.text()).slice(0, PROVIDER_ERROR_MAX_BODY_CHARS)) as unknown;
+		const text = await res.text();
+		return text.length > PROVIDER_BODY_MAX_CHARS ? undefined : (JSON.parse(text) as unknown);
 	} catch {
 		return undefined;
 	}
@@ -304,6 +311,35 @@ export function sanitizeProviderDetail(
  *  metacharacters. */
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * For a provider with no idempotency key: a TIMEOUT becomes a COUNTED attempt.
+ *
+ * An `EmailSendTimeoutError` hands the row back uncounted (and, when cut short,
+ * due at once), on the premise that a retry is deduped by the provider. Without
+ * an idempotency key that premise is false: a provider that is slow but
+ * accepting would be sent the same email on every retry, without bound. So the
+ * timeout is re-thrown as an `ambiguous` {@link EmailProviderError}, which the
+ * dispatcher counts and reschedules like any failure — duplicates are then
+ * bounded by the row's `maxAttempts`. Wrap OUTERMOST, around any wrapper that
+ * produces its own timeouts (the sweep's timer, the inline `cutShortTimeouts`).
+ */
+export function countTimeoutsAsAttempts(sender: EmailSender): EmailSender {
+	return {
+		async send(input) {
+			try {
+				await sender.send(input);
+			} catch (err) {
+				if (!isEmailSendTimeoutError(err)) throw err;
+				throw new EmailProviderError(
+					"ambiguous",
+					0,
+					`email transport failed: the send timed out${err.timeoutMs === undefined ? "" : ` after ${String(err.timeoutMs)} ms`}; counted as an attempt because this provider has no idempotency key`,
+				);
+			}
+		},
+	};
 }
 
 /**

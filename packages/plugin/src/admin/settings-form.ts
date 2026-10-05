@@ -12,7 +12,6 @@ import {
 	EMAIL_PROVIDER_KEY,
 	type EmailProviderId,
 	isEmailProviderId,
-	readEmailProvider,
 	SMTP2GO_REGION_KEY,
 } from "../email/email-provider.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
@@ -21,6 +20,7 @@ import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
 	checkEmailApiKey,
+	checkSmtp2goApiKey,
 	checkOpaqueToken,
 	checkStripeSecretKey,
 	checkStripeWebhookSecret,
@@ -36,6 +36,7 @@ import {
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
+	SMTP2GO_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
@@ -204,21 +205,43 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		fieldId: "emailApiKey",
 		kvKey: EMAIL_API_KEY_KEY,
 		genKey: "settings:emailApiKeyGen",
-		label: "Email provider API key",
+		// The RESEND slot (or the build's Resend-compatible email URL). SMTP2GO has
+		// its own slot below: a key is only ever sent to the provider it belongs to.
+		label: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Resend API key (email)"
+			: "Email API key (the email URL set at build time)",
 		noun: "Email API key",
 		hint: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "re_…"
 			: "Your email provider's API key",
-		// Which provider the store sends through is fixed at build time
-		// (`IN_PROCESS_EGRESS_URLS`), so the shape is too.
+		// The build's email URL is fixed at build time (`IN_PROCESS_EGRESS_URLS`),
+		// so this slot's shape is too.
 		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl),
-		removeEffect: "Order and sign-in emails stop sending until a new key is saved.",
+		removeEffect:
+			"While Resend is the email provider, order and sign-in emails stop sending until a new key is saved.",
 		shapeHelp: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Starts with re_ — a Resend API key."
 			: "Your email provider's API key: one line, no spaces.",
 		whereToFind: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Resend → API Keys"
 			: "your email provider's dashboard",
+	},
+	{
+		// SMTP2GO's OWN slot (ADR-0005, 2026-10-05). Read only when "Email provider"
+		// is SMTP2GO; unset then, the store sends nothing (and claims nothing).
+		actionId: "save-smtp2go-api-key",
+		fieldId: "smtp2goApiKey",
+		kvKey: SMTP2GO_API_KEY_KEY,
+		genKey: "settings:emailSmtp2goApiKeyGen",
+		label: "SMTP2GO API key (email)",
+		noun: "SMTP2GO API key",
+		hint: "api-…",
+		check: checkSmtp2goApiKey,
+		removeEffect:
+			"While SMTP2GO is the email provider, order and sign-in emails stop sending until a new key is saved.",
+		shapeHelp:
+			"Starts with api- — an SMTP2GO API key allowed to send email. Used only when the email provider below is SMTP2GO.",
+		whereToFind: "SMTP2GO → Sending → API Keys",
 	},
 	{
 		actionId: "save-x402-facilitator-secret",
@@ -265,24 +288,6 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		whereToFind: "your storefront's deployment settings",
 	},
 ];
-
-/**
- * The email key's row, for the provider the store has chosen. ONE secret slot
- * holds the active provider's key (ADR-0005, 2026-10-05), so the slot stays
- * the same and only what the screen says about it — the shape it checks, the
- * help, where to find a key — follows the "Email provider" setting.
- */
-function secretSpecForProvider(spec: SecretFieldSpec, provider: EmailProviderId): SecretFieldSpec {
-	if (spec.kvKey !== EMAIL_API_KEY_KEY || provider !== "smtp2go") return spec;
-	return {
-		...spec,
-		hint: "api-…",
-		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl, "smtp2go"),
-		shapeHelp:
-			"Starts with api- — an SMTP2GO API key with permission to send email (Sending → API Keys).",
-		whereToFind: "SMTP2GO → Sending → API Keys",
-	};
-}
 
 /** Look a secret up by the field id a Remove button carries. */
 function secretSpecByField(fieldId: unknown): SecretFieldSpec | undefined {
@@ -357,7 +362,7 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		placeholder: "",
 		choice: {
 			options: [
-				{ value: "resend", label: "Resend (the store's built-in email address setting)" },
+				{ value: "resend", label: "Resend (or a Resend-compatible URL set at build time)" },
 				{ value: "smtp2go", label: "SMTP2GO" },
 			],
 			fallback: DEFAULT_EMAIL_PROVIDER,
@@ -728,12 +733,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// key — and a whitespace-only submit is the blank submit it looks like.
 			const entered = typeof raw === "string" && raw.trim() !== "";
 			if (entered) {
-				// The email key's shape follows the saved provider (fail-soft read).
-				const spec =
-					secretSpec.kvKey === EMAIL_API_KEY_KEY
-						? secretSpecForProvider(secretSpec, await readEmailProvider(ctx))
-						: secretSpec;
-				const checked = spec.check(raw);
+				const checked = secretSpec.check(raw);
 				if (!checked.ok) {
 					// U-8: a wrong paste is REFUSED, naming the field and the shape it
 					// needs — never the value — and the key already stored stays.
@@ -1417,16 +1417,14 @@ function paymentsGroup(
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
-		label: paymentsGroupLabel(state),
+		label: paymentsGroupLabel(state, emailProviderOf(plain)),
 		default_open: false,
 		blocks: [
 			{
 				type: "context",
 				text: "Keys are never shown once saved. Leave a field blank to keep the key you saved before.",
 			},
-			...PAYMENT_SECRET_FIELDS.map((spec) =>
-				secretSpecForProvider(spec, emailProviderOf(plain)),
-			).flatMap((spec) => {
+			...PAYMENT_SECRET_FIELDS.flatMap((spec) => {
 				const secret = state.get(spec.kvKey);
 				const help: Block = { type: "context", text: spec.shapeHelp };
 				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
@@ -1441,7 +1439,7 @@ function paymentsGroup(
 			},
 			{
 				type: "context",
-				text: "Email provider: the email API key above is the chosen provider's key. When you switch provider, save the switch first, then that provider's key.",
+				text: "Email provider: each provider uses its own key above, and email goes only through the one chosen here. Choosing SMTP2GO sends nothing until the SMTP2GO API key is saved.",
 			},
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -1525,7 +1523,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  key, not any part of it; no value is in scope here. The longest render
  *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
  *  the X-11 60-character budget. */
-function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
+function paymentsGroupLabel(
+	state: Map<string, SecretRenderState>,
+	provider: EmailProviderId,
+): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
 	const stripePart =
 		stripe?.set !== true
@@ -1535,7 +1536,9 @@ function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
 				: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
-	const emailPart = state.get(EMAIL_API_KEY_KEY)?.set === true ? "email set" : "no email";
+	// The CHOSEN provider's key: SMTP2GO's slot counts only while SMTP2GO is chosen.
+	const emailKey = provider === "smtp2go" ? SMTP2GO_API_KEY_KEY : EMAIL_API_KEY_KEY;
+	const emailPart = state.get(emailKey)?.set === true ? "email set" : "no email";
 	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }
 

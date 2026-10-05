@@ -745,8 +745,8 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (sender === undefined) {
 			warnOnce(
 				"login-email-unconfigured",
-				"[otta] login email is not configured (no email API URL in this build): " +
-					"login links are not being sent",
+				"[otta] login email is not configured (Resend needs an email API URL in this build; " +
+					"SMTP2GO needs its API key saved in Settings): login links are not being sent",
 			);
 			return { ok: true };
 		}

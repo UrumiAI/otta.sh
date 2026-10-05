@@ -45,7 +45,7 @@
  * {@link CtxHttpEmailSender.checkResponse}.
  */
 import type { EmailSender } from "@otta-sh/domain";
-import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import { EMAIL_API_KEY_KEY, readWriteOnlySecret, SMTP2GO_API_KEY_KEY } from "../payment-secrets.js";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
 import type { PluginContext } from "../types.js";
 import {
@@ -53,7 +53,7 @@ import {
 	storefrontOriginOf,
 	storeNameFrom,
 } from "./email-render-context.js";
-import { readEmailProvider, readSmtp2goRegion } from "./email-provider.js";
+import { readEmailProvider, readSmtp2goRegion, type Smtp2goRegion } from "./email-provider.js";
 import { fromDisplayName, isDeliverableFromAddress } from "./from-address.js";
 import {
 	HttpEmailSender,
@@ -155,14 +155,58 @@ export interface EmailSenderEgress {
 }
 
 /**
+ * The provider a store sends through, resolved ONCE and handed on: which one,
+ * and what that provider needs to be usable. `undefined` ⇒ this store cannot
+ * send, and nothing should be claimed.
+ *  - `resend`: the build's email URL (the key stays optional, as it always was:
+ *    a keyless relay or local mail catcher still works).
+ *  - `smtp2go`: SMTP2GO's OWN key slot must hold a key; the region is read only
+ *    here, only for SMTP2GO.
+ * Unset provider ⇒ Resend. A provider read that FAILS, or an unknown stored
+ * value, ⇒ `undefined`: never a guess that would hand the wrong provider a key.
+ * Cost: one kv read for Resend, three for SMTP2GO
+ * ({@link EMAIL_TRANSPORT_RESOLVE_READS}).
+ */
+export type EmailTransport =
+	| { provider: "resend"; apiUrl: string }
+	| { provider: "smtp2go"; apiKey: string; region: Smtp2goRegion };
+
+/** The most kv reads {@link resolveEmailTransport} makes. */
+export const EMAIL_TRANSPORT_RESOLVE_READS = 3;
+
+export async function resolveEmailTransport(
+	ctx: PluginContext,
+	egress: EmailSenderEgress,
+): Promise<EmailTransport | undefined> {
+	const provider = await readEmailProvider(ctx);
+	if (provider === undefined) return undefined;
+	if (provider === "resend") {
+		return egress.apiUrl !== undefined && emailSenderConfigured(egress)
+			? { provider, apiUrl: egress.apiUrl }
+			: undefined;
+	}
+	const [apiKey, region] = await Promise.all([
+		readWriteOnlySecret(ctx, SMTP2GO_API_KEY_KEY),
+		readSmtp2goRegion(ctx),
+	]);
+	return apiKey === undefined ? undefined : { provider, apiKey, region };
+}
+
+/** The most kv reads {@link makeEmailSender} makes when handed a resolved
+ *  transport: Resend's key, the from-address, the store name and the sign-in
+ *  page (SMTP2GO's key came with the transport, so it makes one fewer). */
+export const EMAIL_SENDER_BUILD_READS = 4;
+
+/**
  * Build the sender for a context, or `undefined` when there is none to build.
  *
- * THE PROVIDER SETTING PICKS IT (`email-provider.ts`): `smtp2go` builds an
- * {@link Smtp2goEmailSender} on the saved region; `resend` — the default, so a
- * store that never chose keeps today's behaviour — builds the
- * {@link CtxHttpEmailSender} on the build's email URL, and nothing when this
- * bundle has none. SMTP2GO needs no build-time URL: its hosts are always on
- * `allowedHosts`.
+ * THE PROVIDER SETTING PICKS IT ({@link resolveEmailTransport}): `smtp2go`
+ * builds an {@link Smtp2goEmailSender} with SMTP2GO's own key on the saved
+ * region; `resend` — the default, so a store that never chose keeps today's
+ * behaviour — builds the {@link CtxHttpEmailSender} on the build's email URL
+ * with Resend's key. Each reads ONLY its own key slot, so no provider is ever
+ * sent another's key. A caller that has already resolved the transport (the
+ * cron leg, the inline send) passes it, so the choice is not read twice.
  *
  * FAIL-CLOSED, and `undefined` rather than a console-logging stand-in: the
  * service could fall back to `ConsoleEmailSender` because a Node process has a
@@ -170,21 +214,22 @@ export interface EmailSenderEgress {
  * which is what makes the cron sweep's `order-emails` leg report `skipped`
  * instead of draining the outbox into nowhere.
  *
- * Every kv read is fail-soft (`readWriteOnlySecret`, `resolveLoginLinkUrl` and
- * the provider readers already swallow a rejection): a kv outage must degrade
- * to an unauthenticated send through the default provider against the
- * documented default from-address — with no store name and no order link —
- * never take down the tick that was about to drain the outbox.
+ * The other kv reads are fail-soft (`readWriteOnlySecret` and
+ * `resolveLoginLinkUrl` swallow a rejection): a Resend store whose key read
+ * fails sends unauthenticated against the documented default from-address, with
+ * no store name and no order link, rather than take down the tick.
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
-	options: { requestTimeoutMs?: number | (() => number) } = {},
+	options: { requestTimeoutMs?: number | (() => number); transport?: EmailTransport } = {},
 ): Promise<EmailSender | undefined> {
-	const [provider, region, apiKey, from, storeName, signInPageUrl] = await Promise.all([
-		readEmailProvider(ctx),
-		readSmtp2goRegion(ctx),
-		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
+	const transport = options.transport ?? (await resolveEmailTransport(ctx, egress));
+	if (transport === undefined) return undefined;
+	const [resendKey, from, storeName, signInPageUrl] = await Promise.all([
+		transport.provider === "resend"
+			? readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY)
+			: Promise.resolve(undefined),
 		readEmailFrom(ctx),
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
 		// Already fail-soft: unset, invalid or unreadable ⇒ undefined ⇒ no link.
@@ -198,41 +243,40 @@ export async function makeEmailSender(
 		// line named the store.
 		storeName: storeName ?? fromDisplayName(from),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
-		...(apiKey !== undefined ? { apiKey } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
 	};
-	if (provider === "smtp2go") return new Smtp2goEmailSender({ ...common, region });
-	const apiUrl = egress.apiUrl;
-	if (apiUrl === undefined || !emailSenderConfigured(egress)) return undefined;
-	return new CtxHttpEmailSender({ ...common, apiUrl });
+	if (transport.provider === "smtp2go") {
+		return new Smtp2goEmailSender({
+			...common,
+			apiKey: transport.apiKey,
+			region: transport.region,
+		});
+	}
+	return new CtxHttpEmailSender({
+		...common,
+		apiUrl: transport.apiUrl,
+		...(resendKey !== undefined ? { apiKey: resendKey } : {}),
+	});
 }
 
 /**
  * Whether this bundle has a build-time email URL — the Resend-shaped sender's
- * whole precondition, with no kv read. NOT the whole answer to "can this store
- * send" any more: a store on SMTP2GO needs no URL. Callers deciding whether to
- * claim outbox rows ask {@link emailSendingConfigured}.
+ * precondition, with no kv read. NOT the whole answer to "can this store send":
+ * callers deciding whether to claim outbox rows use
+ * {@link resolveEmailTransport} / {@link emailSendingConfigured}.
  */
 export function emailSenderConfigured(egress: EmailSenderEgress): boolean {
 	return egress.apiUrl !== undefined && egress.apiUrl.length > 0;
 }
 
-/**
- * Whether {@link makeEmailSender} would build a sender for this context — the
- * same decision, without its other kv reads. A caller that only wants to pay
- * for the sender once there is something to send (the settle routes' inline
- * dispatch, the cron leg) asks this first, so "unconfigured" is decided before
- * anything is claimed. A build-time URL answers it with no kv read at all;
- * without one, only the provider choice is read.
- */
+/** Whether {@link makeEmailSender} would build a sender for this context. */
 export async function emailSendingConfigured(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
 ): Promise<boolean> {
-	if (emailSenderConfigured(egress)) return true;
-	return (await readEmailProvider(ctx)) === "smtp2go";
+	return (await resolveEmailTransport(ctx, egress)) !== undefined;
 }
 
 /**
