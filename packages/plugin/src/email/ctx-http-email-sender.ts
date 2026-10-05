@@ -367,7 +367,10 @@ export function makeLoginEmailSender(
 
 /**
  * The configured from-address, or the documented default — never a throw and
- * never an empty string a provider would reject as a malformed sender.
+ * never an empty string a provider would reject as a malformed sender. The
+ * default is never used silently: the isolate logs once that no from-address is
+ * saved. (A kv read that FAILS falls back quietly: that is an outage, not a
+ * setting to fix, and the send's own failure says more.)
  *
  * A STORED UNDELIVERABLE ADDRESS IS USED, AND LOGGED — NEVER SILENTLY REPLACED.
  * One saved before the Settings save refused reserved domains (or written to kv
@@ -383,7 +386,15 @@ async function readEmailFrom(ctx: PluginContext): Promise<string> {
 	} catch {
 		return DEFAULT_EMAIL_FROM;
 	}
-	if (typeof value !== "string" || value.length === 0) return DEFAULT_EMAIL_FROM;
+	if (typeof value !== "string" || value.length === 0) {
+		// Nothing saved: the default goes out, and a real provider refuses it — say
+		// so once, rather than fall back silently (issue #364).
+		warnOnce(
+			"email-from-default",
+			`[otta] settings:emailFrom is not set; sending from ${DEFAULT_EMAIL_FROM}, which real email providers refuse — set a from-address in the plugin's Settings`,
+		);
+		return DEFAULT_EMAIL_FROM;
+	}
 	if (!isDeliverableFromAddress(value)) {
 		warnOnce(
 			"email-from-undeliverable",

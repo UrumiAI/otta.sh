@@ -294,12 +294,23 @@ describe("makeEmailSender: a stored undeliverable from-address", () => {
 		expect(String(notices[0]?.[0])).not.toContain("shop.local");
 	});
 
-	test("a deliverable or absent from-address is not warned about", async () => {
+	test("a deliverable from-address is not warned about", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		await makeEmailSender(makeCtx({ [EMAIL_FROM_KEY]: "orders@shop.otta.sh" }).ctx, {
 			apiUrl: "https://api.resend.com/emails",
 		});
-		await makeEmailSender(makeCtx().ctx, { apiUrl: "https://api.resend.com/emails" });
 		expect(warn).not.toHaveBeenCalled();
+	});
+
+	test("NO saved from-address: the fallback is warned about once per isolate, never silently used (issue #364)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		for (let i = 0; i < 3; i++) {
+			await makeEmailSender(makeCtx().ctx, { apiUrl: "https://api.resend.com/emails" });
+		}
+		const notices = warn.mock.calls.filter((args) =>
+			String(args[0]).includes("settings:emailFrom is not set"),
+		);
+		expect(notices).toHaveLength(1);
+		expect(String(notices[0]?.[0])).toContain(DEFAULT_EMAIL_FROM);
 	});
 });
