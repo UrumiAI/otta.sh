@@ -711,6 +711,7 @@ export class EmdashOrderStore implements OrderStore {
 					cancelDueAt: pending ? doc.holdExpiresAt : null,
 					cancelAttempts: 0,
 					cancelOutcome: pending ? null : ("not_needed" as const),
+					...(input.customerRef !== undefined ? { customerRef: input.customerRef } : {}),
 				},
 			];
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, {
@@ -2709,6 +2710,7 @@ function intentsOf(doc: OrderDoc): PaymentIntentRecord[] {
 		cancelDueAt: intent.cancelDueAt,
 		cancelAttempts: intent.cancelAttempts,
 		cancelOutcome: intent.cancelOutcome,
+		...(intent.customerRef !== undefined ? { customerRef: intent.customerRef } : {}),
 	}));
 }
 

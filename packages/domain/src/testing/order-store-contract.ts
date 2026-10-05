@@ -537,6 +537,27 @@ export function orderStoreContract(
 			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
 		});
 
+		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			const at = (intentId: string, customerRef?: string | null) =>
+				store.recordPaymentIntent({
+					orderId: orderId("ord-1"),
+					gateway: "stripe",
+					intentId,
+					...(customerRef !== undefined ? { customerRef } : {}),
+				});
+			await at("pi_a", "cus_1");
+			await at("pi_a", "cus_other"); // idempotent: the first record stands
+			await at("pi_b", null);
+			await at("pi_c");
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => i.intentId)).toEqual(["pi_a", "pi_b", "pi_c"]);
+			expect(intents[0]?.customerRef).toBe("cus_1");
+			expect(intents[1]?.customerRef).toBeNull();
+			expect(intents[2]).not.toHaveProperty("customerRef");
+		});
+
 		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

@@ -798,6 +798,9 @@ export interface RecordPaymentIntentInput {
 	gateway: PaymentMethod;
 	/** The provider's intent id (`pi_…` for Stripe). */
 	intentId: string;
+	/** The intent's provider-side customer decision (`PaymentIntentHandle.customerRef`),
+	 *  when the gateway made one. Kept from the FIRST record of an intent. */
+	customerRef?: string | null;
 }
 
 /**
@@ -828,6 +831,9 @@ export interface PaymentIntentRecord {
 	cancelAttempts: number;
 	/** How it ended; `null` while unresolved. */
 	cancelOutcome: PaymentIntentCancelOutcome | null;
+	/** The customer decision recorded with it (issue #382); ABSENT when none was
+	 *  — every intent recorded before decisions were, and other gateways'. */
+	customerRef?: string | null;
 }
 
 /** One intent's next cancel bookkeeping ({@link OrderStore.updatePaymentIntentCancel}). */

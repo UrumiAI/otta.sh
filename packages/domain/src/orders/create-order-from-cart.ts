@@ -181,7 +181,9 @@ export async function createOrderFromCart(
 		try {
 			// Same builder as the fresh path below — the replay must describe the SAME
 			// goods, byte-for-byte, or the provider's same-key retry is rejected.
-			intent = await gateway.createIntent(intentInputFor(already, command.idempotencyKey));
+			intent = await gateway.createIntent(
+				intentInputFor(already, command.idempotencyKey, await recordedCustomer(deps, already)),
+			);
 		} catch (err) {
 			// ONLY a typed intent failure is a clean checkout failure; every other
 			// throw is a bug and must keep propagating. The replayed order is
@@ -775,6 +777,7 @@ async function rememberIntent(
 			orderId: order.id,
 			gateway: intent.gateway,
 			intentId: intent.intentId,
+			...(intent.customerRef !== undefined ? { customerRef: intent.customerRef } : {}),
 		});
 	} catch (err) {
 		console.error(
@@ -782,6 +785,24 @@ async function rememberIntent(
 			{ error: err instanceof Error ? err.message : String(err) },
 		);
 	}
+}
+
+/**
+ * The provider-side customer decision this order's earliest recorded intent
+ * kept (issue #382), for a REPLAY to hand back to the gateway — so the gateway
+ * decides it once per order and every same-key request it makes afterwards is
+ * byte-identical. `undefined` when no recorded intent carries one (none yet, an
+ * order from before decisions were recorded, another gateway): the gateway then
+ * behaves exactly as it always did. A failed read THROWS (the caller's busy /
+ * retry path) rather than reading as "none": guessing could change the request
+ * Stripe already holds under this key, which it refuses for good.
+ */
+async function recordedCustomer(
+	deps: CreateOrderDeps,
+	order: Order,
+): Promise<string | null | undefined> {
+	const intents = await deps.orderStore.listPaymentIntents(order.id);
+	return intents.find((intent) => intent.customerRef !== undefined)?.customerRef;
 }
 
 /**
@@ -802,9 +823,14 @@ async function rememberIntent(
  * naming the field `description` — is the adapter's job (ports-and-adapters: the
  * domain must not learn Stripe's string format).
  */
-function intentInputFor(order: Order, key: IdempotencyKey): CreateIntentInput {
+function intentInputFor(
+	order: Order,
+	key: IdempotencyKey,
+	customerRef?: string | null,
+): CreateIntentInput {
 	const address = order.shippingAddress;
 	return {
+		...(customerRef !== undefined ? { customerRef } : {}),
 		orderId: order.id,
 		amount: order.totals.total,
 		currency: order.totals.currency,

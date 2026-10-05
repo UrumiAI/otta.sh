@@ -300,6 +300,7 @@ export class InMemoryOrderStore implements OrderStore {
 			cancelDueAt: paid ? null : stored.order.holdExpiresAt,
 			cancelAttempts: 0,
 			cancelOutcome: paid ? "not_needed" : null,
+			...(input.customerRef !== undefined ? { customerRef: input.customerRef } : {}),
 		});
 		this.#intents.set(input.orderId, list);
 	}

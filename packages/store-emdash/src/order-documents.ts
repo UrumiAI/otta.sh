@@ -333,6 +333,10 @@ export interface PaymentIntentEntryDoc {
 	cancelDueAt: string | null;
 	cancelAttempts: number;
 	cancelOutcome: PaymentIntentCancelOutcome | null;
+	/** The intent's provider-side customer decision (issue #382): `cus_…`, or
+	 *  `null` for a decided "none". ABSENT on entries written before it existed
+	 *  and on gateways without one — read back as absent, never as `null`. */
+	customerRef?: string | null;
 }
 
 /**
