@@ -446,17 +446,17 @@ soft delete was lost. It reads each live row's document through `ctx.content` (t
 sandboxed path EmDash's bridge answers `null` for any D1 error. The gates, in order:
 
 - **The CMS must list at least one product** in each run, or the run judges nothing.
-- **A page is abandoned as an outage** when at least three, and more than 30%, of the products
-  read on it miss on the FIRST read (before any re-read). The walk then moves past that page.
-  The breaker needs three rows read, so on the Workers Free preset's first pass (pages of one or
-  two rows) it fires only on a second pass; there the other gates do the work.
-- **A missing document is re-read twice on the spot.** It counts as a strike only in a run that
-  read some other document successfully. If nothing on the page was found, the run reads the
-  product the list returned, and a `null` there is treated as an outage.
+- **A missing document is re-read twice on the spot.** A row that misses and is then FOUND by
+  a re-read proves the host is answering "missing" for documents that exist. One such
+  contradiction makes the whole run FLAKY: it records no strike, wipes the strikes of every row
+  it read, and moves the walk past them. A real deletion misses on every look of every pass, so
+  it never looks flaky.
+- **A miss counts as a strike only in a run that read some other document successfully.** If
+  nothing on the page was found, the run reads the product the list returned, and a `null` there
+  is treated as an outage.
 - **The row is tombstoned on the third strike,** each strike from a run at least fifteen minutes
-  after the last. Any read that finds the document wipes its strikes.
-- **Breaker trips wipe strikes.** A list or canary trip wipes all of them; a page trip wipes that
-  page's and any from the last fifteen minutes.
+  after the last. Any read that finds the document wipes its strikes. A list or canary trip
+  wipes all strikes.
 - **Strikes expire** after seven days, or four full passes when a pass takes longer, so a
   catalog whose pass outlasts a week (roughly 30,000 products on Free) still reaches the third
   strike.
@@ -470,24 +470,29 @@ it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and wor
 to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
 by aging.
 
-**A dense block of real orphans is never swept automatically and needs a human.** This is three
-or more, and over 30% of one page: for example, a bulk delete of an import whose hooks were all
-lost. Its page is abandoned on every pass, the walk moves past it (so everything after it is
-still swept), and the error line names the page's range. Soft-delete those products by hand. (A
-later refinement could treat the same set of misses, recurring across runs while other reads on
-the page succeed, as real deletion.)
+**A dense block of real orphans is struck out like any rows,** five a minute at most. An example
+is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
+- 60 products, with 20 adjacent orphans plus one more, were all tombstoned by tick 123 on Free
+  and tick 34 on Paid.
+- 250 products, with a 40-orphan block and two lone orphans, by tick 379 on Free and tick 41 on
+  Paid.
 
 **The residual risk on a sandboxed host:** a CMS database failing reads at random is
-indistinguishable from deletions. A seeded simulation (40 live products, 360 one-minute ticks,
-every product read failing to `null` independently, with and without the list failing at the
-same rate) tombstoned no live product at any failure rate up to 70%, on either preset. That is
-one seed and one independent-failure model, not a proof. The tombstone is final, so a live
-product ever struck out that way sells again only once it is duplicated in the CMS (a new id,
-and its pricing re-entered).
+indistinguishable from deletions, until a re-read contradicts it. The simulations tombstoned no
+live product across 128 seeded cases:
+- 40 live products, 360 one-minute ticks, `get` failing to `null` with probability 0.15–0.9,
+  alone or with the list failing too, four seeds, both presets;
+- 250 live products with p straddling 0.2–0.35, at 0.5 and 0.9, and in twenty-minute bursts
+  (0.6/0.25, 0.9/0.3), three seeds, both presets.
 
-**While CMS reads are failing, real orphans WAIT.** Every list or canary trip wipes the strikes
-gathered so far, so under sustained failures (and on Workers Free, even under a list that fails
-one time in twenty) an orphan may not be tombstoned for hours. That is the safe direction.
+That is seeded PRNGs and one independent-failure model, not a proof. The tombstone is final, so
+a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
+id, and its pricing re-entered).
+
+**While CMS reads are failing, real orphans WAIT.** A flaky run strikes nothing, and every list
+or canary trip wipes the strikes gathered so far. So under sustained failures (on Paid, under
+any; on Workers Free, even under a list that fails one time in twenty) an orphan may not be
+tombstoned for hours, or at all while the failures last. That is the safe direction.
 
 The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a

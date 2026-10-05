@@ -554,32 +554,6 @@ export const ORPHAN_STRIKES = 3;
 export const ORPHAN_READS_PER_STRIKE = 3;
 
 /**
- * The mass-disappearance breaker's floor: a page is abandoned only when at least this
- * many of its rows miss on the first read (and more than
- * `ORPHAN_FIRST_LOOK_MISS_SHARE` of them). Three, so a merchant who deleted a couple of
- * products whose hooks were both lost is not taken for an outage.
- */
-export const ORPHAN_MASS_MIN_NULLS = 3;
-
-/**
- * The FIRST-LOOK breaker's share: a page is abandoned when more than this share of
- * its rows read (and at least `ORPHAN_MASS_MIN_NULLS` of them) missed on the FIRST
- * read, before any re-read. The re-reads exist to see past a sporadic `null`; this
- * is what notices that the `null`s are not sporadic. A CMS failing a third of its
- * reads is an outage, not a merchant: rows reach this leg only when a delete hook
- * was lost, so real orphans are a few to a catalog, never a third of a page.
- *
- * What it costs: a genuine block of orphans dense enough to trip it (three or more
- * on one page, and over 30% of it — a bulk delete whose hooks were all lost) is
- * NEVER swept automatically. The page is abandoned, its strikes wiped, and the walk
- * moves on past it, so everything after it is still swept; the error line names the
- * page's range on every pass, for a human to soft-delete. That is the safe
- * direction. A single orphan on a page of one, two or three rows never trips it:
- * three first-look misses are the floor.
- */
-export const ORPHAN_FIRST_LOOK_MISS_SHARE = 0.3;
-
-/**
  * At most this many tombstones per TICK (both passes of the leg), logged when
  * reached: the last line of defence if every other gate were fooled. Five: a lost
  * delete hook is a rare, one-at-a-time event, so a genuine backlog still clears at
@@ -3022,14 +2996,13 @@ async function releaseOrphanedRedemptions(
  *
  *  1. THE CIRCUIT BREAKER, once per run before any row is read: the CMS must
  *     positively LIST at least one product (`content.list(products, limit 1)`).
- *  2. THE MASS-DISAPPEARANCE BREAKER, per page: when at least
- *     `ORPHAN_MASS_MIN_NULLS` rows, and more than `ORPHAN_FIRST_LOOK_MISS_SHARE` of the
- *     page's rows, miss on their FIRST read, it is far likelier an outage than real
- *     deletions: rows the hook DID tombstone are not live and never reach this page.
- *     The page is abandoned and the walk moves PAST it (so a dense block of real
- *     orphans cannot stall the walk; it is left for a human). It needs three rows
- *     read, so on the Workers Free preset's first pass (pages of one or two rows) it
- *     fires only on a second pass; the other gates are what cover Free.
+ *  2. THE FLAKINESS BREAKER, per run: every missing row is re-read on the spot, and
+ *     a row that missed and was then FOUND proves the host is answering `null` for
+ *     documents that exist. One such contradiction makes the run untrustworthy: no
+ *     strike is recorded, the strikes of every row it read are wiped, and the walk
+ *     moves PAST those rows. A real deletion misses on every look of every pass, so it
+ *     never trips this — a dense block of real orphans (a bulk delete whose hooks were
+ *     all lost) is judged like any other rows, under the per-tick cap.
  *  3. THE CANARY: a missing row counts only in a QUALIFYING run — one that read some
  *     OTHER document successfully. When nothing on the page was found, the run reads
  *     the document the circuit breaker listed; a `null` there is the CMS lying.
@@ -3042,13 +3015,11 @@ async function releaseOrphanedRedemptions(
  *
  * A breaker that trips (1, 2, or a canary read `null`) is direct evidence the CMS is
  * not answering truthfully, so strikes gathered while it was failing are wiped with
- * it: ALL of them for 1 and the canary; for 2, the page's own and every strike from
- * the last cadence (a dense block of real orphans trips its page every pass, and a
- * global wipe there would starve the rest of the catalog). The run then judges
- * nothing and logs an anomaly; it keeps its cursor for 1 and the canary, and moves
- * past the page for 2. (So a store whose every CMS product is gone while
- * live commerce rows remain is never swept — the safe direction, and a state the
- * delete hook makes rare.)
+ * it: ALL of them for 1 and the canary (which keep the cursor); for 2, those of the
+ * rows the run read (and the walk moves past them). The run judges nothing and logs
+ * an anomaly. (So a store whose every CMS product is gone while live commerce rows
+ * remain is never swept — the safe direction, and a state the delete hook makes
+ * rare.)
  *
  * WHAT COUNTS AS GONE, when the CMS can be seen: EmDash reads `WHERE id = ? AND
  * deleted_at IS NULL`, so a draft, scheduled, published or unpublished document is
@@ -3103,23 +3074,20 @@ async function softDeleteOrphanedProducts(
 		if (next !== raw) await cursors.write(PRODUCT_ORPHAN_CURSOR, next);
 	};
 	const anomalies: string[] = [];
-	/** A breaker tripped: wipe every strike, keep the cursor, judge nothing. */
 	/**
 	 * A breaker tripped: judge nothing, and wipe strikes. `scope` says which: `all` for
-	 * the CMS-wide trips (the list, the canary); for a PAGE trip, the strikes of that
-	 * page's rows and every strike recorded within the last cadence (the window an
-	 * outage that tripped this page could have spoiled). Not all of them: a dense block
-	 * of real orphans trips its page on EVERY pass, and a global wipe each time would
-	 * keep every other orphan in the catalog from ever reaching its third strike.
+	 * the CMS-wide trips (the list, the canary), the strikes of the rows this run READ
+	 * for a flaky run (gate 2). Not all of them there: a run is flaky because of what it
+	 * read, and wiping rows it never looked at would let a host that flickers somewhere
+	 * keep every orphan elsewhere from ever reaching its third strike.
 	 */
 	const outage = async (
 		line: string,
 		scope: "all" | { readonly pageIds: ReadonlySet<string> } = "all",
 	): Promise<{ count: number; anomalies: string[] }> => {
 		let wiped = 0;
-		for (const [id, mark] of Object.entries(state.suspects)) {
-			const recent = nowMs - Date.parse(mark.at) < ORPHAN_CONFIRM_AFTER_MS;
-			if (scope === "all" || scope.pageIds.has(id) || recent) {
+		for (const id of Object.keys(state.suspects)) {
+			if (scope === "all" || scope.pageIds.has(id)) {
 				delete state.suspects[id];
 				wiped++;
 			}
@@ -3194,8 +3162,8 @@ async function softDeleteOrphanedProducts(
 	type Read = {
 		item: { data: ProductCommerceDoc };
 		found: boolean;
-		/** The first `get` came back `null` (whatever the re-reads then said). */
-		firstLookMissed?: boolean;
+		/** A look missed and a later look FOUND the document: proof of a flaky read. */
+		contradicted?: boolean;
 		steppedPast?: boolean;
 	};
 	const reads: Read[] = [];
@@ -3214,13 +3182,13 @@ async function softDeleteOrphanedProducts(
 			// A miss is re-read, at a query each, before it counts: a transient `null`
 			// almost never survives three looks in a row.
 			let found = false;
-			let firstLookMissed = false;
-			for (let look = 0; look < ORPHAN_READS_PER_STRIKE && !found; look++) {
+			let looks = 0;
+			for (; looks < ORPHAN_READS_PER_STRIKE && !found; looks++) {
 				found = (await content.get(PRODUCTS_COLLECTION, id)) !== null;
-				if (look === 0) firstLookMissed = !found;
 			}
 			delete state.failures[id];
-			reads.push({ item, found, firstLookMissed });
+			// Found after at least one miss: the host said "missing" for a document it has.
+			reads.push({ item, found, contradicted: found && looks > 1 });
 		} catch (err) {
 			// The tick's own ceiling is not the CMS failing: stop, and let the runner
 			// report it once what was read is recorded.
@@ -3262,32 +3230,26 @@ async function softDeleteOrphanedProducts(
 		if (!read.found && listed.includes(read.item.data.productId)) read.found = true;
 	}
 
-	// GATE 2 — a mass disappearance is an outage until proven otherwise, judged on the
-	// FIRST-LOOK miss rate: the reads before any re-read, which is what an
-	// intermittently failing CMS shows. (A miss that survives its re-reads missed on
-	// the first look too, so no separate count of final misses could trip first.)
-	const firstLookMisses = judged.filter((read) => read.firstLookMissed === true).length;
-	if (
-		firstLookMisses >= ORPHAN_MASS_MIN_NULLS &&
-		firstLookMisses > ORPHAN_FIRST_LOOK_MISS_SHARE * judged.length
-	) {
-		// The page is ABANDONED and the walk MOVES ON past it — nothing judged, nothing
-		// marked, every strike wiped. Keeping the cursor here would refetch the same page
-		// forever if the misses are real (a dense block of orphans: a bulk delete whose
-		// hooks were lost), and nothing after it would ever be read again. Such a block
-		// is therefore never swept automatically; the error line names it for a human.
+	// GATE 2 — FLAKINESS, told apart from deletion by the reads themselves. A row that
+	// missed and was then FOUND by a re-read is direct proof that this host is answering
+	// `null` for documents that exist, right now. A real deletion misses on every look,
+	// every pass. So one contradicted miss makes the whole run untrustworthy: it records
+	// no strike, wipes the strikes of every row it read, and moves the walk past them
+	// (judged found or not judged at all — never struck). A dense block of REAL orphans
+	// has no contradiction in it, so it is judged like any other rows: three strikes
+	// over three passes, under the per-tick cap.
+	const contradicted = judged.filter((read) => read.contradicted === true).length;
+	if (contradicted > 0) {
 		const first = reads[0]?.item.data;
 		const last = reads.at(-1)?.item.data;
 		const range =
 			first === undefined || last === undefined
 				? "an empty page"
-				: `products ${first.productId} (created ${first.createdAt}) to ${last.productId}` +
-					` (created ${last.createdAt})`;
+				: `products ${first.productId} to ${last.productId}`;
 		const r = await outage(
-			`${String(firstLookMisses)} of ${String(judged.length)} products read on this page missed on` +
-				" the first look — an outage, or a dense block of deleted products; the page was" +
-				` abandoned (nothing marked, nothing deleted) and the walk moved past it: ${range}.` +
-				" If those products really were deleted, soft-delete them by hand",
+			`${String(contradicted)} of ${String(judged.length)} products read on this page were missing` +
+				" and then found on a re-read — the CMS is answering missing for documents that exist," +
+				` so nothing on the page was judged (${range}), and the walk moved past it`,
 			{ pageIds: new Set(reads.map((read) => read.item.data.productId)) },
 		);
 		if (last !== undefined) {

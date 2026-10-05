@@ -16,13 +16,13 @@
  *  - three strikes a cadence apart, each three misses in a row, each from a run
  *    that found some OTHER document (the page's, or a canary's): a found document
  *    wipes the strikes, and only the third strike tombstones;
- *  - a CMS that cannot be seen (an empty or failed list, a canary read `null`), and
- *    a page where too many rows miss on the first read, mark and delete nothing —
- *    and wipe every strike; the page breaker moves the walk PAST its page, so a dense
- *    block of real orphans is left for a human and never stalls the walk;
- *  - a seeded simulation of INTERMITTENT `null`s (the bridge swallowing sporadic D1
- *    errors, `get` alone or with `list`) tombstones no live product at any p up to 0.7
- *    over 360 ticks — one seed and one independent-failure model, not a proof;
+ *  - a CMS that cannot be seen (an empty or failed list, a canary read `null`) marks
+ *    and deletes nothing and wipes every strike; a FLAKY run (a miss a re-read
+ *    overturns) strikes nothing, wipes the strikes of the rows it read and moves on;
+ *  - a dense block of real orphans (every read truthful) is struck out like any rows;
+ *  - seeded simulations of INTERMITTENT `null`s (the bridge swallowing sporadic D1
+ *    errors, `get` alone or with `list`, steady or bursty, p up to 0.9) tombstone no
+ *    live product — seeded PRNGs and one independent-failure model, not a proof;
  *  - a strike lives for at least seven days, or four full passes if longer;
  *  - a read that rejects never counts as gone, and one row rejecting run after run
  *    is stepped past (left live) rather than stopping the walk forever;
@@ -285,44 +285,24 @@ describe("three strikes, a cadence apart", () => {
 		expect(await lifecycleOf("p-alone")).toBe("deleted");
 	});
 
-	test("one orphan among three rows on the Workers Free budget never trips a breaker (three first-look misses are the floor) and is struck out", async () => {
-		for (const [i, id] of ["p-f0", "p-f1", "p-f2"].entries()) {
-			await product(id, new Date(CREATED.getTime() + i * 1000));
-		}
-		const cms = fakeCms({ mode: "bridge", gone: ["p-f1"] });
-		const cursors = memoryCursors();
-		let doneAt: number | null = null;
-		for (let t = 0; t < 120 && doneAt === null; t++) {
-			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: FREE }));
-			expect(leg.anomalies ?? [], `tick ${String(t)}`).toEqual([]);
-			if ((await lifecycleOf("p-f1")) === "deleted") doneAt = t;
-		}
-		expect(doneAt, "the orphan was never struck out").not.toBeNull();
-		for (const id of ["p-f0", "p-f2"]) expect(await lifecycleOf(id), id).toBe("live");
-	});
-
-	test("the first-look breaker: three of eight rows missing on the first read abandons the page — even though every re-read then found them", async () => {
-		const ids = Array.from({ length: 8 }, (_, i) => `p-fl${String(i)}`);
-		for (const [i, id] of ids.entries()) await product(id, new Date(CREATED.getTime() + i * 1000));
-		const cms = fakeCms({ mode: "bridge", gone: ["p-fl0"] });
-		const cursors = memoryCursors();
-		await tick(cms, cursors);
-		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-fl0": 1 });
-
-		// p-fl1 and p-fl2 flicker: missing on the first look, found on the re-read.
-		const flicker = new Set(["p-fl1", "p-fl2"]);
-		cms.beforeGet = (id) => {
-			if (!flicker.has(id)) return;
-			if (cms.gone.has(id)) cms.gone.delete(id);
-			else cms.gone.add(id);
-		};
-		const tripped = orphanLeg(await tick(cms, cursors, CADENCE));
-		expect(tripped.anomalies?.join("\n")).toMatch(
-			/3 of 8 products read on this page missed on the first look/,
-		);
-		expect((await orphanState(cursors)).suspects).toEqual({});
-		for (const id of ids) expect(await lifecycleOf(id), id).toBe("live");
-	});
+	for (const rowsOnPage of [1, 2, 3]) {
+		test(`a single orphan among ${String(rowsOnPage)} row(s) on the Workers Free budget is struck out, and nothing else is touched`, async () => {
+			const ids = Array.from({ length: rowsOnPage }, (_, i) => `p-f${String(i)}`);
+			for (const [i, id] of ids.entries())
+				await product(id, new Date(CREATED.getTime() + i * 1000));
+			const orphan = ids.at(-1) as string;
+			const cms = fakeCms({ mode: "bridge", gone: [orphan] });
+			const cursors = memoryCursors();
+			let doneAt: number | null = null;
+			for (let t = 0; t < 120 && doneAt === null; t++) {
+				const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: FREE }));
+				expect(leg.anomalies ?? [], `tick ${String(t)}`).toEqual([]);
+				if ((await lifecycleOf(orphan)) === "deleted") doneAt = t;
+			}
+			expect(doneAt, "the orphan was never struck out").not.toBeNull();
+			for (const id of ids.slice(0, -1)) expect(await lifecycleOf(id), id).toBe("live");
+		});
+	}
 
 	test("a row younger than the grace window is not read, and is judged once it is older", async () => {
 		await product("p-young", new Date(NOW.getTime() - PRODUCT_ORPHAN_GRACE_MS + MINUTE_MS));
@@ -418,61 +398,114 @@ describe("a CMS that cannot be seen judges nothing, and wipes every strike", () 
 		expect((await orphanState(cursors)).suspects).toEqual({});
 	});
 
-	test("the mass-disappearance breaker: a page mostly missing is abandoned — nothing marked, strikes wiped — while a couple missing is not", async () => {
-		const ids = ["p-m0", "p-m1", "p-m2", "p-m3"];
+	test("a FLAKY run — a row missed and then found on a re-read — strikes nothing, wipes the strikes of the rows it read, and moves past them", async () => {
+		const ids = ["p-fk0", "p-fk1", "p-fk2"];
 		for (const [i, id] of ids.entries()) await product(id, new Date(CREATED.getTime() + i * 1000));
-		const cms = fakeCms({ mode: "bridge", gone: ["p-m0"] });
+		const cms = fakeCms({ mode: "bridge", gone: ["p-fk0"] });
 		const cursors = memoryCursors();
 		await tick(cms, cursors);
-		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-m0": 1 });
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-fk0": 1 });
 
-		cms.gone.add("p-m1");
-		cms.gone.add("p-m2");
-		const abandoned = orphanLeg(await tick(cms, cursors, CADENCE));
-		expect(abandoned.anomalies?.join("\n")).toMatch(/3 of 4 products/);
+		// p-fk2 flickers: missing on its first look, found on the re-read.
+		let looks = 0;
+		cms.beforeGet = (id) => {
+			if (id !== "p-fk2") return;
+			looks++;
+			if (looks === 1) cms.gone.add(id);
+			else cms.gone.delete(id);
+		};
+		cms.reads.length = 0;
+		const flaky = orphanLeg(await tick(cms, cursors, CADENCE));
+		expect(flaky).toMatchObject({ ok: true, count: 0 });
+		expect(flaky.anomalies?.join("\n")).toMatch(
+			/1 of 3 products read on this page were missing and then found on a re-read/,
+		);
+		// p-fk0's strike is wiped, not raised to two, and nothing was tombstoned.
 		expect((await orphanState(cursors)).suspects).toEqual({});
-		for (const at of [2, 3].map((n) => n * CADENCE)) await tick(cms, cursors, at);
 		for (const id of ids) expect(await lifecycleOf(id), id).toBe("live");
+	});
 
-		// Two of four missing: below the floor, so both are struck as usual.
-		cms.gone.delete("p-m2");
-		await tick(cms, cursors, 4 * CADENCE);
-		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-m0": 1, "p-m1": 1 });
+	test("a flaky run wipes only the strikes of rows it READ: an orphan struck on another page keeps its strikes", async () => {
+		const ids = Array.from({ length: 6 }, (_, i) => `p-pg${String(i)}`);
+		for (const [i, id] of ids.entries()) await product(id, new Date(CREATED.getTime() + i * 1000));
+		const cms = fakeCms({ mode: "bridge", gone: ["p-pg0"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors, 0, { pageSize: 3 });
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-pg0": 1 });
+
+		// The second page (p-pg3..5) flickers once; the first page's orphan is not on it.
+		const flicker = { done: false };
+		cms.beforeGet = (id) => {
+			if (id !== "p-pg4" || flicker.done) return;
+			flicker.done = true;
+			cms.gone.add(id);
+			cms.beforeGet = (again) => {
+				if (again === "p-pg4") cms.gone.delete(again);
+			};
+		};
+		// Tick on until the flicker has been read (the walk rests between passes).
+		for (let t = 0; t < 40 && !flicker.done; t++) {
+			await tick(cms, cursors, CADENCE + t * MINUTE_MS, { pageSize: 3 });
+		}
+		expect(flicker.done).toBe(true);
+		const state = await orphanState(cursors);
+		expect(strikesOf(state)["p-pg0"]).toBe(2);
+		expect(errors.some((line) => line.includes("missing and then found on a re-read"))).toBe(true);
 	});
 });
 
-describe("a dense block of real orphans never stalls the walk", () => {
-	test("on the Paid budget: a page tripped by a block of 40 deleted products is passed over (the block stays live, named in the log) and a lone orphan after it is still struck out", async () => {
-		const ids = Array.from({ length: 120 }, (_, i) => `p-blk-${String(i).padStart(3, "0")}`);
-		for (const [i, id] of ids.entries()) {
-			await product(id, new Date(CREATED.getTime() + i * 1000));
-		}
-		// Rows 10-49 inside the first page (the leg's Paid share reads about 58 rows a
-		// page); the lone orphan on a later one.
-		const block = ids.slice(10, 50);
-		const lone = ids[110] as string;
-		const cms = fakeCms({ gone: [...block, lone] });
+describe("a dense block of real orphans is struck out like any rows", () => {
+	/** Tick until every id in `gone` is tombstoned; the tick each finished, or null. */
+	async function sweepUntilGone(gone: readonly string[], budget: number, maxTicks: number) {
+		const cms = fakeCms({ gone });
 		const cursors = memoryCursors();
 		let doneAt: number | null = null;
-		for (let t = 0; t < 120 && doneAt === null; t++) {
-			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS));
+		for (let t = 0; t < maxTicks && doneAt === null; t++) {
+			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget }));
 			expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
-			if ((await lifecycleOf(lone)) === "deleted") doneAt = t;
+			const states = await Promise.all(gone.map((id) => lifecycleOf(id)));
+			if (states.every((state) => state === "deleted")) doneAt = t;
 		}
-		expect(doneAt, "the lone orphan after the block was never struck out").not.toBeNull();
-		for (const id of block) expect(await lifecycleOf(id), id).toBe("live");
-		for (const id of ids) {
-			if (id !== lone && !block.includes(id)) expect(await lifecycleOf(id), id).toBe("live");
-		}
-		expect(
-			errors.some(
-				(line) =>
-					/40 of \d+ products read on this page missed on the first look/.test(line) &&
-					/products p-blk-000 \(created [^)]+\) to p-blk-0\d\d/.test(line) &&
-					line.includes("soft-delete them by hand"),
-			),
-		).toBe(true);
-	});
+		return doneAt;
+	}
+
+	// The tick at which the last orphan of each probe was tombstoned — measured 123
+	// and 379 on Free, 34 and 41 on Paid — pinned with a little room. Every read
+	// truthful; the per-tick cap (five) paces the block.
+	const DENSE_DONE_BY: Record<string, number> = {
+		"60@30": 135,
+		"60@600": 40,
+		"250@30": 420,
+		"250@600": 50,
+	};
+
+	for (const budget of [FREE, PAID]) {
+		test(`60 rows, 20 adjacent orphans at rows 10-29 and a lone one at 50 (budget ${String(budget)}): all 21 tombstoned, nothing else`, async () => {
+			const ids = Array.from({ length: 60 }, (_, i) => `p-c-${String(i).padStart(2, "0")}`);
+			for (const [i, id] of ids.entries())
+				await product(id, new Date(CREATED.getTime() + i * 1000));
+			const gone = [...ids.slice(10, 30), ids[50] as string];
+			const doneAt = await sweepUntilGone(gone, budget, 480);
+			expect(doneAt, "not every orphan was tombstoned").not.toBeNull();
+			expect(doneAt!).toBeLessThanOrEqual(DENSE_DONE_BY[`60@${String(budget)}`]!);
+			for (const id of ids) {
+				if (!gone.includes(id)) expect(await lifecycleOf(id), id).toBe("live");
+			}
+		});
+
+		test(`250 rows, lone orphans at 5 and 240 and a block at 150-189 (budget ${String(budget)}): all 42 tombstoned, nothing else`, async () => {
+			const ids = Array.from({ length: 250 }, (_, i) => `p-l-${String(i).padStart(3, "0")}`);
+			for (const [i, id] of ids.entries())
+				await product(id, new Date(CREATED.getTime() + i * 1000));
+			const gone = [ids[5] as string, ...ids.slice(150, 190), ids[240] as string];
+			const doneAt = await sweepUntilGone(gone, budget, 600);
+			expect(doneAt, "not every orphan was tombstoned").not.toBeNull();
+			expect(doneAt!).toBeLessThanOrEqual(DENSE_DONE_BY[`250@${String(budget)}`]!);
+			for (const id of ids) {
+				if (!gone.includes(id)) expect(await lifecycleOf(id), id).toBe("live");
+			}
+		}, 120_000);
+	}
 });
 
 describe("a strike's lifetime follows the pass length", () => {
@@ -801,73 +834,94 @@ describe("the walk fits the budget and pages across ticks", () => {
 	});
 });
 
+/** Reviewer B's PRNG (a 32-bit LCG), so the adversarial cases replay exactly. */
+function lcg(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+		return state / 4294967296;
+	};
+}
+
 /**
- * THE INTERMITTENT-FAILURE SIMULATION (review rounds 2 and 3). The sandbox bridge
- * answers `null` for any D1 error, so a database failing some reads at random looks
- * like products disappearing at random. Forty live products and one real orphan, for
- * 360 one-minute ticks on each preset, from a fixed seed so the run is the same every
- * time. EVERY `get` (the canary's too) fails to `null` independently with probability
- * p; in the `list fails too` variant the circuit breaker's list also comes back empty
- * with the same probability. Two strikes alone tombstoned 5 (p = 0.15) and 20-26
- * (p = 0.3) live products; three strikes without the first-look breaker still struck
- * out up to 25 at p = 0.7 on Paid.
+ * THE INTERMITTENT-FAILURE SIMULATIONS (review rounds 2-5). The sandbox bridge answers
+ * `null` for any D1 error, so a database failing some reads at random looks like
+ * products disappearing at random. Every case is deterministic (a seeded PRNG), and
+ * every case must end with ZERO live products tombstoned — one seed set and one
+ * independent-failure model, not a proof.
+ *
+ * Earlier designs, for the record: two strikes tombstoned 5 (p = 0.15) and 20-26
+ * (p = 0.3) of 40; three strikes struck out up to 25 at p = 0.7 on Paid; and a
+ * first-look page breaker stopped that but stalled the walk on a dense block of
+ * real orphans. Contradiction (a miss a re-read overturns) is what tells them apart.
  */
 describe("intermittent CMS failures never tombstone a live product (seeded)", () => {
-	// Measured with seed 374: the false tombstones each run produced, and whether the
-	// real orphan was tombstoned within the 360 ticks. During sustained failures the
-	// orphan WAITS — liveness drops, the safe direction — which is the `false`s here.
-	const EXPECTED: Record<string, { falseTombstones: number; orphanCaught: boolean }> = {
-		"get 30@0.05": { falseTombstones: 0, orphanCaught: true },
-		"get 30@0.15": { falseTombstones: 0, orphanCaught: true },
-		"get 30@0.3": { falseTombstones: 0, orphanCaught: false },
-		"get 30@0.5": { falseTombstones: 0, orphanCaught: false },
-		"get 30@0.7": { falseTombstones: 0, orphanCaught: false },
-		"get 600@0.05": { falseTombstones: 0, orphanCaught: true },
-		"get 600@0.15": { falseTombstones: 0, orphanCaught: true },
-		"get 600@0.3": { falseTombstones: 0, orphanCaught: true },
-		"get 600@0.5": { falseTombstones: 0, orphanCaught: false },
-		"get 600@0.7": { falseTombstones: 0, orphanCaught: false },
-		"get+list 30@0.05": { falseTombstones: 0, orphanCaught: false },
-		"get+list 30@0.15": { falseTombstones: 0, orphanCaught: false },
-		"get+list 30@0.3": { falseTombstones: 0, orphanCaught: false },
-		"get+list 30@0.5": { falseTombstones: 0, orphanCaught: false },
-		"get+list 30@0.7": { falseTombstones: 0, orphanCaught: false },
-		"get+list 600@0.05": { falseTombstones: 0, orphanCaught: true },
-		"get+list 600@0.15": { falseTombstones: 0, orphanCaught: true },
-		"get+list 600@0.3": { falseTombstones: 0, orphanCaught: true },
-		"get+list 600@0.5": { falseTombstones: 0, orphanCaught: false },
-		"get+list 600@0.7": { falseTombstones: 0, orphanCaught: false },
-	};
-	const cases = (["get", "get+list"] as const).flatMap((failing) =>
-		[FREE, PAID].flatMap((budget) =>
-			[0.05, 0.15, 0.3, 0.5, 0.7].map((p) => ({ failing, budget, p })),
+	const matrix = [374, 12345, 777, 2026].flatMap((seed) =>
+		(["get", "get+list"] as const).flatMap((failing) =>
+			[FREE, PAID].flatMap((budget) =>
+				[0.15, 0.3, 0.5, 0.7, 0.9].map((p) => ({ seed, failing, budget, p })),
+			),
 		),
 	);
-	test.each(cases)(
-		"$failing failing, budget $budget, p = $p, 360 ticks",
-		async ({ failing, budget, p }) => {
+	test.each(matrix)(
+		"40 live + 1 orphan, $failing failing, budget $budget, p = $p, seed $seed, 360 ticks: no live product tombstoned",
+		async ({ seed, failing, budget, p }) => {
 			const live = Array.from({ length: 40 }, (_, i) => `p-sim-${String(i).padStart(2, "0")}`);
-			for (const [i, id] of live.entries()) {
+			for (const [i, id] of live.entries())
 				await product(id, new Date(CREATED.getTime() + i * 1000));
-			}
 			await product("p-sim-orphan", new Date(CREATED.getTime() + 20_500));
 			const cms = fakeCms({ mode: "bridge", gone: ["p-sim-orphan"] });
 			cms.nullRate = p;
 			if (failing === "get+list") cms.listFailRate = p;
-			cms.random = seededRandom(374);
+			cms.random = seededRandom(seed);
 			const cursors = memoryCursors();
+			const counter: CallCounter = { calls: 0 };
 			for (let t = 0; t < 360; t++) {
-				const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget }));
+				counter.calls = 0;
+				const leg = orphanLeg(
+					await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget, counter }),
+				);
 				expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
+				expect(counter.calls, `tick ${String(t)}`).toBeLessThanOrEqual(budget);
 			}
-			let falseTombstones = 0;
-			for (const id of live) if ((await lifecycleOf(id)) === "deleted") falseTombstones++;
-			const orphanCaught = (await lifecycleOf("p-sim-orphan")) === "deleted";
-			expect({ falseTombstones, orphanCaught }).toEqual(
-				EXPECTED[`${failing} ${String(budget)}@${String(p)}`],
-			);
+			for (const id of live) expect(await lifecycleOf(id), id).toBe("live");
 		},
 		120_000,
+	);
+
+	// Reviewer B's adversarial cases, replayed with its own PRNG: a 250-row catalog (a
+	// pass spans pages) with p straddling the old 30% threshold, and bursty failures —
+	// twenty minutes at `hi`, twenty at `lo`.
+	const adversarial = [12345, 777, 2026].flatMap((seed) =>
+		[FREE, PAID].flatMap((budget) => [
+			...[0.2, 0.25, 0.3, 0.35, 0.5, 0.9].map((p) => ({ seed, budget, hi: p, lo: p })),
+			{ seed, budget, hi: 0.6, lo: 0.25 },
+			{ seed, budget, hi: 0.9, lo: 0.3 },
+		]),
+	);
+	test.each(adversarial)(
+		"250 live rows, budget $budget, p $hi/$lo (twenty-minute bursts when they differ), seed $seed, 360 ticks: none tombstoned",
+		async ({ seed, budget, hi, lo }) => {
+			const ids = Array.from({ length: 250 }, (_, i) => `p-a-${String(i).padStart(3, "0")}`);
+			for (const [i, id] of ids.entries())
+				await product(id, new Date(CREATED.getTime() + i * 1000));
+			const cms = fakeCms({ mode: "bridge" });
+			const random = lcg(seed);
+			let p = hi;
+			cms.beforeGet = (id) => {
+				if (random() < p) cms.failing.add(id);
+				else cms.failing.delete(id);
+			};
+			const cursors = memoryCursors();
+			for (let t = 0; t < 360; t++) {
+				p = Math.floor(t / 20) % 2 === 0 ? hi : lo;
+				await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget });
+			}
+			let falseTombstones = 0;
+			for (const id of ids) if ((await lifecycleOf(id)) === "deleted") falseTombstones++;
+			expect(falseTombstones).toBe(0);
+		},
+		300_000,
 	);
 });
 

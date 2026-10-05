@@ -17,31 +17,28 @@ holding the sku the new product needs.
   database failing reads at random reads like products deleted at random. The tombstone is final
   and releases the sku, so it takes all of:
   - the CMS lists at least one product in that run (otherwise the run judges nothing);
-  - the page is not an outage: at least three, and more than 30%, of its rows missing on the
-    FIRST read (before re-reads) abandons it and moves the walk past it (three rows read at least,
-    so on the Workers Free first pass, pages of one or two rows, this only fires on a second
-    pass);
   - three misses in a row for the row in one run, in a run that read some other document
     successfully (the page's, or the product the list returned);
+  - no contradiction in that run: a row that misses and is then FOUND by a re-read proves the
+    host is answering "missing" for documents that exist, so such a FLAKY run strikes nothing,
+    wipes the strikes of every row it read, and moves the walk past them. A real deletion misses on
+    every look of every pass, so it is never mistaken for flakiness;
   - three such strikes, from runs at least fifteen minutes apart. Any read that finds the
-    document wipes them. A list or canary trip wipes all strikes; a page trip wipes the page's and
-    any from the last fifteen minutes. Strikes expire after seven days, or four full passes when a
-    pass is longer;
+    document wipes them. A list or canary trip wipes all strikes. Strikes expire after seven
+    days, or four full passes when a pass is longer;
   - fewer than five tombstones this minute;
   - the row is older than fifteen minutes.
 
   A read that rejects never counts; a row whose read rejects on three runs in a row is stepped
-  past, left live. Every stop logs a `cron sweep product-orphans` error line. A seeded simulation
-  of random read failures (40 live products, 360 ticks, `get` failing alone or with `list`)
-  tombstones no live product at any failure rate up to 70%, on either preset — one seed and one
-  independent-failure model, not a proof. While reads are failing, real orphans wait — the safe
-  direction.
-- **A dense block of real orphans is never swept automatically and needs a human.** That is three
-  or more, and over 30% of one page, such as a bulk delete whose hooks were all lost. Its page is
-  abandoned on every pass and the walk moves past it, so everything after it is still swept, and
-  the error line names the page's range so someone can soft-delete those products by hand.
-  Treating the same misses recurring across runs (while other reads succeed) as real deletion is
-  a possible later refinement.
+  past, left live. Every stop logs a `cron sweep product-orphans` error line. Seeded simulations of
+  random read failures (128 cases: 40 live products with `get` failing alone or with `list` at
+  p 0.15–0.9, and 250 live products with p around 0.2–0.35, at 0.5 and 0.9, and in bursts; both
+  presets; 360 ticks each) tombstoned no live product — seeded PRNGs and one independent-failure
+  model, not a proof. While reads are failing, real orphans wait — the safe direction.
+- **A dense block of real orphans is struck out like any rows** (a bulk delete whose hooks were
+  all lost), at most five a minute: with every read truthful, 20 adjacent orphans plus one more
+  in 60 products all went by tick 123 on Free and 34 on Paid; a 40-orphan block and two lone
+  orphans in 250 products by tick 379 on Free and 41 on Paid.
 - **The soft delete is the hook's own** — the same use-case under the same idempotency key, so the
   sweep and a late hook delivery converge on one tombstone and a replay is a no-op. It keeps the
   row's commercial data, releases its sku claim, and touches no order, stock or hold.
