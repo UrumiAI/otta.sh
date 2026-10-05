@@ -2,6 +2,7 @@ import type { Cents, Currency } from "../money/cents.js";
 import { cents } from "../money/cents.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type {
 	CapturedPayment,
 	OrderLedger,
@@ -29,6 +30,14 @@ export interface RefundOrderDeps {
 	/** Timestamp source for the anomaly record; used only with
 	 *  `paymentEventStore`. */
 	clock?: Clock;
+	/**
+	 * Revokes the order's download entitlements once the order is FULLY refunded
+	 * (issue #376) — see {@link refundOrder}'s "Revocation" paragraph. Optional so
+	 * pure ledger tests and the callers whose refunds never close an order as
+	 * `refunded` (a cancellation's refund, a late payment's) need not wire it; the
+	 * admin refund path always does, and a test pins that wiring.
+	 */
+	entitlementStore?: EntitlementStore;
 }
 
 export interface RefundOrderCommand {
@@ -220,6 +229,27 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  * carrying the provider refundRef + flags reconciliation, and returns the
  * distinct `REFUND_ISSUED_UNRECORDED` — never a silent drop, never confusable
  * with a clean rejection.
+ *
+ * **Revocation (issue #376).** A FULL refund revokes the order's download
+ * entitlements; a partial one does not. "Full" is the ledger's own word, not a
+ * second definition: the order is `refunded`, which the store flips exactly when
+ * the FINALIZED refunds reach the ceiling `min(Σ captured, total)` (a
+ * `cancellation` refund never flips it — the cancellation closes the order
+ * instead). So the revocation runs on EVERY `ok` outcome whose order is
+ * `refunded` — the fresh finalize, the manual one-shot record, AND the
+ * idempotent replay — and only after the money is recorded: revoking first would
+ * close access on a refund the provider then rejects, and revocation is terminal.
+ *
+ * That replay arm is the crash story. The refund is recorded before the revoke,
+ * so a process that dies between the two leaves a `refunded` order whose grants
+ * are still active. The same-key retry (the admin console resubmits under the
+ * same key, and an operator's re-click does too) takes the `recorded` replay
+ * branch — no second provider call — and revokes there, finishing the job.
+ * `revokeByOrder` is idempotent, so running it on every replay costs a read and
+ * changes nothing once done. A revocation that throws propagates: the caller
+ * sees a failure and retries, rather than a success that left access open. The
+ * residual — the crash AND no retry ever — is bounded by the order being
+ * `refunded`, which a delivery gate can also refuse on (download increment 2).
  */
 export async function refundOrder(
 	deps: RefundOrderDeps,
@@ -234,6 +264,30 @@ export async function refundOrder(
 	 * wrong one — but the replay rules are read off it.
 	 */
 	known?: OrderLedger,
+): Promise<RefundOrderOutcome> {
+	const outcome = await refundOnLedger(deps, gateway, cmd, known);
+	if (outcome.ok) await revokeIfFullyRefunded(deps, outcome.order);
+	return outcome;
+}
+
+/**
+ * Revoke a `refunded` order's entitlements — see {@link refundOrder}'s
+ * "Revocation" paragraph. Entitlements are granted per DIGITAL line only
+ * (`settleOrder`), so an order with none has nothing to revoke and costs no read.
+ */
+async function revokeIfFullyRefunded(deps: RefundOrderDeps, order: Order): Promise<void> {
+	if (deps.entitlementStore === undefined || order.state !== "refunded") return;
+	if (!order.lines.some((line) => line.fulfillmentKind === "digital")) return;
+	await deps.entitlementStore.revokeByOrder(order.id);
+}
+
+/** The ledger protocol itself — everything {@link refundOrder} documents except
+ *  the revocation that follows it. */
+async function refundOnLedger(
+	deps: RefundOrderDeps,
+	gateway: PaymentGateway,
+	cmd: RefundOrderCommand,
+	known: OrderLedger | undefined,
 ): Promise<RefundOrderOutcome> {
 	const refundedBy = cmd.refundedBy.trim();
 	if (refundedBy.length === 0) return { ok: false, reason: "EMPTY_REFUNDED_BY" };

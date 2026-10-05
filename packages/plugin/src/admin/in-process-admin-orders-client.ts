@@ -717,6 +717,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				// A FULL refund revokes the order's download access (issue #376). The
+				// dependency is optional on the use-case, so leaving it out here would
+				// refund correctly and keep the file downloadable.
+				entitlementStore: this.#stores.entitlementStore,
 			},
 			gateway,
 			{
