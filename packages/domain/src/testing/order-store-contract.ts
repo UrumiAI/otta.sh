@@ -556,6 +556,11 @@ export function orderStoreContract(
 			expect((await store.getById(orderId("ord-1")))?.buyerAddressRequired).toBe(true);
 			expect((await store.getById(orderId("ord-2")))?.buyerAddressRequired).toBe(false);
 			expect(await store.getById(orderId("ord-3"))).not.toHaveProperty("buyerAddressRequired");
+			// A later write to the order (the guarded expiry flip) keeps the snapshot.
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const flipped = await store.getById(orderId("ord-1"));
+			expect(flipped?.state).toBe("expired");
+			expect(flipped?.buyerAddressRequired).toBe(true);
 		});
 
 		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {

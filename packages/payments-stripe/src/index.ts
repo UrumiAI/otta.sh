@@ -704,7 +704,19 @@ export class StripePaymentGateway implements PaymentGateway {
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
-			// Issue #382: the order's Customer. Decided ONCE per order: a replay hands
+			// Issue #382 — Customer precedence: (1) a recorded `cus_…` id → reuse it;
+			// (2) the order's `customerRequired` → create one iff true (and there is an
+			// address); (3) a recorded `null` → none; (4) legacy orders only: this
+			// gateway's own `customerRequired` resolver.
+			//
+			// RESIDUAL CASE (accepted): the intent was never recorded (its answer or its
+			// record write was lost) AND the buyer retries more than ~24 h later (only
+			// possible with a hold TTL above 1440 min) AND Stripe has pruned the
+			// Customer's key `otta-cus-<orderId>` but not yet the intent's. That retry
+			// creates a second Customer, the intent body differs, and Stripe refuses it.
+			// The default 15-minute hold never reaches it.
+			//
+			// The order's Customer is decided ONCE per order: a replay hands
 			// back what the first intent recorded (`customerRef` — an id to name
 			// again, or `null` for none) and nothing is re-read or re-created, so the
 			// same-key request stays byte-identical even if the account's cached

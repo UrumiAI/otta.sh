@@ -827,6 +827,11 @@ async function recordedCustomer(
  * naming the field `description` — is the adapter's job (ports-and-adapters: the
  * domain must not learn Stripe's string format).
  */
+// Issue #382, the one residual case: an intent never recorded (lost answer or a
+// failed record write), retried after Stripe pruned the Customer's ~24 h key but
+// not the intent's, makes the gateway create a second Customer and the same-key
+// intent body differs. It needs a hold TTL above 1440 min (the default is 15);
+// see the precedence note in the Stripe adapter's `createIntent`.
 function intentInputFor(
 	order: Order,
 	key: IdempotencyKey,
