@@ -84,12 +84,28 @@ const stack: WebServer[] = [
 			// wants in every environment, agent or not: a webServer Playwright
 			// cannot stop is a leaked process, not a convenience.
 			ASTRO_DEV_BACKGROUND: "1",
+			// Arms the plugin's dev-only offline Stripe gateway (issue #378), so this
+			// stack can create orders with no Stripe account and the order seed can
+			// mark them paid with a signed test webhook. It only works under `astro
+			// dev`, and `astro build` refuses to run with it set
+			// (sites/staging/src/lib/e2e-stripe-offline.ts).
+			OTTA_E2E_STRIPE_OFFLINE: "1",
+			// /checkout offers no place button without a publishable key (by design:
+			// no order may hold stock against a payment that cannot happen). A
+			// placeholder is enough, because the specs block js.stripe.com and the
+			// offline gateway never hands Stripe a real client secret. A key already
+			// in the environment wins.
+			STRIPE_PUBLIC_KEY: process.env["STRIPE_PUBLIC_KEY"] ?? "pk_test_e2eplaceholder",
 		},
 	},
 ];
 
 export default defineConfig({
 	testDir: "sites/staging/e2e",
+	// Warms the dev server (and, under OTTA_E2E_SEED=1, seeds it) before the
+	// first spec, so a cold server's compile time is not charged to whichever
+	// console spec happens to run first. A no-op with no site up (issue #378).
+	globalSetup: "./sites/staging/e2e/global-setup.ts",
 	testMatch: /.*\.spec\.ts$/,
 	// Artifacts land under node_modules/ so a run never dirties the tree; the
 	// repo has no ignore entry for Playwright output and this increment does
