@@ -42,7 +42,7 @@
 import {
 	CART_LINE_MAX_QTY,
 	isBoundedProductId,
-	isIdempotencyKeyText,
+	isDocumentIdempotencyKey,
 	isIdToken,
 	isSkuText,
 } from "../commerce/commerce-input.js";
@@ -204,8 +204,8 @@ function isCartIdToken(value: unknown): value is string {
 
 /**
  * The client's own rules for the fields that are NOT id tokens, as type guards —
- * each one the predicate the client's `require*` is built on, so the route and
- * the client cannot drift (#379). Every one of them refuses U+0000, which
+ * each read off the SAME rule function as the client's `require*`, so the route
+ * and the client cannot drift (#379). Every one of them refuses U+0000, which
  * Postgres cannot store: let through, a NUL failed the first store read on that
  * dialect as RENDER_FAILED.
  */
@@ -217,11 +217,12 @@ function isAddProductId(value: unknown): value is string {
 	return typeof value === "string" && isBoundedProductId(value);
 }
 
-/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, no U+0000. A real caller's key is a
- *  form-minted UUID; past the ceiling the store's document-id and value caps
- *  threw. */
+/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, no U+0000 — the client's own rule
+ *  for a cart mutation's key, which becomes part of a document id. A real
+ *  caller's key is a form-minted UUID; past the ceiling the store's document-id
+ *  and value caps threw. */
 function isIdempotencyKey(value: unknown): value is string {
-	return typeof value === "string" && isIdempotencyKeyText(value);
+	return typeof value === "string" && isDocumentIdempotencyKey(value);
 }
 
 function isPositiveInt(value: unknown): value is number {

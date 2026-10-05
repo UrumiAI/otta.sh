@@ -43,7 +43,20 @@
 import { email as toEmail } from "@otta-sh/domain";
 import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { IDEMPOTENCY_KEY_MAX, isCommerceInputError } from "../src/commerce/commerce-input.js";
+import {
+	IDEMPOTENCY_KEY_MAX,
+	isBoundedProductId,
+	isCommerceInputError,
+	isDocumentIdempotencyKey,
+	isIdempotencyKeyText,
+	isIdToken,
+	isSkuText,
+	requireBoundedProductId,
+	requireDocumentIdempotencyKey,
+	requireIdempotencyKey,
+	requireIdToken,
+	requireSku,
+} from "../src/commerce/commerce-input.js";
 import type { CommerceClient } from "../src/product-commerce/commerce-client.js";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { InProcessAdminProductsClient } from "../src/admin/in-process-admin-products-client.js";
@@ -328,6 +341,58 @@ async function expectRefusal(call: Promise<unknown>, field: string): Promise<voi
  * The egress count is here for a simpler reason: that transport's whole job was
  * egress, so it had nothing to assert.
  */
+/** Whether `fn` refuses with a `CommerceInputError` (any other throw is a bug). */
+function throwsInputError(fn: () => unknown): boolean {
+	try {
+		fn();
+		return false;
+	} catch (err) {
+		if (!isCommerceInputError(err)) throw err;
+		return true;
+	}
+}
+
+/**
+ * ONE DEFINITION PER RULE (#379). The storefront routes answer a bad value with
+ * these predicates and the client refuses it with the matching `require*`; the
+ * two must agree on every value, or the route lets through what the client
+ * throws on (RENDER_FAILED) or refuses what it would accept.
+ */
+describe("each boundary predicate agrees with the require* the client throws from", () => {
+	const EDGE_VALUES = [
+		"",
+		"a",
+		" ",
+		"a b",
+		"a\u0000b",
+		"\u0000",
+		"tab\there",
+		"a\x7fb",
+		"cärt",
+		"😀",
+		"x".repeat(200),
+		"x".repeat(201),
+		"k".repeat(IDEMPOTENCY_KEY_MAX),
+		"k".repeat(IDEMPOTENCY_KEY_MAX + 1),
+		"k".repeat(2_000),
+	];
+	const PAIRS: Array<[string, (v: string) => boolean, (v: string) => unknown]> = [
+		["sku", isSkuText, (v) => requireSku(v)],
+		["bounded productId", isBoundedProductId, requireBoundedProductId],
+		["idempotency key", isIdempotencyKeyText, requireIdempotencyKey],
+		["document-id idempotency key", isDocumentIdempotencyKey, requireDocumentIdempotencyKey],
+		["id token", isIdToken, (v) => requireIdToken("id", v)],
+	];
+
+	test.each(PAIRS)("%s", (_label, is, require) => {
+		for (const value of EDGE_VALUES) {
+			expect(is(value), JSON.stringify(value.slice(0, 20))).toBe(
+				!throwsInputError(() => require(value)),
+			);
+		}
+	});
+});
+
 describe("in-process commerce refuses malformed shopper input before any store call", () => {
 	let harness: InProcessCommerceHarness;
 	let client: CommerceClient;
@@ -384,10 +449,34 @@ describe("in-process commerce refuses malformed shopper input before any store c
 		);
 	});
 
-	test("an idempotency key over the ceiling is refused", async () => {
+	test("a cart mutation's idempotency key over the ceiling is refused", async () => {
 		const cartId = (await client.createCart("USD")).cartId;
+		const long = "k".repeat(IDEMPOTENCY_KEY_MAX + 1);
+		await expectRefusal(client.addCartLine(cartId, "SKU", null, 1, long), "idempotencyKey");
+		await expectRefusal(client.adjustCartLine(cartId, "line-1", 2, long), "idempotencyKey");
+		await expectRefusal(client.removeCartLine(cartId, "line-1", long), "idempotencyKey");
+	});
+
+	// The ceiling is for keys that become a document id. A product-row write keeps
+	// its key as a FIELD, and variant sync derives keys longer than the ceiling
+	// from opaque CMS text — so those writes take any storable length.
+	test("a variant write's idempotency key is NOT held to the cart ceiling", async () => {
+		const long = `products:prod-long:variant:${"x".repeat(IDEMPOTENCY_KEY_MAX)}`;
+		await expect(
+			client.upsertProductVariant(
+				"prod-long",
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-09-14T00:00:00.000Z" },
+				long,
+			),
+		).resolves.toMatchObject({ variantKey: "large" });
 		await expectRefusal(
-			client.addCartLine(cartId, "SKU", null, 1, "k".repeat(IDEMPOTENCY_KEY_MAX + 1)),
+			client.upsertProductVariant(
+				"prod-long",
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-09-14T00:00:00.000Z" },
+				"k\u0000ey",
+			),
 			"idempotencyKey",
 		);
 	});
