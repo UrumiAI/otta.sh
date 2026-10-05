@@ -50,7 +50,7 @@ violations that are the entire point of the commerce layer.
   config: the root config turns file parallelism off whenever `PG_CONNECTION_STRING` is set,
   and that guard belongs to the Postgres tier alone. Everything is local (miniflare's D1
   simulator — no Cloudflare account, token or remote database), but it boots workerd and
-  re-migrates per file, so it runs as CI's `d1` job — nightly, on demand, and gating the
+  re-migrates per file, so it runs as CI's `d1` job — on demand, and gating the
   merge into `main` — rather than on every PR.
 
 Every dialect runs the same write model, recorded in
