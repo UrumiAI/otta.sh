@@ -1293,6 +1293,74 @@ function createdRefundOf(
 	return { refundId: r.id, amountCents: r.amount, currency: r.currency };
 }
 
+// -- the account's country (issue #382) -------------------------------------
+
+/**
+ * What `GET /v1/account` says about the account a secret key belongs to — only
+ * its country, the one fact checkout needs: an INDIA-based account refuses an
+ * export payment that does not carry the buyer's name and address, for digital
+ * goods too (<https://docs.stripe.com/india-exports>), so a store on one must
+ * collect them for every cart.
+ *
+ *  - `permission_denied` — a 403: a RESTRICTED key (`rk_…`) without read access
+ *    to account details. Named apart because the merchant can fix it (grant the
+ *    key "Account" read, or use the secret key), and because retrying soon
+ *    cannot help.
+ *  - `authentication_failed` — a 401: the key is wrong or revoked.
+ *  - `unavailable` — anything else: a network error, the timeout, a 5xx or 429,
+ *    or a reply with no two-letter country in it. Worth asking again later.
+ *
+ * Never carries the key, nor anything from Stripe's error body.
+ */
+export type StripeAccountCountryResult =
+	| { ok: true; country: string }
+	| { ok: false; reason: "permission_denied" | "authentication_failed" | "unavailable" };
+
+/** The bound on the account read when the caller names none. Short: it can run
+ *  on a checkout render, which must not wait on Stripe for long. */
+export const DEFAULT_ACCOUNT_READ_TIMEOUT_MS = 3_000;
+
+/**
+ * Read the country of the Stripe account `secretKey` belongs to, through the
+ * caller's `fetch` (the plugin passes `ctx.http`, its only egress). One GET,
+ * no body, the same headers as every other live call. Never throws.
+ */
+export async function fetchStripeAccountCountry(options: {
+	secretKey: string;
+	fetch: typeof fetch;
+	timeoutMs?: number;
+	/** Override the API base (tests); defaults to Stripe. */
+	baseUrl?: string;
+}): Promise<StripeAccountCountryResult> {
+	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
+	const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_ACCOUNT_READ_TIMEOUT_MS);
+	let res: Response;
+	try {
+		res = await options.fetch(`${base}/v1/account`, {
+			method: "GET",
+			headers: stripeHeaders(options.secretKey),
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+	} catch {
+		return { ok: false, reason: "unavailable" };
+	}
+	if (res.status === 403) return { ok: false, reason: "permission_denied" };
+	if (res.status === 401) return { ok: false, reason: "authentication_failed" };
+	if (!res.ok) return { ok: false, reason: "unavailable" };
+	let body: unknown;
+	try {
+		body = await res.json();
+	} catch {
+		return { ok: false, reason: "unavailable" };
+	}
+	const country =
+		typeof body === "object" && body !== null ? (body as { country?: unknown }).country : undefined;
+	if (typeof country !== "string" || !/^[A-Za-z]{2}$/.test(country)) {
+		return { ok: false, reason: "unavailable" };
+	}
+	return { ok: true, country: country.toUpperCase() };
+}
+
 // -- offline fake-Stripe driver (test/proxy helper; NO network) --------------
 
 export interface StripeEventInput {
