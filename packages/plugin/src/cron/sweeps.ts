@@ -1408,7 +1408,11 @@ export async function runCommerceSweeps(
 			"cancel-intents",
 			async (legBudget) => {
 				// Late-payment PREVENTION, in its own leg — never inside `expire-orders`, so
-				// a provider's latency or outage can never slow the stock release — and FIRST
+				// a provider call is never made inside the expiry. The expiry still WAITS on
+				// this leg for any order whose intent is due (QA3 N1), and since issue #364
+				// its look is bounded (`EXPIRY_SCAN_ORDERS`): an order with no due intent
+				// queued behind that many payable ones waits for this leg's throughput, so
+				// provider latency can delay its stock release by a tick or more — and FIRST
 				// in every tick: an intent due at its order's hold deadline is withdrawn
 				// before the expiry (or anything else) can spend the tick, so a backlog of
 				// lapsed orders never leaves one payable. Each unit admitted by the tick's

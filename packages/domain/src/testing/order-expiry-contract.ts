@@ -288,6 +288,66 @@ export function orderExpiryContract(
 			expect(await store.listExpirable(at, { excludeIntentDue: true, scanLimit: 1 })).toEqual([]);
 		});
 
+		test("INVARIANT: every order the expiry leaves out for a payable intent is listed as due by listIntentCancelsDue (issue #364)", async () => {
+			const h = await makeHarness();
+			const store = h.expireDeps.orderStore;
+			const base = h.settleDeps.clock.now().getTime();
+			const seed = async (n: string, minutes: number): Promise<OrderId> =>
+				(
+					await store.createFromCart({
+						orderId: orderId(`ord-expiry-inv-${n}`),
+						cartId: null,
+						currency: USD,
+						idempotencyKey: idempotencyKey(`expiry-inv-${n}`),
+						holdExpiresAt: new Date(base + minutes * 60_000).toISOString(),
+						buyerRef: `buyer-inv-${n}@example.com`,
+						paymentMethod: "stripe",
+						lines: [],
+						totals: { subtotal: cents(0), total: cents(0), currency: USD },
+					})
+				).order.id;
+			const at = new Date(base + 30 * 60_000).toISOString();
+			// Every intent shape: due, rescheduled past `at`, resolved, two intents with
+			// one resolved, and none at all.
+			const due = await seed("due", 1);
+			await store.recordPaymentIntent({ orderId: due, gateway: "stripe", intentId: "pi_inv_due" });
+			const later = await seed("later", 2);
+			await store.recordPaymentIntent({ orderId: later, gateway: "stripe", intentId: "pi_inv_l" });
+			await store.updatePaymentIntentCancel(later, "pi_inv_l", {
+				cancelDueAt: new Date(base + 60 * 60_000).toISOString(),
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			const resolved = await seed("resolved", 3);
+			await store.recordPaymentIntent({
+				orderId: resolved,
+				gateway: "stripe",
+				intentId: "pi_inv_r",
+			});
+			await store.updatePaymentIntentCancel(resolved, "pi_inv_r", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			const mixed = await seed("mixed", 4);
+			await store.recordPaymentIntent({ orderId: mixed, gateway: "stripe", intentId: "pi_inv_m1" });
+			await store.recordPaymentIntent({ orderId: mixed, gateway: "stripe", intentId: "pi_inv_m2" });
+			await store.updatePaymentIntentCancel(mixed, "pi_inv_m1", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			const none = await seed("none", 5);
+
+			const all = await store.listExpirable(at);
+			const kept = new Set(await store.listExpirable(at, { excludeIntentDue: true }));
+			const excluded = all.filter((id) => !kept.has(id));
+			const listedDue = new Set(await store.listIntentCancelsDue(at, 100));
+			expect(excluded.toSorted()).toEqual([due, mixed].toSorted());
+			for (const id of excluded) expect(listedDue.has(id), id).toBe(true);
+			for (const id of [later, resolved, none]) expect(kept.has(id), id).toBe(true);
+		});
+
 		test("a cancel that failed and was rescheduled does not hold the order: it is not due until its retry", async () => {
 			const h = await makeHarness();
 			const store = h.expireDeps.orderStore;

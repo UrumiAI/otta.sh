@@ -204,7 +204,8 @@ cancelling the intent at expiry and refusing the pay page — is a separate, fol
    the same order** (a second intent) is refunded the same way under its own key **without a
    second email** — the notice is per kind, not per payment — and if it would take the refunds
    past the order total, the ceiling refuses it and it goes to a human (amended 2026-10-05: the
-   flag says "Otta cannot refund it … refund it in Stripe directly", not "refund it manually").
+   flag says "it would exceed what Otta can refund on this order … refund it in Stripe directly",
+   not "refund it manually").
 7. **The order page tells the truth.** The public order read carries a derived `latePayment`
    status (`none` / `refunded` / `refund_pending`), read with the order in one document read;
    "Nothing was charged" is said only for `none`. A pending refund is promised only as "it will
@@ -389,9 +390,10 @@ Two edges of the first block, found reviewing the QA stack (#357). Neither chang
    order has taken two full late payments, the first auto-refund uses the whole ceiling and the
    second is refused at reservation (`REFUND_EXCEEDS_TOTAL`): nothing is issued, and no refund
    from Otta's console can return it either — the ceiling refuses that too. The flag used to say
-   "refund it manually", which sent the operator to a button that refuses. It now says "Otta
-   cannot refund it — this order's refunds already reach its total … refund it in Stripe
-   directly, then resolve this flag". The order page keeps saying the payment will be refunded
+   "refund it manually", which sent the operator to a button that refuses. It now says
+   "automatic refund not possible (…) — it would exceed what Otta can refund on this order …
+   refund it in Stripe directly, then resolve this flag". The same wording covers the other
+   ways past the ceiling (a short capture, one late capture above the total). The order page keeps saying the payment will be refunded
    (`refund_pending`) until the flag is resolved as refunded. Raising the ceiling for this case
    was not done: the ceiling is the over-refund guard for every other path, and two full late
    payments on one order need a client that ignored both the pay page's deadline and the
@@ -427,3 +429,17 @@ Two edges of the first block, found reviewing the QA stack (#357). Neither chang
    `cancel-intents` withdraws the payable orders ahead of it (oldest deadline first, both legs).
    `orderExpiryContract` pins the bound on every adapter; `cron-sweep-intents` pins the query
    count and that nothing payable expires.
+
+   **The trade-off, stated.** An order with no due intent that sits behind 100 or more payable
+   orders (oldest deadline first) is not read until `cancel-intents` has withdrawn enough of
+   them. Its stock release now waits on that leg's throughput, which is bounded by its batch and
+   by the provider's latency: under such a backlog a provider slowdown can delay the release of
+   stock that has nothing to do with it, by a tick or more. We accept it because the band ahead
+   always drains — a withdrawn, rescheduled (failed-retryable) or given-up intent leaves the due
+   set — and because the alternative is an unbounded read on every tick.
+
+   **The invariant this rests on.** `listExpirable`'s `excludeIntentDue` and
+   `listIntentCancelsDue` must be the same predicate (an unresolved intent with
+   `cancelDueAt <= now`), so every order the expiry leaves out is one the cancel leg lists and
+   then withdraws, reschedules or resolves. The port documents it and `orderExpiryContract`
+   checks it on every adapter.

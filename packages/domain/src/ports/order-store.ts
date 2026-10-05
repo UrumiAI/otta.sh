@@ -117,6 +117,12 @@ export interface OrderStore {
 	/**
 	 * Orders holding at least one UNRESOLVED intent whose `cancelDueAt <= now`,
 	 * earliest first, at most `limit` — the intent-cancel sweep's batch.
+	 *
+	 * INVARIANT (issue #364): this predicate and {@link listExpirable}'s
+	 * `excludeIntentDue` are the SAME predicate. Every order the expiry leaves out
+	 * for a payable intent must be listed here, so the cancel leg withdraws (or
+	 * reschedules, or resolves) it and the order becomes expirable. If they drifted,
+	 * an excluded order nobody lists would never expire. `orderExpiryContract` pins it.
 	 */
 	listIntentCancelsDue(now: string, limit: number): Promise<OrderId[]>;
 	/**
