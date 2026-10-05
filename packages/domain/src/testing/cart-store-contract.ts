@@ -370,9 +370,11 @@ export function cartStoreContract(
 			expect((await getCart(h.deps, cartId))?.lines[0]?.productId).toBe("prod-1");
 		});
 
-		// The same race with both writes in flight at once: on a compare-and-set
-		// store the loser re-reads and retries, and the retry must keep the winner's
-		// productId — whichever of the two wins.
+		// The same race with both writes in flight at once, whichever lands last.
+		// This does NOT promise the compare-and-set retry is exercised: the
+		// interleaving is left to the scheduler (on SQLite the two run one after the
+		// other). The retry is forced, and its attempt count asserted, by store-emdash's
+		// `cart-productid-race.dialects.test.ts`.
 		test("concurrent first adds keep the productId, whichever write lands last", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-PID", 10);
