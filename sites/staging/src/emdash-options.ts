@@ -2,12 +2,19 @@
  * The emdash() integration options for the staging site — a pure builder
  * so the site-config test can assert the whole trusted-registration
  * surface (plan D6):
- *  - D1 (`DB`) with `session` OFF — it MUST stay off while wrangler.jsonc
- *    carries `global_fetch_strictly_public` (required for the site's
- *    Worker→*.workers.dev service subrequests; combining the two deadlocks
- *    every SSR request, silently — em-dash cloudflare.mdx:121-130, #1273).
- *    Read replication was inert anyway (not enabled account-side). Pinned
- *    by the pairing-invariant test in site-config.test.ts.
+ *  - D1 (`DB`) with `session` OFF. Not for the old wrangler-flag reason:
+ *    `global_fetch_strictly_public` is gone (issue #375), though the pairing
+ *    invariant still holds should it return — the flag silently hangs D1
+ *    sessions (emdash #1273), pinned in site-config.test.ts. It stays off
+ *    because `session: "auto"` gives a request no read-your-writes unless
+ *    EmDash itself authenticates it: every other request starts on any replica
+ *    (`first-unconstrained`) with no bookmark cookie. Every shopper is anonymous
+ *    to EmDash, and every shopper write is a POST that 303s to a GET reading it
+ *    back (place → /checkout/pay reads the new order; sign-in → /account/orders
+ *    reads the new session). A lagging replica would 404 a just-placed order or
+ *    bounce a just-signed-in buyer to login. Read replication is not enabled
+ *    account-side today, so "off" costs nothing now; turning it on (and with it
+ *    "auto" or "primary-first") is a product decision, not a config cleanup.
  *  - R2 (`MEDIA`) — zero-config media storage.
  *  - The Otta plugin registered TRUSTED via a hand-written descriptor
  *    (ADR-0006). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the
@@ -60,7 +67,7 @@ export interface StagingEmdashOptions {
  */
 export function buildEmdashOptions(egress: InProcessEgressUrls = {}): StagingEmdashOptions {
 	return {
-		// No `session` — see the pairing invariant in the module doc above.
+		// No `session` (= "disabled") — see the module doc above.
 		database: d1({ binding: "DB" }),
 		storage: r2({ binding: "MEDIA" }),
 		// TWO descriptors, one array. `otta` is unchanged — standard format,

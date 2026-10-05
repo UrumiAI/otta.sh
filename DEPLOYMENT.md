@@ -93,8 +93,9 @@ expired holds and queued emails drain at the Free pace (§5).
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
-   D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
-   `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
+   D1 `database_name`/`database_id`, and R2 `bucket_name`. Do not add the
+   `global_fetch_strictly_public` compatibility flag, and leave D1 `session` off — §2.4
+   explains both.
 
 3. **Set the site's one secret** (the only secret first boot needs):
 
@@ -189,15 +190,31 @@ cannot be retried in place:
 3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
    claim the admin again (§2.1 step 5 → §2.2).
 
-### 2.4 The `global_fetch_strictly_public` pairing invariant
+### 2.4 D1 sessions and the `global_fetch_strictly_public` pairing invariant
 
-> The site's `wrangler.jsonc` carries the `global_fetch_strictly_public` compatibility flag.
-> That flag silently breaks the D1 Sessions API — its internal routing request is blocked and
-> **every SSR request hangs with nothing in the logs** — so `d1()` in the site config must
-> keep `session` **off** while the flag is present. Both halves are pinned by tests:
-> `sites/staging/test/site-config.test.ts` (session stays off, placeholder equality) and
-> `sites/staging/test/wrangler-config.test.ts` (flag presence, template hygiene). Do not
-> "fix" one side without the other.
+> The site's `wrangler.jsonc` does **not** carry the `global_fetch_strictly_public`
+> compatibility flag (issue #375). It was there so the site's calls to a commerce-service
+> Worker on `*.workers.dev` were not blocked and stubbed 404; that service is gone
+> ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
+> Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
+> fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
+> through Cloudflare, so never point `EMAIL_API_URL` or `X402_FACILITATOR_URL` at the site's
+> own zone.
+>
+> D1 `session` in `sites/staging/src/emdash-options.ts` stays **off** all the same. Under
+> `session: "auto"`, EmDash gives read-your-writes (a bookmark cookie) only to requests it
+> authenticates itself; every other request reads from any replica. Shoppers are anonymous
+> to EmDash, and every shopper write is a POST that redirects to a page reading it back
+> (placing an order, signing in), so a lagging replica would show a just-placed order as
+> not found or bounce a just-signed-in buyer to the login page. Read replication is not
+> enabled on the database today; turning it on, with a session mode, is a product decision.
+>
+> **The pairing invariant still holds:** the flag silently breaks the D1 Sessions API
+> (**every SSR request hangs with nothing in the logs** — emdash issue #1273), so if the
+> flag ever returns, `session` must stay off. Pinned by
+> `sites/staging/test/wrangler-config.test.ts` (flag absent, template hygiene) and
+> `sites/staging/test/site-config.test.ts` (session off; never flag + session together).
+> Do not change one side without the other.
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -425,6 +442,11 @@ the x402 facilitator client — so the allowlist is the perimeter for `api.strip
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
+All three are third-party hosts on the public internet. The Worker runs without
+`global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
+reach that zone's origin directly, skipping its Workers routes and security settings — keep
+both URLs off the site's zone.
+
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
 editing a text field should not be able to move it.
@@ -648,7 +670,7 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 
 | Symptom | Cause → fix |
 |---|---|
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); turn `session` off |
+| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); remove the flag or turn `session` off |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |

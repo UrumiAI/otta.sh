@@ -9,8 +9,10 @@
  *    (the egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
- *  - database/storage are d1(DB, session OFF — paired with wrangler's
- *    global_fetch_strictly_public flag) / r2(MEDIA);
+ *  - database/storage are d1(DB, session OFF — EmDash gives anonymous
+ *    requests, which every shopper is, no read-your-writes; and paired with
+ *    wrangler's global_fetch_strictly_public flag should it ever return) /
+ *    r2(MEDIA);
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
@@ -328,6 +330,23 @@ describe("payment/email secrets never leave kv for the site's build surface", ()
 	});
 });
 
+/** The pairing rule as a predicate: the flag silently breaks the D1 Sessions
+ *  API (every SSR request hangs, nothing logged — emdash issue #1273), so a
+ *  session mode and the flag must never ship together. */
+function violatesPairing(flags: readonly string[], session: unknown): boolean {
+	const sessionOn = session !== undefined && session !== "disabled";
+	return sessionOn && flags.includes("global_fetch_strictly_public");
+}
+
+/** The wrangler template's `compatibility_flags` ARRAY — parsed, not a
+ *  substring search, so the flag's name in a comment cannot count. */
+function wranglerFlags(): string[] {
+	const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+	const array = /^\s*"compatibility_flags"\s*:\s*(\[[^\]]*\])/m.exec(wrangler)?.[1];
+	if (array === undefined) throw new Error("wrangler.jsonc has no compatibility_flags array");
+	return JSON.parse(array.replace(/,(\s*\])/, "$1")) as string[];
+}
+
 describe("buildEmdashOptions", () => {
 	const options = buildEmdashOptions();
 
@@ -337,29 +356,45 @@ describe("buildEmdashOptions", () => {
 		expect(options).not.toHaveProperty("marketplace");
 	});
 
-	test("database is D1 binding DB with session OFF (required by global_fetch_strictly_public)", () => {
+	test("database is D1 binding DB with session OFF (shoppers get no read-your-writes under sessions)", () => {
 		expect(options.database).toMatchObject({
 			entrypoint: "@emdash-cms/cloudflare/db/d1",
 			config: { binding: "DB" },
 		});
-		// NOT session:"auto": read-replica sessions are incompatible with the
-		// wrangler.jsonc `global_fetch_strictly_public` flag (every SSR
-		// request hangs, silently — em-dash cloudflare.mdx:121-130, #1273).
+		// NOT session:"auto" — and no longer because of the wrangler flag (gone,
+		// issue #375). Under "auto", @emdash-cms/cloudflare 0.38 starts every
+		// request that is not EmDash-authenticated (no `astro-session` user, no
+		// Bearer) on `first-unconstrained` — any replica — and writes a bookmark
+		// cookie only for authenticated requests. Every shopper is anonymous to
+		// EmDash (`otta_cart` / `otta_session` are Otta's own cookies), and every
+		// shopper write is a POST that 303s to a GET reading what it just wrote:
+		// /checkout/place → /checkout/pay reads the new order (ORDER_NOT_FOUND on
+		// a lagging replica sends the buyer to a 404 for an order holding their
+		// stock); /account/verify/confirm → /account/orders reads the new session
+		// (a lagging replica bounces the just-signed-in buyer to login). Turning
+		// sessions on is a product decision (see emdash-options.ts), not a cleanup.
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
 		expect(d1Config?.session).toBeUndefined();
 	});
 
+	test("PAIRING INVARIANT: the predicate refuses the flag + a session, and only that", () => {
+		// Proves the guard below is not vacuous while the flag is absent: put the
+		// flag back AND turn sessions on, and it fails.
+		const flag = ["nodejs_compat", "global_fetch_strictly_public"];
+		expect(violatesPairing(flag, "auto")).toBe(true);
+		expect(violatesPairing(flag, "primary-first")).toBe(true);
+		expect(violatesPairing(flag, undefined)).toBe(false);
+		expect(violatesPairing(flag, "disabled")).toBe(false);
+		expect(violatesPairing(["nodejs_compat"], "auto")).toBe(false);
+	});
+
 	test("PAIRING INVARIANT: global_fetch_strictly_public (wrangler) ⇒ D1 session OFF", () => {
-		// The flag is required (Worker→*.workers.dev subrequests are stubbed
-		// 404 without it) and deadlocks D1 sessions when combined — the two
-		// halves must only ever change TOGETHER.
-		const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-		const flagPresent = wrangler.includes('"global_fetch_strictly_public"');
-		expect(flagPresent).toBe(true);
+		// The two halves must only ever change TOGETHER: if the flag returns, the
+		// session must stay off; if sessions are turned on, the flag must be absent.
+		const flags = wranglerFlags();
+		expect(flags).toContain("nodejs_compat");
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
-		if (flagPresent) {
-			expect(d1Config?.session).toBeUndefined();
-		}
+		expect(violatesPairing(flags, d1Config?.session)).toBe(false);
 	});
 
 	test("storage is R2 binding MEDIA", () => {
