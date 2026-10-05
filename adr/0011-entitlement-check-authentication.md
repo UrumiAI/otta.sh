@@ -51,10 +51,10 @@ to bottom — never on which scope the request best "fits":
    check).
 
 `sku` remains the one always-required field (400 if absent). The plugin download route drops
-`buyerRef` entirely and gains an optional `sessionToken` (superseded for that route by the
-2026-10-05 amendment: the session is now ignored) (threaded from the theme's first-party
-cookie layer, exactly like the account routes); its client normalizes a 401 to a typed
-`UNAUTHENTICATED`.
+`buyerRef` entirely and gains an optional `sessionToken` (threaded from the theme's
+first-party cookie layer, exactly like the account routes); its client normalizes a 401 to a
+typed `UNAUTHENTICATED`. (Superseded for that route by the 2026-10-05 amendment: the session
+is now ignored.)
 
 ### Why `X-Internal-Token`, not the service token or a minted claim token
 
