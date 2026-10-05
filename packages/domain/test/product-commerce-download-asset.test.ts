@@ -139,6 +139,28 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 		])("refuses %s", async (_label, filename) => {
 			await refusedOn(asset({ filename }), "downloadAsset.filename");
 		});
+
+		// Ill-formed UTF-16 cannot be stored on every dialect alike (Postgres's jsonb
+		// cast rejects it, SQLite keeps it) and cannot be percent-encoded into a
+		// header (`encodeURIComponent` throws), so it is refused here, by name.
+		// Built from code units: a literal would not survive the formatter.
+		const HIGH = String.fromCharCode(0xd800);
+		const LOW = String.fromCharCode(0xdc00);
+		test.each([
+			["a lone high surrogate", `a${HIGH}.pdf`],
+			["a lone low surrogate", `a${LOW}.pdf`],
+			["a reversed pair", `a${LOW}${HIGH}.pdf`],
+			["a trailing high surrogate", `guide.pdf${HIGH}`],
+			["a line separator", `guide${String.fromCharCode(0x2028)}.pdf`],
+			["a paragraph separator", `guide${String.fromCharCode(0x2029)}.pdf`],
+		])("refuses %s", async (_label, filename) => {
+			await refusedOn(asset({ filename }), "downloadAsset.filename");
+		});
+
+		test("accepts a well-formed surrogate pair (an emoji)", async () => {
+			const book = String.fromCodePoint(0x1f4d8);
+			expect((await edit(asset({ filename: `${book} guide.pdf` }))).ok).toBe(true);
+		});
 	});
 
 	describe("contentType: a bare lowercase type/subtype, never an active-content type", () => {
@@ -150,6 +172,7 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			"video/mp4",
 			"image/png",
 			"text/plain",
+			"text/csv",
 			"application/octet-stream",
 			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		])("accepts %s", async (contentType) => {
@@ -167,6 +190,11 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			["application/javascript", "application/javascript"],
 			["text/xsl", "text/xsl"],
 			["multipart/x-mixed-replace", "multipart/x-mixed-replace"],
+			["text/css (text/* is an allowlist)", "text/css"],
+			["text/markdown (text/* is an allowlist)", "text/markdown"],
+			["text/vtt (text/* is an allowlist)", "text/vtt"],
+			["text/rtf (text/* is an allowlist)", "text/rtf"],
+			["text/x-anything (text/* is an allowlist)", "text/x-component"],
 			["uppercase", "Application/PDF"],
 			["uppercase html", "TEXT/HTML"],
 			["parameters", "text/plain; charset=utf-8"],
@@ -176,6 +204,32 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			["empty", ""],
 			["over-long", `application/${"x".repeat(200)}`],
 		])("refuses %s", async (_label, contentType) => {
+			await refusedOn(asset({ contentType }), "downloadAsset.contentType");
+		});
+	});
+
+	// Every JavaScript MIME type essence the WHATWG MIME Sniffing standard lists.
+	// A browser runs any of them as script, so each is refused — the `text/*` ones
+	// by the text allowlist, the `application/*` ones by name.
+	describe("contentType: every WHATWG JavaScript MIME type essence is refused", () => {
+		test.each([
+			"application/ecmascript",
+			"application/javascript",
+			"application/x-ecmascript",
+			"application/x-javascript",
+			"text/ecmascript",
+			"text/javascript",
+			"text/javascript1.0",
+			"text/javascript1.1",
+			"text/javascript1.2",
+			"text/javascript1.3",
+			"text/javascript1.4",
+			"text/javascript1.5",
+			"text/jscript",
+			"text/livescript",
+			"text/x-ecmascript",
+			"text/x-javascript",
+		])("refuses %s", async (contentType) => {
 			await refusedOn(asset({ contentType }), "downloadAsset.contentType");
 		});
 	});

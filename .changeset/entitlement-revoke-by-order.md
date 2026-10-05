@@ -16,5 +16,12 @@ The contract suite gains the revoke cases (every grant of the order, both scopes
 idempotent replay; other orders untouched; no resurrection by a replayed grant), run on
 the fake, SQLite, Postgres and D1, plus a Postgres race of concurrent revokes.
 
-The contract harness loses its `revoke` hook: the port now has the method. Part of #376
-(download delivery).
+**BREAKING for users of `@otta-sh/domain/testing`:**
+
+- `EntitlementStoreHarness` loses its `revoke(orderId)` hook. A harness now supplies only
+  `{ store }`, and the contract revokes through the port.
+- `InMemoryEntitlementStore.revokeByOrder` is now the port method. It was a synchronous
+  test helper returning nothing; it is now `async` and resolves to the number of grants
+  it flipped. A caller that used it synchronously must `await` it.
+
+Part of #376 (download delivery).

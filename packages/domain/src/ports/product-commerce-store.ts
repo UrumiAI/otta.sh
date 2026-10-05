@@ -225,10 +225,12 @@ export type ProductKind = "physical" | "digital";
  * never rewrite a value — so what is stored is exactly what was submitted:
  *  - `key` — `dl/{productId}/{ulid}`, minted by the server for THIS product and
  *    never derived from the filename or any request input; the bucket object key.
- *  - `filename` — what the buyer's browser saves the file as; 1–255 characters,
- *    no control, quote, slash, backslash or bidi-override characters.
- *  - `contentType` — a bare lowercase `type/subtype`, never one a browser would
- *    run as a document (`text/html`, `image/svg+xml`, `*+xml`, script types).
+ *  - `filename` — what the buyer's browser saves the file as; 1–255 characters
+ *    of well-formed text, no control, quote, slash, backslash, line-separator or
+ *    bidi-control characters.
+ *  - `contentType` — a bare lowercase `type/subtype`. `text/*` is an allowlist
+ *    (`text/plain`, `text/csv`); elsewhere never one a browser would run as a
+ *    document (`*+xml` — SVG, XHTML —, `application/xml`, any JavaScript type).
  *  - `size` — bytes, a non-negative safe integer.
  *  - `sha256` — optional; the lowercase hex digest of the bytes when known.
  */

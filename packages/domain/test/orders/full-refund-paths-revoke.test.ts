@@ -7,10 +7,12 @@ import {
 	idempotencyKey,
 	type Order,
 	type OrderId,
+	type OrderStore,
 	refundOrder,
 	resolveUnverifiedRefund,
 	settleOrder,
 	sku as brandSku,
+	transitionOrder,
 	transitionOrderAsAdmin,
 } from "@otta-sh/domain";
 import type { FakePaymentGateway } from "@otta-sh/domain/testing";
@@ -295,6 +297,50 @@ describe("every full-refund path revokes download access", () => {
 			const retry = await cancel(order, "c1");
 			expect(retry.ok && retry.cancelled).toBe(true);
 			expect(h.stripeGw.refundCalls).toHaveLength(1);
+			expect(await entitled(order.id)).toBe(false);
+		});
+
+		// The order ships between the refund and the cancel flip (cancel-order.ts's
+		// CANCEL_LOST_AFTER_REFUND arm): the cancel is lost, but the money is back in
+		// full, so the access goes anyway — it is the money, not the state, that decides.
+		test("a cancel the flip then loses (the order shipped) still revokes", async () => {
+			const order = await paidDigital("o1");
+			await transitionOrder(
+				{ orderStore: h.orderStore },
+				{ orderId: order.id, toState: "processing", idempotencyKey: idempotencyKey("p1") },
+			);
+			const racing = new Proxy(h.orderStore, {
+				get(target, prop, receiver) {
+					if (prop === "cancelOrder") {
+						return async (input: Parameters<OrderStore["cancelOrder"]>[0]) => {
+							await target.transition({
+								orderId: order.id,
+								fromState: "processing",
+								toState: "shipped",
+								idempotencyKey: idempotencyKey("ship-1"),
+								enqueueEmail: false,
+							});
+							return target.cancelOrder(input);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? (value as Function).bind(target) : value;
+				},
+			});
+			const res = await cancelOrderWithRefund(
+				{ orderStore: racing, inventoryStore: h.inventory, entitlementStore: h.entitlementStore },
+				h.stripeGw,
+				{
+					orderId: order.id,
+					reason: "customer_request",
+					detail: null,
+					cancelledBy: "carol",
+					restock: true,
+					idempotencyKey: idempotencyKey("c1"),
+				},
+			);
+			expect(!res.ok && res.reason).toBe("CANCEL_LOST_AFTER_REFUND");
+			expect((await h.orderStore.getById(order.id))?.state).toBe("shipped");
 			expect(await entitled(order.id)).toBe(false);
 		});
 

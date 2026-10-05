@@ -44,7 +44,9 @@ const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
  *  - `/`, because a filename is a name and not a path (`\` is covered above);
  *  - the bidirectional controls — LRM/RLM (U+200E/F), ALM (U+061C), the
  *    embeddings and overrides (U+202A–U+202E) and the isolates (U+2066–U+2069) —
- *    with which `invoice` + U+202E + `fdp.exe` displays as `invoiceexe.pdf`.
+ *    with which `invoice` + U+202E + `fdp.exe` displays as `invoiceexe.pdf`;
+ *  - the line and paragraph separators (U+2028/U+2029), line breaks by another
+ *    name in a header or a file dialog.
  *
  * Code points rather than a regex character class, so the invisible ones are
  * named by number in the source instead of sitting in it as invisible text.
@@ -60,8 +62,29 @@ function isForbiddenFilenameCodePoint(cp: number): boolean {
 		cp === 0x200e ||
 		cp === 0x200f ||
 		(cp >= 0x202a && cp <= 0x202e) ||
-		(cp >= 0x2066 && cp <= 0x2069)
+		(cp >= 0x2066 && cp <= 0x2069) ||
+		cp === 0x2028 ||
+		cp === 0x2029
 	);
+}
+
+/**
+ * True iff `value` is well-formed UTF-16 — no lone surrogate. Iterating a string
+ * yields a valid pair as ONE code point above U+FFFF, so any element that is
+ * itself in the surrogate range is a lone half. (`String.prototype.isWellFormed`
+ * is the same test, but is ES2024 and this package targets ES2023.)
+ *
+ * Ill-formed text is refused by name rather than left to storage: Postgres's
+ * jsonb cast rejects it (an unmapped storage error, not an input refusal) while
+ * SQLite keeps it, and the serving tier's `encodeURIComponent` would throw on it
+ * when it builds `Content-Disposition`.
+ */
+function isWellFormedUtf16(value: string): boolean {
+	for (const ch of value) {
+		const cp = ch.codePointAt(0) ?? 0;
+		if (cp >= 0xd800 && cp <= 0xdfff) return false;
+	}
+	return true;
 }
 
 /**
@@ -72,24 +95,41 @@ function isForbiddenFilenameCodePoint(cp: number): boolean {
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 
 /**
- * Types a browser would treat as an active document — run script from, or
- * render with the site's origin — if the response were ever opened inline.
- * Refused here, coerced to `application/octet-stream` by the upload endpoint.
- * Any `+xml` subtype is refused too: XML can pull in XSLT and, as SVG or XHTML,
- * script.
+ * The only `text/*` types accepted. `text/*` is an ALLOWLIST, not a denylist: the
+ * family is where browsers keep their executable and renderable spellings —
+ * `text/html`, `text/xml`, `text/xsl`, `text/css` and the long tail of JavaScript
+ * aliases (`text/jscript`, `text/livescript`, `text/javascript1.0`–`1.5`, …) — and
+ * a denylist would have to know every one of them. Plain text and CSV are the
+ * text files merchants actually sell; anything else is uploaded as
+ * `application/octet-stream`.
+ */
+const ALLOWED_TEXT_TYPES: ReadonlySet<string> = new Set(["text/plain", "text/csv"]);
+
+/**
+ * Outside `text/*`, the types a browser would treat as an active document — run
+ * script from, or render with the site's origin — if the response were ever
+ * opened inline. Refused here, coerced to `application/octet-stream` by the upload
+ * endpoint. With them, every `+xml` subtype (XML can pull in XSLT and, as SVG or
+ * XHTML, script) and any subtype naming a script language, so the WHATWG
+ * JavaScript essences are refused in every spelling, not only those listed.
  */
 const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
-	"text/html",
-	"text/xml",
 	"application/xml",
-	"text/xsl",
-	"text/javascript",
 	"application/javascript",
 	"application/x-javascript",
-	"text/ecmascript",
 	"application/ecmascript",
+	"application/x-ecmascript",
 	"multipart/x-mixed-replace",
 ]);
+const SCRIPT_SUBTYPE = /javascript|ecmascript|jscript|livescript/;
+
+/** True iff a (syntactically valid) media type may describe a download. */
+function isSafeDownloadType(contentType: string): boolean {
+	const [type = "", subtype = ""] = contentType.split("/");
+	if (type === "text") return ALLOWED_TEXT_TYPES.has(contentType);
+	if (ACTIVE_CONTENT_TYPES.has(contentType)) return false;
+	return !subtype.endsWith("+xml") && !SCRIPT_SUBTYPE.test(subtype);
+}
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -150,6 +190,9 @@ function requireFilename(filename: unknown): void {
 			`${field} must be at most ${String(MAX_DOWNLOAD_FILENAME_LENGTH)} characters`,
 		);
 	}
+	if (!isWellFormedUtf16(filename)) {
+		throw new InvalidProductFieldError(field, `${field} must be well-formed text`);
+	}
 	if ([...filename].some((ch) => isForbiddenFilenameCodePoint(ch.codePointAt(0) ?? 0))) {
 		throw new InvalidProductFieldError(
 			field,
@@ -172,7 +215,7 @@ function requireContentType(contentType: unknown): void {
 			`${field} must be a lowercase type/subtype with no parameters`,
 		);
 	}
-	if (ACTIVE_CONTENT_TYPES.has(contentType) || contentType.endsWith("+xml")) {
+	if (!isSafeDownloadType(contentType)) {
 		throw new InvalidProductFieldError(
 			field,
 			`${field} must not be a type a browser runs as a page; upload it as application/octet-stream`,
