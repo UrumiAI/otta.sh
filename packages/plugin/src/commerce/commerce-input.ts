@@ -156,6 +156,9 @@ export function requireProductId(value: string): string {
 	return value;
 }
 
+/** {@link requireBoundedProductId}'s ceiling. */
+const BOUNDED_PRODUCT_ID_MAX = 200;
+
 /**
  * A product id where the schema bounded it as TEXT rather than as a path
  * parameter: non-empty, at most 200 characters, and no charset rule. The
@@ -164,7 +167,15 @@ export function requireProductId(value: string): string {
  * that refuses MORE is still a divergence.
  */
 export function requireBoundedProductId(value: string): string {
-	return requireBoundedText("productId", value, 1, 200);
+	return requireBoundedText("productId", value, 1, BOUNDED_PRODUCT_ID_MAX);
+}
+
+/** `requireBoundedProductId`'s rule as a predicate — length only, NO charset —
+ *  for the cart add route, which must answer an over-long product id as its own
+ *  INVALID_INPUT rather than let this client throw. One definition, so the two
+ *  cannot drift; and not {@link isIdToken}, which would refuse ids this accepts. */
+export function isBoundedProductId(value: string): boolean {
+	return value.length > 0 && value.length <= BOUNDED_PRODUCT_ID_MAX;
 }
 
 /** A variant key: non-empty after trimming. The key is opaque CMS text, so no
