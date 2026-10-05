@@ -61,6 +61,30 @@ describe("retireCoupon", () => {
 		);
 	});
 
+	test("reads bounds as checkout does (parseCouponInstant): an impossible date is unreadable, not rolled over (issue #364)", async () => {
+		// `Date.parse` rolls 2026-09-31 over to 1 October — the past — and used to
+		// answer "already ended" for a coupon checkout never read as ended (it fails
+		// closed on an unreadable bound). Retire now replaces the unreadable expiry
+		// with a real instant, which is what the operator asked for.
+		await seed({ expiresAt: "2026-09-31T00:00:00Z" });
+		const res = await rules().retireCoupon("c-live");
+		expect(res.ok).toBe(true);
+		expect((await harness.stores.couponStore.findById("c-live"))?.expiresAt).toBe(
+			NOW.toISOString(),
+		);
+	});
+
+	test("an unreadable START is kept as stored, even one Date.parse would roll into the future", async () => {
+		// 2026-11-31 rolls to 1 December under Date.parse — a future start retire would
+		// have dropped. Unreadable is not "in the future": retire changes only the
+		// bound it must.
+		await seed({ startsAt: "2026-11-31T00:00:00Z" });
+		await rules().retireCoupon("c-live");
+		expect((await harness.stores.couponStore.findById("c-live"))?.startsAt).toBe(
+			"2026-11-31T00:00:00Z",
+		);
+	});
+
 	test("THE DOCUMENTED WINDOW: an edit landing between retire's read and its write is overwritten (last writer wins)", async () => {
 		// `CouponStore.update` is a last-writer-wins full replace (its doc). Retire
 		// re-reads first, which narrows — never closes — the gap: an edit that lands
