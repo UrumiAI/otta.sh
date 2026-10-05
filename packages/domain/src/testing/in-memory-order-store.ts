@@ -1,4 +1,3 @@
-import type { ExpiryListOptions } from "../ports/cart-store.js";
 import { assertSweepLimit } from "../sweep/batch.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import {
@@ -9,7 +8,11 @@ import {
 	orderId as toOrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { ExpiredOrder, ReleaseEmailClaimOptions } from "../ports/order-store.js";
+import type {
+	ExpiredOrder,
+	OrderExpiryListOptions,
+	ReleaseEmailClaimOptions,
+} from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
@@ -239,16 +242,26 @@ export class InMemoryOrderStore implements OrderStore {
 		return { order: this.#clone(stored.order), holdsReleased: false };
 	}
 
-	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
 		assertSweepLimit(options.limit);
+		const candidates = [...this.#orders.values()]
+			.filter((stored) => stored.order.state === "pending" && stored.order.holdExpiresAt <= now)
+			.toSorted((a, b) => (a.order.holdExpiresAt < b.order.holdExpiresAt ? -1 : 1));
 		const out: OrderId[] = [];
-		for (const stored of this.#orders.values()) {
+		for (const stored of candidates) {
 			if (options.limit !== undefined && out.length >= options.limit) break;
-			if (stored.order.state === "pending" && stored.order.holdExpiresAt <= now) {
-				out.push(stored.order.id);
-			}
+			if (options.excludeIntentDue === true && this.#hasIntentDue(stored.order.id, now)) continue;
+			out.push(stored.order.id);
 		}
 		return out;
+	}
+
+	/** A payment intent due for withdrawal and not yet withdrawn (see the port). */
+	#hasIntentDue(orderId: OrderId, now: string): boolean {
+		return (this.#intents.get(orderId) ?? []).some(
+			(intent) =>
+				intent.cancelOutcome === null && intent.cancelDueAt !== null && intent.cancelDueAt <= now,
+		);
 	}
 
 	async recordPayment(input: RecordPaymentInput): Promise<void> {
