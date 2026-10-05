@@ -65,7 +65,7 @@ export function templateOf(source: string): string {
  */
 export function hasExecutableScript(source: string): boolean {
 	const template = templateOf(source);
-	for (const match of template.matchAll(/<script\b([^>]*)>/g)) {
+	for (const match of template.matchAll(/<script\b([^>]*)>/gi)) {
 		const attrs = match[1] ?? "";
 		if (/type\s*=\s*["']application\/(ld\+json|json)["']/.test(attrs)) continue;
 		return true;
