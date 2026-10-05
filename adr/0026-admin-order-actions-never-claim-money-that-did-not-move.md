@@ -292,22 +292,29 @@ order ends as it would have had the provider answered success the first time:
   read off the row, its first attempt's restock choice. It finds its refund `recorded`, which now
   needs no gateway and makes no provider call, then restocks, flips and sends the one cancelled
   email (with the refund on it). The typed free-text detail is not on the row, so the resumed
-  envelope has none. If the order can no longer be cancelled (it shipped meanwhile), it is flagged
-  for a person and the refund announces itself with its `refund-issued` notice, once. If the
-  cancel cannot run here (no inventory store wired) or stops part-way, the operator is told to
-  click Cancel order again, which finishes it without refunding twice.
+  envelope has none. A row written before `restock` existed defaults to restocking, as the cancel
+  does. If the order can no longer be cancelled (it shipped meanwhile), the refund announces itself
+  with its `refund-issued` notice (first-wins, so once) and the order is flagged unless its flag
+  already names this cancellation. Both are checked on every pass, replays included, so a crash or
+  a shipment between two confirms still ends flagged and told. If another path already cancelled
+  the order without this refund on its record, the buyer gets the refund's own notice the same
+  way. If the cancel cannot run here (no inventory store wired) or stops part-way, the operator is
+  told to click Cancel order again, on a replay too. That retry, or a cancel under ANY other key,
+  finishes without refunding twice: a cancellation refund already recorded on the order is
+  carried onto the cancellation record, so the cancelled email names the money.
 - **Cancellation, it didn't happen** → the order is still paid; Cancel order again steps past the
   voided attempt to a fresh key and refunds and cancels it.
-- **Late payment, confirmed** → the automatic path's own finish: its flag resolved, its retry
-  cleared, one `late-payment-refunded` notice.
+- **Late payment, confirmed** → the automatic path's own finish: its flag resolved (in the name of
+  the person who confirmed it), its retry cleared, one `late-payment-refunded` notice.
 - **Late payment, it didn't happen** → the money is still held and its one key is spent, so the
-  order is flagged to refund it by hand (over its own late-payment flag or none, never another).
+  order is flagged to refund it by hand (over its own late-payment flag or none, never another;
+  the answer says when an unrelated flag kept it from writing one).
 - **Plain refund** → unchanged.
 
 The follow-up also runs on a replay of "confirmed", so a crash between the finalize and the
 follow-up heals on the next click. Every step is keyed or first-wins (the guarded flip, the
-restock keys, the notice per refund), so no path refunds, restocks or emails twice. A replay never
-re-writes a flag a person may have resolved since. The console says which of these happened.
+restock keys, the notice per refund), so no path refunds, restocks or emails twice. The console
+says what was actually written: whether a flag went on and whether an email went out.
 
 Provider figures in flags are written in the currency's real minor-unit exponent (ICU's table:
 JPY 0, USD 2, BHD 3).
