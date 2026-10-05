@@ -147,7 +147,7 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
 import { buyerRefHint } from "./buyer-ref-hint.js";
-import { emailMatchesBuyer, resumeThrottleKey } from "./resume-proof.js";
+import { emailMatchesBuyer, resumeDeviceThrottleKey, resumeThrottleKey } from "./resume-proof.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
@@ -1191,14 +1191,20 @@ export class InProcessCommerceClient implements CommerceClient {
 		}
 		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
 		// possession proofs and cost no throttle slot; an email is a guess, so
-		// every one takes a slot of this order's window BEFORE it is compared.
+		// every one takes a slot BEFORE it is compared: first of this device's
+		// window on the order (a device past its own cap spends nothing of the
+		// order's), then of the order's window across devices.
 		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
 		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
 			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
 			proven = customerId !== null && customerId === order.customerId;
 		}
 		if (!proven && proof.email !== undefined) {
-			if (!(await this.#stores.resumeThrottle.admit(resumeThrottleKey(order.id)))) {
+			const deviceKey = resumeDeviceThrottleKey(order.id, proof.clientKey);
+			if (!(await this.#stores.resumeThrottle.admit(deviceKey))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			if (!(await this.#stores.resumeOrderThrottle.admit(resumeThrottleKey(order.id)))) {
 				return { ok: false, reason: "THROTTLED" };
 			}
 			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {

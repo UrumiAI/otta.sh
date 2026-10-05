@@ -146,6 +146,9 @@ export interface OrderResumeRouteInput extends OrderRouteInput {
 	cartId?: unknown;
 	sessionToken?: unknown;
 	email?: unknown;
+	/** The site's per-browser resume key (issue #364): not a proof, the key of
+	 *  the per-device email-guess window. */
+	clientKey?: unknown;
 }
 
 export interface OrderAbandonRouteInput {
@@ -767,6 +770,10 @@ export function createOrderResumeRouteHandler(): RouteHandler<OrderResumeRouteIn
 			const sessionToken = proofText(routeCtx.input.sessionToken);
 			const email = proofText(routeCtx.input.email);
 			if (cartId !== undefined && isIdToken(cartId)) proof.cartId = cartId;
+			// Not a proof: the site's per-browser resume key, so email guesses are
+			// throttled per device as well as per order (issue #364).
+			const clientKey = proofText(routeCtx.input.clientKey);
+			if (clientKey !== undefined && isIdToken(clientKey)) proof.clientKey = clientKey;
 			if (sessionToken !== undefined && sessionToken.length <= 400) {
 				proof.sessionToken = sessionToken;
 			}

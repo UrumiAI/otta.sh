@@ -106,6 +106,20 @@ describe("storefront/order/resume", () => {
 		]);
 	});
 
+	test("forwards the device's resume key, the per-device throttle's key — only when it is an id token (issue #364)", async () => {
+		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "EMAIL_MISMATCH" });
+		await resume({ orderId: ORDER_ID, email: "a@b.co", clientKey: "dev-1a2b" });
+		expect(resumeOrderPayment.mock.calls[0]).toEqual([
+			ORDER_ID,
+			{ email: "a@b.co", clientKey: "dev-1a2b" },
+		]);
+		for (const clientKey of ["has spaces", "x".repeat(201), 7]) {
+			resumeOrderPayment.mockClear();
+			await resume({ orderId: ORDER_ID, email: "a@b.co", clientKey });
+			expect(resumeOrderPayment.mock.calls[0]).toEqual([ORDER_ID, { email: "a@b.co" }]);
+		}
+	});
+
 	test("no proof is forwarded as none; blank or non-string proof is dropped", async () => {
 		resumeOrderPayment.mockResolvedValue({ ok: false, reason: "PROOF_REQUIRED" });
 		await resume({ orderId: ORDER_ID, cartId: "  ", sessionToken: 7, email: "" });

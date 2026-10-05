@@ -11,6 +11,9 @@
 - Amended: 2026-10-02 (second) — the order page resumes a pending order's payment on any
   device through `/checkout/resume`, and a refused checkout keeps the typed values in a
   first-party draft cookie; see "Amended 2026-10-02 (second)" at the end of this record.
+- Amended: 2026-10-05 — resume-by-email guesses are throttled per device of an order (5) and
+  per order (20), so a stranger's wrong guesses no longer lock the buyer out; see "Amended
+  2026-10-05" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -303,7 +306,8 @@ form, because the redirect may carry no personal data (decision 6's reasoning).
     a cross-site form. The plugin compares it with the order's buyer server-side, trimmed and
     case-folded, through SHA-256 digests with no early exit; a wrong one gets one generic
     sentence ("That email doesn't match this order."). Guesses are throttled per order — 5 per
-    15 minutes, counting every email attempt — by the sign-in throttle's own slot window
+    15 minutes, counting every email attempt (superseded 2026-10-05: 5 per device of the order
+    and 20 per order; see the last section) — by the sign-in throttle's own slot window
     (`login_challenge_claims`, `liveSlots`), offered as the `AttemptThrottle` port and
     `EmdashAttemptThrottle` adapter.
 
@@ -417,3 +421,37 @@ say.
 - **The header's cart count** is read on `/checkout` and `/orders/<id>` too (only the pay page is
   left out). Both pages are already private; the read is a server-side dispatch, so nothing
   reaches the order page's URL or a Referer.
+
+## Amended 2026-10-05 — email guesses are throttled per device, with a higher per-order cap
+
+Issue #364 (from #360): the throttle above was per ORDER only, so anyone holding the order link
+could spend its five email tries and lock the real buyer out of resume-by-email for 15 minutes.
+The cart and session routes still worked, but the email route is the one a buyer on a new device
+has.
+
+**Decision.** Two windows, both the sign-in throttle's slot window (`EmdashAttemptThrottle`),
+both 15 minutes, counting every email attempt (a right one too):
+
+- **Per device of an order — 5.** The device is the site's resume key: an opaque random id
+  (`otta_resume_client`; httpOnly, Secure, `SameSite=Strict`, `Path=/checkout`, 30 days) the
+  email page gives a browser before it shows the form, and that the email POST sends to the
+  plugin as `clientKey`. It is not a proof and grants nothing: it only names whose guesses
+  these are. A request without one (cookies blocked or cleared, or a caller skipping the page)
+  shares a single no-device window per order.
+- **Per order, across devices — 20.** So guessing from many browsers, or clearing the cookie
+  between tries, is still stopped. The device window is checked first, so a device past its
+  own cap spends nothing of the order's.
+
+**Why a cookie, not the IP.** The site reaches the plugin in-process from SSR, so the plugin's
+route sees no client address, and the cookies it already gets (the cart, the session) are not
+held by a buyer on a new device — the case the email route exists for. A per-browser key the
+site mints is the only identity both sides have without new plumbing, and it keeps no personal
+data in the throttle's keys.
+
+**What remains, stated.** Someone holding the order link who also rotates the cookie can still
+spend the order's 20 tries and close the email route for 15 minutes; that takes four times the
+effort it did, and the cart and owning-session routes still work through it, as before. A wrong
+guess still gets the one generic sentence.
+
+`commerceClientContract` pins both windows; the route test pins that `clientKey` is forwarded
+only as an id token; the site tests pin the cookie and that it rides the POST.
