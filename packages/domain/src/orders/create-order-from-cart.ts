@@ -78,9 +78,23 @@ export interface CreateOrderCommand {
 	 * frozen copy of whatever checkout submitted (the Shopify model), never a
 	 * live pointer to the profile address book. It is the ONLY input to the
 	 * shipping/tax zone. Required for a cart with a physical line when zones
-	 * are configured (`MISSING_SHIPPING_ADDRESS`); optional otherwise.
+	 * are configured (`MISSING_SHIPPING_ADDRESS`), or for ANY cart when
+	 * {@link addressRequired} says so; optional otherwise.
 	 */
 	shippingAddress?: OrderAddressInput;
+	/**
+	 * The buyer's name and address are required for THIS checkout whatever the
+	 * cart holds (issue #382): a payment account under India's export rules
+	 * refuses a payment without them, digital and no-zone carts included. The
+	 * CALLER decides — whether the account needs it is a fact about the payment
+	 * provider, which the domain does not read — and the domain enforces it with
+	 * the same `MISSING_SHIPPING_ADDRESS` refusal, at the same point, as a
+	 * physical cart in a zoned store: before any redemption or mint. A same-key
+	 * replay short-circuits before the check, so the locked review's retry
+	 * (which sends no address) still replays. Absent or `false` ⇒ ADR-0021's
+	 * rules alone.
+	 */
+	addressRequired?: boolean;
 }
 
 export type CreateOrderFromCartResult =
@@ -307,6 +321,12 @@ export async function createOrderFromCart(
 	// mint.
 	const zone = quote.destination;
 	if (zone.status === "address_needed") return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	// Issue #382: the payment account needs an address on every payment. The
+	// address, when given, was already validated whole above (name, line1, city,
+	// postal code, ISO country; region by ADR-0021's rules).
+	if (command.addressRequired === true && shippingAddress === null) {
+		return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	}
 	const methodId = command.shippingMethodId ?? "";
 	if (zone.status === "matched" && methodId === "") {
 		return { ok: false, reason: "SHIPPING_METHOD_REQUIRED" };
