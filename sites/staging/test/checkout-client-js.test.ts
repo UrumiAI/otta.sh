@@ -288,7 +288,7 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		expect(source).not.toMatch(/<script[^>]*define:vars/i);
 
 		const { body } = splitAstro(source);
-		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map(
+		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)].map(
 			(m) => m[1] ?? "",
 		);
 		expect(scriptBlocks.length).toBeGreaterThan(0);
