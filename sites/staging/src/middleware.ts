@@ -41,10 +41,15 @@
  *
  * SCOPE. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
- * write.
+ * write — with ONE exception that runs first: EmDash's public media route (and
+ * the image endpoint reading through it) never serves a key under `dl/`, where
+ * paid downloads live (issue #376; `lib/media-deny.ts`). Paid files belong in
+ * the private DOWNLOADS bucket, never MEDIA; this is the backstop for one put
+ * in the wrong bucket by hand.
  */
 import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
 import { defineMiddleware } from "astro:middleware";
+import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
@@ -75,6 +80,18 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 export const onRequest = defineMiddleware(async (context, next) => {
 	const { request, url, cookies } = context;
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
+	// Before the `/_` pass-through: the media route is under `/_emdash`. The same
+	// plain 404 EmDash answers for a key it does not have, and never stored.
+	if (isPrivateDownloadMediaRequest(url)) {
+		return new Response("Not found", {
+			status: 404,
+			headers: {
+				"Content-Type": "text/plain; charset=utf-8",
+				"Cache-Control": PRIVATE_NO_STORE,
+				"X-Content-Type-Options": "nosniff",
+			},
+		});
+	}
 	if (url.pathname.startsWith("/_")) return next();
 
 	// A shopper with a cart or a session, on a theme whose chrome draws it. The
