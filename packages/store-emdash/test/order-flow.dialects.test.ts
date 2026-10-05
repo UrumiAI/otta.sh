@@ -616,7 +616,7 @@ describeEachDialect("order flow", (ctx) => {
 			voidRefund: (k) => h.store.voidRefund(k),
 			markRefundUnverified: (k) => h.store.markRefundUnverified(k),
 			voidUnverifiedRefund: (i) => h.store.voidUnverifiedRefund(i),
-			flagReconciliation: (id, d) => h.store.flagReconciliation(id, d),
+			flagReconciliation: (id, d, g) => h.store.flagReconciliation(id, d, g),
 			resolveReconciliation: (i) => h.store.resolveReconciliation(i),
 			recordFulfillment: (i) => h.store.recordFulfillment(i),
 			cancelOrder: (i) => h.store.cancelOrder(i),
@@ -816,6 +816,11 @@ describeEachDialect("order flow", (ctx) => {
 		await expect(clamped.listExpirable("2026-07-10T00:20:00.000Z")).rejects.toSatisfy(
 			isScanPageLimitError,
 		);
+		// A caller's scan bound is read in as few pages as the host allows, and reaching
+		// it is an answer: one page of budget is enough for a 100-order look (#364).
+		expect(
+			await clamped.listExpirable("2026-07-10T00:20:00.000Z", { scanLimit: 100 }),
+		).toHaveLength(100);
 	});
 
 	test("a three-line order with five transitions stays well under the document-size cap", async () => {

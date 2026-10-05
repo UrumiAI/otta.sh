@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -327,6 +327,34 @@ export function intentCancelContract(
 			expect((await h.settleDeps.orderStore.getById(other.order.id))?.reconciliationFlag).toBe(
 				"an earlier anomaly",
 			);
+		});
+
+		test("giving up never overwrites a flag written WHILE the provider was being asked (issue #364)", async () => {
+			const h = await makeHarness();
+			const store = h.settleDeps.orderStore;
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			gateway.setCancelResult({ ok: false, reason: "TERMINAL" });
+			const s = await seedPendingOrder(h, "9c");
+			await expireOrders(h.expireDeps, at(s, MINUTE));
+			// The order was unflagged when the sweep read it; an anomaly lands on it
+			// during the cancel call.
+			const racing = Object.assign(Object.create(gateway) as FakePaymentGateway, {
+				async cancelIntent(input: Parameters<FakePaymentGateway["cancelIntent"]>[0]) {
+					await store.flagReconciliation(s.order.id, "an anomaly raised meanwhile");
+					return gateway.cancelIntent(input);
+				},
+			});
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			await sweep(h, racing, at(s, MINUTE));
+			expect((await intentOf(h, s.order.id)).cancelOutcome).toBe("failed");
+			expect((await store.getById(s.order.id))?.reconciliationFlag).toBe(
+				"an anomaly raised meanwhile",
+			);
+			// The refused write is not dropped silently: it is logged, naming the order.
+			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
+				true,
+			);
+			warn.mockRestore();
 		});
 
 		test("a cancel the caller has no time for is NOT started and NOT counted — the intent stays due, its attempts unchanged", async () => {

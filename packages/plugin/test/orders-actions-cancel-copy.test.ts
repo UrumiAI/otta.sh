@@ -158,3 +158,70 @@ describe("the cancel notices when the money and the order part ways", () => {
 		);
 	});
 });
+
+describe("a cancel from a page that predates the Return-to-stock box (issue #364)", () => {
+	/** A surface in `state` that records whether a cancel was attempted. */
+	function recording(state: string) {
+		const calls: unknown[][] = [];
+		const base = surface({
+			ok: true,
+			cancelled: true,
+			refund: null,
+			restockedUnits: 0,
+			restockSkipped: [],
+		});
+		const client: AdminOrdersSurface = {
+			...base,
+			getOrder: () =>
+				Promise.resolve({ order: { id: ORDER_ID, state } as never, allowedTransitions: [] }),
+			cancelOrder: (...args) => {
+				calls.push(args);
+				return base.cancelOrder(...args);
+			},
+		};
+		return { client, calls };
+	}
+
+	test("a PAID order's cancel with no restock field is refused — never defaulted either way", async () => {
+		for (const restock of [undefined, "", "yes"]) {
+			const { client, calls } = recording("paid");
+			const payload: Record<string, string> = {
+				orderId: ORDER_ID,
+				reason: "customer_request",
+				state: "paid",
+				...(restock === undefined ? {} : { restock }),
+			};
+			const result = await dispatchOrdersAction("orders:cancel-customer_request", payload, client);
+			expect(calls, String(restock)).toEqual([]);
+			expect(result?.notice?.variant).toBe("error");
+			expect(result?.notice?.title).toBe("Nothing was cancelled — this page is out of date");
+			expect(String(result?.notice?.description)).toContain("Reload");
+			expect(String(result?.notice?.description)).toContain("Return to stock");
+		}
+	});
+
+	test("a PENDING order's cancel needs no restock field: its held stock is released either way", async () => {
+		const { client, calls } = recording("pending");
+		await dispatchOrdersAction(
+			"orders:cancel-customer_request",
+			{ orderId: ORDER_ID, reason: "customer_request", state: "pending" },
+			client,
+		);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("an explicit choice is passed through as given", async () => {
+		for (const [field, want] of [
+			["true", true],
+			["false", false],
+		] as const) {
+			const { client, calls } = recording("processing");
+			await dispatchOrdersAction(
+				"orders:cancel-customer_request",
+				{ orderId: ORDER_ID, reason: "customer_request", state: "processing", restock: field },
+				client,
+			);
+			expect(calls[0]?.[1]).toMatchObject({ restock: want });
+		}
+	});
+});

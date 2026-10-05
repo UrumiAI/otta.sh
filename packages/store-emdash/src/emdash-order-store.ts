@@ -169,6 +169,7 @@ import {
 	type RecordRefundInput,
 	type RecordRefundStoreResult,
 	type RefundRecord,
+	type ReconciliationFlagGuard,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 } from "@otta-sh/domain";
@@ -538,26 +539,38 @@ export class EmdashOrderStore implements OrderStore {
 		// the caller asked for a bite and knows the rest is still due (the time-boxed
 		// cron sweep asks for one more than it will expire, to tell the two apart).
 		assertSweepLimit(options.limit);
+		assertSweepLimit(options.scanLimit);
 		const limit = options.limit;
+		const scanLimit = options.scanLimit;
 		const ids: OrderId[] = [];
+		// Rows READ, listed or left out — what `scanLimit` bounds (issue #364).
+		let scanned = 0;
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxExpiryPages; page++) {
-			const result = await this.#orders.query({
-				where: { state: "pending", holdExpiresAt: { lte: now } },
-				orderBy: { holdExpiresAt: "asc" },
-				// Excluding orders still owed a withdrawal (QA3 N1) can skip rows, so the
-				// page reads ahead of the bite; a page is one query whatever its size.
-				limit:
-					limit === undefined
+			// Excluding orders still owed a withdrawal (QA3 N1) can skip rows, so the
+			// page reads ahead of the bite; a page is one query whatever its size, so a
+			// caller's scan bound is read in as few pages as the host allows.
+			const pageSize =
+				scanLimit !== undefined
+					? Math.min(EXPIRY_PAGE_SIZE, scanLimit - scanned)
+					: limit === undefined
 						? EXPIRY_PAGE_SIZE
 						: Math.min(
 								EXPIRY_PAGE_SIZE,
 								options.excludeIntentDue === true ? limit + EXPIRY_INTENT_LOOKAHEAD : limit,
-							),
+							);
+			const result = await this.#orders.query({
+				where: { state: "pending", holdExpiresAt: { lte: now } },
+				orderBy: { holdExpiresAt: "asc" },
+				limit: pageSize,
 				cursor,
 			});
 			for (const { data } of result.items) {
 				if (limit !== undefined && ids.length >= limit) return ids;
+				// The caller's bound on the walk: an order not read is not listed, so
+				// none is expired unchecked; it is read on a later call.
+				if (scanLimit !== undefined && scanned >= scanLimit) return ids;
+				scanned++;
 				if (data.state !== "pending" || data.holdExpiresAt > now) continue;
 				// The order's own indexed "earliest due unresolved intent" — due means
 				// the buyer can still pay it, so it waits for its withdrawal.
@@ -566,6 +579,7 @@ export class EmdashOrderStore implements OrderStore {
 				ids.push(data.orderId as OrderId);
 			}
 			if (limit !== undefined && ids.length >= limit) return ids;
+			if (scanLimit !== undefined && scanned >= scanLimit) return ids;
 			if (!result.hasMore || result.cursor === undefined) return ids;
 			cursor = result.cursor;
 		}
@@ -843,21 +857,30 @@ export class EmdashOrderStore implements OrderStore {
 		return ids;
 	}
 
-	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
-		// Deliberately last-writer-wins on the FIELD (ADR-0019 §7.13): an anomaly
-		// must always be recordable, so there is no expected-value guard here. The
-		// document write is still a compare-and-set, because every write here is.
-		await this.#casOrder<void>("flagReconciliation", async () => {
+	async flagReconciliation(
+		orderId: OrderId,
+		detail: string,
+		guard?: ReconciliationFlagGuard,
+	): Promise<boolean> {
+		// Unguarded, deliberately last-writer-wins on the FIELD (ADR-0019 §7.13): an
+		// anomaly must always be recordable. Guarded, the expected flag is checked
+		// against the SAME revision the write is conditioned on, so a flag written in
+		// between either fails the check here or fails the document CAS and is
+		// re-read (issue #364). The document write is a compare-and-set either way.
+		return this.#casOrder<boolean>("flagReconciliation", async () => {
 			const current = await this.#orders.getVersioned(orderId);
-			if (current === null) return casDone(undefined);
+			if (current === null) return casDone(false);
 			const doc = normalizeOrderDoc(current.value);
+			if (guard !== undefined && (doc.reconciliationFlag ?? null) !== guard.expectedFlag) {
+				return casDone(false);
+			}
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				reconciliationFlag: detail,
 				updatedAt: now,
 			});
-			return written.applied ? casDone(undefined) : CAS_RETRY;
+			return written.applied ? casDone(true) : CAS_RETRY;
 		});
 	}
 

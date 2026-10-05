@@ -241,6 +241,14 @@ function failedFlag(capture: LateCapture, state: OrderState, reason: RefundOrder
 		case "PROVIDER_ALREADY_REFUNDED":
 		case "REFUND_ISSUED_UNRECORDED":
 			return `${lead}: automatic refund needs checking (${reason}) — verify in ${provider}, it may already be refunded`;
+		case "REFUND_EXCEEDS_TOTAL":
+		case "REFUND_EXCEEDS_CAPTURED":
+			// Past the refund ceiling, min(Σ captured, total): a second late payment
+			// after an earlier refund used it up, a short capture, or one late capture
+			// above the total. No refund from Otta can return this money, so "refund it
+			// manually" would send the operator to a button that refuses — say where it
+			// can be done, without guessing which of those it was.
+			return `${lead}: automatic refund not possible (${reason}) — it would exceed what Otta can refund on this order. Nothing was issued: refund it in ${provider} directly, then resolve this flag`;
 		default:
 			return `${lead}: automatic refund failed (${reason}) — refund it manually`;
 	}

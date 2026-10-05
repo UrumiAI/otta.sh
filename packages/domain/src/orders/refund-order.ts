@@ -403,13 +403,22 @@ export async function refundOrder(
 					// a PARTIAL dashboard refund is only stated, both amounts named, and
 					// unlocks nothing; no figures, no flag. Never over an open flag that is
 					// not the provider's own earlier answer: an unreviewed anomaly is not
-					// this function's to overwrite.
+					// this function's to overwrite. `order` was read before the provider
+					// call, so the write is a compare-and-set on the flag it saw: one
+					// written during the call survives (issue #364).
 					const flag = providerRefundedFlag(gwRes.provider, order.totals.currency);
-					if (
-						flag !== null &&
-						(order.reconciliationFlag === null || isProviderRefundFlag(order.reconciliationFlag))
-					) {
-						await deps.orderStore.flagReconciliation(cmd.orderId, flag);
+					const seen = order.reconciliationFlag;
+					if (flag !== null && (seen === null || isProviderRefundFlag(seen))) {
+						const written = await deps.orderStore.flagReconciliation(cmd.orderId, flag, {
+							expectedFlag: seen,
+						});
+						if (!written) {
+							// Another flag landed during the provider call and is kept for a
+							// person; the provider's answer is logged rather than dropped.
+							console.warn(
+								`[domain] order ${cmd.orderId}: provider-refund flag not written — another reconciliation flag was raised meanwhile. Provider answer: ${flag}`,
+							);
+						}
 					}
 					return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
 				}

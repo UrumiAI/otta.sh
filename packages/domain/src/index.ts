@@ -201,6 +201,7 @@ export type {
 	RefundPurpose,
 	RefundRecord,
 	RefundStatus,
+	ReconciliationFlagGuard,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
