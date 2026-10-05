@@ -89,11 +89,31 @@ expired holds and queued emails drain at the Free pace (§5).
    wrangler whoami                                # confirm the right account
    wrangler d1 create YOUR-D1-DATABASE-NAME       # prints the database_id to paste in
    wrangler r2 bucket create your-media-bucket
+   wrangler r2 bucket create your-downloads-bucket  # PRIVATE: paid digital downloads
    ```
+
+   > **Never make the downloads bucket public.** It holds the files buyers pay for. The
+   > site Worker is its only reader, through the `DOWNLOADS` binding, and it re-checks the
+   > buyer's entitlement on every download (issue #376). So:
+   > - **never enable r2.dev public access** on it (dashboard → R2 → the bucket → Settings →
+   >   Public access, or `wrangler r2 bucket dev-url enable`);
+   > - **never connect a custom domain** to it (`wrangler r2 bucket domain add`);
+   > - **never use the media bucket for it.** EmDash serves every key in the media bucket
+   >   publicly at `/_emdash/api/media/file/<key>`, so a paid file there is readable by
+   >   anyone who learns its key, including a buyer whose purchase was refunded. The build
+   >   fails if `DOWNLOADS` and `MEDIA` name the same bucket, and the site refuses media keys
+   >   under `dl/`, but neither can see a bucket's public-access settings.
+   >
+   > Check with `wrangler r2 bucket dev-url get your-downloads-bucket` (it should say
+   > disabled) and `wrangler r2 bucket domain list your-downloads-bucket` (it should list
+   > none). An existing deployment that leaves `DOWNLOADS` out of its config still builds:
+   > downloads are then off, the order pages show no Download link, and the download URL
+   > answers 404.
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
-   D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
+   D1 `database_name`/`database_id`, and the two R2 `bucket_name`s (`MEDIA` and
+   `DOWNLOADS`, which must differ). Leave the
    `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
 
 3. **Set the site's one secret** (the only secret first boot needs):
