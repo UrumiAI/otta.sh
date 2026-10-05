@@ -580,6 +580,39 @@ export function latePaymentContract(
 			expect(await latePayment(h, s.order.id)).toBe("refund_pending");
 		});
 
+		test("a SECOND full late payment on one order is past the refund ceiling: the flag says plainly to refund it in Stripe", async () => {
+			const h = await makeHarness();
+			const gateway = new FakePaymentGateway({ id: "stripe" });
+			const s = await seedExpiredOrder(h, "4b");
+			const store = h.settleDeps.orderStore;
+			for (const ref of ["pi_4b_a", "pi_4b_b"]) {
+				const res = await settleOrder(
+					h.settleDeps,
+					gateway,
+					gateway.webhook({
+						outcome: "succeeded",
+						orderId: s.order.id,
+						providerRef: ref,
+						amount: TOTAL_CENTS,
+						currency: "USD",
+						dedupeKey: `evt_${ref}`,
+					}),
+				);
+				expect(res.ok).toBe(true);
+			}
+
+			// The first is refunded; the second would take refunds past the order's
+			// total — the ceiling is min(Σ captured, total) — so Otta cannot issue it.
+			expect((await store.listRefunds(s.order.id)).map((r) => r.status)).toEqual(["recorded"]);
+			const flag = (await state(h, s.order.id)).reconciliationFlag ?? "";
+			expect(flag).toContain("pi_4b_b");
+			expect(flag).toContain("Otta cannot refund it");
+			expect(flag).toContain("refund it in Stripe");
+			expect(flag).not.toContain("refund it manually");
+			expect(await store.listRefundRetriesDue("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			expect(await latePayment(h, s.order.id)).toBe("refund_pending");
+		});
+
 		test("a resume after the provider ALREADY issued the refund fails closed to 'verify in Stripe' — never a second refund", async () => {
 			const h = await makeHarness();
 			const gateway = new FakePaymentGateway({ id: "stripe" });

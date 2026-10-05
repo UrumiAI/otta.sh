@@ -10,6 +10,9 @@
   itself is narrowed — the order's PaymentIntent is withdrawn once it is due, and the pay page
   refuses an order that can no longer be paid. See the two "Amended 2026-10-02" sections at the
   end of this record.
+- Amended: 2026-10-05 — a late payment Otta cannot refund says "refund it in Stripe", and the
+  delayed-webhook case (a buyer who paid in time is refunded) is recorded as accepted. See the
+  last section.
 
 ## Context
 
@@ -200,7 +203,8 @@ cancelling the intent at expiry and refusing the pay page — is a separate, fol
    It carries the REFUNDED amount and currency, not the order total. **A second late capture on
    the same order** (a second intent) is refunded the same way under its own key **without a
    second email** — the notice is per kind, not per payment — and if it would take the refunds
-   past the order total, the ceiling refuses it and it goes to a human ("refund it manually").
+   past the order total, the ceiling refuses it and it goes to a human (amended 2026-10-05: the
+   flag says "Otta cannot refund it … refund it in Stripe directly", not "refund it manually").
 7. **The order page tells the truth.** The public order read carries a derived `latePayment`
    status (`none` / `refunded` / `refund_pending`), read with the order in one document read;
    "Nothing was charged" is said only for `none`. A pending refund is promised only as "it will
@@ -375,3 +379,38 @@ changes, and one decision recorded.
 cases (fakes and the document store on SQLite; Postgres and D1 run the same suite in CI); the
 Stripe transport's cancel tests cover every status; the commerce-client contract and the
 sandbox cover the abandon route.
+
+## Amended 2026-10-05 — what the late-payment cure cannot do, recorded (issue #364)
+
+Two edges of the first block, found reviewing the QA stack (#357). Neither changes a decision.
+
+1. **A second late payment that would pass the order total is refunded in Stripe, by a
+   person.** The refund ceiling is `min(Σ captured, frozen total)` (ADR-0008). When an expired
+   order has taken two full late payments, the first auto-refund uses the whole ceiling and the
+   second is refused at reservation (`REFUND_EXCEEDS_TOTAL`): nothing is issued, and no refund
+   from Otta's console can return it either — the ceiling refuses that too. The flag used to say
+   "refund it manually", which sent the operator to a button that refuses. It now says "Otta
+   cannot refund it — this order's refunds already reach its total … refund it in Stripe
+   directly, then resolve this flag". The order page keeps saying the payment will be refunded
+   (`refund_pending`) until the flag is resolved as refunded. Raising the ceiling for this case
+   was not done: the ceiling is the over-refund guard for every other path, and two full late
+   payments on one order need a client that ignored both the pay page's deadline and the
+   withdrawn intent, which is rare enough to leave to a person. `latePaymentContract` pins it.
+
+2. **A delayed webhook can auto-refund a buyer who paid in time — accepted.** The cure keys on
+   the order's state when the success is *settled*, not on when Stripe captured the money. If
+   the buyer paid before the deadline but the `payment_intent.succeeded` delivery reaches Otta
+   only after the sweep has expired the order (a Stripe delivery delay, or our endpoint down
+   for a while), the order is dead, its stock is back on sale and may already be sold, and the
+   payment is refunded like any late one. We accept it because:
+   - the alternative — reviving the order from the capture time — could sell stock that the
+     expiry released and someone else bought: an oversell, the one thing this system refuses;
+   - the refund is the safe direction: the buyer gets all the money back and one email saying
+     so, and nobody is charged for goods they will not get;
+   - the window is narrow: the expiry runs after the hold, not at it, so the delivery has to be
+     late by more than the gap between the deadline and the expiry tick.
+   **What the operator sees:** a `SETTLE_ON_NON_PENDING` anomaly on the order ("refunding
+   automatically"), the refund on the ledger by `otta:auto-refund`, and the reconciliation flag
+   already resolved as `refunded` with the reason "Payment arrived after the order was expired;
+   refunded automatically". Nothing waits on them. A merchant who wants the sale can ask the
+   buyer to order again.
