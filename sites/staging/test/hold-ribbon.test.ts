@@ -57,7 +57,7 @@ function markupOnly(html: string): string {
 	let rest = html.trim();
 	for (;;) {
 		const lower = rest.toLowerCase();
-		if (!lower.startsWith("<script")) return rest;
+		if (!lower.startsWith("<script") || /[\w-]/.test(lower.charAt(7))) return rest;
 		const openEnd = rest.indexOf(">");
 		if (openEnd < 0 || !lower.startsWith("</script", openEnd + 1)) return rest;
 		const closeEnd = rest.indexOf(">", openEnd + 1);

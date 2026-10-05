@@ -50,18 +50,29 @@ function declarations(text: string): string {
 	return styles(text).replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
+/**
+ * Remove every `<tag …>…</tag …>` block, case-insensitively, by scanning rather
+ * than a tag regex. An unclosed block runs to the end, as a browser reads it.
+ */
+function stripBlocks(input: string, tag: string): string {
+	let out = input;
+	for (;;) {
+		const lower = out.toLowerCase();
+		let start = lower.indexOf(`<${tag}`);
+		while (start >= 0 && /[\w-]/.test(lower.charAt(start + tag.length + 1))) {
+			start = lower.indexOf(`<${tag}`, start + 1);
+		}
+		if (start < 0) return out;
+		const close = lower.indexOf(`</${tag}`, start);
+		const end = close < 0 ? -1 : lower.indexOf(">", close);
+		out = out.slice(0, start) + (end < 0 ? "" : out.slice(end + 1));
+	}
+}
+
 /** The template — everything after the frontmatter fence, minus the styles. */
 function markup(text: string): string {
 	const body = text.slice(text.indexOf("\n---", 3) + 4);
-	// Until nothing changes, so a removal can't splice a new block together.
-	let out = body;
-	for (let prev = ""; prev !== out;) {
-		prev = out;
-		out = out
-			.replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, "")
-			.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, "");
-	}
-	return out;
+	return stripBlocks(stripBlocks(body, "style"), "script");
 }
 
 /** The literal class names inside one `class=` / `class:list=` attribute. */
