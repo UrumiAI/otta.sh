@@ -187,9 +187,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-report-and-traces
+          # The dev server's own output reaches the job log (the webServer pipes
+          # stdout and stderr). astro writes `.astro/dev.log` only when it
+          # daemonizes, which this config prevents, so it is listed for the case
+          # where that ever changes; miniflare writes no log file of its own.
           path: |
             node_modules/.playwright-artifacts
             node_modules/.playwright-report
+            sites/staging/.astro/dev.log
           # Both paths are dot-directories, and upload-artifact@v4 skips hidden
           # files by default, root path included. Without this the step uploads
           # nothing, and `if-no-files-found: ignore` hides that.

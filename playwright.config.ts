@@ -59,8 +59,24 @@ const stack: WebServer[] = [
 		// plugin, so this dev server runs commerce in-process against its own
 		// store. It used to be handed `COMMERCE_SERVICE_URL` here, which the build
 		// no longer reads at all.
-		command: `pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port}`,
+		// `--host` IS EXPLICIT, AND IT IS THE HOST PLAYWRIGHT POLLS. Without it Vite
+		// listens on `localhost`, which binds whichever address the resolver lists
+		// first. On this repo's dev boxes that is 127.0.0.1, but GitHub's Ubuntu
+		// runners also map `::1` to `localhost` in /etc/hosts, so the server can come
+		// up on IPv6 only while Playwright waits on http://127.0.0.1:4500. That is
+		// how the first CI run of the e2e job failed: "Timed out waiting 180000ms
+		// from config.webServer", with the server alive the whole time. The
+		// brackets of an IPv6 literal (`[::1]`) are not part of the address Vite
+		// takes.
+		command:
+			`pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port} ` +
+			`--host ${new URL(E2E_BASE_URL).hostname.replace(/^\[|\]$/g, "")}`,
 		url: E2E_BASE_URL,
+		// Playwright's default is to DROP the server's stdout, which left the failed
+		// CI run with one line of log for a three-minute wait. Piped, astro's own
+		// startup lines and any error reach the job log, prefixed [WebServer].
+		stdout: "pipe",
+		stderr: "pipe",
 		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
 		env: {
