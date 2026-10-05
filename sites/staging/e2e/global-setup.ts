@@ -62,6 +62,11 @@ export const WARM_UP_BUDGET_MS = 240_000;
 const WELCOME_DIALOG = /Welcome to EmDash/i;
 const WELCOME_WAIT_MS = 10_000;
 
+/** One console warm-up attempt: a navigation plus the wait for the screen. A
+ *  first compile of the admin graph fits well inside it; a page that has not
+ *  rendered by then is a dead tab, and the next attempt navigates afresh. */
+const CONSOLE_ATTEMPT_MS = 90_000;
+
 /** The routes a run touches first, in the order they are first touched: the
  *  storefront, then the admin shell. */
 export const WARM_UP_PATHS = ["/", "/products", "/checkout", ADMIN_BASE_PATH] as const;
@@ -94,12 +99,28 @@ async function warmConsole(deadline: number): Promise<void> {
 		await page.goto(`${E2E_BASE_URL}${DEV_BYPASS_SIGNIN_PATH}`, {
 			timeout: Math.max(1_000, deadline - Date.now()),
 		});
-		await page.goto(`${E2E_BASE_URL}${consoleScreenUrl("/orders")}`, {
-			timeout: Math.max(1_000, deadline - Date.now()),
-		});
-		await page
-			.getByTestId("orders-intro")
-			.waitFor({ timeout: Math.max(1_000, deadline - Date.now()) });
+		// RETRIED, each attempt a fresh navigation. A cold server re-optimizes its
+		// dependencies on the admin's first load ("optimized dependencies changed.
+		// reloading"), and a request caught mid-swap can fail in the workerd runner
+		// ("Network connection lost"), leaving a page that will never render. One
+		// long wait on that page spends the whole budget on a dead tab (measured
+		// under heavy machine load: the single wait timed out after 214 s with the
+		// server healthy); a new navigation picks up the re-optimized graph.
+		let lastError: unknown = new Error(
+			"warm-up: the budget ran out before the console was loaded.",
+		);
+		while (Date.now() < deadline) {
+			const attempt = Math.max(1_000, Math.min(CONSOLE_ATTEMPT_MS, deadline - Date.now()));
+			try {
+				await page.goto(`${E2E_BASE_URL}${consoleScreenUrl("/orders")}`, { timeout: attempt });
+				await page.getByTestId("orders-intro").waitFor({ timeout: attempt });
+				lastError = undefined;
+				break;
+			} catch (err) {
+				lastError = err;
+			}
+		}
+		if (lastError !== undefined) throw lastError;
 		// A FRESH stack's dev admin is greeted once with a modal that opens a moment
 		// after the shell boots and intercepts every click until dismissed. The
 		// dismissal is stored server-side, so doing it here once spares every spec
