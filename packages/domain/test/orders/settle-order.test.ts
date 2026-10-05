@@ -309,9 +309,14 @@ describe("settleOrder", () => {
 		expect(res.ok).toBe(true); // money received; the order is paid
 		const settled = await h.orderStore.getById(order.id);
 		expect(settled?.state).toBe("paid");
-		expect(settled?.reconciliationFlag).not.toBeNull();
+		// The flag write is compare-and-set on "unflagged": the FIRST lost line's flag
+		// lands, the second's is refused; both lines are in the anomalies.
+		expect(settled?.reconciliationFlag).toMatch(/^commit lost for reservation /);
 		const commitLost = h.paymentEventStore.anomalies().filter((a) => a.kind === "COMMIT_LOST");
 		expect(commitLost).toHaveLength(2);
+		expect(settled?.reconciliationFlag).toBe(
+			`commit lost for reservation ${commitLost[0]!.detail.split(" ").at(-1)!}`,
+		);
 	});
 
 	test("commit on an already-committed reservation (idempotent replay) is a benign no-op, not an anomaly", async () => {

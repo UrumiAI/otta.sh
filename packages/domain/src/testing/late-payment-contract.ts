@@ -606,7 +606,7 @@ export function latePaymentContract(
 			expect((await store.listRefunds(s.order.id)).map((r) => r.status)).toEqual(["recorded"]);
 			const flag = (await state(h, s.order.id)).reconciliationFlag ?? "";
 			expect(flag).toContain("pi_4b_b");
-			expect(flag).toContain("Otta cannot refund it");
+			expect(flag).toContain("it would exceed what Otta can refund on this order");
 			expect(flag).toContain("refund it in Stripe");
 			expect(flag).not.toContain("refund it manually");
 			expect(await store.listRefundRetriesDue("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
