@@ -114,6 +114,7 @@ export type RulesClientSurface = Pick<
 	| "createCoupon"
 	| "updateCoupon"
 	| "deleteCoupon"
+	| "retireCoupon"
 >;
 /**
  * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
@@ -4695,6 +4696,253 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.deleteZone("z1")).toEqual({ ok: true });
 		});
 
+		test("a create that collides with an existing id or code ANSWERS 409 — never a rejection — and writes nothing", async () => {
+			// THE OPERATOR'S MOST COMMON TYPO is a duplicate id, and it used to reach the
+			// console as a thrown store collision, which the scaffold's last-resort net
+			// can only describe as "Action outcome unknown — may already have been
+			// applied". A collision is the one failure that is KNOWN to have written
+			// nothing, so it must arrive as the typed refusal the create result already
+			// has an arm for, and the screen's own "already in use" copy can say so.
+			expect((await client.createZone({ id: "dup-z", name: "Zone" })).ok).toBe(true);
+			expect(await client.createZone({ id: "dup-z", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listZones()).filter((z) => z.id === "dup-z")).toEqual([
+				{ id: "dup-z", name: "Zone", regions: null },
+			]);
+
+			expect(
+				(await client.createMethod("dup-z", { id: "dup-m", name: "Flat", type: "flat_rate" })).ok,
+			).toBe(true);
+			expect(
+				await client.createMethod("dup-z", { id: "dup-m", name: "Again", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 409 });
+
+			expect((await client.createRate("dup-m", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			expect(await client.createRate("dup-m", { currency: "USD", amountCents: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.getRate("dup-m", "USD"))?.amountCents).toBe(500);
+
+			expect((await client.createTaxClass({ id: "dup-c", name: "Class" })).ok).toBe(true);
+			expect(await client.createTaxClass({ id: "dup-c", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+
+			const rate = { id: "dup-t", taxClassId: "dup-c", zoneId: "dup-z", rateBps: 725 };
+			expect((await client.createTaxRate(rate)).ok).toBe(true);
+			expect(await client.createTaxRate({ ...rate, rateBps: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listTaxRates("dup-z")).map((r) => r.rateBps)).toEqual([725]);
+
+			const coupon = {
+				id: "dup-cpn",
+				code: "DUPCODE",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			expect((await client.createCoupon(coupon)).ok).toBe(true);
+			// Same id, and — separately — the same code under a new id, case-folded.
+			expect(await client.createCoupon({ ...coupon, code: "OTHER" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.createCoupon({ ...coupon, id: "dup-cpn-2", code: "dupcode" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.getCoupon("OTHER")).toBeNull();
+			expect((await client.getCoupon("DUPCODE"))?.id).toBe("dup-cpn");
+		});
+
+		test("a create under a parent that does not exist ANSWERS 404 and writes nothing", async () => {
+			// The stores raise a missing zone/method only after giving back the id
+			// they claimed, so — like a collision — it is known to have written nothing.
+			expect(
+				await client.createMethod("no-such-zone", { id: "orphan-m", name: "M", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 404 });
+			expect(
+				await client.createRate("no-such-method", { currency: "USD", amountCents: 1 }),
+			).toEqual({ ok: false, status: 404 });
+			expect(await client.getRate("no-such-method", "USD")).toBeNull();
+			// The claimed method id was given back: it can be used under a real zone.
+			await client.createZone({ id: "real-z", name: "Real" });
+			expect(
+				(await client.createMethod("real-z", { id: "orphan-m", name: "M", type: "flat_rate" })).ok,
+			).toBe(true);
+		});
+
+		test("a coupon code with whitespace inside it is refused before anything is written", async () => {
+			await expect(
+				client.createCoupon({
+					id: "ws-cpn",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+			expect(await client.getCoupon("QA ADMIN")).toBeNull();
+		});
+
+		test("a coupon code outside printable ASCII is refused, so case folding is exact for every new code", async () => {
+			// `toLowerCase` is an exact fold on ASCII; on other scripts "the same code"
+			// would depend on Unicode normalisation a shopper's keyboard does not share.
+			await expect(
+				client.createCoupon({
+					id: "uni-cpn",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+		});
+
+		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
+			await client.createZone({ id: "cap-z", name: "Cap" });
+			await client.createTaxClass({ id: "cap-c", name: "Cap" });
+			const rate = { id: "cap-t", taxClassId: "cap-c", zoneId: "cap-z", rateBps: 10_001 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "rateBps",
+			});
+			expect((await client.createTaxRate({ ...rate, rateBps: 10_000 })).ok).toBe(true);
+			await expect(
+				client.updateTaxRate("cap-t", {
+					rateBps: 15_000,
+					appliesToShipping: false,
+					expectedRateBps: 10_000,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
+		});
+
+		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
+			// The console checks this first; the client is the second line, so no
+			// caller of the surface can store a price nobody is quoted in.
+			await client.createZone({ id: "cur-z", name: "Cur" });
+			await client.createMethod("cur-z", { id: "cur-m", name: "M", type: "flat_rate" });
+			await expect(
+				client.createRate("cur-m", { currency: "XYZ", amountCents: 500 }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			await expect(
+				client.createCoupon({
+					id: "cur-c",
+					code: "CURXYZ",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "XYZ",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			expect(await client.getCoupon("CURXYZ")).toBeNull();
+		});
+
+		test("a free-shipping threshold on a FLAT-RATE method's rate is refused on create and edit; a blank one is fine", async () => {
+			await client.createZone({ id: "thr-z", name: "Thr" });
+			await client.createMethod("thr-z", { id: "thr-flat", name: "Flat", type: "flat_rate" });
+			await expect(
+				client.createRate("thr-flat", {
+					currency: "USD",
+					amountCents: 500,
+					minSubtotalCents: 3500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			expect((await client.createRate("thr-flat", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			await expect(
+				client.updateRate("thr-flat", "USD", {
+					amountCents: 500,
+					minSubtotalCents: 3500,
+					expectedAmountCents: 500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			await client.createMethod("thr-z", { id: "thr-free", name: "Free", type: "free_shipping" });
+			expect(
+				(
+					await client.createRate("thr-free", {
+						currency: "USD",
+						amountCents: 500,
+						minSubtotalCents: 3500,
+					})
+				).ok,
+			).toBe(true);
+		});
+
+		test("a coupon window bound is STORED canonically, so an untouched save can never move it", async () => {
+			const storedWindowOf = async (code: string) =>
+				(await client.listCoupons({ search: code })).coupons[0];
+			const base = { type: "fixed_amount", amountCents: 500, currency: "USD" };
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-z",
+						code: "CANONZ",
+						startsAt: "2026-10-02T12:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-off",
+						code: "CANONOFF",
+						expiresAt: "2026-10-02T13:00:00+01:00",
+					})
+				).ok,
+			).toBe(true);
+			expect((await storedWindowOf("CANONZ"))?.startsAt).toBe("2026-10-02T12:00:00.000Z");
+			expect((await storedWindowOf("CANONOFF"))?.expiresAt).toBe("2026-10-02T12:00:00.000Z");
+			// ISO's end-of-day `24:00` is accepted and stored as the next midnight it denotes.
+			expect(
+				(
+					await client.updateCoupon("canon-z", {
+						amountCents: 500,
+						expiresAt: "2026-10-02T24:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect((await storedWindowOf("CANONZ"))?.expiresAt).toBe("2026-10-03T00:00:00.000Z");
+		});
+
+		test("a coupon window bound that is not a zoned ISO instant is refused on create and edit", async () => {
+			// Checkout fails closed on an unreadable bound; the write side refuses
+			// one in the first place, so an API writer cannot store a coupon that
+			// can never be redeemed by accident. The wire's 64-char bound still holds.
+			const base = {
+				id: "win-c",
+				code: "WINC",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			for (const bad of ["2026-13-01", "2026-10-02T12:00:00", "soon"]) {
+				await expect(client.createCoupon({ ...base, startsAt: bad })).rejects.toMatchObject({
+					code: "INVALID_INPUT",
+					field: "startsAt",
+				});
+			}
+			await expect(
+				client.createCoupon({ ...base, expiresAt: `2026-10-02T12:00:00Z${" ".repeat(60)}` }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+			expect(
+				(await client.createCoupon({ ...base, expiresAt: "2026-10-02T13:00:00+01:00" })).ok,
+			).toBe(true);
+			await expect(
+				client.updateCoupon("win-c", { amountCents: 500, expiresAt: "2026-13-01" }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
@@ -4744,6 +4992,75 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: true });
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		/** A live coupon for the retire cases, with a window chosen by the case. */
+		async function retirable(id: string, window: { startsAt?: string; expiresAt?: string } = {}) {
+			const created = await client.createCoupon({
+				id,
+				code: id.toUpperCase(),
+				type: "fixed_amount",
+				amountCents: 1000,
+				currency: "USD",
+				minSubtotalCents: 2000,
+				maxUses: 50,
+				maxUsesPerCustomer: 2,
+				...window,
+			});
+			expect(created.ok).toBe(true);
+		}
+		async function windowOf(code: string) {
+			const page = await client.listCoupons({ search: code });
+			return page.coupons[0];
+		}
+
+		test.skipIf(tier.clock === undefined)(
+			"retireCoupon stamps the expiry from the tier's OWN clock, keeps every other field, and returns the window it replaced (SKIPPED where the tier cannot move its clock)",
+			async () => {
+				const clock = tier.clock;
+				if (clock === undefined) throw new Error("unreachable");
+				await retirable("ret-a", { startsAt: "2000-01-01T00:00:00.000Z" });
+				await retirable("ret-b");
+				const first = await client.retireCoupon("ret-a");
+				// Moving the TIER's clock moves the stamp — wall time would not jump an hour.
+				await clock.advance(60 * 60 * 1000);
+				const second = await client.retireCoupon("ret-b");
+				if (!first.ok || !second.ok) throw new Error("expected both retires to succeed");
+				const gap = Date.parse(second.value.retiredAt) - Date.parse(first.value.retiredAt);
+				expect(gap).toBeGreaterThanOrEqual(60 * 60 * 1000);
+				expect(gap).toBeLessThan(60 * 60 * 1000 + 60_000);
+				expect(first.value.previous).toEqual({
+					startsAt: "2000-01-01T00:00:00.000Z",
+					expiresAt: null,
+				});
+				expect(await windowOf("RET-A")).toMatchObject({
+					expiresAt: first.value.retiredAt,
+					startsAt: "2000-01-01T00:00:00.000Z",
+					amountCents: 1000,
+					minSubtotalCents: 2000,
+					maxUses: 50,
+					maxUsesPerCustomer: 2,
+				});
+			},
+		);
+
+		test("retireCoupon drops a start still in the future, so the window is not left inverted", async () => {
+			await retirable("ret-later", { startsAt: "2999-01-01T00:00:00.000Z" });
+			const result = await client.retireCoupon("ret-later");
+			expect(result.ok && result.value.previous.startsAt).toBe("2999-01-01T00:00:00.000Z");
+			expect((await windowOf("RET-LATER"))?.startsAt).toBeNull();
+		});
+
+		test("retireCoupon on a coupon that already ended answers already_ended and writes nothing", async () => {
+			await retirable("ret-old", { expiresAt: "2000-01-01T00:00:00Z" });
+			expect(await client.retireCoupon("ret-old")).toEqual({ ok: false, reason: "already_ended" });
+			// Unchanged since its create, which stores the bound canonically
+			// (fix/coupon-window-compare): "…00Z" is kept as "…00.000Z".
+			expect((await windowOf("RET-OLD"))?.expiresAt).toBe("2000-01-01T00:00:00.000Z");
+		});
+
+		test("retireCoupon on an unknown coupon is not_found", async () => {
+			expect(await client.retireCoupon("ret-missing")).toEqual({ ok: false, reason: "not_found" });
 		});
 
 		test("coupons: create, LWW-edit, read, delete", async () => {
@@ -4873,7 +5190,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 		test("shipping: getRate reads one method's rate in one currency, and absence is null rather than an error", async () => {
 			await client.createZone({ id: "gr-zone", name: "Get Rate" });
-			await client.createMethod("gr-zone", { id: "gr-method", name: "Flat", type: "flat_rate" });
+			// FREE SHIPPING, because the row below carries a threshold — and a
+			// threshold is refused on a flat-rate method's rate.
+			await client.createMethod("gr-zone", {
+				id: "gr-method",
+				name: "Free",
+				type: "free_shipping",
+			});
 
 			// A method with no rate yet: the read is an ABSENCE, not a failure.
 			expect(await client.getRate("gr-method", "USD")).toBeNull();

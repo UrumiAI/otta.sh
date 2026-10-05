@@ -729,20 +729,21 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 		expect(productQueries).toHaveLength(2);
 	});
 
-	test("coupon codes are matched case-SENSITIVELY and the typed code is echoed back verbatim", async () => {
+	test("coupon codes are matched case-INSENSITIVELY — the typed code is trimmed and the merchant's spelling is what applies", async () => {
+		// ONE RULE FOR CODES (the `CouponStore.findByCode` port doc): codes are
+		// unique after case folding and the admin search was already
+		// case-insensitive, so checkout refusing `ck-save5` for `CK-SAVE5` was the
+		// one place the rule split. The DISCOUNT carries the coupon's own spelling —
+		// that is what the order snapshots and what the buyer sees applied.
 		const cartId = await seedThreeLineCart();
 
 		const result = await summary({ cartId, couponCode: " ck-save5 " });
 
 		expect(result["ok"]).toBe(true);
-		expect(result["selectionErrors"]).toEqual({
-			coupon: { code: "ck-save5", reason: "COUPON_NOT_FOUND" },
-		});
-		expect(result["selection"]).toEqual({
-			couponCode: null,
-			shippingMethodId: null,
-			destination: null,
-		});
+		expect(result["selectionErrors"]).toEqual({});
+		const totals = totalsOf(result);
+		expect(totals["discount"]!.label).toBe("$5.00");
+		expect(totals.appliedCouponCode).toBe("CK-SAVE5");
 	});
 
 	// COUPON_EXHAUSTED is proven by a REAL redemption on the Stripe boot below —

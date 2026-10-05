@@ -196,6 +196,18 @@ export type RefundPanelMode = "empty" | "fully-refunded" | "form";
  *  from a plugin that only ever listed finalized refunds. */
 type RefundRowStatus = "recorded" | "reserved" | "unverified";
 
+/**
+ * An input in error. It sets the SAME `border` shorthand `inputStyle` does, never
+ * the `borderColor` longhand on top of it: toggling a longhand off under a live
+ * shorthand is a React style collision ("Removing borderColor border" — QA's
+ * console on the refund amount), which can leave the error border painted after
+ * the error is gone.
+ */
+const invalidInputStyle: React.CSSProperties = {
+	...inputStyle,
+	border: `1px solid ${FAIL_ACCENT}`,
+};
+
 function refundRowStatus(refund: RefundsSummary["refunds"][number]): RefundRowStatus {
 	return refund.status === "reserved" || refund.status === "unverified"
 		? refund.status
@@ -437,6 +449,7 @@ export function RefundsPanel({
 	// A `voided` attempt moved nothing and is not a refund; it stays on the wire
 	// for audit only. Everything else is listed WITH its status.
 	const listed = refunds.refunds.filter((refund) => refund.status !== "voided");
+	const showRefundKeys = listed.some((refund) => refundRowStatus(refund) === "unverified");
 	const finalizedCents = finalizedRefundedCents(refunds);
 	const recordedCount = listed.filter((refund) => refundRowStatus(refund) === "recorded").length;
 	const unverifiedCents = listed
@@ -495,6 +508,15 @@ export function RefundsPanel({
 					</p>
 				)}
 
+				{/*
+				  THE IDEMPOTENCY KEY IS SHOWN ONLY WHERE IT HAS A JOB. It is how an
+				  UNKNOWN-outcome refund is found in the provider's request log — the
+				  note above says "match it … by its idempotency key below" — and for
+				  nothing else: a settled refund is matched by its provider id. QA read
+				  a column of `admin-refund:…` strings on every refund as internals
+				  leaking into a money table, so the column appears only when some row
+				  is unverified, and only that row prints its key.
+				*/}
 				{listed.length > 0 && (
 					<Table
 						testId="detail-refund-ledger"
@@ -503,7 +525,7 @@ export function RefundsPanel({
 							<EndHeader label="Amount" />,
 							"Status",
 							"Provider ref",
-							"Idempotency key",
+							...(showRefundKeys ? ["Idempotency key"] : []),
 							"By",
 							"When",
 						]}
@@ -517,9 +539,15 @@ export function RefundsPanel({
 								<td className="otta-td">
 									<code>{refund.refundRef ?? refund.providerRef ?? "—"}</code>
 								</td>
-								<td className="otta-td">
-									<code>{refund.idempotencyKey ?? "—"}</code>
-								</td>
+								{showRefundKeys && (
+									<td className="otta-td">
+										{refundRowStatus(refund) === "unverified" && refund.idempotencyKey != null ? (
+											<code>{refund.idempotencyKey}</code>
+										) : (
+											"—"
+										)}
+									</td>
+								)}
 								<td className="otta-td">{refund.refundedBy ?? "—"}</td>
 								<td className="otta-td otta-num">
 									{refund.createdAt != null ? formatTimestamp(refund.createdAt) : "—"}
@@ -555,11 +583,7 @@ export function RefundsPanel({
 										className="otta-focusable"
 										data-testid="refund-amount"
 										ref={amountRef}
-										style={
-											amountError?.field === "amount"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "amount" ? invalidInputStyle : inputStyle}
 										placeholder="e.g. 19.99"
 										{...(amountError?.field === "amount"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
@@ -585,11 +609,7 @@ export function RefundsPanel({
 										className="otta-focusable"
 										data-testid="refund-by"
 										ref={refundedByRef}
-										style={
-											amountError?.field === "refundedBy"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "refundedBy" ? invalidInputStyle : inputStyle}
 										{...(amountError?.field === "refundedBy"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
 											: {})}
