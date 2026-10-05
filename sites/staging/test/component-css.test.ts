@@ -53,9 +53,15 @@ function declarations(text: string): string {
 /** The template — everything after the frontmatter fence, minus the styles. */
 function markup(text: string): string {
 	const body = text.slice(text.indexOf("\n---", 3) + 4);
-	return body
-		.replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, "")
-		.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, "");
+	// Until nothing changes, so a removal can't splice a new block together.
+	let out = body;
+	for (let prev = ""; prev !== out;) {
+		prev = out;
+		out = out
+			.replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, "")
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, "");
+	}
+	return out;
 }
 
 /** The literal class names inside one `class=` / `class:list=` attribute. */

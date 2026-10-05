@@ -51,13 +51,19 @@ function fillPercent(html: string): number {
  * not "an empty string".
  */
 function markupOnly(html: string): string {
-	// Until nothing changes, so a removal can't splice a new tag together.
-	let text = html;
-	for (let prev = ""; prev !== text;) {
-		prev = text;
-		text = text.replace(/<script\b[^>]*><\/script[^>]*>/gi, "");
+	// Peel EMPTY script elements off the front, one at a time, by scanning rather
+	// than a tag regex. A script with a body, or anything else, stops the peel and
+	// stays in the result, so the "renders nothing" assertions can't be fooled.
+	let rest = html.trim();
+	for (;;) {
+		const lower = rest.toLowerCase();
+		if (!lower.startsWith("<script")) return rest;
+		const openEnd = rest.indexOf(">");
+		if (openEnd < 0 || !lower.startsWith("</script", openEnd + 1)) return rest;
+		const closeEnd = rest.indexOf(">", openEnd + 1);
+		if (closeEnd < 0) return rest;
+		rest = rest.slice(closeEnd + 1).trim();
 	}
-	return text.trim();
 }
 
 describe("HoldRibbon — the three states", () => {
