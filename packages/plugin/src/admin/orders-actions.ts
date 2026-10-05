@@ -76,6 +76,7 @@ import type {
 	AdminOrdersSurface,
 	InlineEmailStatus,
 	RefundsSummaryWire,
+	ResolveFollowUpWire,
 	TransitionRefusal,
 } from "./admin-orders-surface.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
@@ -1115,6 +1116,12 @@ function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersA
 						: "Nothing was changed — that refund could not be found on this order. Reload and try again.",
 			});
 		}
+		// What the refund was FOR, finished or not (#364): a cancellation, a late payment.
+		const followUp =
+			result.followUp === undefined
+				? null
+				: followUpNotice(outcome, result.changed, result.followUp, result.email);
+		if (followUp !== null) return applied(followUp);
 		if (!result.changed) {
 			return applied({
 				variant: "default",
@@ -1138,6 +1145,75 @@ function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersA
 			}.${emailSentence(result.email)}`,
 		});
 	};
+}
+
+/**
+ * The notice for a resolved refund that belonged to something larger (#364) — a
+ * cancellation or a late payment — saying what became of THAT. `null` falls back
+ * to the plain refund copy (a replay with nothing new to say).
+ */
+function followUpNotice(
+	outcome: "confirmed" | "voided",
+	changed: boolean,
+	followUp: ResolveFollowUpWire,
+	email: InlineEmailStatus | undefined,
+): Notice | null {
+	if (followUp.purpose === "late-payment") {
+		if (!changed) return null;
+		return followUp.outcome === "finished"
+			? {
+					variant: "default",
+					title: "Refund confirmed",
+					description: `The late payment is recorded as refunded by your payment provider, and its flag is resolved.${emailSentence(email)}`,
+				}
+			: {
+					variant: "default",
+					title: "Marked as not refunded",
+					description:
+						"The automatic refund is recorded as never issued, so the late payment is still held. The order is flagged: refund it from Money → Refunds.",
+				};
+	}
+	switch (followUp.outcome) {
+		case "cancelled": {
+			if (!changed && !followUp.cancelledNow) return null;
+			const head =
+				"The refund is recorded as issued by your payment provider, and the cancellation it was for is finished." +
+				restockSentence(true, followUp.restockedUnits) +
+				emailSentence(email);
+			return {
+				variant: "default",
+				title: "Refund confirmed and order cancelled",
+				description: fit(
+					head + skippedSentence(followUp.restockSkipped, BANNER_BUDGET - head.length),
+					BANNER_BUDGET,
+				),
+			};
+		}
+		case "not_cancelled":
+			return {
+				variant: "error",
+				title: "Refund confirmed — order not cancelled",
+				description: fit(
+					`The refund is recorded, but the order is ${followUp.state ?? "past cancelling"}, so the cancellation it was for could not finish. The order is flagged: contact the buyer before it ships or is refunded again.${changed ? lostEmailSentence(email) : ""}`,
+					BANNER_BUDGET,
+				),
+			};
+		case "cancel_again":
+			if (!changed) return null;
+			return outcome === "voided"
+				? {
+						variant: "default",
+						title: "Marked as not refunded",
+						description:
+							"The refund is recorded as never issued; no money moved and the buyer was not emailed. The order is still paid: click Cancel order again to refund and cancel it.",
+					}
+				: {
+						variant: "default",
+						title: "Refund confirmed — finish the cancellation",
+						description:
+							"The refund is recorded as issued by your payment provider, but the cancellation it was for has not finished. Click Cancel order again to finish it; it will not refund twice.",
+					};
+	}
 }
 
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's

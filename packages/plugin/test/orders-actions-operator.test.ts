@@ -325,6 +325,113 @@ describe("resolving an unverified refund (review round 2)", () => {
 		expect(result.notice?.description).toMatch(/can be refunded again/);
 	});
 
+	// #364: the notice says what became of what the refund was FOR.
+	test("a confirmed cancellation refund says the order is cancelled, what went back to stock, and the email", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				email: "sent",
+				followUp: {
+					purpose: "cancellation",
+					outcome: "cancelled",
+					cancelledNow: true,
+					restockedUnits: 2,
+					restockSkipped: [],
+				},
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("Refund confirmed and order cancelled");
+		expect(result.notice?.description).toContain("the cancellation it was for is finished");
+		expect(result.notice?.description).toContain("2 items returned to stock.");
+		expect(result.notice?.description).toContain("The buyer has been emailed.");
+	});
+
+	test("a confirmed cancellation refund on an order that moved on is an error naming its state", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				email: "sent",
+				followUp: { purpose: "cancellation", outcome: "not_cancelled", state: "shipped" },
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Refund confirmed — order not cancelled");
+		expect(result.notice?.description).toContain("the order is shipped");
+		expect(result.notice?.description).toContain("contact the buyer");
+	});
+
+	test("a cancellation refund that didn't happen tells the operator to cancel again", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				followUp: { purpose: "cancellation", outcome: "cancel_again" },
+			}).client,
+			"orders:resolve-refund-voided",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("Marked as not refunded");
+		expect(result.notice?.description).toContain("click Cancel order again");
+	});
+
+	test("a confirm whose cancel did not finish says to click Cancel order again, without refunding twice", async () => {
+		const result = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				followUp: { purpose: "cancellation", outcome: "cancel_again" },
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "admin-cancel:o:refund" },
+			OPERATOR,
+		);
+		expect(result.notice?.title).toBe("Refund confirmed — finish the cancellation");
+		expect(result.notice?.description).toContain("it will not refund twice");
+	});
+
+	test("late payments: confirmed resolves its flag and emails; didn't happen says to refund it", async () => {
+		const done = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				email: "sent",
+				followUp: { purpose: "late-payment", outcome: "finished" },
+			}).client,
+			"orders:resolve-refund-confirmed",
+			{ orderId: ORDER_ID, refundKey: "late-payment-refund:pi_1" },
+			OPERATOR,
+		);
+		expect(done.notice?.description).toContain("The late payment is recorded as refunded");
+		expect(done.notice?.description).toContain("The buyer has been emailed.");
+		const manual = await act(
+			withResolve({
+				ok: true,
+				changed: true,
+				fullyRefunded: false,
+				followUp: { purpose: "late-payment", outcome: "refund_manually" },
+			}).client,
+			"orders:resolve-refund-voided",
+			{ orderId: ORDER_ID, refundKey: "late-payment-refund:pi_1" },
+			OPERATOR,
+		);
+		expect(manual.notice?.description).toContain("still held");
+		expect(manual.notice?.description).toContain("refund it from Money → Refunds");
+	});
+
 	test("a replay says it was already resolved; a row no longer waiting says so", async () => {
 		const replay = await act(
 			withResolve({ ok: true, changed: false, fullyRefunded: false }).client,

@@ -295,6 +295,26 @@ export type RefundOrderResult =
 	  }
 	| { ok: false; status: number; reason?: string };
 
+/** What became of the thing a resolved refund was FOR (#364) — the domain's
+ *  `ResolveFollowUp` on the wire. Absent for a plain refund.
+ *  - `cancellation`/`cancelled` — the cancellation it belonged to is finished.
+ *  - `cancellation`/`not_cancelled` — the order had moved on (`state`); flagged.
+ *  - `cancellation`/`cancel_again` — Cancel order again finishes it (no second refund).
+ *  - `late-payment`/`finished` — the late payment is refunded and its buyer told.
+ *  - `late-payment`/`refund_manually` — still held; flagged to refund by hand. */
+export type ResolveFollowUpWire =
+	| {
+			purpose: "cancellation";
+			outcome: "cancelled";
+			/** True ⇒ THIS answer cancelled it (a replay finds it already cancelled). */
+			cancelledNow: boolean;
+			restockedUnits: number;
+			restockSkipped: { sku: string; quantity: number; reason: string }[];
+	  }
+	| { purpose: "cancellation"; outcome: "not_cancelled"; state: string | null }
+	| { purpose: "cancellation"; outcome: "cancel_again" }
+	| { purpose: "late-payment"; outcome: "finished" | "refund_manually" };
+
 /** {@link AdminOrdersSurface.resolveUnverifiedRefund}'s answer. */
 export type ResolveUnverifiedRefundResult =
 	| {
@@ -302,8 +322,10 @@ export type ResolveUnverifiedRefundResult =
 			/** False ⇒ the same answer was already recorded (a replay). */
 			changed: boolean;
 			fullyRefunded: boolean;
-			/** The refund email a confirmation sent — absent for a void or a replay. */
+			/** The email the answer sent: the refund's own, or the one what it was for
+			 *  sends (the cancelled email, the late-payment notice). Absent when none. */
 			email?: InlineEmailStatus;
+			followUp?: ResolveFollowUpWire;
 	  }
 	| { ok: false; status: number; reason?: string };
 

@@ -118,6 +118,7 @@ import {
 	type OrderListCursor,
 	type OrderListFilter,
 	type OrderNote,
+	type OrderNotice,
 	type OrderState,
 	type OrderId,
 	type OrderSummary,
@@ -128,6 +129,7 @@ import {
 	type ReconciliationOutcome,
 	type RefundOrderFailure,
 	type RefundRecord,
+	type ResolveFollowUp,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -165,6 +167,7 @@ import type {
 	RefundOrderResult,
 	RefundsSummaryWire,
 	RefundWire,
+	ResolveFollowUpWire,
 	ResolveReconciliationResult,
 	ResolveUnverifiedRefundResult,
 	TransitionOrderResult,
@@ -783,7 +786,12 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		}
 		const oid = toOrderId(orderId);
 		const res = await resolveUnverifiedRefundUseCase(
-			{ orderStore: this.#stores.orderStore },
+			{
+				orderStore: this.#stores.orderStore,
+				// A confirmed CANCELLATION refund resumes its cancel, which restocks (#364).
+				inventoryStore: this.#stores.inventory,
+				isRetryable: isRetryableStorageBusy,
+			},
 			{
 				orderId: oid,
 				refundKey: toIdempotencyKey(input.refundKey),
@@ -799,15 +807,23 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				res.reason === "ORDER_NOT_FOUND" || res.reason === "REFUND_NOT_FOUND" ? 404 : 409;
 			return { ok: false, status, reason: res.reason };
 		}
-		if (res.outcome === "voided" || !res.changed) {
-			return { ok: true, changed: res.changed, fullyRefunded: res.fullyRefunded };
-		}
+		const followUp = toFollowUpWire(res.followUp);
+		const base = {
+			ok: true as const,
+			changed: res.changed,
+			fullyRefunded: res.fullyRefunded,
+			...(followUp !== null ? { followUp } : {}),
+		};
+		// The one email the answer (or the follow-up it finished) enqueued, sent now:
+		// a cancellation's cancelled email, a late payment's notice, else the refund's own.
+		const which = emailOfResolve(res);
+		if (which === null) return base;
 		const email = await this.#sendEmailsNow(oid, deadline, (row) =>
-			res.fullyRefunded
-				? isStateRow(row, "refunded")
-				: row.notice?.kind === "refund-issued" && row.notice.refundId === res.refundId,
+			which.state !== undefined
+				? isStateRow(row, which.state)
+				: row.notice?.kind === which.notice && row.notice.refundId === res.refundId,
 		);
-		return { ok: true, changed: true, fullyRefunded: res.fullyRefunded, email };
+		return { ...base, email };
 	}
 
 	async listNotes(orderId: string): Promise<OrderNoteWire[]> {
@@ -908,6 +924,47 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 
 /** An outbox row that is the STATE email for `state` — never a notice row, whatever
  *  state the order was in when the notice was enqueued. */
+/** The email a resolved refund's answer enqueued, or `null` when it enqueued none
+ *  (a void, a replay with nothing finished now). See `resolveUnverifiedRefund`. */
+function emailOfResolve(
+	res: Extract<Awaited<ReturnType<typeof resolveUnverifiedRefundUseCase>>, { ok: true }>,
+): { state: OrderState; notice?: undefined } | { state?: undefined; notice: OrderNotice } | null {
+	const followUp = res.followUp;
+	if (followUp?.purpose === "cancellation") {
+		if (followUp.outcome === "cancelled") {
+			return followUp.cancelledNow ? { state: "cancelled" } : null;
+		}
+		return followUp.outcome === "not_cancelled" && res.changed ? { notice: "refund-issued" } : null;
+	}
+	if (followUp?.purpose === "late-payment") {
+		return followUp.outcome === "finished" && res.changed
+			? { notice: "late-payment-refunded" }
+			: null;
+	}
+	if (res.outcome === "voided" || !res.changed) return null;
+	return res.fullyRefunded ? { state: "refunded" } : { notice: "refund-issued" };
+}
+
+/** {@link ResolveFollowUp} on the wire. */
+function toFollowUpWire(followUp: ResolveFollowUp | null): ResolveFollowUpWire | null {
+	if (followUp === null) return null;
+	if (followUp.purpose === "late-payment") return { ...followUp };
+	switch (followUp.outcome) {
+		case "cancelled":
+			return {
+				purpose: "cancellation",
+				outcome: "cancelled",
+				cancelledNow: followUp.cancelledNow,
+				restockedUnits: followUp.restockedUnits,
+				restockSkipped: followUp.restockSkipped.map((skip) => ({ ...skip })),
+			};
+		case "not_cancelled":
+			return { purpose: "cancellation", outcome: "not_cancelled", state: followUp.state };
+		case "cancel_again":
+			return { purpose: "cancellation", outcome: "cancel_again" };
+	}
+}
+
 function isStateRow(row: OutboxEmail, state: OrderState): boolean {
 	return row.notice === null && row.toState === state;
 }

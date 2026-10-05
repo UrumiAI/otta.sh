@@ -359,6 +359,8 @@ test("an unverified refund offers 'Confirmed at the provider', behind a confirm,
 	});
 	const sent = await confirmAndSend(view, "resolve-refund-confirmed");
 	expect(String(sent?.["confirmText"])).toMatch(/payment provider shows/i);
+	// #364: confirming finishes what the refund was for, once.
+	expect(String(sent?.["confirmText"])).toMatch(/a cancellation completes/);
 	expect(sent?.["action_id"]).toBe("orders:resolve-refund-confirmed");
 	expect(sent?.["value"]).toEqual({
 		orderId: ORDER_ID,
@@ -372,6 +374,7 @@ test("an unverified refund offers 'It didn't happen', behind a confirm", async (
 	await fire(tab(view, "money"), "click");
 	const sent = await confirmAndSend(view, "resolve-refund-voided");
 	expect(String(sent?.["confirmText"])).toMatch(/can be refunded again/i);
+	expect(String(sent?.["confirmText"])).toContain("click Cancel order again");
 	// A wrong "didn't happen" cannot pay twice: the next refund asks the provider first.
 	expect(String(sent?.["confirmText"])).toContain(
 		"If it was in fact refunded, a new refund will be stopped by the provider check and nothing more is paid.",
