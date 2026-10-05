@@ -39,7 +39,7 @@ pnpm test:d1                                   # real D1 inside workerd, via the
 root `pnpm test` does not include it. It is entirely local — the D1 is miniflare's simulator, and
 no Cloudflare account, API token or remote database is involved — but it boots workerd and
 re-migrates a fresh database per test file, so expect minutes rather than seconds. In CI it is the
-`d1` job: nightly, on demand, and as the release gate on pull requests into `main`.
+`d1` job: on demand, and as the release gate on pull requests into `main`.
 
 ## TDD, contract-first
 

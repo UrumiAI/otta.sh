@@ -53,7 +53,8 @@ simulator** — no Cloudflare account, API token, remote database or deployment 
 involved, and nothing here can reach one. It is wired as its own vitest project
 (`store-emdash-d1`, `vitest.d1.config.ts`) rather than into the default battery:
 it boots `workerd`, migrates a fresh database per test file, and takes a couple of
-minutes. CI runs it **nightly** and on manual dispatch, never per PR. Miniflare is
+minutes. CI runs it on manual dispatch and as the release gate (PRs into `main` and
+`main` pushes), never on per-increment PRs. Miniflare is
 given the **storefront's own** compatibility date and flags
 (`sites/staging/wrangler.jsonc`), so a divergence found here means something about
 production rather than about an invented runtime.
@@ -61,14 +62,14 @@ production rather than about an invented runtime.
 **What the toolchain costs, stated plainly.** `@cloudflare/vitest-plugin` pins its
 `wrangler` and `miniflare` versions **exactly**, and that `miniflare` in turn pins
 its own `workerd` exactly. So installing it adds a third `workerd` build (~150 MB)
-that only the nightly job ever executes, and **every** install — including every
+that only the `d1` job ever executes, and **every** install — including every
 per-PR CI install — pays for it. It also moves the version `sites/staging`'s
 `@astrojs/cloudflare` peer-resolves `workerd` to, because pnpm picks the highest
 `workerd` in the graph: the storefront build now runs the newer one. Overriding
 `wrangler` back to the catalog version was tried and does **not** undo either
 effect — `miniflare`'s exact `workerd` pin is what carries it — so the override is
 deliberately absent rather than forgotten. The honest fix is upstream ranges or a
-separate install for the nightly; until then the whole toolchain is enumerated in
+separate install for the `d1` job; until then the whole toolchain is enumerated in
 `pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` so nothing about it is
 implicit.
 
