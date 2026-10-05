@@ -124,6 +124,22 @@ describe("the cancel notices when the money and the order part ways", () => {
 		expect(description).not.toContain("returned to stock.");
 	});
 
+	test("a restock that stopped PART-WAY says how many came back and that the rest will follow", async () => {
+		const result = await cancel({
+			ok: true,
+			cancelled: true,
+			refund: { amountCents: 2400, currency: "USD" },
+			restockedUnits: 2,
+			restockSkipped: [],
+			restockPending: true,
+		});
+		const description = String(result.notice?.description);
+		expect(description).toContain(
+			"2 items returned to stock so far; the rest are not back yet and Otta will return them automatically.",
+		);
+		expect(description).not.toContain("The items are not back in stock yet");
+	});
+
 	test("a busy store after the refund says so, and that clicking again will not refund twice", async () => {
 		const result = await cancel({
 			ok: false,

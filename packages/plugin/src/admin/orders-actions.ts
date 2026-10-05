@@ -715,7 +715,13 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
  *  restock still pending after the flip (issue #364) says so: the units are not
  *  back, and the sweep returns them. */
 function restockSentence(restock: boolean, units: number, pending: boolean): string {
-	if (pending) return " The items are not back in stock yet; Otta will return them automatically.";
+	if (pending) {
+		// Part-way: the lines before the failure ARE back. Say how many, not "none".
+		if (units > 0) {
+			return ` ${units === 1 ? "1 item" : `${String(units)} items`} returned to stock so far; the rest are not back yet and Otta will return them automatically.`;
+		}
+		return " The items are not back in stock yet; Otta will return them automatically.";
+	}
 	// The units the cancellation REPORTS, not the checkbox: a retry keeps the first
 	// attempt's restock choice (ADR-0026), so units may be back although the box was
 	// unticked on the retry.

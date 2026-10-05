@@ -2387,10 +2387,13 @@ async function completeHoldIntents(
 				{ kind: "release" as const, result: await stores.orderStore.completeHoldRelease(id) },
 			];
 			completed += attempts.filter((attempt) => attempt.result.completed).length;
-			if ((item.data.cancellation?.restockPending ?? null) !== null) {
+			const owed = item.data.cancellation?.restockPending ?? null;
+			// A backed-off restock waits for its `retryAt`, even when another intent on
+			// the same order brought the row into this scan early.
+			if (owed !== null && (owed.retryAt === undefined || owed.retryAt <= nowIso)) {
 				const restocked = await finishRestockOwed(stores, id);
-				if (restocked === "failed") anomalies.push(`${item.data.orderId}:restock`);
-				else if (restocked) completed++;
+				anomalies.push(...restocked.anomalies);
+				if (restocked.finished) completed++;
 			}
 			const lost = attempts.filter((attempt) => attempt.result.lost.length > 0);
 			if (lost.length === 0) return;
@@ -2424,44 +2427,55 @@ async function completeHoldIntents(
 }
 
 /**
- * Finish one cancelled order's pending restock (issue #364). True when this call
- * closed it, false when a racing caller did, "failed" when it failed or threw — logged here,
- * and the order stays in `holdsPendingAt` for the next tick. Lines it could not
- * return (a deleted sku) are flagged on the order: the operator who cancelled it has
- * long since left the page.
+ * Finish one cancelled order's pending restock (issue #364). `finished` when this
+ * call closed it; a failure is logged and is an anomaly, and the order stays in
+ * `holdsPendingAt` (backed off once flagged) for a later tick. Lines it could not
+ * return (a deleted sku) are flagged on the order — the operator who cancelled it
+ * has long since left the page — unless another flag is already there, which is
+ * never overwritten: that, like a stuck-restock flag the domain could not write, is
+ * reported as an anomaly instead.
  */
 async function finishRestockOwed(
 	stores: InProcessCommerceStores,
 	orderId: OrderId,
-): Promise<boolean | "failed"> {
+): Promise<{ finished: boolean; anomalies: string[] }> {
 	try {
 		const res = await finishCancellationRestock(
 			{ orderStore: stores.orderStore, inventoryStore: stores.inventory },
 			orderId,
 		);
+		const anomalies: string[] = [];
+		if (res.flagSkipped !== null) {
+			// Another flag is on the order; it is never overwritten. Reported here instead.
+			anomalies.push(`${orderId}:restock-flag-skipped: ${res.flagSkipped}`);
+		}
 		if (res.failure !== null) {
-			// Counted on the order, which is flagged after a few in a row (the domain's
-			// CANCELLATION_RESTOCK_FLAG_AFTER); this tick only logs it.
+			// Counted on the order, which is flagged (and backed off) after a few in a
+			// row — the domain's CANCELLATION_RESTOCK_FLAG_AFTER; this tick only logs it.
 			console.error(`[otta] cron sweep: the pending restock of cancelled order ${orderId} failed`, {
 				error: res.failure,
 			});
-			return "failed";
+			anomalies.push(`${orderId}:restock`);
+			return { finished: false, anomalies };
 		}
 		if (res.restockSkipped.length > 0) {
 			const lines = res.restockSkipped
 				.map((skip) => `${skip.sku} ×${String(skip.quantity)}`)
 				.join(", ");
-			await stores.orderStore.flagReconciliation(
-				orderId,
-				`cron sweep: the cancellation's restock could not return ${lines} (no inventory row) — adjust stock by hand`,
-			);
+			const text = `cron sweep: the cancellation's restock could not return ${lines} (no inventory row) — adjust stock by hand`;
+			// Never over a flag something else wrote: report it instead.
+			if ((res.order?.reconciliationFlag ?? null) === null) {
+				await stores.orderStore.flagReconciliation(orderId, text);
+			} else {
+				anomalies.push(`${orderId}:restock-flag-skipped: ${text}`);
+			}
 		}
-		return res.finished;
+		return { finished: res.finished, anomalies };
 	} catch (err) {
 		console.error(`[otta] cron sweep: the pending restock of cancelled order ${orderId} failed`, {
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return "failed";
+		return { finished: false, anomalies: [`${orderId}:restock`] };
 	}
 }
 

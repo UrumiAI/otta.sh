@@ -7,6 +7,7 @@
  * once, under the keys the flip recorded — and takes the order out of the index.
  */
 import {
+	CANCELLATION_RESTOCK_FLAG_AFTER,
 	cancelOrderWithRefund,
 	cents,
 	type InventoryStore,
@@ -17,7 +18,8 @@ import {
 	sku as toSku,
 } from "@otta-sh/domain";
 import { FakePaymentGateway } from "@otta-sh/domain/testing";
-import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import { EmdashInventoryStore } from "@otta-sh/store-emdash";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps } from "../src/cron/sweeps.js";
 import {
@@ -33,18 +35,22 @@ beforeEach(async () => {
 	else await h.reset();
 });
 
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 afterAll(async () => {
 	await h?.close();
 });
 
-const SKU = "SKU-cxl-sweep";
+const DEFAULT_SKU = "SKU-cxl-sweep";
 const QTY = 2;
 const ON_HAND = 10;
 
 /** A paid physical order whose cancellation flipped but whose restock threw. */
-async function cancelledWithRestockOwed(id: string): Promise<void> {
+async function cancelledWithRestockOwed(id: string, lineSku: string = DEFAULT_SKU): Promise<void> {
 	const oid = toOrderId(id);
-	await h.stores.inventory.seedOnHand(SKU, ON_HAND);
+	await h.stores.inventory.seedOnHand(lineSku, ON_HAND);
 	await h.stores.orderStore.createFromCart({
 		orderId: oid,
 		cartId: null,
@@ -56,7 +62,7 @@ async function cancelledWithRestockOwed(id: string): Promise<void> {
 		lines: [
 			{
 				productId: toProductId(`prod-${id}`),
-				sku: toSku(SKU),
+				sku: toSku(lineSku),
 				title: "Widget",
 				unitPrice: cents(500),
 				currency: usd,
@@ -101,28 +107,60 @@ async function cancelledWithRestockOwed(id: string): Promise<void> {
 	expect(res).toMatchObject({ ok: true, cancelled: true, restockPending: true });
 }
 
-function sweep() {
-	return runCommerceSweeps(h.ctx, SWEEP_TASK_NAME, {
-		now: new Date("2100-01-01T00:00:00.000Z"),
-		queryBudget: 1_000,
-	});
+function sweep(now: Date = new Date("2100-01-01T00:00:00.000Z")) {
+	return runCommerceSweeps(h.ctx, SWEEP_TASK_NAME, { now, queryBudget: 1_000 });
 }
 
 describe("cron hold-intents: a cancellation's pending restock", () => {
 	test("one tick returns the owed units once and clears the marker; the next tick moves nothing", async () => {
 		await cancelledWithRestockOwed("cxl-sweep-1");
 		const oid = toOrderId("cxl-sweep-1");
-		expect(await h.stores.inventory.getOnHand(SKU)).toBe(ON_HAND);
+		expect(await h.stores.inventory.getOnHand(DEFAULT_SKU)).toBe(ON_HAND);
 
 		const first = await sweep();
 		expect(first.legs.find((leg) => leg.leg === "hold-intents")).toMatchObject({ ok: true });
-		expect(await h.stores.inventory.getOnHand(SKU)).toBe(ON_HAND + QTY);
+		expect(await h.stores.inventory.getOnHand(DEFAULT_SKU)).toBe(ON_HAND + QTY);
 		const order = await h.stores.orderStore.getById(oid);
 		expect(order?.state).toBe("cancelled");
 		expect(order?.cancellation?.restockPending ?? null).toBeNull();
 		expect(order?.cancellation?.restocked).toBe(true);
 
 		await sweep();
-		expect(await h.stores.inventory.getOnHand(SKU)).toBe(ON_HAND + QTY);
+		expect(await h.stores.inventory.getOnHand(DEFAULT_SKU)).toBe(ON_HAND + QTY);
+	});
+
+	test("a restock that keeps failing is flagged, then BACKED OFF behind newer work — and still retried", async () => {
+		const STUCK = "SKU-stuck";
+		const original = EmdashInventoryStore.prototype.restock;
+		const restock = vi
+			.spyOn(EmdashInventoryStore.prototype, "restock")
+			.mockImplementation(function (this: EmdashInventoryStore, sku, qty, key) {
+				if (sku === STUCK) return Promise.reject(new Error("stock row locked"));
+				return original.call(this, sku, qty, key);
+			});
+		const stuckAttempts = () => restock.mock.calls.filter(([sku]) => sku === STUCK).length;
+		await cancelledWithRestockOwed("cxl-stuck", STUCK);
+		const stuck = toOrderId("cxl-stuck");
+		const soon = new Date(Date.now() + 60_000);
+
+		// Three ticks: three quiet retries, then the flag.
+		for (let n = 0; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) await sweep(soon);
+		expect(stuckAttempts()).toBe(CANCELLATION_RESTOCK_FLAG_AFTER);
+		expect((await h.stores.orderStore.getById(stuck))?.reconciliationFlag).toContain(
+			"items could not be returned to stock: stock row locked",
+		);
+
+		// Newer torn work arrives. The next tick finishes it and leaves the backed-off
+		// restock alone.
+		await cancelledWithRestockOwed("cxl-newer", "SKU-newer");
+		const tick = await sweep(soon);
+		expect(tick.legs.find((leg) => leg.leg === "hold-intents")).toMatchObject({ ok: true });
+		expect(await h.stores.inventory.getOnHand("SKU-newer")).toBe(ON_HAND + QTY);
+		expect(stuckAttempts()).toBe(CANCELLATION_RESTOCK_FLAG_AFTER);
+
+		// Once its back-off has passed it is tried again — never dropped.
+		await sweep(new Date(Date.now() + 10 * 60_000));
+		expect(stuckAttempts()).toBe(CANCELLATION_RESTOCK_FLAG_AFTER + 1);
+		expect((await h.stores.orderStore.getById(stuck))?.cancellation?.restockPending).toBeDefined();
 	});
 });
