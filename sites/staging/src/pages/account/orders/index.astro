@@ -15,7 +15,12 @@
 import { ACCOUNT_ORDERS_ROUTE, orderLabel, type AccountOrdersResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
-import { currentSessionToken, orderMoney, orderStateLabel } from "../../../lib/account.js";
+import {
+	accountOrderStatus,
+	currentSessionToken,
+	orderMoney,
+	orderPlacedOn,
+} from "../../../lib/account.js";
 import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
@@ -44,6 +49,9 @@ if (orders === null) Astro.response.status = 503;
 const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
+/* The plugin lists newest first (`listCustomerOrders`); each row says what the
+   order page says about that order, and when it was placed (QA U-5). */
+const now = new Date();
 const rows =
 	orders?.map((order) => {
 		const items = order.lines.reduce((sum, line) => sum + line.quantity, 0);
@@ -52,7 +60,8 @@ const rows =
 			   stays where a machine reads it — the href. */
 			label: orderLabel(order.lines),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
-			state: orderStateLabel(order.state),
+			state: accountOrderStatus(order, now),
+			placed: orderPlacedOn(order.createdAt),
 			items: items === 1 ? "1 item" : `${items} items`,
 			total: orderMoney(order.totals.totalCents, order.totals.currency),
 		};
@@ -65,4 +74,11 @@ const model: AccountOrdersModel = {
 };
 ---
 
-<Storefront view="accountOrders" model={model} title="Your orders" />
+{/* A list came back, so the session is live: the header can say so without
+    asking again. Unknown (busy, unavailable) ⇒ the shell decides. */}
+<Storefront
+	view="accountOrders"
+	model={model}
+	title="Your orders"
+	signedIn={orders !== null ? true : undefined}
+/>

@@ -48,12 +48,20 @@ export interface ChromeModel {
 	description: string | null;
 	/** The primary menu, Account link already appended. */
 	navItems: readonly ChromeNavItem[];
-	/** Units in the cart, or `null` for "this page read no cart" (never `0`). */
+	/** Units in the cart, or `null` for "no count to draw" — no cart read on this
+	 *  page, no cart cookie, or an empty or unreadable cart. */
 	cartCount: number | null;
 	/** The spoken form of `cartCount` ("3 items"), `null` exactly when it is. */
 	cartCountLabel: string | null;
 	/** The currency CODE the page quoted, or `null` when it quoted none (§7). */
 	currency: string | null;
+	/**
+	 * `true` only when this request carried a session the plugin still honours
+	 * (asked for a theme that opts into `shopperState`); `false` for signed out or
+	 * not known. The nav's own Account entry is already relabelled for it ("Your
+	 * account"); a theme may also style on it. Never the email.
+	 */
+	signedIn: boolean;
 	themeId: ThemeId;
 	/**
 	 * The cart's LINES, for a chrome that draws them outside `/cart` (a drawer,
@@ -353,6 +361,9 @@ export interface CartModel {
 /** The order a review is locked to (it has already been created). */
 export interface CheckoutLockedModel {
 	id: string;
+	/** The way on for a locked, payable order: the page-owned resume path
+	 *  (QA U-2) — a link, never a form re-asking for the email the order keeps. */
+	resumeHref: string;
 }
 
 export interface CheckoutModel {
@@ -367,6 +378,9 @@ export interface CheckoutModel {
 	ended: boolean;
 	/** The coupon field's value (a refused code comes back to be fixed). */
 	couponValue: string;
+	/** That refused code, when the field holds one — echoed so Enter with it
+	 *  unchanged does not apply it again. `null` otherwise. */
+	refusedCouponCode: string | null;
 	/** Refusal copy, already mapped: coupon, destination, delivery method. */
 	couponError: string | null;
 	destinationError: string | null;
@@ -390,8 +404,23 @@ export interface CheckoutModel {
 	paymentConfigured: boolean;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
-	/** The email field's initial value: the signed-in account's address, else "". */
+	/** The email field's initial value: what the buyer typed before a refused
+	 *  place (QA U-1), else the signed-in account's address, else "". */
 	emailValue: string;
+	/** The address fields' initial values — what the buyer typed before a
+	 *  refused place, else "" (QA U-1). */
+	addressValues: Record<
+		"name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+		string
+	>;
+	/** Copy for the fields a refused place identified, keyed by field name — a
+	 *  view prints each beside its field (QA U-1). */
+	fieldErrors: Partial<
+		Record<
+			"email" | "name" | "line1" | "line2" | "city" | "postalCode" | "country" | "region" | "phone",
+			string
+		>
+	>;
 	/** The hint under the email field — the page's copy (`checkoutEmailNote`). */
 	emailNote: string;
 	ledgerRows: LedgerLine[];
@@ -410,6 +439,19 @@ export interface PayModel {
 	notConfiguredLead: string;
 	/** Where "View your order" goes. */
 	orderPath: string;
+	/**
+	 * The email the order was placed with, as a hint (`j•••@g•••.com`) — shown
+	 * READ-ONLY on a resumed payment (QA U-2), where the order keeps its email
+	 * and nothing on this step can change it. `null` when the stash carries none.
+	 */
+	emailHint: string | null;
+	/**
+	 * How long the order is still reserved (QA U-14): `lead` ("Your order is
+	 * reserved for 12 more minutes") and `until` ("2:32 pm UTC", with its zone)
+	 * for a `<time datetime={iso}>`. `null` when the page could not read the
+	 * order (it renders the form anyway — pay-guard.ts's fail-open).
+	 */
+	holdNote: { lead: string; until: string; iso: string } | null;
 }
 
 export interface OrderStampCopy {
@@ -432,19 +474,38 @@ export interface OrderModel {
 	orderLabel: string | null;
 	/** The failure copy for the no-order arm (BUSY / not found / unavailable). */
 	failureMessage: string;
-	/** The bounded meta-refresh poll is running (the page emits the refresh). */
+	/**
+	 * Where the checkout tracker stands (`orderProgress`): Payment is completed
+	 * only for an order that was paid; an expired or failed order is `halted` at
+	 * Payment; `null` ⇒ draw no tracker (a cancelled order may or may not have
+	 * been paid first).
+	 */
+	progress: { current: "payment" | "order"; halted: boolean } | null;
+	/** The bounded poll is running (the page emits the same-URL refresh) — only
+	 *  while a change is expected: the buyer just came back from Stripe. */
 	shouldPoll: boolean;
 	/** Which hop of the poll this render is (1-based), and of how many. */
 	pollHop: number;
 	pollMax: number;
+	/** "Check again"'s href: `""`, this very URL, so a check REPLACES the history
+	 *  entry instead of adding one (and the redirect parameters are never echoed). */
 	nextPollUrl: string;
 	hasActions: boolean;
 	canCheckAgain: boolean;
-	canResume: boolean;
+	/**
+	 * "Complete payment"'s target — the page-owned resume path
+	 * (`/checkout/resume?order=…`, QA U-2), which works on any device. `null` ⇔
+	 * the order cannot be resumed (not pending, past its hold, or just back from
+	 * Stripe). A view links to this and never invents a path of its own.
+	 */
+	resumeHref: string | null;
+	/** Why the last "Complete payment" did not reach the pay page, when the page
+	 *  knows (a payment that could not be started) — copy, already mapped. */
+	resumeError: string | null;
 	deadEnd: boolean;
 	ledgerRows: LedgerLine[];
 	sumRows: SumRow[];
-	/** "Total", or "Paid" once settled. */
+	/** "Paid" once the money was captured (refunded included), else "Total". */
 	totalLabel: string;
 	/** The sign-in page. The page owns the path; a theme only links to it. For a
 	 *  shopper who is not signed in as this order's owner: the sign-in link joins
@@ -460,8 +521,12 @@ export interface AccountLoginModel {
 	/** Signed in already: who, and where their orders are — shown above the form
 	 *  (which still works, to switch address). `null` ⇔ signed out. */
 	signedIn: { email: string; ordersHref: string } | null;
-	/** `?sent=1`: the generic notice — the same for every address. */
+	/** `?sent=1` or `?sent=many`: a link was asked for. */
 	sent: boolean;
+	/** The notice's copy, the page's call: the generic sentence, the same for
+	 *  every address — or, once THIS BROWSER has asked more often than the
+	 *  per-address cap allows, the sentence saying a new link may not have been
+	 *  sent. Never decided by the address, so never an account oracle. */
 	sentCopy: string;
 	errorMessage: string | null;
 }
@@ -484,7 +549,13 @@ export interface AccountOrderRow {
 	/** The order's products (`orderLabel`), the link text. */
 	label: string;
 	href: string;
+	/** The order's status in words (`accountOrderStatus`) — what the order page
+	 *  says about it, list-sized: never "Awaiting payment" for an order that can
+	 *  no longer be paid. */
 	state: string;
+	/** When it was placed ("Oct 2, 2026", UTC) and the instant for `<time>`;
+	 *  `null` when the date is unreadable. Rows arrive newest first. */
+	placed: { text: string; iso: string } | null;
 	/** "1 item" / "3 items". */
 	items: string;
 	total: string;
@@ -501,10 +572,24 @@ export interface AccountOrderModel {
 	order: {
 		/** The order's products (`orderLabel`) — the heading. No id: see `AccountOrderRow`. */
 		label: string;
+		/** Status in words, as in the list (`accountOrderStatus`). */
 		state: string;
+		/** What the order page says about this state (`orderStamp`'s body — e.g.
+		 *  whether anything was charged on an expired order), or `null`. */
+		stateNote: string | null;
+		placed: { text: string; iso: string } | null;
 		ledgerRows: LedgerLine[];
-		totals: readonly { label: string; value: string }[];
-		total: string;
+		/** The order page's own rows (`orderSumRows`): "Not calculated" where the
+		 *  order was never priced for shipping or tax, never $0.00. */
+		sumRows: SumRow[];
+		total: CheckoutAmountView;
+		/** "Paid" / "Total" (the domain's `orderTotalLabel`), as on the order page. */
+		totalLabel: string;
+		/** "Refunded $5.00" — what the order's ledger shows refunded, as its own line
+		 *  under the total; `null` when the ledger shows none. */
+		refundedNote: string | null;
+		/** The plugin's `totalExcludesUncalculated` — the Sum footnote's switch. */
+		excludesUncalculated: boolean;
 	} | null;
 	errorMessage: string;
 }
@@ -548,6 +633,19 @@ export interface ThemeViews {
  */
 export interface ThemeChromeNeeds {
 	cartLines?: boolean;
+	/**
+	 * This theme's chrome shows the SHOPPER'S STATE on every storefront page: the
+	 * cart's count beside the cart link, and whether they are signed in (QA U-12,
+	 * U-14). The shell then makes ONE dispatch of the lean `storefront/shopper-state`
+	 * route (`lib/chrome-state.ts`: at most a cart-document and a session-document
+	 * read) for whichever of the cart and session cookies the request carries —
+	 * none without either — and hands over `ChromeModel.cartCount` (no badge for an
+	 * empty cart, on every page) and `ChromeModel.signedIn`. The middleware keeps every such page private,
+	 * no-store and out of the route cache. Both reads fail soft and skip the
+	 * checkout flow (`/checkout`, `/checkout/pay`, `/orders/<id>`); `/cart` passes
+	 * its own count.
+	 */
+	shopperState?: boolean;
 }
 
 export interface ThemeModule {

@@ -82,7 +82,7 @@ describe.each(ORDER_TEMPLATES)("%s carries the order's details", (template) => {
 
 	test("subtotal, discount with its coupon code, shipping, tax and total — the order page's rows", () => {
 		// The order page's labels and sign: "Discount · CODE", the amount unsigned,
-		// and the total "Paid" on a paid order (its `TOTAL_LABEL`).
+		// and the total "Paid" on a paid order (`orderTotalLabel`).
 		expect(rendered.text).toContain("Subtotal: [USD 4500]");
 		expect(rendered.text).toContain("Discount · SAVE5: [USD 500]");
 		expect(rendered.text).toContain("Shipping: [USD 700]");
@@ -218,10 +218,34 @@ describe("absent totals components", () => {
 		expect(rendered.text).toContain(`Tax: ${EMAIL_NOT_CALCULATED_LABEL}`);
 	});
 
-	test("a total on an order that is not (yet) paid reads 'Total', as on the page", () => {
-		const rendered = renderEmail("order-processing", { ...full, state: "processing" }, ctx);
+	// The total's label is the domain's `orderTotalLabel`, shared with the order
+	// pages: "Paid" for every state an order reaches only after its payment was
+	// captured, "Total" otherwise — so the email and the page cannot disagree.
+	test.each([
+		["order-processing", "processing"],
+		["order-shipped", "shipped"],
+		["order-delivered", "delivered"],
+		["order-completed", "completed"],
+	] as const)("%s: a captured order's total reads 'Paid', as on the page", (template, state) => {
+		const rendered = renderEmail(template, { ...full, state }, ctx);
+		expect(rendered.text).toContain("Paid: [USD 5020]");
+		expect(rendered.text).not.toMatch(/^Total:/mu);
+	});
+
+	test.each([
+		["order-expired", "expired"],
+		["order-cancelled", "cancelled"],
+		["order-confirmation", "pending"],
+	] as const)("%s: an order whose payment was never captured reads 'Total'", (template, state) => {
+		const rendered = renderEmail(template, { ...full, state }, ctx);
 		expect(rendered.text).toContain("Total: [USD 5020]");
 		expect(rendered.text).not.toContain("Paid:");
+	});
+
+	test("a refunded order with no Refunded figure still says it was paid — the refund is said separately", () => {
+		const rendered = renderEmail("order-refunded", { ...full, state: "refunded" }, ctx);
+		expect(rendered.text).toContain("Paid: [USD 5020]");
+		expect(rendered.text).not.toMatch(/^Total:/mu);
 	});
 
 	test("a line whose title is blank still shows, as 'Item'", () => {
@@ -281,6 +305,17 @@ describe("refund emails keep their own figure first, then the order", () => {
 		const orderTotal = rendered.text.indexOf("Order total: [USD 5020]");
 		expect(refunded).toBeGreaterThan(-1);
 		expect(orderTotal).toBeGreaterThan(refunded);
+	});
+
+	test("the refunded state email that leads with 'Refunded: X' keeps 'Order total', never 'Paid'", () => {
+		const rendered = renderEmail(
+			"order-refunded",
+			{ ...full, state: "refunded", noticeAmountCents: 5020, noticeCurrency: "USD" },
+			ctx,
+		);
+		expect(rendered.text).toContain("Refunded: [USD 5020]");
+		expect(rendered.text).toContain("Order total: [USD 5020]");
+		expect(rendered.text).not.toContain("Paid:");
 	});
 
 	test("the cancelled-with-refund line is kept, formatted by the same formatter", () => {

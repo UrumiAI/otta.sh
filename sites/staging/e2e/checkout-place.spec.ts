@@ -91,22 +91,24 @@ test.describe("checkout in the browser", () => {
 		// A store with zones asks where the order goes first (ADR-0021): choose a
 		// country, then the first enabled delivery option, so the review is
 		// ready to place.
-		const delivery = page.locator("form#delivery");
+		// The delivery block's fields and Update button belong to the place form
+		// (QA U-1), under their own names.
+		const delivery = page.locator("#delivery");
 		if ((await delivery.count()) > 0) {
-			const deliveryCountry = delivery.locator('select[name="country"]');
+			const deliveryCountry = delivery.locator('select[name="deliveryCountry"]');
 			if ((await deliveryCountry.inputValue()) === "") {
 				await deliveryCountry.selectOption("US");
 				await Promise.all([
 					page.waitForURL(/\/checkout\?/),
-					delivery.locator('button[type="submit"]').click(),
+					delivery.locator('button[value="update-delivery"]').click(),
 				]);
 			}
-			const method = delivery.locator('input[name="method"]:not([disabled])').first();
+			const method = delivery.locator('input[name="deliveryMethod"]:not([disabled])').first();
 			if ((await method.count()) > 0 && !(await method.isChecked())) {
 				await method.check();
 				await Promise.all([
 					page.waitForURL(/method=/),
-					delivery.locator('button[type="submit"]').click(),
+					delivery.locator('button[value="update-delivery"]').click(),
 				]);
 			}
 		}
@@ -119,6 +121,8 @@ test.describe("checkout in the browser", () => {
 		expect(page.url(), "the review dropped the coupon from its URL").toContain(COUPON);
 
 		const form = page.locator('form[action="/checkout/place"]');
+		// The visible "Continue to payment" — not the hidden Enter button, which
+		// sits outside the form element (form= attribute) anyway.
 		const submit = form.locator('button[type="submit"]');
 		if ((await submit.count()) === 0) {
 			const why = (await form.textContent())?.replace(/\s+/g, " ").trim() ?? "(no place form)";
@@ -145,10 +149,16 @@ test.describe("checkout in the browser", () => {
 		if ((await region.count()) > 0 && (await region.isVisible())) await region.fill("CA");
 
 		const before = page.url();
+		// Placed by pressing ENTER in the email field, not by clicking: the place
+		// form's default button is the hidden intent=enter submit (review round 1),
+		// never Apply. The made-up coupon is refused and echoed as refusedCoupon,
+		// so this Enter places rather than re-applying it.
 		const [place] = await Promise.all([
 			page.waitForResponse((res) => new URL(res.url()).pathname === "/checkout/place"),
-			submit.click(),
+			form.locator('input[name="email"]').press("Enter"),
 		]);
+		const posted = new URLSearchParams(place.request().postData() ?? "");
+		expect(posted.get("intent"), "Enter did not go through the hidden enter button").toBe("enter");
 
 		// THE ASSERTIONS: the browser sent the real origin, and the guard let it through.
 		const origin = await place.request().headerValue("origin");

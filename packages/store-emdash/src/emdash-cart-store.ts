@@ -245,6 +245,17 @@ export class EmdashCartStore implements CartStore {
 		return this.#toCart(normalizeCartDoc(doc));
 	}
 
+	/** ONE read of the cart document — the lines' stored quantities, no
+	 *  reservation lookup (`get`'s per-line inventory reads), no write. */
+	async units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null> {
+		const doc = await this.#carts.get(cartId);
+		if (doc === null) return null;
+		const cart = normalizeCartDoc(doc);
+		let units = 0;
+		for (const line of Object.values(cart.lines)) units += line.qty;
+		return { state: cart.state, units };
+	}
+
 	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
 		// The key alone cannot find an embedded map entry, so the locator resolves
 		// the cart and the cart's own ledger answers.

@@ -36,6 +36,13 @@ export interface CartStore {
 	/** Read a cart with its lines (each carrying its live reservation state), or null. */
 	get(cartId: string): Promise<Cart | null>;
 	/**
+	 * The cart's state and the sum of its lines' quantities, or null for an unknown
+	 * cart — from the cart's OWN record only: no reservation state, no hold expiry,
+	 * no write. For a reader that only counts (the storefront header, on every
+	 * page), where `get`'s per-line reservation reads would be the whole cost.
+	 */
+	units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null>;
+	/**
 	 * Read the `cart_mutations` ledger entry for `key`, or null. The use-cases
 	 * consult this BEFORE any inventory movement (ledger-first): a `completed`
 	 * entry short-circuits the whole mutation to its recorded result, so a stale

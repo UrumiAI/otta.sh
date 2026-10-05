@@ -44,7 +44,17 @@ import {
 } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
+	clearCheckoutDraft,
+	draftValuesFromForm,
+	writeCheckoutDraft,
+	type DraftField,
+	type DraftFieldError,
+} from "../../lib/checkout-draft.js";
+import {
 	checkoutPath,
+	deliveryDiffers,
+	deliveryUpdatePath,
+	isCouponFailure,
 	placeFailurePath,
 	readCouponCode,
 	shapedDestination,
@@ -71,6 +81,8 @@ const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
 /** The site's own token for a review page placed for a cart the cookie no
  *  longer names (see the module doc). */
 const CHECKOUT_STALE = "CHECKOUT_STALE";
+/** An explicit Apply of the code already applied (it never places). */
+const COUPON_ALREADY_APPLIED = "COUPON_ALREADY_APPLIED";
 
 const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
 
@@ -82,12 +94,15 @@ const OPTIONAL_ADDRESS_FIELDS = ["line2", "phone"] as const;
 /** Two letters — the SHAPE of an ISO 3166-1 alpha-2 code (ADR-0021). */
 const COUNTRY_SHAPE = /^[A-Za-z]{2}$/;
 
+type FieldErrors = Partial<Record<DraftField, DraftFieldError>>;
+
 type AddressResult =
 	| { ok: true; address: Record<string, string> | undefined }
 	/** `partial`: the destination itself is fine — only typed fields are
 	 *  missing — so the redirect keeps it rather than making the buyer choose
-	 *  their delivery again. */
-	| { ok: false; error: string; partial: boolean };
+	 *  their delivery again. `fields`: which fields the refusal is about, so the
+	 *  review can say so beside each one (QA U-1). */
+	| { ok: false; error: string; partial: boolean; fields: FieldErrors };
 
 /**
  * Read the ship-to block. Three outcomes, and the middle one matters:
@@ -118,13 +133,26 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	const filled = counted.filter(([, value]) => value !== undefined);
 	if (filled.length === 0) return { ok: true, address: undefined };
 	if (filled.length !== counted.length || country === undefined) {
-		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: true };
+		const fields: FieldErrors = {};
+		for (const [field, value] of counted) if (value === undefined) fields[field] = "missing";
+		if (country === undefined) fields.country = "missing";
+		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: true, fields };
 	}
 	if (!COUNTRY_SHAPE.test(country)) {
-		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false };
+		return {
+			ok: false,
+			error: INVALID_SHIPPING_ADDRESS,
+			partial: false,
+			fields: { country: "invalid" },
+		};
 	}
 	if (region !== undefined && !isCodeShapedRegion(region)) {
-		return { ok: false, error: SHIPPING_REGION_CODE_REQUIRED, partial: false };
+		return {
+			ok: false,
+			error: SHIPPING_REGION_CODE_REQUIRED,
+			partial: false,
+			fields: { region: "invalid" },
+		};
 	}
 	// Over the domain's own per-field bound (measured after trimming, as the
 	// domain measures it) is the ADDRESS error it is, refused here. Dispatched,
@@ -132,11 +160,15 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	// went wrong" for a buyer whose street name was simply too long (QA U-6).
 	// The inputs carry the same numbers as `maxlength`; this is for whatever
 	// gets past them.
+	const tooLong: FieldErrors = {};
 	for (const field of [...TYPED_ADDRESS_FIELDS, ...OPTIONAL_ADDRESS_FIELDS]) {
 		const value = formString(form.get(field));
 		if (value !== undefined && value.length > ORDER_ADDRESS_MAX_LENGTHS[field]) {
-			return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false };
+			tooLong[field] = "too_long";
 		}
+	}
+	if (Object.keys(tooLong).length > 0) {
+		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: false, fields: tooLong };
 	}
 
 	const address: Record<string, string> = {};
@@ -148,6 +180,19 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 		if (value !== undefined) address[field] = value;
 	}
 	return { ok: true, address };
+}
+
+/** The required ship-to fields the buyer left blank — for the plugin's
+ *  MISSING_SHIPPING_ADDRESS, which names none. */
+function blankRequiredFields(form: FormData, zoned: boolean): FieldErrors {
+	const fields: FieldErrors = {};
+	const required: readonly DraftField[] = zoned
+		? TYPED_ADDRESS_FIELDS
+		: [...TYPED_ADDRESS_FIELDS, "country"];
+	for (const field of required) {
+		if (formString(form.get(field)) === undefined) fields[field] = "missing";
+	}
+	return fields;
 }
 
 /** Every response — above all the 303 to /checkout/pay — is sent
@@ -166,6 +211,23 @@ async function place(context: APIContext): Promise<Response> {
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 
+	// What the buyer typed, kept across every refusal below (QA U-1) — in the
+	// draft cookie, never in the redirect URL (see lib/checkout-draft.ts).
+	const draftValues = draftValuesFromForm(form);
+	const refuse = (
+		path: string,
+		error: string | undefined,
+		extra: { fields?: FieldErrors; coupon?: string | undefined } = {},
+	): Response => {
+		writeCheckoutDraft(context.cookies, {
+			values: draftValues,
+			errors: extra.fields ?? {},
+			...(error !== undefined ? { error } : {}),
+			...(extra.coupon !== undefined ? { coupon: extra.coupon } : {}),
+		});
+		return context.redirect(path, 303);
+	};
+
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
 	// every redirect below can carry it back: it is not personal data. Trimmed,
 	// never case-folded (lookup is case-sensitive); blank ⇒ OMITTED, never `""`,
@@ -173,7 +235,7 @@ async function place(context: APIContext): Promise<Response> {
 	// refused here as what it is — no such coupon — without a dispatch.
 	const coupon = readCouponCode(formString(form.get("couponCode")));
 	if (coupon.rejected !== undefined) {
-		return context.redirect(placeFailurePath(coupon.rejected.reason, {}), 303);
+		return refuse(placeFailurePath(coupon.rejected.reason, {}), coupon.rejected.reason);
 	}
 	const couponCode = coupon.couponCode;
 	// The method the review priced (a radio, or the lone option it preselected),
@@ -195,12 +257,73 @@ async function place(context: APIContext): Promise<Response> {
 			: {}),
 	};
 
+	// APPLY / REMOVE COUPON (QA U-1). These buttons submit THIS form (they sit
+	// beside the coupon field, `form="checkout-place"`, without browser
+	// validation), so changing the coupon no longer drops everything typed below
+	// it: the typed values go into the draft and the review re-renders priced
+	// with the new code. An explicit Apply NEVER places — the applied code again
+	// is answered "already applied".
+	//
+	// ENTER (review round 1). Enter in a details field submits through the form's
+	// first submit button, a hidden `intent=enter` (CheckoutView.astro), never
+	// through Apply. It applies a code typed into the box that differs from the
+	// applied one — unless it is the code just REFUSED, put back for correcting
+	// (`refusedCoupon`), which would only loop on the same refusal; re-prices a
+	// changed delivery (below); and otherwise places.
+	const intent = formString(form.get("intent"));
+	const typedCoupon = readCouponCode(formString(form.get("coupon")));
+	const typedCode = typedCoupon.couponCode ?? typedCoupon.rejected?.code;
+	if (intent === "remove-coupon") {
+		return refuse(checkoutPath({ ...selection, couponCode: undefined }), undefined);
+	}
+	if (intent === "apply-coupon") {
+		if (typedCode !== undefined && typedCode === couponCode) {
+			return refuse(
+				checkoutPath({ ...selection, error: COUPON_ALREADY_APPLIED }),
+				COUPON_ALREADY_APPLIED,
+			);
+		}
+		return refuse(checkoutPath({ ...selection, couponCode: typedCode }), undefined);
+	}
+	if (
+		intent === "enter" &&
+		typedCode !== couponCode &&
+		typedCode !== undefined &&
+		typedCode !== formString(form.get("refusedCoupon"))
+	) {
+		return refuse(checkoutPath({ ...selection, couponCode: typedCode }), undefined);
+	}
+
+	// UPDATE DELIVERY (QA U-1): like Apply, a submit of THIS form, so changing
+	// where the order goes keeps everything typed. And the safety net: any other
+	// submit (Enter in a field goes through Apply, the form's default button)
+	// whose delivery fields differ from the ones the totals were priced with is
+	// re-priced, never placed at the old price.
+	const delivery = {
+		country: formString(form.get("deliveryCountry")),
+		region: formString(form.get("deliveryRegion")),
+		method: formString(form.get("deliveryMethod")),
+		fromCountry: formString(form.get("fromCountry")),
+		fromRegion: formString(form.get("fromRegion")),
+	};
+	if (
+		intent === "update-delivery" ||
+		(zoned &&
+			deliveryDiffers(delivery, {
+				country: formString(form.get("country")),
+				region: formString(form.get("region")),
+				method: shippingMethodId,
+			}))
+	) {
+		return refuse(deliveryUpdatePath(delivery, couponCode), undefined);
+	}
+
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
 	// order would hold stock for 15 minutes against a payment that structurally
 	// cannot happen. (A malformed key never reaches here — it fails the build.)
 	if (STRIPE_PUBLISHABLE_KEY === undefined) {
-		return context.redirect(placeFailurePath(STRIPE_NOT_CONFIGURED, selection), 303);
+		return refuse(placeFailurePath(STRIPE_NOT_CONFIGURED, selection), STRIPE_NOT_CONFIGURED);
 	}
 
 	const cartId = currentCartId(context);
@@ -210,20 +333,16 @@ async function place(context: APIContext): Promise<Response> {
 	const rawEmail = form.get("email");
 	const email = typeof rawEmail === "string" ? normalizeBuyerRef(rawEmail) : "";
 	if (!isPlausibleEmail(email)) {
-		// DELIBERATE deviation from the plan's "other form values preserved":
-		// nothing typed is echoed back through the redirect. Carrying a home
+		// Nothing typed is echoed back through the redirect: carrying a home
 		// address and an email through a query string puts them in browser
 		// history, in the Referer of every subresource and in Cloudflare's access
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
-		// secret. The buyer re-enters; the PII does not travel. (The coupon does:
-		// it is not personal data.)
-		// COST, stated plainly: this check runs BEFORE readShippingAddress, so a
-		// mistyped email discards any typed shipping address too — not just the
-		// email. The alternative that would preserve both without a URL is
-		// re-rendering from the POST response instead of 303-ing, which was not
-		// taken because it breaks POST-redirect-GET (reload re-POSTs). Revisit if
-		// the re-entry cost shows up in real use.
-		return context.redirect(placeFailurePath(INVALID_EMAIL, selection), 303);
+		// secret. They travel in the draft cookie instead (QA U-1), and the address
+		// is checked here too, so every field that needs fixing is marked at once.
+		const address = readShippingAddress(form, zoned);
+		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
+			fields: { email: "invalid", ...(address.ok ? {} : address.fields) },
+		});
 	}
 
 	// Derived from the COOKIE's cart; the form's copy is only checked against it
@@ -234,16 +353,17 @@ async function place(context: APIContext): Promise<Response> {
 	}
 	const idempotencyKey = checkoutIdempotencyKey(cartId);
 	if (formKey !== idempotencyKey) {
-		return context.redirect(placeFailurePath(CHECKOUT_STALE, selection), 303);
+		return refuse(placeFailurePath(CHECKOUT_STALE, selection), CHECKOUT_STALE);
 	}
 
 	const shipping = readShippingAddress(form, zoned);
 	if (!shipping.ok) {
-		return context.redirect(
+		return refuse(
 			shipping.partial
 				? checkoutPath({ ...selection, error: shipping.error })
 				: placeFailurePath(shipping.error, selection),
-			303,
+			shipping.error,
+			{ fields: shipping.fields },
 		);
 	}
 
@@ -274,13 +394,30 @@ async function place(context: APIContext): Promise<Response> {
 	// route that mints a payment intent). The 503 invites the buyer to try again:
 	// a reload re-posts the same `checkout:<cartId>` key, and since #337 a
 	// same-key replay finishes a partial first attempt rather than skipping it.
-	if (isBusyResult(result)) return busyResponse("/checkout");
+	if (isBusyResult(result)) {
+		writeCheckoutDraft(context.cookies, { values: draftValues, errors: {} });
+		return busyResponse("/checkout");
+	}
 	if (result === null || !result.ok) {
 		// Back to /checkout, which can explain and let the buyer retry — the cart
 		// is still theirs, and for CART_CHECKED_OUT the page offers a way out. The
-		// part of the selection a refusal blames is dropped; the rest is kept.
-		return context.redirect(placeFailurePath(failureToken(result), selection), 303);
+		// part of the selection a refusal blames is dropped; the rest is kept, and
+		// so is everything typed (the draft). A refused coupon is dropped from the
+		// URL but comes back into its field, to be corrected.
+		const token = failureToken(result);
+		return refuse(placeFailurePath(token, selection), token, {
+			fields:
+				token === SHIPPING_REGION_CODE_REQUIRED
+					? { region: "invalid" }
+					: token === "MISSING_SHIPPING_ADDRESS"
+						? blankRequiredFields(form, zoned)
+						: {},
+			coupon: isCouponFailure(token) ? couponCode : undefined,
+		});
 	}
+
+	// Placed: the typed values have done their job.
+	clearCheckoutDraft(context.cookies);
 
 	// A replay of an order that has already LEFT pending: no intent was minted
 	// and none is needed. Straight to the order — treating this as an error

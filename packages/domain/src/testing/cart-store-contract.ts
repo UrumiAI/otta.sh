@@ -54,6 +54,26 @@ export function cartStoreContract(
 			expect(new Set([first, other, unkeyed]).size).toBe(3);
 		});
 
+		// The storefront header asks this on every uncached page a shopper with a cart
+		// loads (QA U-14), so it must be the cart's own document and nothing else: the
+		// state and the summed quantities, with no hold resolution and no writes.
+		test("units(): the cart's state and summed quantities, agreeing with get(); null for an unknown cart", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-UNITS-A", 10);
+			await h.seedStock("SKU-UNITS-B", 10);
+			const cartId = await createCart(h.deps, USD);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: 0 });
+			await addLine(h.deps, cartId, sku("SKU-UNITS-A"), null, 2, idempotencyKey("k-units-a"));
+			await addLine(h.deps, cartId, sku("SKU-UNITS-B"), null, 3, idempotencyKey("k-units-b"));
+			const read = await h.deps.cartStore.get(cartId);
+			const summed = read?.lines.reduce((sum, line) => sum + line.qty, 0);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: summed });
+			expect(summed).toBe(5);
+			await h.deps.cartStore.checkout(cartId, brandOrderId("ord-units-1"));
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "checked_out", units: 5 });
+			expect(await h.deps.cartStore.units("cart-units-never-minted")).toBeNull();
+		});
+
 		test("concurrent keyed creates converge on one cart", async () => {
 			const h = await makeHarness();
 			const key = idempotencyKey("rotate:cart-spent-race");

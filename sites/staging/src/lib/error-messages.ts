@@ -121,6 +121,13 @@ const MESSAGES: Record<string, string> = {
 	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
+	/* Resuming a payment with the order's email (QA U-2): one generic sentence
+	   for a wrong address — it says nothing the order link does not already. */
+	EMAIL_MISMATCH: "That email doesn't match this order.",
+	THROTTLED:
+		"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
+	/* An explicit Apply of the code already applied: re-rendered, never placed. */
+	COUPON_ALREADY_APPLIED: "That code is already applied.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 	...SELECTION_MESSAGES,

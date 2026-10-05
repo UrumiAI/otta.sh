@@ -6,6 +6,9 @@
  * spans: the sequence IS the meaning, and `aria-current="step"` is the only way
  * a screen reader gets the same thing the straw dot gives everyone else.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import StepTrack, { CHECKOUT_STEPS } from "../src/components/StepTrack.astro";
@@ -82,5 +85,43 @@ describe("StepTrack — the sequence is in the markup, not only in the styling",
 	test("the dots are decoration and are hidden from a screen reader", async () => {
 		const html = await track("details");
 		expect(html.match(/class="dot"[^>]*aria-hidden="true"/g) ?? []).toHaveLength(4);
+	});
+});
+
+describe("StepTrack — a journey that stopped (QA U-13)", () => {
+	const halted = (current: string): Promise<string> =>
+		container.renderToString(StepTrack, { props: { current, halted: true } });
+
+	test("the step it stopped at is marked halted, not current-and-in-progress", async () => {
+		expect(states(await halted("payment"))).toEqual(["done", "done", "halted", undefined]);
+	});
+
+	test("it SAYS the step was not completed, and claims completion only for the steps before it", async () => {
+		const html = await halted("payment");
+		expect(html.match(/, completed/g) ?? []).toHaveLength(2); // cart + details
+		expect(html).toContain(", not completed");
+	});
+
+	test("it is still the step the shopper is on, for a screen reader", async () => {
+		expect((await halted("payment")).match(/aria-current="step"/g) ?? []).toHaveLength(1);
+	});
+
+	test("without `halted`, nothing changes", async () => {
+		expect(await track("payment")).not.toContain("not completed");
+	});
+});
+
+describe("StepTrack — a halted step is quiet, not crossed out", () => {
+	test("its label is muted; no line-through (the open ring and the words carry it)", () => {
+		const source = readFileSync(
+			path.resolve(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"../src/components/StepTrack.astro",
+			),
+			"utf8",
+		);
+		const halted = /li\[data-state="halted"\] \.label \{[^}]*\}/.exec(source)?.[0] ?? "";
+		expect(halted).toContain("var(--u-mute)");
+		expect(source).not.toMatch(/line-through/);
 	});
 });
