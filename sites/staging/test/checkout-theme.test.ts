@@ -182,6 +182,16 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		);
 	});
 
+	test("review B: the required address fields say so to assistive tech, not only in the label", () => {
+		for (const name of ["name", "line1", "city", "postalCode", "country"]) {
+			const field =
+				new RegExp(`<(?:input|select)(?![^>]*type="hidden")[^>]*?name="${name}"[\\s\\S]*?>`).exec(
+					VIEW.slice(VIEW.indexOf('<fieldset class="checkout-group">')),
+				)?.[0] ?? "";
+			expect(field, name).toContain("aria-required={summary.addressRequired}");
+		}
+	});
+
 	test("the address block is one answer in eight boxes, and says so", () => {
 		// `place.ts` treats the five required fields as ALL-OR-NOTHING, so the
 		// grouping is semantic, not decorative.
@@ -406,6 +416,8 @@ describe("/checkout — the coupon: the page's half", () => {
 	test("issue #382: an address refused for the payment account's sake is explained as that, not as delivery", () => {
 		expect(REVIEW).toContain('"BUYER_ADDRESS_REQUIRED"');
 		expect(REVIEW).toMatch(/summary\.paymentAccountNeedsAddress/);
+		// A partly filled address on a cart that ships nothing is not a "delivery address".
+		expect(REVIEW).toContain('INVALID_SHIPPING_ADDRESS: "BUYER_ADDRESS_INVALID"');
 	});
 
 	test("the retired 'unreachable' note stays retired on the page too", () => {

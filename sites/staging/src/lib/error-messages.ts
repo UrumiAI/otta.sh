@@ -131,6 +131,8 @@ const MESSAGES: Record<string, string> = {
 	   India — the address is for the payment, not for a delivery. */
 	BUYER_ADDRESS_REQUIRED:
 		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
+	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
+	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	/* Resuming a payment with the order's email (QA U-2): one generic sentence

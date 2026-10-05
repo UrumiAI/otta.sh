@@ -118,6 +118,13 @@ describe("cartErrorMessage", () => {
 		expect(message).not.toMatch(/deliver/i);
 	});
 
+	test("BUYER_ADDRESS_INVALID (issue #382) is the address error without the word delivery", () => {
+		const message = cartErrorMessage("BUYER_ADDRESS_INVALID");
+		expect(message).toMatch(/address/i);
+		expect(message).not.toMatch(/deliver/i);
+		expect(message).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
+	});
+
 	test("INVALID_EMAIL is specific enough to act on", () => {
 		const message = cartErrorMessage("INVALID_EMAIL");
 		expect(message).toMatch(/email/i);

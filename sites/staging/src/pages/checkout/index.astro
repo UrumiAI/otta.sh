@@ -253,13 +253,16 @@ const sumRows = [
  * token-to-sentence mapping (§10) is the page's, so no theme can print a raw
  * token or phrase one differently.
  */
-/** Issue #382: a cart that ships nothing was refused its missing address for
- *  the PAYMENT ACCOUNT's sake (India), not for a delivery — and says so. */
+/** Issue #382: on a cart that ships nothing the address is not a delivery
+ *  address — it is asked for because the store's Stripe account (India) needs
+ *  the buyer's name and billing address — so its refusals say so. */
+const NO_DELIVERY_ADDRESS_ERRORS: Record<string, string> = {
+	MISSING_SHIPPING_ADDRESS: "BUYER_ADDRESS_REQUIRED",
+	INVALID_SHIPPING_ADDRESS: "BUYER_ADDRESS_INVALID",
+};
 const shownErrorToken =
-	shownError === "MISSING_SHIPPING_ADDRESS" &&
-	summary.paymentAccountNeedsAddress &&
-	!summary.requiresShipping
-		? "BUYER_ADDRESS_REQUIRED"
+	shownError !== null && summary.paymentAccountNeedsAddress && !summary.requiresShipping
+		? (NO_DELIVERY_ADDRESS_ERRORS[shownError] ?? shownError)
 		: shownError;
 const model: CheckoutModel = {
 	summary,
