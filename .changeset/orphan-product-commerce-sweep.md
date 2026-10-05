@@ -17,9 +17,10 @@ holding the sku the new product needs.
   database failing reads at random reads like products deleted at random. The tombstone is final
   and releases the sku, so it takes all of:
   - the CMS lists at least one product in that run (otherwise the run judges nothing);
-  - the page is not mostly missing (at least three rows read, and more than half missing,
-    abandons it — so on the Workers Free first pass, pages of one or two rows, this only fires on
-    a second pass);
+  - the page is not an outage: at least three, and more than 30%, of its rows missing on the
+    FIRST read (before re-reads), or more than half still missing after them, abandons it (three
+    rows read at least, so on the Workers Free first pass, pages of one or two rows, these only
+    fire on a second pass);
   - three misses in a row for the row in one run, in a run that read some other document
     successfully (the page's, or the product the list returned);
   - three such strikes, from runs at least fifteen minutes apart — any read that finds the
@@ -29,8 +30,9 @@ holding the sku the new product needs.
 
   A read that rejects never counts; a row whose read rejects on three runs in a row is stepped
   past, left live. Every stop logs a `cron sweep product-orphans` error line. A seeded simulation
-  of random read failures (40 live products, 360 ticks) tombstones none at failure rates up to
-  30% on either preset. At a sustained 50% on Paid it struck out 2.
+  of random read failures (40 live products, 360 ticks, `get` failing alone or with `list`)
+  tombstones no live product at any failure rate up to 70%, on either preset. While reads are
+  failing, real orphans wait — the safe direction.
 - **The soft delete is the hook's own** — the same use-case under the same idempotency key, so the
   sweep and a late hook delivery converge on one tombstone and a replay is a no-op. It keeps the
   row's commercial data, releases its sku claim, and touches no order, stock or hold.

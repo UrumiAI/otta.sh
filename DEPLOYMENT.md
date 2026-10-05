@@ -444,8 +444,9 @@ commerce row whose CMS product is gone (deleted or in the trash) when the delete
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
 sandboxed path EmDash's bridge answers `null` for any D1 error. So a run first checks that the
-CMS lists at least one product, and judges nothing otherwise. A page on which at least three, and
-more than half, of the products read are missing is abandoned as an outage. That breaker needs
+CMS lists at least one product, and judges nothing otherwise. A page is abandoned as an outage when
+at least three, and more than 30%, of the products read on it miss on the FIRST read (before any
+re-read), or when more than half are still missing after their re-reads. Those breakers need
 three rows read, so on the Workers Free preset's first pass (pages of one or two rows) it fires
 only on a second pass; there the other gates do the work. A missing document is re-read twice on
 the spot, and counts as a strike only in a run that read some other document successfully (if
@@ -460,10 +461,14 @@ on Paid; an orphan is tombstoned on the third pass that finds it, so up to about
 on Free. The leg has no deadline, so it is never promoted ahead of other legs by aging. **The
 residual risk on a sandboxed host:** a CMS database failing reads at random is
 indistinguishable from deletions. A seeded simulation (40 live products, 360 one-minute ticks,
-every read independently failing to `null`) tombstones none at failure rates up to 30%. At a
-sustained 50% for six hours, on the Paid preset, it struck out 2 of 40. The tombstone is
-final, so a live product struck out that way sells again only once it is duplicated in the CMS
-(a new id, and its pricing re-entered). The outbox, the two expiry legs, the
+every product read failing to `null` independently, with and without the list failing at the
+same rate) tombstoned no live product at any failure rate up to 70%, on either preset. That is
+one seed, not a proof. The tombstone is final, so a live product ever struck out that way sells
+again only once it is duplicated in the CMS (a new id, and its pricing re-entered). **While CMS
+reads are failing, real orphans WAIT:** every breaker trip wipes the strikes gathered so far, so
+under sustained failures (and on Workers Free, even under a list that fails one time in twenty) an
+orphan may not be tombstoned for hours. That is the safe direction. A dense backlog of real
+orphans (three or more, and over 30%, of one page) also waits, logged on every run. The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.

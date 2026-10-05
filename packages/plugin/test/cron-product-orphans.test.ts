@@ -281,6 +281,45 @@ describe("three strikes, a cadence apart", () => {
 		expect(await lifecycleOf("p-alone")).toBe("deleted");
 	});
 
+	test("one orphan among three rows on the Workers Free budget never trips a breaker (three first-look misses are the floor) and is struck out", async () => {
+		for (const [i, id] of ["p-f0", "p-f1", "p-f2"].entries()) {
+			await product(id, new Date(CREATED.getTime() + i * 1000));
+		}
+		const cms = fakeCms({ mode: "bridge", gone: ["p-f1"] });
+		const cursors = memoryCursors();
+		let doneAt: number | null = null;
+		for (let t = 0; t < 120 && doneAt === null; t++) {
+			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: FREE }));
+			expect(leg.anomalies ?? [], `tick ${String(t)}`).toEqual([]);
+			if ((await lifecycleOf("p-f1")) === "deleted") doneAt = t;
+		}
+		expect(doneAt, "the orphan was never struck out").not.toBeNull();
+		for (const id of ["p-f0", "p-f2"]) expect(await lifecycleOf(id), id).toBe("live");
+	});
+
+	test("the first-look breaker: three of eight rows missing on the first read abandons the page — even though every re-read then found them", async () => {
+		const ids = Array.from({ length: 8 }, (_, i) => `p-fl${String(i)}`);
+		for (const [i, id] of ids.entries()) await product(id, new Date(CREATED.getTime() + i * 1000));
+		const cms = fakeCms({ mode: "bridge", gone: ["p-fl0"] });
+		const cursors = memoryCursors();
+		await tick(cms, cursors);
+		expect(strikesOf(await orphanState(cursors))).toEqual({ "p-fl0": 1 });
+
+		// p-fl1 and p-fl2 flicker: missing on the first look, found on the re-read.
+		const flicker = new Set(["p-fl1", "p-fl2"]);
+		cms.beforeGet = (id) => {
+			if (!flicker.has(id)) return;
+			if (cms.gone.has(id)) cms.gone.delete(id);
+			else cms.gone.add(id);
+		};
+		const tripped = orphanLeg(await tick(cms, cursors, CADENCE));
+		expect(tripped.anomalies?.join("\n")).toMatch(
+			/3 of 8 products read on this page missed on the first look/,
+		);
+		expect((await orphanState(cursors)).suspects).toEqual({});
+		for (const id of ids) expect(await lifecycleOf(id), id).toBe("live");
+	});
+
 	test("a row younger than the grace window is not read, and is judged once it is older", async () => {
 		await product("p-young", new Date(NOW.getTime() - PRODUCT_ORPHAN_GRACE_MS + MINUTE_MS));
 		const cms = fakeCms({ gone: ["p-young"] });
@@ -533,7 +572,8 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 
 	test(`at most ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones a tick — second pass included — logged when the cap is hit; the rest go on the next tick`, async () => {
 		const gone = Array.from({ length: 7 }, (_, i) => `p-cap-g${String(i)}`);
-		const kept = Array.from({ length: 8 }, (_, i) => `p-cap-k${String(i)}`);
+		// Enough found rows that seven misses stay under the first-look breaker's 30%.
+		const kept = Array.from({ length: 20 }, (_, i) => `p-cap-k${String(i)}`);
 		for (const [i, id] of [...gone, ...kept].entries()) {
 			await product(id, new Date(CREATED.getTime() + i * 1000));
 		}
@@ -666,37 +706,50 @@ describe("the walk fits the budget and pages across ticks", () => {
 });
 
 /**
- * THE INTERMITTENT-FAILURE SIMULATION (review round 2). The sandbox bridge answers
- * `null` for any D1 error, so a database failing some reads at random looks like
- * products disappearing at random. Forty live products and one real orphan, the
- * circuit breaker's list answering, and EVERY `get` (the canary's too) failing to
- * `null` independently with probability p, for 360 one-minute ticks on each preset,
- * from a fixed seed so the run is the same every time. Two strikes alone tombstoned
- * 5 (p = 0.15) and 20-26 (p = 0.3) live products here.
+ * THE INTERMITTENT-FAILURE SIMULATION (review rounds 2 and 3). The sandbox bridge
+ * answers `null` for any D1 error, so a database failing some reads at random looks
+ * like products disappearing at random. Forty live products and one real orphan, for
+ * 360 one-minute ticks on each preset, from a fixed seed so the run is the same every
+ * time. EVERY `get` (the canary's too) fails to `null` independently with probability
+ * p; in the `list fails too` variant the circuit breaker's list also comes back empty
+ * with the same probability. Two strikes alone tombstoned 5 (p = 0.15) and 20-26
+ * (p = 0.3) live products; three strikes without the first-look breaker still struck
+ * out up to 25 at p = 0.7 on Paid.
  */
 describe("intermittent CMS failures never tombstone a live product (seeded)", () => {
-	// Measured with seed 374 — the false tombstones each run produced, and whether the
-	// real orphan was tombstoned within the 360 ticks.
+	// Measured with seed 374: the false tombstones each run produced, and whether the
+	// real orphan was tombstoned within the 360 ticks. During sustained failures the
+	// orphan WAITS — liveness drops, the safe direction — which is the `false`s here.
 	const EXPECTED: Record<string, { falseTombstones: number; orphanCaught: boolean }> = {
-		"30@0.05": { falseTombstones: 0, orphanCaught: true },
-		"30@0.15": { falseTombstones: 0, orphanCaught: true },
-		// Safe, not live: on Free, the sustained failures keep the orphan from three
-		// clean strikes inside six hours.
-		"30@0.3": { falseTombstones: 0, orphanCaught: false },
-		"30@0.5": { falseTombstones: 0, orphanCaught: false },
-		"600@0.05": { falseTombstones: 0, orphanCaught: true },
-		"600@0.15": { falseTombstones: 0, orphanCaught: true },
-		"600@0.3": { falseTombstones: 0, orphanCaught: true },
-		// THE RESIDUAL, outside the target (p ≤ 0.3): half of all reads failing for six
-		// hours straight, on Paid, struck out 2 of 40 live products. See DEPLOYMENT.md §5.
-		"600@0.5": { falseTombstones: 2, orphanCaught: true },
+		"get 30@0.05": { falseTombstones: 0, orphanCaught: true },
+		"get 30@0.15": { falseTombstones: 0, orphanCaught: true },
+		"get 30@0.3": { falseTombstones: 0, orphanCaught: false },
+		"get 30@0.5": { falseTombstones: 0, orphanCaught: false },
+		"get 30@0.7": { falseTombstones: 0, orphanCaught: false },
+		"get 600@0.05": { falseTombstones: 0, orphanCaught: true },
+		"get 600@0.15": { falseTombstones: 0, orphanCaught: true },
+		"get 600@0.3": { falseTombstones: 0, orphanCaught: true },
+		"get 600@0.5": { falseTombstones: 0, orphanCaught: false },
+		"get 600@0.7": { falseTombstones: 0, orphanCaught: false },
+		"get+list 30@0.05": { falseTombstones: 0, orphanCaught: false },
+		"get+list 30@0.15": { falseTombstones: 0, orphanCaught: false },
+		"get+list 30@0.3": { falseTombstones: 0, orphanCaught: false },
+		"get+list 30@0.5": { falseTombstones: 0, orphanCaught: false },
+		"get+list 30@0.7": { falseTombstones: 0, orphanCaught: false },
+		"get+list 600@0.05": { falseTombstones: 0, orphanCaught: true },
+		"get+list 600@0.15": { falseTombstones: 0, orphanCaught: true },
+		"get+list 600@0.3": { falseTombstones: 0, orphanCaught: true },
+		"get+list 600@0.5": { falseTombstones: 0, orphanCaught: false },
+		"get+list 600@0.7": { falseTombstones: 0, orphanCaught: false },
 	};
-	const cases = [FREE, PAID].flatMap((budget) =>
-		[0.05, 0.15, 0.3, 0.5].map((p) => ({ budget, p })),
+	const cases = (["get", "get+list"] as const).flatMap((failing) =>
+		[FREE, PAID].flatMap((budget) =>
+			[0.05, 0.15, 0.3, 0.5, 0.7].map((p) => ({ failing, budget, p })),
+		),
 	);
 	test.each(cases)(
-		"budget $budget, each read null with p = $p, 360 ticks",
-		async ({ budget, p }) => {
+		"$failing failing, budget $budget, p = $p, 360 ticks",
+		async ({ failing, budget, p }) => {
 			const live = Array.from({ length: 40 }, (_, i) => `p-sim-${String(i).padStart(2, "0")}`);
 			for (const [i, id] of live.entries()) {
 				await product(id, new Date(CREATED.getTime() + i * 1000));
@@ -704,6 +757,7 @@ describe("intermittent CMS failures never tombstone a live product (seeded)", ()
 			await product("p-sim-orphan", new Date(CREATED.getTime() + 20_500));
 			const cms = fakeCms({ mode: "bridge", gone: ["p-sim-orphan"] });
 			cms.nullRate = p;
+			if (failing === "get+list") cms.listFailRate = p;
 			cms.random = seededRandom(374);
 			const cursors = memoryCursors();
 			for (let t = 0; t < 360; t++) {
@@ -713,7 +767,9 @@ describe("intermittent CMS failures never tombstone a live product (seeded)", ()
 			let falseTombstones = 0;
 			for (const id of live) if ((await lifecycleOf(id)) === "deleted") falseTombstones++;
 			const orphanCaught = (await lifecycleOf("p-sim-orphan")) === "deleted";
-			expect({ falseTombstones, orphanCaught }).toEqual(EXPECTED[`${String(budget)}@${String(p)}`]);
+			expect({ falseTombstones, orphanCaught }).toEqual(
+				EXPECTED[`${failing} ${String(budget)}@${String(p)}`],
+			);
 		},
 		120_000,
 	);

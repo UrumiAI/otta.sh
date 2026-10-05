@@ -139,6 +139,8 @@ export interface FakeCms {
 	/** INTERMITTENT failure: each `get` independently answers `null` with this
 	 *  probability, drawn from `random` — the bridge swallowing a sporadic D1 error. */
 	nullRate: number;
+	/** Likewise for `list`: an empty page with this probability (the bridge's catch). */
+	listFailRate: number;
 	random: () => number;
 	access(count?: () => void): ContentReadAccess;
 }
@@ -176,6 +178,7 @@ export function fakeCms(
 		outage: false,
 		listEmpty: false,
 		nullRate: 0,
+		listFailRate: 0,
 		random: Math.random,
 		status: new Map(Object.entries(spec.status ?? {})),
 		reads: [],
@@ -210,6 +213,9 @@ export function fakeCms(
 						throw new Error("D1_ERROR: list timed out");
 					}
 					if (cms.listEmpty) return { items: [], hasMore: false };
+					if (cms.listFailRate > 0 && cms.random() < cms.listFailRate) {
+						return { items: [], hasMore: false };
+					}
 					return {
 						items: [{ id: "listed", type: collection, status: "published", data: {} }],
 						hasMore: true,

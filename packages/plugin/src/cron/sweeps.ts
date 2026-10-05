@@ -564,6 +564,22 @@ export const ORPHAN_READS_PER_STRIKE = 3;
 export const ORPHAN_MASS_MIN_NULLS = 3;
 
 /**
+ * The FIRST-LOOK breaker's share: a page is abandoned when more than this share of
+ * its rows read (and at least `ORPHAN_MASS_MIN_NULLS` of them) missed on the FIRST
+ * read, before any re-read. The re-reads exist to see past a sporadic `null`; this
+ * is what notices that the `null`s are not sporadic. A CMS failing a third of its
+ * reads is an outage, not a merchant: rows reach this leg only when a delete hook
+ * was lost, so real orphans are a few to a catalog, never a third of a page.
+ *
+ * What it costs: a genuine backlog of orphans dense enough to trip it (three or more
+ * on one page, and over 30% of it) WAITS — the page is abandoned, its strikes wiped,
+ * on every run while the density holds. That is the safe direction; the rows stay
+ * live and the error line says why on every run. A single orphan on a page of one,
+ * two or three rows never trips it: three first-look misses are the floor.
+ */
+export const ORPHAN_FIRST_LOOK_MISS_SHARE = 0.3;
+
+/**
  * At most this many tombstones per TICK (both passes of the leg), logged when
  * reached: the last line of defence if every other gate were fooled. Five: a lost
  * delete hook is a rare, one-at-a-time event, so a genuine backlog still clears at
@@ -3004,10 +3020,11 @@ async function releaseOrphanedRedemptions(
  *
  *  1. THE CIRCUIT BREAKER, once per run before any row is read: the CMS must
  *     positively LIST at least one product (`content.list(products, limit 1)`).
- *  2. THE MASS-DISAPPEARANCE BREAKER, per page: when at least
- *     `ORPHAN_MASS_MIN_NULLS` rows, and more than half of the page's rows, read
- *     missing, it is far likelier an outage than real deletions — rows the hook DID
- *     tombstone are not live and never reach this page. It needs three rows read, so
+ *  2. THE MASS-DISAPPEARANCE BREAKERS, per page: when at least
+ *     `ORPHAN_MASS_MIN_NULLS` rows, and more than `ORPHAN_FIRST_LOOK_MISS_SHARE` of the
+ *     page's rows, miss on their FIRST read — or more than half are still missing
+ *     after their re-reads — it is far likelier an outage than real deletions: rows the
+ *     hook DID tombstone are not live and never reach this page. It needs three rows read, so
  *     on the Workers Free preset's first pass (pages of one or two rows) it fires only
  *     on a second pass; the other gates are what cover Free.
  *  3. THE CANARY: a missing row counts only in a QUALIFYING run — one that read some
@@ -3150,7 +3167,13 @@ async function softDeleteOrphanedProducts(
 
 	// Read the page's documents first: GATES 2 and 3 are decided on the run as a whole,
 	// before anything is marked or deleted.
-	type Read = { item: { data: ProductCommerceDoc }; found: boolean; steppedPast?: boolean };
+	type Read = {
+		item: { data: ProductCommerceDoc };
+		found: boolean;
+		/** The first `get` came back `null` (whatever the re-reads then said). */
+		firstLookMissed?: boolean;
+		steppedPast?: boolean;
+	};
 	const reads: Read[] = [];
 	const gate = budget.gate(0, CONTENT_READ_QUERIES);
 	/** What the run must still be able to afford for the row at the cursor, until it
@@ -3167,11 +3190,13 @@ async function softDeleteOrphanedProducts(
 			// A miss is re-read, at a query each, before it counts: a transient `null`
 			// almost never survives three looks in a row.
 			let found = false;
+			let firstLookMissed = false;
 			for (let look = 0; look < ORPHAN_READS_PER_STRIKE && !found; look++) {
 				found = (await content.get(PRODUCTS_COLLECTION, id)) !== null;
+				if (look === 0) firstLookMissed = !found;
 			}
 			delete state.failures[id];
-			reads.push({ item, found });
+			reads.push({ item, found, firstLookMissed });
 		} catch (err) {
 			// The tick's own ceiling is not the CMS failing: stop, and let the runner
 			// report it once what was read is recorded.
@@ -3207,12 +3232,28 @@ async function softDeleteOrphanedProducts(
 		}
 	}
 	const judged = reads.filter((read) => read.steppedPast !== true);
-	// A row the circuit breaker's own list just returned exists, whatever its reads said.
+	// A row whose id the gate-1 list just RETURNED counts as found, whatever its `get`s
+	// said: the list is a successful read of that very document in this run.
 	for (const read of judged) {
 		if (!read.found && listed.includes(read.item.data.productId)) read.found = true;
 	}
 
-	// GATE 2 — a mass disappearance is an outage until proven otherwise.
+	// GATE 2 — a mass disappearance is an outage until proven otherwise. Two views of
+	// it: the FIRST-LOOK miss rate (the reads before any re-read — what an intermittently
+	// failing CMS shows), and the rows still missing after their re-reads.
+	const firstLookMisses = judged.filter((read) => read.firstLookMissed === true).length;
+	if (
+		firstLookMisses >= ORPHAN_MASS_MIN_NULLS &&
+		firstLookMisses > ORPHAN_FIRST_LOOK_MISS_SHARE * judged.length
+	) {
+		const r = await outage(
+			`${String(firstLookMisses)} of ${String(judged.length)} products read on this page missed on` +
+				" the first look — a CMS failing that many reads is an outage, so the page was" +
+				" abandoned: nothing marked, nothing deleted",
+		);
+		if (pendingError !== undefined) throw pendingError;
+		return legResult(0, false, r.anomalies);
+	}
 	const nulls = judged.filter((read) => !read.found).length;
 	if (nulls >= ORPHAN_MASS_MIN_NULLS && nulls * 2 > judged.length) {
 		const r = await outage(
