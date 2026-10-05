@@ -359,6 +359,26 @@ the sweep keeps retrying, and the attempt that lands clears it by compare-and-cl
 text, as the cancel clears its own "did not finish" flag. Three is small on purpose: the sweep
 runs every minute, so the operator hears within minutes, and one busy tick does not page anyone.
 
+**Review round 1 (2026-10-05).**
+- **One path.** The cancel right after its flip, a replay and the sweep all run the restock
+  through one helper (`runOwedRestock`), so whichever lands it clears the stuck-restock flag. The
+  clear is a compare-and-clear on that flag's own text, resolved with a new outcome,
+  **`restocked`** (written by Otta only; not offered to an operator).
+- **Back-off once flagged.** From the flagging failure on, each failure stamps
+  `restockPending.retryAt` = now + `cancellationRestockBackoffMs(failures)`: 5 minutes
+  (`CANCELLATION_RESTOCK_BACKOFF_MS`), doubling per further failure, capped at 6 hours
+  (`CANCELLATION_RESTOCK_BACKOFF_MAX_MS`). The document store derives `holdsPendingAt` from
+  `retryAt`, so a restock that cannot land leaves the head of the `hold-intents` scan to newer
+  work, and is still retried when its wait is over. The leg also skips a restock whose `retryAt`
+  is still ahead when another intent brought the order into the scan.
+- **Never over another flag.** The stuck-restock flag, and the leg's "no inventory row" flag, are
+  written only when the order has no flag or (for the former) its own. Otherwise the text is
+  returned (`flagSkipped`) and reported as a sweep anomaly.
+- **Part-way failures are counted.** The restock stops at the first line that throws and reports
+  the units of the lines before it, which are back (their keys are spent). The console then says
+  "N items returned to stock so far; the rest are not back yet and Otta will return them
+  automatically."
+
 **History says so.** While the marker is present, the cancellation's History entry reads
 "restock pending" (`restockPending: true` on the timeline entry, absent otherwise), and "items
 returned to stock" once they are.

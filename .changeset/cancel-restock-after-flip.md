@@ -32,3 +32,11 @@ restock and the cancel (or a cancel that failed) had its shipped units counted b
   `failure` instead of throwing.
 - **History** shows "restock pending" on the cancellation while the units are still owed
   (`restockPending: true` on the timeline entry), in the React admin too.
+- **Review round 1.** Every path that finishes a pending restock (the cancel, a replay, the sweep)
+  clears the stuck-restock flag, resolved with the new `ReconciliationOutcome` `"restocked"`
+  (Otta's own; operators are not offered it). Once flagged, a stuck restock backs off
+  (`restockPending.retryAt`; 5 min doubling to 6 h, `cancellationRestockBackoffMs`) so newer work
+  is not starved; `recordCancellationRestockFailure` takes `{ retryAfterMs }`. Neither restock
+  flag is written over another flag (reported as a sweep anomaly instead). A restock that fails
+  part-way reports the units that came back, and the console says "N items returned to stock so
+  far; the rest …".
