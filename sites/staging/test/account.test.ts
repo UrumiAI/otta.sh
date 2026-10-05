@@ -419,7 +419,8 @@ describe("POST /account/logout", () => {
 		});
 		const response = await LOGOUT_POST(context);
 		expect(response.status).toBe(303);
-		expect(location(response)).toBe("/");
+		// Home, with the one-line "You're signed out" notice (QA2 A5).
+		expect(location(response)).toBe("/?signed-out=1");
 		expect(calls).toEqual([{ route: ACCOUNT_LOGOUT_ROUTE, body: { sessionToken: "sess-1" } }]);
 		expect(cookieOps).toEqual([
 			{ op: "delete", name: SESSION_COOKIE_NAME, options: { path: "/" } },
@@ -431,7 +432,7 @@ describe("POST /account/logout", () => {
 		const { context, cookieOps } = makeContext("/account/logout", {}, handler, {
 			session: "sess-1",
 		});
-		expect(location(await LOGOUT_POST(context))).toBe("/");
+		expect(location(await LOGOUT_POST(context))).toBe("/?signed-out=1");
 		expect(cookieOps).toEqual([
 			{ op: "delete", name: SESSION_COOKIE_NAME, options: { path: "/" } },
 		]);
@@ -440,7 +441,7 @@ describe("POST /account/logout", () => {
 	test("with no session there is nothing to revoke, and the answer is the same", async () => {
 		const { handler, calls } = makeHandler({ [ACCOUNT_LOGOUT_ROUTE]: LOGGED_OUT });
 		const { context } = makeContext("/account/logout", {}, handler);
-		expect(location(await LOGOUT_POST(context))).toBe("/");
+		expect(location(await LOGOUT_POST(context))).toBe("/?signed-out=1");
 		expect(calls).toHaveLength(0);
 	});
 });

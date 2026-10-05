@@ -1,4 +1,3 @@
-import type { ExpiryListOptions } from "../ports/cart-store.js";
 import { assertSweepLimit } from "../sweep/batch.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import {
@@ -9,7 +8,11 @@ import {
 	orderId as toOrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { ExpiredOrder, ReleaseEmailClaimOptions } from "../ports/order-store.js";
+import type {
+	ExpiredOrder,
+	OrderExpiryListOptions,
+	ReleaseEmailClaimOptions,
+} from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
@@ -239,16 +242,26 @@ export class InMemoryOrderStore implements OrderStore {
 		return { order: this.#clone(stored.order), holdsReleased: false };
 	}
 
-	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
 		assertSweepLimit(options.limit);
+		const candidates = [...this.#orders.values()]
+			.filter((stored) => stored.order.state === "pending" && stored.order.holdExpiresAt <= now)
+			.toSorted((a, b) => (a.order.holdExpiresAt < b.order.holdExpiresAt ? -1 : 1));
 		const out: OrderId[] = [];
-		for (const stored of this.#orders.values()) {
+		for (const stored of candidates) {
 			if (options.limit !== undefined && out.length >= options.limit) break;
-			if (stored.order.state === "pending" && stored.order.holdExpiresAt <= now) {
-				out.push(stored.order.id);
-			}
+			if (options.excludeIntentDue === true && this.#hasIntentDue(stored.order.id, now)) continue;
+			out.push(stored.order.id);
 		}
 		return out;
+	}
+
+	/** A payment intent due for withdrawal and not yet withdrawn (see the port). */
+	#hasIntentDue(orderId: OrderId, now: string): boolean {
+		return (this.#intents.get(orderId) ?? []).some(
+			(intent) =>
+				intent.cancelOutcome === null && intent.cancelDueAt !== null && intent.cancelDueAt <= now,
+		);
 	}
 
 	async recordPayment(input: RecordPaymentInput): Promise<void> {
@@ -558,6 +571,7 @@ export class InMemoryOrderStore implements OrderStore {
 		const now = this.#clock.now().toISOString();
 		row.status = "recorded";
 		row.refundRef = input.refundRef;
+		if (input.resolvedBy !== undefined) row.resolvedBy = input.resolvedBy;
 		let fullyRefunded = false;
 		if (stored !== undefined) {
 			stored.order.updatedAt = now;
@@ -602,6 +616,21 @@ export class InMemoryOrderStore implements OrderStore {
 		);
 		if (row === undefined) return false;
 		row.status = "voided";
+		return true;
+	}
+
+	async voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person says the provider never issued it;
+		// the capacity is released and who said so is kept on the row.
+		const row = this.#refunds.find(
+			(r) => r.idempotencyKey === input.idempotencyKey && r.status === "unverified",
+		);
+		if (row === undefined) return false;
+		row.status = "voided";
+		row.resolvedBy = input.resolvedBy;
 		return true;
 	}
 
@@ -728,6 +757,7 @@ export class InMemoryOrderStore implements OrderStore {
 			input.fromState,
 			input.toState,
 			input.enqueueEmail,
+			input.actor ?? null,
 		);
 		const order = await this.getById(input.orderId);
 		return { transitioned, order };
@@ -1078,16 +1108,22 @@ export class InMemoryOrderStore implements OrderStore {
 
 	// -- internals ------------------------------------------------------------
 
-	#guardedFlip(orderId: OrderId, from: OrderState, to: OrderState, enqueue?: boolean): boolean {
+	#guardedFlip(
+		orderId: OrderId,
+		from: OrderState,
+		to: OrderState,
+		enqueue?: boolean,
+		actor: string | null = null,
+	): boolean {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
-		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
-		// no modeled who (markPaid/transition).
-		this.#appendEvent(orderId, from, to, null);
+		// (already-flipped / lost race) writes NO event. The actor is the admin's,
+		// when a `transition` carries one; markPaid has none.
+		this.#appendEvent(orderId, from, to, actor);
 		// A PAID order owes no intent cancels: resolve its unresolved intents in the
 		// same step as the flip, exactly as the real adapter does in the same write.
 		if (to === "paid") {

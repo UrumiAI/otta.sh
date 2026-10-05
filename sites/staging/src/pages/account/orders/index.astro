@@ -19,8 +19,9 @@ import {
 	accountOrderStatus,
 	currentSessionToken,
 	orderMoney,
-	orderPlacedOn,
+	signedInEmail,
 } from "../../../lib/account.js";
+import { orderPlacedAt } from "../../../lib/account-order.js";
 import { keepPrivate } from "../../../lib/no-store.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
@@ -61,7 +62,9 @@ const rows =
 			label: orderLabel(order.lines),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
 			state: accountOrderStatus(order, now),
-			placed: orderPlacedOn(order.createdAt),
+			/* To the minute: two orders of the same thing on one day must not
+			   read alike (QA2 A2). Never any part of the id. */
+			placed: orderPlacedAt(order.createdAt),
 			items: items === 1 ? "1 item" : `${items} items`,
 			total: orderMoney(order.totals.totalCents, order.totals.currency),
 		};
@@ -71,6 +74,11 @@ const model: AccountOrdersModel = {
 	/* BUSY is the page's to say: the view only ever sees the sentence. */
 	errorMessage: orders === null ? cartErrorMessage(busy ? "BUSY" : "SERVICE_UNAVAILABLE") : null,
 	rows,
+	/* Who is signed in, named on this private page (QA2 A7). */
+	signedInAs:
+		orders !== null
+			? await signedInEmail(getPublicPluginApiRouteHandler(Astro.locals), Astro.cookies, Astro.url)
+			: null,
 };
 ---
 

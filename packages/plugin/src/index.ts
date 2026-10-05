@@ -447,7 +447,7 @@ export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
-export { COUNTRY_CODES, isCodeShapedRegion } from "@otta-sh/domain";
+export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh/domain";
 // The shopper-facing name of an order — its products, never its id. The site
 // names an order on its confirmation and account pages; the order emails name
 // it through the same function in the domain, so the site takes THAT one rather

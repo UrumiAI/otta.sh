@@ -60,6 +60,7 @@ import {
 	shapedDestination,
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
+import { ORDER_PLACED_OTHER_EMAIL } from "../../lib/checkout-review.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -71,7 +72,7 @@ import {
 	notAFormResponse,
 	readFormBody,
 } from "../../lib/otta-api.js";
-import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -138,7 +139,9 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 		if (country === undefined) fields.country = "missing";
 		return { ok: false, error: INVALID_SHIPPING_ADDRESS, partial: true, fields };
 	}
-	if (!COUNTRY_SHAPE.test(country)) {
+	// Shaped like a code but naming no country ("ZZ"): refused here with the
+	// field marked (QA2 edge H) — dispatched, the plugin's refusal named none.
+	if (!COUNTRY_SHAPE.test(country) || !COUNTRY_CODES.has(country.toUpperCase())) {
 		return {
 			ok: false,
 			error: INVALID_SHIPPING_ADDRESS,
@@ -230,7 +233,7 @@ async function place(context: APIContext): Promise<Response> {
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
 	// every redirect below can carry it back: it is not personal data. Trimmed,
-	// never case-folded (lookup is case-sensitive); blank ⇒ OMITTED, never `""`,
+	// never case-folded here (the plugin's lookup ignores case, ADR-0025); blank ⇒ OMITTED, never `""`,
 	// which the commerce client would refuse. A code over the plugin's cap is
 	// refused here as what it is — no such coupon — without a dispatch.
 	const coupon = readCouponCode(formString(form.get("couponCode")));
@@ -435,10 +438,25 @@ async function place(context: APIContext): Promise<Response> {
 	//    its amount, never 500 an order whose stock is already held and whose
 	//    intent already exists.
 	const total = checkoutStashTotal(result.total);
+	/* The order's email, masked: the pay page states where the confirmation goes
+	   (QA2 X2), as the resume path's stash already did. */
+	const emailHint =
+		typeof result.buyerRefHint === "string" && result.buyerRefHint.length > 0
+			? result.buyerRefHint
+			: undefined;
 	setCheckoutCookie(context.cookies, {
 		orderId: result.orderId,
 		clientSecret: result.clientAction.clientSecret,
 		...(total !== undefined ? { total } : {}),
+		...(emailHint !== undefined ? { emailHint } : {}),
 	});
+	/* ANOTHER TAB placed this cart's order first, with another email (QA2 X2): the
+	   same-key place replayed that order, which keeps its own email. Never on to
+	   the pay page as if the typed email were used: back to the locked review,
+	   which names the order's (masked) address and offers to pay it or start a
+	   new cart. Stashed above like any place, so "Continue to payment" pays it. */
+	if (result.emailMatches === false) {
+		return seeOther(context, "/checkout", ORDER_PLACED_OTHER_EMAIL);
+	}
 	return seeOther(context, "/checkout/pay");
 }

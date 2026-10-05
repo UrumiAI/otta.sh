@@ -327,6 +327,7 @@ describe("buildOrderTotal", () => {
 			fulfillment: null,
 			cancellation: null,
 			latePayment: "none",
+			refundedCents: 0,
 		}) as PublicOrderWire;
 
 	test("is the order's totalCents, through the one money→string boundary", () => {
@@ -380,6 +381,7 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		fulfillment: null,
 		cancellation: null,
 		latePayment: "none",
+		refundedCents: 0,
 		...extra,
 	});
 
@@ -424,6 +426,13 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 				latePayment,
 			);
 		}
+	});
+
+	test("the ledger's refunded figure rides through untouched — the page says 'Refunded $X' from it (QA2 X3)", () => {
+		expect(
+			buildOrderView(order({}, { state: "paid", refundedCents: 350 }), LOCALE).refundedCents,
+		).toBe(350);
+		expect(buildOrderView(order({}), LOCALE).refundedCents).toBe(0);
 	});
 });
 

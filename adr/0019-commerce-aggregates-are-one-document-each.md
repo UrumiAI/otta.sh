@@ -1602,3 +1602,58 @@ five claims a tick (a day of a few hundred transitions heals within the hour). A
 abandoned checkouts per minute than that needs Workers Paid. The aging state lives in the sweep's
 `ctx.kv` state document; a store that loses it falls back to plain priority order until the next
 tick writes it again.
+
+## Amendment 2026-10-03 (QA round 3) — no expiry ahead of its withdrawal; provider calls are always recorded
+
+**N1 — an order never expires while its intent is payable.**
+
+On an idle Workers Free store, QA round 3 saw an order expire about two minutes after its
+deadline with its PaymentIntent still open; the intent was withdrawn a minute later. Under a
+backlog, intents stayed payable 23–24 minutes past the deadline, and two buyers were charged and
+then refunded.
+
+The head-of-tick `cancel-intents` run skipped the intents of the orders the expiry bite was about
+to flip, and left them to a run after the flip. On Free that run had no room, and with a batch of
+one the skip emptied the whole list.
+
+Now:
+- `cancel-intents` withdraws every due intent on its list. A lapsed order's intent is due at the
+  hold deadline (ADR-0022), so there is no exclusion and no post-expiry run.
+- The expiry never flips an order whose intent is due and not yet withdrawn. Its list drops orders
+  with `intentCancelDueAt <= now`, read off the same page (no extra query), and looks ten orders
+  past the bite so waiting orders do not block the ones behind them.
+- An intent whose cancel failed and was rescheduled is not due until its retry, so a provider
+  outage never holds stock. That order expires, and a late payment is refunded.
+
+The starvation guard's caveat in item 9 above ("if the starving leg is `expire-orders`, an order
+may expire before its intent is withdrawn") no longer holds. A guard tick can delay a withdrawal,
+and the expiry waits with it.
+
+**N2 — a provider call is recorded wherever the ceiling lands.**
+
+QA saw "Checkout expired" emails sent twice and three times. The ceiling refused `markEmailSent`
+after the provider had the email, and the row went out again when its lease lapsed.
+
+Two rules now apply to every leg that calls a provider and then writes:
+- **Nothing is started that cannot be recorded.** Before the send or cancel, the leg checks that
+  the ceiling still has room for the rest of the unit including its record: 8 calls for an email,
+  6 for a cancel.
+- **The record is never refused.** Once the provider call returns, a commit window (email 3,
+  cancel 4) lets the record past the ceiling. A tick overruns its budget only by that window, and
+  only when an estimate was wrong; the log line says how many calls. Review: above the Workers Free preset the
+  largest window (4) is kept out of the ceiling the legs plan against
+  (`MAX_COMMIT_WINDOW`), so a tick never passes its configured budget. On the Free preset (30)
+  reserving it cost a quarter of the expiry pace in the backlog simulation, so it is not kept:
+  the worst Free tick is 34 calls, inside the 20 the preset leaves the host under Workers Free's
+  50 (`COMMIT_WINDOW_EXEMPT_BUDGET`). The cadence-state write follows any such overrun.
+
+A late-refund resume needs neither. Its unit gate already demands room for a whole resume, and an
+interrupted one is re-driven under the same key, which Stripe answers with the refund it already
+made.
+
+The email unit estimate rises from 8 to 12. The claim is three calls, and the real sender reads
+its key and from-address and makes a request. The Paid email batch moves from 22 to 15.
+
+**Measured (`cron-sweep-backlog.test.ts`, Free).** At no tick boundary does an expired order have
+a payable intent. All 50 orders expired by minute 73, and everything was done by minute 120. Every
+leg did some of its work within 7 ticks, and no leg waited more than 6 in a row.

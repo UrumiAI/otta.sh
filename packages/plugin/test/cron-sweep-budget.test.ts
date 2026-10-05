@@ -447,7 +447,7 @@ describe("the query budget is an operational setting (Background work per minute
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 600,
 			expiryBatch: 18,
-			emailBatch: 22,
+			emailBatch: 15,
 		});
 	}, 120_000);
 

@@ -391,3 +391,29 @@ JavaScript, and the confirmation page still carries none.
   keeps "Nothing was charged"; a `processing` return promises the refund only if the payment
   goes through. The parameters are still never rendered or forwarded, and still
   decide nothing about the order's state.
+
+## Amended 2026-10-03 (second) — a second tab is told which email the order has; the order page states refunds
+
+QA round 2 (X2, X3, N7, U-14). The decisions above are unchanged; these are what the pages now
+say.
+
+- **A second checkout tab.** The place key is stable per cart, so a second tab's submit replays
+  the order the first tab placed, which keeps the email it was placed with. The place route now
+  answers `buyerRefHint` (the order's email, masked) and `emailMatches`. When the typed email is
+  not the order's, `/checkout/place` does not go on to the pay page: it stashes the order as any
+  place does and returns to the locked review with `ORDER_PLACED_OTHER_EMAIL`, which names the
+  masked address and offers "Continue to payment" or "Start a new cart". The hint comes from the
+  stash place just wrote, and only when it is the locked order's; otherwise the sentence names no
+  address. A normal place stashes the hint too, so the fresh pay page states where the
+  confirmation goes, as the resume path already did.
+- **Refunds on the order page.** The public order read carries `refundedCents`: the order's
+  RECORDED refunds, from the same single ledger read as `latePayment`. The page prints "Refunded
+  $X" under the total by the account page's own rule (`orderRefundedNote`), and nothing when the
+  ledger shows none, so a refund made outside Otta ("Mark refunded", ADR-0026) is the status
+  alone. The figure is a sum the buyer was already told by email; no provider reference or
+  reconciliation detail reaches the page.
+- **The resume email page** reads the order first: an id that names no order gets the order
+  page's 404 and sentence and no form; an order that cannot be paid now goes to its own page.
+- **The header's cart count** is read on `/checkout` and `/orders/<id>` too (only the pay page is
+  left out). Both pages are already private; the read is a server-side dispatch, so nothing
+  reaches the order page's URL or a Referer.

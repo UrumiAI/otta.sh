@@ -20,7 +20,8 @@
  *    lost — the same no-personal-data-in-URLs trade-off `place.ts` documents.
  *    The coupon field sits FIRST on the page for that reason.
  *
- * Codes are trimmed and never case-folded: coupon lookup is case-sensitive.
+ * Codes are trimmed and never case-folded here: the plugin's coupon lookup
+ * ignores case (ADR-0025), and the code is echoed as the buyer typed it.
  *
  * #305 part 2 (ADR-0021) adds the DESTINATION and the shipping METHOD, by the
  * same GET: the delivery form submits `?country=US&region=CA&method=<id>`. Only

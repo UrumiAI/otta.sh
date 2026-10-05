@@ -173,6 +173,12 @@
 /* ── Home (was pages/index.astro) ────────────────────────────────────────── */
 
 /* §8: asymmetric, ~1.15fr / 1fr — the copy leads and the tape answers. */
+/* A one-line notice the page decided on (sign-out, QA2 A5), above the hero. */
+[data-theme-id="tempered"] .home-notice {
+	margin-bottom: 1.5rem;
+	max-width: 34rem;
+}
+
 [data-theme-id="tempered"] .home-hero {
 	display: grid;
 	grid-template-columns: 1.15fr 1fr;

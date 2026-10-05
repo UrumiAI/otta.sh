@@ -19,7 +19,7 @@ import {
 const at = (search: string) => new URL(`http://localhost:4321/checkout${search}`);
 
 describe("readCouponParam", () => {
-	test("trims the code and KEEPS its case — coupon lookup is case-sensitive", () => {
+	test("trims the code and KEEPS its case — the plugin folds case, the site echoes what was typed", () => {
 		expect(readCouponParam(at("?coupon=%20Ck-Save5%20"))).toEqual({ couponCode: "Ck-Save5" });
 	});
 

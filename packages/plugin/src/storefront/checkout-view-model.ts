@@ -241,6 +241,9 @@ export interface PublicOrderView {
 	/** {@link PublicOrderWire.latePayment}, passed through: the page chooses its
 	 *  "was anything charged?" sentence from it. */
 	latePayment: PublicOrderWire["latePayment"];
+	/** {@link PublicOrderWire.refundedCents}, passed through: the page states
+	 *  "Refunded $X" from it, and nothing when it is 0 (QA2 X3). */
+	refundedCents: number;
 }
 
 /**
@@ -297,6 +300,7 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		fulfillment: order.fulfillment,
 		cancellation: order.cancellation,
 		latePayment: order.latePayment,
+		refundedCents: order.refundedCents,
 	};
 }
 

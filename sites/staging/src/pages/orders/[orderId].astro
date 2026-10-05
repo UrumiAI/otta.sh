@@ -53,6 +53,7 @@ import {
 	ACCOUNT_HOME_PATH,
 	ACCOUNT_LOGIN_PATH,
 	currentSessionToken,
+	orderRefundedNote,
 	sessionOwnsOrder,
 } from "../../lib/account.js";
 import { forgetSpentCart } from "../../lib/cart-rotation.js";
@@ -316,6 +317,8 @@ const model: OrderModel = {
 	   for every state the money was captured in, refunded included — a refund is
 	   the stamp's to say — else "Total" (§7). */
 	totalLabel: order === null ? "Total" : orderTotalLabel(order.state),
+	/* The refunds ledger's figure, by the account page's own rule (QA2 X3). */
+	refundedNote: order === null ? null : orderRefundedNote(order.refundedCents, order.currency),
 	accountSignInHref: ACCOUNT_LOGIN_PATH,
 	accountOrdersHref: ownsOrder ? ACCOUNT_HOME_PATH : null,
 };

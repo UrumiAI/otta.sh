@@ -129,7 +129,7 @@ import {
 	type CreateOrderResult,
 	type Currency,
 	type CustomerId,
-	type ExpiryListOptions,
+	type OrderExpiryListOptions,
 	type ExpiredOrder,
 	type ReleaseEmailClaimOptions,
 	type FinalizeRefundInput,
@@ -357,6 +357,10 @@ interface FlipOutcome {
 	revision?: string | null;
 }
 
+/** How many lapsed orders past the bite `listExpirable` reads when it excludes the
+ *  ones still owed an intent withdrawal (QA3 N1). Rows, not queries. */
+const EXPIRY_INTENT_LOOKAHEAD = 10;
+
 export class EmdashOrderStore implements OrderStore {
 	readonly #orders: StorageCollection<OrderDoc>;
 	readonly #keys: StorageCollection<OrderKeyDoc>;
@@ -523,7 +527,7 @@ export class EmdashOrderStore implements OrderStore {
 		await this.#stampIntent(doc.orderId as OrderId, "holdsReleased");
 	}
 
-	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
 		// Both halves of the SQL predicate are declared index fields, so this is the
 		// predicate itself rather than a candidate filter — but `limit` is clamped by
 		// the host, so it pages, and each fetched document is re-checked because a
@@ -540,14 +544,26 @@ export class EmdashOrderStore implements OrderStore {
 		for (let page = 0; page < this.#maxExpiryPages; page++) {
 			const result = await this.#orders.query({
 				where: { state: "pending", holdExpiresAt: { lte: now } },
-				limit: limit === undefined ? EXPIRY_PAGE_SIZE : Math.min(EXPIRY_PAGE_SIZE, limit),
+				orderBy: { holdExpiresAt: "asc" },
+				// Excluding orders still owed a withdrawal (QA3 N1) can skip rows, so the
+				// page reads ahead of the bite; a page is one query whatever its size.
+				limit:
+					limit === undefined
+						? EXPIRY_PAGE_SIZE
+						: Math.min(
+								EXPIRY_PAGE_SIZE,
+								options.excludeIntentDue === true ? limit + EXPIRY_INTENT_LOOKAHEAD : limit,
+							),
 				cursor,
 			});
 			for (const { data } of result.items) {
 				if (limit !== undefined && ids.length >= limit) return ids;
-				if (data.state === "pending" && data.holdExpiresAt <= now) {
-					ids.push(data.orderId as OrderId);
-				}
+				if (data.state !== "pending" || data.holdExpiresAt > now) continue;
+				// The order's own indexed "earliest due unresolved intent" — due means
+				// the buyer can still pay it, so it waits for its withdrawal.
+				const intentDue = data.intentCancelDueAt ?? null;
+				if (options.excludeIntentDue === true && intentDue !== null && intentDue <= now) continue;
+				ids.push(data.orderId as OrderId);
 			}
 			if (limit !== undefined && ids.length >= limit) return ids;
 			if (!result.hasMore || result.cursor === undefined) return ids;
@@ -567,6 +583,8 @@ export class EmdashOrderStore implements OrderStore {
 			fromState: input.fromState,
 			toState: input.toState,
 			enqueueEmail: input.enqueueEmail,
+			// The admin's move carries who made it, onto the flip's audit event.
+			...(input.actor !== undefined ? { actor: input.actor } : {}),
 			// `markPaid`/`expire` route through this same primitive, so a bare
 			// transition into those states records the same intent they would.
 			...(input.toState === "paid"
@@ -1043,6 +1061,7 @@ export class EmdashOrderStore implements OrderStore {
 					...entry,
 					status: "recorded",
 					refundRef: input.refundRef,
+					...(input.resolvedBy !== undefined ? { resolvedBy: input.resolvedBy } : {}),
 				};
 				const refunds = doc.refunds.map((row) =>
 					row.idempotencyKey === input.idempotencyKey ? finalized : row,
@@ -1098,6 +1117,18 @@ export class EmdashOrderStore implements OrderStore {
 		// the row RELEASES its ceiling capacity (it leaves the active sum) and stays
 		// as an audit record of the attempt.
 		return this.#flipRefundStatus(idempotencyKey, "voided");
+	}
+
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person checked the provider and the refund
+		// never happened. The capacity is released; who said so is kept on the row.
+		return this.#flipRefundStatus(input.idempotencyKey, "voided", {
+			from: "unverified",
+			resolvedBy: input.resolvedBy,
+		});
 	}
 
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
@@ -1875,7 +1906,9 @@ export class EmdashOrderStore implements OrderStore {
 	async #flipRefundStatus(
 		key: IdempotencyKey,
 		to: Extract<RefundStatus, "voided" | "unverified">,
+		resolution: { from: "unverified"; resolvedBy: string } | null = null,
 	): Promise<boolean> {
+		const from: RefundStatus = resolution?.from ?? "reserved";
 		const claim = await this.#refundKeys.get(key);
 		if (claim === null) return false;
 		const orderId = claim.orderId;
@@ -1886,12 +1919,18 @@ export class EmdashOrderStore implements OrderStore {
 			const entry = findRefund(doc, key);
 			// The guard the SQL's `WHERE status = 'reserved'` was: capacity is released
 			// or held deliberately, never by accident.
-			if (entry === undefined || entry.status !== "reserved") return casDone(false);
+			if (entry === undefined || entry.status !== from) return casDone(false);
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				refunds: doc.refunds.map((row) =>
-					row.idempotencyKey === key ? { ...row, status: to } : row,
+					row.idempotencyKey === key
+						? {
+								...row,
+								status: to,
+								...(resolution !== null ? { resolvedBy: resolution.resolvedBy } : {}),
+							}
+						: row,
 				),
 				updatedAt: now,
 			});
@@ -2629,6 +2668,7 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		createdAt: refund.createdAt,
 		purpose: refund.purpose ?? "refund",
 		...(refund.restock !== undefined ? { restock: refund.restock } : {}),
+		...(refund.resolvedBy !== undefined ? { resolvedBy: refund.resolvedBy } : {}),
 	};
 }
 

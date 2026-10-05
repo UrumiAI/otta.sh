@@ -615,6 +615,7 @@ describeEachDialect("order flow", (ctx) => {
 			finalizeRefund: (i) => h.store.finalizeRefund(i),
 			voidRefund: (k) => h.store.voidRefund(k),
 			markRefundUnverified: (k) => h.store.markRefundUnverified(k),
+			voidUnverifiedRefund: (i) => h.store.voidUnverifiedRefund(i),
 			flagReconciliation: (id, d) => h.store.flagReconciliation(id, d),
 			resolveReconciliation: (i) => h.store.resolveReconciliation(i),
 			recordFulfillment: (i) => h.store.recordFulfillment(i),

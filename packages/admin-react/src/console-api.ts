@@ -172,6 +172,15 @@ export interface TimelineEntry {
 	readonly reason?: string | null;
 	readonly detail?: string | null;
 	readonly outcome?: string | null;
+	/** refund (QA round 2): the ledger row's money, its state and who issued it. */
+	readonly amount?: number | null;
+	readonly currency?: string | null;
+	readonly status?: string | null;
+	readonly purpose?: string | null;
+	readonly refundedBy?: string | null;
+	/** cancellation: what it refunded, and whether it returned the units to stock. */
+	readonly refund?: { readonly amount: number; readonly currency: string } | null;
+	readonly restocked?: boolean | null;
 }
 
 export interface OrderTimeline {

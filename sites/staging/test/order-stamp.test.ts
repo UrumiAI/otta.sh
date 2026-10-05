@@ -29,7 +29,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		const stamp = orderStamp({ ...base, state: "expired", latePayment: "refunded" });
 		expect(stamp?.headline).toBe("This order expired.");
 		expect(stamp?.body).toContain(
-			"A payment arrived after this order expired, so we've refunded it — it can take 5–10 days to appear.",
+			"A payment arrived after this order expired, so we've refunded it — it can take 5–10 business days to appear.",
 		);
 		expect(stamp?.body).not.toContain("Nothing was charged");
 	});
@@ -43,7 +43,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		// refusal) — so the page promises THAT it will be refunded, never how fast or
 		// by whom.
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired. It will be refunded — once it is, it can take 5–10 days to appear.",
+			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired. It will be refunded — once it is, it can take 5–10 business days to appear.",
 		);
 	});
 
@@ -54,7 +54,7 @@ describe("orderStamp — expired and cancelled orders", () => {
 		});
 		const refunded = orderStamp({ ...base, state: "cancelled", latePayment: "refunded" });
 		expect(refunded?.body).toBe(
-			"A payment arrived after this order was cancelled, so we've refunded it — it can take 5–10 days to appear.",
+			"A payment arrived after this order was cancelled, so we've refunded it — it can take 5–10 business days to appear.",
 		);
 	});
 });
@@ -126,27 +126,27 @@ describe("orderStamp — back from Stripe with a successful payment on an order 
 		const stamp = orderStamp({ ...back, state: "expired", polling: true });
 		expect(stamp?.headline).toBe("This order expired.");
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 business days to appear. This page refreshes automatically.",
 		);
 	});
 
 	test("once the poll has stopped it says to check again, not that the page updates", () => {
 		const stamp = orderStamp({ ...back, state: "expired", polling: false });
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 days to appear. Check again in a minute.",
+			"Payment didn't complete in time, so the items went back on sale. Your payment arrived after this order expired, so it will be refunded — once it is, it can take 5–10 business days to appear. Check again in a minute.",
 		);
 	});
 
 	test("the refund recorded: the ledger's sentence, and no promise of an update", () => {
 		const stamp = orderStamp({ ...back, state: "expired", latePayment: "refunded" });
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired, so we've refunded it — it can take 5–10 days to appear.",
+			"Payment didn't complete in time, so the items went back on sale. A payment arrived after this order expired, so we've refunded it — it can take 5–10 business days to appear.",
 		);
 	});
 
 	test("cancelled and failed say the same, by their own verb", () => {
 		expect(orderStamp({ ...back, state: "cancelled", polling: true })?.body).toBe(
-			"Your payment arrived after this order was cancelled, so it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+			"Your payment arrived after this order was cancelled, so it will be refunded — once it is, it can take 5–10 business days to appear. This page refreshes automatically.",
 		);
 		const failed = orderStamp({ ...back, state: "failed", polling: false });
 		expect(failed?.body).not.toContain("No charge was made");
@@ -161,7 +161,7 @@ describe("orderStamp — back from Stripe with a successful payment on an order 
 			polling: true,
 		});
 		expect(stamp?.body).toBe(
-			"Payment didn't complete in time, so the items went back on sale. Your payment was still processing when this order expired, so if it goes through, it will be refunded — once it is, it can take 5–10 days to appear. This page refreshes automatically.",
+			"Payment didn't complete in time, so the items went back on sale. Your payment was still processing when this order expired, so if it goes through, it will be refunded — once it is, it can take 5–10 business days to appear. This page refreshes automatically.",
 		);
 	});
 

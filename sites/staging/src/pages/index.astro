@@ -33,7 +33,16 @@ import {
 	type StoreSettings,
 } from "../lib/store-settings.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../lib/otta-api.js";
+import { currentSessionToken } from "../lib/account.js";
+import { keepPrivate } from "../lib/no-store.js";
 import type { HomeModel } from "../themes/contract.js";
+
+/* Sign-out lands here with `?signed-out=1` (QA2 A5): one line saying it worked —
+   only when no session is left, so a crafted link cannot tell a signed-in shopper
+   they are signed out. That render is never cached for anyone else. */
+if (Astro.url.searchParams.has("signed-out")) keepPrivate(Astro);
+const signedOut =
+	Astro.url.searchParams.get("signed-out") === "1" && currentSessionToken(Astro.cookies) === undefined;
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -155,6 +164,7 @@ const model: HomeModel = {
 	rows,
 	count,
 	cards,
+	notice: signedOut ? "You're signed out." : null,
 };
 ---
 

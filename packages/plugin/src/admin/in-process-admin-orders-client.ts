@@ -105,6 +105,7 @@ import {
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
+	resolveUnverifiedRefund as resolveUnverifiedRefundUseCase,
 	sumCapturedPayments,
 	sumFinalizedRefunds,
 	sumRefunds,
@@ -165,6 +166,7 @@ import type {
 	RefundsSummaryWire,
 	RefundWire,
 	ResolveReconciliationResult,
+	ResolveUnverifiedRefundResult,
 	TransitionOrderResult,
 } from "./admin-orders-surface.js";
 
@@ -296,11 +298,14 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *  `cancelled`, which Cancel order replaces), never re-derived console-side. */
 	async getOrder(orderId: string): Promise<OrderDetailResult | null> {
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null) return null;
+		// The ledger read, not the bare order: Mark refunded is offered only where
+		// it cannot hide captured money (`adminNextStates` reads the payments and
+		// refunds, QA2 M4). The same one document read.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return null;
 		return {
-			order: toOrderDetailWire(order),
-			allowedTransitions: adminNextStates(order),
+			order: toOrderDetailWire(ledger.order),
+			allowedTransitions: adminNextStates(ledger.order, ledger),
 		};
 	}
 
@@ -312,7 +317,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	async transitionOrder(
 		orderId: string,
 		toState: string,
-		opts: { idempotencyKey: string },
+		opts: { idempotencyKey: string; actor?: string },
 	): Promise<TransitionOrderResult> {
 		// The write's one deadline, fixed HERE — see `#writeDeadline`.
 		const deadline = this.#writeDeadline();
@@ -320,14 +325,21 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		try {
 			requireIdToken("orderId", orderId);
 			target = requireOrderState("toState", toState);
+			if (opts.actor !== undefined) requireBoundedText("actor", opts.actor, 1, 200);
 		} catch (err) {
 			if (isCommerceInputError(err)) return { ok: false, status: 400 };
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
+		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
 			{ orderStore: this.#stores.orderStore },
-			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
+			{
+				orderId: toOrderId(orderId),
+				toState: target,
+				idempotencyKey: toIdempotencyKey(key),
+				...(actor !== undefined ? { actor } : {}),
+			},
 		);
 		if (res.ok) {
 			// A move that enqueued an email sends it now. Mark refunded enqueues none
@@ -741,6 +753,63 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/** GET an order's append-only notes, oldest first (the store's own order). An
 	 *  order with no notes — including one that does not exist — is an empty list,
 	 *  exactly as the route answers it. */
+	/** POST a person's answer to an UNVERIFIED refund (review round 2). A
+	 *  confirmation that finalized the row sends its refund email at once, like a
+	 *  refund's own: the refunded state email when it completed the refund, else
+	 *  that refund's `refund-issued` notice. */
+	async resolveUnverifiedRefund(
+		orderId: string,
+		input: {
+			refundKey: string;
+			outcome: "confirmed" | "voided";
+			refundRef?: string;
+			resolvedBy: string;
+		},
+	): Promise<ResolveUnverifiedRefundResult> {
+		const deadline = this.#writeDeadline();
+		try {
+			requireIdToken("orderId", orderId);
+			requireBoundedText("refundKey", input.refundKey, 1, 400);
+			requireBoundedText("resolvedBy", input.resolvedBy, 1, 200);
+			if (input.refundRef !== undefined && input.refundRef.length > 0) {
+				requireBoundedText("refundRef", input.refundRef, 1, 200);
+			}
+		} catch (err) {
+			if (isCommerceInputError(err)) return { ok: false, status: 400 };
+			throw err;
+		}
+		if (input.outcome !== "confirmed" && input.outcome !== "voided") {
+			return { ok: false, status: 400 };
+		}
+		const oid = toOrderId(orderId);
+		const res = await resolveUnverifiedRefundUseCase(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId: oid,
+				refundKey: toIdempotencyKey(input.refundKey),
+				outcome: input.outcome,
+				...(input.refundRef !== undefined && input.refundRef.length > 0
+					? { refundRef: input.refundRef }
+					: {}),
+				resolvedBy: input.resolvedBy,
+			},
+		);
+		if (!res.ok) {
+			const status =
+				res.reason === "ORDER_NOT_FOUND" || res.reason === "REFUND_NOT_FOUND" ? 404 : 409;
+			return { ok: false, status, reason: res.reason };
+		}
+		if (res.outcome === "voided" || !res.changed) {
+			return { ok: true, changed: res.changed, fullyRefunded: res.fullyRefunded };
+		}
+		const email = await this.#sendEmailsNow(oid, deadline, (row) =>
+			res.fullyRefunded
+				? isStateRow(row, "refunded")
+				: row.notice?.kind === "refund-issued" && row.notice.refundId === res.refundId,
+		);
+		return { ok: true, changed: true, fullyRefunded: res.fullyRefunded, email };
+	}
+
 	async listNotes(orderId: string): Promise<OrderNoteWire[]> {
 		requireIdToken("orderId", orderId);
 		const notes = await listOrderNotes(

@@ -275,6 +275,16 @@ export type CheckoutPlaceRouteResult =
 			 * the payment. A healthy reply always carries it, replays included.
 			 */
 			total?: CartMoneyWire;
+			/** The order's email as a hint (`j•••@g•••.com`), never the address —
+			 *  the pay page states where the confirmation goes (QA2 X2). */
+			buyerRefHint: string;
+			/**
+			 * `false` when the order was ALREADY placed for this cart with another
+			 * email — a second checkout tab, whose same-key place replays the first
+			 * tab's order and keeps that order's email. The site tells the shopper
+			 * instead of sending them on to pay (QA2 X2).
+			 */
+			emailMatches: boolean;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
@@ -682,6 +692,8 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				alreadyPlaced: isAlreadyPlaced(result.intent),
 				clientAction: result.intent.clientAction,
 				...(total !== undefined ? { total } : {}),
+				buyerRefHint: result.buyerRefHint,
+				emailMatches: result.buyerRefMatches,
 			};
 		});
 }

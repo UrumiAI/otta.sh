@@ -13,6 +13,8 @@ import {
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
+import { orderTotalLabel } from "./order-total-label.js";
+import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import {
 	emailTemplateForNotice,
@@ -33,6 +35,10 @@ export interface TransitionOrderCommand {
 	 *  store's guarded flip + `UNIQUE(order_id, to_state)`, independent of this
 	 *  key. Forwarded to `OrderStore.transition` for command-shape consistency. */
 	idempotencyKey: IdempotencyKey;
+	/** Who made the move, recorded on its audit event — the admin console passes
+	 *  the signed-in operator (QA2: History showed "—"). Absent ⇒ no actor, as
+	 *  for a flip no person made. */
+	actor?: string;
 }
 
 export type TransitionOrderResult =
@@ -96,6 +102,7 @@ async function applyTransition(
 		toState: cmd.toState,
 		idempotencyKey: cmd.idempotencyKey,
 		enqueueEmail,
+		...(cmd.actor !== undefined && cmd.actor.trim().length > 0 ? { actor: cmd.actor.trim() } : {}),
 	});
 	return { ok: true, transitioned: res.transitioned, order: res.order ?? order };
 }
@@ -129,15 +136,100 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 }
 
 /**
+ * How each payment method's money goes BACK: through its PROVIDER (a Stripe refund,
+ * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (x402
+ * cannot refund automatically; the operator sends the money and records it). A
+ * `Record` over every method, like {@link PAYMENT_METHOD_SETTLEMENT}, so a new
+ * method must say which it is.
+ */
+const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
+	stripe: "provider",
+	x402: "outside",
+};
+
+/** The two ledgers Mark refunded is decided from. */
+export interface RefundLedgerFacts {
+	payments: readonly { amount: number; status: string }[];
+	refunds: readonly { amount: number; status: string }[];
+}
+
+/**
+ * Captured money the refunds ledger has not returned: `succeeded` payments less
+ * RECORDED refunds only. A reserved or unverified row is a promise, not money
+ * back (it may still void — review round 1). Never below zero.
+ */
+export function unrefundedCapturedCents(facts: RefundLedgerFacts): number {
+	let captured = 0;
+	for (const p of facts.payments) if (p.status === "succeeded") captured += p.amount;
+	let returned = 0;
+	for (const r of facts.refunds) if (r.status === "recorded") returned += r.amount;
+	return Math.max(0, captured - returned);
+}
+
+/**
+ * Why an admin may NOT mark this order refunded, or `null` when they may:
+ *  - `REFUND_IN_FLIGHT` — a refund on the ledger is still reserved or unverified:
+ *    its outcome decides whether money is still held, so it is resolved first
+ *    (the cancel path's rule);
+ *  - `REFUND_THROUGH_MONEY` — captured money its provider can still return
+ *    ({@link markRefundedAllowed}).
+ */
+export function markRefundedRefusal(
+	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	facts: RefundLedgerFacts,
+): "REFUND_IN_FLIGHT" | "REFUND_THROUGH_MONEY" | null {
+	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
+		return "REFUND_IN_FLIGHT";
+	}
+	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
+		return null;
+	}
+	if (unrefundedCapturedCents(facts) === 0) return null;
+	return order.reconciliationFlag?.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX) === true
+		? null
+		: "REFUND_THROUGH_MONEY";
+}
+
+/**
+ * May an admin MARK this order refunded — a status move that moves no money? Only
+ * where that cannot hide money still held (QA2 M4: a shipped Stripe order with
+ * $6.50 captured was closed as "refunded" and its buyer's page said so):
+ *  - its method returns money OUTSIDE Otta (x402), so a refund made there is
+ *    exactly what this records; or
+ *  - the ledger shows NOTHING left to refund through the provider; or
+ *  - the provider itself reported the payment refunded IN FULL — the flag
+ *    `refundOrder` writes on that pre-flight answer
+ *    ({@link PROVIDER_REFUNDED_FLAG_PREFIX}): the refund was made outside Otta, in
+ *    the provider's dashboard. A partial one never unlocks it.
+ * And never while a refund on the ledger is still reserved or unverified
+ * (`REFUND_IN_FLIGHT`, {@link markRefundedRefusal}).
+ * Otherwise the money goes back through Money → Refunds, which returns it and
+ * emails the buyer.
+ */
+export function markRefundedAllowed(
+	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	facts: RefundLedgerFacts,
+): boolean {
+	return markRefundedRefusal(order, facts) === null;
+}
+
+/**
  * The status moves the admin console may OFFER for an order: the state machine's
- * legal moves, minus a manual `paid` that {@link manualPaymentAllowed} refuses and
- * minus `cancelled`, which an admin reaches only through Cancel order. Read by the
- * console instead of `legalNextStates`, so it never renders a button
+ * legal moves, minus a manual `paid` that {@link manualPaymentAllowed} refuses,
+ * minus `cancelled`, which an admin reaches only through Cancel order, and minus
+ * `refunded` where {@link markRefundedAllowed} says money is still held. Read by
+ * the console instead of `legalNextStates`, so it never renders a button
  * {@link transitionOrderAsAdmin} would refuse.
  */
-export function adminNextStates(order: Pick<Order, "state" | "paymentMethod">): OrderState[] {
+export function adminNextStates(
+	order: Pick<Order, "state" | "paymentMethod" | "reconciliationFlag">,
+	facts: RefundLedgerFacts,
+): OrderState[] {
 	return legalNextStates(order.state).filter(
-		(to) => !(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) && to !== "cancelled",
+		(to) =>
+			!(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) &&
+			to !== "cancelled" &&
+			!(to === "refunded" && !markRefundedAllowed(order, facts)),
 	);
 }
 
@@ -147,7 +239,12 @@ export type TransitionOrderAsAdminResult =
 	 *  offline — its gateway settles it, or there is no method to settle at all. */
 	| { ok: false; reason: "MANUAL_PAYMENT_NOT_ALLOWED" }
 	/** A bare `→ cancelled` — Cancel order is the admin's only way to cancel. */
-	| { ok: false; reason: "USE_CANCEL" };
+	| { ok: false; reason: "USE_CANCEL" }
+	/** Mark refunded on an order whose captured money the ledger has not returned
+	 *  through its provider ({@link markRefundedAllowed}): use Money → Refunds. */
+	| { ok: false; reason: "REFUND_THROUGH_MONEY" }
+	/** Mark refunded while a refund on the order is still reserved or unverified. */
+	| { ok: false; reason: "REFUND_IN_FLIGHT" };
 
 /** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
  *  maps to copy. */
@@ -173,10 +270,13 @@ export type TransitionOrderAsAdminFailure = Extract<
  *    (QA T1-4). Cancel order — the store's `cancelOrder`, which records the reason
  *    and the release intent — is the admin's one way to cancel. (It does not refund
  *    a paid order: that is Money → Refunds.)
- *  - **`→ refunded` emails nobody.** A manual Mark refunded moves no money — it
- *    records a refund made OUTSIDE Otta (the Stripe dashboard, a bank transfer) —
- *    so it must not send the buyer "your order has been refunded" on Otta's word.
- *    Money moved through `refundOrder` emails the buyer from the ledger write.
+ *  - **`→ refunded` emails nobody, and only closes money that is not still held.**
+ *    A manual Mark refunded moves no money — it records a refund made OUTSIDE Otta
+ *    (the Stripe dashboard, a bank transfer) — so it must not send the buyer "your
+ *    order has been refunded" on Otta's word, and it is refused
+ *    (`REFUND_THROUGH_MONEY`) where {@link markRefundedAllowed} says the ledger
+ *    still holds captured money its provider can return (QA2 M4). Money moved
+ *    through `refundOrder` emails the buyer from the ledger write.
  *
  * All three are refused in the domain, so a hand-made request is refused exactly
  * as the console's missing button implies.
@@ -197,6 +297,13 @@ export async function transitionOrderAsAdmin(
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	}
 	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
+	if (cmd.toState === "refunded") {
+		// The one admin move decided by the money: read the ledgers (only for it).
+		const ledger = await deps.orderStore.readOrderLedger(cmd.orderId);
+		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		const refusal = markRefundedRefusal(ledger.order, ledger);
+		if (refusal !== null) return { ok: false, reason: refusal };
+	}
 	const enqueueEmail = cmd.toState !== "refunded" && emailTemplateForState(cmd.toState) !== null;
 	return applyTransition(deps, order, cmd, enqueueEmail);
 }
@@ -405,6 +512,20 @@ async function drainOutbox(
 				: row.toState === "refunded"
 					? await refundedTotal(deps.orderStore, order)
 					: null;
+		// Any OTHER state email for an order whose money was captured (processing,
+		// shipped, …) states what the ledger has refunded so far beside its "Paid"
+		// total (QA round 2). A cancellation states its own refund.
+		const refundedSoFar =
+			row.notice === null &&
+			row.toState !== "refunded" &&
+			row.toState !== "cancelled" &&
+			orderTotalLabel(row.toState) === "Paid"
+				? await refundedTotal(deps.orderStore, order)
+				: null;
+		const stateData = {
+			...buildOrderEmailData(order, row.toState),
+			...(refundedSoFar !== null ? { refundedSoFarCents: refundedSoFar.amount } : {}),
+		};
 
 		try {
 			await deps.emailSender.send({
@@ -412,7 +533,7 @@ async function drainOutbox(
 				template,
 				data:
 					refunded === null
-						? buildOrderEmailData(order, row.toState)
+						? stateData
 						: {
 								...buildOrderEmailData(order, row.toState),
 								// The OWN figure — the money refunded, never the order total

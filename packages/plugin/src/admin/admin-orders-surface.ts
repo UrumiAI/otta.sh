@@ -295,6 +295,18 @@ export type RefundOrderResult =
 	  }
 	| { ok: false; status: number; reason?: string };
 
+/** {@link AdminOrdersSurface.resolveUnverifiedRefund}'s answer. */
+export type ResolveUnverifiedRefundResult =
+	| {
+			ok: true;
+			/** False ⇒ the same answer was already recorded (a replay). */
+			changed: boolean;
+			fullyRefunded: boolean;
+			/** The refund email a confirmation sent — absent for a void or a replay. */
+			email?: InlineEmailStatus;
+	  }
+	| { ok: false; status: number; reason?: string };
+
 /** An append-only order note (admin-UX Increment 0) on the wire. */
 export interface OrderNoteWire {
 	id: string;
@@ -309,7 +321,9 @@ export interface OrderNoteWire {
  * wire. A discriminated union keyed by `kind`; every entry carries `at`, and the
  * kind-specific fields are OPTIONAL here (the plugin reads only what a given
  * `kind` populates), so an unknown/future kind degrades to a bare `at` row rather
- * than throwing. Money-free — the timeline is an audit surface, not a totals one.
+ * than throwing. Its only money is what an audit needs (QA round 2): each refund
+ * on the ledger, and what a cancellation refunded — integer minor units with
+ * their currency, never a total.
  */
 export interface TimelineEntryWire {
 	kind: string;
@@ -327,13 +341,22 @@ export interface TimelineEntryWire {
 	trackingUrl?: string | null;
 	shippedAt?: string;
 	recordedBy?: string;
-	/** cancellation */
-	reason?: string;
+	/** cancellation (the closed reason); refund (the operator's free text, or null) */
+	reason?: string | null;
 	detail?: string | null;
 	cancelledBy?: string;
 	/** reconciliation_resolved */
 	outcome?: string;
 	resolvedBy?: string;
+	/** cancellation: what it refunded (minor units), and whether it restocked */
+	refund?: { amount: number; currency: string } | null;
+	restocked?: boolean;
+	/** refund: one ledger row that moved, or is moving, money */
+	amount?: number;
+	currency?: string;
+	status?: string;
+	purpose?: string;
+	refundedBy?: string;
 }
 
 /** The order timeline payload (admin-UX Increment 1, timeline slice) — read-only.
@@ -359,7 +382,13 @@ export type TransitionRefusal =
 	| "ORDER_NOT_FOUND"
 	| "INVALID_TRANSITION"
 	| "MANUAL_PAYMENT_NOT_ALLOWED"
-	| "USE_CANCEL";
+	| "USE_CANCEL"
+	/** Mark refunded while the ledger still holds captured money its provider can
+	 *  return (QA2 M4): the money goes back through Money → Refunds. */
+	| "REFUND_THROUGH_MONEY"
+	/** Mark refunded while a refund on the order is still reserved or unverified:
+	 *  its outcome is resolved in Money → Refunds first. */
+	| "REFUND_IN_FLIGHT";
 
 /** POST transition returns a discriminated result (like `updateSettings`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host.
@@ -518,7 +547,9 @@ export interface AdminOrdersSurface {
 	transitionOrder(
 		orderId: string,
 		toState: string,
-		opts: { idempotencyKey: string },
+		/** `actor`: who made the move — the signed-in operator the console names —
+		 *  recorded on the audit event History shows. */
+		opts: { idempotencyKey: string; actor?: string },
 	): Promise<TransitionOrderResult>;
 
 	/** Resolve an order's reconciliation flag (admin-UX Increment 1). The
@@ -595,6 +626,19 @@ export interface AdminOrdersSurface {
 		refund: { amountCents: number; currency: string; reason?: string | null; refundedBy: string },
 		opts: { idempotencyKey: string },
 	): Promise<RefundOrderResult>;
+
+	/** A person's answer to a refund whose provider outcome is UNKNOWN (review
+	 *  round 2): `confirmed` finalizes it (refundRef optional), `voided` releases
+	 *  it. Idempotent; only an `unverified` row can be resolved. */
+	resolveUnverifiedRefund(
+		orderId: string,
+		input: {
+			refundKey: string;
+			outcome: "confirmed" | "voided";
+			refundRef?: string;
+			resolvedBy: string;
+		},
+	): Promise<ResolveUnverifiedRefundResult>;
 
 	/** Read an order's append-only notes. A failure throws — the caller degrades
 	 *  to an empty notes surface, never a hard error. */

@@ -337,6 +337,7 @@ describe("settleOrder", () => {
 			finalizeRefund: (i) => h.orderStore.finalizeRefund(i),
 			voidRefund: (k) => h.orderStore.voidRefund(k),
 			markRefundUnverified: (k) => h.orderStore.markRefundUnverified(k),
+			voidUnverifiedRefund: (i) => h.orderStore.voidUnverifiedRefund(i),
 			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
 			resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 			recordFulfillment: (i) => h.orderStore.recordFulfillment(i),
