@@ -11,6 +11,12 @@ import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
+	countryRequiresBuyerAddress,
+	peekStripeAccountCountry,
+	refreshStripeAccountCountry,
+	type StripeAccountCountryStatus,
+} from "../payments/stripe-account-country.js";
+import {
 	checkEmailApiKey,
 	checkOpaqueToken,
 	checkStripeSecretKey,
@@ -387,6 +393,9 @@ interface SettingsPageState {
 	/** The commerce sweep's per-tick query budget ("Background work per minute"),
 	 *  as the sweep would read it — the default when unset or unusable. */
 	backgroundWork: number;
+	/** Issue #382: the Stripe account's country as last learned — the CACHE,
+	 *  never a live read (a page load must not wait on Stripe). */
+	stripeAccount: StripeAccountCountryStatus;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -416,18 +425,22 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * budget: four concurrent gets.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings, backgroundWork] = await Promise.all([
-		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-		// a kv blip on it must not deny the operator the secret forms below.
-		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		readPaymentSecretState(ctx),
-		readPlainSettings(ctx),
-		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
-		// sweep makes, so the form shows the budget the next tick will use.
-		readBackgroundWork(ctx),
-	]);
+	const [displayName, paymentSecrets, plainSettings, backgroundWork, stripeAccount] =
+		await Promise.all([
+			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+			// a kv blip on it must not deny the operator the secret forms below.
+			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+			readPaymentSecretState(ctx),
+			readPlainSettings(ctx),
+			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+			// sweep makes, so the form shows the budget the next tick will use.
+			readBackgroundWork(ctx),
+			// Fail-soft inside (never throws; a kv blip reads as "not checked").
+			peekStripeAccountCountry(ctx),
+		]);
 	return {
 		backgroundWork,
+		stripeAccount,
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,
@@ -663,6 +676,13 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				}
 				await ctx.kv.set(secretSpec.kvKey, checked.value);
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				// Issue #382: a new Stripe key may be another account — read its
+				// country NOW, so the answer is cached before the first checkout
+				// needs it and the screen below can state it. Never throws; a
+				// failure is recorded as unknown and retried lazily by checkout.
+				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
+					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
+				}
 				// A5. The INC-C3 key this credential moved OFF of holds a value with a
 				// different threat model (an offline HMAC secret, never transmitted)
 				// that nothing reads any more. Deleting it here — the one moment an
@@ -1090,6 +1110,7 @@ function buildSettingsBlocks(args: {
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
 	backgroundWork: number;
+	stripeAccount: StripeAccountCountryStatus;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 }): Block[] {
@@ -1104,7 +1125,7 @@ function buildSettingsBlocks(args: {
 	blocks.push(
 		storeGroup(args.displayName),
 		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
-		paymentsGroup(args.paymentSecrets, args.plainSettings, args.paymentRefusal),
+		paymentsGroup(args.paymentSecrets, args.plainSettings, args.stripeAccount, args.paymentRefusal),
 	);
 	return blocks;
 }
@@ -1309,6 +1330,7 @@ function checkoutGroup(
 function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	stripeAccount: StripeAccountCountryStatus,
 	refusal?: PaymentRefusal,
 ): AccordionBlock {
 	return {
@@ -1325,7 +1347,13 @@ function paymentsGroup(
 				const secret = state.get(spec.kvKey);
 				const help: Block = { type: "context", text: spec.shapeHelp };
 				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
-				return secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+				const blocks: Block[] =
+					secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+				// Issue #382: what the stored key's account is — read-only.
+				const country =
+					spec.kvKey === STRIPE_SECRET_KEY_KEY ? stripeAccountLine(stripeAccount) : null;
+				if (country !== null) blocks.push({ type: "context", text: country });
+				return blocks;
 			}),
 			// INC-C5: the non-secret companions, LAST so the group still reads
 			// keys-first, and visibly a different kind of field — these prefill with
@@ -1341,6 +1369,46 @@ function paymentsGroup(
 			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
 	};
+}
+
+/** How long the Settings save waits on Stripe for the account's country. */
+const STRIPE_ACCOUNT_READ_ON_SAVE_MS = 5_000;
+
+/** `IN` → `India`, in the admin's language (English); the code if the runtime
+ *  cannot name it. */
+function countryName(code: string): string {
+	try {
+		return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
+	} catch {
+		return code;
+	}
+}
+
+/**
+ * Issue #382 — the read-only line under the Stripe secret key: which country the
+ * key's account is in, and what that means for checkout; or why it is not known
+ * and what to do. `null` (no line) when no key is stored. Names the account's
+ * country, never anything about the key.
+ */
+function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
+	switch (found.status) {
+		case "not_configured":
+			return null;
+		case "known": {
+			const named = `Stripe account country: ${countryName(found.country)} (${found.country}).`;
+			return countryRequiresBuyerAddress(found.country)
+				? `${named} Checkout asks every buyer for their name and address — Stripe accounts in India need them.`
+				: named;
+		}
+		case "permission_denied":
+			return "Stripe account country: unknown — this restricted key can't read account details. If your Stripe account is in India, give the key read access to Account (or use your secret key) and save it again, so checkout asks every buyer for their name and address.";
+		case "authentication_failed":
+			return "Stripe account country: unknown — Stripe refused this key. Check the key and save it again.";
+		case "unavailable":
+			return "Stripe account country: not checked yet — Stripe couldn't be reached. Checkout checks again by itself; saving the key again checks now.";
+		case "not_checked":
+			return "Stripe account country: not checked yet. Checkout checks it by itself; saving the key again checks now.";
+	}
 }
 
 /** A refused payment-settings save: every rule broken, and what was typed. */

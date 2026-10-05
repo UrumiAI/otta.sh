@@ -46,7 +46,8 @@ function invalidRequest(code: string, message: string): { status: number; body: 
 
 /**
  * The default responder: `POST /v1/payment_intents` answered the way Stripe
- * answers it, including the refusals — so a case cannot pass on a reply real
+ * answers it, including the refusals — and `GET /v1/account` as a US account
+ * (issue #382) — so a case cannot pass on a reply real
  * Stripe would never give.
  *
  *  - `amount` must be a positive integer string and `currency` a lowercase
@@ -61,6 +62,11 @@ export function stripeLikeResponder(): StripeResponder {
 	const byKey = new Map<string, { params: string; reply: { status: number; body: unknown } }>();
 	let n = 0;
 	return (req) => {
+		// The account read (issue #382): a US account, so a suite that does not
+		// care about the account's country sees no change in what checkout asks.
+		if (req.method === "GET" && req.path === "/v1/account") {
+			return { status: 200, body: { id: "acct_stub", object: "account", country: "US" } };
+		}
 		const amount = req.form.get("amount") ?? "";
 		const currency = req.form.get("currency") ?? "";
 		if (!/^[1-9]\d*$/.test(amount)) {

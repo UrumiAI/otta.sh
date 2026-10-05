@@ -2465,6 +2465,138 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			expect(totals["total"]!.label).toBe("$38.17");
 		});
 	});
+
+	/**
+	 * Issue #382: an India-based Stripe account refuses an export payment that
+	 * does not carry the buyer's name and address — digital carts included. The
+	 * plugin learns the account's country from `GET /v1/account` when the secret
+	 * key is saved, caches it, and from then on requires the address for EVERY
+	 * cart; a US account (the stub's default) changes nothing.
+	 */
+	describe("the Stripe account's country (issue #382)", () => {
+		const IN_ADDRESS = {
+			name: "Asha Rao",
+			line1: "12 Park Street",
+			city: "Kolkata",
+			postalCode: "700016",
+			country: "IN",
+		};
+
+		/** Save the secret key again — the Settings save that re-reads the country. */
+		async function resaveSecretKey(): Promise<void> {
+			const saved = await stripeBoot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: STRIPE_SECRET_KEY },
+			});
+			expect(saved).toHaveProperty("result");
+		}
+
+		async function stripeSummary(cartId: string): Promise<Record<string, unknown>> {
+			return resultOf(await stripeBoot.invokeRoute("storefront/checkout/summary", { cartId }));
+		}
+
+		test("a US account: a digital cart asks for no address and places without one — no account read on the way", async () => {
+			const cartId = await p2Cart("digital");
+			expect(await stripeSummary(cartId)).toMatchObject({
+				ok: true,
+				addressRequired: false,
+				paymentAccountNeedsAddress: false,
+			});
+			expect(await placeCart(cartId)).toMatchObject({ ok: true, state: "pending" });
+			// The country was cached when the key was saved: checkout only read kv.
+			expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+				"POST /v1/payment_intents",
+			]);
+			expect(stripe.requests[0]!.form.has("shipping[name]")).toBe(false);
+		});
+
+		describe("an India account", () => {
+			beforeEach(async () => {
+				const stripeLike = stripeLikeResponder();
+				stripe.respondWith((req) =>
+					req.method === "GET" && req.path === "/v1/account"
+						? { status: 200, body: { id: "acct_in", object: "account", country: "IN" } }
+						: stripeLike(req),
+				);
+				await resaveSecretKey();
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v1/account"]);
+				stripe.reset();
+				// The reset restored the default responder; keep answering as Stripe.
+			});
+
+			afterEach(async () => {
+				// Back to the US account the rest of this boot assumes.
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			});
+
+			test("the summary of a digital cart requires the name and address, and says it is the payment account", async () => {
+				const cartId = await p2Cart("digital");
+				expect(await stripeSummary(cartId)).toMatchObject({
+					ok: true,
+					requiresShipping: false,
+					addressRequired: true,
+					paymentAccountNeedsAddress: true,
+					// Nothing to choose — the address goes on the same form as the email.
+					readyToPlace: true,
+				});
+				expect(stripe.requests).toHaveLength(0);
+			});
+
+			test("a digital cart placed with NO address is refused MISSING_SHIPPING_ADDRESS before anything is minted", async () => {
+				await expectRefusedAtPlace(await p2Cart("digital"), {}, "MISSING_SHIPPING_ADDRESS");
+			});
+
+			test("a digital cart placed with a complete address: the PaymentIntent carries the name and address", async () => {
+				const placed = await placeCart(await p2Cart("digital"), { shippingAddress: IN_ADDRESS });
+				expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true, state: "pending" });
+				expect(stripe.requests).toHaveLength(1);
+				const form = stripe.requests[0]!.form;
+				expect(stripe.requests[0]!.path).toBe("/v1/payment_intents");
+				expect(form.get("shipping[name]")).toBe("Asha Rao");
+				expect(form.get("shipping[address][line1]")).toBe("12 Park Street");
+				expect(form.get("shipping[address][city]")).toBe("Kolkata");
+				expect(form.get("shipping[address][postal_code]")).toBe("700016");
+				expect(form.get("shipping[address][country]")).toBe("IN");
+				expect(form.get("description")).toBe("2 × Bamboo Water Bottle");
+			});
+		});
+
+		test("a restricted key that cannot read the account (403): not required, cached — checkout does not ask again", async () => {
+			stripe.respondWith((req) =>
+				req.method === "GET" && req.path === "/v1/account"
+					? {
+							status: 403,
+							body: {
+								error: {
+									type: "invalid_request_error",
+									message:
+										"The provided key does not have the required permissions for this endpoint.",
+								},
+							},
+						}
+					: stripeLikeResponder()(req),
+			);
+			try {
+				await resaveSecretKey();
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v1/account"]);
+				const cartId = await p2Cart("digital");
+				expect(await stripeSummary(cartId)).toMatchObject({
+					addressRequired: false,
+					paymentAccountNeedsAddress: false,
+				});
+				expect(await stripeSummary(cartId)).toMatchObject({ addressRequired: false });
+				// Two renders, no second account read.
+				expect(stripe.requests).toHaveLength(1);
+			} finally {
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			}
+		});
+	});
 });
 
 describe("storefront/order (workerd sandbox)", () => {
