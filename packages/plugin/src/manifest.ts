@@ -17,9 +17,11 @@ export const OTTA_PLUGIN_VERSION = "0.1.0";
  * capabilities, nothing else.
  *  - `content:read` — the minimum capability `content:afterSave` /
  *    `content:afterDelete` require to register (em-dash
- *    `HOOK_REQUIRED_CAPABILITY`); the plugin never calls `ctx.content` (the
- *    hook event already carries what it needs) and never declares
- *    `content:write` — it never writes CMS content.
+ *    `HOOK_REQUIRED_CAPABILITY`). The hooks never call `ctx.content` (the event
+ *    already carries what they need); the one reader is the `product-orphans`
+ *    sweep leg, which asks `ctx.content.get` whether a commerce row's CMS
+ *    document still exists (issue #374). Never `content:write` — the plugin
+ *    never writes CMS content.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
  * No `storage`/`kv`/db CAPABILITY — and not because the plugin holds no

@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: eleven legs, one tick (INC-C4).
+ * The scheduled sweep: twelve legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -34,8 +34,9 @@
  * a field the collection never declared *throws* `StorageQueryError` rather than
  * running slowly. So every scan below filters on a declared field — `holdsPendingAt`
  * for the hold intents, `createdAt` for the index heal and the product scan,
- * `createdAt`+`holdsUse` for the coupon orphans — and anything else is decided
- * from the document once it is in hand.
+ * `createdAt`+`holdsUse` for the coupon orphans, `createdAt`+`lifecycle` for the
+ * product orphans — and anything else is decided from the document once it is in
+ * hand.
  *
  * NO SCAN MAY STARVE, and this is the property the first cut got wrong. A sweep
  * that pages a collection `createdAt ASC` from a FIXED lower bound, capped at a
@@ -49,7 +50,8 @@
  *    is still seen, and a tick that runs out of budget resumes where it stopped.
  *  - the product catalog ROTATES: there is no "swept" marker on a product to narrow
  *    by, so the cursor advances to the end and then wraps to the beginning. Every
- *    product is reached within one rotation regardless of catalog size.
+ *    product is reached within one rotation regardless of catalog size. Two legs
+ *    rotate it, each on its own cursor: `sku-transfers` and `product-orphans`.
  *  - the hold intents need no cursor: `holdsPendingAt` is null once the order owes
  *    nothing, so that predicate narrows by itself as the work completes.
  *
@@ -154,9 +156,12 @@ import {
 	expireHoldsBatch,
 	expireOrdersBatch,
 	finishCancellationRestock,
+	idempotencyKey as toIdempotencyKey,
 	isEmailSendTimeoutError,
 	orderId as toOrderId,
+	productId as toProductId,
 	retryLatePaymentRefunds,
+	softDeleteProductCommerce,
 	type EmailSender,
 	type OrderId,
 	type OrderState,
@@ -194,7 +199,9 @@ import {
 	type PaymentGateways,
 } from "../payments/resolve-payment-gateways.js";
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
-import type { PluginContext } from "../types.js";
+import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
+import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
+import type { ContentReadAccess, PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
 	isSweepQueryCeilingError,
@@ -205,7 +212,7 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The eleven legs in the order a SUMMARY lists them (and the order the sweep ran
+/** The twelve legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -219,13 +226,14 @@ export const SWEEP_LEGS = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	"product-orphans",
 	"late-refunds",
 ] as const;
 
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
- * The legs that run on the slow cadence rather than every tick: the four that walk
+ * The legs that run on the slow cadence rather than every tick: the five that walk
  * a collection (or a whole closed day) on every run, and the sign-in challenge
  * prune. The others find their work from a predicate that narrows as the work
  * completes, so an idle run is one empty query — cheap enough for every minute.
@@ -240,6 +248,10 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	// A CMS document whose delete hook was lost is not customer-visible within
+	// minutes (the storefront lists from the CMS); what it blocks — the sku, a
+	// tidy Pricing & inventory list — can wait for the slow cadence.
+	"product-orphans",
 ];
 
 /**
@@ -256,8 +268,9 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     by abandoned carts — the costliest unit, about twenty calls on Free);
  *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
  *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
- *  4. housekeeping: `prune-challenges` and the four scans. `coupon-orphans` stays
- *     after `expire-orders`, though it no longer depends on it finishing.
+ *  4. housekeeping: `prune-challenges` and the five scans. `coupon-orphans` stays
+ *     after `expire-orders`, though it no longer depends on it finishing;
+ *     `product-orphans` is last of all, the leg nothing else waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
  */
@@ -273,6 +286,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	"product-orphans",
 ];
 
 /**
@@ -461,11 +475,41 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// before it can absorb anything, so a thin slice is mostly overhead.
 	"reporting-heal": { time: 0.6, queries: 0.6 },
 	"coupon-orphans": { time: 0.3, queries: 0.3 },
+	// A CMS read per row: under a long walk it must not take the tick from the legs
+	// a customer waits on. Its leftovers come back to it in the second pass.
+	"product-orphans": { time: 0.3, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
  *  share, and the setting's floor is sized so each can always start. */
 export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds", "expire-orders"];
+
+/**
+ * What ONE `ctx.content.get` is charged against the tick's query budget: EmDash's
+ * read is the row (`findById`), then — for a document that exists — whether the
+ * collection has SEO enabled and, when it does, the document's SEO row. Three D1
+ * queries at most; a miss is one, and the budget is charged the worst case.
+ */
+export const CONTENT_READ_QUERIES = 3;
+
+/**
+ * The calls one orphan's soft delete makes, MEASURED at 4 (`cron-leg-costs.test.ts`):
+ * the product document's versioned read and its compare-and-set, then the release
+ * of its `sku_owners` claim (a read and a guarded delete). The leg checks this much
+ * is left before it starts a delete, so a row it cannot finish stays ahead of the
+ * cursor for the next tick; a compare-and-set retry costing more is what the tick's
+ * ceiling is for.
+ */
+export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
+
+/**
+ * How old a commerce row must be before `product-orphans` judges it. The row is
+ * written by the CMS sync AFTER the CMS commits its document, so on one database a
+ * fresh row always has its document — but a read served by a lagging replica, or a
+ * sync still in flight, is not a place to be decisive. Fifteen minutes: nothing a
+ * merchant notices, and well past any replication lag.
+ */
+export const PRODUCT_ORPHAN_GRACE_MS = 15 * 60 * 1000;
 
 /**
  * What a leg's calls cost before its first checked unit (`entry`) and per unit
@@ -506,6 +550,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// by the calls it has left (`healReportingRollups`), so it never exceeds them.
 		"reporting-heal": { entry: 1, unit: 8 },
 		"coupon-orphans": { entry: 2, unit: 7 },
+		// entry: the cursor read and the one page of rows. unit: the CMS read
+		// (`CONTENT_READ_QUERIES`) and, for an orphan, the soft delete — the row's
+		// guarded flip and the release of its sku claim (`PRODUCT_ORPHAN_DELETE_CALLS`).
+		"product-orphans": { entry: 2, unit: CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS },
 		// entry: resolving the gateways (their secret kv reads: 2 for Stripe, up to 3
 		// more with x402 configured) — once, and only when a unit needs them. The due
 		// list is the leg's due check, charged before this (see `run`'s `isDue`).
@@ -831,6 +879,7 @@ const CURSOR_KEY_PREFIX = "cron:sweep:cursor:";
 const SKU_TRANSFER_CURSOR = "sku-transfers";
 const SKU_INDEX_CURSOR = "order-sku-index";
 const COUPON_CURSOR = "coupon-orphans";
+const PRODUCT_ORPHAN_CURSOR = "product-orphans";
 const REPORTING_CURSOR = "reporting-heal";
 /** One JSON document — each scan's last completion, each leg's consecutive
  *  deferrals — so the cadence costs one read per tick, and a write only when
@@ -1524,6 +1573,28 @@ export async function runCommerceSweeps(
 				async (legBudget) =>
 					await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget),
 			),
+		"product-orphans": async () =>
+			await run("product-orphans", async (legBudget) => {
+				// The host hands `ctx.content` over only under `content:read`, and the
+				// workerd test mirror has no CMS at all. Without it there is nothing to
+				// judge a row against — and a row must never be judged gone for want of a
+				// reader — so the leg says it is not wired, and is stamped like any scan.
+				const content = ctx.content;
+				if (content === undefined) return { count: 0, skipped: true };
+				const result = await softDeleteOrphanedProducts(
+					storage,
+					stores,
+					content,
+					now,
+					cursors,
+					options,
+					legBudget,
+				);
+				// Stopped by its share with rows left: a candidate for the second pass,
+				// which hands it whatever the tick has left once every leg has had a turn.
+				if (legBudget.stopped) stoppedByBudget.add("product-orphans");
+				return result;
+			}),
 	};
 
 	// ── the order ─────────────────────────────────────────────────────────────
@@ -1769,10 +1840,23 @@ function countingContext(ctx: PluginContext, budget: TickBudget): PluginContext 
 			: Object.fromEntries(
 					Object.entries(ctx.storage).map(([name, collection]) => [name, counted(collection)]),
 				);
+	// A CMS read is several host queries, not one (`CONTENT_READ_QUERIES`), and is
+	// charged as such — before it is made, so the ceiling refuses it whole.
+	const reader = ctx.content;
+	const content: ContentReadAccess | undefined =
+		reader === undefined
+			? undefined
+			: {
+					get(collection, id) {
+						for (let i = 0; i < CONTENT_READ_QUERIES; i++) budget.countQuery();
+						return reader.get(collection, id);
+					},
+				};
 	return Object.assign(Object.create(ctx) as PluginContext, {
 		kv: counted(ctx.kv),
 		http: counted(ctx.http),
 		...(storage === undefined ? {} : { storage }),
+		...(content === undefined ? {} : { content }),
 	});
 }
 
@@ -1906,9 +1990,10 @@ function outboxSender(
 	};
 }
 
-/** Whether the "skipped — no email URL" line was logged in this isolate: it is
- *  true every minute on such a deployment, so it is said once, not 1,440 times a day. */
-let loggedSkipped = false;
+/** The legs whose "skipped — not wired" line was logged in this isolate: it is
+ *  true every minute on such a deployment, so it is said once, not 1,440 times a
+ *  day. Per leg, so one unwired leg's line never silences another's. */
+const loggedSkipped = new Set<SweepLeg>();
 
 /**
  * One line for a leg that DID something worth reading: a non-zero count, more
@@ -1918,8 +2003,8 @@ let loggedSkipped = false;
  */
 function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 	if (outcome.skipped === true) {
-		if (!loggedSkipped) {
-			loggedSkipped = true;
+		if (!loggedSkipped.has(outcome.leg)) {
+			loggedSkipped.add(outcome.leg);
 			console.log(`[otta] cron sweep ${outcome.leg} skipped — not wired on this deployment`);
 		}
 		return;
@@ -2768,4 +2853,129 @@ async function releaseOrphanedRedemptions(
 	const next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
 	if (next !== null && next !== from) await cursors.write(COUPON_CURSOR, next);
 	return legResult(released, walked.incomplete);
+}
+
+/**
+ * PRODUCT ORPHANS (issue #374): soft-delete a `product_commerce` row whose CMS
+ * document is gone.
+ *
+ * WHY IT IS OWED. `content:afterDelete` is the only thing that tombstones a
+ * commerce row, and it is fire-and-forget (`createAfterDeleteHandler`): a failed
+ * delivery is logged and nothing retries it. A CMS product deleted — and, as
+ * merchants do, created again under a NEW id (EmDash mints a fresh ULID) with the
+ * same name and sku — then leaves its old row live for good: listed in Pricing &
+ * inventory beside the new one, and holding the sku claim the new product needs.
+ * This leg is the retry the hook never had.
+ *
+ * WHAT COUNTS AS GONE — only a POSITIVE "not found": `ctx.content.get` resolving
+ * `null`. EmDash's read is `WHERE id = ? AND deleted_at IS NULL`, so:
+ *  - a draft, scheduled, published or unpublished document is found, and its row is
+ *    never touched — whether a product is on sale is the publish gate's business,
+ *    not this leg's;
+ *  - a TRASHED document reads `null` and its row is soft-deleted. Deliberately: the
+ *    hook already tombstones on trash (it fires with `permanent: false`), and this
+ *    leg completes what that delivery would have done, never more. The plugin API
+ *    offers no "including trashed" read to tell the two apart. A restore from the
+ *    trash re-activates nothing on either path — that is the hook's existing rule
+ *    (a tombstone is final), not a new one;
+ *  - a read that REJECTS — a D1 error, a timeout, a missing collection — is never
+ *    taken for absence. The leg stops at that row, saves the cursor BEFORE it, and
+ *    fails loudly; a failed scan is retried at its cadence, from that row.
+ *
+ * THE SOFT DELETE IS THE HOOK'S OWN: the same use-case (`softDeleteProductCommerce`)
+ * under the same idempotency key (`deriveDeleteIdempotencyKey`), so this leg and a
+ * late hook delivery converge on one tombstone, and a replay is the store's no-op.
+ * It keeps the row and its commercial data (order history reads it), drops the
+ * publish gate and releases the sku claim. It touches no order — orders snapshot
+ * their price and title — and no stock: holds and on-hand stay under the sku they
+ * are keyed by, exactly as after a delivered hook. Variants ride the product's
+ * tombstone, as there.
+ *
+ * DISCOVERY is the two declared fields: `lifecycle: "live"` (a tombstone or a
+ * variant-only shell is not a candidate) and `createdAt`, bounded above by the
+ * grace window (`PRODUCT_ORPHAN_GRACE_MS`). The cursor ROTATES like
+ * `sku-transfers`' — nothing on a row says "checked", so the walk advances through
+ * the catalog and wraps — and it moves only past rows actually judged. A row
+ * sharing its exact `createdAt` instant with the last one judged before a tick
+ * stopped is stepped over until the next rotation, as there.
+ *
+ * ONE PAGE A RUN, sized to what the leg can pay for: a CMS read per row is the
+ * cost, so reading pages ahead of the walk would spend the leg on rows it cannot
+ * judge. A full pass therefore takes about `catalog / rows-per-tick` ticks, run
+ * back to back (an unfinished scan is due on the very next tick, and its second
+ * pass takes what the tick has left), and then rests for the maintenance interval.
+ */
+async function softDeleteOrphanedProducts(
+	storage: AdapterStorageAccess,
+	stores: InProcessCommerceStores,
+	content: ContentReadAccess,
+	now: Date,
+	cursors: SweepCursorStore,
+	options: CommerceSweepOptions,
+	budget: LegBudget,
+): Promise<{ count: number; incomplete?: true }> {
+	const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
+	const cutoff = new Date(now.getTime() - PRODUCT_ORPHAN_GRACE_MS).toISOString();
+	const saved = await cursors.read(PRODUCT_ORPHAN_CURSOR);
+	const from = saved === null || saved === "" ? null : saved;
+	// The page: as many rows as the leg can read the CMS for after this query, at
+	// least one (the leg was admitted with room for one), at most a host page.
+	const affordable = Math.floor((budget.remainingQueries() - 1) / CONTENT_READ_QUERIES);
+	const limit = Math.max(1, Math.min(options.pageSize ?? DEFAULT_PAGE_SIZE, affordable));
+	const page = await products.query({
+		where: {
+			lifecycle: "live",
+			createdAt: from === null ? { lt: cutoff } : { gt: from, lt: cutoff },
+		},
+		orderBy: { createdAt: "asc" },
+		limit,
+	});
+	const gate = budget.gate(0, CONTENT_READ_QUERIES);
+	let deleted = 0;
+	let judged = 0;
+	let last: string | null = null;
+	// Saved before a failure is rethrown, and at the end: only past rows judged.
+	const save = async (next: string | null): Promise<void> => {
+		if (next !== null && next !== saved) await cursors.write(PRODUCT_ORPHAN_CURSOR, next);
+	};
+	for (const item of page.items) {
+		if (!gate()) break;
+		const id = item.data.productId;
+		let doc: Record<string, unknown> | null;
+		try {
+			doc = await content.get(PRODUCTS_COLLECTION, id);
+		} catch (err) {
+			await save(last);
+			// The tick's own ceiling is not the CMS failing: the runner reports it.
+			if (isSweepQueryCeilingError(err)) throw err;
+			throw new Error(
+				`product-orphans: the CMS read of product ${id} failed, so its commerce row is` +
+					" left live (a failed read is never taken for a deleted document); the scan" +
+					" resumes from it at its next run",
+				{ cause: err },
+			);
+		}
+		if (doc === null) {
+			// Room for the whole delete, or the row waits — unjudged — for the next tick.
+			if (budget.remainingQueries() < PRODUCT_ORPHAN_DELETE_CALLS) {
+				budget.stopped = true;
+				break;
+			}
+			await softDeleteProductCommerce(
+				stores.productCommerce,
+				toProductId(id),
+				toIdempotencyKey(deriveDeleteIdempotencyKey(PRODUCTS_COLLECTION, id)),
+			);
+			deleted++;
+		}
+		judged++;
+		last = item.data.createdAt;
+	}
+	const reachedEnd = judged === page.items.length && (!page.hasMore || page.cursor === undefined);
+	// Short of the end, it was the budget that stopped the walk (a page sized to it,
+	// a gate, a delete that did not fit) — which is what earns the second pass.
+	if (!reachedEnd) budget.stopped = true;
+	// WRAP at the end of the catalog; otherwise resume after the last row judged.
+	await save(reachedEnd ? "" : last);
+	return legResult(deleted, !reachedEnd);
 }

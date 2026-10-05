@@ -60,6 +60,7 @@ import { LEG_PRIORITY, MAINTENANCE_LEGS } from "../src/cron/sweeps.js";
 import {
 	adapters,
 	DAY_MS,
+	fakeCms,
 	HOUR_MS,
 	memoryCursors,
 	MINUTE_MS,
@@ -92,6 +93,9 @@ const START = new Date(Math.floor((Date.now() + 2 * HOUR_MS) / MINUTE_MS) * MINU
 
 let storage: StorageAccess;
 const stripe = new FakePaymentGateway({ id: "stripe" });
+/** product-orphans: the CMS behind `ctx.content`, missing three products' documents. */
+const ORPHANED_PRODUCTS = [0, 1, 2].map((i) => `prod-orphan-${String(i)}`);
+const cms = fakeCms({ gone: ORPHANED_PRODUCTS });
 
 beforeAll(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
@@ -232,6 +236,18 @@ async function seedEveryLeg(): Promise<void> {
 		if (!claimed.ok) throw new Error("seed redemption failed");
 	}
 
+	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
+	for (const id of ORPHANED_PRODUCTS) {
+		await products.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(`SKU-${id}`),
+				price: money(cents(1000), currency("USD")),
+			},
+			idempotencyKey(`upsert-${id}`),
+		);
+	}
+
 	// late-refunds: an expired order paid late, whose refund hit a retryable failure.
 	const late = await placeOrder(
 		storage,
@@ -318,6 +334,13 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 		"order-sku-index": unindexed.every((pointer) => pointer !== null),
 		"reporting-heal": claims.items.every((claim) => claim.data.absorbedAt !== null),
 		"coupon-orphans": (await coupons.findById("coupon-orphan"))?.usesCount === 0,
+		"product-orphans": (
+			await Promise.all(
+				ORPHANED_PRODUCTS.map((id) =>
+					collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get(id),
+				),
+			)
+		).every((doc) => doc?.lifecycle === "deleted"),
 		"late-refunds": stripe.refundCalls.length >= 1,
 	};
 }
@@ -325,7 +348,7 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 describe("a backlog in every leg, on the Workers Free preset", () => {
 	test("no tick passes 30 calls, cancel-intents always runs, every leg progresses, and the expiry keeps its pace", async () => {
 		const counter: CallCounter = { calls: 0 };
-		const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE });
+		const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE }, cms);
 		const cursors = memoryCursors();
 		const sent: SendEmailInput[] = [];
 		const traces = new Map<SweepLeg, LegTrace>(
@@ -439,6 +462,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"order-sku-index",
 			"reporting-heal",
 			"coupon-orphans",
+			"product-orphans",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {
 			for (const chore of housekeeping) {

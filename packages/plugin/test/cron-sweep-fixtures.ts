@@ -27,7 +27,8 @@ import {
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
 import type { SweepCursorStore } from "../src/cron/index.js";
-import type { PluginContext } from "../src/types.js";
+import { CONTENT_READ_QUERIES } from "../src/cron/sweeps.js";
+import type { ContentReadAccess, PluginContext } from "../src/types.js";
 
 export const MINUTE_MS = 60_000;
 export const HOUR_MS = 60 * MINUTE_MS;
@@ -62,6 +63,7 @@ export function sweepContext(
 	store: StorageAccess,
 	counter?: CallCounter,
 	seed: Record<string, unknown> = {},
+	content?: FakeCms,
 ): PluginContext {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const count = (): void => {
@@ -92,7 +94,68 @@ export function sweepContext(
 			},
 		},
 		storage: counter === undefined ? store : countingStorage(store, counter),
+		...(content === undefined ? {} : { content: content.access(count) }),
 	} as unknown as PluginContext;
+}
+
+/**
+ * The CMS half of a sweep context: the host's `ctx.content` read, as EmDash 0.38
+ * answers it — `get` is `ContentRepository.findById`, which reads `WHERE id = ? AND
+ * deleted_at IS NULL`, so a TRASHED document and a permanently deleted one both come
+ * back `null`, and a document in any status (draft, scheduled, published) comes
+ * back as itself. A read the database fails throws.
+ *
+ * Not a mock of a database this repo owns: the commerce documents stay real SQLite.
+ * This stands in for the HOST, the same way the in-memory kv above does. Every
+ * product id not named here EXISTS (published), so rows other cases left behind are
+ * never mistaken for orphans.
+ */
+export interface FakeCms {
+	/** Ids the CMS no longer has — deleted, or in the trash. */
+	readonly gone: Set<string>;
+	/** Ids whose read fails (a D1 error, a timeout). */
+	readonly failing: Set<string>;
+	/** Status per id, for a case that cares (default `published`). */
+	readonly status: Map<string, string>;
+	/** Every id read, in order. */
+	readonly reads: string[];
+	access(count?: () => void): ContentReadAccess;
+}
+
+export function fakeCms(
+	spec: {
+		gone?: Iterable<string>;
+		failing?: Iterable<string>;
+		status?: Record<string, string>;
+	} = {},
+): FakeCms {
+	const cms: FakeCms = {
+		gone: new Set(spec.gone ?? []),
+		failing: new Set(spec.failing ?? []),
+		status: new Map(Object.entries(spec.status ?? {})),
+		reads: [],
+		access(count) {
+			return {
+				async get(collection, id) {
+					// The sweep charges a read as CONTENT_READ_QUERIES calls (the host's
+					// row read plus its SEO lookups), so the outside count does too.
+					for (let i = 0; i < CONTENT_READ_QUERIES; i++) count?.();
+					cms.reads.push(id);
+					if (collection !== "products") throw new Error(`no such collection: ${collection}`);
+					if (cms.failing.has(id)) throw new Error(`D1_ERROR: read of ${id} timed out`);
+					if (cms.gone.has(id)) return null;
+					return {
+						id,
+						type: collection,
+						slug: id,
+						status: cms.status.get(id) ?? "published",
+						data: { title: `CMS ${id}` },
+					};
+				},
+			};
+		},
+	};
+	return cms;
 }
 
 export function memoryCursors(): SweepCursorStore {

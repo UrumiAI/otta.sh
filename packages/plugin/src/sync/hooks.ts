@@ -432,6 +432,14 @@ export function createAfterSaveHandler(
  * product row's own tombstone already withholds the whole product from every
  * catalog and checkout path, and a variant's rows keep their sku, price and
  * stock exactly as an orphan's would. Retaining them is the point.
+ *
+ * A LOST DELIVERY IS SWEPT (issue #374). This hook stays fire-and-forget — it must
+ * never fail the CMS delete — so a soft delete that fails here is completed by the
+ * cron's `product-orphans` leg (`cron/sweeps.ts`): it walks the live commerce rows,
+ * asks `ctx.content` whether each one's document still exists, and soft-deletes the
+ * row under THIS hook's idempotency key once the CMS positively answers "not found".
+ * Without it, a product deleted and re-created (a new CMS id) left the old row live
+ * for good, holding the sku the new one needs.
  */
 export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 	return async (event, ctx) => {
@@ -440,7 +448,10 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		try {
 			await (await makeCommerceClient(ctx)).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
-			console.error(`[otta] content:afterDelete sync failed for product_id=${event.id}:`, err);
+			console.error(
+				`[otta] content:afterDelete sync failed for product_id=${event.id} — the cron's product-orphans sweep soft-deletes the row once the CMS document is confirmed gone:`,
+				err,
+			);
 		}
 	};
 }

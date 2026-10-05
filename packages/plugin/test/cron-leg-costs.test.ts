@@ -49,11 +49,13 @@ import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
 import {
+	CONTENT_READ_QUERIES,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
 	legReserveQueries,
 	legStartCalls,
 	MAINTENANCE_LEGS,
+	PRODUCT_ORPHAN_DELETE_CALLS,
 	SWEEP_LEGS,
 	TICK_OVERHEAD_QUERIES,
 } from "../src/cron/sweeps.js";
@@ -600,6 +602,23 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		// The due list is the leg's due check, charged before the entry.
 		const used = await cost(() => resolvePaymentGateways(ctx));
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["late-refunds"].entry);
+	});
+
+	test("product-orphans: one orphan's soft delete (the row's flip and its sku claim's release)", async () => {
+		const s = counted();
+		const pid = toProductId("prod-cost-orphan");
+		await s.productCommerce.upsert(
+			{ productId: pid, sku: toSku("COST-ORPHAN"), price: money(cents(900), currency("USD")) },
+			idempotencyKey("cost-orphan-seed"),
+		);
+		const used = await cost(() =>
+			s.productCommerce.softDelete(pid, idempotencyKey("products:prod-cost-orphan:deleted")),
+		);
+		expect(used).toBeLessThanOrEqual(PRODUCT_ORPHAN_DELETE_CALLS);
+		// The judging read is charged on top, as the worst case of EmDash's `get`.
+		expect(LEG_QUERY_COSTS["product-orphans"].unit).toBe(
+			CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
+		);
 	});
 
 	test("reporting-heal: one day reconciled", async () => {

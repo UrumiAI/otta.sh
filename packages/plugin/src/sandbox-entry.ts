@@ -18,8 +18,11 @@
  *    suites inject one from outside. `storage` is capability-free — the host
  *    builds it on an always-available path and there is no capability string
  *    for it (ADR-0018) — so nothing about the declared two changes here.
- *  - no `content`/`media`/`users`/`email` on `ctx` at all — this plugin never
- *    declares those capabilities (sandbox-clean guard).
+ *  - no `media`/`users`/`email` on `ctx` at all — this plugin never declares
+ *    those capabilities (sandbox-clean guard). And no `content` either: the
+ *    plugin does declare `content:read`, but this mirror has no CMS behind it,
+ *    so the one reader (the `product-orphans` sweep leg) reports itself skipped
+ *    here rather than judging rows against a CMS that is not there.
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus

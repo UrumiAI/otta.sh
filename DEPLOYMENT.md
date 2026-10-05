@@ -434,11 +434,18 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all eleven sweep legs: they share a store composition
-and a clock, and splitting them would only put eleven rows in contention on the same documents. The
-four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
-sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
-scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+hook when it comes due. One task drives all twelve sweep legs: they share a store composition
+and a clock, and splitting them would only put twelve rows in contention on the same documents. The
+five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
+task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
+the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
+commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
+soft delete was lost: it reads each live row's document through `ctx.content` (the
+`content:read` capability already declared), acts only on a positive "not found" — never on a
+failed read — and leaves rows younger than fifteen minutes alone. A pass over a 1000-product
+catalog takes about 150 ticks on the Workers Free preset when the store is otherwise idle, and
+about 7 on Paid. The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.
