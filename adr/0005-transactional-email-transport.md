@@ -147,3 +147,50 @@ Two things are new. `sendOrderEmailsNow` resolves to the rows it delivered while
 waiting, and the dispatchers gained `onSent(row)`. With these the console says "the buyer has
 been emailed" only when the row the write enqueued was delivered. The email goes out in click
 order: each write sends what is due for that order, oldest first.
+
+## Amended 2026-10-05 — the store chooses its email provider: Resend or SMTP2GO
+
+A store can now send through SMTP2GO's HTTP API as well as the Resend-shaped sender.
+
+- **The choice is a Settings value, and the default is unchanged.** "Email provider"
+  (`settings:emailProvider`, readable kv) is `resend` or `smtp2go`. Unset means `resend`, so an
+  existing store keeps sending as before. "SMTP2GO region" (`settings:emailSmtp2goRegion`) is
+  `global`, `us`, `eu` or `au`, default `global`. The Settings save refuses any other value,
+  all-or-nothing with the rest of the payment settings. An unknown value in kv reads as the
+  default and is logged once.
+- **One key slot.** The SMTP2GO key lives in the existing write-only `settings:emailApiKey`. A
+  store sends through one provider at a time, so the slot holds the active provider's key.
+  A second slot would leave the inactive provider's live key in kv with nothing reading it,
+  and "is email set up" would need to know which slot counts. The key field's shape check
+  follows the saved provider (`re_…` for Resend, `api-…` for SMTP2GO), so the operator saves
+  the provider first and then its key. When fallback providers arrive, this becomes the
+  primary slot.
+- **The seam.** `HttpEmailSender` (`packages/plugin/src/email/http-email-sender.ts`) holds
+  what every HTTP provider shares: rendering, the per-send timeout and its
+  `EmailSendTimeoutError`, and the sanitizing of provider error text (control characters,
+  the recipient and the sender's own key redacted, 200-character bound). A provider is a
+  subclass with two methods: build the request and read the response. `CtxHttpEmailSender`
+  (Resend's body, unchanged) and `Smtp2goEmailSender` are the two. `makeEmailSender` picks
+  one from the setting. Refusals are `EmailProviderError`s with a `kind` (`auth`,
+  `rate_limited`, `unavailable`, `invalid`, `refused`, `ambiguous`). The outbox treats every
+  kind alike today; the kind is there for the retry and failover rules a registry of
+  providers will need.
+- **SMTP2GO can refuse with HTTP 200.** A send counts only when `data.succeeded ≥ 1` and
+  `data.failed = 0`. A 200 with `failed > 0` is a refusal carrying `data.failures`, and a 2xx
+  whose body is not SMTP2GO's JSON is `ambiguous` and is not taken as sent.
+- **No idempotency on SMTP2GO.** It defines no idempotency key. The outbox row id rides as an
+  `X-Otta-Id` message header for correlation only. With SMTP2GO the outbox's claim is the only
+  dedupe, so the at-least-once delivery recorded above can, rarely, deliver an email twice:
+  after a timeout that came after SMTP2GO accepted it, or a tick that died before marking the
+  row sent. The provider research's `in_flight` / `ambiguous` outbox states are the fix and
+  are not built here.
+- **allowedHosts.** `api.smtp2go.com`, `us-api.smtp2go.com`, `eu-api.smtp2go.com` and
+  `au-api.smtp2go.com` are constant entries in `resolveAllowedHosts` (`manifest.ts`), like
+  `api.stripe.com`. The region is a runtime choice and kv cannot widen the build-time list, so
+  every region's host is granted in every build. Each host only accepts an SMTP2GO key. They
+  are exact hosts, not `*.smtp2go.com`. Adding a provider host remains a manifest change and an
+  amendment here.
+- **No URL needed for SMTP2GO.** "Can this store send" was "the build has `EMAIL_API_URL`". It
+  is now that, or SMTP2GO chosen in Settings (`emailSendingConfigured`). The cron leg and the
+  inline settle/admin send ask it before claiming a row. A build with a URL answers without a
+  kv read; one without reads the provider choice once per tick or attempt.

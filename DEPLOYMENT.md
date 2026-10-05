@@ -371,9 +371,15 @@ order of appearance in a deployment's life:
   emails list the order's own line snapshot, totals and ship-to, with money formatted as the
   storefront formats it.
 
-> **Email provider: Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
-> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag), so
-> Resend is the supported provider. To reach real inboxes:
+> **Email provider: Resend (default) or SMTP2GO.** Settings → "Payments & email" →
+> "Email provider" picks which one the store sends through. Resend is the default, so a
+> store that never sets it behaves as before. Both use the same "Email provider API key"
+> field: it holds the chosen provider's key. To switch, save the provider first, then that
+> provider's key (the key field's shape check follows the saved provider).
+>
+> **Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
+> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag) to the
+> build's `EMAIL_API_URL`. To reach real inboxes:
 >
 > 1. Build with `EMAIL_API_URL=https://api.resend.com/emails` (§4 — this also grants
 >    `api.resend.com` in `allowedHosts`).
@@ -400,6 +406,37 @@ order of appearance in a deployment's life:
 >
 > Another provider needs its own adapter behind the `EmailSender` port; pointing
 > `EMAIL_API_URL` at a non-Resend API is not supported.
+>
+> **SMTP2GO.** The sender posts SMTP2GO's `POST /v3/email/send` body (`sender`, `to` as a
+> list, `subject`, `html_body`, `text_body`, and an `X-Otta-Id` header carrying the outbox
+> row id) with the key in `X-Smtp2go-Api-Key`. Its hosts — `api.smtp2go.com` and the
+> regional `us-api`, `eu-api` and `au-api.smtp2go.com` — are granted in every build (§4), so
+> SMTP2GO needs **no** `EMAIL_API_URL` and no rebuild. To reach real inboxes:
+>
+> 1. In SMTP2GO, go to **Sending → Verified Senders** and add your sending domain. Publish
+>    the DNS records it lists (the DKIM and return-path CNAMEs) and wait until it shows as
+>    verified. Until then SMTP2GO refuses every send from that domain.
+> 2. Go to **Sending → API Keys** and add a key for this store. In the key's permissions,
+>    allow **only** sending email (the `/email/send` endpoint) — the store never needs
+>    anything else, so a leaked key cannot read your account or change its settings.
+> 3. In admin Settings → "Payments & email", set "Email provider" to SMTP2GO and "SMTP2GO
+>    region" (Global unless your account is tied to the US, EU or AU region), and set the
+>    from-address to one on the verified domain. Save, then save the API key (it starts
+>    `api-`; with SMTP2GO chosen, the save refuses any other shape).
+> 4. Set "Sign-in page address" and "Store display name" as for Resend (step 4 above).
+>
+> **SMTP2GO can refuse a send with HTTP 200.** An unverified sender domain, for one, comes
+> back as `200` with `data.failed: 1` and the reason in `data.failures`. The sender treats any
+> answer without `data.succeeded ≥ 1` and `data.failed = 0` as a failed send, and its error
+> carries SMTP2GO's reason (sanitized and cut to 200 characters, never the key or the
+> recipient), for example "From header sender domain not verified". The row is retried and
+> eventually parked `failed`, as with any refusal.
+>
+> **SMTP2GO has no idempotency key.** Resend dedupes a retried send; SMTP2GO does not. With
+> SMTP2GO, "once" rests on the outbox's claim alone: a send SMTP2GO accepted but whose answer
+> was lost (a timeout after acceptance, a tick cut off before the row was marked sent) is sent
+> again, so a buyer can rarely get the same email twice. Look a message up in SMTP2GO's
+> activity log by its `X-Otta-Id` header.
 
 ## 4. Egress and `allowedHosts`
 
@@ -409,8 +446,9 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 
 | Host | When |
 |---|---|
-| `api.stripe.com` | always — the one constant entry |
-| the email API host | when an email API URL is configured |
+| `api.stripe.com` | always |
+| `api.smtp2go.com`, `us-api.smtp2go.com`, `eu-api.smtp2go.com`, `au-api.smtp2go.com` | always — a store chooses SMTP2GO and its region in Settings, which cannot widen this build-time list |
+| the email API host | when an email API URL is configured (the Resend-shaped sender) |
 | the x402 facilitator host | when a facilitator URL is configured |
 
 The two URLs are `EMAIL_API_URL` and `X402_FACILITATOR_URL`, read by
