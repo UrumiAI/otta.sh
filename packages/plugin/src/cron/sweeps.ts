@@ -182,7 +182,7 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
-import { makeEmailSender } from "../email/ctx-http-email-sender.js";
+import { emailSendingConfigured, makeEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
 	boundedRefundStripeOptions,
@@ -1143,14 +1143,15 @@ export async function runCommerceSweeps(
 	// ── the legs ──────────────────────────────────────────────────────────────
 
 	// Whether this deployment can send at all: an unwired outbox reports `skipped`
-	// without asking the store anything.
-	const canSendEmail =
+	// without asking the store anything. A build-time email URL answers it with no
+	// read; without one, the store's provider choice does (one kv read: SMTP2GO
+	// needs no URL, its hosts are always granted).
+	const canSendEmail = async (): Promise<boolean> =>
 		options.emailSender !== undefined ||
 		options.emailSenderFactory !== undefined ||
-		(IN_PROCESS_EGRESS_URLS.emailApiUrl !== undefined &&
-			IN_PROCESS_EGRESS_URLS.emailApiUrl.length > 0);
+		(await emailSendingConfigured(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }));
 	const orderEmailsLeg = async (): Promise<void> => {
-		if (!canSendEmail) {
+		if (!(await canSendEmail())) {
 			const outcome = { leg: "order-emails" as const, ok: true, count: 0, skipped: true };
 			record(outcome);
 			reached.add("order-emails");
@@ -1844,19 +1845,18 @@ function outboxSender(
 ): EmailSender | undefined {
 	if (options.emailSender !== undefined) return options.emailSender;
 	const apiUrl = IN_PROCESS_EGRESS_URLS.emailApiUrl;
+	// Reached only once the leg has established that this context can send
+	// (`emailSendingConfigured`); `makeEmailSender` makes the same decision.
 	const factory =
 		options.emailSenderFactory ??
-		(apiUrl === undefined || apiUrl.length === 0
-			? undefined
-			: (requestTimeoutMs: () => number) => makeEmailSender(ctx, { apiUrl }, { requestTimeoutMs }));
-	if (factory === undefined) return undefined;
+		((requestTimeoutMs: () => number) => makeEmailSender(ctx, { apiUrl }, { requestTimeoutMs }));
 	const timeoutMs = (): number =>
 		Math.max(1, Math.min(SWEEP_EMAIL_SEND_TIMEOUT_MS, legBudget.remainingMs()));
 	let built: Promise<EmailSender | undefined> | undefined;
 	const attempt = async (input: Parameters<EmailSender["send"]>[0]): Promise<void> => {
 		built ??= factory(timeoutMs, ctx);
 		const sender = await built;
-		// Unreachable while the URL check above and `makeEmailSender` agree; a throw
+		// Unreachable while the leg's check and `makeEmailSender` agree; a throw
 		// here is a failed send, rescheduled like any other.
 		if (sender === undefined) throw new Error("email sender is not configured");
 		await sender.send(input);

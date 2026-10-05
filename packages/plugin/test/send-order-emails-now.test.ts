@@ -37,6 +37,7 @@ import {
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
 import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-http-email-sender.js";
+import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -147,6 +148,25 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		const id = await seedOrder("ord-unconfigured", true);
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
 		expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
+	});
+
+	test("no email API URL but SMTP2GO chosen in Settings ⇒ claimed and sent through SMTP2GO", async () => {
+		// SMTP2GO's hosts are granted in every build, so the store's provider choice
+		// alone makes it able to send.
+		const id = await seedOrder("ord-smtp2go", true);
+		const before = harness.egressAttempts();
+		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
+			expect(result.configured).toBe(true);
+			// The harness's ctx.http rejects it.
+			expect(harness.egressAttempts() - before).toBe(1);
+			expect(await cronView(id)).toMatchObject({ attempts: 2 });
+		} finally {
+			// kv outlives `harness.reset()`.
+			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
+		}
 	});
 
 	test("no email API URL is a QUIET no-op even when the budget is spent — nothing to say", async () => {

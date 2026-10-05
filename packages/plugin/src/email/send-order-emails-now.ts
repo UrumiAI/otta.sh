@@ -65,7 +65,7 @@ import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {
-	emailSenderConfigured,
+	emailSendingConfigured,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
 	type EmailSenderEgress,
@@ -164,7 +164,9 @@ export async function sendOrderEmailsNow(
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
 	// as well, so a "the cron sweep will deliver it" line below would be false.
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
-	if (options.emailSender === undefined && !emailSenderConfigured(egress)) {
+	// A build-time URL answers this with no kv read; without one, the store's
+	// provider choice does (SMTP2GO needs no URL).
+	if (options.emailSender === undefined && !(await emailSendingConfigured(ctx, egress))) {
 		return { configured: false, sent: [] };
 	}
 	const sent: OutboxEmail[] = [];
@@ -245,8 +247,8 @@ export async function sendOrderEmailsNow(
 /**
  * The context's sender, built on FIRST SEND rather than up front — so a replay with
  * nothing due never pays its two kv reads. The caller has already established that
- * this bundle has an email API URL (`emailSenderConfigured`, the predicate
- * `makeEmailSender` applies), so a row is never claimed for a sender that cannot
+ * this context can send (`emailSendingConfigured`, the decision
+ * `makeEmailSender` makes), so a row is never claimed for a sender that cannot
  * exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
  */
@@ -260,7 +262,7 @@ function lazySender(
 		async send(input) {
 			built ??= makeEmailSender(ctx, egress, { requestTimeoutMs: timeoutMs });
 			const sender = await built;
-			// Unreachable while `emailSenderConfigured` and `makeEmailSender` agree; a
+			// Unreachable while `emailSendingConfigured` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
 			await sender.send(input);

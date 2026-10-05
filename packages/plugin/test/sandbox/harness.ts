@@ -41,6 +41,7 @@ import {
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
 	resolveInProcessEgress,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 } from "../../src/manifest.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
@@ -286,6 +287,8 @@ function manifestSource(options: SandboxOptions): string {
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
+		// The SMTP2GO send hosts, a constant the email-provider setting reads.
+		`export const SMTP2GO_API_HOSTS = ${JSON.stringify(SMTP2GO_API_HOSTS)};`,
 		// INC-C5: the email sender and the x402 wiring read their endpoints from
 		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
 		// production. Absent ⇒ that provider is unconfigured (fail-closed).

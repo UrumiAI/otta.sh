@@ -50,9 +50,10 @@ function readDotEnv(name: string): string | undefined {
  * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
  * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
  * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
- * today sets neither, so its allowlist is the Stripe API host alone — order email
- * is a capability this deployment does not yet have, and setting `EMAIL_API_URL`
- * at build time is the whole of turning it on.
+ * today sets neither, so its allowlist is the constant part alone — Stripe's API
+ * host and SMTP2GO's send hosts. Email then goes out only if the store picks
+ * SMTP2GO in Settings; setting `EMAIL_API_URL` at build time turns on the
+ * Resend-shaped sender.
  */
 const egress = {
 	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
