@@ -26,6 +26,7 @@ vi.mock("emdash", () => ({ getEmDashEntry }));
 
 import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@otta-sh/plugin";
 import { POST } from "../src/pages/cart/add.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 
 const SITE = "http://localhost:4321";
 
@@ -264,5 +265,28 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 		const addCall = calls.find((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE);
 		expect(addCall).toBeDefined();
 		expect(addCall!.body["productId"]).toBeUndefined();
+	});
+});
+
+describe("POST /cart/add — out of stock, in words that fit the quantity (QA2 F)", () => {
+	const OUT = { ok: false, reason: "OUT_OF_STOCK" };
+
+	test("one unit refused: the item is sold out — never 'try a smaller quantity'", async () => {
+		const { handler } = makeHandler({ addLineResult: OUT });
+		const response = await POST(
+			makeContext({ sku: "SKU-1", qty: "1", idempotencyKey: "idem-so-1" }, handler),
+		);
+		const location = new URL(response.headers.get("location")!, SITE);
+		expect(location.searchParams.get("error")).toBe("SOLD_OUT");
+		expect(cartErrorMessage("SOLD_OUT")).toBe("Sorry, this item is sold out.");
+	});
+
+	test("more than one refused: the quantity sentence, which is true for both cases", async () => {
+		const { handler } = makeHandler({ addLineResult: OUT });
+		const response = await POST(
+			makeContext({ sku: "SKU-1", qty: "3", idempotencyKey: "idem-so-3" }, handler),
+		);
+		const location = new URL(response.headers.get("location")!, SITE);
+		expect(location.searchParams.get("error")).toBe("OUT_OF_STOCK");
 	});
 });

@@ -128,6 +128,37 @@ describe("shouldPollOrder — only while a change is expected, and only so many 
 	);
 });
 
+describe("shouldPollOrder — a late payment on a dead order polls until its refund is recorded (QA2 M3)", () => {
+	const late = { returnedFromStripe: true, returnedPaid: true, hop: 1 } as const;
+
+	test.each(["expired", "cancelled", "failed"])(
+		"a %s order the buyer just PAID polls while the refund is not on the ledger yet",
+		(state) => {
+			expect(shouldPollOrder({ ...late, state, latePayment: "none" })).toBe(true);
+			expect(shouldPollOrder({ ...late, state, latePayment: "refund_pending" })).toBe(true);
+		},
+	);
+
+	test("it stops once the refund is recorded, and at the same bound as every poll", () => {
+		expect(shouldPollOrder({ ...late, state: "expired", latePayment: "refunded" })).toBe(false);
+		expect(
+			shouldPollOrder({ ...late, state: "expired", latePayment: "none", hop: MAX_ORDER_POLLS + 1 }),
+		).toBe(false);
+	});
+
+	test("without a successful return status it does not poll", () => {
+		expect(
+			shouldPollOrder({
+				state: "expired",
+				returnedFromStripe: true,
+				returnedPaid: false,
+				latePayment: "none",
+				hop: 1,
+			}),
+		).toBe(false);
+	});
+});
+
 describe("the order page polls without piling up history", () => {
 	const PAGE = path.resolve(
 		path.dirname(fileURLToPath(import.meta.url)),
@@ -149,5 +180,23 @@ describe("the order page polls without piling up history", () => {
 		expect(frontmatter).toMatch(/shouldPollOrder\(/);
 		expect(frontmatter).toMatch(/orderPollHop\(/);
 		expect(frontmatter).toMatch(/recordOrderPollHop\(/);
+	});
+
+	test("QA2 M3: a successful return status is read for copy and polling only, and handed to both", () => {
+		// succeeded or processing — the two statuses Stripe returns for money that
+		// moved or is moving; a declined return keeps "Nothing was charged".
+		expect(frontmatter).toMatch(/searchParams\.get\("redirect_status"\)/);
+		expect(frontmatter).toMatch(
+			/const returnedPaid =\s*returnedFromStripe && \(\w+ === "succeeded" \|\| \w+ === "processing"\);/,
+		);
+		const poll = /shouldPollOrder\(\{[\s\S]*?\}\)/.exec(frontmatter)?.[0] ?? "";
+		expect(poll).toMatch(/returnedPaid/);
+		expect(poll).toMatch(/latePayment/);
+		const stamp = /orderStamp\(\{[\s\S]*?\}\)/.exec(frontmatter)?.[0] ?? "";
+		expect(stamp).toMatch(/returnedPaid/);
+		// …and whether it was only PROCESSING, which promises less.
+		expect(stamp).toMatch(/returnedProcessing/);
+		// The hop count runs for a dead order the buyer just paid, too.
+		expect(frontmatter).not.toMatch(/isPending && returnedFromStripe \? orderPollHop/);
 	});
 });

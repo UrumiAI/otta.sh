@@ -129,7 +129,8 @@ import {
 	type CreateOrderResult,
 	type Currency,
 	type CustomerId,
-	type ExpiryListOptions,
+	type OrderExpiryListOptions,
+	type ExpiredOrder,
 	type ReleaseEmailClaimOptions,
 	type FinalizeRefundInput,
 	type FinalizeRefundStoreResult,
@@ -352,7 +353,13 @@ export interface HoldCompletionResult {
 interface FlipOutcome {
 	won: boolean;
 	doc: OrderDoc | null;
+	/** The document's revision after a WON flip's write; null otherwise. */
+	revision?: string | null;
 }
+
+/** How many lapsed orders past the bite `listExpirable` reads when it excludes the
+ *  ones still owed an intent withdrawal (QA3 N1). Rows, not queries. */
+const EXPIRY_INTENT_LOOKAHEAD = 10;
 
 export class EmdashOrderStore implements OrderStore {
 	readonly #orders: StorageCollection<OrderDoc>;
@@ -448,7 +455,42 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
-		const { won } = await this.#flip({
+		return (await this.#expire(orderId, now)) !== null;
+	}
+
+	async expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null> {
+		const won = await this.#expire(orderId, now);
+		if (won === null) return null;
+		return { order: toOrder(won.doc), holdsReleased: won.holdsReleased };
+	}
+
+	/**
+	 * The guarded expiry flip, then — in the same call — the release intent it
+	 * recorded, completed from the document the flip just wrote.
+	 *
+	 * THE COMPLETION REUSES THE FLIP'S DOCUMENT AND REVISION (QA2 M2). It used to
+	 * re-read the order, release one reservation at a time and re-read the order
+	 * again to stamp the intent — and the expiry use-case then re-read the order and
+	 * released every line a second time. Now: one batched, order-scoped release
+	 * (`releaseAdoptedMany`), and the stamp is ONE compare-and-set against the
+	 * revision the flip returned (the re-reading stamp only if a peer moved the order
+	 * in between). `holdsReleased` says whether that completion finished, so the
+	 * use-case releases nothing a second time.
+	 *
+	 * A failure in the completion must not become the caller's, and must not be
+	 * reported as a lost flip: the flip is already durable, the port documents the
+	 * answer as "did this call win the guarded expiry", and a throw would make a sweep
+	 * that really did expire the order look like one that did not — so the next run
+	 * would re-read it as pending, find it expired, and report 0 while the release
+	 * stayed owed anyway. The intent is left outstanding (and `holdsPendingAt` keeps
+	 * it findable), which is precisely the state the sweeper exists for, and the
+	 * answer says `holdsReleased: false` so the use-case tries the release itself.
+	 */
+	async #expire(
+		orderId: OrderId,
+		now: string,
+	): Promise<{ doc: OrderDoc; holdsReleased: boolean } | null> {
+		const flipped = await this.#flip({
 			orderId,
 			fromState: "pending",
 			toState: "expired",
@@ -456,32 +498,36 @@ export class EmdashOrderStore implements OrderStore {
 			holdExpiresBefore: now,
 			intent: "release",
 		});
-		// The flip recorded the release intent; completing it is the second,
-		// idempotent step, and any replayer can run it (`expireOrders` also releases
-		// the same holds through the same order-scoped, no-op-on-miss port call).
-		//
-		// A failure HERE must not become the caller's, and must not be reported as a
-		// lost flip: the flip is already durable, the port documents the return as
-		// "did this call win the guarded expiry", and a throw would make a sweep that
-		// really did expire the order look like one that did not — so the next run
-		// would re-read it as pending, find it expired, and report 0 while the release
-		// stayed owed anyway. The intent is left outstanding (and `holdsPendingAt`
-		// keeps it findable), which is precisely the state the sweeper exists for.
-		if (won) {
-			try {
-				await this.completeHoldRelease(orderId);
-			} catch (err) {
-				// Not swallowed silently: recorded on the order's own reconciliation
-				// envelope, the one loud channel this port has that needs no extra
-				// collaborator. Best-effort — if even that write fails, the outstanding
-				// intent is still the durable record of the owed work.
-				await this.#noteReleaseFailure(orderId, err);
-			}
+		if (!flipped.won || flipped.doc === null) return null;
+		try {
+			await this.#completeReleaseFrom(flipped.doc, flipped.revision ?? null);
+			return { doc: flipped.doc, holdsReleased: true };
+		} catch (err) {
+			// Not swallowed silently: recorded on the order's own reconciliation
+			// envelope, the one loud channel this port has that needs no extra
+			// collaborator. Best-effort — if even that write fails, the outstanding
+			// intent is still the durable record of the owed work.
+			await this.#noteReleaseFailure(orderId, err);
+			return { doc: flipped.doc, holdsReleased: false };
 		}
-		return won;
 	}
 
-	async listExpirable(now: string, options: ExpiryListOptions = {}): Promise<OrderId[]> {
+	/**
+	 * Complete a release intent from a document in hand: the batched release, then
+	 * the stamp at `revision` (or the re-reading stamp if that is null or stale).
+	 * Only while the order is `expired` or `cancelled` — see `completeHoldRelease`.
+	 */
+	async #completeReleaseFrom(doc: OrderDoc, revision: string | null): Promise<void> {
+		const intent = doc.holdsReleased ?? null;
+		if (!isOutstanding(intent) || intent === null) return;
+		if (doc.state === "expired" || doc.state === "cancelled") {
+			await this.#inventory.releaseAdoptedMany(intent.reservationIds, doc.orderId);
+		}
+		if (revision !== null && (await this.#stampIntentAt(doc, revision, "holdsReleased"))) return;
+		await this.#stampIntent(doc.orderId as OrderId, "holdsReleased");
+	}
+
+	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
 		// Both halves of the SQL predicate are declared index fields, so this is the
 		// predicate itself rather than a candidate filter — but `limit` is clamped by
 		// the host, so it pages, and each fetched document is re-checked because a
@@ -498,14 +544,26 @@ export class EmdashOrderStore implements OrderStore {
 		for (let page = 0; page < this.#maxExpiryPages; page++) {
 			const result = await this.#orders.query({
 				where: { state: "pending", holdExpiresAt: { lte: now } },
-				limit: limit === undefined ? EXPIRY_PAGE_SIZE : Math.min(EXPIRY_PAGE_SIZE, limit),
+				orderBy: { holdExpiresAt: "asc" },
+				// Excluding orders still owed a withdrawal (QA3 N1) can skip rows, so the
+				// page reads ahead of the bite; a page is one query whatever its size.
+				limit:
+					limit === undefined
+						? EXPIRY_PAGE_SIZE
+						: Math.min(
+								EXPIRY_PAGE_SIZE,
+								options.excludeIntentDue === true ? limit + EXPIRY_INTENT_LOOKAHEAD : limit,
+							),
 				cursor,
 			});
 			for (const { data } of result.items) {
 				if (limit !== undefined && ids.length >= limit) return ids;
-				if (data.state === "pending" && data.holdExpiresAt <= now) {
-					ids.push(data.orderId as OrderId);
-				}
+				if (data.state !== "pending" || data.holdExpiresAt > now) continue;
+				// The order's own indexed "earliest due unresolved intent" — due means
+				// the buyer can still pay it, so it waits for its withdrawal.
+				const intentDue = data.intentCancelDueAt ?? null;
+				if (options.excludeIntentDue === true && intentDue !== null && intentDue <= now) continue;
+				ids.push(data.orderId as OrderId);
 			}
 			if (limit !== undefined && ids.length >= limit) return ids;
 			if (!result.hasMore || result.cursor === undefined) return ids;
@@ -525,6 +583,8 @@ export class EmdashOrderStore implements OrderStore {
 			fromState: input.fromState,
 			toState: input.toState,
 			enqueueEmail: input.enqueueEmail,
+			// The admin's move carries who made it, onto the flip's audit event.
+			...(input.actor !== undefined ? { actor: input.actor } : {}),
 			// `markPaid`/`expire` route through this same primitive, so a bare
 			// transition into those states records the same intent they would.
 			...(input.toState === "paid"
@@ -913,9 +973,7 @@ export class EmdashOrderStore implements OrderStore {
 			return { completed: false, lost: [] };
 		}
 		if (doc.state === "expired" || doc.state === "cancelled") {
-			for (const reservationId of intent.reservationIds) {
-				await this.#inventory.releaseAdopted(reservationId, orderId);
-			}
+			await this.#inventory.releaseAdoptedMany(intent.reservationIds, orderId);
 		}
 		await this.#stampIntent(orderId, "holdsReleased");
 		return { completed: true, lost: [] };
@@ -1003,6 +1061,7 @@ export class EmdashOrderStore implements OrderStore {
 					...entry,
 					status: "recorded",
 					refundRef: input.refundRef,
+					...(input.resolvedBy !== undefined ? { resolvedBy: input.resolvedBy } : {}),
 				};
 				const refunds = doc.refunds.map((row) =>
 					row.idempotencyKey === input.idempotencyKey ? finalized : row,
@@ -1058,6 +1117,18 @@ export class EmdashOrderStore implements OrderStore {
 		// the row RELEASES its ceiling capacity (it leaves the active sum) and stays
 		// as an audit record of the attempt.
 		return this.#flipRefundStatus(idempotencyKey, "voided");
+	}
+
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean> {
+		// Guarded `unverified → voided`: a person checked the provider and the refund
+		// never happened. The capacity is released; who said so is kept on the row.
+		return this.#flipRefundStatus(input.idempotencyKey, "voided", {
+			from: "unverified",
+			resolvedBy: input.resolvedBy,
+		});
 	}
 
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
@@ -1835,7 +1906,9 @@ export class EmdashOrderStore implements OrderStore {
 	async #flipRefundStatus(
 		key: IdempotencyKey,
 		to: Extract<RefundStatus, "voided" | "unverified">,
+		resolution: { from: "unverified"; resolvedBy: string } | null = null,
 	): Promise<boolean> {
+		const from: RefundStatus = resolution?.from ?? "reserved";
 		const claim = await this.#refundKeys.get(key);
 		if (claim === null) return false;
 		const orderId = claim.orderId;
@@ -1846,12 +1919,18 @@ export class EmdashOrderStore implements OrderStore {
 			const entry = findRefund(doc, key);
 			// The guard the SQL's `WHERE status = 'reserved'` was: capacity is released
 			// or held deliberately, never by accident.
-			if (entry === undefined || entry.status !== "reserved") return casDone(false);
+			if (entry === undefined || entry.status !== from) return casDone(false);
 			const now = this.#clock.now().toISOString();
 			const written = await this.#orders.compareAndSet(orderId, current.revision, {
 				...doc,
 				refunds: doc.refunds.map((row) =>
-					row.idempotencyKey === key ? { ...row, status: to } : row,
+					row.idempotencyKey === key
+						? {
+								...row,
+								status: to,
+								...(resolution !== null ? { resolvedBy: resolution.resolvedBy } : {}),
+							}
+						: row,
 				),
 				updatedAt: now,
 			});
@@ -1941,7 +2020,9 @@ export class EmdashOrderStore implements OrderStore {
 			// The rollup, after everything this flip owes is durable. Reached only on a WON
 			// flip, and `casDone` ends the retry loop, so it fires exactly once per move.
 			await this.#reportTransition(next, input.fromState, input.toState);
-			return casDone<FlipOutcome>({ won: true, doc: next });
+			// Neither of those writes the order, so the revision is still the flip's own —
+			// which lets a caller close the intent it just recorded without a re-read.
+			return casDone<FlipOutcome>({ won: true, doc: next, revision: written.revision });
 		});
 	}
 
@@ -2039,6 +2120,28 @@ export class EmdashOrderStore implements OrderStore {
 			});
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * `#stampIntent` against a document and revision already in hand: ONE
+	 * compare-and-set. False when the revision moved (a peer wrote the order since),
+	 * and the caller falls back to the re-reading stamp.
+	 */
+	async #stampIntentAt(
+		doc: OrderDoc,
+		revision: string,
+		field: "holdsAdopted" | "holdsCommitted" | "holdsReleased",
+	): Promise<boolean> {
+		const intent: HoldIntentDoc | null = doc[field] ?? null;
+		if (!isOutstanding(intent) || intent === null) return true;
+		const now = this.#clock.now().toISOString();
+		const stamped: OrderDoc = { ...doc, [field]: { ...intent, completedAt: now } };
+		const written = await this.#orders.compareAndSet(doc.orderId, revision, {
+			...stamped,
+			holdsPendingAt: computeHoldsPendingAt(stamped),
+			updatedAt: now,
+		});
+		return written.applied;
 	}
 
 	/**
@@ -2565,6 +2668,7 @@ function toRefundRecord(refund: RefundEntryDoc, orderId: OrderId): RefundRecord 
 		createdAt: refund.createdAt,
 		purpose: refund.purpose ?? "refund",
 		...(refund.restock !== undefined ? { restock: refund.restock } : {}),
+		...(refund.resolvedBy !== undefined ? { resolvedBy: refund.resolvedBy } : {}),
 	};
 }
 

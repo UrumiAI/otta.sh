@@ -1,7 +1,12 @@
 import type { OrderId } from "../money/ids.js";
 import type { OrderNotesStore } from "../ports/order-notes-store.js";
-import type { OrderEvent, OrderStore } from "../ports/order-store.js";
-import type { CancellationReason, OrderState, ReconciliationOutcome } from "./model.js";
+import type { OrderEvent, OrderStore, RefundPurpose, RefundStatus } from "../ports/order-store.js";
+import type {
+	CancellationReason,
+	CancellationRefund,
+	OrderState,
+	ReconciliationOutcome,
+} from "./model.js";
 
 export interface OrderTimelineDeps {
 	orderStore: OrderStore;
@@ -21,7 +26,8 @@ export interface OrderTimelineDeps {
  *  - everything else — DERIVED from records that already carry their own
  *    timestamp (`created` from `order.createdAt`, `note` from `order_notes`,
  *    `fulfillment`/`cancellation`/`reconciliation_resolved` from the order's
- *    mutable envelope), so they are never double-written.
+ *    mutable envelope, `refund` from the refunds ledger), so they are never
+ *    double-written.
  */
 export type OrderTimelineEntry =
 	| { kind: "created"; at: string }
@@ -48,6 +54,23 @@ export type OrderTimelineEntry =
 			reason: CancellationReason;
 			detail: string | null;
 			cancelledBy: string;
+			/** What the cancellation refunded, `null` for nothing (QA2: History left
+			 *  the money out). */
+			refund: CancellationRefund | null;
+			/** Whether it returned the order's sold units to stock. */
+			restocked: boolean;
+	  }
+	/** A refund on the order's ledger — recorded, or still in flight (reserved /
+	 *  unverified). A voided attempt moved no money and is not an entry (QA2). */
+	| {
+			kind: "refund";
+			at: string;
+			amount: number;
+			currency: string;
+			status: RefundStatus;
+			purpose: RefundPurpose;
+			refundedBy: string;
+			reason: string | null;
 	  }
 	| {
 			kind: "reconciliation_resolved";
@@ -85,8 +108,9 @@ const KIND_RANK: Record<OrderTimelineEntry["kind"], number> = {
 	state_change: 1,
 	fulfillment: 2,
 	cancellation: 3,
-	reconciliation_resolved: 4,
-	note: 5,
+	refund: 4,
+	reconciliation_resolved: 5,
+	note: 6,
 };
 
 /**
@@ -109,9 +133,10 @@ export async function getOrderTimeline(
 	const order = await deps.orderStore.getById(orderId);
 	if (order === null) return null;
 
-	const [events, notes] = await Promise.all([
+	const [events, notes, refunds] = await Promise.all([
 		deps.orderStore.listEventsForOrder(orderId),
 		deps.orderNotesStore.listForOrder(orderId),
+		deps.orderStore.listRefunds(orderId),
 	]);
 
 	const entries: OrderTimelineEntry[] = [];
@@ -144,6 +169,22 @@ export async function getOrderTimeline(
 			reason: c.reason,
 			detail: c.detail,
 			cancelledBy: c.cancelledBy,
+			refund: c.refund ?? null,
+			restocked: c.restocked === true,
+		});
+	}
+	// The refunds ledger (QA2): every row that moved, or is moving, money.
+	for (const r of refunds) {
+		if (r.status === "voided") continue;
+		entries.push({
+			kind: "refund",
+			at: r.createdAt,
+			amount: r.amount,
+			currency: r.currency,
+			status: r.status,
+			purpose: r.purpose ?? "refund",
+			refundedBy: r.refundedBy,
+			reason: r.reason,
 		});
 	}
 	if (order.reconciliationResolution !== null) {

@@ -311,13 +311,17 @@ export class EmdashReportingStore implements ReportingStore {
 	 * whatever the order's state is, which is what makes a fully refunded order's money
 	 * reportable at all.
 	 *
-	 * Calling it twice is calling it once. A second delivery finds the claim and returns
-	 * without a write.
+	 * Calling it twice is calling it once. A second delivery is refused at the claim and
+	 * moves no counter (it reads the day first, as every delivery does: four calls for a
+	 * first delivery, two for a spent one).
 	 */
 	async recordOrderEvent(event: ReportingOrderEvent): Promise<void> {
 		const claimId = claimIdFor(event);
-		// The fast path: a spent event costs one read and nothing else.
-		if ((await this.#applied.get(claimId)) !== null) return;
+		// No "already spent?" read first (QA2 M2). The claim below is a create-if-absent,
+		// so it refuses a spent event on its own; a pre-read only spared a REDELIVERY one
+		// call while costing every FIRST delivery — every order transition, the expiry
+		// sweep's included — one more. A redelivery now costs the day read and a refused
+		// claim, and moves nothing.
 
 		const day = dayKeyOf(event.orderCreatedAt);
 		const now = this.#clock.now().toISOString();

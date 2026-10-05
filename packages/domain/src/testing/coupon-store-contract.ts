@@ -86,6 +86,20 @@ export function couponStoreContract(
 			expect(await store.findByCode("NOPE")).toBeNull();
 		});
 
+		// QA round 2: a double-submitted create (the same ID and the same code)
+		// collided on its ID — and the refusal gave back the code claim the EXISTING
+		// coupon held, so checkout stopped finding the live coupon by its code.
+		test("a create refused on its ID never takes the existing coupon's code with it", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await expect(store.create(fixedCoupon())).rejects.toThrow();
+			expect((await store.findByCode("SAVE5"))?.id).toBe("c1");
+			// A NEW code under a taken ID is refused too, and claims nothing.
+			await expect(store.create({ ...fixedCoupon(), code: "OTHER" })).rejects.toThrow();
+			expect(await store.findByCode("OTHER")).toBeNull();
+			expect((await store.findByCode("SAVE5"))?.id).toBe("c1");
+		});
+
 		test("findByCode matches a code whatever its case — the shopper's `save5` is the merchant's `SAVE5`", async () => {
 			// ONE RULE FOR CODES, end to end. Codes are unique after case folding (a
 			// store refuses `save5` beside `SAVE5`), the admin search is

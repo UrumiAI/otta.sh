@@ -55,8 +55,34 @@ export interface OrderStore {
 	 * 0 rows ⇒ someone else won (paid/cancelled/expired, or not yet due) ⇒ false.
 	 */
 	expire(orderId: OrderId, now: string): Promise<boolean>;
-	/** Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`. */
-	listExpirable(now: string, options?: ExpiryListOptions): Promise<OrderId[]>;
+	/**
+	 * `expire`, for the sweep (QA2 M2): the SAME guarded flip, answering with what
+	 * the expiry use-case needs next so it never re-reads the order. `null` when
+	 * this call did not win the flip (exactly when `expire` would answer `false`);
+	 * otherwise the order as the flip left it, and whether the store has ALREADY
+	 * released the holds the order adopted.
+	 *
+	 * `holdsReleased: true` is a promise, not a hint: a store that records a release
+	 * intent with the flip and completes it in the same call (the document store)
+	 * says so, and the use-case then releases nothing itself. A store that cannot,
+	 * or whose completion failed this time (its intent stays outstanding for the
+	 * completer), says `false` and the use-case releases them through
+	 * `InventoryStore.releaseAdoptedMany`, which is order-scoped and idempotent.
+	 */
+	expireWithOrder(orderId: OrderId, now: string): Promise<ExpiredOrder | null>;
+	/**
+	 * Unpaid past-TTL orders: `state='pending' AND hold_expires_at<=:now`, oldest
+	 * deadline first.
+	 *
+	 * `excludeIntentDue` (QA3 N1): leave out every order with a payment intent that
+	 * is DUE for withdrawal and not yet withdrawn (`cancelOutcome` null and
+	 * `cancelDueAt <= now`) — such an order must not expire while the buyer can still
+	 * pay it; `cancelDueIntents` withdraws it first. An intent whose cancel failed and
+	 * was rescheduled is not due until its retry, so a provider outage never holds an
+	 * order. `limit` then counts the orders LISTED, not the ones read: the store keeps
+	 * reading past excluded ones (within its page bound).
+	 */
+	listExpirable(now: string, options?: OrderExpiryListOptions): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 
@@ -217,6 +243,18 @@ export interface OrderStore {
 	 * retried or released. False ⇒ no reserved row under the key.
 	 */
 	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean>;
+
+	/**
+	 * A person's answer to an UNVERIFIED refund, "it didn't happen" (review round
+	 * 2): guarded `unverified → voided`, releasing the row's ceiling capacity and
+	 * recording `resolvedBy` on it. False ⇒ no unverified row under the key. The
+	 * other answer, "confirmed at the provider", is {@link finalizeRefund} with
+	 * `resolvedBy`.
+	 */
+	voidUnverifiedRefund(input: {
+		idempotencyKey: IdempotencyKey;
+		resolvedBy: string;
+	}): Promise<boolean>;
 	/**
 	 * Read the order AND its ledgers — state-change audit, captured payments,
 	 * refunds — in ONE read of the aggregate, or `null` when there is no such order.
@@ -630,6 +668,8 @@ export interface OrderTransitionInput {
 	/** Enqueue an outbox row for `toState` in the same transaction. False for a
 	 *  state with no template (`failed`) so no undeliverable row is ever written. */
 	enqueueEmail: boolean;
+	/** Who made the move — recorded on the flip's audit event. Absent ⇒ `null`. */
+	actor?: string;
 }
 
 export interface OrderTransitionResult {
@@ -1154,6 +1194,9 @@ export interface RefundRecord {
 	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
+	/** Who resolved this row by hand when its outcome was unknown (`unverified`
+	 *  → recorded or voided, review round 2). Absent otherwise. */
+	resolvedBy?: string;
 }
 
 export type RefundKind = "gateway" | "manual";
@@ -1198,6 +1241,9 @@ export type RefundStatus = "recorded" | "reserved" | "unverified" | "voided";
 export interface FinalizeRefundInput {
 	idempotencyKey: IdempotencyKey;
 	refundRef: string;
+	/** A person confirmed an UNVERIFIED refund at the provider: who, recorded on
+	 *  the row. Absent on the gateway's own finalize. */
+	resolvedBy?: string;
 }
 
 /** `found:false` ⇒ no reserved/unverified row under the key AND no benign
@@ -1269,3 +1315,17 @@ export interface RecordRefundStoreResult {
 }
 
 export type { OrderState };
+
+/** What {@link OrderStore.expireWithOrder} answers for a WON expiry. */
+export interface ExpiredOrder {
+	/** The order as the flip left it: `state` is `expired`. */
+	readonly order: Order;
+	/** True when the store already released every hold the order adopted. */
+	readonly holdsReleased: boolean;
+}
+
+/** {@link OrderStore.listExpirable}'s options. */
+export interface OrderExpiryListOptions extends ExpiryListOptions {
+	/** Leave out orders whose payment intent is due and not yet withdrawn. */
+	readonly excludeIntentDue?: boolean;
+}

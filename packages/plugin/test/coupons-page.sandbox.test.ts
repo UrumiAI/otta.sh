@@ -844,6 +844,49 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(bannerOf(blocksOf(pctWithAmount))?.variant).toBe("error");
 	});
 
+	test("a create whose ID alone is taken names the ID, not the new code (QA round 2)", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "c-five",
+					code: "BRANDNEW",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		const banner = bannerOf(outcome);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toMatch(/coupon ID "c-five" is already used/);
+		expect(String(banner?.description)).not.toMatch(/code "BRANDNEW" is already used/);
+	});
+
+	test("a create whose code alone is taken names the code", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "c-brand-new",
+					code: "fiveoff",
+					type: "fixed_amount",
+					amount: "5.00",
+					currency: "USD",
+				},
+			}),
+		);
+		expect(String(bannerOf(outcome)?.description)).toMatch(
+			/code "fiveoff" is already used by another coupon/,
+		);
+	});
+
 	test("creating a coupon with a duplicate id/code says it is taken, keeps the typing, and writes nothing", async () => {
 		const state = makeCouponsState();
 		await boot(state);
@@ -1754,6 +1797,18 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		// DA-7a: names the alternative, no "deliberately"/"there is no"/"we do not".
 		expect(String(blockedNote?.text)).not.toMatch(/deliberately|there is no|we do not/i);
 		expect(String(blockedNote?.text)).toMatch(/Retire coupon/);
+	});
+
+	test("Delete coupon is on the coupon's main panel, beside Retire — not only under Redemptions (QA round 2)", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const detail = await openCoupon("FIVEOFF");
+		const tabs = findBlocks(detail, "tab")[0] as {
+			panels?: Array<{ label: string; blocks: Blk[] }>;
+		};
+		const main = tabs.panels?.find((p) => p.label === "Coupon");
+		expect(main).toBeDefined();
+		expect(actionButtons(main!.blocks).some((e) => e.action_id === "coupons:delete")).toBe(true);
 	});
 
 	test("Retire ends a LIVE coupon now — redeemed or not — keeping its economics and its uses, and the detail says checkout refuses it", async () => {

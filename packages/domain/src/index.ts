@@ -38,6 +38,7 @@ export {
 	normalizeCountryCode,
 	normalizeSubdivision,
 	parseZoneRegions,
+	REGION_CODE_PATTERN,
 	validateZoneRegionsInput,
 	type NormalizeSubdivisionResult,
 	type ValidateZoneRegionsResult,
@@ -164,6 +165,8 @@ export type {
 	CreateOrderLineInput,
 	CreateOrderResult,
 	CreateOrderTotalsInput,
+	ExpiredOrder,
+	OrderExpiryListOptions,
 	OrderCustomerKey,
 	OrderEvent,
 	OrderEventKind,
@@ -224,6 +227,7 @@ export type { Session, SessionStore, SessionSummary } from "./ports/session-stor
 export type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
+	PruneChallengesOptions,
 	VerifyChallengeResult,
 } from "./ports/credential-verifier.js";
 export type { Address, AddressKind, Customer } from "./customers/model.js";
@@ -275,8 +279,12 @@ export {
 	UNTRIED_RETRY_MS,
 	adminNextStates,
 	manualPaymentAllowed,
+	markRefundedAllowed,
+	markRefundedRefusal,
 	transitionOrder,
 	transitionOrderAsAdmin,
+	unrefundedCapturedCents,
+	type RefundLedgerFacts,
 	type TransitionOrderAsAdminFailure,
 	type TransitionOrderAsAdminResult,
 	type DispatchOrderEmailsDeps,
@@ -286,6 +294,16 @@ export {
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
+export {
+	resolveUnverifiedRefund,
+	type ResolveUnverifiedRefundCommand,
+	type ResolveUnverifiedRefundResult,
+} from "./orders/resolve-unverified-refund.js";
+export {
+	PROVIDER_PARTLY_REFUNDED_FLAG_PREFIX,
+	PROVIDER_REFUNDED_FLAG_PREFIX,
+	providerRefundedFlag,
+} from "./orders/provider-refunded-flag.js";
 export {
 	requestLogin,
 	verifyLogin,
@@ -427,7 +445,12 @@ export {
 	type OrderTimelineDeps,
 	type OrderTimelineEntry,
 } from "./orders/order-timeline.js";
-export { expireOrders, expireOrdersBatch, type ExpireOrdersDeps } from "./orders/expire-orders.js";
+export {
+	expireOrders,
+	expireOrdersBatch,
+	type ExpireOrdersBatchOptions,
+	type ExpireOrdersDeps,
+} from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
 export {
 	cancelDueIntents,

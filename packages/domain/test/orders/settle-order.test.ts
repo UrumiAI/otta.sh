@@ -317,6 +317,7 @@ describe("settleOrder", () => {
 				return h.orderStore.markPaid(id);
 			},
 			expire: (id, at) => h.orderStore.expire(id, at),
+			expireWithOrder: (id, at) => h.orderStore.expireWithOrder(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
 			recordPaymentIntent: (i) => h.orderStore.recordPaymentIntent(i),
@@ -336,6 +337,7 @@ describe("settleOrder", () => {
 			finalizeRefund: (i) => h.orderStore.finalizeRefund(i),
 			voidRefund: (k) => h.orderStore.voidRefund(k),
 			markRefundUnverified: (k) => h.orderStore.markRefundUnverified(k),
+			voidUnverifiedRefund: (i) => h.orderStore.voidUnverifiedRefund(i),
 			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
 			resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 			recordFulfillment: (i) => h.orderStore.recordFulfillment(i),

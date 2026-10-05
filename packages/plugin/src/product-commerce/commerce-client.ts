@@ -461,6 +461,25 @@ export interface CommerceClient {
 	 * to whoever holds the link.
 	 */
 	resumeOrderPayment(orderId: string, proof?: ResumeProof): Promise<ResumeOrderPaymentResult>;
+	/**
+	 * "Start a new cart" (QA2 X4): cancel the order this cart became, if that
+	 * order is still UNPAID — so a payment still open for it in another tab can no
+	 * longer go through, and its stock goes back on sale now rather than at the
+	 * hold deadline. The cart id is the proof (the cookie, the same possession
+	 * factor {@link resumeOrderPayment} accepts); nothing else is read from the
+	 * caller.
+	 *
+	 * The plain cancel (`cancelOrder`, reason `customer_request`, by `shopper`):
+	 * it releases the held stock and makes the order's PaymentIntent due for
+	 * withdrawal at once. A payment that still lands is refunded at settle, like
+	 * any payment on a cancelled unpaid order. Idempotent under a key derived from
+	 * the order.
+	 *
+	 * A cart with no order, an unknown cart, or an order that is no longer
+	 * `pending` (paid, expired, already cancelled) is a no-op success:
+	 * `cancelled: false` — there is nothing in progress to clear.
+	 */
+	abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult>;
 	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
 
@@ -628,6 +647,14 @@ export interface PublicOrderWire {
 	 * amount, a provider ref or the reconciliation detail behind it.
 	 */
 	latePayment: "none" | "refunded" | "refund_pending";
+	/**
+	 * Money the order's refunds LEDGER shows returned — RECORDED refunds only, in
+	 * the order's minor units; `0` when none (QA2 X3). The confirmation page says
+	 * "Refunded $X" from it. A refund made outside Otta ("Mark refunded",
+	 * ADR-0026) has no ledger row and is not counted: the page then states the
+	 * status and invents no amount. Read off the same ledger read as `latePayment`.
+	 */
+	refundedCents: number;
 }
 
 /** `CreateOrderFailure` verbatim (`@otta-sh/domain`'s orders/errors.ts). */
@@ -673,7 +700,19 @@ export type CheckoutFailureReason =
  * the whitelist.
  */
 export type CheckoutResult =
-	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire }
+	| {
+			ok: true;
+			order: PublicOrderWire;
+			intent: PaymentIntentWire;
+			/** The ORDER's email, masked (`j•••@g•••.com`) — never the address. A
+			 *  same-key replay (a second checkout tab) answers with the order the
+			 *  first tab placed, which keeps the email IT was placed with (QA2 X2). */
+			buyerRefHint: string;
+			/** Whether that email is the one this request carried (trimmed,
+			 *  case-folded). `false` only on a replay placed with another email:
+			 *  the site must say so rather than send the shopper on to pay. */
+			buyerRefMatches: boolean;
+	  }
 	| { ok: false; reason: CheckoutFailureReason };
 
 export type PublicOrderResult =
@@ -690,6 +729,10 @@ export interface ResumeProof {
 	/** The order's email, typed again. */
 	email?: string;
 }
+
+/** {@link CommerceClient.abandonCartOrder}'s reply: did THIS call cancel the
+ *  cart's order (and which order the cart names, if any). */
+export type AbandonCartOrderResult = { ok: true; cancelled: boolean; orderId: string | null };
 
 /** {@link CommerceClient.resumeOrderPayment}'s reply. */
 export type ResumeOrderPaymentResult =
@@ -759,10 +802,27 @@ export interface OrderSummaryWire {
  */
 export interface AccountOrderWire extends OrderSummaryWire {
 	latePayment: PublicOrderWire["latePayment"];
+	/** The tracking, as the public order read trims it (QA2 X1). */
+	fulfillment: PublicOrderWire["fulfillment"];
+	/** Where the order is going — the ship-to snapshot without its contact
+	 *  fields, or `null` when none was taken (QA2 X1). The OWNER's read only: the
+	 *  public order read never carries it. */
+	shippingAddress: AccountOrderAddressWire | null;
 	/** Money the order's ledger shows refunded (RECORDED refunds only), in the
 	 *  order's minor units — `0` when none. A refund made outside Otta ("Mark
 	 *  refunded", ADR-0026) is not on the ledger and is not counted. */
 	refundedCents: number;
+}
+
+/** An order's ship-to as its owner's account page shows it. */
+export interface AccountOrderAddressWire {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
 }
 
 export interface AddressWire {

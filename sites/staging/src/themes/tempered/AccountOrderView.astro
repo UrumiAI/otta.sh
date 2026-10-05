@@ -19,11 +19,12 @@ interface Props {
 	model: AccountOrderModel;
 }
 
-const { order, errorMessage } = Astro.props.model;
+const { order, errorMessage, signedInAs } = Astro.props.model;
 ---
 
 <p class="account-order-back">
 	<a href="/account/orders">← Your orders</a>
+	{signedInAs !== null && <span class="account-order-who">Signed in as {signedInAs}</span>}
 </p>
 
 {
@@ -52,12 +53,48 @@ const { order, errorMessage } = Astro.props.model;
 			</p>
 			{order.stateNote !== null && <p class="account-order-note">{order.stateNote}</p>}
 
+			{/* What the public order page offers for this order, decided by the
+			    page (QA2 X1): Complete payment while it can still be paid — the
+			    same resume path — and always the order's own page. */}
+			<div class="account-order-actions">
+				{order.payHref !== null && (
+					<a class="u-btn" href={order.payHref}>
+						Complete payment
+					</a>
+				)}
+				<a class="account-order-link" href={order.orderPageHref}>
+					View the order page
+				</a>
+			</div>
+
 			<div class="account-order-cols">
 				<section class="account-order-panel">
 					<div class="account-order-panel-head">
 						<h2 class="u-label account-order-head-label">Items</h2>
 					</div>
 					<Ledger rows={order.ledgerRows} />
+					{order.tracking !== null && (
+						<p class="account-order-ship">
+							Shipped with {order.tracking.carrier} — tracking{" "}
+							{order.tracking.trackingUrl !== null ? (
+								<a class="u-mono" href={order.tracking.trackingUrl} rel="noopener noreferrer">
+									{order.tracking.trackingNumber}
+								</a>
+							) : (
+								<span class="u-mono">{order.tracking.trackingNumber}</span>
+							)}
+						</p>
+					)}
+					{order.addressLines !== null && (
+						<div class="account-order-address">
+							<h2 class="u-label account-order-head-label">Delivery address</h2>
+							<address>
+								{order.addressLines.map((line) => (
+									<span>{line}</span>
+								))}
+							</address>
+						</div>
+					)}
 				</section>
 
 				<section class="account-order-panel">

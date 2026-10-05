@@ -22,8 +22,14 @@ export function normalizeCountryCode(raw: string): string | null {
 	return COUNTRY_CODES.has(code) ? code : null;
 }
 
-/** An optional `CC-` prefix and a 1–3 character alphanumeric suffix. */
-const REGION_SHAPE = /^([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}$/;
+/**
+ * The region SHAPE as an unanchored pattern source — an optional `CC-` prefix
+ * and a 1–3 character alphanumeric suffix — exported so a form field's
+ * `pattern` is this rule rather than a copy of it (QA2 N6).
+ */
+export const REGION_CODE_PATTERN = "([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}";
+
+const REGION_SHAPE = new RegExp(`^${REGION_CODE_PATTERN}$`);
 
 /** SHAPE only — see the module doc. Trims before testing. */
 export function isCodeShapedRegion(raw: string): boolean {

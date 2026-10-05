@@ -71,6 +71,7 @@ export {
 	type PaymentDeclineContractOptions,
 	type PaymentDeclineHarness,
 } from "./payment-decline-contract.js";
+export { orderExpiryContract, type OrderExpiryContractOptions } from "./order-expiry-contract.js";
 export {
 	orderTimelineContract,
 	type OrderTimelineHarness,

@@ -1,6 +1,7 @@
 import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
+import type { OrderId } from "../money/ids.js";
 import type { OrderStore } from "../ports/order-store.js";
 import {
 	listLimitFor,
@@ -31,6 +32,29 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 	return (await expireOrdersBatch(deps, at)).count;
 }
 
+/** {@link expireOrdersBatch}'s options: the sweep bite, plus an optional pre-listed
+ *  due set. */
+export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
+	/**
+	 * The candidates, already listed by the caller — the scheduled sweep lists them
+	 * once as its cheap "is there any work?" check and hands the same list here, so
+	 * the tick never pays for the list twice. Listed as `limit + 1` (like the
+	 * use-case's own list), so a set longer than the bite still reports
+	 * `drained: false`. Each is re-checked by the guarded flip, so a stale entry
+	 * (paid, cancelled, expired since) is a clean no-op.
+	 */
+	readonly due?: readonly OrderId[];
+	/**
+	 * QA3 N1: leave out (via the port's `listExpirable`) every order whose payment
+	 * intent is due for withdrawal and not yet withdrawn, so no order expires while
+	 * the buyer can still pay it. The scheduled sweep sets it, and withdraws those
+	 * intents first (`cancelDueIntents`). Default false: the use-case on its own stays
+	 * the pure state-and-stock transition ADR-0022 decision 2 describes, and a caller
+	 * that does not withdraw intents would otherwise never expire such an order.
+	 */
+	readonly excludeIntentDue?: boolean;
+}
+
 /**
  * `expireOrders`, bounded: at most `limit` orders attempted, each only while
  * `shouldContinue` allows, reporting whether the expirable set was `drained`.
@@ -38,38 +62,59 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
  * overrunning the host's hook timeout (see `sweep/batch.ts`). Stopping between two
  * orders is safe: each order's flip-then-release is its own guarded unit, and an
  * order not reached is still `pending` and still listed next time.
+ *
+ * ONE ORDER IS ONE STORE FLIP, NOT A FLIP AND A RE-READ (QA2 M2). The flip answers
+ * with the order it wrote (`expireWithOrder`), and the holds go back in ONE
+ * batched, order-scoped call — and only when the store has not already released
+ * them itself (the document store completes the release intent its flip records,
+ * in the same call). On the Workers Free preset the old shape — re-read, then a
+ * release per line on top of the store's own — was 22 storage calls an order,
+ * most of a tick.
  */
 export async function expireOrdersBatch(
 	deps: ExpireOrdersDeps,
 	at?: Date,
-	options: SweepBatchOptions = {},
+	options: ExpireOrdersBatchOptions = {},
 ): Promise<SweepBatchResult> {
 	const now = (at ?? deps.clock.now()).toISOString();
-	const ids = await deps.orderStore.listExpirable(now, listLimitFor(options));
+	const ids =
+		options.due ??
+		(await deps.orderStore.listExpirable(now, {
+			...listLimitFor(options),
+			...(options.excludeIntentDue === true ? { excludeIntentDue: true } : {}),
+		}));
 	let expired = 0;
 	let attempted = 0;
 	for (const id of ids) {
 		if (!mayContinue(options, attempted)) return { count: expired, drained: false };
 		attempted++;
-		const won = await deps.orderStore.expire(id, now);
-		if (!won) continue; // someone else won the transition (paid/cancelled/expired)
+		const won = await deps.orderStore.expireWithOrder(id, now);
+		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
-		const order = await deps.orderStore.getById(id);
-		if (order === null) continue;
-		for (const line of order.lines) {
+		const { order } = won;
+		if (!won.holdsReleased) {
 			// Order-SCOPED release (review G2): only a hold THIS order adopted is
 			// released — a line pointing at another order's reservation (a stale
 			// pre-fence order) is a silent skip, never a foreign release or a throw
-			// that would crash every subsequent sweep run.
-			if (line.reservationId !== null) {
-				await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
+			// that would crash every subsequent sweep run. One call for every line.
+			const reservationIds = order.lines.flatMap((line) =>
+				line.reservationId === null ? [] : [line.reservationId],
+			);
+			if (reservationIds.length > 0) {
+				await deps.inventoryStore.releaseAdoptedMany(reservationIds, order.id);
 			}
 		}
 		// Review I2: free the coupon too — symmetric with the inventory release.
-		// Order-scoped + idempotent (a double-sweep releases exactly once). The flip
-		// above is already durable, so a crash HERE would strand the use: the plugin's
-		// coupon sweeper releases any redemption whose order is `expired` as the retry.
-		await deps.couponStore.releaseByOrder(order.id);
+		// Order-scoped + idempotent (a double-sweep releases exactly once). Only an
+		// order that CARRIED a coupon holds a redemption: checkout redeems a coupon
+		// only when it discounts, and stamps `appliedCouponCode` in the same order
+		// (I4), so a coupon-less order is skipped — one storage read saved per order.
+		// The flip above is already durable, so a crash HERE would strand the use:
+		// the plugin's coupon sweeper releases any redemption whose order is
+		// `expired` as the retry, which also covers an order whose stamp is missing.
+		if (order.totals.appliedCouponCode !== null) {
+			await deps.couponStore.releaseByOrder(order.id);
+		}
 	}
 	return { count: expired, drained: true };
 }

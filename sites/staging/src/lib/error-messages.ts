@@ -31,8 +31,7 @@ const STALE_CHECKOUT_PAGE =
  * method are checked, so nothing was charged.
  */
 const SELECTION_MESSAGES = {
-	COUPON_NOT_FOUND:
-		"We couldn't find that coupon code — check it and try again (codes are case-sensitive).",
+	COUPON_NOT_FOUND: "We couldn't find that coupon code — check the spelling and try again.",
 	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
 	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
 	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",
@@ -65,6 +64,9 @@ const MESSAGES: Record<string, string> = {
 	// for that case and for a sold-out item alike. The available count is not
 	// named because the OUT_OF_STOCK refusal does not carry one.
 	OUT_OF_STOCK: "Sorry, we don't have enough of that in stock — try a smaller quantity.",
+	// The site's own (cart/add.ts): ONE unit refused OUT_OF_STOCK — there is no
+	// smaller quantity to try (QA2 F).
+	SOLD_OUT: "Sorry, this item is sold out.",
 	// Built from the plugin's own cap, so the number cannot drift. "At a time":
 	// the cap is per request, and an add can still take a line past it.
 	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
@@ -85,6 +87,11 @@ const MESSAGES: Record<string, string> = {
 	// with the shopper's request and nothing was lost — the store is just
 	// momentarily busy, and trying again in a few seconds will work.
 	BUSY: "We're a little busy right now — please try again in a few seconds.",
+	// QA2 X4: "Start a new cart" could not confirm it cancelled the cart's unpaid
+	// order (busy, unreachable), so it cleared nothing — saying it had would be the
+	// lie the control used to tell.
+	NEW_CART_NOT_CLEARED:
+		"We couldn't start a new cart just now, so nothing was changed — please try again in a few seconds.",
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",
@@ -128,6 +135,11 @@ const MESSAGES: Record<string, string> = {
 		"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
 	/* An explicit Apply of the code already applied: re-rendered, never placed. */
 	COUPON_ALREADY_APPLIED: "That code is already applied.",
+	/* QA2 X2: another tab already placed this cart's order, with another email.
+	   The locked review says WHICH (masked, `checkout-review.ts`); this is the
+	   sentence for a review that is no longer locked to it. */
+	ORDER_PLACED_OTHER_EMAIL:
+		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 	...SELECTION_MESSAGES,

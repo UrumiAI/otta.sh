@@ -32,8 +32,8 @@ export function orderSumRows(totals: CheckoutTotalsView): SumRow[] {
 	return [
 		{ label: "Subtotal", amount: totals.subtotal },
 		{
-			label:
-				totals.appliedCouponCode !== null ? `Discount · ${totals.appliedCouponCode}` : "Discount",
+			label: "Discount",
+			...(totals.appliedCouponCode !== null ? { code: totals.appliedCouponCode } : {}),
 			amount: totals.discount,
 			fallback: "No coupon applied",
 		},

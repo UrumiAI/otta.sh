@@ -228,7 +228,11 @@ describe("§8 — the home hero and its degraded rule", () => {
 
 	test("a degraded home shows NO error box — that is the catalog page's job", () => {
 		expect(HOME).not.toContain("Notice");
-		expect(HOME_VIEW).not.toContain("Notice");
+		// The view's ONE notice is the page's own one-liner (sign-out, QA2 A5),
+		// never a read failure: it prints `model.notice` and nothing else.
+		const notices = HOME_VIEW.match(/<Notice>[^<]*<\/Notice>/g) ?? [];
+		expect(notices).toEqual(["<Notice>{model.notice}</Notice>"]);
+		expect(HOME_VIEW).toMatch(/model\.notice !== null &&/);
 	});
 
 	test("the hero reads the same catalog the shop page reads", () => {

@@ -31,6 +31,16 @@ export interface OrderStampInput {
 	/** Is the page's bounded poll still running? Only then may it say it
 	 *  refreshes itself (QA U-13). */
 	polling: boolean;
+	/**
+	 * Did Stripe send the buyer back saying the payment SUCCEEDED (or is
+	 * processing)? Read only to stop a dead order's page saying "Nothing was
+	 * charged" before the webhook has recorded the payment (QA2 M3). It never
+	 * decides anything about the order; absent ⇒ `false`.
+	 */
+	returnedPaid?: boolean;
+	/** …and was that only `processing` — not yet settled? Then the refund is
+	 *  promised only IF the payment goes through. Absent ⇒ `false`. */
+	returnedProcessing?: boolean;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -41,7 +51,7 @@ function latePaymentSentence(
 	latePayment: PublicOrderView["latePayment"],
 ): string | null {
 	if (latePayment === "refunded") {
-		return `A payment arrived after this order ${verb}, so we've refunded it — it can take 5–10 days to appear.`;
+		return `A payment arrived after this order ${verb}, so we've refunded it — it can take 5–10 business days to appear.`;
 	}
 	if (latePayment === "refund_pending") {
 		// Captured and not (yet) back: never "nothing was charged", and never
@@ -49,9 +59,45 @@ function latePaymentSentence(
 		// a person's job (a gateway that cannot refund, a refusal the provider gave),
 		// and the wire deliberately does not say which — so the page promises only
 		// THAT it will be refunded.
-		return `A payment arrived after this order ${verb}. It will be refunded — once it is, it can take 5–10 days to appear.`;
+		return `A payment arrived after this order ${verb}. It will be refunded — once it is, it can take 5–10 business days to appear.`;
 	}
 	return null;
+}
+
+/**
+ * The sentence for a buyer just back from Stripe with a successful payment on an
+ * order that is already dead, while the ledger has not recorded it yet (QA2 M3):
+ * the payment came too late and will be refunded. The page polls (bounded) until
+ * the refund is on the ledger, and only says it refreshes while it does.
+ */
+function returnedLateSentence(
+	verb: "expired" | "was cancelled" | "failed",
+	polling: boolean,
+	processing: boolean,
+): string {
+	const lead = processing
+		? `Your payment was still processing when this order ${verb}, so if it goes through, it will be refunded`
+		: `Your payment arrived after this order ${verb}, so it will be refunded`;
+	return `${lead} — once it is, it can take 5–10 business days to appear. ${
+		polling ? "This page refreshes automatically." : "Check again in a minute."
+	}`;
+}
+
+/** The late-payment sentence a dead order earns: the ledger's, or — straight back
+ *  from a successful payment the ledger does not show yet — the returned one. */
+function deadOrderSentence(
+	verb: "expired" | "was cancelled" | "failed",
+	input: OrderStampInput,
+): string | null {
+	const fromLedger = latePaymentSentence(verb, input.latePayment);
+	if (input.latePayment === "refunded") return fromLedger;
+	if (input.returnedFromStripe && input.returnedPaid === true) {
+		if (input.latePayment === "none")
+			return returnedLateSentence(verb, input.polling, input.returnedProcessing === true);
+		// Recorded, refund not yet: the ledger's sentence, plus whether the page updates.
+		return `${fromLedger ?? ""} ${input.polling ? "This page refreshes automatically." : "Check again in a minute."}`.trim();
+	}
+	return fromLedger;
 }
 
 const FAILED: StateCopy = {
@@ -72,7 +118,7 @@ const COPY: Record<string, StateCopy> = {
 };
 
 export function orderStamp(input: OrderStampInput): StateCopy | null {
-	const { state, latePayment } = input;
+	const { state } = input;
 	if (state === null) return null;
 
 	if (state === "pending") {
@@ -104,7 +150,7 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	}
 
 	if (state === "expired") {
-		const late = latePaymentSentence("expired", latePayment);
+		const late = deadOrderSentence("expired", input);
 		return late === null
 			? EXPIRED
 			: { headline: EXPIRED.headline, body: `${EXPIRED_LEAD} ${late}` };
@@ -112,11 +158,11 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	if (state === "cancelled") {
 		return {
 			headline: "This order was cancelled.",
-			body: latePaymentSentence("was cancelled", latePayment),
+			body: deadOrderSentence("was cancelled", input),
 		};
 	}
 	if (state === "failed") {
-		const late = latePaymentSentence("failed", latePayment);
+		const late = deadOrderSentence("failed", input);
 		return late === null ? FAILED : { headline: FAILED.headline, body: late };
 	}
 	return COPY[state] ?? { headline: `Order status: ${state}.`, body: null };

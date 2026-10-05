@@ -21,7 +21,11 @@
  *
  * Styles: `commerce.css` (`checkout-*`).
  */
-import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import {
+	BUYER_REF_MAX,
+	ORDER_ADDRESS_MAX_LENGTHS,
+	REGION_CODE_PATTERN,
+} from "@otta-sh/plugin";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
 import StepTrack from "../../components/StepTrack.astro";
@@ -75,6 +79,14 @@ const {
 {errorMessage !== null && <div class="checkout-notice-slot"><Notice>{errorMessage}</Notice></div>}
 
 {
+	locked?.otherEmailNotice != null && (
+		<div class="checkout-notice-slot">
+			<Notice lead="This order was already placed.">{locked.otherEmailNotice}</Notice>
+		</div>
+	)
+}
+
+{
 	locked !== null && (
 		<div class="checkout-notice-slot">
 			{ended ? (
@@ -95,7 +107,8 @@ const {
 			) : (
 				<Notice lead="Your order has already been created.">
 					Its email, coupon and delivery address can no longer be changed. To change them, start a
-					new cart.
+					new cart — that cancels this order, and any payment for it that arrives
+					afterwards will be refunded.
 				</Notice>
 			)}
 		</div>
@@ -194,7 +207,7 @@ const {
 							</div>
 						)}
 						<span class="checkout-note" id="coupon-note">
-							Codes are case-sensitive.
+							Codes aren't case-sensitive.
 							{summary.selection.couponCode !== null && (
 								<>
 									{" "}
@@ -262,7 +275,7 @@ const {
 									form="checkout-place"
 									autocomplete="address-level1"
 									maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
-									pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+									pattern={REGION_CODE_PATTERN}
 									title="The state or province code, e.g. IL for Illinois"
 									autocapitalize="characters"
 									spellcheck="false"
@@ -566,7 +579,7 @@ const {
 													name="region"
 													autocomplete="address-level1"
 													maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
-													pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"
+													pattern={REGION_CODE_PATTERN}
 													value={addressValues.region}
 													aria-invalid={fieldErrors.region !== undefined}
 													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}

@@ -13,6 +13,7 @@
  *
  * Styles: `views.css` (`home-*`), linked by this theme's Layout.
  */
+import Notice from "../../components/Notice.astro";
 import PriceTag from "../../components/PriceTag.astro";
 import type { HomeModel } from "../contract.js";
 
@@ -23,6 +24,14 @@ interface Props {
 const { model } = Astro.props;
 const { rows } = model;
 ---
+
+{
+	model.notice !== null && (
+		<div class="home-notice" role="status">
+			<Notice>{model.notice}</Notice>
+		</div>
+	)
+}
 
 <div class="home-hero">
 	<div class="home-thesis">

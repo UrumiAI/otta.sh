@@ -129,8 +129,9 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 			expect(region).not.toMatch(/maxlength="\d+"/);
 			expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
 			// A name ("Illinois") is refused at the field by the pattern, and the
-			// browser's message quotes the title — which names the code to type.
-			expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
+			// browser's message quotes the title — which names the code to type. The
+			// pattern IS the domain's shape rule (QA2 N6), not a copy that can drift.
+			expect(region).toContain("pattern={REGION_CODE_PATTERN}");
 			expect(region).toMatch(/title="[^"]*code[^"]*IL[^"]*"/);
 			expect(region).toContain('autocapitalize="characters"');
 			expect(region).toContain('spellcheck="false"');
@@ -270,7 +271,13 @@ describe.each(REVIEW_VIEWS)("/checkout — the coupon — %s", (_label, { source
 	test("the lock notice says the email, the coupon AND the delivery address can no longer be changed", () => {
 		// QA U-2 added the email: the locked review no longer offers an email field.
 		expect(VIEW).toMatch(
-			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart\./,
+			/Its email, coupon and delivery address can no longer be changed\.\s+To change them, start a\s+new cart/,
+		);
+	});
+
+	test("QA2 X4: the lock notice says starting a new cart CANCELS this order — the button does that now", () => {
+		expect(VIEW).toMatch(
+			/start a\s+new cart\s+—\s+that cancels this order, and any payment for it that arrives\s+afterwards will be refunded\./,
 		);
 	});
 
@@ -418,7 +425,7 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(select).toContain('form="checkout-place"');
 		const region = /<input[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
-		expect(region).toContain('pattern="([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}"');
+		expect(region).toContain("pattern={REGION_CODE_PATTERN}");
 		expect(region).toContain('form="checkout-place"');
 		expect(DELIVERY).toMatch(/State\/province code/);
 		expect(DELIVERY).toMatch(
@@ -670,7 +677,19 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 				frontmatter,
 			)?.[0] ?? "";
 		expect(holdNote, "the hold note reads the order's deadline only").not.toBe("");
-		expect(frontmatter.replace(holdNote, "").match(/orderRead/g) ?? []).toHaveLength(2);
+		// QA2 M1c: the deadline script is handed the same `holdExpiresAt` — and
+		// nothing else from the read.
+		const deadline =
+			/const payDeadline =\s*orderRead !== null && !isBusyResult\(orderRead\) && orderRead\.ok\s*\?\s*orderRead\.order\.holdExpiresAt\s*:\s*undefined;/.exec(
+				frontmatter,
+			)?.[0] ?? "";
+		expect(deadline, "the page's deadline is the order's holdExpiresAt only").not.toBe("");
+		expect(
+			frontmatter
+				.replace(holdNote, "")
+				.replace(deadline, "")
+				.match(/orderRead/g) ?? [],
+		).toHaveLength(2);
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {

@@ -49,6 +49,8 @@
 import {
 	activateProductCommerce,
 	addLine,
+	cancelDueIntents,
+	cancelOrder,
 	cents,
 	checkoutOwner,
 	computeQuote,
@@ -82,7 +84,6 @@ import {
 	updateProductVariantFields,
 	upsertProductCommerce,
 	upsertProductVariant,
-	readOrderWithLatePayment,
 	recordedRefundTotal,
 	classifyLatePayment,
 	verifyLogin,
@@ -108,7 +109,9 @@ import {
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
+	AbandonCartOrderResult,
 	AddressWire,
+	AccountOrderAddressWire,
 	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
@@ -201,7 +204,22 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * success, and the client logs that once.
 	 */
 	resolveEmailSender?: () => Promise<EmailSender | undefined>;
+	/**
+	 * The gateways "Start a new cart" withdraws an abandoned order's intent through
+	 * (QA2 X4), resolved LAZILY — only when an order was actually cancelled — and
+	 * built for a SHORT, fixed provider bound ({@link ABANDON_CANCEL_CALL_MS}), not
+	 * checkout's. Absent ⇒ no in-request withdrawal; the sweep does it.
+	 */
+	resolveWithdrawGateways?: () => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>;
 }
+
+/** The provider bound for the in-request intent withdrawal: fixed, never
+ *  clipped — a cancel gets all of it or is not started (the sweep's rule). */
+export const ABANDON_CANCEL_CALL_MS = 1_500;
+/** The whole in-request withdrawal's budget, measured from the start of the
+ *  abandon: the cancel is started only while a whole {@link ABANDON_CANCEL_CALL_MS}
+ *  still fits, so the shopper's redirect waits at most this long for it. */
+export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
 
 /**
  * Server-side notices that are logged ONCE per isolate rather than once per
@@ -222,6 +240,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
 	readonly #resolveEmailSender: (() => Promise<EmailSender | undefined>) | undefined;
+	readonly #resolveWithdrawGateways:
+		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
+		| undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -236,6 +257,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#resolveEmailSender = options.resolveEmailSender;
+		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -856,6 +878,10 @@ export class InProcessCommerceClient implements CommerceClient {
 					refunds: ledger.refunds,
 				}),
 				refundedCents: recordedRefundTotal(ledger.refunds),
+				// The owner's own page (QA2 X1): the tracking as the public read trims
+				// it, and the ship-to — which the public read never carries.
+				fulfillment: publicFulfillment(ledger.order),
+				shippingAddress: accountOrderAddress(ledger.order),
 			},
 		};
 	}
@@ -1067,8 +1093,12 @@ export class InProcessCommerceClient implements CommerceClient {
 			// A checkout's reply describes the order it just placed (or replayed);
 			// whatever `latePayment` would say, the place route projects only id and
 			// state out of it, so it is not worth three reads on the hot path.
-			order: serializePublicOrder(result.order, "none"),
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
+			// A same-key replay is the order ANOTHER tab placed, with the email it
+			// was placed with (QA2 X2): masked, and whether it is this request's.
+			buyerRefHint: buyerRefHint(result.order.buyerRef),
+			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
 	}
 
@@ -1103,12 +1133,25 @@ export class InProcessCommerceClient implements CommerceClient {
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
 		requireIdToken("orderId", orderId);
 		// ONE read of the order aggregate — the order and the ledgers its
-		// `latePayment` status is derived from (`readOrderWithLatePayment`). On a
-		// live order (every poll of a pending confirmation page, the pay page's
-		// guard) the derivation is pure and short-circuits; nothing is read twice.
-		const read = await readOrderWithLatePayment(this.#stores.orderStore, toOrderId(orderId));
-		if (read === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		return { ok: true, order: serializePublicOrder(read.order, read.latePayment) };
+		// `latePayment` status and its recorded refunds (QA2 X3) are derived from,
+		// as the account's order read makes. On a live order (every poll of a
+		// pending confirmation page, the pay page's guard) the derivation is pure;
+		// nothing is read twice.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			order: serializePublicOrder(
+				ledger.order,
+				classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				recordedRefundTotal(ledger.refunds),
+			),
+		};
 	}
 
 	/**
@@ -1176,10 +1219,71 @@ export class InProcessCommerceClient implements CommerceClient {
 		}
 		return {
 			ok: true,
-			order: serializePublicOrder(result.order, "none"),
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
 			buyerRefHint: buyerRefHint(order.buyerRef),
 		};
+	}
+
+	/**
+	 * "Start a new cart" (QA2 X4) — see the port. The cart is the proof: its
+	 * order is read through the cart row's own `orderId`, never from the caller.
+	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
+	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 */
+	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
+		requireIdToken("cartId", cartId);
+		const startedAt = Date.now();
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null || cart.orderId === null) {
+			return { ok: true, cancelled: false, orderId: null };
+		}
+		const orderId = toOrderId(cart.orderId);
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order === null || order.state !== "pending") {
+			return { ok: true, cancelled: false, orderId: cart.orderId };
+		}
+		const res = await cancelOrder(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId,
+				reason: "customer_request",
+				detail: "Started a new cart",
+				cancelledBy: "shopper",
+				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
+			},
+		);
+		const cancelled = res.ok && res.cancelled;
+		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
+		return { ok: true, cancelled, orderId: cart.orderId };
+	}
+
+	/**
+	 * Withdraw a just-cancelled order's PaymentIntent at the provider IN the
+	 * request, so a tab still open on it stops being payable now rather than on
+	 * the sweep's next tick. BEST-EFFORT and BOUNDED: the cancel made it due at
+	 * once, and this is the sweep's own drain (`cancelDueIntents`) run for that one
+	 * order — same keys, same bookkeeping — so a definite answer is recorded and
+	 * the sweep never asks again, a RETRYABLE one is rescheduled for the sweep
+	 * exactly as there, and a cancel that would not fit whole in
+	 * {@link ABANDON_WITHDRAW_BUDGET_MS} is not started at all (still due,
+	 * uncounted). Never throws: the cancellation already stands.
+	 */
+	async #withdrawIntentsNow(orderId: ReturnType<typeof toOrderId>, startedAt: number) {
+		const resolve = this.#resolveWithdrawGateways;
+		if (resolve === undefined) return;
+		const remainingMs = () => ABANDON_WITHDRAW_BUDGET_MS - (Date.now() - startedAt);
+		try {
+			await cancelDueIntents(
+				{ orderStore: this.#stores.orderStore, clock: this.#stores.clock, gateways: resolve },
+				{ due: [orderId], limit: 1, canStartCancel: () => remainingMs() >= ABANDON_CANCEL_CALL_MS },
+			);
+		} catch (err) {
+			console.error(
+				`[otta] withdrawing the payment intent of abandoned order ${orderId} failed; the sweep will`,
+				{ error: err instanceof Error ? err.message : String(err) },
+			);
+		}
 	}
 
 	/**
@@ -1387,7 +1491,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
  * guest may legitimately read — carrier and tracking, the cancellation reason —
  * never the staff identity, the audit witness or the free-text detail.
  */
-function serializePublicOrder(order: Order, latePayment: LatePaymentStatus): PublicOrderWire {
+function serializePublicOrder(
+	order: Order,
+	latePayment: LatePaymentStatus,
+	refundedCents: number,
+): PublicOrderWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1407,21 +1515,48 @@ function serializePublicOrder(order: Order, latePayment: LatePaymentStatus): Pub
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
-		fulfillment:
-			order.fulfillment === null
-				? null
-				: {
-						carrier: order.fulfillment.carrier,
-						trackingNumber: order.fulfillment.trackingNumber,
-						trackingUrl: order.fulfillment.trackingUrl,
-						shippedAt: order.fulfillment.shippedAt,
-					},
+		fulfillment: publicFulfillment(order),
 		cancellation:
 			order.cancellation === null
 				? null
 				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
 		latePayment,
+		refundedCents,
 	};
+}
+
+/** The fulfilment trimmed to what a buyer may read: carrier and tracking, never
+ *  who recorded it. */
+function publicFulfillment(order: Order): PublicOrderWire["fulfillment"] {
+	return order.fulfillment === null
+		? null
+		: {
+				carrier: order.fulfillment.carrier,
+				trackingNumber: order.fulfillment.trackingNumber,
+				trackingUrl: order.fulfillment.trackingUrl,
+				shippedAt: order.fulfillment.shippedAt,
+			};
+}
+
+/** The ship-to for its OWNER's page: where it goes, without the contact fields
+ *  (email, phone) captured beside it. */
+function accountOrderAddress(order: Order): AccountOrderAddressWire | null {
+	const address = order.shippingAddress;
+	if (address === null) return null;
+	return {
+		name: address.name,
+		line1: address.line1,
+		line2: address.line2,
+		city: address.city,
+		region: address.region,
+		postalCode: address.postalCode,
+		country: address.country,
+	};
+}
+
+/** The same mailbox, as the resume proof compares one: trimmed, case-folded. */
+function sameBuyerRef(stored: string, typed: string): boolean {
+	return stored.trim().toLowerCase() === typed.trim().toLowerCase();
 }
 
 /** The chosen shipping zone, read off the totals' method snapshot (an opaque value

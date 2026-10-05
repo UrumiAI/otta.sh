@@ -96,6 +96,38 @@ describe("cron cancel-intents", () => {
 		expect((await h.stores.orderStore.getById(toOrderId("cx-1")))?.state).toBe("expired");
 	});
 
+	test("an order the expiry has NOT reached yet still has its intent withdrawn at its deadline (QA2 M1a)", async () => {
+		// Two lapsed orders, an expiry that can take only one this tick: the other
+		// stays `pending` — and its intent is withdrawn anyway, so it cannot be paid
+		// in the gap before the expiry catches up.
+		await lapsedOrderWithIntent("cx-lag-a", "pi_cx_lag_a");
+		await lapsedOrderWithIntent("cx-lag-b", "pi_cx_lag_b");
+		const stripe = new FakePaymentGateway({ id: "stripe" });
+
+		const summary = await runCommerceSweeps(h.ctx, SWEEP_TASK_NAME, {
+			now: new Date("2001-01-01T00:00:00.000Z"),
+			queryBudget: PAID_QUERIES,
+			expiryBatchLimit: 1,
+			gateways: { stripe },
+		});
+
+		expect(summary.legs.find((leg) => leg.leg === "expire-orders")).toMatchObject({ count: 1 });
+		const states = await Promise.all(
+			["cx-lag-a", "cx-lag-b"].map(
+				async (id) => (await h.stores.orderStore.getById(toOrderId(id)))?.state,
+			),
+		);
+		expect(states.toSorted()).toEqual(["expired", "pending"]);
+		expect(stripe.cancelCalls.map((c) => c.intentId).toSorted()).toEqual([
+			"pi_cx_lag_a",
+			"pi_cx_lag_b",
+		]);
+		for (const id of ["cx-lag-a", "cx-lag-b"]) {
+			const [intent] = await h.stores.orderStore.listPaymentIntents(toOrderId(id));
+			expect(intent?.cancelOutcome, id).toBe("cancelled");
+		}
+	});
+
 	test("a gateway that throws costs the cancel, never the expiry", async () => {
 		await lapsedOrderWithIntent("cx-2", "pi_cx_2");
 		const stripe = new FakePaymentGateway({ id: "stripe" });
@@ -138,15 +170,18 @@ describe("cron cancel-intents", () => {
 			gateways: { stripe: slow },
 		});
 
-		// Both orders expired — the expiry never waits on a provider — but only one
-		// cancel fit.
-		expect(summary.legs.find((leg) => leg.leg === "expire-orders")).toMatchObject({ count: 2 });
+		// Only one cancel fit (and the cancel took the tick's time, so the expiry got
+		// none). QA3 N1: the expiry never flips an order whose intent is due and not
+		// yet withdrawn — the other order waits, still pending (and refused by the pay
+		// page), for the next tick.
 		expect(summary.legs.find((leg) => leg.leg === "cancel-intents")).toMatchObject({
 			ok: true,
 			count: 1,
 			incomplete: true,
 		});
 		expect(stripe.cancelCalls).toHaveLength(1);
+		const waiting = stripe.cancelCalls[0]?.intentId === "pi_cx_3a" ? "cx-3b" : "cx-3a";
+		expect((await h.stores.orderStore.getById(toOrderId(waiting)))?.state).toBe("pending");
 	});
 
 	test("a cancel is never STARTED with less than a whole cancel's time left — and a tick that runs out costs it no attempt", async () => {

@@ -139,10 +139,10 @@ describe("cartErrorMessage", () => {
 		expect(new Set(coupon).size).toBe(coupon.length);
 	});
 
-	test("COUPON_NOT_FOUND tells the buyer to check the code, and that case matters", () => {
+	test("COUPON_NOT_FOUND tells the buyer to check the code — and never that case matters: lookup ignores it (ADR-0025)", () => {
 		const message = cartErrorMessage("COUPON_NOT_FOUND");
 		expect(message).toMatch(/check/i);
-		expect(message).toMatch(/case-sensitive/i);
+		expect(message).not.toMatch(/(?<!n't |not )case-sensitive/i);
 	});
 
 	test("SHIPPING_ZONE_NOT_MATCHED says plainly that the store does not ship there", () => {

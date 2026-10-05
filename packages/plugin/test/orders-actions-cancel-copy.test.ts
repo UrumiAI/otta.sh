@@ -34,6 +34,7 @@ function surface(outcome: CancelOrderResult): AdminOrdersSurface {
 		getTimeline: refuse("getTimeline"),
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
+		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
 	};
 }
 

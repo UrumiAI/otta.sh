@@ -56,7 +56,8 @@ export interface PaymentGateway {
 	/**
 	 * Withdraw a payment the buyer has NOT completed, so it can no longer be paid
 	 * — the mirror of `createIntent`, called by the intent-cancel sweep
-	 * (`cancelDueIntents`) once an unpaid order has left `pending`.
+	 * (`cancelDueIntents`) once an unpaid order's time to pay has run out — at its
+	 * hold deadline, or at once when it is cancelled unpaid.
 	 *
 	 * WHY THIS EXISTS. An expired order's PaymentIntent used to stay live: a buyer
 	 * who kept the pay page (or its cookie) open past the hold could still pay it,
@@ -94,9 +95,11 @@ export interface CancelIntentInput {
 /**
  * The normalized result of a `cancelIntent` attempt.
  *  - `cancelled` — the provider withdrew the intent; it can no longer be paid.
- *  - `not_cancellable` — the intent is already final (succeeded, or cancelled
- *    earlier): nothing to do here. A SUCCEEDED intent is the buyer paying at the
- *    instant the order expired; its webhook takes the late-payment refund path.
+ *  - `not_cancellable` — the intent SUCCEEDED: the buyer paid at the instant it
+ *    was withdrawn. Its webhook settles a still-pending order normally (its stock
+ *    was still held) or takes the late-payment refund path on a dead one. An
+ *    adapter reports this only once it has seen the success — an intent that is
+ *    still payable must be `RETRYABLE`, never this (QA2 M1b).
  *  - `UNSUPPORTED` — the gateway has no standing intent or no credential: a
  *    capability statement, never retried and not worth an operator's attention.
  *  - `RETRYABLE` / `TERMINAL` — the provider could not be reached / refused. The
@@ -145,7 +148,18 @@ export interface RefundInput {
  */
 export type RefundResult =
 	| { ok: true; refundRef: string; amount: Cents; currency: Currency }
-	| { ok: false; reason: RefundFailureReason };
+	| {
+			ok: false;
+			reason: RefundFailureReason;
+			/**
+			 * On `PROVIDER_ALREADY_REFUNDED`: the provider's own figures from the
+			 * pre-flight read — what it shows refunded, and what it captured, in the
+			 * payment's minor units. They tell a payment refunded IN FULL outside Otta
+			 * from a partial dashboard refund the requested amount would over-run.
+			 * Absent when the adapter cannot say.
+			 */
+			provider?: { refunded: number; captured: number };
+	  };
 
 export type RefundFailureReason =
 	| "UNSUPPORTED"

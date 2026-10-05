@@ -353,3 +353,67 @@ every `pending` order, including one simply awaiting payment, where nothing is a
   bounded poll" and "this page will update". It no longer polls; its copy now reads "If you
   already paid, check again in a minute — if the order has expired by then, your payment will be
   refunded."
+
+## Amended 2026-10-03 — the pay page keeps its own deadline; the return page tells the truth about a late payment
+
+**What changed and why (QA2 M1c, M3).** A pay tab left open past the hold kept a live Pay button
+and "reserved for 14 more minutes", and a click charged the buyer for an order that was expiring.
+And a buyer sent back by Stripe with `redirect_status=succeeded` on an order that had already
+expired read "Nothing was charged." — the webhook had not recorded the payment yet.
+
+**The amendment.** Decision 2 stands: `/checkout/pay` is still the only page with client
+JavaScript, and the confirmation page still carries none.
+
+- **The pay page closes itself at its deadline.** The page passes its script the order's
+  `holdExpiresAt` and the server's "now" at render (`data-pay-deadline`, `data-pay-server-now`
+  on the mount), from the read the guard already makes. A second, BUNDLED module script on the
+  same page (`lib/pay-deadline.ts`, tested with a fake clock) measures only the time elapsed
+  since load, so a wrong browser clock cannot move the deadline; re-checks on visibility, focus
+  and pageshow, since a background tab's timer cannot be trusted; and at the deadline disables
+  Pay, hides the hold sentence (`data-pay-hold`, the view's hook), and shows a page-rendered,
+  hidden-until-then notice: "The time to pay has run out." with a link to the order. A submit
+  after the deadline is stopped in the capture phase on the document, before Stripe's handler
+  runs, and the inline handler refuses on the form's closed flag as well — it never re-enables
+  Pay once closed. A payment already under way at the deadline is left alone. An unreadable
+  deadline closes nothing: the server-side withdrawal and refund remain the backstop.
+  The notice's `role="alert"` region is in the DOM from first render with only its body
+  hidden, so closing is announced (WCAG 4.1.3), and focus moves to its "View your order"
+  link if it was in the payment form. A confirm Stripe refuses because the intent was
+  withdrawn (`payment_intent_unexpected_state`, or a canceled intent) closes the page the
+  same way instead of showing Stripe's own message.
+- **Decision 5 is widened by one more clause.** `redirect_status` is now read, in the page
+  frontmatter only, for one further copy choice: on an `expired`, `cancelled` or `failed` order
+  whose ledger does not yet show a late payment, a `succeeded` or `processing` return says "Your
+  payment arrived after this order expired, so it will be refunded — once it is, it can take
+  5–10 days to appear", instead of "Nothing was charged". The page then runs the same bounded,
+  same-URL poll as a just-paid pending order, until the refund is on the ledger (`latePayment:
+  refunded`), and offers "Check again" when the poll ends first. A declined or abandoned return
+  keeps "Nothing was charged"; a `processing` return promises the refund only if the payment
+  goes through. The parameters are still never rendered or forwarded, and still
+  decide nothing about the order's state.
+
+## Amended 2026-10-03 (second) — a second tab is told which email the order has; the order page states refunds
+
+QA round 2 (X2, X3, N7, U-14). The decisions above are unchanged; these are what the pages now
+say.
+
+- **A second checkout tab.** The place key is stable per cart, so a second tab's submit replays
+  the order the first tab placed, which keeps the email it was placed with. The place route now
+  answers `buyerRefHint` (the order's email, masked) and `emailMatches`. When the typed email is
+  not the order's, `/checkout/place` does not go on to the pay page: it stashes the order as any
+  place does and returns to the locked review with `ORDER_PLACED_OTHER_EMAIL`, which names the
+  masked address and offers "Continue to payment" or "Start a new cart". The hint comes from the
+  stash place just wrote, and only when it is the locked order's; otherwise the sentence names no
+  address. A normal place stashes the hint too, so the fresh pay page states where the
+  confirmation goes, as the resume path already did.
+- **Refunds on the order page.** The public order read carries `refundedCents`: the order's
+  RECORDED refunds, from the same single ledger read as `latePayment`. The page prints "Refunded
+  $X" under the total by the account page's own rule (`orderRefundedNote`), and nothing when the
+  ledger shows none, so a refund made outside Otta ("Mark refunded", ADR-0026) is the status
+  alone. The figure is a sum the buyer was already told by email; no provider reference or
+  reconciliation detail reaches the page.
+- **The resume email page** reads the order first: an id that names no order gets the order
+  page's 404 and sentence and no form; an order that cannot be paid now goes to its own page.
+- **The header's cart count** is read on `/checkout` and `/orders/<id>` too (only the pay page is
+  left out). Both pages are already private; the read is a server-side dispatch, so nothing
+  reaches the order page's URL or a Referer.

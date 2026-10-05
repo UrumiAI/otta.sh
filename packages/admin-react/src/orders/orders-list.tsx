@@ -1445,6 +1445,14 @@ export function OrdersList({
 								style={inputStyle}
 								value={draft.search ?? ""}
 								onChange={(event) => setDraft({ ...draft, search: event.target.value })}
+								// Enter searches, as Apply filters does (QA round 2: it did
+								// nothing). Not while a read is in flight — Apply is
+								// unavailable then too.
+								onKeyDown={(event) => {
+									if (event.key !== "Enter" || busy) return;
+									event.preventDefault();
+									apply(normalize(draft, statusAny));
+								}}
 							/>
 						</Field>
 					</div>
