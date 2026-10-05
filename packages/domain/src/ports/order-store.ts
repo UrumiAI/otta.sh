@@ -931,6 +931,9 @@ export interface CreateOrderInput {
 	 * nothing (the address, like the line snapshots, is carried exactly once).
 	 */
 	shippingAddress?: OrderAddress | null;
+	/** The order's buyer-address-requirement snapshot ({@link Order.buyerAddressRequired}),
+	 *  written once in the same insert. Absent ⇒ the order carries none. */
+	buyerAddressRequired?: boolean;
 	/**
 	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
 	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are

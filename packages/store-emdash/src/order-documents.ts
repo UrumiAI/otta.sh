@@ -514,6 +514,9 @@ export interface OrderDoc {
 	totals: OrderTotalsDoc;
 	/** The ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
+	/** The buyer-address-requirement snapshot (issue #382); absent on documents
+	 *  written before it existed. Written once by the creating write. */
+	buyerAddressRequired?: boolean;
 	/** Append-only state-change audit; appended inside the guarded flip. */
 	events: OrderEventDoc[];
 	/** At most one entry per `toState`; first-wins. */

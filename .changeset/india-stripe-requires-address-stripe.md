@@ -28,3 +28,8 @@ India-based Stripe accounts (issue #382):
   without asking `customerRequired` and without creating another, so the same-key intent
   body stays byte-identical even if the account's cached country changed or Stripe pruned
   the Customer's key. Every live intent now returns a `customerRef`.
+
+`CreateIntentInput.customerRequired`, when present (the order's own decision), wins:
+`true` creates the Customer for an order with an address (or names the recorded one), and
+`false` creates none. Either way `customerRequired` is not asked. Only an order without
+that snapshot falls back to the recorded decision, then to the gateway's resolver.

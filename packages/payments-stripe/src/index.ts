@@ -711,9 +711,22 @@ export class StripePaymentGateway implements PaymentGateway {
 			// country moved, or Stripe pruned the Customer's own key. Only the
 			// first intent decides: an account that needs a Customer gets one, from
 			// the SAME address snapshot `shipping` is built from.
+			//
+			// THE ORDER DECIDES (`customerRequired`, its snapshot of the requirement it
+			// was placed under): every intent of it gets the same yes/no, and only an
+			// order created before that snapshot existed falls back to the recorded
+			// decision or, failing that, to this gateway's own `customerRequired`.
+			// `customerRef` then says WHICH Customer, once one exists.
 			let customerRef: string | null;
-			if (input.customerRef !== undefined) {
+			if (typeof input.customerRef === "string") {
 				customerRef = input.customerRef;
+			} else if (input.customerRequired !== undefined) {
+				customerRef =
+					input.customerRequired && shipping !== undefined
+						? await this.#createCustomer(input.orderId, shipping, this.#secretKey, this.#transport)
+						: null;
+			} else if (input.customerRef === null) {
+				customerRef = null;
 			} else if (shipping !== undefined && (await this.#needsCustomer())) {
 				customerRef = await this.#createCustomer(
 					input.orderId,

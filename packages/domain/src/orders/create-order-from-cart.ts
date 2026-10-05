@@ -499,6 +499,9 @@ async function finalizeOrder(
 		// ADR-0009: freeze the ship-to snapshot alongside the order, in the same
 		// guarded insert. A replay re-inserts nothing (idempotency-key conflict).
 		shippingAddress: ctx.shippingAddress,
+		// Issue #382: the requirement this checkout was placed under, frozen in the
+		// same insert — it also decides the payment's customer for every intent.
+		buyerAddressRequired: command.addressRequired === true,
 		totals: {
 			subtotal: breakdown.subtotalCents,
 			total: breakdown.totalCents,
@@ -793,9 +796,10 @@ async function rememberIntent(
  * decides it once per order and every same-key request it makes afterwards is
  * byte-identical. `undefined` when no recorded intent carries one (none yet, an
  * order from before decisions were recorded, another gateway): the gateway then
- * behaves exactly as it always did. A failed read THROWS (the caller's busy /
- * retry path) rather than reading as "none": guessing could change the request
- * Stripe already holds under this key, which it refuses for good.
+ * behaves exactly as it always did. A failed read THROWS — the checkout fails
+ * with that error, and the buyer's same-key retry asks again — rather than
+ * reading as "none": guessing could change the request Stripe already holds
+ * under this key, which it refuses for good.
  */
 async function recordedCustomer(
 	deps: CreateOrderDeps,
@@ -831,6 +835,11 @@ function intentInputFor(
 	const address = order.shippingAddress;
 	return {
 		...(customerRef !== undefined ? { customerRef } : {}),
+		// Issue #382: the order decides whether its payment carries a customer —
+		// the same answer for every intent of it. Absent on older orders.
+		...(order.buyerAddressRequired !== undefined
+			? { customerRequired: order.buyerAddressRequired && address !== null }
+			: {}),
 		orderId: order.id,
 		amount: order.totals.total,
 		currency: order.totals.currency,

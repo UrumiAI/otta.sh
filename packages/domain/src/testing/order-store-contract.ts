@@ -537,6 +537,27 @@ export function orderStoreContract(
 			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
 		});
 
+		test("createFromCart freezes the buyer-address-requirement snapshot (issue #382): true, false, or — when not given — absent", async () => {
+			const { store } = await makeHarness();
+			const required = await store.createFromCart(physicalInput({ buyerAddressRequired: true }));
+			const notRequired = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					buyerAddressRequired: false,
+				}),
+			);
+			const legacy = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-3"), idempotencyKey: idempotencyKey("key-3") }),
+			);
+			expect(required.order.buyerAddressRequired).toBe(true);
+			expect(notRequired.order.buyerAddressRequired).toBe(false);
+			expect(legacy.order).not.toHaveProperty("buyerAddressRequired");
+			expect((await store.getById(orderId("ord-1")))?.buyerAddressRequired).toBe(true);
+			expect((await store.getById(orderId("ord-2")))?.buyerAddressRequired).toBe(false);
+			expect(await store.getById(orderId("ord-3"))).not.toHaveProperty("buyerAddressRequired");
+		});
+
 		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

@@ -333,3 +333,45 @@ describe("an account that does not need one — the wire is unchanged", () => {
 		expect(stub.calls.map(route)).toEqual(["POST /v1/payment_intents"]);
 	});
 });
+
+describe("the ORDER's decision (`customerRequired`) wins over the gateway's own (review round 3)", () => {
+	test("true: a Customer — even when the gateway's resolver now says no — and the resolver is not asked", async () => {
+		const stub = stripeStub();
+		let asked = 0;
+		const gw = gateway(stub.fetch, async () => {
+			asked += 1;
+			return false;
+		});
+		const handle = await gw.createIntent(input({ customerRequired: true }));
+		expect(handle.customerRef).toBe("cus_1");
+		expect(stub.calls.map(route)).toEqual(["POST /v1/customers", "POST /v1/payment_intents"]);
+		expect(asked).toBe(0);
+	});
+
+	test("false: no Customer — even when the resolver now says yes — and the body is the unchanged one", async () => {
+		const stub = stripeStub();
+		const gw = gateway(stub.fetch, async () => true);
+		const handle = await gw.createIntent(input({ customerRequired: false }));
+		expect(handle.customerRef).toBeNull();
+		expect(stub.calls.map(route)).toEqual(["POST /v1/payment_intents"]);
+		const legacy = stripeStub();
+		await gateway(legacy.fetch).createIntent(input());
+		expect(stub.calls[0]!.raw).toBe(legacy.calls[0]!.raw);
+	});
+
+	test("true but no address on the order: no Customer", async () => {
+		const stub = stripeStub();
+		const { shipTo: _omitted, ...withoutShipTo } = input({ customerRequired: true });
+		await gateway(stub.fetch, async () => true).createIntent(withoutShipTo);
+		expect(stub.calls.map(route)).toEqual(["POST /v1/payment_intents"]);
+	});
+
+	test("true with a recorded Customer: that one is named again, with no create", async () => {
+		const stub = stripeStub();
+		await gateway(stub.fetch, async () => true).createIntent(
+			input({ customerRequired: true, customerRef: "cus_7" }),
+		);
+		expect(stub.calls.map(route)).toEqual(["POST /v1/payment_intents"]);
+		expect(stub.calls[0]!.form.get("customer")).toBe("cus_7");
+	});
+});

@@ -1287,6 +1287,24 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  *    is still refused as INVALID_INPUT before an order, a hold adoption or a
  *    PaymentIntent exists.
  */
+/**
+ * Review round 3: Stripe CREATED the first intent but the answer was lost
+ * (the stub keeps the request under its key, as Stripe does, and answers
+ * 500) — so nothing was recorded. The retry must still send the request
+ * Stripe holds, or Stripe refuses it (`idempotency_error`) for good.
+ */
+function losingTheFirstIntentAnswer(base: StripeResponder): StripeResponder {
+	let lost = false;
+	return (req) => {
+		const reply = base(req);
+		if (req.path === "/v1/payment_intents" && !lost) {
+			lost = true;
+			return { status: 500, body: { error: { type: "api_error" } } };
+		}
+		return reply;
+	};
+}
+
 describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbed)", () => {
 	const STRIPE_SECRET_KEY = "sk_test_sandbox_NEVER_LEAK";
 	const STRIPE_WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
@@ -2549,6 +2567,47 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				stripe.reset();
 				await resaveSecretKey();
 				stripe.reset();
+			});
+
+			test("a lost intent answer, then the country flips to IN: the retry is byte-identical, with no Customer, and accepted", async () => {
+				const stripeLike = losingTheFirstIntentAnswer(stripeLikeResponder());
+				await accountAnswers(US_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				expect(await placeCart(cartId, { shippingAddress: IN_ADDRESS })).toEqual({
+					ok: false,
+					reason: "PAYMENT_INTENT_FAILED",
+				});
+				const first = stripe.requests[0]!;
+
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried, JSON.stringify(retried)).toMatchObject({ ok: true });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(first.form.toString());
+			});
+
+			test("a lost intent answer, then the country reads unknown: the retry names the same Customer, byte-identical, and is accepted", async () => {
+				const stripeLike = losingTheFirstIntentAnswer(stripeLikeResponder());
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				expect(await placeCart(cartId, { shippingAddress: IN_ADDRESS })).toEqual({
+					ok: false,
+					reason: "PAYMENT_INTENT_FAILED",
+				});
+				const [customer, first] = stripe.requests as [StripeRecordedRequest, StripeRecordedRequest];
+				expect(first.form.get("customer")).toBe("cus_stub_1");
+
+				await accountAnswers({ status: 503, body: {} }, stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried, JSON.stringify(retried)).toMatchObject({ ok: true });
+				// Nothing was recorded, so the Customer is asked for again — under the
+				// same key, with the same body, and Stripe hands back the same one.
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/payment_intents",
+				]);
+				expect(stripe.requests[0]!.form.toString()).toBe(customer.form.toString());
+				expect(stripe.requests[1]!.form.toString()).toBe(first.form.toString());
 			});
 
 			test("the country flips to IN after the first intent: the replay sends a byte-identical body, still with no Customer", async () => {

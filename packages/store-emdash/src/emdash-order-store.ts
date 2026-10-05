@@ -1746,6 +1746,9 @@ export class EmdashOrderStore implements OrderStore {
 				taxBreakdown: input.totals.taxBreakdown ?? null,
 			},
 			shippingAddress: input.shippingAddress ?? null,
+			...(input.buyerAddressRequired !== undefined
+				? { buyerAddressRequired: input.buyerAddressRequired }
+				: {}),
 			events: [],
 			emailOutbox: [],
 			payments: [],
@@ -3153,6 +3156,9 @@ function toOrder(doc: OrderDoc): Order {
 			taxBreakdown: doc.totals.taxBreakdown,
 		},
 		shippingAddress: doc.shippingAddress,
+		...(doc.buyerAddressRequired !== undefined
+			? { buyerAddressRequired: doc.buyerAddressRequired }
+			: {}),
 		reconciliationFlag: doc.reconciliationFlag,
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,

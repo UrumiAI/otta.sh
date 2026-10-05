@@ -261,6 +261,16 @@ export interface CreateIntentInput {
 	 * gateway's own inputs (an account's cached country) moved in between.
 	 */
 	customerRef?: string | null;
+	/**
+	 * Whether this order's payment carries a provider-side customer, DECIDED BY
+	 * THE ORDER (issue #382): placed under the payment account's buyer-address
+	 * requirement AND holding an address. The same answer for the first intent,
+	 * every replay and every resume — the gateway reads nothing of its own to
+	 * decide it. {@link customerRef} still says WHICH customer, once one exists.
+	 * Absent for an order created before the snapshot existed: the gateway then
+	 * decides as it always did.
+	 */
+	customerRequired?: boolean;
 }
 
 export interface PaymentIntentErrorInput {
