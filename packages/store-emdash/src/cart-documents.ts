@@ -42,6 +42,13 @@ import type { CollectionIndexDeclaration } from "./inventory-documents.js";
 export const CARTS_COLLECTION = "carts";
 /** Collection name: mutation idempotency key → the cart whose ledger holds it. */
 export const CART_MUTATION_INDEX_COLLECTION = "cart_mutation_index";
+/**
+ * Collection name: a KEYED create's key → the cart it minted (`CartStore.create`'s
+ * optional key). A locator like `cart_mutation_index`, and kept separate from it on
+ * purpose: a create key and a mutation key are different namespaces, and a caller-
+ * supplied mutation key must never be able to read a create key's cart.
+ */
+export const CART_CREATE_KEYS_COLLECTION = "cart_create_keys";
 
 /**
  * The collections `EmdashCartStore` reads and writes, with the indexes each must
@@ -52,11 +59,12 @@ export const CART_MUTATION_INDEX_COLLECTION = "cart_mutation_index";
  * `carts` declares the two fields ADR-0019 §4 names. `state` is for the admin
  * cart views a later increment renders; `holdExpiresAt` is what `listExpired`
  * queries, and the store would be unable to sweep without it. The lookup
- * collection declares none — every access to it is by document id.
+ * collections declare none — every access to them is by document id.
  */
 export const CART_COLLECTIONS: Readonly<Record<string, CollectionIndexDeclaration>> = {
 	[CARTS_COLLECTION]: { indexes: ["state", "holdExpiresAt"] },
 	[CART_MUTATION_INDEX_COLLECTION]: {},
+	[CART_CREATE_KEYS_COLLECTION]: {},
 };
 
 /**
@@ -201,6 +209,11 @@ export interface CartDoc {
 	holdExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** `cart_create_keys/{key}` — the cart a keyed create minted. */
+export interface CartCreateKeyDoc {
+	cartId: string;
 }
 
 /** `cart_mutation_index/{key}` — the locator, never the record. */

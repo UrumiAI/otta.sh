@@ -44,6 +44,21 @@ describe("parseCheckoutSummaryInput", () => {
 });
 
 describe("parseCheckoutPlaceInput", () => {
+	// The signed-in shopper's session rides along so the order can be theirs from
+	// birth. It is a bearer the client resolves, never trusted here — and a bad one
+	// must never cost the buyer their order, so it is DROPPED, not refused.
+	test("carries a session token through; drops a blank, non-string or oversized one without refusing the order", () => {
+		const base = { cartId: "cart-1", buyerRef: "b@example.com", idempotencyKey: "checkout:cart-1" };
+		expect(parseCheckoutPlaceInput({ ...base, sessionToken: "sess-1" })?.sessionToken).toBe(
+			"sess-1",
+		);
+		for (const sessionToken of [undefined, "", 42, null, {}, "x".repeat(513)]) {
+			const parsed = parseCheckoutPlaceInput({ ...base, sessionToken });
+			expect(parsed, `sessionToken ${String(sessionToken).slice(0, 20)}`).not.toBeNull();
+			expect(parsed !== null && "sessionToken" in parsed).toBe(false);
+		}
+	});
+
 	test("accepts the minimum viable checkout — cartId, buyerRef, idempotencyKey", () => {
 		expect(
 			parseCheckoutPlaceInput({

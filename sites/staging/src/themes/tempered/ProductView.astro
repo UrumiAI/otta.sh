@@ -76,7 +76,15 @@ const { model } = Astro.props;
 			)}
 			{model.errorMessage !== null && (
 				<div class="pdp-notice-slot">
-					<Notice>{model.errorMessage}</Notice>
+					<Notice>
+						{model.errorMessage}
+						{model.errorAction !== null && (
+							<>
+								{" "}
+								<a href={model.errorAction.href}>{model.errorAction.label}</a>
+							</>
+						)}
+					</Notice>
 				</div>
 			)}
 

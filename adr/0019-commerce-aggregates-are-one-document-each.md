@@ -464,6 +464,7 @@ code, not that it changed. A row with no **†** is still design. See the
 | `inventory_movements` | `stock:<key>` / `adjust:<key>` | `sku`, `createdAt` | — |
 | `carts` | cartId | `state`, `holdExpiresAt` | — |
 | **†** `cart_mutation_index` | cart mutation idempotency key | — | — |
+| `cart_create_keys` *(added 2026-10-02, see the [amendment](#amendment-2026-10-02--cart_create_keys))* | server-derived create key, `rotate:<spentCartId>` | — | — |
 | **†** `orders` | orderId | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` | — |
 | `order_keys` | order idempotency key | — | — |
 | `refund_keys` | refund idempotency key | — | — |
@@ -506,7 +507,11 @@ id the port never pairs with a parent — nine such methods across the two rules
 whose parent is known (the order the event belongs to, and the day document its effect lands
 in), keyed by the event rather than by a lookup nobody else can serve — its second job is to
 be revocable, since a recompute that counts an event absolutely must be able to stop that
-event's delta from ever applying.
+event's delta from ever applying. `cart_create_keys` (added 2026-10-02) is the
+same device once more, for a create rather than a lookup: one locator per keyed create,
+claimed create-if-absent on the key BEFORE the cart is written, so racing creates of the same
+replacement cart converge. It is never pruned and grows by one document per replaced cart —
+bounded by the number of orders that ever left a cart behind.
 
 **† The product document's index list has no `sku` and no `titleLower`, and `active` is filtered
 through a text mirror.** Nothing queries `product_commerce` by sku — live-sku uniqueness is the
@@ -1075,7 +1080,7 @@ by the same bounded budget.
   coupon per-customer refusal above all — the document model must write an explicit, idempotent
   compensation, and get its ordering right.
 - **Reporting becomes write-time work**, with past-bucket decrements and paged reads.
-- **†** **32 rows naming 35 collections** to declare and keep in step with the descriptor — their
+- **†** **32 rows naming 35 collections** (33 naming 36 since the 2026-10-02 amendment) to declare and keep in step with the descriptor — their
   index lists part of the read contract. The count rose from the ~22 first estimated, and every
   addition is a claim or locator document standing in for a lookup the port signatures force (§4).
 - **The orders search narrows** as recorded in 6.1.
@@ -1253,3 +1258,26 @@ as adoptable where the port, the SQL reference and the document adapter do not �
 follow-ups in the domain, outside this record. The mapping of the retryable contention error to a
 retryable HTTP response is still owed by the route increments. And §5's substance is unchanged: the
 descriptor still declares no storage, so §4's lists become a **pinned** read contract only when it does.
+
+## Amendment 2026-10-02 — `cart_create_keys`
+
+The storefront now replaces a SPENT cart (checked out into an order that can no longer be paid)
+with a fresh one by itself, and two requests can race to do it — a double-submitted "Add to cart"
+sent while the cookie still names the spent cart. Unkeyed, each would mint its own cart and the
+shopper would keep whichever cookie arrived last. So `CartStore.create` takes an optional key, and
+the domain's `replaceSpentCart` — the only code that makes a key — derives it server-side as
+`rotate:<spentCartId>` after checking the cart exists, is checked out, and that its order is no
+longer pending. Callers name only the spent cart, never a key. Cart ids are bearer secrets, so a
+spent cart's id grants access to the cart that replaces it, just as it already grants access to
+the spent cart itself.
+
+- **One new collection, `cart_create_keys`** (§4's table; doc id = the key; no indexes, every
+  access is by id). It is the claim/locator device again: the key is claimed create-if-absent
+  naming a freshly minted cart id; a losing racer reads the winner's id back; every caller then
+  create-if-absents the cart document itself, so a crash between the two writes is finished by the
+  next call. Pinned by `cartStoreContract`'s keyed-create and `replaceSpentCart` cases.
+- **Never pruned.** It grows by one document per replaced cart, bounded by orders. Pruning a
+  locator while the spent cart's cookie survives in some browser would let a later replacement mint
+  a second cart, so retention waits for a policy on spent carts themselves.
+- The decision is unchanged; this adds one row to §4 and one name to its "claim collections" list.
+

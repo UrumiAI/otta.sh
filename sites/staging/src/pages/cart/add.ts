@@ -28,6 +28,7 @@ import {
 	seeOther,
 	SERVICE_UNAVAILABLE,
 } from "../../lib/cart-actions.js";
+import { forgetCheckedOutCart } from "../../lib/cart-rotation.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
@@ -147,6 +148,14 @@ export const POST: APIRoute = async (context) => {
 		}
 	}
 
+	const addTo = async (cartId: string) =>
+		dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
+			handler,
+			STOREFRONT_CART_LINE_ADD_ROUTE,
+			{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
+			context.url,
+		);
+
 	const cart = await ensureCartId(context, handler);
 	if (!cart.ok) {
 		// A busy `cart/create` (key-less, so never auto-retried) is the busy 503;
@@ -154,14 +163,41 @@ export const POST: APIRoute = async (context) => {
 		if (cart.reason === "busy") return busyResponse(returnTo);
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 	}
-	const { cartId } = cart;
 
-	const result = await dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
-		handler,
-		STOREFRONT_CART_LINE_ADD_ROUTE,
-		{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
-		context.url,
-	);
+	let result = await addTo(cart.cartId);
+
+	// The cookie still names a cart that became an order. When that order can no
+	// longer be paid (paid, expired, failed…) the cart is SPENT: forget it, start a
+	// new one and add there. A PENDING order's cart is kept — its payment may still
+	// happen, and /checkout resumes it from this cookie — so that add still answers
+	// CART_CHECKED_OUT, and the product page's notice links to the cart, which
+	// offers the way out (cart-rotation.ts).
+	//
+	// The new cart is the spent cart's REPLACEMENT: the plugin keys it on the spent
+	// cart (`rotate:<cartId>`, derived server-side), so a duplicate request racing this
+	// one lands in the same new cart. The retry reuses the form's own key: an add
+	// refused CART_CHECKED_OUT records no mutation (pinned by cartStoreContract), so
+	// this is the key's first application and a racing duplicate replays into the
+	// same line instead of adding twice. If the replacement itself is refused (the
+	// cart changed under us), the shopper gets the ordinary unavailable turn; the
+	// spent cookie is already gone, so their next add starts a fresh cart.
+	if (
+		result !== null &&
+		!isBusyResult(result) &&
+		!result.ok &&
+		failureToken(result) === "CART_CHECKED_OUT" &&
+		(await forgetCheckedOutCart(
+			{ cookies: context.cookies, handler, url: context.url },
+			cart.cartId,
+		))
+	) {
+		const fresh = await ensureCartId(context, handler, { replacesCartId: cart.cartId });
+		if (!fresh.ok) {
+			if (fresh.reason === "busy") return busyResponse(returnTo);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		}
+		result = await addTo(fresh.cartId);
+	}
 
 	// Still busy after dispatch's one retry (same idempotency key): 503, not a
 	// generic "went wrong" — a reload re-posts the same key, which is replay-safe.

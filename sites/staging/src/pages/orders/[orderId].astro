@@ -40,13 +40,27 @@
 import { orderLabel, STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
-import { ACCOUNT_LOGIN_PATH } from "../../lib/account.js";
+import {
+	ACCOUNT_HOME_PATH,
+	ACCOUNT_LOGIN_PATH,
+	currentSessionToken,
+	sessionOwnsOrder,
+} from "../../lib/account.js";
+import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { keepPrivate } from "../../lib/no-store.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { OrderModel } from "../../themes/contract.js";
 
 const { orderId } = Astro.params;
+
+/* This page renders one buyer's order, and may delete the checkout stash and a
+   spent cart's cookie: never stored by a shared cache, and kept out of Astro's
+   route cache, which ignores Cache-Control (middleware.ts, "TWO CACHES") — QA
+   U-7. Called FIRST, before any cookie is touched; a stored copy of a response
+   that deletes a cookie would delete the next shopper's. */
+keepPrivate(Astro);
 
 // The stash has done its job the moment the buyer lands here — whether payment
 // succeeded, failed or was abandoned. Drop it either way.
@@ -64,6 +78,19 @@ const result =
 
 const order = result !== null && result.ok ? result.order : null;
 if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+
+/* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
+   spent: it can never produce another order. If the cart cookie still names it,
+   forget it here, so the shopper's next "Add to cart" starts a new cart instead
+   of failing CART_CHECKED_OUT. A PENDING order's cart is kept: "Complete payment"
+   resumes through /checkout, which rebuilds from that cookie (cart-rotation.ts).
+   The response is already private (keepPrivate, above). */
+if (order !== null) {
+	await forgetSpentCart(
+		{ cookies: Astro.cookies, handler: getPublicPluginApiRouteHandler(Astro.locals), url: Astro.url },
+		order,
+	);
+}
 /* BUSY is not "no such order": the read was refused under load (already retried
    once). 503 + short Retry-After, and the busy copy below — never a 404. */
 const busy = isBusyResult(result);
@@ -153,6 +180,23 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
  */
 const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
 
+/* Signed in as this order's owner? Then it is already in their list (a signed-in
+   checkout under the account's own email is owned from birth), and the keep-this-
+   link line can point straight there instead of at sign-in. Asked of the plugin
+   through the session's own order read — the public order carries no email — and
+   only once the poll has stopped: a polling page reloads every few seconds, and
+   the answer changes nothing it shows. A render that may carry it is private. */
+if (currentSessionToken(Astro.cookies) !== undefined) keepPrivate(Astro);
+const ownsOrder =
+	order !== null &&
+	!shouldPoll &&
+	(await sessionOwnsOrder(
+		getPublicPluginApiRouteHandler(Astro.locals),
+		Astro.cookies,
+		order.id,
+		Astro.url,
+	));
+
 /* Resuming a PENDING order is different, and still goes through /checkout
    rather than straight to /checkout/pay: the stash was just deleted above, so
    the pay page has no client secret to mount. Re-submitting the review form
@@ -226,6 +270,7 @@ const model: OrderModel = {
 	sumRows,
 	totalLabel: order === null ? "Total" : (TOTAL_LABEL[order.state] ?? "Total"),
 	accountSignInHref: ACCOUNT_LOGIN_PATH,
+	accountOrdersHref: ownsOrder ? ACCOUNT_HOME_PATH : null,
 };
 ---
 

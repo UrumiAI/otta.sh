@@ -265,11 +265,12 @@ Compare each against the matching frame in the mockup.
 |---|---|
 | `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK as mono rows. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
-| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note |
+| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
-| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
+| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right. The email field takes its initial value from `model.emailValue` (the signed-in account's address, else empty) and its hint from `model.emailNote` — the page's copy, which for a signed-in shopper says an order placed with a different email won't appear in their account. No client JS, so the note is stated up front, never on typing |
+| `account/login/index.astro` | Heading, lede, then the email form. Signed in (`model.signedIn`), a hairline-ruled block ABOVE the form says "You're signed in as <email>" with a quiet "View your orders" link (`signedIn.ordersHref`) and a Sign out POST to `/account/logout`; the form stays, to switch address |
 | `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line also links to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line links straight to Your orders (`model.accountOrdersHref`) when the shopper is signed in as the order's owner, else to sign-in (`model.accountSignInHref`), where the order joins the shopper's list |
 | `404.astro` | Same empty-state language as the others |
 
 **An order is named by its products, never its id.** The stamp's `Order` row, the account

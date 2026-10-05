@@ -24,6 +24,7 @@ import {
 	ACCOUNT_LOGIN_REQUEST_ROUTE,
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
 	ACCOUNT_LOGOUT_ROUTE,
+	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
 	SESSION_COOKIE_NAME,
@@ -31,12 +32,18 @@ import {
 import type { APIContext } from "astro";
 import { describe, expect, test } from "vitest";
 import {
+	ACCOUNT_HOME_PATH,
+	checkoutEmailNote,
 	LOGIN_LINK_SENT_COPY,
 	orderMoney,
 	orderStateLabel,
+	sessionOwnsOrder,
+	signedInEmail,
 	verifyFailureToken,
 } from "../src/lib/account.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
+import { GET as ACCOUNT_INDEX_GET } from "../src/pages/account/index.js";
+import { keepPrivate } from "../src/lib/no-store.js";
 import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.js";
 import { POST as LOGOUT_POST } from "../src/pages/account/logout.js";
 import { POST as VERIFY_CONFIRM_POST } from "../src/pages/account/verify/confirm.js";
@@ -411,7 +418,7 @@ describe("account pages — source-level guarantees", () => {
 		"%s is private: no-store, and an unauthenticated read redirects to /account/login",
 		(relative) => {
 			const { frontmatter } = splitAstro(page(relative));
-			expect(frontmatter).toContain("ACCOUNT_NO_STORE");
+			expect(frontmatter).toContain("keepPrivate(Astro);");
 			expect(frontmatter).toMatch(/Astro\.redirect\(/);
 		},
 	);
@@ -489,5 +496,196 @@ describe("the order page", () => {
 		expect(splitAstro(page("orders/[orderId].astro")).frontmatter).toMatch(
 			/accountSignInHref: ACCOUNT_LOGIN_PATH\b/,
 		);
+	});
+});
+
+/** A cookie jar holding only the session (or nothing). */
+function sessionJar(session?: string): { get(name: string): { value: string } | undefined } {
+	return {
+		get: (name: string) =>
+			name === SESSION_COOKIE_NAME && session !== undefined ? { value: session } : undefined,
+	};
+}
+
+// The pages that greet a signed-in shopper ask the plugin who the session is —
+// never the cookie itself, which is only a bearer, and never a stored email.
+describe("signedInEmail — who the session is", () => {
+	const url = new URL("/account/login", SITE);
+
+	test("no session cookie: signed out, and nothing is dispatched", async () => {
+		const { handler, calls } = makeHandler({});
+		expect(await signedInEmail(handler as never, sessionJar(), url)).toBeNull();
+		expect(calls).toEqual([]);
+	});
+
+	test("a live session: the plugin's answer, asked with the cookie's bearer", async () => {
+		const { handler, calls } = makeHandler({
+			[ACCOUNT_ME_ROUTE]: { ok: true, email: "ada@example.com" },
+		});
+		expect(await signedInEmail(handler as never, sessionJar("sess-1"), url)).toBe(
+			"ada@example.com",
+		);
+		expect(calls).toEqual([{ route: ACCOUNT_ME_ROUTE, body: { sessionToken: "sess-1" } }]);
+	});
+
+	test("a session the plugin no longer honours, or an unreachable plugin: signed out", async () => {
+		const stale = makeHandler({ [ACCOUNT_ME_ROUTE]: { ok: false, redirectTo: "/account/login" } });
+		expect(await signedInEmail(stale.handler as never, sessionJar("sess-old"), url)).toBeNull();
+		const dead = makeHandler({});
+		expect(await signedInEmail(dead.handler as never, sessionJar("sess-1"), url)).toBeNull();
+	});
+});
+
+describe("sessionOwnsOrder — may the order page point at the shopper's list", () => {
+	const url = new URL("/orders/ord-1", SITE);
+
+	test("no session: no, and nothing is dispatched", async () => {
+		const { handler, calls } = makeHandler({});
+		expect(await sessionOwnsOrder(handler as never, sessionJar(), "ord-1", url)).toBe(false);
+		expect(calls).toEqual([]);
+	});
+
+	test("the session's own order: yes — asked through the session route, never a customer id", async () => {
+		const { handler, calls } = makeHandler({
+			[ACCOUNT_ORDER_ROUTE]: { ok: true, order: { id: "ord-1" } },
+		});
+		expect(await sessionOwnsOrder(handler as never, sessionJar("sess-1"), "ord-1", url)).toBe(true);
+		expect(calls).toEqual([
+			{ route: ACCOUNT_ORDER_ROUTE, body: { sessionToken: "sess-1", orderId: "ord-1" } },
+		]);
+	});
+
+	test("someone else's order, or a stale session: no", async () => {
+		const foreign = makeHandler({ [ACCOUNT_ORDER_ROUTE]: { ok: false, error: "NOT_FOUND" } });
+		expect(
+			await sessionOwnsOrder(foreign.handler as never, sessionJar("sess-1"), "ord-1", url),
+		).toBe(false);
+		const stale = makeHandler({
+			[ACCOUNT_ORDER_ROUTE]: { ok: false, redirectTo: "/account/login" },
+		});
+		expect(await sessionOwnsOrder(stale.handler as never, sessionJar("s"), "ord-1", url)).toBe(
+			false,
+		);
+	});
+});
+
+describe("checkout's email note", () => {
+	test("signed out, it says the order joins the account at a later sign-in", () => {
+		expect(checkoutEmailNote(null)).toMatch(/sign in later/);
+	});
+
+	// Checkout carries no client JS, so the note cannot react to typing: it says up
+	// front what a different email means, beside the prefilled account address.
+	test("signed in, it names the account and says a different email stays out of it", () => {
+		const note = checkoutEmailNote("ada@example.com");
+		expect(note).toContain("ada@example.com");
+		expect(note).toMatch(/different email/i);
+		expect(note).toMatch(/won't appear in your account/);
+	});
+});
+
+describe("GET /account", () => {
+	test("is the account's home: a redirect to Your orders, not a 404", async () => {
+		const response = await ACCOUNT_INDEX_GET({
+			redirect: (target: string, status = 302) =>
+				new Response(null, { status, headers: { location: target } }),
+		} as unknown as APIContext);
+		expect(response.status).toBe(303);
+		expect(location(response)).toBe(ACCOUNT_HOME_PATH);
+		expect(ACCOUNT_HOME_PATH).toBe("/account/orders");
+	});
+});
+
+describe("signed-in surfaces — source-level guarantees", () => {
+	test("the order page points an owner at Your orders, decided by the page", () => {
+		expect(splitAstro(page("orders/[orderId].astro")).frontmatter).toMatch(
+			/accountOrdersHref: ownsOrder \? ACCOUNT_HOME_PATH : null/,
+		);
+	});
+
+	// The page reloads itself every ~4 s while a payment confirms; the ownership read
+	// is one more dispatch per hop and changes nothing a polling page shows. It is
+	// asked once the poll has stopped (or never ran).
+	test("the order page asks about ownership only when it is not polling", () => {
+		expect(splitAstro(page("orders/[orderId].astro")).frontmatter).toMatch(
+			/const ownsOrder =\s*order !== null &&\s*!shouldPoll &&\s*\(await sessionOwnsOrder\(/,
+		);
+	});
+
+	// A page that renders for ONE signed-in shopper must never be stored and replayed
+	// to another: an account's email in a prefilled field, or "your orders" for an
+	// order someone else then opens. Whenever the request carries a session, the
+	// response is private and out of the route cache.
+	test.each(["orders/[orderId].astro", "checkout/index.astro"])(
+		"%s keeps a signed-in render private",
+		(relative) => {
+			const { frontmatter } = splitAstro(page(relative));
+			expect(frontmatter).toMatch(
+				/if \(currentSessionToken\(Astro\.cookies\) !== undefined\) keepPrivate\(Astro\);/,
+			);
+		},
+	);
+
+	test("the sign-in page asks who the session is, and hands over the orders path", () => {
+		const { frontmatter } = splitAstro(page("account/login/index.astro"));
+		expect(frontmatter).toContain("signedInEmail(");
+		expect(frontmatter).toMatch(/ordersHref: ACCOUNT_HOME_PATH/);
+	});
+
+	test("checkout prefills the account's email and states the note the page chose", () => {
+		const { frontmatter } = splitAstro(page("checkout/index.astro"));
+		expect(frontmatter).toContain("signedInEmail(");
+		expect(frontmatter).toMatch(/emailNote: checkoutEmailNote\(accountEmail\)/);
+	});
+});
+
+describe.each(viewCases("order"))(
+	"the order view %s, for the order's owner",
+	(_label, { source }) => {
+		test("the keep-this-link line links straight to Your orders, from the model", () => {
+			expect(templateOf(source)).toMatch(
+				/accountOrdersHref !== null \?[\s\S]*?<p class="order-keep">[\s\S]*?<a href=\{accountOrdersHref\}>your orders<\/a>[\s\S]*?<\/p>/,
+			);
+		});
+	},
+);
+
+describe.each(viewCases("accountLogin"))("the sign-in view %s, signed in", (_label, { source }) => {
+	test("says who is signed in, above the form, with Your orders and a sign-out POST", () => {
+		const template = templateOf(source);
+		const banner = template.indexOf("You're signed in as");
+		expect(banner).toBeGreaterThan(-1);
+		expect(banner).toBeLessThan(template.indexOf('action="/account/login/request"'));
+		expect(template).toMatch(/<a href=\{signedIn\.ordersHref\}>View your orders<\/a>/);
+		expect(template).toMatch(/<form[^>]*method="POST"[^>]*action="\/account\/logout"/);
+	});
+});
+
+describe.each(viewCases("checkout"))("the checkout view %s, signed in", (_label, { source }) => {
+	test("the email field carries the page's value and note", () => {
+		const template = templateOf(source);
+		expect(template).toMatch(/name="email"[\s\S]*?value=\{emailValue\}/);
+		expect(template).toMatch(/id="email-note">\s*\{emailNote\}\s*<\/span>/);
+	});
+});
+
+describe("the sign-in page's caching", () => {
+	// Always private (it can greet a signed-in shopper), set ONCE through keepPrivate
+	// — never a second, hand-written Cache-Control beside it.
+	test("calls keepPrivate unconditionally and sets no Cache-Control of its own", () => {
+		const { frontmatter } = splitAstro(page("account/login/index.astro"));
+		expect(frontmatter).toMatch(/^keepPrivate\(Astro\);$/m);
+		expect(frontmatter.match(/keepPrivate\(/g)).toHaveLength(1);
+		expect(frontmatter).not.toContain('headers.set("Cache-Control"');
+	});
+});
+
+describe("keepPrivate — a per-shopper response is never stored", () => {
+	test("sets private, no-store and opts out of the route cache", () => {
+		const headers = new Headers();
+		const cacheCalls: unknown[] = [];
+		keepPrivate({ response: { headers }, cache: { set: (options) => cacheCalls.push(options) } });
+		expect(headers.get("Cache-Control")).toBe("private, no-store");
+		expect(cacheCalls).toEqual([false]);
 	});
 });

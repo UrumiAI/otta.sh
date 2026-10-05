@@ -254,9 +254,11 @@ export interface OrderStore {
 	 */
 	transition(input: OrderTransitionInput): Promise<OrderTransitionResult>;
 
-	/** Every order owned by a customer (Phase 5 §7). The identity is derived
-	 *  server-side from the session — the customer id is never client-supplied —
-	 *  which is the actual mechanism behind "sees only own orders" (§4). */
+	/** Every order owned by a customer (Phase 5 §7), NEWEST FIRST — `created_at
+	 *  DESC, id DESC`, the admin list's order — because a shopper's list leads with
+	 *  the order they just placed. The identity is derived server-side from the
+	 *  session — the customer id is never client-supplied — which is the actual
+	 *  mechanism behind "sees only own orders" (§4). */
 	listForCustomer(customerId: CustomerId): Promise<Order[]>;
 
 	/**
@@ -309,11 +311,14 @@ export interface OrderStore {
 	countOrders(filter: OrderListFilter): Promise<number>;
 
 	/**
-	 * Claim guest orders for a just-authenticated customer (Phase 5 §9 Risk 3):
-	 * `UPDATE orders SET customer_id=:customerId WHERE buyer_ref=:buyerRef AND
-	 * customer_id IS NULL`. Safe because a magic-link login already proves the
-	 * person owns that inbox. Returns the number of orders linked. Idempotent —
-	 * a second login links nothing new.
+	 * Claim guest orders for a customer whose inbox is PROVEN (Phase 5 §9 Risk 3):
+	 * `UPDATE orders SET customer_id=:customerId WHERE lower(buyer_ref)=lower(:buyerRef)
+	 * AND customer_id IS NULL`. Called at sign-in (`verifyLogin` — the magic link
+	 * just proved the inbox) and, since ADR-0004's 2026-10-02 amendment, whenever a
+	 * signed-in customer lists their orders (`listCustomerOrders` — a live session
+	 * is the same proof until it expires or is revoked). Pass only the customer's
+	 * own email. Returns the number of orders linked. Idempotent — a second call
+	 * links nothing new.
 	 */
 	linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number>;
 
@@ -498,6 +503,15 @@ export interface CreateOrderInput {
 	idempotencyKey: IdempotencyKey;
 	holdExpiresAt: string;
 	buyerRef: string;
+	/**
+	 * The account that owns the order FROM BIRTH, or absent/null for a guest order.
+	 * Set only when the checkout came from a session whose customer's email IS the
+	 * `buyerRef` (`checkoutOwner`), so it is the same claim `linkGuestOrders` makes
+	 * at the next sign-in — made now, so a signed-in shopper's order is in their
+	 * list at once instead of after another magic link. A replay keeps the first
+	 * write's owner: the order, like its snapshots, is written once.
+	 */
+	customerId?: CustomerId | null;
 	paymentMethod: PaymentMethod | null;
 	lines: CreateOrderLineInput[];
 	/**

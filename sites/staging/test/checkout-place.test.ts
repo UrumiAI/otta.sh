@@ -120,7 +120,12 @@ function makeHandler(placeResult: unknown = PLACED): {
 function makeContext(
 	form: Record<string, string>,
 	handler: unknown,
-	opts: { origin?: string | null; cartCookie?: string | undefined; url?: string } = {},
+	opts: {
+		origin?: string | null;
+		cartCookie?: string | undefined;
+		url?: string;
+		session?: string;
+	} = {},
 ): { context: APIContext; cookieOps: CookieOp[] } {
 	const url = new URL(opts.url ?? "/checkout/place", SITE);
 	const headers: Record<string, string> = {
@@ -138,6 +143,7 @@ function makeContext(
 	const cookieStore = new Map<string, string>();
 	const cartCookie = "cartCookie" in opts ? opts.cartCookie : "cart-existing";
 	if (cartCookie !== undefined) cookieStore.set("otta_cart", cartCookie);
+	if (opts.session !== undefined) cookieStore.set("otta_session", opts.session);
 	const cookieOps: CookieOp[] = [];
 
 	const context = {
@@ -328,6 +334,26 @@ describe("6b — the idempotency key comes from the FORM, never invented", () =>
 		await PLACE_POST(context);
 
 		expect(calls[0]!.body["idempotencyKey"]).toBe("checkout:cart-existing");
+	});
+});
+
+// A shopper who checks out signed in must find the order in "Your orders" at
+// once. The place route cannot read cookies (ADR-0003), so the session travels as
+// route input — the plugin decides whether it owns the order (only when the
+// email is the account's own), never this page.
+describe("the signed-in shopper's session reaches the place route", () => {
+	test("the otta_session cookie's value is forwarded as sessionToken", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(VALID_FORM, handler, { session: "sess-abc" });
+		await PLACE_POST(context);
+		expect(calls[0]!.body["sessionToken"]).toBe("sess-abc");
+	});
+
+	test("signed out, no sessionToken is sent at all — never a blank one", async () => {
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(VALID_FORM, handler);
+		await PLACE_POST(context);
+		expect(calls[0]!.body).not.toHaveProperty("sessionToken");
 	});
 });
 

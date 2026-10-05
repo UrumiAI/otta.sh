@@ -43,6 +43,8 @@ import {
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
+import { checkoutEmailNote, currentSessionToken, signedInEmail } from "../../lib/account.js";
+import { keepPrivate } from "../../lib/no-store.js";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import {
 	readCouponParam,
@@ -56,6 +58,13 @@ import { checkoutFootnote } from "../../lib/totals.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
+
+/* This page renders one shopper's cart, email and delivery choice: never stored by a shared cache, and kept out of
+   Astro's route cache, which ignores Cache-Control (middleware.ts, "TWO
+   CACHES") — QA U-7. Called FIRST so no rendered branch (an error state, a
+   busy 503) goes out without it; a redirect is its own response and carries
+   no body to store. */
+keepPrivate(Astro);
 
 /* The coupon rides this page's URL, so no Referer carrying it may leave for
    another origin. Sent as a HEADER as well as the meta below, as defence in
@@ -162,6 +171,16 @@ const notReadyCopy = summary.shipping.noOptions
 		? "Choose a delivery option above to continue."
 		: "Choose where we're delivering above to continue.";
 
+/** The signed-in shopper's own address, prefilled into the email field — the
+ *  order is filed under their account only when placed with it (the plugin's
+ *  rule; place.ts forwards the session). `null` when signed out. */
+if (currentSessionToken(Astro.cookies) !== undefined) keepPrivate(Astro);
+const accountEmail = await signedInEmail(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	Astro.cookies,
+	Astro.url,
+);
+
 /** SKU / qty / money — the same tape the home page opens with, itemised. The
  *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
 const ledgerRows = lines.map((line) => ({
@@ -215,6 +234,8 @@ const model: CheckoutModel = {
 	/* Quoted from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
+	emailValue: accountEmail ?? "",
+	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,
 	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated),

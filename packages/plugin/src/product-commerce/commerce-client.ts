@@ -302,6 +302,17 @@ export interface CommerceClient {
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
 	createCart(currency?: string): Promise<{ cartId: string }>;
+	/**
+	 * The replacement for a SPENT cart — one checked out into an order that is no
+	 * longer pending. The caller names only the spent cart; the key that makes this
+	 * idempotent is derived server-side (`rotate:<cartId>`), so the same spent cart
+	 * always gets the same new cart and racing requests converge. A caller never
+	 * chooses a key. Cart ids are bearer secrets: a spent cart's id grants access to
+	 * the cart that replaces it. Refused `CART_NOT_FOUND`, `CART_NOT_CHECKED_OUT`, or
+	 * `ORDER_NOT_FINISHED` (no order, or one still pending — its payment may still
+	 * happen).
+	 */
+	replaceCart(spentCartId: string): Promise<ReplaceCartResult>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
@@ -351,6 +362,13 @@ export interface CommerceClient {
 		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	>;
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
+	/**
+	 * Who the session is: its customer's email, read server-side off the session
+	 * (never caller-named). For a storefront that greets a signed-in shopper or
+	 * prefills their checkout; an unusable bearer, or one whose customer is gone,
+	 * is UNAUTHENTICATED.
+	 */
+	getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>>;
 	// ── end Phase 5 customer account ──────────────────────────────────────
 
 	// ── Delivery authorization (ADR-0011) ─────────────────────────────────
@@ -381,8 +399,18 @@ export interface CommerceClient {
 	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
 	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
 	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
-	 *  it must be stable per cart, or a reload mints a second order). */
-	createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult>;
+	 *  it must be stable per cart, or a reload mints a second order).
+	 *
+	 *  `opts.sessionToken` — the shopper's session, when they are signed in. It
+	 *  is a bearer like every other here: the customer is resolved FROM it, and
+	 *  the order is theirs from birth only when `buyerRef` is that customer's own
+	 *  email (ADR-0004, amended 2026-10-02). Any other email, or an unusable
+	 *  session, places a guest order — a session never refuses a checkout. */
+	createOrder(
+		input: CheckoutRequestWire,
+		idempotencyKey: string,
+		opts?: { sessionToken?: string },
+	): Promise<CheckoutResult>;
 	/**
 	 * The delivery options of the zone a quote MATCHED (ADR-0021), each priced
 	 * for the cart. `zoneId` and `discountedSubtotalCents` come ONLY from this
@@ -670,6 +698,11 @@ export interface CartLineWire {
 	reservationId: string | null;
 	expiresAt: string | null;
 }
+
+/** `replaceCart`'s answer: the new cart, or why the named cart cannot be replaced. */
+export type ReplaceCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
 
 export interface CartWire {
 	cartId: string;

@@ -9,12 +9,18 @@
  * exact call.
  */
 import {
+	ACCOUNT_ME_ROUTE,
+	ACCOUNT_ORDER_ROUTE,
 	cents,
 	currency,
 	formatMoney,
 	SESSION_COOKIE_NAME,
+	type AccountMeResult,
+	type AccountOrderResult,
 	type SessionCookieDescriptor,
 } from "@otta-sh/plugin";
+import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { dispatchOttaRoute } from "./otta-api.js";
 
 /** The one notice a link request ends on, whatever the plugin knows about the
  *  address — the page must not become an account oracle (ADR-0004). It must
@@ -28,8 +34,9 @@ export const LOGIN_LINK_SENT_COPY =
 
 /** `Cache-Control` for every page that renders a customer's own data: it must
  *  never be stored by a shared cache, nor replayed from the back/forward cache
- *  after logout. */
-export const ACCOUNT_NO_STORE = "private, no-store";
+ *  after logout. The site's ONE such constant, under the name the account pages
+ *  already use. */
+export { PRIVATE_NO_STORE as ACCOUNT_NO_STORE } from "./no-store.js";
 
 /** Where a signed-in customer lands, and where the header's "Account" points. */
 export const ACCOUNT_HOME_PATH = "/account/orders";
@@ -76,6 +83,68 @@ export function clearSessionCookie(cookies: Pick<SessionCookieJar, "delete">): v
 export function currentSessionToken(cookies: Pick<SessionCookieJar, "get">): string | undefined {
 	const value = cookies.get(SESSION_COOKIE_NAME)?.value;
 	return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The signed-in shopper's email, or `null` when signed out — asked of the plugin
+ * with the cookie's bearer (`storefront/account/me`), never read off the cookie,
+ * which is only a token. No cookie ⇒ no dispatch. Anything but a clean answer
+ * (a stale session, BUSY, an unreachable plugin) reads as signed out: every caller
+ * renders a page that works for a guest, so failing that way costs a greeting,
+ * never the page.
+ */
+export async function signedInEmail(
+	handler: PublicPluginApiRouteHandler | undefined,
+	cookies: Pick<SessionCookieJar, "get">,
+	url: URL,
+): Promise<string | null> {
+	const sessionToken = currentSessionToken(cookies);
+	if (sessionToken === undefined) return null;
+	const result = await dispatchOttaRoute<AccountMeResult>(
+		handler,
+		ACCOUNT_ME_ROUTE,
+		{ sessionToken },
+		url,
+	);
+	return result !== null && result.ok ? result.email : null;
+}
+
+/**
+ * Is `orderId` the signed-in shopper's own order? Asked through the session's own
+ * order read (`storefront/account/order`), so ownership is the plugin's answer —
+ * the public order deliberately carries no email to compare. No session ⇒ `false`
+ * without a dispatch; anything but a clean yes is `false`, which only means the
+ * page shows the sign-in wording instead of the direct link.
+ */
+export async function sessionOwnsOrder(
+	handler: PublicPluginApiRouteHandler | undefined,
+	cookies: Pick<SessionCookieJar, "get">,
+	orderId: string,
+	url: URL,
+): Promise<boolean> {
+	const sessionToken = currentSessionToken(cookies);
+	if (sessionToken === undefined) return false;
+	const result = await dispatchOttaRoute<AccountOrderResult>(
+		handler,
+		ACCOUNT_ORDER_ROUTE,
+		{ sessionToken, orderId },
+		url,
+	);
+	return result !== null && result.ok;
+}
+
+/**
+ * The note under checkout's email field. Signed in, the field is prefilled with
+ * the account's address, and the note says what changing it means: the order is
+ * filed under the account only when it is placed with the account's own email
+ * (the plugin's rule), so a different one — a gift, a work address — stays out of
+ * it. Checkout carries no client JS, so this cannot react to typing; it is said up
+ * front instead.
+ */
+export function checkoutEmailNote(accountEmail: string | null): string {
+	return accountEmail === null
+		? "We use this to send your order confirmation and to link the order to your account if you sign in later."
+		: `Signed in as ${accountEmail}. An order placed with a different email won't appear in your account.`;
 }
 
 /** The plugin's failed-verify reasons → the site's own `?error=` tokens, so the

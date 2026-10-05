@@ -124,3 +124,24 @@ const MESSAGES: Record<string, string> = {
 export function cartErrorMessage(token: string): string {
 	return MESSAGES[token] ?? GENERIC_FALLBACK;
 }
+
+/** A link a notice may offer beside its sentence. */
+export interface CartErrorAction {
+	href: string;
+	label: string;
+}
+
+/**
+ * The way out an error token offers, when it has one — decided here, beside the
+ * copy, so no view invents a path.
+ *
+ * Only CART_CHECKED_OUT has one today. `/cart/add` already starts a new cart when
+ * the order that cart became is finished (cart-rotation.ts), so a CART_CHECKED_OUT
+ * that still reaches a page means a cart whose payment may be IN PROGRESS. The
+ * cart page is where that is resolved — it links the order (which can complete
+ * the payment) and offers "Start a new cart" with its consequence stated — so the
+ * notice links there rather than discarding anything itself.
+ */
+export function cartErrorAction(token: string): CartErrorAction | null {
+	return token === "CART_CHECKED_OUT" ? { href: "/cart", label: "Go to your cart" } : null;
+}

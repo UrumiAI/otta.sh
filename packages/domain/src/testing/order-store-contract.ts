@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
-import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
+import {
+	customerId,
+	idempotencyKey,
+	orderId,
+	productId,
+	reservationId,
+	sku,
+} from "../money/ids.js";
 import type { CreateOrderInput, OrderStore } from "../ports/order-store.js";
 import type { SeedOrderSummaryRow } from "./in-memory-order-store.js";
 
@@ -285,6 +292,75 @@ export function orderStoreContract(
 			expect(replay.order.id).toBe(first.order.id);
 			expect(replay.order.shippingAddress).toEqual(address);
 			expect((await store.getById(first.order.id))?.shippingAddress).toEqual(address);
+		});
+
+		// A shopper who checks out SIGNED IN, as the email they ordered with, owns the
+		// order from birth: it must be in their list before any later sign-in claims it.
+		test("createFromCart with a customerId owns the order from birth; without one it is a guest order", async () => {
+			const { store } = await makeHarness();
+			const owner = customerId("cust-born");
+			const { order } = await store.createFromCart(
+				physicalInput({ customerId: owner, buyerRef: "born@example.com" }),
+			);
+			expect(order.customerId).toBe(owner);
+			expect((await store.getById(order.id))?.customerId).toBe(owner);
+			expect((await store.listForCustomer(owner)).map((o) => o.id)).toEqual([order.id]);
+			// Nothing left for a sign-in to claim: it is already this customer's.
+			expect(await store.linkGuestOrders(owner, "born@example.com")).toBe(0);
+
+			const guest = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-guest"),
+					idempotencyKey: idempotencyKey("key-guest"),
+				}),
+			);
+			expect(guest.order.customerId).toBeNull();
+		});
+
+		// The owner is written ONCE, with the order. A replay is not a second checkout:
+		// a guest order replayed by a now-signed-in shopper stays a guest order, and the
+		// sign-in (or the signed-in list's claim) is what links it — never the replay.
+		test("a same-key replay that names a customerId never re-owns a guest order", async () => {
+			const { store } = await makeHarness();
+			const first = await store.createFromCart(physicalInput({ buyerRef: "replay@example.com" }));
+			expect(first.order.customerId).toBeNull();
+			const replay = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-replay-2"),
+					buyerRef: "replay@example.com",
+					customerId: customerId("cust-replay"),
+				}),
+			);
+			expect(replay.created).toBe(false);
+			expect(replay.order.id).toBe(first.order.id);
+			expect(replay.order.customerId).toBeNull();
+			expect((await store.getById(first.order.id))?.customerId).toBeNull();
+			expect(await store.listForCustomer(customerId("cust-replay"))).toEqual([]);
+		});
+
+		test("listForCustomer is newest first: created_at DESC, then id DESC", async () => {
+			const h = await makeHarness();
+			const owner = "cust-newest";
+			// Seeded oldest-first, so an implementation that returns insertion or
+			// ascending order fails. Two share a created_at: the id breaks the tie.
+			await h.seedOrder(
+				summaryRow({ id: "ord-old", customerId: owner, createdAt: "2026-07-10T00:00:01.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-a", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-b", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-new", customerId: owner, createdAt: "2026-07-10T00:00:03.000Z" }),
+			);
+			expect((await h.store.listForCustomer(customerId(owner))).map((o) => o.id)).toEqual([
+				"ord-new",
+				"ord-tie-b",
+				"ord-tie-a",
+				"ord-old",
+			]);
 		});
 
 		test("getById returns the created order; an unknown id is null", async () => {
