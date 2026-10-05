@@ -181,8 +181,8 @@ changed is **where** it runs and **what** it covers (issue #376):
   refusal used to carry fewer headers, and those refusals only GAIN headers: the six routes that
   sent a bare 403 (`/cart/add|remove|update`, `/account/login/request`, `/account/logout`,
   `/account/verify/confirm`) gain both, `/checkout/place` and `/checkout/new-cart` gain
-  `Cache-Control`, and `/checkout/resume`'s refusal is unchanged. One answer means no per-route table that copies the endpoints' wrappers
-  from a distance and can drift from them.
+  `Cache-Control`, and `/checkout/resume`'s refusal is unchanged. One answer means no
+  per-route table that copies the endpoints' wrappers from a distance and can drift from them.
 
 The route table — every write route the site serves, guarded or exempt — is pinned by
 `sites/staging/test/origin-middleware.test.ts`, which fails when a new write route appears
