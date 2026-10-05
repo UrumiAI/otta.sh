@@ -9,7 +9,7 @@ import {
 } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
-import { cancelOrderWithRefund } from "../orders/cancel-order.js";
+import { cancelOrder, cancelOrderWithRefund } from "../orders/cancel-order.js";
 import { refundOrder } from "../orders/refund-order.js";
 import { resolveUnverifiedRefund } from "../orders/resolve-unverified-refund.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
@@ -221,6 +221,22 @@ function crashingOnceOnCancel(store: OrderStore): OrderStore {
 			return typeof value === "function" ? (value as Function).bind(target) : value;
 		},
 	});
+}
+
+/** Move a paid order on to `shipped` — past every cancellable state. */
+async function ship(h: CancelWithRefundHarness, oid: OrderId): Promise<void> {
+	for (const [from, to] of [
+		["paid", "processing"],
+		["processing", "shipped"],
+	] as const) {
+		await h.orderStore.transition({
+			orderId: oid,
+			fromState: from,
+			toState: to,
+			idempotencyKey: idempotencyKey(`${oid}-${to}`),
+			enqueueEmail: false,
+		});
+	}
 }
 
 /** A paid order whose cancellation's refund timed out: held `unverified`. */
@@ -880,7 +896,12 @@ export function cancelWithRefundContract(
 			});
 			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
 				ok: true,
-				followUp: { purpose: "cancellation", outcome: "cancelled", restockedUnits: 0 },
+				followUp: {
+					purpose: "cancellation",
+					outcome: "cancelled",
+					restock: false,
+					restockedUnits: 0,
+				},
 			});
 			const order = await h.orderStore.getById(oid);
 			expect(order?.state).toBe("cancelled");
@@ -927,7 +948,13 @@ export function cancelWithRefundContract(
 			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
 				ok: true,
 				changed: true,
-				followUp: { purpose: "cancellation", outcome: "not_cancelled", state: "shipped" },
+				followUp: {
+					purpose: "cancellation",
+					outcome: "not_cancelled",
+					state: "shipped",
+					flagged: true,
+					refundEmailQueued: true,
+				},
 			});
 			const order = await h.orderStore.getById(oid);
 			expect(order?.state).toBe("shipped");
@@ -971,6 +998,97 @@ export function cancelWithRefundContract(
 				"voided",
 			]);
 			expect((await drainEmails(h)).countByTemplate("order-cancelled", oid)).toBe(1);
+		});
+
+		// Review round 1: every follow-up heals on a replay, and says what it did.
+		test("settled, then the follow-up crashed, then the order shipped: a confirm REPLAY flags it and tells the buyer once", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-heal");
+			// The finalize lands, the cancel step does not run (the crash stand-in).
+			expect(await resolveRefund(h, oid, key, "confirmed", { inventory: false })).toMatchObject({
+				changed: true,
+				followUp: { outcome: "cancel_again" },
+			});
+			await ship(h, oid);
+
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				changed: false,
+				followUp: {
+					purpose: "cancellation",
+					outcome: "not_cancelled",
+					state: "shipped",
+					flagged: true,
+					refundEmailQueued: true,
+				},
+			});
+			const order = await h.orderStore.getById(oid);
+			expect(order?.reconciliationFlag).toContain(`a cancellation (key cxl:${oid})`);
+			expect(order?.reconciliationFlag).toContain("contact the buyer");
+			expect((await drainEmails(h)).countByTemplate("order-refund-issued", oid)).toBe(1);
+
+			// Again: the flag already names this cancellation, the notice is first-wins.
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				followUp: { outcome: "not_cancelled", flagged: true, refundEmailQueued: false },
+			});
+			expect((await drainEmails(h)).sends).toHaveLength(0);
+			expect(gw.refundCalls).toHaveLength(1);
+		});
+
+		test("an order cancelled by ANOTHER path without this refund on its record: the buyer is told about the refund once", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-elsewhere");
+			// A plain cancel (another key, no refund leg) won while the refund was unknown.
+			expect(
+				await cancelOrder(
+					{ orderStore: h.orderStore },
+					{
+						orderId: oid,
+						reason: "other",
+						cancelledBy: "someone",
+						idempotencyKey: idempotencyKey("plain-cancel"),
+					},
+				),
+			).toMatchObject({ ok: true, cancelled: true });
+			await drainEmails(h);
+
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				changed: true,
+				followUp: {
+					purpose: "cancellation",
+					outcome: "already_cancelled",
+					refundEmailQueued: true,
+				},
+			});
+			const sent = await drainEmails(h);
+			expect(sent.countByTemplate("order-refund-issued", oid)).toBe(1);
+			expect(sent.countByTemplate("order-cancelled", oid)).toBe(0);
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				followUp: { outcome: "already_cancelled", refundEmailQueued: false },
+			});
+			expect((await drainEmails(h)).sends).toHaveLength(0);
+			expect(gw.refundCalls).toHaveLength(1);
+		});
+
+		test("a cancel under a DIFFERENT key after the refund was settled carries that refund — never 'cancelled with no refund'", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-otherkey");
+			await resolveRefund(h, oid, key, "confirmed", { inventory: false });
+
+			expect(await cancelWith(h, gw, oid, { key: "api-cancel-2" })).toMatchObject({
+				ok: true,
+				cancelled: true,
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+			});
+			expect((await h.orderStore.getById(oid))?.cancellation?.refund).toMatchObject({
+				amount: TOTAL_CENTS,
+			});
+			expect(gw.refundCalls).toHaveLength(1);
+			const sent = await drainEmails(h);
+			expect(
+				sent.sends.find((m) => m.template === "order-cancelled")?.data["cancellation"],
+			).toMatchObject({ refund: { amountCents: TOTAL_CENTS, currency: "USD" } });
 		});
 	});
 }

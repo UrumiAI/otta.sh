@@ -62,9 +62,14 @@ export interface ResolveUnverifiedRefundCommand {
  * refund.
  *  - `cancellation`/`cancelled` — the order is cancelled (`cancelledNow`: by this
  *    call, so its cancelled email is new).
+ *  - `cancellation`/`already_cancelled` — another path had cancelled the order
+ *    WITHOUT this refund on its record, so its cancelled email never mentioned
+ *    the money: the refund's `refund-issued` notice tells the buyer (once).
  *  - `cancellation`/`not_cancelled` — the refund is settled but the order had left
- *    every cancellable state (`state`); it is flagged, and the refund's
- *    `refund-issued` notice tells the buyer.
+ *    every cancellable state (`state`); it is flagged (unless a flag naming this
+ *    cancellation is already there), and the refund's `refund-issued` notice
+ *    tells the buyer (once). Both are re-checked on EVERY pass, replays included,
+ *    so a crash or an order that ships between passes still ends flagged and told.
  *  - `cancellation`/`cancel_again` — the cancel did not finish here (it did not
  *    run, or stopped part-way); Cancel order again finishes it without refunding
  *    twice. After a void it is the plain next step: the order is still paid.
@@ -76,12 +81,30 @@ export type ResolveFollowUp =
 			purpose: "cancellation";
 			outcome: "cancelled";
 			cancelledNow: boolean;
+			/** The cancellation's restock choice (its first attempt's). */
+			restock: boolean;
 			restockedUnits: number;
 			restockSkipped: RestockSkip[];
 	  }
-	| { purpose: "cancellation"; outcome: "not_cancelled"; state: OrderState | null }
+	| {
+			purpose: "cancellation";
+			outcome: "already_cancelled";
+			/** This call enqueued the refund's own `refund-issued` notice (false: it
+			 *  was already enqueued by an earlier pass, or the write failed). */
+			refundEmailQueued: boolean;
+	  }
+	| {
+			purpose: "cancellation";
+			outcome: "not_cancelled";
+			state: OrderState | null;
+			/** The order carries a flag naming this cancellation (written now or before). */
+			flagged: boolean;
+			/** As in `already_cancelled`. */
+			refundEmailQueued: boolean;
+	  }
 	| { purpose: "cancellation"; outcome: "cancel_again" }
-	| { purpose: "late-payment"; outcome: "finished" | "refund_manually" };
+	| { purpose: "late-payment"; outcome: "finished" }
+	| { purpose: "late-payment"; outcome: "refund_manually"; flagged: boolean };
 
 export interface ResolveUnverifiedRefundDeps {
 	orderStore: OrderStore;
@@ -207,22 +230,18 @@ async function finishPurpose(
 ): Promise<ResolveFollowUp | null> {
 	const purpose = row.purpose ?? "refund";
 	if (purpose === "late-payment") {
-		// A void's flag is written once, on the answer itself — a replay must not
-		// re-open a flag a person has since resolved.
-		if (cmd.outcome === "voided" && !changed) {
-			return { purpose: "late-payment", outcome: "refund_manually" };
-		}
 		const done = await finishResolvedLatePaymentRefund(
 			deps,
 			row,
 			cmd.outcome,
 			cmd.resolvedBy.trim(),
+			cmd.outcome === "voided" && !changed,
 		);
-		return done === null ? null : { purpose: "late-payment", outcome: done };
+		return done === null ? null : { purpose: "late-payment", ...done };
 	}
 	if (purpose !== "cancellation") return null;
 	if (cmd.outcome === "voided") return { purpose: "cancellation", outcome: "cancel_again" };
-	return resumeCancellation(deps, row, changed);
+	return resumeCancellation(deps, row);
 }
 
 /**
@@ -237,7 +256,6 @@ async function finishPurpose(
 async function resumeCancellation(
 	deps: ResolveUnverifiedRefundDeps,
 	row: RefundRecord,
-	changed: boolean,
 ): Promise<ResolveFollowUp> {
 	const again = { purpose: "cancellation", outcome: "cancel_again" } as const;
 	const cancelKey = /^(.+):refund(?::\d+)?$/.exec(row.idempotencyKey)?.[1];
@@ -245,6 +263,9 @@ async function resumeCancellation(
 	if (deps.inventoryStore === undefined || cancelKey === undefined || reason === null) {
 		return again;
 	}
+	// A row written before `restock` existed defaults as the cancel itself does
+	// (`restock: true`, the console's default) — the cancel would read it the same.
+	const restock = row.restock ?? true;
 	let res: Awaited<ReturnType<typeof cancelOrderWithRefund>>;
 	try {
 		res = await cancelOrderWithRefund(
@@ -260,7 +281,7 @@ async function resumeCancellation(
 				reason,
 				detail: null,
 				cancelledBy: row.refundedBy,
-				restock: row.restock ?? true,
+				restock,
 				idempotencyKey: toIdempotencyKey(cancelKey),
 			},
 		);
@@ -269,41 +290,90 @@ async function resumeCancellation(
 		return again;
 	}
 	if (res.ok) {
+		const carried = res.refund;
+		if (
+			!res.cancelled &&
+			(carried === null || carried.amount !== row.amount || carried.currency !== row.currency)
+		) {
+			// Cancelled by ANOTHER path, without this refund on its record: its email
+			// never mentioned the money, so the refund announces itself.
+			return {
+				purpose: "cancellation",
+				outcome: "already_cancelled",
+				refundEmailQueued: await announceRefund(deps, row),
+			};
+		}
 		return {
 			purpose: "cancellation",
 			outcome: "cancelled",
 			cancelledNow: res.cancelled,
+			restock,
 			restockedUnits: res.restockedUnits,
 			restockSkipped: res.restockSkipped,
 		};
 	}
 	if (res.reason === "CANCEL_LOST_AFTER_REFUND") {
 		// The cancel itself flagged the order and announced the refund.
-		return { purpose: "cancellation", outcome: "not_cancelled", state: res.movedTo };
+		return {
+			purpose: "cancellation",
+			outcome: "not_cancelled",
+			state: res.movedTo,
+			flagged: true,
+			refundEmailQueued: true,
+		};
 	}
 	if (res.reason !== "NOT_CANCELLABLE") return again;
-	// The order left every cancellable state (it shipped) before the refund was
-	// confirmed. The money is back and cannot be un-refunded: flag it for a person,
-	// and let the refund tell the buyer, as the cancel's own lost path does. Only on
-	// the answer itself — a replay must not re-open a flag a person has resolved.
 	const order = await deps.orderStore.getById(row.orderId);
-	if (changed) {
-		await bestEffort(() =>
-			deps.orderStore.enqueueNotice(row.orderId, {
-				kind: "refund-issued",
-				amount: row.amount,
-				currency: row.currency,
-				refundId: row.id,
-			}),
-		);
-		await bestEffort(() =>
+	if (order?.state === "cancelled") {
+		// Cancelled with no reason on file (the bare transition): the money went back
+		// on a cancelled order — only the buyer is missing the news.
+		return {
+			purpose: "cancellation",
+			outcome: "already_cancelled",
+			refundEmailQueued: await announceRefund(deps, row),
+		};
+	}
+	// The order left every cancellable state (it shipped) before the refund was
+	// confirmed. The money is back and cannot be un-refunded: tell the buyer and flag
+	// it for a person, as the cancel's own lost path does. On EVERY pass — a replay
+	// after a crash, or after the order shipped, must still heal — but the flag only
+	// when the order's flag does not already name this cancellation.
+	const refundEmailQueued = await announceRefund(deps, row);
+	const mine = `a cancellation (key ${cancelKey})`;
+	let flagged = order?.reconciliationFlag?.startsWith(mine) === true;
+	if (!flagged && order !== null) {
+		flagged = await bestEffort(() =>
 			deps.orderStore.flagReconciliation(
 				row.orderId,
-				`a cancellation (key ${cancelKey}) refunded ${String(row.amount)} ${row.currency} (confirmed at the provider), but the order is ${order?.state ?? "in an unknown state"} and could not be cancelled — contact the buyer, then stop the shipment or use Mark refunded; do not ship or refund it again unchecked`,
+				`${mine} refunded ${String(row.amount)} ${row.currency} (confirmed at the provider), but the order is ${order.state} and could not be cancelled — contact the buyer, then stop the shipment or use Mark refunded; do not ship or refund it again unchecked`,
 			),
 		);
 	}
-	return { purpose: "cancellation", outcome: "not_cancelled", state: order?.state ?? null };
+	return {
+		purpose: "cancellation",
+		outcome: "not_cancelled",
+		state: order?.state ?? null,
+		flagged,
+		refundEmailQueued,
+	};
+}
+
+/** The refund's own `refund-issued` notice (first-wins per refund): true iff THIS
+ *  call enqueued it. */
+async function announceRefund(
+	deps: ResolveUnverifiedRefundDeps,
+	row: RefundRecord,
+): Promise<boolean> {
+	try {
+		return await deps.orderStore.enqueueNotice(row.orderId, {
+			kind: "refund-issued",
+			amount: row.amount,
+			currency: row.currency,
+			refundId: row.id,
+		});
+	} catch {
+		return false;
+	}
 }
 
 const CANCELLATION_REASONS: ReadonlySet<string> = new Set<CancellationReason>([
@@ -322,11 +392,15 @@ function cancellationReasonOf(text: string | null): CancellationReason | null {
 		: null;
 }
 
-async function bestEffort(write: () => Promise<unknown>): Promise<void> {
+/** Run a write whose failure must not surface; true iff it succeeded, so the
+ *  answer can say what was actually written. */
+async function bestEffort(write: () => Promise<unknown>): Promise<boolean> {
 	try {
 		await write();
+		return true;
 	} catch {
 		// Best effort: the refund is resolved either way, and the answer says so.
+		return false;
 	}
 }
 

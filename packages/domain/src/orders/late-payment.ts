@@ -449,6 +449,9 @@ async function finish(
 	capture: LateCapture,
 	refund: RefundRecord,
 	knownOrder?: Order,
+	/** The person who confirmed the refund at the provider (`resolveUnverifiedRefund`),
+	 *  when it was not the automatic path that saw it succeed. */
+	confirmedBy?: string,
 ): Promise<"refunded"> {
 	const fresh = knownOrder ?? (await deps.orderStore.getById(orderId));
 	const current = fresh?.reconciliationFlag ?? null;
@@ -457,8 +460,11 @@ async function finish(
 			orderId,
 			expectedFlag: current,
 			outcome: "refunded",
-			reason: `Payment arrived after the order was ${fresh.state}; refunded automatically${refund.refundRef === null ? "" : ` (${refund.refundRef})`}.`,
-			resolvedBy: LATE_PAYMENT_REFUNDED_BY,
+			reason:
+				confirmedBy === undefined
+					? `Payment arrived after the order was ${fresh.state}; refunded automatically${refund.refundRef === null ? "" : ` (${refund.refundRef})`}.`
+					: `Payment arrived after the order was ${fresh.state}; the automatic refund's outcome was unknown and ${confirmedBy} confirmed at the provider that it was refunded${refund.refundRef === null ? "" : ` (${refund.refundRef})`}.`,
+			resolvedBy: confirmedBy ?? LATE_PAYMENT_REFUNDED_BY,
 			idempotencyKey: idempotencyKey(`late-payment-resolve:${capture.providerRef}`),
 		});
 	}
@@ -483,11 +489,13 @@ async function finish(
  * would have:
  *  - `confirmed` — the money went back: {@link finish} (our flag resolved, the
  *    retry cleared, ONE `late-payment-refunded` notice — first-wins per refund, so
- *    a replay emails nobody). Answers `finished`.
+ *    a replay emails nobody). The flag's resolution names the person who
+ *    confirmed it, not the automatic path. Answers `finished`.
  *  - `voided` — it never happened, so the payment is still held on a dead order
  *    and nothing will refund it by itself (its one key is spent). The retry is
  *    cleared and the order flagged to refund it by hand — over our own flag for
- *    this payment or none, never over an unrelated one. Answers `refund_manually`.
+ *    this payment or none, never over an unrelated one. Answers `refund_manually`
+ *    with `flagged` — false when an unrelated flag kept it from writing one.
  * `null` when the row is not a late-payment refund this module made.
  */
 export async function finishResolvedLatePaymentRefund(
@@ -495,7 +503,10 @@ export async function finishResolvedLatePaymentRefund(
 	refund: RefundRecord,
 	outcome: "confirmed" | "voided",
 	resolvedBy: string,
-): Promise<"finished" | "refund_manually" | null> {
+	/** A replay of a `voided` answer: report, write nothing — a flag a person has
+	 *  resolved since is never re-opened. */
+	replay = false,
+): Promise<{ outcome: "finished" } | { outcome: "refund_manually"; flagged: boolean } | null> {
 	const providerRef = providerRefOfLateRefundKey(refund.idempotencyKey);
 	if (providerRef === null) return null;
 	const capture: LateCapture = {
@@ -505,22 +516,30 @@ export async function finishResolvedLatePaymentRefund(
 		currency: refund.currency,
 	};
 	if (outcome === "confirmed") {
-		await finish(deps, refund.orderId, capture, refund);
-		return "finished";
+		await finish(deps, refund.orderId, capture, refund, undefined, resolvedBy);
+		return { outcome: "finished" };
 	}
-	await deps.orderStore.scheduleRefundRetry(refund.orderId, refund.idempotencyKey, null);
+	if (!replay) {
+		await deps.orderStore.scheduleRefundRetry(refund.orderId, refund.idempotencyKey, null);
+	}
 	const order = await deps.orderStore.getById(refund.orderId);
-	if (order !== null) {
-		const current = order.reconciliationFlag;
-		if (current === null || current.startsWith(flagPrefix(capture, order.state))) {
-			const provider = capture.gateway === "stripe" ? "Stripe" : capture.gateway;
-			await deps.orderStore.flagReconciliation(
-				refund.orderId,
-				`${flagPrefix(capture, order.state)}: automatic refund did not happen (${resolvedBy} found no refund in ${provider}) — refund it manually`,
-			);
-		}
+	if (order === null) return { outcome: "refund_manually", flagged: false };
+	const prefix = flagPrefix(capture, order.state);
+	const current = order.reconciliationFlag;
+	// Already ours (a replay, or the answer's own earlier write): flagged, untouched.
+	if (current !== null && current.startsWith(prefix) && current.includes("did not happen")) {
+		return { outcome: "refund_manually", flagged: true };
 	}
-	return "refund_manually";
+	// An unrelated open flag is never overwritten: the caller says none was written.
+	if (replay || (current !== null && !current.startsWith(prefix))) {
+		return { outcome: "refund_manually", flagged: false };
+	}
+	const provider = capture.gateway === "stripe" ? "Stripe" : capture.gateway;
+	await deps.orderStore.flagReconciliation(
+		refund.orderId,
+		`${prefix}: automatic refund did not happen (${resolvedBy} found no refund in ${provider}) — refund it manually`,
+	);
+	return { outcome: "refund_manually", flagged: true };
 }
 
 /** The gateways the sweep refunds through, resolved only when something is due. */

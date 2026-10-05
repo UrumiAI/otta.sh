@@ -724,6 +724,9 @@ export function latePaymentContract(
 			expect(after.state).toBe("expired");
 			expect(after.reconciliationFlag).toBeNull();
 			expect(after.reconciliationResolution?.outcome).toBe("refunded");
+			// The person who checked the provider resolved it — not the automatic path.
+			expect(after.reconciliationResolution?.resolvedBy).toBe("ops@shop");
+			expect(after.reconciliationResolution?.reason).toContain("confirmed at the provider");
 			expect(await latePayment(h, s.order.id)).toBe("refunded");
 			expect(await store.listRefundRetriesDue("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
 			const refunds = await store.listRefunds(s.order.id);
@@ -757,13 +760,29 @@ export function latePaymentContract(
 			).toMatchObject({
 				ok: true,
 				changed: true,
-				followUp: { purpose: "late-payment", outcome: "refund_manually" },
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: true },
 			});
 			const flag = (await state(h, s.order.id)).reconciliationFlag ?? "";
 			expect(flag).toContain("did not happen");
 			expect(flag).toContain("refund it manually");
 			expect(await latePayment(h, s.order.id)).toBe("refund_pending");
 			expect(await drainRows(store, s.order.id, now)).toEqual([]);
+		});
+
+		test("'It didn't happen' over an UNRELATED open flag leaves that flag and says it wrote none", async () => {
+			const h = await makeHarness();
+			const { s, store, key } = await unverifiedLateRefund(h, "unv-void-other");
+			await store.flagReconciliation(s.order.id, "an unrelated anomaly");
+			expect(
+				await resolveUnverifiedRefund(
+					{ orderStore: store },
+					{ orderId: s.order.id, refundKey: key, outcome: "voided", resolvedBy: "ops@shop" },
+				),
+			).toMatchObject({
+				ok: true,
+				followUp: { purpose: "late-payment", outcome: "refund_manually", flagged: false },
+			});
+			expect((await state(h, s.order.id)).reconciliationFlag).toBe("an unrelated anomaly");
 		});
 	});
 }
