@@ -675,6 +675,17 @@ async function refundForCancellation(
 	// a retry with the box flipped does not contradict units already moved.
 	const restock = mine?.restock ?? cmd.restock;
 	if (amount === 0) return { ok: true, refund: null, refundId: null, restock };
+	// A refund this cancellation already SETTLED (an earlier attempt finished it, or
+	// a person confirmed it at the provider after a timeout — `resolveUnverifiedRefund`,
+	// #364) needs no gateway and no provider call: the cancel carries on from it.
+	if (mine !== null && mine.status === "recorded") {
+		return {
+			ok: true,
+			refund: { amount: mine.amount, currency: mine.currency },
+			refundId: mine.id,
+			restock,
+		};
+	}
 	if (gateway === null || !gateway.refundable) {
 		return { ok: false, failure: { ok: false, reason: "REFUND_NOT_AUTOMATIC" } };
 	}

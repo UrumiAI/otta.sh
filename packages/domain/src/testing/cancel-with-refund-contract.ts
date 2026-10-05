@@ -11,6 +11,7 @@ import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
 import { cancelOrderWithRefund } from "../orders/cancel-order.js";
 import { refundOrder } from "../orders/refund-order.js";
+import { resolveUnverifiedRefund } from "../orders/resolve-unverified-refund.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import type { Clock } from "../ports/clock.js";
 import { ReservationCommitLostError, type InventoryStore } from "../ports/inventory-store.js";
@@ -220,6 +221,42 @@ function crashingOnceOnCancel(store: OrderStore): OrderStore {
 			return typeof value === "function" ? (value as Function).bind(target) : value;
 		},
 	});
+}
+
+/** A paid order whose cancellation's refund timed out: held `unverified`. */
+async function unverifiedCancellation(
+	h: CancelWithRefundHarness,
+	id: string,
+	cancelOpts: { restock?: boolean } = {},
+) {
+	const oid = await seedOrder(h, id);
+	const gw = new FakePaymentGateway({ id: "stripe" });
+	gw.setRefundResult({ ok: false, reason: "UNVERIFIED" });
+	expect(await cancelWith(h, gw, oid, cancelOpts)).toMatchObject({
+		ok: false,
+		refundFailure: "GATEWAY_UNVERIFIED",
+	});
+	const row = (await h.orderStore.listRefunds(oid))[0];
+	if (row === undefined) throw new Error("seed: no refund row");
+	expect(row).toMatchObject({ status: "unverified", purpose: "cancellation" });
+	await drainEmails(h); // the confirmation email is not the subject
+	return { oid, gw, key: row.idempotencyKey };
+}
+
+function resolveRefund(
+	h: CancelWithRefundHarness,
+	oid: OrderId,
+	key: string,
+	outcome: "confirmed" | "voided",
+	deps: { inventory?: boolean; orderStore?: OrderStore } = {},
+) {
+	return resolveUnverifiedRefund(
+		{
+			orderStore: deps.orderStore ?? h.orderStore,
+			...(deps.inventory === false ? {} : { inventoryStore: h.inventoryStore }),
+		},
+		{ orderId: oid, refundKey: idempotencyKey(key), outcome, resolvedBy: "ops@shop" },
+	);
 }
 
 /**
@@ -786,6 +823,154 @@ export function cancelWithRefundContract(
 			);
 			expect(blank).toEqual({ ok: false, reason: "EMPTY_CANCELLED_BY" });
 			expect(gw.refundCalls).toHaveLength(0);
+		});
+
+		// -- a cancellation whose refund timed out, resolved by a person (#364) ------
+		//
+		// Confirming the refund must finish what it was FOR: the order ends exactly as
+		// if the provider had answered success the first time — cancelled, restocked per
+		// the first attempt's choice, one cancelled email — and the provider is never
+		// asked again. "It didn't happen" leaves the cancel retryable.
+
+		test("CONFIRMING a cancellation's unverified refund finishes the cancel: cancelled, restocked, one cancelled email, no second provider call; a replay changes nothing", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-confirm");
+
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				outcome: "confirmed",
+				changed: true,
+				fullyRefunded: false,
+				followUp: { purpose: "cancellation", outcome: "cancelled", cancelledNow: true },
+			});
+			const order = await h.orderStore.getById(oid);
+			expect(order?.state).toBe("cancelled");
+			expect(order?.cancellation).toMatchObject({
+				reason: "customer_request",
+				cancelledBy: "admin@shop",
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+				restocked: true,
+			});
+			expect(order?.reconciliationFlag ?? null).toBeNull();
+			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND + QTY);
+			expect(gw.refundCalls, "the provider is never asked again").toHaveLength(1);
+			expect((await h.orderStore.listRefunds(oid)).map((r) => r.status)).toEqual(["recorded"]);
+			const sent = await drainEmails(h);
+			expect(sent.countByTemplate("order-cancelled", oid)).toBe(1);
+			expect(sent.countByTemplate("order-refund-issued", oid)).toBe(0);
+			expect(sent.countByTemplate("order-refunded", oid)).toBe(0);
+			expect(
+				sent.sends.find((m) => m.template === "order-cancelled")?.data["cancellation"],
+			).toMatchObject({ refund: { amountCents: TOTAL_CENTS, currency: "USD" } });
+
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				changed: false,
+				followUp: { purpose: "cancellation", outcome: "cancelled", cancelledNow: false },
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND + QTY);
+			expect((await drainEmails(h)).sends).toHaveLength(0);
+			expect(gw.refundCalls).toHaveLength(1);
+		});
+
+		test("CONFIRMING keeps the first attempt's Return to stock choice", async () => {
+			const h = await makeHarness();
+			const { oid, key } = await unverifiedCancellation(h, "cxl-unv-norestock", {
+				restock: false,
+			});
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				followUp: { purpose: "cancellation", outcome: "cancelled", restockedUnits: 0 },
+			});
+			const order = await h.orderStore.getById(oid);
+			expect(order?.state).toBe("cancelled");
+			expect(order?.cancellation?.restocked).toBe(false);
+			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND);
+		});
+
+		test("a confirm whose cancel step could not run says 'cancel again', and Cancel order again finishes it without asking the provider", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-later");
+			expect(await resolveRefund(h, oid, key, "confirmed", { inventory: false })).toMatchObject({
+				ok: true,
+				changed: true,
+				followUp: { purpose: "cancellation", outcome: "cancel_again" },
+			});
+			expect((await h.orderStore.getById(oid))?.state).toBe("paid");
+			// Even with no gateway wired now: the refund is settled, so nothing is issued.
+			expect(await cancelWith(h, null, oid)).toMatchObject({
+				ok: true,
+				cancelled: true,
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+				restockedUnits: QTY,
+			});
+			expect(gw.refundCalls).toHaveLength(1);
+			expect((await drainEmails(h)).countByTemplate("order-cancelled", oid)).toBe(1);
+		});
+
+		test("a confirm after the order SHIPPED cannot cancel it: flagged for a person, the buyer told about the refund once, nothing restocked", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-shipped");
+			for (const [from, to] of [
+				["paid", "processing"],
+				["processing", "shipped"],
+			] as const) {
+				await h.orderStore.transition({
+					orderId: oid,
+					fromState: from,
+					toState: to,
+					idempotencyKey: idempotencyKey(`cxl-unv-shipped-${to}`),
+					enqueueEmail: false,
+				});
+			}
+
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				changed: true,
+				followUp: { purpose: "cancellation", outcome: "not_cancelled", state: "shipped" },
+			});
+			const order = await h.orderStore.getById(oid);
+			expect(order?.state).toBe("shipped");
+			expect(order?.reconciliationFlag).toContain("could not be cancelled");
+			expect(order?.reconciliationFlag).toContain("contact the buyer");
+			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND);
+			expect(gw.refundCalls).toHaveLength(1);
+			const sent = await drainEmails(h);
+			expect(sent.countByTemplate("order-refund-issued", oid)).toBe(1);
+			expect(sent.countByTemplate("order-cancelled", oid)).toBe(0);
+
+			// A replay neither re-flags nor emails again.
+			expect(await resolveRefund(h, oid, key, "confirmed")).toMatchObject({
+				ok: true,
+				changed: false,
+			});
+			expect((await drainEmails(h)).sends).toHaveLength(0);
+		});
+
+		test("'It didn't happen' on a cancellation's refund leaves the order paid, and Cancel order again refunds and cancels it", async () => {
+			const h = await makeHarness();
+			const { oid, gw, key } = await unverifiedCancellation(h, "cxl-unv-void");
+			expect(await resolveRefund(h, oid, key, "voided")).toMatchObject({
+				ok: true,
+				outcome: "voided",
+				changed: true,
+				followUp: { purpose: "cancellation", outcome: "cancel_again" },
+			});
+			expect((await h.orderStore.getById(oid))?.state).toBe("paid");
+			expect((await drainEmails(h)).sends).toHaveLength(0);
+
+			gw.clearRefundResult();
+			expect(await cancelWith(h, gw, oid)).toMatchObject({
+				ok: true,
+				cancelled: true,
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+			});
+			expect(gw.refundCalls).toHaveLength(2);
+			expect((await h.orderStore.listRefunds(oid)).map((r) => r.status).toSorted()).toEqual([
+				"recorded",
+				"voided",
+			]);
+			expect((await drainEmails(h)).countByTemplate("order-cancelled", oid)).toBe(1);
 		});
 	});
 }

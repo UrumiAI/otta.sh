@@ -444,7 +444,7 @@ async function giveUp(
  * it has just done (the ledger it resumed from).
  */
 async function finish(
-	deps: LatePaymentDeps,
+	deps: Pick<LatePaymentDeps, "orderStore">,
 	orderId: OrderId,
 	capture: LateCapture,
 	refund: RefundRecord,
@@ -474,6 +474,53 @@ async function finish(
 		refundId: refund.id,
 	});
 	return "refunded";
+}
+
+/**
+ * A late-payment refund whose outcome was UNKNOWN, after a person answered it
+ * (`resolveUnverifiedRefund`, #364). The row itself is already settled by the
+ * caller; this finishes what the refund was FOR, exactly as the automatic path
+ * would have:
+ *  - `confirmed` — the money went back: {@link finish} (our flag resolved, the
+ *    retry cleared, ONE `late-payment-refunded` notice — first-wins per refund, so
+ *    a replay emails nobody). Answers `finished`.
+ *  - `voided` — it never happened, so the payment is still held on a dead order
+ *    and nothing will refund it by itself (its one key is spent). The retry is
+ *    cleared and the order flagged to refund it by hand — over our own flag for
+ *    this payment or none, never over an unrelated one. Answers `refund_manually`.
+ * `null` when the row is not a late-payment refund this module made.
+ */
+export async function finishResolvedLatePaymentRefund(
+	deps: Pick<LatePaymentDeps, "orderStore">,
+	refund: RefundRecord,
+	outcome: "confirmed" | "voided",
+	resolvedBy: string,
+): Promise<"finished" | "refund_manually" | null> {
+	const providerRef = providerRefOfLateRefundKey(refund.idempotencyKey);
+	if (providerRef === null) return null;
+	const capture: LateCapture = {
+		gateway: refund.gateway,
+		providerRef,
+		amount: refund.amount,
+		currency: refund.currency,
+	};
+	if (outcome === "confirmed") {
+		await finish(deps, refund.orderId, capture, refund);
+		return "finished";
+	}
+	await deps.orderStore.scheduleRefundRetry(refund.orderId, refund.idempotencyKey, null);
+	const order = await deps.orderStore.getById(refund.orderId);
+	if (order !== null) {
+		const current = order.reconciliationFlag;
+		if (current === null || current.startsWith(flagPrefix(capture, order.state))) {
+			const provider = capture.gateway === "stripe" ? "Stripe" : capture.gateway;
+			await deps.orderStore.flagReconciliation(
+				refund.orderId,
+				`${flagPrefix(capture, order.state)}: automatic refund did not happen (${resolvedBy} found no refund in ${provider}) — refund it manually`,
+			);
+		}
+	}
+	return "refund_manually";
 }
 
 /** The gateways the sweep refunds through, resolved only when something is due. */
