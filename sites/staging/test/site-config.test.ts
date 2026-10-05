@@ -9,10 +9,10 @@
  *    (the egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
- *  - database/storage are d1(DB, session OFF — EmDash gives anonymous
- *    requests, which every shopper is, no read-your-writes; and paired with
- *    wrangler's global_fetch_strictly_public flag should it ever return) /
- *    r2(MEDIA);
+ *  - database/storage are d1(DB, session "primary-first" — never "auto":
+ *    EmDash gives anonymous requests, which every shopper is, no
+ *    read-your-writes under it; and never alongside wrangler's
+ *    global_fetch_strictly_public flag, should it ever return) / r2(MEDIA);
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
@@ -356,25 +356,26 @@ describe("buildEmdashOptions", () => {
 		expect(options).not.toHaveProperty("marketplace");
 	});
 
-	test("database is D1 binding DB with session OFF (shoppers get no read-your-writes under sessions)", () => {
+	test('database is D1 binding DB with session "primary-first" (every shopper request starts on the primary)', () => {
 		expect(options.database).toMatchObject({
 			entrypoint: "@emdash-cms/cloudflare/db/d1",
 			config: { binding: "DB" },
 		});
-		// NOT session:"auto" — and no longer because of the wrangler flag (gone,
-		// issue #375). Under "auto", @emdash-cms/cloudflare 0.38 starts every
-		// request that is not EmDash-authenticated (no `astro-session` user, no
-		// Bearer) on `first-unconstrained` — any replica — and writes a bookmark
-		// cookie only for authenticated requests. Every shopper is anonymous to
-		// EmDash (`otta_cart` / `otta_session` are Otta's own cookies), and every
-		// shopper write is a POST that 303s to a GET reading what it just wrote:
-		// /checkout/place → /checkout/pay reads the new order (ORDER_NOT_FOUND on
-		// a lagging replica sends the buyer to a 404 for an order holding their
-		// stock); /account/verify/confirm → /account/orders reads the new session
-		// (a lagging replica bounces the just-signed-in buyer to login). Turning
-		// sessions on is a product decision (see emdash-options.ts), not a cleanup.
+		// "primary-first" — NOT "auto" (issue #375, product-owner decision). In
+		// @emdash-cms/cloudflare 0.38 (dist/db/d1.mjs:630-635) "auto" starts every
+		// request EmDash has not authenticated on `first-unconstrained` — any
+		// replica, no bookmark. Every shopper is anonymous to EmDash (`otta_cart` /
+		// `otta_session` are Otta's own cookies), and every shopper write is a POST
+		// that 303s to a GET reading it back: /checkout/place → /checkout/pay reads
+		// the new order (a lagging replica answers ORDER_NOT_FOUND and the buyer
+		// lands on a 404 for an order holding their stock); /account/verify/confirm
+		// → /account/orders reads the new session (bounced to login); GET
+		// /checkout/resume replays the order's payment from what it reads.
+		// "primary-first" starts those GETs on the primary (`first-primary`), so
+		// each sees every write committed before it. "auto" needs a shopper-side
+		// bookmark first.
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
-		expect(d1Config?.session).toBeUndefined();
+		expect(d1Config?.session).toBe("primary-first");
 	});
 
 	test("PAIRING INVARIANT: the predicate refuses the flag + a session, and only that", () => {
@@ -389,8 +390,8 @@ describe("buildEmdashOptions", () => {
 	});
 
 	test("PAIRING INVARIANT: global_fetch_strictly_public (wrangler) ⇒ D1 session OFF", () => {
-		// The two halves must only ever change TOGETHER: if the flag returns, the
-		// session must stay off; if sessions are turned on, the flag must be absent.
+		// Sessions are ON ("primary-first"), so this is no longer vacuous: it fails
+		// the moment the flag comes back. Bring the flag back only with sessions off.
 		const flags = wranglerFlags();
 		expect(flags).toContain("nodejs_compat");
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;

@@ -11,10 +11,10 @@
  *    site's ctx.http calls to a commerce-service Worker on *.workers.dev,
  *    which Cloudflare otherwise blocks and stubs 404; that service and the
  *    call are gone (ADR-0020, #288), and no remaining egress targets
- *    workers.dev or this Worker's own zone. Left in, it would only keep
- *    D1 read-replica sessions unusable (every SSR request hangs, silently —
- *    emdash issue #1273). If it ever comes back, the pairing invariant in
- *    site-config.test.ts still requires D1 `session` OFF alongside it;
+ *    workers.dev or this Worker's own zone. It must not come back: D1
+ *    sessions are on (`"primary-first"`), and the flag hangs every session
+ *    query, silently (emdash issue #1273) — the pairing guard in
+ *    site-config.test.ts fails on the pair;
  * *  - a cron trigger (scheduled publishing needs it on Workers);
  *  - no secret-shaped keys under `vars` (secrets go via `wrangler secret`).
  */
@@ -83,9 +83,8 @@ describe("wrangler.jsonc", () => {
 		// *.workers.dev left Cloudflare instead of being stubbed 404. That service
 		// is gone (ADR-0020): the plugin's egress is api.stripe.com plus the
 		// deployment's email and x402 hosts (DEPLOYMENT.md §4), none of them on
-		// workers.dev, and the site makes no fetch of its own. Re-adding the flag
-		// is allowed only with D1 `session` off — the pairing invariant in
-		// site-config.test.ts.
+		// workers.dev, and the site makes no fetch of its own. It must not come
+		// back while D1 sessions are on — the pairing guard in site-config.test.ts.
 		expect(flags).not.toContain("global_fetch_strictly_public");
 	});
 

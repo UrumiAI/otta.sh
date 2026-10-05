@@ -44,10 +44,10 @@
 	// email and x402 hosts, none on workers.dev. Without the flag, a fetch to a
 	// hostname on THIS Worker's own zone goes to the zone's origin rather than
 	// back through Cloudflare's front door — so do not point either egress URL at
-	// this site's zone. PAIRING INVARIANT (DEPLOYMENT.md §2.4): should the flag
-	// ever return, D1 `session` in src/emdash-options.ts must be off with it (the
-	// flag silently hangs the D1 Sessions API — emdash issue #1273); pinned by
-	// test/site-config.test.ts.
+	// this site's zone. Do not bring the flag back: D1 sessions are ON
+	// (`session: "primary-first"` in src/emdash-options.ts), and the flag
+	// silently hangs every D1 Sessions API query (emdash issue #1273) —
+	// DEPLOYMENT.md §2.4; pinned by test/site-config.test.ts.
 	"compatibility_flags": ["nodejs_compat"],
 	"d1_databases": [
 		{

@@ -2,19 +2,23 @@
  * The emdash() integration options for the staging site — a pure builder
  * so the site-config test can assert the whole trusted-registration
  * surface (plan D6):
- *  - D1 (`DB`) with `session` OFF. Not for the old wrangler-flag reason:
- *    `global_fetch_strictly_public` is gone (issue #375), though the pairing
- *    invariant still holds should it return — the flag silently hangs D1
- *    sessions (emdash #1273), pinned in site-config.test.ts. It stays off
- *    because `session: "auto"` gives a request no read-your-writes unless
- *    EmDash itself authenticates it: every other request starts on any replica
- *    (`first-unconstrained`) with no bookmark cookie. Every shopper is anonymous
- *    to EmDash, and every shopper write is a POST that 303s to a GET reading it
- *    back (place → /checkout/pay reads the new order; sign-in → /account/orders
- *    reads the new session). A lagging replica would 404 a just-placed order or
- *    bounce a just-signed-in buyer to login. Read replication is not enabled
- *    account-side today, so "off" costs nothing now; turning it on (and with it
- *    "auto" or "primary-first") is a product decision, not a config cleanup.
+ *  - D1 (`DB`) with `session: "primary-first"` (issue #375). Every request
+ *    EmDash has not authenticated — every shopper, since `otta_cart` /
+ *    `otta_session` are Otta's own cookies — starts on the primary
+ *    (`first-primary`), as do writes and the cron; later reads in the same
+ *    request may use a replica no older than that start. That keeps the
+ *    shopper's POST → 303 → GET flows correct with read replicas on: place →
+ *    /checkout/pay reads the new order, sign-in → /account/orders reads the new
+ *    session, and GET /checkout/resume replays a payment from what it reads.
+ *    NOT "auto": it starts those same GETs on any replica with no bookmark
+ *    (bookmarks go only to EmDash-authenticated requests), so a lagging replica
+ *    would 404 a just-placed order or bounce a just-signed-in buyer. "auto"
+ *    needs a shopper-side bookmark first. EmDash-authenticated GETs resume from
+ *    their `__em_d1_bookmark` cookie (read-your-own-writes); that cookie is never
+ *    set on an anonymous response. The old pairing invariant with wrangler's
+ *    `global_fetch_strictly_public` is moot now the flag is gone — it silently
+ *    hangs every session query (emdash #1273), so it must never return
+ *    alongside a session mode; site-config.test.ts pins both.
  *  - R2 (`MEDIA`) — zero-config media storage.
  *  - The Otta plugin registered TRUSTED via a hand-written descriptor
  *    (ADR-0006). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the
@@ -67,8 +71,8 @@ export interface StagingEmdashOptions {
  */
 export function buildEmdashOptions(egress: InProcessEgressUrls = {}): StagingEmdashOptions {
 	return {
-		// No `session` (= "disabled") — see the module doc above.
-		database: d1({ binding: "DB" }),
+		// "primary-first", never "auto" — see the module doc above.
+		database: d1({ binding: "DB", session: "primary-first" }),
 		storage: r2({ binding: "MEDIA" }),
 		// TWO descriptors, one array. `otta` is unchanged — standard format,
 		// five Block Kit pages, its own capabilities and allowedHosts.
