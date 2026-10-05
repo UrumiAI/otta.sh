@@ -1,27 +1,13 @@
 /**
- * The order's email as a page may SHOW it to whoever holds the order link (QA
- * U-2): one letter of the mailbox, one of the domain and its last label —
- * `jane.doe@gmail.com` → `j•••@g•••.com`.
+ * The order's email as a page may show it to whoever holds the order link (QA
+ * U-2) — `jane.doe@gmail.com` → `j•••@g•••.com`. RE-EXPORTED from
+ * `@otta-sh/admin-presentation` since issue #377, when the React Orders
+ * console began masking buyer emails with the same rule and could not import
+ * this package to get it. It moved; it did not change. `test/buyer-ref-hint.test.ts`
+ * still pins the behaviour through this path, and pins that it IS the shared
+ * function rather than a copy.
  *
- * Why a hint and not the address. The order id is a bearer capability: anyone
- * holding the link reads the public order, and the public order deliberately
- * carries no email (`serializePublicOrder`). A page resumed from that link must
- * not grant more than the link already does, but the buyer still deserves to
- * see WHICH address the order — and its receipt — belongs to, and that it can no
- * longer be changed. This is enough to recognise your own address and not
- * enough to learn someone else's.
- *
- * Anything that is not shaped like `local@domain.tld` hides everything.
+ * The same compatibility-shim idiom as `presentation/format-money.ts`: a module
+ * being edited for another reason should import the package directly.
  */
-const DOTS = "•••";
-
-export function buyerRefHint(buyerRef: string): string {
-	const at = buyerRef.lastIndexOf("@");
-	if (at <= 0 || at === buyerRef.length - 1) return DOTS;
-	const local = buyerRef.slice(0, at);
-	const domain = buyerRef.slice(at + 1);
-	const lastDot = domain.lastIndexOf(".");
-	if (lastDot <= 0 || lastDot === domain.length - 1) return DOTS;
-	const tld = domain.slice(lastDot + 1);
-	return `${[...local][0]}${DOTS}@${[...domain][0]}${DOTS}.${tld}`;
-}
+export { buyerRefHint } from "@otta-sh/admin-presentation";

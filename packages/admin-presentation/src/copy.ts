@@ -13,6 +13,7 @@
  * exports `BANNER_BUDGET`, `fit` and `fitBanner`, and `orders-copy.ts` still
  * uses them. Only the file they live in moved.
  */
+import { BUYER_REF_HINT_HIDDEN, buyerRefHint } from "./buyer-ref-hint.js";
 
 /**
  * What an ABSENT value renders as, anywhere on either surface.
@@ -157,4 +158,35 @@ export function buyerReferenceText(buyerRef: string | null | undefined): string 
 	if (typeof buyerRef !== "string") return ABSENT;
 	const trimmed = buyerRef.trim();
 	return trimmed.length > 0 ? trimmed : ABSENT;
+}
+
+/**
+ * The Orders console's MASKED buyer email (issue #377), or `null` when there is
+ * no email to mask.
+ *
+ * MASKED BY DEFAULT, REVEALED ON A CLICK. Only an EmDash admin reaches the
+ * console, so there is no lower role to hide an address from; what the mask
+ * buys is that an ordinary working screen — over a shoulder, in a screenshot
+ * pasted into a ticket — does not carry every buyer's address. The operator
+ * loses nothing: the list and the detail both put a Show/Hide toggle beside it.
+ *
+ * NOT A SECOND MASKING RULE. This is {@link buyerRefHint}, the resume flow's
+ * `j•••@g•••.com`, applied to what {@link buyerReferenceText} would PRINT (so
+ * incidental whitespace cannot change the mask). Two screens that hint at the
+ * same address show the same hint.
+ *
+ * `null` FOR ANYTHING NOT SHAPED LIKE AN ADDRESS, and the caller prints such a
+ * value exactly as it always did. `buyerRef` is length-checked free text — an
+ * email at checkout, but documented as an "email/session claim token"
+ * (`plugin/src/storefront/checkout-route-input.ts`) — and a non-email value is
+ * the operator's only key for finding that buyer's other orders. The resume
+ * flow hides such a value entirely (`•••`) because its audience is whoever
+ * holds a bearer link; this audience is the store's admin, and hiding an
+ * opaque handle from them would cost the key and protect no address.
+ */
+export function maskBuyerEmail(value: string | null | undefined): string | null {
+	const printed = buyerReferenceText(value);
+	if (printed === ABSENT) return null;
+	const hint = buyerRefHint(printed);
+	return hint === BUYER_REF_HINT_HIDDEN ? null : hint;
 }

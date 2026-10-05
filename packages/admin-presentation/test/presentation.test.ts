@@ -55,6 +55,7 @@ import {
 	TERMINAL_ORDER_STATES,
 	UNNAMED_REFUND_RECIPIENT,
 	addStockConfirm,
+	buyerRefHint,
 	buyerReferenceText,
 	canonicalMoneyInput,
 	cancelBannerText,
@@ -72,6 +73,7 @@ import {
 	formatMoney,
 	formatOptionalAmount,
 	formatTimestamp,
+	maskBuyerEmail,
 	PRODUCT_SECTION_ORDER,
 	SPLIT_DISCARD_CONTEXT,
 	dirtyGroupLabel,
@@ -1455,6 +1457,52 @@ describe("buyerReferenceText — the readable buyer reference, never the uuid", 
 	test("null and undefined both render the shared em dash", () => {
 		expect(buyerReferenceText(null)).toBe(ABSENT);
 		expect(buyerReferenceText(undefined)).toBe(ABSENT);
+	});
+});
+
+/**
+ * `maskBuyerEmail` — the Orders console's mask (issue #377), and deliberately
+ * NOT a second masking rule: it is `buyerRefHint`, the resume flow's
+ * `j•••@g•••.com`, applied to what `buyerReferenceText` would print. The one
+ * thing it adds is the answer to "is there an email here to mask at all?" —
+ * `null` for anything that is not shaped like an address, which the console
+ * prints as it always did.
+ */
+describe("maskBuyerEmail — the resume flow's hint, applied to an email-shaped reference only", () => {
+	test("an email-shaped reference masks to exactly the resume flow's hint", () => {
+		for (const email of ["jane.doe@gmail.com", "a@b.co", "x@mail.example.co.uk"]) {
+			expect(maskBuyerEmail(email), email).toBe(buyerRefHint(email));
+		}
+		expect(maskBuyerEmail("jane.doe@gmail.com")).toBe("j•••@g•••.com");
+	});
+
+	test("masks what would be PRINTED — the trimmed reference — not the raw value", () => {
+		expect(maskBuyerEmail("  jane.doe@gmail.com\n")).toBe("j•••@g•••.com");
+	});
+
+	test("never carries more of the address than one letter of each half and the last label", () => {
+		const masked = maskBuyerEmail("secret.name@private-company.example");
+		expect(masked).not.toContain("secret");
+		expect(masked).not.toContain("private");
+	});
+
+	test("a reference that is not an email has nothing to mask, and says so with null", () => {
+		// A guest or session token, a long opaque handle: the operator's only
+		// correlation key for the order, and not an address anyone can be reached
+		// at. Hiding it behind `•••` would cost the operator the key and protect
+		// nothing a screenshot could leak.
+		expect(maskBuyerEmail("guest_checkout_772")).toBeNull();
+		expect(maskBuyerEmail("0x52908400098527886E0F7030069857D2E4169EE7")).toBeNull();
+		expect(maskBuyerEmail("@nolocal.com")).toBeNull();
+		expect(maskBuyerEmail("nodomain@")).toBeNull();
+		expect(maskBuyerEmail("no-tld@localhost")).toBeNull();
+	});
+
+	test("absent, blank and whitespace-only have nothing to mask either", () => {
+		expect(maskBuyerEmail("")).toBeNull();
+		expect(maskBuyerEmail("   ")).toBeNull();
+		expect(maskBuyerEmail(null)).toBeNull();
+		expect(maskBuyerEmail(undefined)).toBeNull();
 	});
 });
 
