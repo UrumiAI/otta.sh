@@ -373,9 +373,11 @@ order of appearance in a deployment's life:
 
 > **Email provider: Resend (default) or SMTP2GO.** Settings → "Payments & email" →
 > "Email provider" picks which one the store sends through. Resend is the default, so a
-> store that never sets it behaves as before. Both use the same "Email provider API key"
-> field: it holds the chosen provider's key. To switch, save the provider first, then that
-> provider's key (the key field's shape check follows the saved provider).
+> store that never sets it behaves as before. Each provider has its **own** key field
+> ("Resend API key (email)" and "SMTP2GO API key (email)"), and a key is only ever sent to
+> its own provider. Switching is safe in either order; while the chosen provider has no
+> usable setup (SMTP2GO with no key, Resend with no `EMAIL_API_URL`) the store sends and
+> claims nothing, so no outbox attempt is spent.
 >
 > **Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
 > auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag) to the
@@ -408,8 +410,7 @@ order of appearance in a deployment's life:
 > `EMAIL_API_URL` at a non-Resend API is not supported.
 >
 > **SMTP2GO.** The sender posts SMTP2GO's `POST /v3/email/send` body (`sender`, `to` as a
-> list, `subject`, `html_body`, `text_body`, and an `X-Otta-Id` header carrying the outbox
-> row id) with the key in `X-Smtp2go-Api-Key`. Its hosts — `api.smtp2go.com` and the
+> list, `subject`, `html_body`, `text_body`) with the key in `X-Smtp2go-Api-Key`. Its hosts — `api.smtp2go.com` and the
 > regional `us-api`, `eu-api` and `au-api.smtp2go.com` — are granted in every build (§4), so
 > SMTP2GO needs **no** `EMAIL_API_URL` and no rebuild. To reach real inboxes:
 >
@@ -419,24 +420,27 @@ order of appearance in a deployment's life:
 > 2. Go to **Sending → API Keys** and add a key for this store. In the key's permissions,
 >    allow **only** sending email (the `/email/send` endpoint) — the store never needs
 >    anything else, so a leaked key cannot read your account or change its settings.
-> 3. In admin Settings → "Payments & email", set "Email provider" to SMTP2GO and "SMTP2GO
->    region" (Global unless your account is tied to the US, EU or AU region), and set the
->    from-address to one on the verified domain. Save, then save the API key (it starts
->    `api-`; with SMTP2GO chosen, the save refuses any other shape).
+> 3. In admin Settings → "Payments & email", save the key in "SMTP2GO API key (email)" (it
+>    starts `api-`; the field refuses any other shape). Then set "Email provider" to SMTP2GO,
+>    "SMTP2GO region" (Global unless your account is tied to the US, EU or AU region) and a
+>    from-address on the verified domain, and save the payment settings.
 > 4. Set "Sign-in page address" and "Store display name" as for Resend (step 4 above).
 >
 > **SMTP2GO can refuse a send with HTTP 200.** An unverified sender domain, for one, comes
 > back as `200` with `data.failed: 1` and the reason in `data.failures`. The sender treats any
 > answer without `data.succeeded ≥ 1` and `data.failed = 0` as a failed send, and its error
-> carries SMTP2GO's reason (sanitized and cut to 200 characters, never the key or the
-> recipient), for example "From header sender domain not verified". The row is retried and
-> eventually parked `failed`, as with any refusal.
+> carries SMTP2GO's reason and `request_id` (sanitized and cut to 200 characters, never the
+> key or the recipient), for example "From header sender domain not verified". The row is
+> retried and eventually parked `failed`, as with any refusal.
 >
-> **SMTP2GO has no idempotency key.** Resend dedupes a retried send; SMTP2GO does not. With
-> SMTP2GO, "once" rests on the outbox's claim alone: a send SMTP2GO accepted but whose answer
-> was lost (a timeout after acceptance, a tick cut off before the row was marked sent) is sent
-> again, so a buyer can rarely get the same email twice. Look a message up in SMTP2GO's
-> activity log by its `X-Otta-Id` header.
+> **SMTP2GO has no idempotency key, so dedupe does not hold for it.** Resend dedupes a
+> retried send on its `Idempotency-Key`; SMTP2GO does not. With SMTP2GO, "once" rests on the
+> outbox's claim alone: a send SMTP2GO accepted but whose answer was lost (a timeout after
+> acceptance, a body read cut off by the timeout, a tick cut off before the row was marked
+> sent) is sent again. To bound that, every SMTP2GO timeout counts as one of the row's
+> attempts (Resend timeouts do not), so a buyer gets at most one copy per attempt — rarely
+> more than one in practice. Find a message in SMTP2GO's activity log by recipient and time,
+> or by the `request_id` a refusal quotes.
 
 ## 4. Egress and `allowedHosts`
 
