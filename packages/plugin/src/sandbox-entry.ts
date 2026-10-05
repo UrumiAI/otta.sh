@@ -260,7 +260,12 @@ export function createSandboxWorker(
 
 				return jsonResponse({ error: "not found" }, 404);
 			} catch (err) {
-				return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
+				// Only an Error's own message crosses back to the caller: never its stack,
+				// and never a stringified non-Error throw (which could carry anything).
+				// The full value goes to the isolate's log instead.
+				console.error("sandbox invocation failed", err);
+				const message = err instanceof Error ? err.message : "internal error";
+				return jsonResponse({ error: message }, 500);
 			}
 		},
 	};
