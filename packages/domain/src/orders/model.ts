@@ -133,6 +133,22 @@ export interface OrderCancellation {
 	 *  (an older cancellation) reads as `false`. A pending order's held stock is
 	 *  released by the cancel itself either way; this is about SOLD units. */
 	restocked?: boolean;
+	/**
+	 * The restock this cancellation still OWES (issue #364). `cancelOrderWithRefund`
+	 * restocks only after its flip lands, so the flip records what it is about to
+	 * return — the cancellation's key and the lines — and the restock clears it when
+	 * the units are back. Non-null ⇒ the units have NOT come back yet; a replay of the
+	 * cancellation or the sweep finishes it under the recorded key, exactly once.
+	 * ABSENT or `null` ⇒ nothing is owed.
+	 */
+	restockPending?: CancellationRestockPending | null;
+}
+
+/** A cancellation's outstanding restock: each line is returned under
+ *  `<idempotencyKey>:restock:<lineId>`, the keys the inventory spends once. */
+export interface CancellationRestockPending {
+	idempotencyKey: string;
+	lineIds: string[];
 }
 
 /** The refund a cancellation issued — integer minor units in the order's currency. */

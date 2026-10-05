@@ -160,6 +160,8 @@ export {
 export type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
+	CompleteCancellationRestockInput,
+	CompleteCancellationRestockResult,
 	CapturedPayment,
 	CreateOrderInput,
 	CreateOrderLineInput,
@@ -352,6 +354,7 @@ export {
 export type {
 	CancellationReason,
 	CancellationRefund,
+	CancellationRestockPending,
 	FulfillmentKind,
 	Order,
 	OrderAddress,
@@ -421,6 +424,9 @@ export {
 export {
 	cancelOrder,
 	cancelOrderWithRefund,
+	finishCancellationRestock,
+	type FinishCancellationRestockDeps,
+	type FinishCancellationRestockOutcome,
 	type RestockSkip,
 	type CancelOrderWithRefundCommand,
 	type CancelOrderWithRefundDeps,

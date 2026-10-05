@@ -153,6 +153,7 @@ import {
 	escalateStaleLateRefunds,
 	expireHoldsBatch,
 	expireOrdersBatch,
+	finishCancellationRestock,
 	isEmailSendTimeoutError,
 	orderId as toOrderId,
 	retryLatePaymentRefunds,
@@ -2348,6 +2349,15 @@ async function healOrderSkuIndex(
  * HAZARD 2 is handled below the calls: their guard reads a non-versioned `get`, so
  * a `lost` id is re-judged against the order's CURRENT state before it counts as an
  * anomaly — and one that survives is WRITTEN TO THE ORDER, not merely returned.
+ *
+ * A CANCELLATION'S PENDING RESTOCK rides the same index (issue #364): a paid order's
+ * cancel restocks only after its flip lands, and the flip records the restock it
+ * owes (`cancellation.restockPending`), which `holdsPendingAt` counts. So when that
+ * restock failed, this leg finishes it through the domain's
+ * `finishCancellationRestock` — under the keys the flip recorded, so a racing replay
+ * moves nothing twice. A failure is an anomaly for this row only: the marker stays,
+ * the order stays in the index, and the next tick retries it. A line the inventory no
+ * longer knows is flagged on the order, because nobody else will see it.
  */
 async function completeHoldIntents(
 	storage: AdapterStorageAccess,
@@ -2376,8 +2386,13 @@ async function completeHoldIntents(
 				{ kind: "commit" as const, result: await stores.orderStore.completeHoldCommit(id) },
 				{ kind: "release" as const, result: await stores.orderStore.completeHoldRelease(id) },
 			];
-			const lost = attempts.filter((attempt) => attempt.result.lost.length > 0);
 			completed += attempts.filter((attempt) => attempt.result.completed).length;
+			if ((item.data.cancellation?.restockPending ?? null) !== null) {
+				const restocked = await finishRestockOwed(stores, id);
+				if (restocked === "failed") anomalies.push(`${item.data.orderId}:restock`);
+				else if (restocked) completed++;
+			}
+			const lost = attempts.filter((attempt) => attempt.result.lost.length > 0);
 			if (lost.length === 0) return;
 			// HAZARD 2. The completers decided from a non-versioned read; re-read the
 			// order NOW and keep only the losses that are still the order's problem.
@@ -2409,12 +2424,48 @@ async function completeHoldIntents(
 }
 
 /**
+ * Finish one cancelled order's pending restock (issue #364). True when this call
+ * closed it, false when a racing caller did, "failed" when it threw — logged here,
+ * and the order stays in `holdsPendingAt` for the next tick. Lines it could not
+ * return (a deleted sku) are flagged on the order: the operator who cancelled it has
+ * long since left the page.
+ */
+async function finishRestockOwed(
+	stores: InProcessCommerceStores,
+	orderId: OrderId,
+): Promise<boolean | "failed"> {
+	try {
+		const res = await finishCancellationRestock(
+			{ orderStore: stores.orderStore, inventoryStore: stores.inventory },
+			orderId,
+		);
+		if (res.restockSkipped.length > 0) {
+			const lines = res.restockSkipped
+				.map((skip) => `${skip.sku} ×${String(skip.quantity)}`)
+				.join(", ");
+			await stores.orderStore.flagReconciliation(
+				orderId,
+				`cron sweep: the cancellation's restock could not return ${lines} (no inventory row) — adjust stock by hand`,
+			);
+		}
+		return res.finished;
+	} catch (err) {
+		console.error(`[otta] cron sweep: the pending restock of cancelled order ${orderId} failed`, {
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return "failed";
+	}
+}
+
+/**
  * What completing one order's outstanding hold intents costs, from the document in
  * hand: the three completers' order reads, then per reservation id of each
  * OUTSTANDING intent a settle (about seven calls: the index, the aggregate, the key,
- * the terminal state, the prune) and the intent's stamp (two). A ten-line order owes
- * far more than the one-line unit `LEG_QUERY_COSTS` measures, and the gate must
- * know before it starts the row, not after (QA2 M2).
+ * the terminal state, the prune) and the intent's stamp (two). A pending
+ * cancellation restock adds its reads and its marker write (four) and a keyed
+ * restock per line (about six: the key claim, the stock row, the ledger). A ten-line
+ * order owes far more than the one-line unit `LEG_QUERY_COSTS` measures, and the
+ * gate must know before it starts the row, not after (QA2 M2).
  */
 function holdIntentCost(item: { data: OrderDoc }): number {
 	let calls = 3;
@@ -2426,6 +2477,8 @@ function holdIntentCost(item: { data: OrderDoc }): number {
 		if (intent === undefined || intent === null || intent.completedAt !== null) continue;
 		calls += 7 * intent.reservationIds.length + 2;
 	}
+	const restock = item.data.cancellation?.restockPending ?? null;
+	if (restock !== null) calls += 6 * restock.lineIds.length + 4;
 	return calls;
 }
 

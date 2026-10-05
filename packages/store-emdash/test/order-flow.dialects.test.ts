@@ -620,6 +620,7 @@ describeEachDialect("order flow", (ctx) => {
 			resolveReconciliation: (i) => h.store.resolveReconciliation(i),
 			recordFulfillment: (i) => h.store.recordFulfillment(i),
 			cancelOrder: (i) => h.store.cancelOrder(i),
+			completeCancellationRestock: (i) => h.store.completeCancellationRestock(i),
 			transition: (i) => h.store.transition(i),
 			listForCustomer: (c) => h.store.listForCustomer(c),
 			listEventsForOrder: (id) => h.store.listEventsForOrder(id),

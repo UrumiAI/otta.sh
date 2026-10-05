@@ -120,8 +120,12 @@ import {
 	computeRefundCeiling,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	type CancellationRestockPending,
+	type OrderCancellation,
 	type CancelOrderInput,
 	type CancelOrderStoreResult,
+	type CompleteCancellationRestockInput,
+	type CompleteCancellationRestockResult,
 	type CapturedPayment,
 	type Cents,
 	type Clock,
@@ -1230,6 +1234,10 @@ export class EmdashOrderStore implements OrderStore {
 					cancelledAt: now,
 					refund: input.refund ?? null,
 					restocked: input.restocked ?? false,
+					// The restock the use-case owes once this flip lands (issue #364). It is
+					// in the envelope, so `#flip` re-derives `holdsPendingAt` with it and the
+					// sweep can find the order until `completeCancellationRestock` clears it.
+					...copyRestockPending(input.restockPending),
 				},
 			}),
 		});
@@ -1244,6 +1252,39 @@ export class EmdashOrderStore implements OrderStore {
 			}
 		}
 		return { cancelled: won, order: await this.getById(input.orderId) };
+	}
+
+	async completeCancellationRestock(
+		input: CompleteCancellationRestockInput,
+	): Promise<CompleteCancellationRestockResult> {
+		// A compare-and-set on the order, guarded on the marker's own key: a second
+		// caller (a replay racing the sweep) finds it gone and changes nothing.
+		// `holdsPendingAt` is re-derived in the same write, so the sweep stops finding
+		// the order the moment nothing is owed.
+		const completed = await this.#casOrder<boolean>("completeCancellationRestock", async () => {
+			const current = await this.#orders.getVersioned(input.orderId);
+			if (current === null) return casDone(false);
+			const doc = normalizeOrderDoc(current.value);
+			const cancellation = doc.cancellation;
+			const pending = cancellation?.restockPending ?? null;
+			if (
+				cancellation === null ||
+				pending === null ||
+				pending.idempotencyKey !== input.idempotencyKey
+			) {
+				return casDone(false);
+			}
+			const now = this.#clock.now().toISOString();
+			const next: OrderDoc = {
+				...doc,
+				cancellation: closeRestockPending(cancellation, input.restocked),
+				updatedAt: now,
+			};
+			next.holdsPendingAt = computeHoldsPendingAt(next);
+			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
+		return { completed, order: await this.getById(input.orderId) };
 	}
 
 	// -- lists, search, counts, the customer view, guest linking ---------------
@@ -3068,4 +3109,27 @@ function refundNoticeFor(refund: RefundEntryDoc): OrderNoticeInput | null {
 		currency: refund.currency,
 		refundId: refund.id,
 	};
+}
+
+/** The envelope field for a cancellation's pending restock: a private copy (never
+ *  sharing an array with the caller), or NOTHING when none is owed — absent reads
+ *  as "nothing owed", so a cancellation that owes no restock keeps its old shape. */
+function copyRestockPending(pending: CancellationRestockPending | null | undefined): {
+	restockPending?: CancellationRestockPending;
+} {
+	return pending === undefined || pending === null
+		? {}
+		: {
+				restockPending: { idempotencyKey: pending.idempotencyKey, lineIds: [...pending.lineIds] },
+			};
+}
+
+/** The cancellation with its pending restock closed: the marker dropped, and
+ *  `restocked` set once any unit came back. */
+function closeRestockPending(
+	cancellation: OrderCancellation,
+	restocked: boolean,
+): OrderCancellation {
+	const { restockPending: _closed, ...rest } = cancellation;
+	return { ...rest, restocked: cancellation.restocked === true || restocked };
 }

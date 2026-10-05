@@ -9,7 +9,7 @@ import {
 } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
-import { cancelOrderWithRefund } from "../orders/cancel-order.js";
+import { cancelOrderWithRefund, finishCancellationRestock } from "../orders/cancel-order.js";
 import { refundOrder } from "../orders/refund-order.js";
 import { dispatchOrderEmails } from "../orders/transition.js";
 import type { Clock } from "../ports/clock.js";
@@ -255,6 +255,7 @@ export function cancelWithRefundContract(
 				cancelled: true,
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
 				restockedUnits: QTY,
+				restockPending: false,
 			});
 			const order = await h.orderStore.getById(id);
 			expect(order?.state).toBe("cancelled");
@@ -263,6 +264,8 @@ export function cancelWithRefundContract(
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
 				restocked: true,
 			});
+			// The restock finished, so nothing is left owed on the cancellation.
+			expect(order?.cancellation?.restockPending ?? null).toBeNull();
 			// The money went back through the gateway, once, for the whole capture.
 			expect(gw.refundCalls).toHaveLength(1);
 			expect(gw.refundCalls[0]?.amount).toBe(TOTAL_CENTS);
@@ -303,9 +306,19 @@ export function cancelWithRefundContract(
 			const id = await seedOrder(h, "cxl-norestock");
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const res = await cancelWith(h, gw, id, { restock: false });
-			expect(res).toMatchObject({ ok: true, cancelled: true, restockedUnits: 0 });
+			expect(res).toMatchObject({
+				ok: true,
+				cancelled: true,
+				restockedUnits: 0,
+				restockPending: false,
+			});
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
-			expect((await h.orderStore.getById(id))?.cancellation?.restocked).toBe(false);
+			const order = await h.orderStore.getById(id);
+			expect(order?.cancellation?.restocked).toBe(false);
+			// Declined ⇒ nothing is owed: no pending restock for a sweep to finish.
+			expect(order?.cancellation?.restockPending ?? null).toBeNull();
+			expect(await finishCancellationRestock(h, id)).toMatchObject({ restockedUnits: 0 });
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 			expect(gw.refundCalls).toHaveLength(1);
 		});
 
@@ -326,7 +339,7 @@ export function cancelWithRefundContract(
 			expect((await drainEmails(h)).countByTemplate("order-cancelled", id)).toBe(1);
 		});
 
-		test("a crash after the refund and restock but before the cancel: the retry neither refunds nor restocks twice", async () => {
+		test("a crash at the cancel flip: nothing is restocked yet, and the retry refunds once and restocks once", async () => {
 			const h = await makeHarness();
 			const id = await seedOrder(h, "cxl-crash");
 			const gw = new FakePaymentGateway({ id: "stripe" });
@@ -339,13 +352,14 @@ export function cancelWithRefundContract(
 				reason: "CANCEL_INCOMPLETE_AFTER_REFUND",
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
 			});
-			// The order is still PAID — still cancellable — with the money already back and
-			// the units restocked, and flagged so it is not lost if nobody retries.
+			// The order is still PAID — still cancellable — with the money already back,
+			// and flagged so it is not lost if nobody retries. NO unit came back: the
+			// restock waits for the flip, so a paid order is never restocked under it.
 			const after = await h.orderStore.getById(id);
 			expect(after?.state).toBe("paid");
 			expect(after?.reconciliationFlag).toContain("did not finish");
 			expect(gw.refundCalls).toHaveLength(1);
-			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 
 			const retry = await cancelWith(h, gw, id);
 			expect(retry).toMatchObject({
@@ -379,12 +393,12 @@ export function cancelWithRefundContract(
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 		});
 
-		test("an untyped failure in the restock AFTER the refund flags the order and a retry finishes without refunding twice", async () => {
+		test("an untyped failure closing a commit bracket AFTER the refund flags the order and a retry finishes without refunding twice", async () => {
 			const h = await makeHarness();
-			const id = await seedOrder(h, "cxl-restock-throws");
+			const id = await seedOrder(h, "cxl-commit-throws", { hold: "adopted" });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const res = await cancelWith(h, gw, id, {
-				inventoryStore: failingOnce(h.inventoryStore, "restock"),
+				inventoryStore: failingOnce(h.inventoryStore, "commit"),
 			});
 			expect(res).toMatchObject({
 				ok: false,
@@ -400,17 +414,111 @@ export function cancelWithRefundContract(
 			expect(retry).toMatchObject({ ok: true, cancelled: true, restockedUnits: QTY });
 			expect(gw.refundCalls).toHaveLength(1);
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(1);
-			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			// Committed once, restocked once: back where the shop started.
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+		});
+
+		// -- the restock comes AFTER the flip (issue #364) ----------------------------
+
+		test("a restock that throws AFTER the flip leaves the order cancelled with its restock pending — a replay finishes it once", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-restock-throws");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const res = await cancelWith(h, gw, id, {
+				inventoryStore: failingOnce(h.inventoryStore, "restock"),
+			});
+			// The order IS cancelled and refunded — an honest success — but it says the
+			// units are still owed rather than claiming they came back.
+			expect(res).toMatchObject({
+				ok: true,
+				cancelled: true,
+				refund: { amount: TOTAL_CENTS, currency: "USD" },
+				restockedUnits: 0,
+				restockPending: true,
+			});
+			const after = await h.orderStore.getById(id);
+			expect(after?.state).toBe("cancelled");
+			expect(after?.cancellation?.restocked).toBe(false);
+			expect(after?.cancellation?.restockPending).toMatchObject({
+				idempotencyKey: `cxl:${id}`,
+			});
+			// Nothing to click again: the cancel is done, so no "did not finish" flag.
+			expect(after?.reconciliationFlag).toBeNull();
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
+
+			// The replay (same key) finishes the restock, once.
+			const replay = await cancelWith(h, gw, id);
+			expect(replay).toMatchObject({
+				ok: true,
+				cancelled: false,
+				restockedUnits: QTY,
+				restockPending: false,
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			const done = await h.orderStore.getById(id);
+			expect(done?.cancellation?.restocked).toBe(true);
+			expect(done?.cancellation?.restockPending ?? null).toBeNull();
+			// Every later path moves nothing more.
+			expect(await cancelWith(h, gw, id)).toMatchObject({ restockedUnits: 0 });
+			expect(await finishCancellationRestock(h, id)).toMatchObject({
+				finished: false,
+				restockedUnits: 0,
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			expect(gw.refundCalls).toHaveLength(1);
+			// One cancelled email, from the flip; the completion sends nothing.
+			expect((await drainEmails(h)).countByTemplate("order-cancelled", id)).toBe(1);
+		});
+
+		test("a pending restock is finished by the sweep's completer exactly once, under the key the flip recorded", async () => {
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-restock-sweep", { state: "processing" });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
+
+			// The completer and a replay under ANOTHER key race: the recorded key wins, so
+			// the units come back once, never twice.
+			const [swept, other] = await Promise.all([
+				finishCancellationRestock(h, id),
+				cancelWith(h, gw, id, { key: `cxl-other:${id}` }),
+			]);
+			expect(swept.finished || other.ok).toBe(true);
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+			const done = await h.orderStore.getById(id);
+			expect(done?.cancellation?.restocked).toBe(true);
+			expect(done?.cancellation?.restockPending ?? null).toBeNull();
+			expect(await finishCancellationRestock(h, id)).toMatchObject({
+				finished: false,
+				restockedUnits: 0,
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
+		});
+
+		test("the completer does nothing for an order with no pending restock", async () => {
+			const h = await makeHarness();
+			const paid = await seedOrder(h, "cxl-nothing-owed");
+			expect(await finishCancellationRestock(h, paid)).toEqual({
+				finished: false,
+				restockedUnits: 0,
+				restockSkipped: [],
+			});
+			expect(await finishCancellationRestock(h, toOrderId("cxl-none"))).toEqual({
+				finished: false,
+				restockedUnits: 0,
+				restockSkipped: [],
+			});
+			expect(await h.inventoryStore.getOnHand(skuOf(paid))).toBe(ON_HAND);
 		});
 
 		test("a RETRYABLE (busy) failure after the refund says so, and stays retry-safe", async () => {
 			const h = await makeHarness();
-			const id = await seedOrder(h, "cxl-busy");
+			const id = await seedOrder(h, "cxl-busy", { hold: "adopted" });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const busy = new Error("storage busy");
 			const res = await cancelWith(h, gw, id, {
-				inventoryStore: failingOnce(h.inventoryStore, "restock", busy),
+				inventoryStore: failingOnce(h.inventoryStore, "commit", busy),
 				isRetryable: (err) => err === busy,
 			});
 			expect(res).toMatchObject({
@@ -607,16 +715,19 @@ export function cancelWithRefundContract(
 				ok: false,
 				reason: "CANCEL_LOST_AFTER_REFUND",
 				refund: { amount: TOTAL_CENTS, currency: "USD" },
-				restockedUnits: QTY,
+				// The restock waits for the flip, and the flip lost: the units that shipped
+				// are NOT counted back into stock (issue #364).
+				restockedUnits: 0,
 				movedTo: "shipped",
 				// The refund it carries, so the caller can send its notice inline.
 				refundId: (await h.orderStore.listRefunds(id))[0]?.id,
 			});
 			const order = await h.orderStore.getById(id);
 			expect(order?.state).toBe("shipped");
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 			// The flag says what was done and what to do next.
 			expect(order?.reconciliationFlag).toContain("refunded");
-			expect(order?.reconciliationFlag).toContain(`restocked ${String(QTY)} unit(s)`);
+			expect(order?.reconciliationFlag).toContain("restocked nothing");
 			expect(order?.reconciliationFlag).toContain("contact the buyer");
 			// The buyer still hears about their money: the cancelled email that would have
 			// carried it will never go, so the refund announces itself — exactly once.
@@ -628,6 +739,52 @@ export function cancelWithRefundContract(
 			// A retry neither cancels nor emails again.
 			await cancelWith(h, gw, id, { orderStore: racing });
 			expect((await drainEmails(h)).countByTemplate("order-refund-issued", id)).toBe(0);
+		});
+
+		test("a fulfilment that wins between the refund and the flip: the held units stay sold, none come back", async () => {
+			// Admin A cancels a processing order while admin B records its fulfilment
+			// (issue #364). B wins. The open commit bracket is still closed (the units are
+			// sold, and now shipped), and nothing is restocked or released.
+			const h = await makeHarness();
+			const id = await seedOrder(h, "cxl-lost-adopted", { state: "processing", hold: "adopted" });
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const racing = new Proxy(h.orderStore, {
+				get(target, prop, receiver) {
+					if (prop === "cancelOrder") {
+						return async (input: Parameters<OrderStore["cancelOrder"]>[0]) => {
+							await target.recordFulfillment({
+								orderId: id,
+								fromState: "processing",
+								carrier: "UPS",
+								trackingNumber: "1Z",
+								trackingUrl: null,
+								shippedAt: null,
+								recordedBy: "admin-b",
+								idempotencyKey: idempotencyKey("cxl-lost-adopted-ship"),
+								enqueueEmail: false,
+							});
+							return target.cancelOrder(input);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? (value as Function).bind(target) : value;
+				},
+			});
+			expect(await cancelWith(h, gw, id, { orderStore: racing })).toMatchObject({
+				ok: false,
+				reason: "CANCEL_LOST_AFTER_REFUND",
+				restockedUnits: 0,
+				movedTo: "shipped",
+			});
+			const order = await h.orderStore.getById(id);
+			expect(order?.state).toBe("shipped");
+			expect(order?.cancellation).toBeNull();
+			expect(order?.reconciliationFlag).toContain("restocked nothing");
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
+			// Nothing is owed, so no later path returns them either.
+			expect(await finishCancellationRestock(h, id)).toMatchObject({ restockedUnits: 0 });
+			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
 		});
 
 		// -- the stock a cancellation returns, exactly once ------------------------

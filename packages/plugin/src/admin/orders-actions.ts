@@ -699,7 +699,7 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 		(refund !== null
 			? `Refunded ${formatTotal(refund.amountCents, refund.currency)} to the buyer’s original payment method.`
 			: "The cancellation was recorded.") +
-		restockSentence(restock, result.restockedUnits ?? 0) +
+		restockSentence(restock, result.restockedUnits ?? 0, result.restockPending === true) +
 		emailSentence(result.email);
 	const description =
 		head + skippedSentence(result.restockSkipped ?? [], BANNER_BUDGET - head.length);
@@ -711,8 +711,11 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 };
 
 /** What a cancellation did with the order's units, as a sentence led by a space —
- *  or nothing, when it had none to return (an unpaid or digital-only order). */
-function restockSentence(restock: boolean, units: number): string {
+ *  or nothing, when it had none to return (an unpaid or digital-only order). A
+ *  restock still pending after the flip (issue #364) says so: the units are not
+ *  back, and the sweep returns them. */
+function restockSentence(restock: boolean, units: number, pending: boolean): string {
+	if (pending) return " The items are not back in stock yet; Otta will return them automatically.";
 	// The units the cancellation REPORTS, not the checkbox: a retry keeps the first
 	// attempt's restock choice (ADR-0026), so units may be back although the box was
 	// unticked on the retry.
@@ -763,7 +766,7 @@ function lostEmailSentence(email: InlineEmailStatus | undefined): string {
 }
 
 /**
- * The refund went through, then the restock or the cancel flip FAILED. The order is
+ * The refund went through, then closing a commit bracket or the cancel flip FAILED. The order is
  * still paid and flagged; clicking Cancel order again finishes it, and its refund
  * replays under its key rather than repeating.
  */
