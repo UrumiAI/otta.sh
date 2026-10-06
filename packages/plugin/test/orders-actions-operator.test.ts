@@ -241,6 +241,8 @@ describe("a refund replayed after it was recorded (QA round 2)", () => {
 				{
 					status: "recorded",
 					amountCents: 100,
+					currency: "USD",
+					refundedBy: "carol",
 					idempotencyKey: `admin-refund:${ORDER_ID}:100:0`,
 				},
 			],
@@ -252,7 +254,16 @@ describe("a refund replayed after it was recorded (QA round 2)", () => {
 			{ orderId: ORDER_ID, amountCents: "100", refundedSoFarCents: "0", currency: "USD" },
 			OPERATOR,
 		);
-		expect(calls.refund).toHaveLength(0);
+		// The retry is REPLAYED under the key the refund was recorded with, so the
+		// service can finish a revoke a crash cut short (issue #405, item 3); the
+		// domain answers a recorded key without a provider call.
+		expect(calls.refund).toEqual([
+			[
+				ORDER_ID,
+				{ amountCents: 100, currency: "USD", refundedBy: "carol" },
+				{ idempotencyKey: `admin-refund:${ORDER_ID}:100:0` },
+			],
+		]);
 		expect(result.notice).toMatchObject({ variant: "default", title: "Already refunded" });
 		expect(result.notice?.description).not.toMatch(/someone else/);
 	});
