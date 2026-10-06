@@ -25,3 +25,8 @@ instead of reaching storage and breaking every order query on Postgres.
   identifier would name a different variant.
 
 No route's result union changes.
+
+The cron sweep's query-budget proxy exposes the collection it meters to the storage
+guard's repair walk (`UNMETERED_COLLECTION`), so on Postgres a legacy order deep in
+the collection is healed and expired on the next tick instead of the walk being cut
+off by the expiry leg's budget every minute.

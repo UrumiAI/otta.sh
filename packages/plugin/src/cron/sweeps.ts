@@ -177,6 +177,7 @@ import {
 	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess as AdapterStorageAccess,
+	UNMETERED_COLLECTION,
 } from "@otta-sh/store-emdash";
 import {
 	createInProcessCommerceStores,
@@ -1790,6 +1791,11 @@ function countingContext(ctx: PluginContext, budget: TickBudget): PluginContext 
 	const counted = <T extends object>(target: T): T =>
 		new Proxy(target, {
 			get(inner, prop, receiver) {
+				// The storage guard's repair walk reads past the meter (review A2): the
+				// budget is D1's per-invocation cap, the walk only runs after a Postgres
+				// error, and it is bounded by its own page budget. Charged here, a bad
+				// row deep in a collection cut the walk off every tick, from page 0.
+				if (prop === UNMETERED_COLLECTION) return inner;
 				const value: unknown = Reflect.get(inner, prop, receiver);
 				if (typeof value !== "function") return value;
 				return (...args: unknown[]) => {
