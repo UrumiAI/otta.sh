@@ -1,4 +1,5 @@
 import type { StorageAccess, StorageCollection } from "./storage-access.js";
+import { guardWellFormed } from "./well-formed-storage.js";
 
 /**
  * The ONE audited narrowing in this package.
@@ -26,5 +27,10 @@ export function collectionOf<T>(storage: StorageAccess, name: string): StorageCo
 	}
 	// Safe by the argument above: the runtime object is the host's collection for
 	// `name`, and `T` is the caller's statement of what it stores there.
-	return collection as StorageCollection<T>;
+	//
+	// And GUARDED (review R3-B X1): no document is written with text Postgres's
+	// `jsonb` cannot read, and a read that one legacy row would break heals it and
+	// runs again — see `well-formed-storage.ts`. Here, because this is the one door
+	// every adapter's collections come through.
+	return guardWellFormed(collection as StorageCollection<T>, name);
 }
