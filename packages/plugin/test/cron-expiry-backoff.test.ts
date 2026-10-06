@@ -24,23 +24,32 @@ import {
 	sweepContext,
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+import { SweepQueryCeilingError } from "../src/cron/tick-budget.js";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 
 let storage: StorageAccess;
+let warns: string[];
 
 beforeEach(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
 	vi.spyOn(console, "log").mockImplementation(() => undefined);
-	vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	warns = [];
+	vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+		warns.push(args.map(String).join(" "));
+	});
 }, 120_000);
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-/** `storage`, with the orders collection's reads of `poisoned` ids failing. */
-function poisonedOrders(poisoned: ReadonlySet<string>): StorageAccess {
+/** `storage`, with the orders collection's reads of `poisoned` ids failing (with
+ *  `failure()`, by default a plain error). */
+function poisonedOrders(
+	poisoned: ReadonlySet<string>,
+	failure: () => Error = () => new Error("poisoned order"),
+): StorageAccess {
 	const orders = storage[ORDERS_COLLECTION];
 	if (orders === undefined) throw new Error("no orders collection");
 	const wrapped = new Proxy(orders, {
@@ -49,7 +58,7 @@ function poisonedOrders(poisoned: ReadonlySet<string>): StorageAccess {
 			if (typeof value !== "function") return value;
 			if (prop === "getVersioned" || prop === "get") {
 				return async (id: string) => {
-					if (poisoned.has(id)) throw new Error("poisoned order");
+					if (poisoned.has(id)) throw failure();
 					return (value as (id: string) => Promise<unknown>).call(target, id);
 				};
 			}
@@ -96,4 +105,39 @@ test("two orders whose flip always fails cannot hold the bite: the order behind 
 	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("pending");
 	// Not tried again while they wait: no new failure lines.
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
+}, 120_000);
+
+test("the tick's query ceiling inside an order's flip ends the leg as the ceiling: no failure line, no back-off (polish P-2)", async () => {
+	// The expiry leg passes `isSweepQueryCeilingError` as `stopsBatch`, so a refusal
+	// raised part-way through one order's flip is the TICK's stop, not that order
+	// failing: it must not be logged as one, nor put the order on back-off (where it
+	// would wait five minutes for nothing).
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const ctx = sweepContext(
+		poisonedOrders(new Set(["order-a"]), () => new SweepQueryCeilingError(30, "expire-orders")),
+	);
+	const backoff = new UnitBackoff();
+	const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+		cursors: memoryCursors(),
+		emailSender: recordingSender([]),
+		now: NOW,
+		expiryBatchLimit: 2,
+		expiryBackoff: backoff,
+	});
+
+	expect(summary.legs.find((entry) => entry.leg === "expire-orders")).toMatchObject({
+		ok: true,
+		count: 0,
+		incomplete: true,
+	});
+	expect(
+		warns.some((line) => line.includes("expire-orders stopped at the tick's query ceiling")),
+	).toBe(true);
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(0);
+	expect(backoff.size).toBe(0);
+	expect((await adapters(storage, NOW).orderStore.getById(toOrderId("order-a")))?.state).toBe(
+		"pending",
+	);
 }, 120_000);
