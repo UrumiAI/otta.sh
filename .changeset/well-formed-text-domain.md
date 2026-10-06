@@ -25,3 +25,12 @@ on every transport.
 expiry flip or release is logged and the batch moves on, so one order the store
 cannot handle neither ends the tick early nor leaves the orders after it holding
 their stock.
+
+`expireOrdersBatch` also takes a `backoff` (the new `UnitBackoff`): an order whose
+flip threw waits before it is tried again (5 minutes, doubling to an hour), and the
+call lists that many more candidates and leaves the waiting ones out, so a few
+orders that fail every time cannot take every call's bite and starve the orders
+behind them. A `stopsBatch` predicate (sweep options) names an error that ends the
+whole call — the cron tick's query ceiling — which is rethrown rather than logged as
+one order's failure. A unit failure is logged as the error's name, code and a short
+message with quoted values removed.

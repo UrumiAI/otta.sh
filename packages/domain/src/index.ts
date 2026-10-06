@@ -493,6 +493,7 @@ export {
 	type ExpireOrdersDeps,
 } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export { UnitBackoff, type UnitBackoffOptions } from "./sweep/backoff.js";
 export {
 	cancelDueIntents,
 	DEFAULT_INTENT_CANCEL_BATCH,

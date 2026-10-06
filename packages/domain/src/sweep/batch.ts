@@ -28,6 +28,13 @@ export interface SweepBatchOptions {
 	/** Passed to the store's candidate LIST as its `shouldContinue` (see
 	 *  `ExpiryListOptions`): the list's own cost, bounded by the caller. */
 	readonly shouldContinueListing?: () => boolean;
+	/**
+	 * An error that ends the whole call rather than failing one unit — the cron
+	 * tick's query ceiling (`SweepQueryCeilingError`): a sweep that catches per unit
+	 * rethrows it, so the leg reports the ceiling instead of logging each refused
+	 * unit as a failure (review round 3, A I2). Default: none.
+	 */
+	readonly stopsBatch?: (err: unknown) => boolean;
 }
 
 export interface SweepBatchResult {
@@ -52,15 +59,17 @@ export function assertSweepLimit(limit: number | undefined): void {
 	}
 }
 
-/** The list options a bounded sweep passes its store: one more than its limit,
- *  and the caller's listing stop check. */
+/** The list options a bounded sweep passes its store: one more than its limit
+ *  (plus `readPast` candidates it will leave out, such as units backing off), and
+ *  the caller's listing stop check. */
 export function listLimitFor(
 	options: SweepBatchOptions,
+	readPast = 0,
 ): { limit?: number; shouldContinue?: () => boolean } | undefined {
 	assertSweepLimit(options.limit);
 	if (options.limit === undefined && options.shouldContinueListing === undefined) return undefined;
 	return {
-		...(options.limit === undefined ? {} : { limit: options.limit + 1 }),
+		...(options.limit === undefined ? {} : { limit: options.limit + 1 + readPast }),
 		...(options.shouldContinueListing === undefined
 			? {}
 			: { shouldContinue: options.shouldContinueListing }),

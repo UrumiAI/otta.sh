@@ -3,9 +3,10 @@ import {
 	expireOrders,
 	expireOrdersBatch,
 	idempotencyKey,
+	UnitBackoff,
 	type Order,
 } from "@otta-sh/domain";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 // The order-expiry sweep runs inside a host hook with a hard timeout, so one call
@@ -16,6 +17,9 @@ describe("bounded order expiry", () => {
 	let h: OrderHarness;
 	beforeEach(() => {
 		h = makeOrderHarness();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
 	async function pendingOrders(n: number): Promise<Order[]> {
@@ -147,5 +151,113 @@ describe("bounded order expiry", () => {
 		// The next run picks it up.
 		expect(await expireOrdersBatch(h.expireDeps)).toEqual({ count: 1, drained: true });
 		expect(h.inventory.onHand("SKU-1")).toBe(5);
+	});
+
+	test("orders whose flip always fails cannot starve the orders behind them: they back off (review round 3, B I4)", async () => {
+		// Reviewer B's repro (S8): with a bite of 2 and two poisoned orders at the head
+		// of the list, every run spent its bite on them and the third order's stock
+		// stayed held forever. With a back-off, a failed order waits its turn and the
+		// list reads past it.
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
+		const poisoned = new Set([orders[0]?.id, orders[1]?.id]);
+		const flip = vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
+			if (poisoned.has(id)) throw new Error("poisoned order");
+			return real(id, now);
+		});
+		const list = vi.spyOn(h.orderStore, "listExpirable");
+		const backoff = new UnitBackoff();
+		const runs = [];
+		for (let i = 0; i < 3; i++) {
+			runs.push(await expireOrdersBatch(h.expireDeps, undefined, { limit: 2, backoff }));
+		}
+		expect(runs[0]).toEqual({ count: 0, drained: false });
+		expect(runs[1]).toEqual({ count: 1, drained: true });
+		expect((await h.orderStore.getById(orders[2]?.id ?? ("" as never)))?.state).toBe("expired");
+		expect(h.inventory.onHand("SKU-3")).toBe(5);
+		// Each run is ONE list call; it reads past the waiting orders instead of
+		// spending a query per skipped one.
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(list.mock.calls[1]?.[1]).toMatchObject({ limit: 2 + 1 + 2 });
+		// The poisoned orders were tried once each, then waited.
+		expect(flip.mock.calls.filter(([id]) => poisoned.has(id))).toHaveLength(2);
+
+		// Once the back-off has passed they are tried again, and expire if healed.
+		poisoned.clear();
+		h.clock.advance(UnitBackoff.DEFAULT_BASE_MS);
+		expect(await expireOrdersBatch(h.expireDeps, undefined, { limit: 2, backoff })).toEqual({
+			count: 2,
+			drained: true,
+		});
+		expect(await expiredCount(orders)).toBe(3);
+		expect(backoff.size).toBe(0);
+		error.mockRestore();
+	});
+
+	test("a pre-listed `due` set skips the orders still backing off", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(2);
+		const ids = orders.map((o) => o.id);
+		const backoff = new UnitBackoff();
+		backoff.failed(ids[0] ?? ("" as never), h.clock.now().getTime());
+		expect(
+			await expireOrdersBatch(h.expireDeps, undefined, { limit: 1, due: ids, backoff }),
+		).toEqual({ count: 1, drained: true });
+		expect((await h.orderStore.getById(ids[0] ?? ("" as never)))?.state).toBe("pending");
+		expect((await h.orderStore.getById(ids[1] ?? ("" as never)))?.state).toBe("expired");
+		expect(error).not.toHaveBeenCalled();
+		error.mockRestore();
+	});
+
+	test("an error that stops the whole batch (the sweep's query ceiling) is rethrown, not logged as one order's failure (review round 3, A I2)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(2);
+		const ceiling = Object.assign(new Error("tick query ceiling reached"), {
+			name: "SweepQueryCeilingError",
+		});
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(ceiling);
+		const backoff = new UnitBackoff();
+		await expect(
+			expireOrdersBatch(h.expireDeps, undefined, {
+				backoff,
+				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
+			}),
+		).rejects.toBe(ceiling);
+		expect(error).not.toHaveBeenCalled();
+		expect(backoff.size).toBe(0);
+		expect(await expiredCount(orders)).toBe(0);
+
+		// A stop raised by a release is rethrown too.
+		// (The in-memory store leaves the release to the use-case: `holdsReleased: false`.)
+		vi.spyOn(h.inventory, "releaseAdoptedMany").mockRejectedValueOnce(ceiling);
+		await expect(
+			expireOrdersBatch(h.expireDeps, undefined, {
+				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
+			}),
+		).rejects.toBe(ceiling);
+		expect(error).not.toHaveBeenCalled();
+		error.mockRestore();
+	});
+
+	test("a unit failure logs the error's name, code and a short message with quoted values removed (review round 3, B I5)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		const leaky = Object.assign(
+			new Error(
+				`duplicate key value "victim.person@example.com" violates 'orders_pkey' for ${"x".repeat(400)}`,
+			),
+			{ name: "DatabaseError", code: "23505" },
+		);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(leaky);
+		await expireOrdersBatch(h.expireDeps);
+		expect(error).toHaveBeenCalledTimes(1);
+		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(logged).toMatch(/DatabaseError/);
+		expect(logged).toMatch(/23505/);
+		expect(logged).toMatch(/duplicate key value/);
+		expect(logged).not.toMatch(/victim|example\.com|orders_pkey/);
+		expect(logged).not.toMatch(/x{200}/);
+		error.mockRestore();
 	});
 });
