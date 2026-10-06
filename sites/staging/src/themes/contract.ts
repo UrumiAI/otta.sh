@@ -280,6 +280,10 @@ export interface LedgerLine {
 	title?: string;
 	/** `lineTotal.formatted`, or the honest prose — never assembled. */
 	money: string;
+	/** The line's download URL (issue #376) — only on a digital line the buyer
+	 *  may download now; the page asked the delivery gate. A view links to it
+	 *  and never builds one of its own. */
+	downloadHref?: string;
 }
 
 /**
