@@ -231,7 +231,7 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// ADR-0028 increment 2: nothing reads this key until the x402 content gate
 		// ships, so the copy must not claim a removal breaks anything today.
 		removeEffect:
-			"Nothing uses this key yet. x402 payments are not available until the x402 content gate ships.",
+			"Nothing uses this key yet. x402 payments are not available until x402 support ships.",
 		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
 		whereToFind: "your x402 facilitator's dashboard",
 	},
