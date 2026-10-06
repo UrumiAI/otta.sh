@@ -22,6 +22,9 @@
  * route of this base.
  */
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { join as joinPath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
 import { env as virtualEnv } from "./helpers/virtual-emdash-env.js";
@@ -30,6 +33,7 @@ import {
 	DOWNLOAD_FILENAME_HEADER,
 	downloadUploadPath,
 	MAX_DOWNLOAD_UPLOAD_BYTES,
+	UPLOAD_MIN_ROLE,
 } from "../src/lib/download-upload.js";
 import { POST } from "../src/pages/otta-admin/downloads/[productId].js";
 
@@ -124,6 +128,7 @@ interface Drive {
 	body?: Uint8Array | null;
 	productId?: string;
 	bucket?: ReturnType<typeof makeBucket> | null;
+	tokenScopes?: string[];
 }
 
 async function upload(drive: Drive = {}) {
@@ -158,6 +163,7 @@ async function upload(drive: Drive = {}) {
 		params: { productId },
 		locals: {
 			user: drive.user === undefined ? ADMIN : (drive.user ?? undefined),
+			...(drive.tokenScopes !== undefined ? { tokenScopes: drive.tokenScopes } : {}),
 			emdash: { handlePluginApiRoute: dispatcher.handlePluginApiRoute },
 		},
 		cache,
@@ -290,6 +296,29 @@ describe("who may upload", () => {
 		expect(json.error?.message).toContain("plugins:manage");
 		expect(r2.puts).toEqual([]);
 		expect(dispatcher.calls).toEqual([]);
+	});
+
+	test("a request authenticated by an API token is refused, even with an admin user", async () => {
+		const { response, json, r2, dispatcher } = await upload({ tokenScopes: ["admin"] });
+		expect(response.status).toBe(403);
+		expect(json.error?.code).toBe("TOKEN_NOT_ACCEPTED");
+		expect(r2.puts).toEqual([]);
+		expect(dispatcher.calls).toEqual([]);
+	});
+
+	test("the minimum role is exactly the level the INSTALLED @emdash-cms/auth gives plugins:manage", async () => {
+		// The site does not depend on @emdash-cms/auth, so it reaches the copy
+		// EmDash itself resolves (pnpm keeps it beside emdash's real path).
+		const emdash = realpathSync(fileURLToPath(new URL("../node_modules/emdash", import.meta.url)));
+		const auth = (await import(
+			pathToFileURL(joinPath(emdash, "..", "@emdash-cms", "auth", "dist", "index.mjs")).href
+		)) as { Permissions: Record<string, number> };
+		expect(auth.Permissions["plugins:manage"]).toBe(UPLOAD_MIN_ROLE);
+		// Just below it is refused; at it, allowed.
+		expect((await upload({ user: { id: "u", role: UPLOAD_MIN_ROLE - 1 } })).response.status).toBe(
+			403,
+		);
+		expect((await upload({ user: { id: "u", role: UPLOAD_MIN_ROLE } })).response.status).toBe(201);
 	});
 
 	test("without the X-EmDash-Request header → 403: a plain cross-site form cannot send it", async () => {

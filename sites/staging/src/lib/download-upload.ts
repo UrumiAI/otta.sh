@@ -22,7 +22,8 @@
  * on storefront paths from the admin session cookie) whose role holds
  * `plugins:manage` — ADMIN, the role the `otta` admin route itself requires. A
  * lower role could only orphan bytes: the save that would attach them is
- * refused. The request must also carry `X-EmDash-Request: 1`, the custom header
+ * refused. A request authenticated by an API token (`locals.tokenScopes`) is
+ * refused outright: this is a console action. The request must also carry `X-EmDash-Request: 1`, the custom header
  * EmDash's own authenticated API demands: a cross-site form cannot set it, so it
  * holds even if the site's origin check (the middleware, default-deny, where
  * this route is in the guarded column) were ever loosened.
@@ -84,8 +85,11 @@ export const DOWNLOAD_FILENAME_HEADER = "X-Otta-Filename";
  *  limit (Free/Pro) whether that is counted in decimal or binary megabytes. */
 export const MAX_DOWNLOAD_UPLOAD_BYTES = 100_000_000;
 
-/** EmDash's role level for ADMIN, the role that holds `plugins:manage` — the
- *  permission the `otta` admin route, and so the descriptor's save, requires. */
+/** The role level `@emdash-cms/auth`'s permission table gives `plugins:manage`
+ *  (ADMIN) — the permission the `otta` admin route, and so the descriptor's
+ *  save, requires. A constant because the site does not depend on
+ *  `@emdash-cms/auth`; `test/download-upload.test.ts` reads the INSTALLED table
+ *  and fails if the two ever disagree. */
 export const UPLOAD_MIN_ROLE = 50;
 
 /** A product id the endpoint will look up: the CMS's ids are ULIDs, and this
@@ -267,6 +271,10 @@ function declaredFilename(headers: Headers): string | null {
 
 export interface UploadDeps {
 	readonly user: UploadUser | undefined;
+	/** The request was authenticated by an API or OAuth token
+	 *  (`locals.tokenScopes` set), not by an admin session. Refused: the upload
+	 *  is a console action, and a token's scopes say nothing about it. */
+	readonly tokenAuthenticated: boolean;
 	readonly bucket: UploadBucket | undefined;
 	readonly lookup: (productId: string, user: UploadUser) => Promise<ProductLookup>;
 	/** Milliseconds since the epoch — the key's ULID timestamp. */
@@ -289,6 +297,13 @@ export async function handleDownloadUpload(
 ): Promise<Response> {
 	if (request.headers.get("X-EmDash-Request") !== "1") {
 		return refuse(403, "CSRF_REJECTED", "Missing required header.");
+	}
+	if (deps.tokenAuthenticated) {
+		return refuse(
+			403,
+			"TOKEN_NOT_ACCEPTED",
+			"Download files are uploaded from the admin, signed in — not with an API token.",
+		);
 	}
 	const { user } = deps;
 	if (user === undefined) {

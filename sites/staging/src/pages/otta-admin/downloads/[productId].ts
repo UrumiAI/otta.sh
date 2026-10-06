@@ -56,6 +56,7 @@ export const POST: APIRoute = async (context) => {
 	const response = await handleDownloadUpload(
 		{
 			user: signedInUser(context.locals.user),
+			tokenAuthenticated: context.locals.tokenScopes !== undefined,
 			bucket: uploadBucketFrom(env),
 			// The FULL user record goes to the plugin as the caller, exactly as
 			// EmDash's own plugin endpoint forwards it.
