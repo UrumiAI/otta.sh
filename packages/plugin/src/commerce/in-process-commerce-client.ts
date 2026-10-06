@@ -71,6 +71,7 @@ import {
 	money,
 	orderId as toOrderId,
 	productId as toProductId,
+	quoteCommandFor,
 	quoteShippingOptions,
 	removeLine,
 	replaceSpentCart,
@@ -105,7 +106,7 @@ import {
 	type ProductId,
 	type ProductVariant,
 	type ProductVariantSummary,
-	type TotalsLineInput,
+	type PricedLine,
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
@@ -970,8 +971,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				.filter((id): id is string => id !== null)
 				.map((id) => toProductId(id)),
 		);
-		const lines: TotalsLineInput[] = [];
-		let requiresShipping = false;
+		const lines: PricedLine[] = [];
 		for (const line of cart.lines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
@@ -981,15 +981,24 @@ export class InProcessCommerceClient implements CommerceClient {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
-			// The same classification `createOrderFromCart` snapshots onto the line.
-			if (row.productKind === "physical") requiresShipping = true;
 			lines.push({
-				unitPriceCents: row.price.amount,
+				price: row.price,
 				qty: line.qty,
-				taxClassId: row.taxClass ?? "standard",
+				taxClass: row.taxClass,
+				productKind: row.productKind,
 			});
 		}
 
+		// The same quote command `createOrderFromCart` prices the order with, so the
+		// review and the order cannot disagree on what was quoted.
+		const command = quoteCommandFor({
+			currency: cart.currency,
+			lines,
+			destination: input.destination,
+			methodId: input.shippingMethodId,
+			couponCode: input.couponCode,
+		});
+		const requiresShipping = command.requiresShipping;
 		const quote = await computeQuote(
 			{
 				shippingRules: this.#stores.shippingRules,
@@ -997,14 +1006,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
 			},
-			{
-				currency: cart.currency,
-				lines,
-				requiresShipping,
-				...(input.destination !== undefined ? { destination: input.destination } : {}),
-				...(input.shippingMethodId !== undefined ? { methodId: input.shippingMethodId } : {}),
-				...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
-			},
+			command,
 		);
 		if (!quote.ok) return { ok: false, reason: quote.reason };
 		const breakdown = quote.breakdown;
