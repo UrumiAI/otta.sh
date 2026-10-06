@@ -10,6 +10,11 @@ escapes, and `jsonb` refuses either — for every row a query casts, so one such
 used to make a whole collection unqueryable. Every other character (controls,
 noncharacters, emoji and other surrogate pairs) is well formed and unaffected.
 
+`findIllFormedText` returns a path safe to log: an ill-formed key, or any key that is
+not a plain camelCase field name, is written `(key #n)`. `repairIllFormedText` never
+merges two keys that repair to the same text: it keeps the key that was already well
+formed (else the first) and reports each dropped entry to an optional callback.
+
 `normalizeOrderAddress` now refuses an address any of whose fields is not well-formed
 text as `INVALID`, so `createOrderFromCart` answers `INVALID_SHIPPING_ADDRESS` for it
 on every transport.

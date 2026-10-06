@@ -70,8 +70,24 @@ describe("toWellFormedText", () => {
 describe("findIllFormedText", () => {
 	test("names the first offending string's path, keys included", () => {
 		expect(findIllFormedText({ a: 1, b: ["ok", { city: "x\uD800" }] })).toBe("b[1].city");
-		expect(findIllFormedText({ ["k\u0000"]: "v" })).toBe('(key "k\\u0000")');
 		expect(findIllFormedText("\uDC00")).toBe("");
+	});
+
+	test("an offending KEY is named by its position, never by its text", () => {
+		expect(findIllFormedText({ ["k\u0000"]: "v" })).toBe("(key #0)");
+		expect(findIllFormedText({ a: 1, nested: { ok: 1, ["k\uD800"]: 2 } })).toBe("nested.(key #1)");
+	});
+
+	test("a key that is not a plain field name is named by position too: it may be shopper text", () => {
+		// A sku, an idempotency key, an email: the path goes to a log, so it never
+		// carries them. A camelCase field name is the document's schema and prints.
+		expect(findIllFormedText({ lines: { "SKU-1": { title: "x\uD800" } } })).toBe(
+			"lines.(key #0).title",
+		);
+		expect(findIllFormedText({ mutations: { a: 1, "buyer@example.com": "\u0000" } })).toBe(
+			"mutations.(key #1)",
+		);
+		expect(findIllFormedText({ shipTo: { city: "\uDC00" } })).toBe("shipTo.city");
 	});
 
 	test("a clean value — including non-string leaves — is null", () => {
@@ -94,5 +110,43 @@ describe("repairIllFormedText", () => {
 		expect(doc.b[1]).toEqual({ city: "x\uD800" });
 		// Untouched branches are shared, not copied.
 		expect((out as { a: string }).a).toBe("ok");
+	});
+
+	describe("keys that repair to the same text are never merged", () => {
+		const A = { result: "A" };
+		const B = { result: "B" };
+		const C = { result: "C" };
+
+		test("a key that was ALREADY well formed wins, and every other entry is reported dropped", () => {
+			// Review B L2 / A A4: `Object.fromEntries` kept the LAST entry, so a key
+			// that slipped past the boundary could overwrite a real `…\uFFFD` key's record.
+			const dropped: string[] = [];
+			const out = repairIllFormedText({ ["k\uD800"]: A, ["k\uDC00"]: B, ["k\uFFFD"]: C }, (path) =>
+				dropped.push(path),
+			);
+			expect(out).toEqual({ ["k\uFFFD"]: C });
+			expect(dropped).toEqual(["(key #0)", "(key #1)"]);
+		});
+
+		test("otherwise the FIRST entry wins, whatever the order", () => {
+			const dropped: string[] = [];
+			expect(
+				repairIllFormedText({ ["k\uD800"]: A, ["k\uDC00"]: B }, (p) => dropped.push(p)),
+			).toEqual({ ["k\uFFFD"]: A });
+			expect(repairIllFormedText({ ["k\uFFFD"]: C, ["k\uD800"]: A })).toEqual({
+				["k\uFFFD"]: C,
+			});
+			expect(dropped).toEqual(["(key #1)"]);
+		});
+
+		test("a nested collision reports its full path", () => {
+			const dropped: string[] = [];
+			const out = repairIllFormedText(
+				{ m: { ["x\uD800"]: 1, ["x\uDBFF"]: 2, ["y\uFFFD"]: 3, ["y\u0000"]: 4 } },
+				(p) => dropped.push(p),
+			);
+			expect(out).toEqual({ m: { ["x\uFFFD"]: 1, ["y\uFFFD"]: 3 } });
+			expect(dropped).toEqual(["m.(key #1)", "m.(key #3)"]);
+		});
 	});
 });

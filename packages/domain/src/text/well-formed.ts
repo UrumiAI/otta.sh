@@ -40,17 +40,30 @@ export function toWellFormedText(value: string): string {
 	return isWellFormedText(value) ? value : value.replace(ILL_FORMED_GLOBAL, "\uFFFD");
 }
 
-/** A path segment for {@link findIllFormedText}'s answer: `a.b[2]`. */
+/**
+ * A key that prints as itself in a path: a camelCase field name, which is the
+ * document's schema. Anything else — a sku, an idempotency key, an email, an
+ * ill-formed key — may be a shopper's text, and a path goes to a log, so it is
+ * named by its position instead: `(key #n)`.
+ */
+const FIELD_NAME = /^[a-z][A-Za-z0-9]{0,63}$/;
+
+/** A path segment for {@link findIllFormedText}'s answer: `a.b[2]`, `m.(key #1)`. */
 function join(path: string, segment: string | number): string {
 	if (typeof segment === "number") return `${path}[${String(segment)}]`;
 	return path === "" ? segment : `${path}.${segment}`;
 }
 
+function keySegment(key: string, position: number): string {
+	return FIELD_NAME.test(key) ? key : `(key #${String(position)})`;
+}
+
 /**
  * The path of the first string — value or object KEY — in a JSON-shaped value
- * that is not well formed, or `null` when there is none. A key is reported as
- * `(key "…")`, JSON-escaped, so the answer is itself printable. The root
- * string itself is the empty path.
+ * that is not well formed, or `null` when there is none. The root string itself
+ * is the empty path. The answer is safe to log: a key that is not a plain field
+ * name (an ill-formed key included) is written `(key #n)`, its position in its
+ * object, never its text.
  */
 export function findIllFormedText(value: unknown, path = ""): string | null {
 	if (typeof value === "string") return isWellFormedText(value) ? null : path;
@@ -62,12 +75,11 @@ export function findIllFormedText(value: unknown, path = ""): string | null {
 		return null;
 	}
 	if (typeof value === "object" && value !== null) {
-		for (const [key, child] of Object.entries(value)) {
-			if (!isWellFormedText(key)) {
-				// `JSON.stringify` escapes both offenders, so the answer stays printable.
-				return join(path, `(key ${JSON.stringify(key)})`);
-			}
-			const found = findIllFormedText(child, join(path, key));
+		const entries = Object.entries(value);
+		for (let i = 0; i < entries.length; i++) {
+			const [key, child] = entries[i] as [string, unknown];
+			if (!isWellFormedText(key)) return join(path, `(key #${String(i)})`);
+			const found = findIllFormedText(child, join(path, keySegment(key, i)));
 			if (found !== null) return found;
 		}
 	}
@@ -79,17 +91,31 @@ export function findIllFormedText(value: unknown, path = ""): string | null {
  * {@link toWellFormedText}. Returns the SAME reference when nothing needed it, so
  * the common case costs one walk and no copy; otherwise copies only the branches
  * that changed and never mutates the input.
+ *
+ * KEYS NEVER MERGE SILENTLY. Two keys that differ only in their ill-formed code
+ * units (`"k\uD800"`, `"k\uDC00"`) repair to the same text. Exactly one entry is
+ * kept, deterministically: the key that was ALREADY well formed if there is one
+ * (it is the genuine record; the other is the one that slipped past a boundary),
+ * else the first in the object's order. Every other entry is dropped, and its
+ * path — in {@link findIllFormedText}'s log-safe form — is passed to
+ * `onDroppedKey`, so the caller can say so. Dropping rather than throwing is on
+ * purpose: this also heals legacy documents, and a heal that throws leaves the
+ * row unreadable for good.
  */
-export function repairIllFormedText<T>(value: T): T {
-	return repair(value) as T;
+export function repairIllFormedText<T>(value: T, onDroppedKey?: (path: string) => void): T {
+	return repair(value, "", onDroppedKey) as T;
 }
 
-function repair(value: unknown): unknown {
+function repair(
+	value: unknown,
+	path: string,
+	onDroppedKey: ((path: string) => void) | undefined,
+): unknown {
 	if (typeof value === "string") return toWellFormedText(value);
 	if (Array.isArray(value)) {
 		let out: unknown[] | undefined;
 		for (let i = 0; i < value.length; i++) {
-			const next = repair(value[i]);
+			const next = repair(value[i], join(path, i), onDroppedKey);
 			if (next !== value[i]) {
 				out ??= value.slice();
 				out[i] = next;
@@ -98,14 +124,32 @@ function repair(value: unknown): unknown {
 		return out ?? value;
 	}
 	if (typeof value === "object" && value !== null) {
+		const entries = Object.entries(value);
+		const repairedKeys = entries.map(([key]) => toWellFormedText(key));
+		// Which original entry each repaired key keeps: an already-well-formed key
+		// (only one can exist per repaired key — object keys are unique), else the first.
+		const keeper = new Map<string, number>();
+		for (let i = 0; i < entries.length; i++) {
+			const nextKey = repairedKeys[i] as string;
+			const held = keeper.get(nextKey);
+			const wellFormed = repairedKeys[i] === (entries[i] as [string, unknown])[0];
+			if (held === undefined || wellFormed) keeper.set(nextKey, i);
+		}
 		let changed = false;
-		const entries = Object.entries(value).map(([key, child]): [string, unknown] => {
-			const nextKey = toWellFormedText(key);
-			const next = repair(child);
+		const out: [string, unknown][] = [];
+		for (let i = 0; i < entries.length; i++) {
+			const [key, child] = entries[i] as [string, unknown];
+			const nextKey = repairedKeys[i] as string;
+			if (keeper.get(nextKey) !== i) {
+				changed = true;
+				onDroppedKey?.(join(path, `(key #${String(i)})`));
+				continue;
+			}
+			const next = repair(child, join(path, keySegment(key, i)), onDroppedKey);
 			if (nextKey !== key || next !== child) changed = true;
-			return [nextKey, next];
-		});
-		return changed ? Object.fromEntries(entries) : value;
+			out.push([nextKey, next]);
+		}
+		return changed ? Object.fromEntries(out) : value;
 	}
 	return value;
 }
