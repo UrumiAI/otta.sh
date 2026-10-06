@@ -168,7 +168,10 @@ A store can now send through SMTP2GO's HTTP API as well as the Resend-shaped sen
   works); SMTP2GO needs its own key. A provider read that fails, or an unknown stored value,
   is unconfigured too: never a guess that would hand the wrong provider a key. Unconfigured,
   the cron leg reports `skipped` and the inline send claims nothing, so no attempt is spent.
-  The resolved transport is handed to the sender build, so the choice is read once.
+  The resolved transport is handed to the sender build, so the choice is read once. In the
+  cron leg the resolve runs inside the leg's body, after its due check and budget gate: a
+  tick too busy for it defers the leg (which then ages), rather than letting the tick's query
+  ceiling refuse a read that the fail-soft readers would mistake for "unconfigured".
 - **The seam.** `HttpEmailSender` (`packages/plugin/src/email/http-email-sender.ts`) holds
   what every HTTP provider shares: rendering, the per-send timeout and its
   `EmailSendTimeoutError`, and the sanitizing of provider error text (control, line-separator

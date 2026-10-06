@@ -330,7 +330,7 @@ order of appearance in a deployment's life:
 
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
-  rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  whenever an email is due, rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
   With a sender, a settled payment's **order confirmation goes out inline** from the settle
   route, and an admin's status move, fulfilment, cancel or refund sends its email inline from
   the console write (best-effort, a few seconds at most); the `order-emails` leg is the backstop
@@ -557,8 +557,8 @@ that runs the sweep also runs EmDash's own executor, scheduled publishing, clean
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
 scans come due adds about 17–20 more; one email is about **14** (the claim, the order, the
-provider, key and from-address reads, the request, marking it sent), plus 1–3 once per tick to
-resolve the email provider, one hold expired about
+provider, key and from-address reads, the request, marking it sent), plus 1–3 once per tick
+that has an email due, to resolve the email provider, one hold expired about
 **20** with its list on Free, one order expired **13** for a one-line order (22 before the
 QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
 about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
