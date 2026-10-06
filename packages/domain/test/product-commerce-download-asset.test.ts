@@ -69,17 +69,66 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 		expect((await productCommerce.getByProductId(PID))?.downloadAsset).toBeNull();
 	}
 
-	test("a well-formed descriptor is stored as given, and null clears it", async () => {
+	test("a well-formed descriptor is stored as given", async () => {
 		const res = await edit(asset({ sha256: "a".repeat(64) }));
 		expect(res.ok && res.product.downloadAsset).toEqual(asset({ sha256: "a".repeat(64) }));
+	});
 
-		const cleared = await updateProductCommerceFields(
-			{ productCommerce, inventory },
-			{ productId: PID, downloadAsset: null },
-			idempotencyKey("edit-2"),
-			res.ok ? res.product.updatedAt.toISOString() : "",
-		);
-		expect(cleared.ok && cleared.product.downloadAsset).toBeNull();
+	describe("REPLACE ONLY: a file can be replaced, never removed (ADR-0029 Decision 6)", () => {
+		test("null on a product WITH a file is refused, naming the field, and the file stays", async () => {
+			const res = await edit(asset());
+			const watermark = res.ok ? res.product.updatedAt.toISOString() : "";
+			const err = await updateProductCommerceFields(
+				{ productCommerce, inventory },
+				{ productId: PID, downloadAsset: null },
+				idempotencyKey("detach-1"),
+				watermark,
+			).then(
+				() => null,
+				(e: unknown) => e,
+			);
+			expect(err).toBeInstanceOf(InvalidProductFieldError);
+			expect((err as InvalidProductFieldError).field).toBe("downloadAsset");
+			expect((err as Error).message).toContain("replaced but never removed");
+			const row = await productCommerce.getByProductId(PID);
+			expect(row?.downloadAsset).toEqual(asset());
+			expect(row?.updatedAt.toISOString()).toBe(watermark);
+		});
+
+		test("REPLACING (a new descriptor) is still allowed", async () => {
+			const first = await edit(asset());
+			const replacement = asset({
+				key: `dl/${PID}/01J9ZQ4000000000000000000Z`,
+				filename: "v2.pdf",
+			});
+			const second = await updateProductCommerceFields(
+				{ productCommerce, inventory },
+				{ productId: PID, downloadAsset: replacement },
+				idempotencyKey("replace-1"),
+				first.ok ? first.product.updatedAt.toISOString() : "",
+			);
+			expect(second.ok && second.product.downloadAsset).toEqual(replacement);
+		});
+
+		test("null on a product with NO file is a harmless no-op edit, not a refusal", async () => {
+			const res = await edit(null, "noop-null");
+			expect(res.ok && res.product.downloadAsset).toBeNull();
+		});
+
+		test("null with a STALE watermark is the store's stale answer, not this refusal", async () => {
+			await edit(asset());
+			const res = await updateProductCommerceFields(
+				{ productCommerce, inventory },
+				{ productId: PID, downloadAsset: null },
+				idempotencyKey("detach-stale"),
+				// A watermark the row has never had (this suite's clock is fixed, so
+				// every write stamps the same instant).
+				"2020-01-01T00:00:00.000Z",
+			);
+			expect(res.ok).toBe(false);
+			expect(!res.ok && res.reason).toBe("stale");
+			expect((await productCommerce.getByProductId(PID))?.downloadAsset).toEqual(asset());
+		});
 	});
 
 	test("a product with no descriptor reads null — absent is never an attached file", async () => {
@@ -155,8 +204,6 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			["a paragraph separator", `guide${String.fromCharCode(0x2029)}.pdf`],
 			// Invisible characters: two names that look alike, or hidden text.
 			["a zero-width space", `guide${String.fromCodePoint(0x200b)}.pdf`],
-			["a zero-width non-joiner", `guide${String.fromCodePoint(0x200c)}.pdf`],
-			["a zero-width joiner", `guide${String.fromCodePoint(0x200d)}.pdf`],
 			["a word joiner", `guide${String.fromCodePoint(0x2060)}.pdf`],
 			["an invisible operator", `guide${String.fromCodePoint(0x2064)}.pdf`],
 			["a BOM", `${String.fromCodePoint(0xfeff)}guide.pdf`],
@@ -165,6 +212,14 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			["the last tag character", `guide${String.fromCodePoint(0xe007f)}.pdf`],
 		])("refuses %s", async (_label, filename) => {
 			await refusedOn(asset({ filename }), "downloadAsset.filename");
+		});
+
+		test("ACCEPTS the zero-width non-joiner and joiner: real spelling, and emoji sequences", async () => {
+			// Persian "می‌خواهم" ("I want") is spelled with a ZWNJ; 👩‍💻 is a ZWJ sequence.
+			const persian = `${"\u0645\u06cc"}${String.fromCodePoint(0x200c)}${"\u062e\u0648\u0627\u0647\u0645"}.pdf`;
+			const technologist = `${String.fromCodePoint(0x1f469, 0x200d, 0x1f4bb)} guide.pdf`;
+			expect((await edit(asset({ filename: persian }))).ok).toBe(true);
+			expect((await edit(asset({ filename: technologist }), "edit-zwj")).ok).toBe(true);
 		});
 
 		test("accepts a well-formed surrogate pair (an emoji)", async () => {

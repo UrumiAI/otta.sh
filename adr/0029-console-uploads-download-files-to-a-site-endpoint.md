@@ -79,8 +79,13 @@ forbids.
    shows the Physical choice disabled, with the reason ("This product has a download file,
    so it stays Digital. To change the file, use Replace file."), and the store's refusal of
    a file on a physical product stays as the backstop, answered in the same words rather
-   than as an invalid price or measurement. The plugin's wire still accepts
-   `downloadAsset: null`; nothing in the console sends it.
+   than as an invalid price or measurement. The rule also lives in the DOMAIN:
+   `updateProductCommerceFields` refuses `downloadAsset: null` on a product whose stored
+   row has a file ("a product's download file can be replaced but never removed",
+   `InvalidProductFieldError("downloadAsset")`). It reads the row at the edit's own
+   watermark, which is sound without a transaction because the store's compare-and-set
+   only applies the edit to a row still at that watermark. So no caller — the console,
+   a script, a future surface — can detach a file; it can only point at a new one.
 
 ## Consequences
 

@@ -23,7 +23,7 @@
  */
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
@@ -307,12 +307,16 @@ describe("who may upload", () => {
 	});
 
 	test("the minimum role is exactly the level the INSTALLED @emdash-cms/auth gives plugins:manage", async () => {
-		// The site does not depend on @emdash-cms/auth, so it reaches the copy
-		// EmDash itself resolves (pnpm keeps it beside emdash's real path).
-		const emdash = realpathSync(fileURLToPath(new URL("../node_modules/emdash", import.meta.url)));
-		const auth = (await import(
-			pathToFileURL(joinPath(emdash, "..", "@emdash-cms", "auth", "dist", "index.mjs")).href
-		)) as { Permissions: Record<string, number> };
+		// The site does not depend on @emdash-cms/auth, so it asks Node to resolve
+		// the package FROM emdash's own (real) package path — the copy EmDash itself
+		// loads — with the ordinary resolution algorithm, not a folder layout.
+		const emdashPackage = realpathSync(
+			fileURLToPath(new URL("../node_modules/emdash/package.json", import.meta.url)),
+		);
+		const authEntry = createRequire(emdashPackage).resolve("@emdash-cms/auth");
+		const auth = (await import(pathToFileURL(authEntry).href)) as {
+			Permissions: Record<string, number>;
+		};
 		expect(auth.Permissions["plugins:manage"]).toBe(UPLOAD_MIN_ROLE);
 		// Just below it is refused; at it, allowed.
 		expect((await upload({ user: { id: "u", role: UPLOAD_MIN_ROLE - 1 } })).response.status).toBe(

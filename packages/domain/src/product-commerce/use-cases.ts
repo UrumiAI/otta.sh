@@ -122,6 +122,8 @@ export async function listProductCommerceByIds(
  *    a safe content type, a byte size, an optional digest — refused, never
  *    rewritten), and is not paired with `productKind: "physical"` in the same
  *    edit. The store refuses it against a STORED physical kind.
+ *  - `downloadAsset: null` (detach) is refused on a product whose stored row has
+ *    a file: a file is replaced, never removed (ADR-0029 Decision 6).
  * NOT re-checked here: stored-currency integrity + existence + staleness are the
  * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
  * already closes); SKU live-uniqueness stays the store's partial-index guard.
@@ -227,6 +229,28 @@ export async function updateProductCommerceFields(
 			...input,
 			downloadAsset: validateDownloadAsset(input.productId, input.downloadAsset),
 		};
+	}
+	// REPLACE ONLY (ADR-0029 Decision 6, the product owner's rule): a product's
+	// download file can be replaced but never removed, so past buyers never lose
+	// what they bought. Detaching (`null`) needs the STORED row, read here at the
+	// edit's own watermark. That read is sound without a transaction: the store's
+	// compare-and-set applies the edit only to a row still at `expectedUpdatedAt`,
+	// so when the row read here is at that watermark it IS the row the write
+	// would apply to; when it is not, the store answers stale (or a same-key
+	// replay) and this check has nothing to protect. `null` on a product with no
+	// file is a harmless no-op and passes.
+	if (input.downloadAsset === null) {
+		const stored = await deps.productCommerce.getByProductId(input.productId);
+		if (
+			stored !== null &&
+			stored.downloadAsset !== null &&
+			stored.updatedAt.toISOString() === expectedUpdatedAt
+		) {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a product's download file can be replaced but never removed",
+			);
+		}
 	}
 	const result = await deps.productCommerce.updateCommerceFields(checked, key, expectedUpdatedAt);
 	// Only an applied (or replayed) edit seeds: a not_found / stale /

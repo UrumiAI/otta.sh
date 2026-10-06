@@ -11,10 +11,11 @@
  * ADR-0029 allowed.
  *
  * TWO DELIBERATE CARVE-OUTS, each tested below so they cannot grow:
- *  - an injected callback that happens to be NAMED `fetch` (the list
- *    accumulator's `opts.fetch`, declared `fetch:` and called as a member) is
- *    not the global — the detector skips member access and property keys, and
- *    catches the global through `globalThis.` / `window.` / `self.` explicitly;
+ *  - the list accumulator's injected callback, called as the literal
+ *    `opts.fetch(` (and declared as a `fetch:` property key), is not the global.
+ *    That ONE literal call is exempt; every other `.fetch(` member call is
+ *    flagged, and the global is caught bare or through `globalThis.` /
+ *    `window.` / `self.`;
  *  - `navigator.clipboard` (the copy button) makes no request.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -56,7 +57,17 @@ const FORBIDDEN: readonly RegExp[] = [
 	/\bimport\s*\(/,
 ];
 
-const forbiddenIn = (code: string): boolean => FORBIDDEN.some((pattern) => pattern.test(code));
+/** The one sanctioned member call named `fetch`: the list accumulator's
+ *  injected page loader (`accumulate.ts`). */
+const EXEMPT_MEMBER_FETCH = /\bopts\.fetch\(/g;
+
+/** Any member call `.fetch(` left once the exempt literal is removed. */
+const MEMBER_FETCH_CALL = /\.\s*fetch\s*\(/;
+
+const forbiddenIn = (code: string): boolean => {
+	const rest = code.replace(EXEMPT_MEMBER_FETCH, "");
+	return MEMBER_FETCH_CALL.test(rest) || FORBIDDEN.some((pattern) => pattern.test(rest));
+};
 
 describe("the detector itself", () => {
 	test.each([
@@ -72,6 +83,10 @@ describe("the detector itself", () => {
 		"new WebSocket('wss://x')",
 		"await import('./x.js')",
 		"import ( url )",
+		"client.fetch(url)",
+		"this.fetch('/x')",
+		"deps . fetch (url)",
+		"myopts.fetch(url)",
 	])("flags %j", (code) => {
 		expect(forbiddenIn(code)).toBe(true);
 	});

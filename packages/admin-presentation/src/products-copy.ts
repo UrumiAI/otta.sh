@@ -851,3 +851,7 @@ export function productFilterParts(filter: {
 export const DIGITAL_WITH_FILE_TITLE = "This product stays Digital";
 export const DIGITAL_WITH_FILE =
 	"This product has a download file, so it stays Digital. To change the file, use Replace file.";
+/** The save refusal's body, under {@link DIGITAL_WITH_FILE_TITLE} — the reason
+ *  without repeating the title's "stays Digital". */
+export const DIGITAL_WITH_FILE_REASON =
+	"Nothing was saved: this product has a download file, which can be replaced but never removed. To change the file, use Replace file.";

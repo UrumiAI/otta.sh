@@ -134,14 +134,19 @@ describe("sanitizeDownloadFilename — a name the buyer's browser can save, neve
 		expect(sanitizeDownloadFilename("x\uD800y.txt")).toBe("xy.txt");
 	});
 
-	test("removes invisible characters: zero-width, word joiner, BOM, soft hyphen, tags", () => {
-		for (const cp of [
-			0x200b, 0x200c, 0x200d, 0x2060, 0x2061, 0x2064, 0xfeff, 0x00ad, 0xe0000, 0xe0041, 0xe007f,
-		]) {
+	test("removes invisible characters: zero-width space, word joiner, BOM, soft hyphen, tags", () => {
+		for (const cp of [0x200b, 0x2060, 0x2061, 0x2064, 0xfeff, 0x00ad, 0xe0000, 0xe0041, 0xe007f]) {
 			const raw = `gui${String.fromCodePoint(cp)}de.pdf`;
 			expect(sanitizeDownloadFilename(raw), cp.toString(16)).toBe("guide.pdf");
 			expect(accepted(sanitizeDownloadFilename(raw), "application/pdf")).toBe(true);
 		}
+		// The non-joiner and joiner are spelling, not hiding: they survive unchanged.
+		const persian = `\u0645\u06cc${String.fromCodePoint(0x200c)}\u062e\u0648\u0627\u0647\u0645.pdf`;
+		const technologist = `${String.fromCodePoint(0x1f469, 0x200d, 0x1f4bb)} notes.txt`;
+		expect(sanitizeDownloadFilename(persian)).toBe(persian);
+		expect(sanitizeDownloadFilename(technologist)).toBe(technologist);
+		expect(accepted(persian, "application/pdf")).toBe(true);
+		expect(accepted(technologist, "text/plain")).toBe(true);
 		// Neighbours that are visible stay.
 		expect(sanitizeDownloadFilename("a\u2065b\u00ACc.txt")).toBe("a\u2065b\u00ACc.txt");
 		expect(sanitizeDownloadFilename(`${String.fromCodePoint(0xfeff)}\u200B`)).toBe(

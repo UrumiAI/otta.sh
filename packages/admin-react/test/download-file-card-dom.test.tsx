@@ -621,6 +621,50 @@ test("REPLACE ONLY: with a file attached, Physical is disabled with the reason; 
 	expect(fresh.querySelector("[data-testid='otta-kind-locked']")).toBeNull();
 });
 
+test("an UNSAVED switch to Physical goes back to Digital once a file is attached", async () => {
+	let attached = false;
+	apiFetch.mockImplementation(async (_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			attached = true;
+			return json({
+				ok: true,
+				notice: { variant: "default", title: "File attached", description: "Attached." },
+			});
+		}
+		return attached
+			? detail({
+					downloadAsset: {
+						key: KEY_1,
+						filename: "a.pdf",
+						contentType: "application/pdf",
+						size: 100,
+					},
+				})
+			: detail();
+	});
+	const container = await mountPanel();
+	const radio = (kind: string) =>
+		[...container.querySelectorAll<HTMLInputElement>("input[type='radio']")].find(
+			(r) => r.value === kind,
+		)!;
+	await React.act(async () => {
+		radio("physical").click();
+	});
+	expect(radio("physical").checked).toBe(true);
+	await choose(container, fileOf(100, "a.pdf"));
+	await FakeXhr.instances[0]!.respond(201, {
+		ok: true,
+		asset: { key: KEY_1, filename: "a.pdf", contentType: "application/pdf", size: 100 },
+	});
+	await flush();
+	expect(radio("digital").checked).toBe(true);
+	expect(radio("physical").checked).toBe(false);
+	expect(radio("physical").disabled).toBe(true);
+	// Nothing left unsaved: the pricing Save has no kind change to offer.
+	expect(button(container, "Save pricing & stock").disabled).toBe(true);
+});
+
 test("leaving by an in-app link mid-upload asks first, about the upload", async () => {
 	apiFetch.mockResolvedValue(detail());
 	const container = await mountPanel();

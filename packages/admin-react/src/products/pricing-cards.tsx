@@ -1112,6 +1112,15 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						record={p}
 						titleId={id("h-download")}
 						onAttached={() => {
+							// A product with a file stays Digital (ADR-0029 Decision 6). An
+							// UNSAVED switch to Physical made before the upload can no longer
+							// be saved, so the choice goes back to Digital — where the now
+							// disabled Physical radio and its reason say why.
+							setDraft((prev) =>
+								prev === null || prev.productKind === "digital"
+									? prev
+									: { ...prev, productKind: "digital" },
+							);
 							rereadNow();
 						}}
 						onBusyChange={onDownloadBusy}

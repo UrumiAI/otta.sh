@@ -94,7 +94,7 @@
  */
 import {
 	ADD_STOCK_INVALID_QTY,
-	DIGITAL_WITH_FILE,
+	DIGITAL_WITH_FILE_REASON,
 	DIGITAL_WITH_FILE_TITLE,
 	NO_TAX_CLASS,
 	PRODUCT_DELETED_SINCE_LOADED,
@@ -636,7 +636,7 @@ function editOutcome(
 				return applied({
 					variant: "error",
 					title: DIGITAL_WITH_FILE_TITLE,
-					description: `Nothing was saved. ${DIGITAL_WITH_FILE}`,
+					description: DIGITAL_WITH_FILE_REASON,
 				});
 			}
 			return applied({

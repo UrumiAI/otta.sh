@@ -47,12 +47,17 @@ const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
  *    with which `invoice` + U+202E + `fdp.exe` displays as `invoiceexe.pdf`;
  *  - the line and paragraph separators (U+2028/U+2029), line breaks by another
  *    name in a header or a file dialog;
- *  - the INVISIBLE characters — zero-width space, non-joiner and joiner
- *    (U+200B–U+200D), word joiner and the invisible operators (U+2060–U+2064),
- *    the BOM / zero-width no-break space (U+FEFF), the soft hyphen (U+00AD) and
- *    the tag characters (U+E0000–U+E007F) — with which two names that look the
- *    same in the buyer's file dialog are different strings, or a name hides
- *    text nobody can see.
+ *  - the INVISIBLE characters with no spelling job — the zero-width space
+ *    (U+200B), word joiner and the invisible operators (U+2060–U+2064), the
+ *    BOM / zero-width no-break space (U+FEFF), the soft hyphen (U+00AD) and the
+ *    tag characters (U+E0000–U+E007F) — with which two names that look the same
+ *    in the buyer's file dialog are different strings, or a name hides text
+ *    nobody can see.
+ *
+ * The zero-width NON-JOINER and JOINER (U+200C, U+200D) are deliberately
+ * ALLOWED: they are part of correct spelling in Persian, Urdu and the Indic
+ * scripts, select letter forms in Malayalam and Sinhala, and join emoji
+ * sequences (👩‍💻). Refusing them would refuse real names.
  *
  * Code points rather than a regex character class, so the invisible ones are
  * named by number in the source instead of sitting in it as invisible text.
@@ -72,7 +77,7 @@ function isForbiddenFilenameCodePoint(cp: number): boolean {
 		cp === 0x2028 ||
 		cp === 0x2029 ||
 		cp === 0x00ad ||
-		(cp >= 0x200b && cp <= 0x200d) ||
+		cp === 0x200b ||
 		(cp >= 0x2060 && cp <= 0x2064) ||
 		cp === 0xfeff ||
 		(cp >= 0xe0000 && cp <= 0xe007f)

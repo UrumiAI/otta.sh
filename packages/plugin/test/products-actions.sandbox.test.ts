@@ -108,7 +108,7 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	BACKORDERS_CONTEXT,
-	DIGITAL_WITH_FILE,
+	DIGITAL_WITH_FILE_REASON,
 	DIGITAL_WITH_FILE_TITLE,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LIST_INTRO,
@@ -1265,7 +1265,11 @@ describe("products:attach-download — saving an uploaded file's descriptor (iss
 		});
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe(DIGITAL_WITH_FILE_TITLE);
-		expect(result.notice?.description).toBe(`Nothing was saved. ${DIGITAL_WITH_FILE}`);
+		expect(result.notice?.description).toBe(DIGITAL_WITH_FILE_REASON);
+		// Said once: the title says "stays Digital", the body gives the reason.
+		expect(
+			`${result.notice?.title} ${result.notice?.description}`.match(/stays Digital/g),
+		).toHaveLength(1);
 		expect(result.notice?.description).not.toMatch(/price|measurement|greater than zero/i);
 		const row = await readProduct(seeded.productId);
 		expect(row.productKind).toBe("digital");

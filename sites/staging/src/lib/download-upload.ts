@@ -23,10 +23,11 @@
  * `plugins:manage` — ADMIN, the role the `otta` admin route itself requires. A
  * lower role could only orphan bytes: the save that would attach them is
  * refused. A request authenticated by an API token (`locals.tokenScopes`) is
- * refused outright: this is a console action. The request must also carry `X-EmDash-Request: 1`, the custom header
- * EmDash's own authenticated API demands: a cross-site form cannot set it, so it
- * holds even if the site's origin check (the middleware, default-deny, where
- * this route is in the guarded column) were ever loosened.
+ * refused outright: this is a console action. Before any of that, the page
+ * runs the site's per-route origin guard (`rejectCrossOrigin`, as every write
+ * route on this base does). The request must also carry `X-EmDash-Request: 1`,
+ * the custom header EmDash's own authenticated API demands: a cross-site form
+ * cannot set it, so it holds even if the origin check were ever loosened.
  *
  * ── What is stored ───────────────────────────────────────────────────────────
  *  - The KEY is `dl/{productId}/{ULID}` from `mintDownloadAssetKey`: the clock
@@ -68,8 +69,9 @@ import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import { BUSY_RETRY_AFTER_SECONDS } from "./otta-api.js";
 
-/** The route's path prefix. Not under `/_`, so the site's origin middleware
- *  guards it (EmDash guards only its own `/_emdash` paths). */
+/** The route's path prefix. Not under `/_` (EmDash guards only its own
+ *  `/_emdash` paths), so the page guards its own origin with `rejectCrossOrigin`
+ *  first. */
 export const DOWNLOAD_UPLOAD_PATH_PREFIX = "/otta-admin/downloads/";
 
 /** The upload URL for one product. */

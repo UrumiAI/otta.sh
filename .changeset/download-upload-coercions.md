@@ -20,7 +20,8 @@ accepts, kept in the same module so the two cannot drift.
 The plugin re-exports the three functions and the two constants, so a site's upload
 endpoint uses the same rules as the admin save.
 
-`validateDownloadAsset` now also refuses invisible characters in a filename — zero-width
-space, non-joiner and joiner (U+200B–U+200D), word joiner and invisible operators
-(U+2060–U+2064), the BOM (U+FEFF), the soft hyphen (U+00AD) and tag characters
-(U+E0000–U+E007F) — and `sanitizeDownloadFilename` removes them.
+`validateDownloadAsset` now also refuses invisible characters in a filename — the
+zero-width space (U+200B), word joiner and invisible operators (U+2060–U+2064), the BOM
+(U+FEFF), the soft hyphen (U+00AD) and tag characters (U+E0000–U+E007F) — and
+`sanitizeDownloadFilename` removes them. The zero-width non-joiner and joiner (U+200C,
+U+200D) stay allowed: Persian, Urdu and Indic spelling and emoji sequences need them.
