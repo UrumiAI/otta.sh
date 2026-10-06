@@ -681,7 +681,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// Issue #382: a new Stripe key may be another account — read its
 				// country NOW, so the answer is cached before the first checkout
 				// needs it and the screen below can state it. Never throws; a
-				// failure is recorded as unknown and retried lazily by checkout.
+				// failure is recorded as unknown and asked again by the next
+				// Settings page load once its back-off runs out — checkout only
+				// reads the cache, it never asks Stripe.
 				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
 					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
 				}
