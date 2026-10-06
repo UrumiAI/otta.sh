@@ -240,7 +240,7 @@ export {
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "./payment-secrets.js";
-// INC-C5 — email dispatch and x402 settlement in-process. Both adapters are
+// INC-C5 — email dispatch and the x402 wiring, in-process. Both are
 // exported so a deploying site can name the kv settings keys it provisions
 // (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without
 // restating the strings, and so a suite can build either adapter directly.
@@ -272,17 +272,6 @@ export {
 	type StripeWebhookSettleReason,
 	type StripeWebhookSettleResult,
 } from "./webhooks/stripe-settle-route.js";
-// INC-C5: the in-process x402 page-gate settle surface. Exported for the same
-// reason as the Stripe one above — the calling site reconstructs the HTTP status
-// from the returned `status` field.
-export {
-	createX402SettleHandler,
-	X402_SETTLE_ROUTE,
-	x402SettleResultToResponse,
-	type X402SettleInput,
-	type X402SettleReason,
-	type X402SettleResult,
-} from "./payments/x402-settle-route.js";
 export {
 	CommerceClientError,
 	type CartFailureReason,

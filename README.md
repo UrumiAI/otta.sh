@@ -121,7 +121,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 | `@otta-sh/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
 | `@otta-sh/store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
 | `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
+| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (settles nothing until the ADR-0028 content gate). |
 | `@otta-sh/plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Themes pages, plus the product editor's Pricing & stock cards and the products list's Price / Stock columns. |

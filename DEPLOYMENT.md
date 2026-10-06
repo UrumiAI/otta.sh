@@ -320,13 +320,16 @@ order of appearance in a deployment's life:
 > boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
 > `packages/payments-stripe/src/index.ts`.
 
-> **x402 settles against a real facilitator over `ctx.http`.** The configured facilitator
-> credential goes **on the wire** as `Authorization: Bearer …` to the facilitator host, so
-> provision a credential that was minted to be sent. The facilitator host must be in the
-> plugin's `allowedHosts` — it is seeded at **build** time from the site's Astro config, not
-> from `kv`, so changing facilitators is a rebuild, not a settings edit. The pay-to address
-> and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
-> and live alongside it in Settings.
+> **x402 does not take payments yet.** The old receipt-forwarding settle route
+> (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
+> content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+> ships. The settings below still save, so a deployment can be configured ahead of it. The
+> facilitator credential is meant to go **on the wire** as `Authorization: Bearer …` to the
+> facilitator host, so provision a credential that was minted to be sent. The facilitator
+> host must be in the plugin's `allowedHosts` — it is seeded at **build** time from the
+> site's Astro config, not from `kv`, so changing facilitators is a rebuild, not a settings
+> edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
+> configuration, not credentials, and live alongside it in Settings.
 
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
@@ -420,8 +423,8 @@ the provider is simply unconfigured and no host is granted for it.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
-`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender and
-the x402 facilitator client — so the allowlist is the perimeter for `api.stripe.com` too. This
+`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender —
+so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 

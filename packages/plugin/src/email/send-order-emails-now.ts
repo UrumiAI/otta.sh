@@ -32,8 +32,8 @@
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
  *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
  *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
- *    Repeated Stripe redeliveries or x402 re-posts during a provider outage
- *    therefore cannot spend it and park the confirmation `failed` within minutes. A
+ *    Repeated Stripe redeliveries during a provider outage therefore cannot
+ *    spend it and park the confirmation `failed` within minutes. A
  *    cut-short inline attempt is uncounted and may recur on a later delivery before
  *    the sweep takes the row; the `Idempotency-Key` dedupes it.
  *
