@@ -551,6 +551,11 @@ describe("rangeRequest — the Range header as an R2 range, no size needed", () 
 		["bytes=5-2", { kind: "none" }],
 		["bytes=0-1,2-3", { kind: "none" }],
 		["items=0-1", { kind: "none" }],
+		// The cases `parseByteRange` pins, without a size (issue #405: one parser).
+		[" bytes=1-2 ", { kind: "range", range: { offset: 1, length: 2 } }],
+		["bytes=-", { kind: "none" }],
+		["bytes=99999999999999999999-", { kind: "none" }],
+		["bytes=0-99999999999999999999", { kind: "none" }],
 		[null, { kind: "none" }],
 	] as const)("%j → %j", (header, expected) => {
 		expect(rangeRequest(header)).toEqual(expected);
@@ -592,6 +597,10 @@ describe("parseByteRange", () => {
 		["bytes=10-", 10, { kind: "unsatisfiable" }],
 		["bytes=-0", 10, { kind: "unsatisfiable" }],
 		["bytes=0-", 0, { kind: "unsatisfiable" }],
+		["bytes=-3", 0, { kind: "unsatisfiable" }],
+		["bytes=12-15", 10, { kind: "unsatisfiable" }],
+		["bytes=10-10", 10, { kind: "unsatisfiable" }],
+		["bytes=9-9", 10, { kind: "range", start: 9, end: 9 }],
 		["bytes=3-1", 10, { kind: "none" }],
 		["bytes=-", 10, { kind: "none" }],
 		["bytes=0-1,2-3", 10, { kind: "none" }],
