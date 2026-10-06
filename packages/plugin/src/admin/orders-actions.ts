@@ -263,6 +263,9 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
 			return " The buyer’s email is queued and will be retried automatically.";
 		case "unconfigured":
 			return " No email was sent — this store has no email provider set up.";
+		case "no-recipient":
+			// An x402 buyer (ADR-0028 Decision 7): a wallet, no address — and nothing queued.
+			return " No email was sent — this order has no email address.";
 		default:
 			return "";
 	}
@@ -784,6 +787,8 @@ function lostEmailSentence(email: InlineEmailStatus | undefined): string {
 			return " Refund email queued; retried automatically.";
 		case "unconfigured":
 			return " No email sent: no email provider set up.";
+		case "no-recipient":
+			return " No email sent: the order has no email address.";
 		default:
 			return "";
 	}

@@ -102,7 +102,7 @@ interface StoredPayment {
 	status: string;
 }
 
-type OutboxStatus = "pending" | "sending" | "sent" | "failed";
+type OutboxStatus = "pending" | "sending" | "sent" | "skipped" | "failed";
 
 interface StoredOutbox {
 	id: string;
@@ -114,6 +114,8 @@ interface StoredOutbox {
 	failureReason: string | null;
 	leaseUntil: string | null;
 	sentAt: string | null;
+	/** When the row was completed as skipped (no recipient); null otherwise. */
+	skippedAt: string | null;
 	createdAt: string;
 	/** Non-null on a NOTICE row (`enqueueNotice`); null on a state row. */
 	notice: OrderNoticeInput | null;
@@ -1049,7 +1051,7 @@ export class InMemoryOrderStore implements OrderStore {
 		scope: (row: { orderId: string; attempts: number; timeouts: number }) => boolean,
 	): Promise<OutboxEmail | null> {
 		// Claimability is lease-driven: a row is claimable when it isn't sent, isn't
-		// failed, and has no live lease (null, or elapsed). This unifies "fresh
+		// skipped, isn't failed, and has no live lease (null, or elapsed). This unifies "fresh
 		// pending", "crashed 'sending' whose lease expired", and "rescheduled with a
 		// retry backoff" — a rescheduled row is not re-claimed until its lease passes.
 		const claimable = this.#outbox
@@ -1057,6 +1059,7 @@ export class InMemoryOrderStore implements OrderStore {
 				(r) =>
 					scope(r) &&
 					r.sentAt === null &&
+					r.status !== "skipped" &&
 					r.status !== "failed" &&
 					(r.leaseUntil === null || r.leaseUntil <= now),
 			)
@@ -1110,6 +1113,7 @@ export class InMemoryOrderStore implements OrderStore {
 			failureReason: null,
 			leaseUntil: null,
 			sentAt: null,
+			skippedAt: null,
 			createdAt: this.#clock.now().toISOString(),
 			notice: { ...notice },
 		});
@@ -1121,6 +1125,17 @@ export class InMemoryOrderStore implements OrderStore {
 		if (row === undefined) return;
 		row.status = "sent";
 		row.sentAt = now;
+	}
+
+	async markEmailSkipped(id: string, now: string): Promise<void> {
+		const row = this.#outbox.find((r) => r.id === id);
+		// Only a claimed row: pending, sent, failed and skipped rows stay as they are.
+		if (row === undefined || row.status !== "sending") return;
+		row.status = "skipped";
+		row.skippedAt = now;
+		row.leaseUntil = null;
+		// Not an attempt: the claim's count is taken back off.
+		row.attempts = Math.max(0, row.attempts - 1);
 	}
 
 	async releaseEmailClaim(id: string, options: ReleaseEmailClaimOptions = {}): Promise<void> {
@@ -1166,6 +1181,21 @@ export class InMemoryOrderStore implements OrderStore {
 		return this.#outbox
 			.filter((r) => r.orderId === orderId && r.notice === null)
 			.map((r) => ({ toState: r.toState, status: r.status }));
+	}
+
+	/** EVERY outbox row of an order, state rows and notices alike, in enqueue order —
+	 *  `emailRecipientContract`'s read-back. */
+	outboxRows(
+		orderId: string,
+	): { toState: OrderState; notice: OrderNotice | null; status: OutboxStatus; attempts: number }[] {
+		return this.#outbox
+			.filter((r) => r.orderId === orderId)
+			.map((r) => ({
+				toState: r.toState,
+				notice: r.notice?.kind ?? null,
+				status: r.status,
+				attempts: r.attempts,
+			}));
 	}
 
 	/** NOTICE outbox rows for an order (for contract assertions). */
@@ -1241,6 +1271,7 @@ export class InMemoryOrderStore implements OrderStore {
 			failureReason: null,
 			leaseUntil: null,
 			sentAt: null,
+			skippedAt: null,
 			createdAt: this.#clock.now().toISOString(),
 			notice: null,
 		});
