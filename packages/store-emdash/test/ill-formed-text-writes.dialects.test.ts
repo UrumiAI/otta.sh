@@ -108,25 +108,23 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		expect(await notes().count({ kind: "k" })).toBe(4);
 	});
 
-	describe("ids (review B L1, A A5): an id that is not well formed is REFUSED on every method", () => {
-		// Unlike document text, no row can already hold such an id on Postgres (the
-		// driver rewrites a lone surrogate to U+FFFD on the way in, merging distinct
-		// ids into one row), so refusing bricks nothing — and repairing would be the
-		// silent merge itself.
+	describe("ids (review B L1; round 2 A R2-A1): an id that is not well formed can never CREATE a row", () => {
+		// Creating under such an id is refused: on Postgres the driver rewrites a lone
+		// surrogate to U+FFFD on the way in, so "x\uD800" and "x\uDC00" would name ONE
+		// row and the second create would silently overwrite the first. A method that
+		// addresses an EXISTING row passes the id through unchanged, exactly as before
+		// the guard — an id built from a legacy document's stored text (a reservation's
+		// sku, a buyer's email) must still reach that legacy row (see
+		// `ill-formed-text-legacy-ids`).
 		const BAD_IDS = { "lone high": "x\uD800", "lone low": "x\uDC00", NUL: "x\u0000" };
 
 		test.each(Object.entries(BAD_IDS))(
-			"%s: every id-taking method rejects with a typed error",
+			"%s: every method that can create a row rejects with a typed error",
 			async (_l, id) => {
 				const c = notes();
 				const calls: Array<[string, () => Promise<unknown>]> = [
-					["get", () => c.get(id)],
-					["getVersioned", () => c.getVersioned(id)],
 					["put", () => c.put(id, { kind: "k" })],
-					["compareAndSet", () => c.compareAndSet(id, null, { kind: "k" })],
-					["delete", () => c.delete(id)],
-					["compareAndDelete", () => c.compareAndDelete(id, "1")],
-					["updateIf", () => c.updateIf(id, { where: { kind: "k" }, set: { body: "x" } })],
+					["compareAndSet(null)", () => c.compareAndSet(id, null, { kind: "k" })],
 				];
 				for (const [name, call] of calls) {
 					const err = await call().then(
@@ -145,11 +143,34 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 			},
 		);
 
-		test("two ids that differ only in a lone surrogate can no longer collapse into one row", async () => {
+		test.each(Object.entries(BAD_IDS))(
+			"%s: the methods that address an existing row pass the id through and create nothing",
+			async (_l, id) => {
+				const c = notes();
+				expect(await c.get(id)).toBeNull();
+				expect(await c.getVersioned(id)).toBeNull();
+				expect(await c.delete(id)).toBe(false);
+				expect((await c.compareAndDelete(id, "1")).applied).toBe(false);
+				expect((await c.compareAndSet(id, "1", { kind: "k" })).applied).toBe(false);
+				expect((await c.updateIf(id, { where: { kind: "k" }, set: { body: "x" } })).applied).toBe(
+					false,
+				);
+				expect((await bound.storage["notes"]?.query({ limit: 10 }))?.items).toEqual([]);
+			},
+		);
+
+		test("two ids that differ only in a lone surrogate can no longer collapse into one NEW row", async () => {
 			await expect(notes().put("x\uD800", { kind: "a" })).rejects.toBeInstanceOf(IllFormedIdError);
 			await expect(notes().put("x\uDC00", { kind: "b" })).rejects.toBeInstanceOf(IllFormedIdError);
+			await expect(notes().compareAndSet("x\uD800", null, { kind: "a" })).rejects.toBeInstanceOf(
+				IllFormedIdError,
+			);
 			await notes().put("x\uFFFD", { kind: "c" });
 			expect(await notes().get("x\uFFFD")).toEqual({ kind: "c" });
+			// Neither spelling can overwrite the legitimate row either: `put` is refused,
+			// and a create-if-absent is refused before it could see the row exists.
+			await expect(notes().put("x\uDC00", { kind: "d" })).rejects.toBeInstanceOf(IllFormedIdError);
+			expect(await bound.storage["notes"]?.get("x\uFFFD")).toEqual({ kind: "c" });
 		});
 	});
 
@@ -214,5 +235,28 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		).toEqual(["n1"]);
 		const updated = await notes().updateIf("n1", { where: { kind: "a\uDC00b" }, set: { seq: 2 } });
 		expect(updated.applied).toBe(true);
+	});
+	test("a LEGACY row holding the raw text is still found by its raw value (A R2-A3)", async () => {
+		// Written past the guard, the way a row written before it was: SQLite (and
+		// D1) keep the raw code units, Postgres's driver folded them to U+FFFD.
+		await bound.storage["notes"]?.put("legacy", { kind: "k\uD800", seq: 1 });
+		await bound.storage["notes"]?.put("legacy-low", { kind: "m\uDC00n", seq: 2 });
+		expect((await notes().query({ where: { kind: "k\uD800" } })).items.map((i) => i.id)).toEqual([
+			"legacy",
+		]);
+		expect(await notes().count({ kind: "k\uD800" })).toBe(1);
+		expect(
+			(await notes().query({ where: { kind: { in: ["k\uD800", "m\uDC00n"] } } })).items
+				.map((i) => i.id)
+				.toSorted(),
+		).toEqual(["legacy", "legacy-low"]);
+		const updated = await notes().updateIf("legacy", {
+			where: { kind: "k\uD800" },
+			set: { seq: 3 },
+		});
+		expect(updated.applied).toBe(true);
+		// A NUL operand matches only the repaired spelling, without an error: Postgres
+		// refuses a raw NUL parameter (22021), so the raw spelling is never sent.
+		expect(await notes().count({ kind: "k\u0000" })).toBe(await notes().count({ kind: "k\uFFFD" }));
 	});
 });

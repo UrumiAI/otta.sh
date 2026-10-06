@@ -4,14 +4,15 @@
  * The heal walk is the expensive half of the guard — it pages the WHOLE collection
  * the one way Postgres never casts. Three properties keep it a one-time cost:
  *
- * - **Shared by collection NAME, not by object.** EmDash builds a fresh
- *   `ctx.storage` (fresh collection objects) for every route call and hook, so
- *   keying the in-flight walk by object meant K concurrent requests ran K walks.
+ * - **Shared by database and collection NAME, not by object.** EmDash builds a
+ *   fresh `ctx.storage` (fresh collection objects) for every route call and hook,
+ *   so keying the in-flight walk by object meant K concurrent requests ran K
+ *   walks. A caller that failed before a walk finished retries without walking.
  * - **Resumable.** A walk that reaches its page budget remembers where it
  *   stopped, so the next failing call continues past it instead of re-walking the
  *   same pages and failing again forever (a bad row past page 1,000).
- * - **Cooled down.** A walk that reached the end of the collection and repaired
- *   nothing cannot help a retry, so for a while a failing call fails fast instead
+ * - **Cooled down.** A walk from the start that reached the end of the collection
+ *   and repaired nothing cannot help a retry, so for a while a failing call fails fast instead
  *   of re-walking the collection on every call.
  *
  * The failing host is SIMULATED here (a `where` query that rejects with the
@@ -22,18 +23,15 @@
 import { findIllFormedText } from "@otta-sh/domain";
 import { afterEach, expect, test, vi } from "vitest";
 import type { StorageCollection } from "../src/index.js";
-import {
-	guardWellFormed,
-	HEAL_COOL_DOWN_MS,
-	resetHealStateForTests,
-} from "../src/well-formed-storage.js";
-import { describeEachDialect } from "./describe-each-dialect.js";
+import { guardWellFormed, HEAL_COOL_DOWN_MS } from "../src/well-formed-storage.js";
+import { describeEachDialect, makeSqliteStorage } from "./describe-each-dialect.js";
 
 const LAYOUT = { things: { indexes: ["k"] } };
 
+// The heal state itself is reset after every case by this package's test setup
+// (`test/setup.ts`), so no case inherits another's cursor or cool-down.
 afterEach(() => {
 	vi.restoreAllMocks();
-	resetHealStateForTests();
 });
 
 const pgError = () =>
@@ -44,9 +42,20 @@ interface Counts {
 	walkPages: number;
 }
 
+/** A promise and the function that resolves it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let settle: ((value: void) => void) | undefined;
+	const promise = new Promise<void>((r) => {
+		settle = r;
+	});
+	return { promise, resolve: () => settle?.() };
+}
+
 /**
  * A fresh host-collection OBJECT over the same rows, the way EmDash hands every
- * request its own. Its filtered queries fail while `blocked()` says so.
+ * request its own. Its filtered queries fail while `blocked()` says so. It carries
+ * the host collection's own fields (its database handle among them) the way a
+ * fresh `PluginStorageRepository` over the same database does.
  */
 function hostView(
 	raw: StorageCollection<unknown>,
@@ -54,6 +63,7 @@ function hostView(
 	blocked: () => Promise<boolean>,
 ): StorageCollection<unknown> {
 	return {
+		...raw,
 		get: (id) => raw.get(id),
 		getVersioned: (id) => raw.getVersioned(id),
 		put: (id, d) => raw.put(id, d),
@@ -170,5 +180,146 @@ describeEachDialect("ill-formed text: the heal walk's bookkeeping", (ctx) => {
 		expect(results[3]).toBe(251);
 		// ONE walk: 3 pages of 100 over 251 rows.
 		expect(counts.walkPages).toBe(3);
+	});
+
+	test("a caller whose query failed BEFORE a walk repaired the row, but noticed AFTER, retries without walking (A R2-A2)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		await seedClean(250);
+		await raw().put("bad", { k: "a", note: "x\uD800" });
+		const counts: Counts = { walkPages: 0 };
+		// Two stragglers whose filtered query has SEEN the bad row and is held there,
+		// so their failure lands only after the walk below has finished.
+		const gates: Array<() => void> = [];
+		const seen: Array<Promise<void>> = [];
+		const straggler = () => {
+			const gate = deferred();
+			const sawRow = deferred();
+			seen.push(sawRow.promise);
+			gates.push(gate.resolve);
+			return guardWellFormed(
+				hostView(raw(), counts, async () => {
+					const bad = await stillBad();
+					sawRow.resolve();
+					await gate.promise;
+					return bad;
+				}),
+				"things",
+			);
+		};
+		const s1 = straggler();
+		const s2 = straggler();
+		const late1 = s1.query({ where: { k: "a" } });
+		const late2 = s2.count({ k: "a" });
+		await Promise.all(seen);
+
+		// Meanwhile a third caller fails, walks (3 pages) and repairs the row.
+		const first = guardWellFormed(hostView(raw(), counts, stillBad), "things");
+		expect((await first.query({ where: { k: "a" } })).items).toHaveLength(50);
+		expect(counts.walkPages).toBe(3);
+		expect(await stillBad()).toBe(false);
+
+		// The stragglers' failures land now. A walk finished since their queries
+		// began, so each retries at once: no second walk, no false cool-down.
+		for (const release of gates) release();
+		expect((await late1).items).toHaveLength(50);
+		expect(await late2).toBe(251);
+		expect(counts.walkPages).toBe(3);
+
+		// No cool-down was armed: a NEW legacy row is still healed on the next read.
+		await raw().put("bad", { k: "a", note: "y\u0000" });
+		expect(await first.count({ k: "a" })).toBe(251);
+		expect(counts.walkPages).toBe(6);
+	});
+
+	test("a RESUMED walk that reaches the end clean arms no cool-down: it never saw the rows before its cursor (B L7)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		await seedClean(250);
+		const counts: Counts = { walkPages: 0 };
+		const oldestBad = async () => findIllFormedText(await raw().get("r0000")) !== null;
+		let unfixable = true;
+		const c = guardWellFormed(
+			hostView(raw(), counts, async () => unfixable || (await oldestBad())),
+			"things",
+			{ maxPages: 2 },
+		);
+		// An unfixable failure: the walk stops at its 2-page budget and saves its cursor.
+		await expect(c.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+		expect(counts.walkPages).toBe(2);
+
+		// A bad row appears BEHIND that cursor (the oldest row, page 1).
+		await raw().put("r0000", { k: "a", note: "x\uDC00" });
+		unfixable = false;
+		// The resumed walk (page 3) reaches the end having seen nothing bad...
+		await expect(c.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+		expect(counts.walkPages).toBe(3);
+		// ...which proves nothing about pages 1-2, so the next call walks from the
+		// start (its 2-page budget) and repairs the row on page 1.
+		expect((await c.query({ where: { k: "a" }, limit: 100 })).items).toHaveLength(100);
+		expect(counts.walkPages).toBe(5);
+		expect(await oldestBad()).toBe(false);
+	});
+
+	test("two databases in one process never share a cursor, a walk or a cool-down (B L7, A R2-A4)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const other = await makeSqliteStorage(LAYOUT);
+		try {
+			const rawB = other.storage["things"] as StorageCollection<unknown>;
+			// B's rows are OLDER than A's, so a cursor from A's walk would skip them all.
+			await rawB.put("b-bad", { k: "a", note: "x\uD800" });
+			for (let i = 0; i < 250; i++) await rawB.put(`b${String(i).padStart(4, "0")}`, { k: "a" });
+			await new Promise((r) => setTimeout(r, 5));
+			await seedClean(250);
+
+			// Database A: unfixable failures walk it in 2-page bites, leaving a cursor.
+			const countsA: Counts = { walkPages: 0 };
+			const a = guardWellFormed(
+				hostView(raw(), countsA, async () => true),
+				"things",
+				{ maxPages: 2 },
+			);
+			await expect(a.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+			await expect(a.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+			await expect(a.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+
+			// Database B, same collection name: its own state, walked from ITS start.
+			const countsB: Counts = { walkPages: 0 };
+			const bBad = async () => findIllFormedText(await rawB.get("b-bad")) !== null;
+			const b = guardWellFormed(hostView(rawB, countsB, bBad), "things", { maxPages: 2 });
+			expect(await b.count({ k: "a" })).toBe(251);
+			expect(countsB.walkPages).toBe(2);
+			expect(await bBad()).toBe(false);
+		} finally {
+			await other.close();
+		}
+	});
+
+	test("a per-document heal that loses every compare-and-set says so once, without the id (A R2-A6)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await raw().put("buyer@example.com", { k: "a", note: "x\uD800" });
+		const counts: Counts = { walkPages: 0 };
+		const view = hostView(raw(), counts, async () => true);
+		const losing: StorageCollection<unknown> = {
+			...view,
+			// Every repair loses to a (simulated) concurrent writer.
+			compareAndSet: async () => ({ applied: false }),
+			updateIf: async () => {
+				throw Object.assign(new Error("invalid input syntax for type json"), { code: "22P02" });
+			},
+		};
+		const c = guardWellFormed(losing, "things");
+		await expect(c.updateIf("buyer@example.com", { where: {}, set: { k: "b" } })).rejects.toThrow(
+			/type json/,
+		);
+		const gaveUp = error.mock.calls.map((a) => String(a[0])).filter((l) => /gave up/.test(l));
+		// One line per exhausted heal, not one per attempt: the row's own heal, the
+		// walk reaching it, and the row's own heal again on the one retry.
+		expect(gaveUp).toHaveLength(3);
+		for (const line of gaveUp) {
+			expect(line).toMatch(/things\/id#[0-9a-f]{8}/);
+			expect(line).not.toMatch(/buyer|example/);
+		}
 	});
 });

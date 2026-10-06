@@ -26,16 +26,25 @@ a guarded collection:
   compare-and-set — losing to, and never undoing, a concurrent writer — and runs the
   call once more. The host's query API has no way to skip an unreadable row, so
   repair-then-retry is the resilient read it allows. It is a one-time cost per
-  legacy row. The walk is shared per collection NAME by every concurrent caller in
-  the process (EmDash hands each request fresh collection objects), resumes where it
-  stopped when it reaches its 1,000-page budget, fails fast for 60 s after a walk
-  that saw no unreadable row, and runs past the sweep's query meter
-  (`UNMETERED_COLLECTION`), since that budget is for D1 and the heal only runs on
-  Postgres.
-- **Ids are refused.** Every id-taking method (`get`, `getVersioned`, `put`,
-  `compareAndSet`, `delete`, `compareAndDelete`, `updateIf`) rejects an id holding a
-  lone surrogate or NUL with `IllFormedIdError` (`code: "STORAGE_ILL_FORMED_ID"`).
-  On Postgres the driver folds such ids into one row, so repairing them would merge
-  documents.
-- **`where` operands are repaired** like stored text, so a lookup by the raw value
-  finds the repaired row on every dialect.
+  legacy row. The walk is shared by every concurrent caller of one collection in one
+  database (EmDash hands each request fresh collection objects, so it is keyed by the
+  host's database handle and the collection name, not by object). A caller whose
+  query failed before a walk finished retries without walking again. A walk resumes
+  where it stopped when it reaches its 1,000-page budget, a walk from the start that
+  saw no unreadable row makes failing calls fail fast for 60 s, and the walk runs
+  past the sweep's query meter (`UNMETERED_COLLECTION`), since that budget is for D1
+  and the heal only runs on Postgres. A per-document repair that loses every
+  compare-and-set logs it once.
+- **Ids can never create a row ill-formed.** `put` and a create-if-absent
+  `compareAndSet` (null revision) reject an id holding a lone surrogate or NUL with
+  `IllFormedIdError` (`code: "STORAGE_ILL_FORMED_ID"`): on Postgres the driver folds
+  such ids into one row, so two spellings would silently become one document. The
+  methods that address an EXISTING row (`get`, `getVersioned`, `delete`,
+  `compareAndDelete`, `compareAndSet` with a revision, and the update-only
+  `updateIf`) pass the id through unchanged, so an id built from a legacy document's
+  stored text (a reservation's sku, a buyer's email) still reaches its row. A NUL in
+  such an id answers "absent" on Postgres, which refuses it as a parameter.
+- **`where` operands match both spellings.** An ill-formed string operand matches
+  its repaired text (how the guard stores it now) and its raw text (how a legacy
+  SQLite or D1 row still holds it); a raw spelling holding NUL is left out, since
+  Postgres refuses it.
