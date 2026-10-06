@@ -143,10 +143,12 @@ async function upload(drive: Drive = {}) {
 	const request = new Request(new URL(downloadUploadPath(productId), SITE), {
 		method: "POST",
 		headers,
-		body,
+		body: body as BodyInit | null,
 	});
-	const r2 = drive.bucket === undefined ? makeBucket() : drive.bucket;
-	if (r2 === null) delete virtualEnv[DOWNLOADS_BINDING];
+	// `bucket: null` is a deployment with no binding; the recorder still exists,
+	// unbound, so every case can assert it was never written.
+	const r2 = drive.bucket ?? makeBucket();
+	if (drive.bucket === null) delete virtualEnv[DOWNLOADS_BINDING];
 	else virtualEnv[DOWNLOADS_BINDING] = r2.bucket;
 	const dispatcher = makeDispatcher(drive.answer ?? { productKind: "digital" });
 	const cache = { set: vi.fn() };
@@ -362,8 +364,9 @@ describe("which product", () => {
 	});
 
 	test("no DOWNLOADS binding on this deployment → 503 naming the setup step, nothing read", async () => {
-		const { response, json, dispatcher } = await upload({ bucket: null });
+		const { response, json, dispatcher, r2 } = await upload({ bucket: null });
 		expect(response.status).toBe(503);
+		expect(r2.puts).toEqual([]);
 		expect(json.error?.code).toBe("DOWNLOADS_NOT_CONFIGURED");
 		expect(json.error?.message).toContain("DOWNLOADS");
 		expect(dispatcher.calls).toEqual([]);
