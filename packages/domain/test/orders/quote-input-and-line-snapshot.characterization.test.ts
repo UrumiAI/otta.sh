@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { cents, currency, money, type Currency } from "../../src/money/cents.js";
 import {
 	idempotencyKey,
@@ -49,31 +49,50 @@ vi.mock("../../src/pricing/quote.js", async (importOriginal) => {
 
 const GOLDEN = new URL("./quote-input-and-line-snapshot.golden.json", import.meta.url);
 const RECORD = process.env["OTTA_RECORD_CHARACTERIZATION"] === "1";
-const recorded: Record<string, unknown> = RECORD
-	? {}
-	: (JSON.parse(readFileSync(GOLDEN, "utf8")) as Record<string, unknown>);
-const recording: Record<string, unknown> = {};
+/**
+ * A name-filtered run (`-t`) skips cases, so it cannot tell an orphaned golden
+ * entry from one whose case it did not run: the orphan check stands down.
+ */
+const FILTERED = process.argv.some(
+	(arg) => arg === "-t" || arg.startsWith("-t=") || arg.startsWith("--testNamePattern"),
+);
+/**
+ * The recording. In record mode it is SEEDED from the existing file and merged
+ * into, never replaced, so re-recording a subset (`-t`), or a run in which a case
+ * throws before it pins, keeps every other entry as it was.
+ */
+const golden: Record<string, unknown> = existsSync(GOLDEN)
+	? (JSON.parse(readFileSync(GOLDEN, "utf8")) as Record<string, unknown>)
+	: {};
+const pinned = new Set<string>();
 
-/** Compare against the recording, by bytes; or, when recording, keep the value. */
+/** Compare against the recording, by bytes; or, when recording, merge the value in. */
 function pin(name: string, value: unknown): void {
 	// Round-trip once so a Date and an ISO string compare the same way on both sides.
 	const actual = JSON.parse(JSON.stringify(value)) as unknown;
+	pinned.add(name);
 	if (RECORD) {
-		recording[name] = actual;
-		writeFileSync(GOLDEN, `${JSON.stringify(sortedTop(recording), null, "\t")}\n`);
+		golden[name] = actual;
+		const sorted = Object.fromEntries(
+			Object.keys(golden)
+				.toSorted()
+				.map((key) => [key, golden[key]]),
+		);
+		writeFileSync(GOLDEN, `${JSON.stringify(sorted, null, "\t")}\n`);
 		return;
 	}
-	expect(name in recorded, `no recording for "${name}"`).toBe(true);
-	expect(JSON.stringify(actual, null, "\t")).toBe(JSON.stringify(recorded[name], null, "\t"));
+	expect(name in golden, `no recording for "${name}"`).toBe(true);
+	expect(JSON.stringify(actual, null, "\t")).toBe(JSON.stringify(golden[name], null, "\t"));
 }
 
-function sortedTop(value: Record<string, unknown>): Record<string, unknown> {
-	return Object.fromEntries(
-		Object.keys(value)
-			.toSorted()
-			.map((key) => [key, value[key]]),
-	);
-}
+/** No orphans: on a full compare run, every golden entry was pinned by some case. */
+afterAll(() => {
+	if (RECORD || FILTERED) return;
+	expect(
+		Object.keys(golden).filter((key) => !pinned.has(key)),
+		"golden entries no case pinned (stale: delete them, or re-record)",
+	).toEqual([]);
+});
 
 const USD = currency("USD");
 const INR = currency("INR");

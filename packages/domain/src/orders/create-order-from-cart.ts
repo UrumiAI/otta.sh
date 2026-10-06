@@ -270,8 +270,9 @@ export async function createOrderFromCart(
 				productId: pc.productId,
 				sku: brandSku(line.sku),
 				title: pc.title,
-				// Physical lines adopt their cart reservation; digital carry none (§6).
-				reservationId: physical ? asReservationId(line.reservationId) : null,
+				// A physical line adopts its cart reservation; the helper drops it from a
+				// digital one (§6).
+				reservationId: asReservationId(line.reservationId),
 			}),
 		);
 		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
