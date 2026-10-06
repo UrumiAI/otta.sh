@@ -3218,8 +3218,8 @@ accordion   block_id settings:payments
                                                          → clear-payment-secret {secret}
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
-               context "The settings below are shown as saved. Crypto (x402) checkout
-                        stays off until a destination wallet is set."
+               context "The settings below are shown as saved. x402 payments are not
+                        available yet. These settings are kept for when they are."
                banner alert (cond) a stored http sign-in page saved before the https
                      rule: "The links in sign-in emails point to an http page, so their
                      tokens travel unencrypted when clicked — change this address to https. …"

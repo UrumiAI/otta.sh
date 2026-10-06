@@ -189,9 +189,9 @@ const DEFAULT_CURRENCY = "USD";
  * The stores' own options plus the payment gateways.
  *
  * Gateways are PASSED IN rather than resolved here because resolving them is
- * asynchronous — the x402 wiring reads `payTo` and its facilitator credential
- * from kv — and this constructor is synchronous by design (a client is built per
- * invocation and must stay cheap). `makeCommerceClient` is already async, so it
+ * asynchronous — the x402 wiring reads `payTo` and its networks from kv — and
+ * this constructor is synchronous by design (a client is built per invocation
+ * and must stay cheap). `makeCommerceClient` is already async, so it
  * is the natural place for that await; see `make-commerce-client.ts`.
  */
 export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
@@ -287,7 +287,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
 			// Whatever the composition root could wire, and nothing more. INC-C5 fills
-			// the `x402` slot (its facilitator now runs over `ctx.http`); `stripe`
+			// the `x402` slot (`payments/x402-wiring.ts`); `stripe`
 			// arrives with the rest of the payment topology. A method with no gateway
 			// here is still REFUSED by the domain, loudly, rather than minted as a
 			// silently unpayable order — which is why an empty map stays a correct

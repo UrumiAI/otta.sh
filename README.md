@@ -122,7 +122,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 | `@otta-sh/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
 | `@otta-sh/store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
 | `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
+| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (settles nothing until the ADR-0028 content gate). |
 | `@otta-sh/plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Themes pages, plus the product editor's Pricing & stock cards and the products list's Price / Stock columns. |
@@ -157,7 +157,7 @@ breaking changes before 1.0.
 ([`DEPLOYMENT.md`](./DEPLOYMENT.md)); a one-click / hosted Workers deployment is coming soon.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
-cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
+cart, checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
 shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
 an email API is configured and the Settings "Sign-in page address" (`settings:loginLinkUrl`)
 points at the storefront's `/account/verify` page.

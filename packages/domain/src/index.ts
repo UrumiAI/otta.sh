@@ -359,6 +359,24 @@ export {
 	type X402Proof,
 } from "./ports/payment-gateway.js";
 export type {
+	X402DecodedPayment,
+	X402DecodeResult,
+	X402MalformedDetail,
+	X402MatchResult,
+	X402MismatchField,
+	X402NotOfferedDetail,
+	X402Offer,
+	X402OfferResult,
+	X402OpaquePayload,
+	X402PaymentRequired,
+	X402PaymentRequirements,
+	X402Rail,
+	X402SettleResult,
+	X402UnavailableCause,
+	X402UnconfirmedCause,
+	X402VerifyResult,
+} from "./ports/x402-rail.js";
+export type {
 	CancellationReason,
 	CancellationRefund,
 	CancellationRestockPending,

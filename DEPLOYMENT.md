@@ -25,9 +25,9 @@ staging-only.
 > Workers deployment is coming soon.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
-> discounts, entitlements, reporting, and settings (the magic-link email needs the email API
-> and a sign-in page URL, §3 Email). The reference **storefront** covers
+> checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+> shipping, discounts, entitlements, reporting, and settings (the magic-link email needs the
+> email API and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
@@ -367,13 +367,16 @@ order of appearance in a deployment's life:
 > boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
 > `packages/payments-stripe/src/index.ts`.
 
-> **x402 settles against a real facilitator over `ctx.http`.** The configured facilitator
-> credential goes **on the wire** as `Authorization: Bearer …` to the facilitator host, so
-> provision a credential that was minted to be sent. The facilitator host must be in the
-> plugin's `allowedHosts` — it is seeded at **build** time from the site's Astro config, not
-> from `kv`, so changing facilitators is a rebuild, not a settings edit. The pay-to address
-> and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
-> and live alongside it in Settings.
+> **x402 does not take payments yet.** The old receipt-forwarding settle route
+> (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
+> content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+> ships. The settings below still save, so a deployment can be configured ahead of it. The
+> facilitator credential is meant to go **on the wire** as `Authorization: Bearer …` to the
+> facilitator host, so provision a credential that was minted to be sent. The facilitator
+> host must be in the plugin's `allowedHosts` — it is seeded at **build** time from the
+> site's Astro config, not from `kv`, so changing facilitators is a rebuild, not a settings
+> edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
+> configuration, not credentials, and live alongside it in Settings.
 
 - **Email** — with no email API URL baked in at build time there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
@@ -467,8 +470,8 @@ the provider is simply unconfigured and no host is granted for it.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
-`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender and
-the x402 facilitator client — so the allowlist is the perimeter for `api.stripe.com` too. This
+`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender —
+so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
@@ -703,4 +706,4 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
 | An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
-| An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
+| An outbound call to Stripe or the email provider never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

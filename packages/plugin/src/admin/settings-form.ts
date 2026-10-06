@@ -234,7 +234,10 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		noun: "x402 facilitator API key",
 		hint: "Your x402 facilitator's API key",
 		check: checkOpaqueToken,
-		removeEffect: "Crypto (x402) checkout stops working until a new key is saved.",
+		// ADR-0028 increment 2: nothing reads this key until the x402 content gate
+		// ships, so the copy must not claim a removal breaks anything today.
+		removeEffect:
+			"Nothing uses this key yet. x402 payments are not available until x402 support ships.",
 		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
 		whereToFind: "your x402 facilitator's dashboard",
 	},
@@ -1362,7 +1365,7 @@ function paymentsGroup(
 			// what is stored.
 			{
 				type: "context",
-				text: "The settings below are shown as saved. Crypto (x402) checkout stays off until a destination wallet is set.",
+				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
 			},
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form

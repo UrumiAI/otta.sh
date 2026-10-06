@@ -2,8 +2,8 @@
  * `sendOrderEmailsNow` — the settle routes' inline, best-effort order-email attempt
  * (ADR-0005, amended 2026-10-02), driven directly over a REAL document store.
  *
- * The route suites (`stripe-settle-route.test.ts`, `x402-settle-route.test.ts`) pin
- * that a dispatch problem can never change a settle's status. This file pins the
+ * The route suite (`stripe-settle-route.test.ts`) pins that a dispatch problem can
+ * never change a settle's status. This file pins the
  * helper's own budget rules, which a route-level case cannot observe precisely:
  *
  *  - a replay or no-op costs ONE order read — the sender (two kv reads) is built only

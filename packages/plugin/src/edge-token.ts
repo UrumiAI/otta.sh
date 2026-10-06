@@ -1,18 +1,19 @@
 /**
- * The CHEAP OUTER GATE both public settlement routes run first.
+ * The CHEAP OUTER GATE a public settlement route runs first.
  *
- * `webhooks/stripe/settle` (INC-C1b) introduced it; `entitlements/x402/settle`
- * (INC-C5 revision 2, review B2) needs exactly the same thing for exactly the
- * same reason, so it lives here rather than being copied — one gate, one set of
- * semantics, one place to get the constant-time comparison right.
+ * `webhooks/stripe/settle` (INC-C1b) introduced it and is its one caller today.
+ * The x402 page-gate route that shared it, `entitlements/x402/settle`, was
+ * retired by ADR-0028 increment 2; that ADR's `x402/pay` route reuses this gate
+ * (Decision 11), so it stays here rather than inside the Stripe route — one
+ * gate, one set of semantics, one place to get the constant-time comparison
+ * right.
  *
- * WHAT IT IS AND IS NOT. It is NOT the trust anchor of either route: a forged
- * Stripe webhook is stopped by the Stripe HMAC and a forged x402 receipt by the
- * facilitator, both verified unconditionally and neither switchable off by any
- * token. This is the layer in front of that — it lets a public route refuse an
- * UNATTRIBUTED request before it reads another kv key, builds a gateway, opens a
- * store, or (on the x402 route) spends a metered third-party facilitator call and
- * a Worker subrequest on a stranger's well-formed-but-bogus proof.
+ * WHAT IT IS AND IS NOT. It is NOT the trust anchor of the route: a forged
+ * Stripe webhook is stopped by the Stripe HMAC, verified unconditionally and not
+ * switchable off by any token. This is the layer in front of that — it lets a
+ * public route refuse an UNATTRIBUTED request before it reads another kv key,
+ * builds a gateway, opens a store, or spends a metered third-party call and a
+ * Worker subrequest on a stranger's well-formed-but-bogus input.
  *
  * PASS-THROUGH WHEN UNSET, mirroring `service/src/auth.ts`'s `requireServiceToken`
  * ("token unset ⇒ next()"): an un-provisioned deploy degrades to
