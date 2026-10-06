@@ -37,6 +37,8 @@ import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import type { SendOrderEmailsNowOptions } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS } from "../src/settle-deadline.js";
+import type { PluginContext, StorageAccess } from "../src/types.js";
+import { busyStorage } from "./helpers/busy-storage.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -110,6 +112,22 @@ function adminClient(
 	orderEmails: Omit<SendOrderEmailsNowOptions, "deadline">,
 ): InProcessAdminOrdersClient {
 	return new InProcessAdminOrdersClient(harness.ctx, { gateways, orderEmails });
+}
+
+// Review round 2: an unverified refund is resolved by a person.
+async function unverified(id: OrderId, key: string, amount: number) {
+	await harness.stores.orderStore.reserveRefund({
+		orderId: id,
+		amount: cents(amount),
+		currency: USD,
+		kind: "gateway",
+		gateway: "stripe",
+		refundRef: null,
+		reason: null,
+		refundedBy: "admin",
+		idempotencyKey: toIdempotencyKey(key),
+	});
+	await harness.stores.orderStore.markRefundUnverified(toIdempotencyKey(key));
 }
 
 describe("an admin write sends its email at once, in order", () => {
@@ -192,22 +210,6 @@ describe("an admin write sends its email at once, in order", () => {
 		const events = await harness.stores.orderStore.listEventsForOrder(id);
 		expect(events.at(-1)).toMatchObject({ toState: "processing", actor: "ops@example.test" });
 	});
-
-	// Review round 2: an unverified refund is resolved by a person.
-	async function unverified(id: OrderId, key: string, amount: number) {
-		await harness.stores.orderStore.reserveRefund({
-			orderId: id,
-			amount: cents(amount),
-			currency: USD,
-			kind: "gateway",
-			gateway: "stripe",
-			refundRef: null,
-			reason: null,
-			refundedBy: "admin",
-			idempotencyKey: toIdempotencyKey(key),
-		});
-		await harness.stores.orderStore.markRefundUnverified(toIdempotencyKey(key));
-	}
 
 	test("an unverified refund confirmed at the provider is recorded, closes the order and sends the refunded email now", async () => {
 		const id = await seedPaid("ord-unv-confirm");
@@ -518,6 +520,74 @@ describe("the console is told the truth when the email did not go", () => {
 		expect(await unconfigured.transitionOrder(bare, "processing", { idempotencyKey: "k" })).toEqual(
 			{ ok: true, transitioned: true, email: "no-recipient" },
 		);
+	});
+
+	/**
+	 * A context whose `orders.get` turns BUSY for every read made once the write's
+	 * email step has begun (`#sendEmailsNow` is on the stack) — the store failing
+	 * between the committed write and the email that ends it. Reads made by the write
+	 * itself, and every other call, are untouched; the failure is `busyStorage`'s.
+	 */
+	function ordersReadFailsAfterWrite(): PluginContext {
+		const storage = harness.ctx.storage as StorageAccess;
+		const busyOrders = busyStorage(storage)["orders"] as unknown as {
+			get: (...args: unknown[]) => Promise<unknown>;
+		};
+		const proxied = new Proxy(storage, {
+			get(target, collection, receiver) {
+				const real = Reflect.get(target, collection, receiver) as unknown;
+				if (collection !== "orders" || typeof real !== "object" || real === null) return real;
+				return new Proxy(real, {
+					get(inner, method, innerReceiver) {
+						const value = Reflect.get(inner, method, innerReceiver) as unknown;
+						if (typeof value !== "function") return value;
+						const fn = (value as (...args: unknown[]) => unknown).bind(inner);
+						if (method !== "get") return fn;
+						return (...args: unknown[]) =>
+							new Error().stack?.includes("sendEmailsNow") === true
+								? busyOrders.get(...args)
+								: fn(...args);
+					},
+				});
+			},
+		});
+		return { ...harness.ctx, storage: proxied } as PluginContext;
+	}
+
+	test("a store that turns busy after the write never fails it: the write answers ok with an email status", async () => {
+		// The one write with no order in hand (`resolveUnverifiedRefund`) reads it for
+		// the recipient check after committing; that read failing falls through to the
+		// ordinary path, whose drain read fails too — so the email is queued for the cron
+		// (and the write, which committed, still answers ok). Without the guard this case
+		// rejects with the store's busy error.
+		const card = await seedPaid("ord-busy-after");
+		await unverified(card, "k-unv-busy", 1500);
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = new InProcessAdminOrdersClient(ordersReadFailsAfterWrite(), {
+			gateways,
+			orderEmails: { emailSender: new FakeEmailSender() },
+		});
+		expect(
+			await orders.resolveUnverifiedRefund(card, {
+				refundKey: "k-unv-busy",
+				outcome: "confirmed",
+				refundRef: "re_busy",
+				resolvedBy: "ops@example.test",
+			}),
+		).toEqual({ ok: true, changed: true, fullyRefunded: true, email: "queued" });
+		errors.mockRestore();
+
+		// A write that holds its order makes no read for the check at all.
+		const x402 = await seedPaid("ord-busy-x402", X402_BUYER);
+		const moves = new InProcessAdminOrdersClient(ordersReadFailsAfterWrite(), {
+			gateways,
+			orderEmails: { emailSender: new FakeEmailSender() },
+		});
+		expect(await moves.transitionOrder(x402, "processing", { idempotencyKey: "k" })).toEqual({
+			ok: true,
+			transitioned: true,
+			email: "no-recipient",
+		});
 	});
 
 	test("a store with no email provider reports unconfigured, and claims nothing", async () => {

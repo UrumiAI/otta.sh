@@ -6,12 +6,10 @@
  * recipient" and never emailed (ADR-0028 Decision 7). The domain's check is the
  * looser of the two by design, so the reverse need not hold.
  *
- * The site does not depend on `@otta-sh/domain`, so the domain module is imported
- * by path: it is pure (no IO), and this keeps the drift check without adding a
- * workspace dependency for one test.
+ * `@otta-sh/domain` is a devDependency of the site for this check only.
  */
+import { isEmailAddress } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { isEmailAddress } from "../../../packages/domain/src/money/ids.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../src/lib/email.js";
 
 /** Addresses a buyer can really type — plus the site's own edge cases. */
