@@ -178,6 +178,22 @@ describe("bad payloads reach the facilitator zero times", () => {
 			corrupt((p) => (p.payload.authorization.validBefore = " 1740672154")),
 			"valid_before",
 		],
+		[
+			"validAfter past uint256",
+			corrupt((p) => (p.payload.authorization.validAfter = (2n ** 256n).toString())),
+			"valid_after",
+		],
+		[
+			"validBefore past uint256",
+			corrupt((p) => (p.payload.authorization.validBefore = (2n ** 256n).toString())),
+			"valid_before",
+		],
+		["maxTimeoutSeconds zero", corrupt((p) => (p.accepted.maxTimeoutSeconds = 0)), "shape"],
+		[
+			"a leading byte-order mark",
+			encodeHeader(`\uFEFF${JSON.stringify(specPaymentPayload())}`),
+			"json",
+		],
 		// value (Decision 3)
 		[
 			"value not divisible by 10^4",
@@ -364,6 +380,58 @@ describe("bad payloads reach the facilitator zero times", () => {
 			cause: "offer_mismatch",
 		});
 		expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
+	});
+
+	test("a spread copy with edited public fields is refused, with zero calls (identity, not shape)", async () => {
+		const { rail, facilitator } = makeRail({ networks: [BASE, BASE_SEPOLIA] });
+		const decoded = decodeOrThrow(rail, SPEC_PAYMENT_SIGNATURE_HEADER);
+		const offer = offerOrThrow(rail);
+		const edited = { ...decoded, network: BASE, amount: cents(999) };
+		expect(rail.matchOffer(edited, offer)).toEqual({
+			ok: false,
+			reason: "PAYMENT_MISMATCH",
+			field: "payload",
+		});
+		expect(await rail.verify(edited, offer)).toEqual({
+			outcome: "unavailable",
+			cause: "offer_mismatch",
+		});
+		expect(await rail.settle(edited, offer)).toEqual({
+			outcome: "unconfirmed",
+			cause: "offer_mismatch",
+		});
+		// Even an unedited copy is not the object decode returned.
+		expect(rail.matchOffer({ ...decoded }, offer)).toMatchObject({ field: "payload" });
+		expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
+	});
+
+	test("an offer from another rail, or a copy of ours, is refused with zero calls", async () => {
+		const { rail, facilitator } = makeRail();
+		const payment = decodeOrThrow(rail, SPEC_PAYMENT_SIGNATURE_HEADER);
+		const foreign = offerOrThrow(makeRail().rail);
+		const copied = { ...offerOrThrow(rail) };
+		for (const offer of [foreign, copied]) {
+			expect(await rail.verify(payment, offer)).toEqual({
+				outcome: "unavailable",
+				cause: "offer_mismatch",
+			});
+			expect(await rail.settle(payment, offer)).toEqual({
+				outcome: "unconfirmed",
+				cause: "offer_mismatch",
+			});
+		}
+		expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
+	});
+
+	test("a validBefore of exactly uint256 max decodes", () => {
+		const { rail } = makeRail();
+		const max = (2n ** 256n - 1n).toString();
+		expect(
+			decodeOrThrow(
+				rail,
+				corrupt((p) => (p.payload.authorization.validBefore = max)),
+			).validBefore,
+		).toBe(2n ** 256n - 1n);
 	});
 
 	test("verify and settle refuse, without a call, a payment this adapter did not decode", async () => {

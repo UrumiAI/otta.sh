@@ -29,8 +29,10 @@ export const MAX_HEADER_LENGTH = 16 * 1024;
  *  base64url alphabet is refused rather than guessed at. */
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/u;
 const NONCE = /^0x[0-9a-fA-F]{64}$/u;
-/** Decimal digits only, at most uint256's 78. */
+/** Decimal digits only, at most uint256's 78 (the value is bounded below). */
 const UNIX_SECONDS = /^[0-9]{1,78}$/u;
+/** EIP-3009's `validAfter` / `validBefore` are uint256. */
+const UINT256_MAX = 2n ** 256n - 1n;
 /** A CAIP-2 `eip155` network; the chain id becomes part of the payment key. */
 const EIP155_NETWORK = /^eip155:([1-9][0-9]{0,31})$/u;
 /**
@@ -74,17 +76,18 @@ export interface ParsedPayment {
 }
 
 /**
- * The decoded payloads this module minted. The token handed to the domain is an
- * empty frozen object, so the domain can neither read the payload nor build one
- * that `verify` or `settle` would send: a token that is not a key here is
- * refused before any call.
+ * The decoded payments this module minted, keyed by the FROZEN PAYMENT OBJECT
+ * `decode` returned — not by its payload token. A spread copy keeps the token
+ * but is a different object, so a copy whose public fields were edited (another
+ * network, another amount) is not a key here and is refused before any call. The
+ * domain can neither read the payload nor build a payment `verify` or `settle`
+ * would send.
  */
-const parsedByToken = new WeakMap<X402OpaquePayload, ParsedPayment>();
+const parsedByPayment = new WeakMap<X402DecodedPayment, ParsedPayment>();
 
 export function parsedPaymentOf(payment: X402DecodedPayment): ParsedPayment | undefined {
-	const token: unknown = payment.payload;
-	if (typeof token !== "object" || token === null) return undefined;
-	return parsedByToken.get(token as X402OpaquePayload);
+	if (typeof payment !== "object" || payment === null) return undefined;
+	return parsedByPayment.get(payment);
 }
 
 const USD = currency("USD");
@@ -104,7 +107,9 @@ function base64ToText(header: string): string | undefined {
 		const binary = atob(header);
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		// `ignoreBOM: true` keeps a leading BOM in the text, where JSON.parse then
+		// refuses it, rather than silently dropping bytes the client sent.
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 	} catch {
 		return undefined;
 	}
@@ -146,7 +151,7 @@ export function decodePaymentHeader(header: string): X402DecodeResult {
 	if (
 		typeof maxTimeoutSeconds !== "number" ||
 		!Number.isSafeInteger(maxTimeoutSeconds) ||
-		maxTimeoutSeconds < 0
+		maxTimeoutSeconds <= 0
 	) {
 		return malformed("shape");
 	}
@@ -161,12 +166,8 @@ export function decodePaymentHeader(header: string): X402DecodeResult {
 		return malformed("address");
 	}
 	if (typeof nonce !== "string" || !NONCE.test(nonce)) return malformed("nonce");
-	if (typeof validAfter !== "string" || !UNIX_SECONDS.test(validAfter)) {
-		return malformed("valid_after");
-	}
-	if (typeof validBefore !== "string" || !UNIX_SECONDS.test(validBefore)) {
-		return malformed("valid_before");
-	}
+	if (!isUint256(validAfter)) return malformed("valid_after");
+	if (!isUint256(validBefore)) return malformed("valid_before");
 	// Decision 3's grammar, divisibility and safe-integer bound in one place. The
 	// signed `value` is what settles; an `accepted.amount` that says otherwise
 	// makes the payment's amount ambiguous, so it is refused too.
@@ -189,25 +190,40 @@ export function decodePaymentHeader(header: string): X402DecodeResult {
 		signature,
 		authorization: { from, to, value, validAfter, validBefore, nonce },
 	};
-	// The one place an opaque token is made: an empty object whose only meaning
-	// is its identity as a key in `parsedByToken`.
+	// The opaque token carries nothing: the port requires a payload field the
+	// domain cannot read, and an empty frozen object is exactly that. What the
+	// adapter reads back is keyed by the payment object itself.
 	const token = Object.freeze({}) as X402OpaquePayload;
-	parsedByToken.set(token, parsed);
+	const payment: X402DecodedPayment = Object.freeze({
+		paymentKey: `eip3009:${chainId}:${asset}:${from}:${nonce}`.toLowerCase(),
+		network,
+		payer: from.toLowerCase(),
+		nonce: nonce.toLowerCase(),
+		amount: cents,
+		currency: USD,
+		validAfter: BigInt(validAfter),
+		validBefore: BigInt(validBefore),
+		payload: token,
+	});
+	parsedByPayment.set(payment, parsed);
+	return { ok: true, payment };
+}
 
-	return {
-		ok: true,
-		payment: Object.freeze({
-			paymentKey: `eip3009:${chainId}:${asset}:${from}:${nonce}`.toLowerCase(),
-			network,
-			payer: from.toLowerCase(),
-			nonce: nonce.toLowerCase(),
-			amount: cents,
-			currency: USD,
-			validAfter: BigInt(validAfter),
-			validBefore: BigInt(validBefore),
-			payload: token,
-		}),
-	};
+function isUint256(value: unknown): value is string {
+	return typeof value === "string" && UNIX_SECONDS.test(value) && BigInt(value) <= UINT256_MAX;
+}
+
+/**
+ * An x402 header value (`PAYMENT-REQUIRED`, `PAYMENT-RESPONSE`): JSON, UTF-8,
+ * then standard base64 with padding — the reference client's `safeBase64Encode`
+ * (`typescript/packages/core/src/utils/index.ts:148`), and the exact inverse of
+ * what {@link decodePaymentHeader} accepts.
+ */
+export function encodeX402Header(value: unknown): string {
+	const bytes = new TextEncoder().encode(JSON.stringify(value));
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
 }
 
 function isAddress(value: unknown): value is string {

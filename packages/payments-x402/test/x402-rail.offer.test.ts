@@ -121,6 +121,8 @@ describe("X402Rail.offer", () => {
 		});
 
 		test.each([
+			["the zero address", "0x0000000000000000000000000000000000000000"],
+			["the zero address as CAIP-10", `${BASE_SEPOLIA}:0x0000000000000000000000000000000000000000`],
 			["not an address", "treasury"],
 			["39 hex digits", "0x209693Bc6afc0C5328bA36FaF03C514EF312287"],
 			["surrounding whitespace", ` ${SPEC_PAY_TO}`],
@@ -166,6 +168,10 @@ describe("X402Rail.offer", () => {
 	test.each([
 		["not a URL", "facilitator"],
 		["not http(s)", "ftp://facilitator.test/x402"],
+		[
+			"plain http: the key and the payment would travel in the clear",
+			"http://facilitator.test/x402",
+		],
 		["carrying a query", "https://facilitator.test/x402?route=1"],
 		["carrying credentials", "https://user:pass@facilitator.test/x402"],
 	])("an unusable facilitator URL (%s) is not offered", (_label, facilitatorUrl) => {
@@ -174,6 +180,19 @@ describe("X402Rail.offer", () => {
 			ok: false,
 			reason: "NOT_OFFERED",
 			detail: "facilitator",
+		});
+	});
+
+	test.each([
+		["empty", ""],
+		["relative", "/x402/products/ebook"],
+		["not http(s)", "javascript:alert(1)"],
+	])("a resource URL that is not absolute http(s) (%s) is not offered", (_label, resourceUrl) => {
+		const { rail } = makeRail();
+		expect(rail.offer(ONE_CENT, resourceUrl)).toEqual({
+			ok: false,
+			reason: "NOT_OFFERED",
+			detail: "resource",
 		});
 	});
 

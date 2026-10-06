@@ -30,8 +30,9 @@ export interface X402RailOptions {
 	/**
 	 * The facilitator's BASE URL (the build-time `X402_FACILITATOR_URL`); the
 	 * adapter appends `/verify` and `/settle`, as the reference client does. An
-	 * absolute http(s) URL with no query, fragment or userinfo; anything else
-	 * leaves the rail unconfigured (nothing offered, nothing sent).
+	 * absolute `https:` URL with no query, fragment or userinfo; anything else —
+	 * plain `http:` included, because the bearer key and the payment travel in
+	 * it — leaves the rail unconfigured (nothing offered, nothing sent).
 	 */
 	facilitatorUrl: string;
 	/**
@@ -61,12 +62,22 @@ function parseBaseUrl(raw: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-	if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+	if (url.protocol !== "https:") return undefined;
 	if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "") {
 		return undefined;
 	}
 	if (raw.includes("?") || raw.includes("#")) return undefined;
 	return url.href.replace(/\/+$/u, "");
+}
+
+function isAbsoluteHttpUrl(value: unknown): boolean {
+	if (typeof value !== "string" || value === "") return false;
+	try {
+		const { protocol } = new URL(value);
+		return protocol === "https:" || protocol === "http:";
+	} catch {
+		return false;
+	}
 }
 
 function refuse(detail: Extract<X402OfferResult, { ok: false }>["detail"]): X402OfferResult {
@@ -122,7 +133,13 @@ function matchOffer(payment: X402DecodedPayment, against: X402Offer): X402MatchR
  *
  * WHAT IT DOES NOT DO. It does not check the amount or the time window against
  * an order or a clock (the domain does, Decision 5 step 4), and it holds no
- * state between calls beyond which offers and payloads it minted.
+ * state between calls beyond which offers and payments it minted.
+ *
+ * ONE INSTANCE PER REQUEST'S FLOW. `offer`, `verify` and `settle` must be called
+ * on the same rail, with the very objects `offer` and `decode` returned: an
+ * offer is recognised by identity in this instance, a payment by identity in
+ * this module. A copy, or an offer from another instance, is refused with no
+ * call (`offer_mismatch`).
  */
 export function createX402Rail(options: X402RailOptions): X402Rail {
 	const baseUrl = parseBaseUrl(options.facilitatorUrl);
@@ -146,6 +163,7 @@ export function createX402Rail(options: X402RailOptions): X402Rail {
 
 	function offer(price: Money, resourceUrl: string): X402OfferResult {
 		if (!configured) return refuse("facilitator");
+		if (!isAbsoluteHttpUrl(resourceUrl)) return refuse("resource");
 		if (price.currency !== "USD") return refuse("currency");
 		if (!Number.isSafeInteger(price.amount) || price.amount <= 0) return refuse("amount");
 		if (networks.length === 0) return refuse("network");
@@ -190,9 +208,11 @@ export function createX402Rail(options: X402RailOptions): X402Rail {
 	/** The parsed payment and OUR requirements for it, or why there are none. */
 	function prepare(payment: X402DecodedPayment, against: X402Offer) {
 		if (!configured || baseUrl === undefined) return { ok: false, cause: "unconfigured" } as const;
+		// Identity first: an offer this rail did not build is never read at all.
+		if (!minted.has(against)) return { ok: false, cause: "offer_mismatch" } as const;
 		const parsed = parsedPaymentOf(payment);
 		const match = matchOffer(payment, against);
-		if (parsed === undefined || !match.ok || !minted.has(against)) {
+		if (parsed === undefined || !match.ok) {
 			return { ok: false, cause: "offer_mismatch" } as const;
 		}
 		const body = JSON.stringify({
@@ -204,6 +224,18 @@ export function createX402Rail(options: X402RailOptions): X402Rail {
 	}
 
 	async function verify(
+		payment: X402DecodedPayment,
+		against: X402Offer,
+	): Promise<X402VerifyResult> {
+		try {
+			return await verifyOnce(payment, against);
+		} catch {
+			// Never reached by design; the port promises verify never throws.
+			return { outcome: "unavailable", cause: "transport" };
+		}
+	}
+
+	async function verifyOnce(
 		payment: X402DecodedPayment,
 		against: X402Offer,
 	): Promise<X402VerifyResult> {
@@ -220,6 +252,19 @@ export function createX402Rail(options: X402RailOptions): X402Rail {
 	}
 
 	async function settle(
+		payment: X402DecodedPayment,
+		against: X402Offer,
+	): Promise<X402SettleResult> {
+		try {
+			return await settleOnce(payment, against);
+		} catch {
+			// Never reached by design. If it were, money may have moved, so the
+			// answer is the conservative one: unconfirmed, flagged for a check.
+			return { outcome: "unconfirmed", cause: "transport" };
+		}
+	}
+
+	async function settleOnce(
 		payment: X402DecodedPayment,
 		against: X402Offer,
 	): Promise<X402SettleResult> {

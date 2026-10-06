@@ -11,6 +11,9 @@ calls it yet. The domain use case that does comes in increment 7.
   `X402VerifyResult` and `X402SettleResult`, with the requirements, offer and decoded-payment
   shapes. The decoded payment carries the payment key, network, payer, nonce, the amount in
   exact `Cents`, and the time window as `bigint` seconds.
-- The decoded payment's wire payload is an opaque type the domain cannot build.
+- The decoded payment's wire payload is an opaque type the domain cannot build. A request uses
+  one rail and passes back the exact offer and payment objects it was given; a copy is refused
+  with no facilitator call.
+- `X402PaymentRequired` has an optional `error`, and `NOT_OFFERED` can name `resource`.
 - `verify` answers valid, invalid or unavailable. `settle` answers settled, rejected or
   unconfirmed, and `rejected` means proven pre-broadcast.

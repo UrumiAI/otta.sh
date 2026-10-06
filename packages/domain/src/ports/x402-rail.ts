@@ -21,6 +21,14 @@ import type { Cents, Currency, Money } from "../money/cents.js";
  * throw. `verify` and `settle` do IO through the adapter's injected fetch and
  * never throw either: "could not ask" is an outcome (`unavailable` /
  * `unconfirmed`), never an exception and never "the answer was no".
+ *
+ * ONE RAIL, THE SAME OBJECTS. A request uses ONE rail instance for `offer`,
+ * `verify` and `settle`, and passes back the exact objects it returned: the
+ * `X402Offer` from `offer` and the `X402DecodedPayment` from `decode`. A copy
+ * (a spread, a rebuilt object, an offer from another instance) is refused with
+ * no facilitator call — `PAYMENT_MISMATCH` (`payload`) from `matchOffer`,
+ * `offer_mismatch` from `verify` / `settle` — so nothing outside the adapter can
+ * change what is sent.
  */
 export interface X402Rail {
 	/**
@@ -70,6 +78,9 @@ export interface X402PaymentRequirements {
  *  answers a refused payment. */
 export interface X402PaymentRequired {
 	readonly x402Version: 2;
+	/** Why payment is required (v2 §5.1.2, optional), e.g. the field a refused
+	 *  payment got wrong. `offer` never sets it. */
+	readonly error?: string;
 	readonly resource: { readonly url: string };
 	readonly accepts: readonly X402PaymentRequirements[];
 }
@@ -82,8 +93,15 @@ export interface X402Offer {
 
 /** Why no offer: a non-USD price, a zero price, a `payTo` that projects onto
  *  no offered network, a configured network outside the asset table (or none
- *  configured), or an unusable facilitator configuration. */
-export type X402NotOfferedDetail = "currency" | "amount" | "pay_to" | "network" | "facilitator";
+ *  configured), an unusable facilitator configuration, or a resource URL that
+ *  is not an absolute http(s) URL. */
+export type X402NotOfferedDetail =
+	| "currency"
+	| "amount"
+	| "pay_to"
+	| "network"
+	| "facilitator"
+	| "resource";
 
 export type X402OfferResult =
 	| { readonly ok: true; readonly offer: X402Offer }
@@ -161,8 +179,18 @@ export type X402MatchResult =
 	| { readonly ok: true; readonly requirements: X402PaymentRequirements }
 	| { readonly ok: false; readonly reason: "PAYMENT_MISMATCH"; readonly field: X402MismatchField };
 
-/** Why the facilitator could not be asked, or its answer was not a verdict.
- *  `offer_mismatch` and `unconfigured` mean no call was made at all. */
+/**
+ * Why the facilitator could not be asked, or its answer was not a verdict.
+ *
+ * `unconfigured` and `offer_mismatch` mean NO CALL WAS MADE. In correct code
+ * neither can happen after a successful `offer` and `matchOffer` on the same
+ * rail with the same objects, so the domain must treat them as programming
+ * errors (log loudly), not as facilitator weather. They stay inside the
+ * `unavailable` / `unconfirmed` arms on purpose: those arms already mean "no
+ * verdict", and their conservative handling (503, or a flag for a manual check)
+ * is safe for a case that should never occur — a separate arm would add a branch
+ * every caller must get right for no money-safety gain.
+ */
 export type X402UnavailableCause =
 	| "unconfigured"
 	| "offer_mismatch"

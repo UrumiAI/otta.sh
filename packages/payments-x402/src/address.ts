@@ -38,6 +38,8 @@ export function sameAddress(a: unknown, b: unknown): boolean {
  *   id is its `<namespace>:<reference>`, compared as an EXACT string: the chain
  *   reference `08453` is not `8453`. Guessing that two spellings mean the same
  *   chain is exactly the kind of leniency a fund destination must not have.
+ * - The zero address projects nowhere: USDC refuses a transfer to it, so a
+ *   `payTo` of zero is a misconfiguration, never a destination.
  * - Anything else projects nowhere, so the gate offers nothing (fail closed).
  *
  * The result keeps the stored letter case byte for byte. The stored setting is
@@ -46,6 +48,13 @@ export function sameAddress(a: unknown, b: unknown): boolean {
  * be a worse bug than refusing one.
  */
 export function projectPayTo(stored: string, network: string): string | undefined {
+	const projected = projectAddress(stored, network);
+	return projected === undefined || ZERO_ADDRESS.test(projected) ? undefined : projected;
+}
+
+const ZERO_ADDRESS = /^0x0{40}$/u;
+
+function projectAddress(stored: string, network: string): string | undefined {
 	if (EVM_ADDRESS.test(stored)) return stored;
 	const caip10 = CAIP10_EVM_ACCOUNT.exec(stored);
 	if (caip10 === null) return undefined;

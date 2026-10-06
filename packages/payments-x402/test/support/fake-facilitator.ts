@@ -9,6 +9,12 @@
  * The final `Response.url` is settable, because the adapter treats a response
  * whose `url` differs from the one it asked for as a redirect (Decision 8). By
  * default the fake answers from the URL it was asked, as `fetch` does.
+ *
+ * `{ bridge: true }` answers the way EmDash's Cloudflare Worker Loader bridge
+ * does (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`):
+ * a plain `{status, ok, headers, text(), json()}` with no `url` and no `body`.
+ * And because that bridge sends `init` over RPC, where an `AbortSignal` cannot
+ * be serialised, bridge mode throws a `DataCloneError` for any `init.signal`.
  */
 
 export const FAKE_FACILITATOR_URL = "https://facilitator.test/x402";
@@ -51,7 +57,10 @@ export interface FakeFacilitator {
 	onSettle(script: FakeScript): void;
 }
 
-export function createFakeFacilitator(baseUrl = FAKE_FACILITATOR_URL): FakeFacilitator {
+export function createFakeFacilitator(
+	baseUrl = FAKE_FACILITATOR_URL,
+	options: { bridge?: boolean } = {},
+): FakeFacilitator {
 	const calls = { verify: 0, settle: 0, other: 0 };
 	const requests: RecordedRequest[] = [];
 	const scripts: { verify: FakeScript; settle: FakeScript } = {
@@ -60,6 +69,9 @@ export function createFakeFacilitator(baseUrl = FAKE_FACILITATOR_URL): FakeFacil
 	};
 
 	async function fetch(url: string, init?: RequestInit): Promise<Response> {
+		if (options.bridge === true && init?.signal != null) {
+			throw new DOMException("Could not serialize object of type AbortSignal.", "DataCloneError");
+		}
 		const path = url.startsWith(baseUrl) ? url.slice(baseUrl.length) : url;
 		const headers: Record<string, string> = {};
 		new Headers(init?.headers).forEach((value, key) => {
@@ -83,7 +95,7 @@ export function createFakeFacilitator(baseUrl = FAKE_FACILITATOR_URL): FakeFacil
 			script = scripts.settle;
 		} else {
 			calls.other += 1;
-			return answer(url, { status: 404, body: "not found" });
+			return finish(url, { status: 404, body: "not found" });
 		}
 		if ("throws" in script) throw script.throws;
 		if ("hangIgnoringSignal" in script) return new Promise<Response>(() => {});
@@ -94,7 +106,25 @@ export function createFakeFacilitator(baseUrl = FAKE_FACILITATOR_URL): FakeFacil
 				});
 			});
 		}
-		return answer(url, script);
+		return finish(url, script);
+	}
+
+	async function finish(url: string, script: FakeAnswer): Promise<Response> {
+		const response = answer(url, script);
+		if (options.bridge !== true) return response;
+		// The bridge's host side buffers the body and serialises the headers.
+		const text = await response.text();
+		const headers: Record<string, string> = {};
+		response.headers.forEach((value, key) => {
+			headers[key] = value;
+		});
+		return {
+			status: response.status,
+			ok: response.status >= 200 && response.status < 300,
+			headers: new Headers(headers),
+			text: async () => text,
+			json: async () => JSON.parse(text) as unknown,
+		} as unknown as Response;
 	}
 
 	return {

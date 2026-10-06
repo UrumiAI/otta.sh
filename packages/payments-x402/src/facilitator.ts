@@ -46,6 +46,17 @@ const REASON_TOKEN = /^[A-Za-z0-9_]{1,128}$/u;
  * `*_transaction_failed` — never to a reason listed here. A facilitator that
  * spells its reasons some other way simply gets more manual checks, which is the
  * safe direction.
+ *
+ * THE RESIDUAL ASSUMPTION, stated plainly. The catch-path reasons on this list
+ * (`*_insufficient_balance`, `*_signature`, `*_valid_after`, `*_valid_before`)
+ * come from `parseEip3009TransferError` matching a contract revert message. With
+ * the reference signer (viem's `writeContract`), such a revert surfaces while the
+ * transaction is being simulated and gas estimated — BEFORE it is broadcast —
+ * because a reverted transaction is never sent. A facilitator with a custom
+ * signer that broadcasts without estimating, and then maps a mined revert's
+ * message to one of these reasons with `transaction: ""`, would break that. We
+ * accept it: a mined revert moved no money either, and the reference
+ * facilitator reports a mined failure with its hash (`eip3009.ts:306-313`).
  */
 export const PRE_BROADCAST_REASONS: ReadonlySet<string> = new Set([
 	// Not enough funds
@@ -80,7 +91,34 @@ export const PRE_BROADCAST_REASONS: ReadonlySet<string> = new Set([
 	"invalid_exact_evm_eip3009_not_supported",
 ]);
 
-export type FacilitatorFetch = (url: string, init: RequestInit) => Promise<Response>;
+/**
+ * What the adapter needs from a fetch response — no more, because the platforms
+ * differ. A real `Response` (EmDash's in-process `ctx.http`, the test sandbox)
+ * has all of it. EmDash's Cloudflare Worker Loader bridge
+ * (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`) returns
+ * a plain object `{status, ok, headers, text(), json()}` with NO `url` and NO
+ * `body`: the host side follows redirects itself, re-checks `allowedHosts` and
+ * strips `Authorization` on every cross-origin hop (`:164-209`, `:207`), and
+ * buffers the whole body (`:192`).
+ */
+export interface FacilitatorResponse {
+	readonly status: number;
+	readonly headers: { get(name: string): string | null };
+	/** The final URL, where the platform reports one. */
+	readonly url?: string;
+	readonly body?: ReadableStream<Uint8Array> | null;
+	text(): Promise<string>;
+}
+
+/**
+ * The injected egress — the plugin passes `ctx.http.fetch`. Called with a plain
+ * `init` (method, headers as a plain object, a string body, `redirect`) and
+ * deliberately NO `signal`: the Worker Loader bridge sends `init` over RPC
+ * (`bridge.httpFetch(url, init)`, `runner-CQpZcxVz.mjs:999`), and an
+ * `AbortSignal` is not structured-cloneable, so passing one would fail every
+ * call there. The adapter's own timeout race bounds the wait on every platform.
+ */
+export type FacilitatorFetch = (url: string, init: RequestInit) => Promise<FacilitatorResponse>;
 
 type Exchange =
 	| { readonly ok: true; readonly status: number; readonly json: unknown }
@@ -106,15 +144,48 @@ function is2xx(status: number): boolean {
 	return status >= 200 && status < 300;
 }
 
-/** `undefined` for "too large", otherwise the bytes read. */
-async function readBounded(response: Response): Promise<Uint8Array | undefined> {
+function cancelBody(response: FacilitatorResponse): void {
+	const { body } = response;
+	if (body !== undefined && body !== null) void body.cancel().catch(() => {});
+}
+
+/**
+ * The body as text, at most {@link MAX_RESPONSE_BYTES} of UTF-8, or `"oversize"`.
+ *
+ * With a stream (a real `Response`) the read stops at the bound. Without one
+ * (the Worker Loader bridge) `text()` is all there is: the host has already
+ * buffered the whole body, so the bound on what the HOST reads is the
+ * platform's, and the adapter enforces 16 KiB on what it accepts.
+ */
+async function readBoundedText(
+	response: FacilitatorResponse,
+): Promise<string | "oversize" | "not_utf8"> {
 	const declared = response.headers.get("content-length");
 	if (declared !== null && /^[0-9]+$/u.test(declared) && Number(declared) > MAX_RESPONSE_BYTES) {
-		void response.body?.cancel().catch(() => {});
-		return undefined;
+		cancelBody(response);
+		return "oversize";
 	}
-	if (response.body === null) return new Uint8Array(0);
-	const reader = response.body.getReader();
+	const { body } = response;
+	if (body === undefined || body === null || typeof body.getReader !== "function") {
+		const text = await response.text();
+		if (typeof text !== "string") throw new TypeError("response text is not a string");
+		if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) return "oversize";
+		return text;
+	}
+	const bytes = await readBoundedStream(body);
+	if (bytes === undefined) return "oversize";
+	try {
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return "not_utf8";
+	}
+}
+
+/** `undefined` for "too large", otherwise the bytes read. */
+async function readBoundedStream(
+	stream: ReadableStream<Uint8Array>,
+): Promise<Uint8Array | undefined> {
+	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	for (;;) {
@@ -140,14 +211,21 @@ async function readBounded(response: Response): Promise<Uint8Array | undefined> 
  * One POST to the facilitator, bounded in time and size.
  *
  * The timeout covers the whole exchange — the request AND the body — and is a
- * race of its own as well as an abort signal, so a `fetch` that ignores its
- * signal still cannot hold the caller past the bound.
+ * race of its own, so it holds whatever the platform does with the request (no
+ * `signal` is passed: see {@link FacilitatorFetch}).
  *
- * A final response whose `url` is not the URL requested was redirected. The
- * platform's fetch follows redirects itself (EmDash's `ctx.http` re-checks each
- * hop against `allowedHosts`; the test sandbox's does not), so a redirected
- * answer is never trusted as a verdict. `redirect: "manual"` is asked for as
- * well; where it is honoured, a 3xx comes back and is unavailable by status.
+ * A final response whose `url` is a non-empty string other than the URL
+ * requested was redirected, and is never trusted as a verdict. Where the
+ * platform reports no `url` (the Worker Loader bridge), the redirect rule is the
+ * platform's own: it follows at most five hops, each re-checked against
+ * `allowedHosts`, with `Authorization` stripped on a cross-origin hop. A
+ * redirect can then only land on another allowlisted host (Stripe, the email
+ * API), whose answer is not a well-formed verdict and so classifies as
+ * unavailable. `redirect: "manual"` is asked for as well; where it is honoured,
+ * a 3xx comes back and is unavailable by status.
+ *
+ * Nothing in here throws: any failure of the injected fetch or of the response
+ * object it returns (even a fetch that resolves to `null`) is `transport`.
  */
 export async function postToFacilitator(
 	fetchFn: FacilitatorFetch,
@@ -156,45 +234,38 @@ export async function postToFacilitator(
 	body: string,
 	timeoutMs: number,
 ): Promise<Exchange> {
-	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<Exchange>((resolve) => {
-		timer = setTimeout(() => {
-			controller.abort();
-			resolve({ ok: false, cause: "timeout" });
-		}, timeoutMs);
+		timer = setTimeout(() => resolve({ ok: false, cause: "timeout" }), timeoutMs);
 	});
 
 	const work = (async (): Promise<Exchange> => {
-		let response: Response;
+		let response: FacilitatorResponse;
 		try {
-			response = await fetchFn(url, {
-				method: "POST",
-				headers,
-				body,
-				redirect: "manual",
-				signal: controller.signal,
-			});
+			response = await fetchFn(url, { method: "POST", headers, body, redirect: "manual" });
+			if (typeof response !== "object" || response === null)
+				return { ok: false, cause: "transport" };
+			if (typeof response.url === "string" && response.url !== "" && response.url !== url) {
+				cancelBody(response);
+				return { ok: false, cause: "redirect" };
+			}
+			if (typeof response.status !== "number" || isUnavailableStatus(response.status)) {
+				cancelBody(response);
+				return { ok: false, cause: "status" };
+			}
 		} catch {
-			return { ok: false, cause: controller.signal.aborted ? "timeout" : "transport" };
+			return { ok: false, cause: "transport" };
 		}
-		if (response.url !== url) {
-			void response.body?.cancel().catch(() => {});
-			return { ok: false, cause: "redirect" };
-		}
-		if (isUnavailableStatus(response.status)) {
-			void response.body?.cancel().catch(() => {});
-			return { ok: false, cause: "status" };
-		}
-		let bytes: Uint8Array | undefined;
+		let text: string;
 		try {
-			bytes = await readBounded(response);
+			const read = await readBoundedText(response);
+			if (read === "oversize") return { ok: false, cause: "oversize" };
+			if (read === "not_utf8") return { ok: false, cause: "body" };
+			text = read;
 		} catch {
-			return { ok: false, cause: controller.signal.aborted ? "timeout" : "transport" };
+			return { ok: false, cause: "transport" };
 		}
-		if (bytes === undefined) return { ok: false, cause: "oversize" };
 		try {
-			const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 			return { ok: true, status: response.status, json: JSON.parse(text) as unknown };
 		} catch {
 			return { ok: false, cause: "body" };

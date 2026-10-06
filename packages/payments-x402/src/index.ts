@@ -13,7 +13,8 @@ import {
 
 export { createX402Rail, type X402RailOptions } from "./rail.js";
 export { X402_USDC_ASSETS, type X402UsdcAsset } from "./assets.js";
-export type { FacilitatorFetch } from "./facilitator.js";
+export type { FacilitatorFetch, FacilitatorResponse } from "./facilitator.js";
+export { encodeX402Header } from "./decode.js";
 
 /**
  * The receipt-forwarding model is retired (ADR-0028, increment 2).

@@ -17,11 +17,14 @@ export const ONE_CENT: Money = { amount: cents(1), currency: currency("USD") };
 /** An adapter over a fresh fake facilitator, typed as the PORT: every test
  *  drives `X402Rail`, not the implementation. Defaults: the spec example's
  *  `payTo`, Base Sepolia only, no key. */
-export function makeRail(options: Partial<X402RailOptions> = {}): {
+export function makeRail(
+	options: Partial<X402RailOptions> = {},
+	fake: { bridge?: boolean } = {},
+): {
 	rail: X402Rail;
 	facilitator: FakeFacilitator;
 } {
-	const facilitator = createFakeFacilitator();
+	const facilitator = createFakeFacilitator(undefined, fake);
 	const rail: X402Rail = createX402Rail({
 		facilitatorUrl: facilitator.baseUrl,
 		payTo: SPEC_PAY_TO,

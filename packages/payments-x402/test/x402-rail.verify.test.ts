@@ -41,7 +41,9 @@ describe("X402Rail.verify — what gets sent", () => {
 		expect(request?.url).toBe(`${FAKE_FACILITATOR_URL}/verify`);
 		expect(request?.method).toBe("POST");
 		expect(request?.headers["content-type"]).toBe("application/json");
-		expect(request?.hadSignal).toBe(true);
+		// No AbortSignal: the Worker Loader bridge sends `init` over RPC, where a
+		// signal cannot be serialised. The adapter's own race bounds the wait.
+		expect(request?.hadSignal).toBe(false);
 		expect(request?.body).toEqual({
 			x402Version: 2,
 			paymentPayload: {
