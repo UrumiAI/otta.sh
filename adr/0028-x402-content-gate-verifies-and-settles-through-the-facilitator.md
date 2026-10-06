@@ -4,7 +4,9 @@
 - Date: 2026-10-05
 - Decided by: the product owner, 2026-10-05 (issue #376 part 2): standard x402, digital products
   only, USD stores first, USDC on Base, access re-checked on every download, and a full refund
-  revokes it.
+  revokes it. The two questions left open in the first draft were answered on 2026-10-06: live
+  payments use any facilitator that takes no credential or a static API key (Decision 7), and a
+  lost `/settle` answer is flagged for a manual check, with no chain read in v1 (Decision 5).
 - Refines: [ADR-0008](./0008-order-refunds.md) (x402 refunds stay manual and recorded; this record
   says what "refund" means for a gate order). Builds on [ADR-0011](./0011-entitlement-check-authentication.md)
   (the `orderId` scope is how an agent downloads again) and [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)
@@ -159,8 +161,8 @@ Three surfaces, one per tier.
 rejected: it would let any anonymous GET add an order to storage.
 
 **B. With a `PAYMENT-SIGNATURE` header.** The site calls `x402/pay` and passes the header through
-unchanged. The plugin then works through these steps, cheapest first. Every step up to step 5
-writes nothing and makes no network call.
+unchanged. The plugin then works through these steps, cheapest first. Steps 1–4 write nothing
+and make no network call.
 
 1. **Decode strictly.** The header must be at most 8 KiB of base64 that decodes to JSON with the
    v2 `PaymentPayload` shape (v2 §5.2.2). That means `x402Version === 2`, `accepted`, and
@@ -328,12 +330,14 @@ is no longer needed, because the recipient is an input we supply, not a claim we
 
   The adapter keeps today's rule that "could not ask" is never reported as "the answer was no"
   (`packages/payments-x402/src/index.ts:48-96`).
-- **Accepted residual: an unconfirmed settlement whose nonce is now used.** It needs a person.
-  ADR-0026 forbids marking a gateway order paid by hand, so in v1 the operator checks the chain
-  (payer, nonce, `payTo`). If the money arrived, they send it back to the payer and record a
-  manual refund. This case needs `/settle` to broadcast and then lose its answer. Closing it
-  automatically means reading `authorizationState` on-chain, which adds an RPC host to
-  `allowedHosts`. That is deferred (open question 2).
+- **A lost `/settle` answer is flagged for a manual check** (decided by the product owner,
+  2026-10-06). This is the unconfirmed settlement whose nonce is now used. It needs `/settle` to
+  broadcast and then lose its answer. **v1 does not read the chain**: no Base RPC host is added to
+  `allowedHosts`. The order is flagged, as above. ADR-0026 forbids marking a gateway order paid by
+  hand, so the operator checks the chain themselves (payer, nonce, `payTo`). If the money arrived,
+  they send it back to the payer, record a manual refund and use Mark refunded (Decision 6). A
+  chain read (`authorizationState(from, nonce)` and the transaction receipt) that would close this
+  automatically is a possible later increment, not part of this plan.
 
 ### 6. What a gate order is, and what "refund" means for it
 
@@ -369,21 +373,24 @@ is no longer needed, because the recipient is an input we supply, not a claim we
   client does (`coinbase/x402` `typescript/packages/core/src/http/httpFacilitatorClient.ts:196,220,272`).
   The increment that does this updates DEPLOYMENT.md and the changeset. **No request input ever
   reaches the URL.**
-- **Which facilitator.** For staging and tests we use `https://x402.org/facilitator`, which needs
-  no credential. Its `/supported` (fetched 2026-10-05) lists `exact` on `eip155:84532` only, so it
-  cannot settle on Base mainnet. A mainnet store needs a facilitator that supports
-  `eip155:8453`. For which one, see open question 1.
-- **Credentials.** The adapter takes an **auth-header strategy per call path**, the same seam the
-  reference client exposes (`createAuthHeaders(path)`, `httpFacilitatorClient.ts:16,215-217`).
-  v1 ships two strategies:
-  - **none**;
-  - **a static bearer** from the existing write-only `settings:x402FacilitatorApiKey`.
-
-  The Coinbase CDP facilitator does not use a static key. It needs a fresh **JWT signed with the
-  CDP API key secret** (Ed25519 or ES256, bound to the method, host and path, valid for 120 s).
-  That would be a third strategy, with the key id and secret in write-only kv (open question 1).
-  No credential, and no part of a payload, ever appears in an error, a log line or a returned
-  reason (`index.ts:84-86`).
+- **Which facilitator: any facilitator that takes a simple key** (decided by the product owner,
+  2026-10-06). The deployer picks the facilitator; Otta names none. For staging and tests we use
+  `https://x402.org/facilitator`, which needs no credential. Its `/supported` (fetched
+  2026-10-05) lists `exact` on `eip155:84532` (Base Sepolia) only, so it cannot settle on Base
+  mainnet. **A live Base deployment therefore needs a facilitator that supports `exact` on
+  `eip155:8453` and accepts no credential or a static API key.**
+- **Credentials: none, or a static bearer key.** The adapter sends either no `Authorization`
+  header, or `Authorization: Bearer <key>` from the existing write-only
+  `settings:x402FacilitatorApiKey` (as `index.ts:301-304` does today). It builds the headers per
+  call path, the seam the reference client exposes (`createAuthHeaders(path)`,
+  `httpFacilitatorClient.ts:16,215-217`), so another scheme can be added later without changing
+  the flow. No credential, and no part of a payload, ever appears in an error, a log line or a
+  returned reason (`index.ts:84-86`).
+- **Known limitation: the Coinbase CDP facilitator is not supported in v1.** CDP does not take a
+  static key. Every request needs a fresh **JWT signed with the CDP API key secret** (Ed25519 or
+  ES256, bound to the method, host and path, valid for 120 s). Supporting it would mean a signing
+  strategy plus a key id and secret in write-only kv. That is a possible later increment, not part
+  of increment 2.
 - **Bounds.** Each call has a timeout: 10 s for `/verify`, and 30 s for `/settle`, which waits for
   inclusion on-chain (`DEFAULT_FACILITATOR_TIMEOUT_MS`, `index.ts:229`). Redirects are not
   followed: a 3xx counts as unavailable. Response bodies are read up to 16 KiB.
@@ -445,7 +452,8 @@ of Decision 4.
   plausible transaction hash would get a file served without payment. That is inherent to x402's
   design, where the facilitator is the party that broadcasts. It is bounded by the facilitator
   being the deployer's own allowlisted choice. Checking every settlement on-chain would remove
-  that trust, and it shares the RPC-host follow-up with Decision 5's residual.
+  that trust. It needs the same Base RPC host that v1 deliberately leaves out (Decision 5), so it
+  is a possible later increment.
 - **A price change between the 402 and the payment.** The authorization fixes the old amount, so
   step 3 refuses it with a fresh 402 at the new price. We never charge a stale price, and never
   ask the facilitator about one. Once an order exists, its snapshot governs (Decision 5).
@@ -484,8 +492,8 @@ Increments 2–5 must ship these tests. Each one must fail first.
   - Unavailability is classified for transport errors, timeouts, 408/429/5xx/401/403, a non-JSON
     2xx, a wrong shape, a 3xx and an oversize body. A truthy-but-not-`true` answer is refused.
   - A settle answer with a mismatched network, payer or amount counts as unconfirmed.
-  - The auth strategies send the credential only in the header, and no credential appears in any
-    error.
+  - With no key configured, no `Authorization` header is sent. With a key, it is sent only as
+    `Authorization: Bearer`, and no credential appears in any error.
 - **Domain** (contract suites on fake, SQLite, Postgres and D1):
   - one authorization makes one order under concurrency;
   - the same transaction on another order is `RECEIPT_REBOUND`, concurrently too (#283);
@@ -530,8 +538,10 @@ Increments 2–5 must ship these tests. Each one must fail first.
   block: typically a few seconds.
 - A gate order has no email, so the buyer gets no receipt email. The `PAYMENT-RESPONSE` and the
   order link are the receipt.
-- Refunds are manual (Decision 6). An unconfirmed settlement with a used nonce needs a person
-  until the RPC follow-up lands (Decision 5).
+- Refunds are manual (Decision 6). A lost `/settle` answer with a used nonce needs a person,
+  because v1 does not read the chain (Decision 5).
+- The CDP facilitator, and any other facilitator that needs per-request signed credentials, cannot
+  be used in v1 (Decision 7).
 - We trust the facilitator's "settled" (Decision 10).
 - v1 speaks **x402 v2 only**: `PAYMENT-SIGNATURE`, `PAYMENT-REQUIRED` and `PAYMENT-RESPONSE`. A
   v1 client sending `X-PAYMENT` gets the v2 402 with `error: "x402Version 1 is not supported"`,
@@ -547,7 +557,7 @@ Increments 2–5 must ship these tests. Each one must fail first.
 2. **[Adapters]** `payments-x402`:
    - the asset table and requirements builder;
    - the payload decoder and local checks;
-   - the `/verify` and `/settle` client with auth strategies;
+   - the `/verify` and `/settle` client, with no credential or a static bearer key (no CDP JWT);
    - removal of `verifyReceipt`, the HMAC facilitator and `signature`;
    - the #283 changeset fixes.
 3. **[Domain]**:
@@ -569,15 +579,10 @@ Increments 2–5 must ship these tests. Each one must fail first.
 
 Increments 2–4 can land before part 1's streamer. Increment 5 needs downloads increment 3.
 
-## Open questions for the product owner
+**Possible later increments, outside this plan:**
+- a CDP facilitator auth strategy (a per-request signed JWT; Decision 7);
+- a chain read through a Base RPC host, which would resolve a lost `/settle` answer automatically
+  (Decision 5) and could check every settlement on-chain (Decision 10).
 
-1. **Which facilitator on Base mainnet?** `x402.org/facilitator` is testnet-only.
-   **Recommended default:** the Coinbase CDP facilitator, which supports `exact` on `eip155:8453`.
-   That means adding the CDP JWT auth strategy (Ed25519 via WebCrypto, so the plugin stays
-   sandbox-clean) to increment 2, with the key id and secret in write-only kv. Until this is
-   answered, increment 2 ships the "none" and "static bearer" strategies only, and the gate is
-   proven on Base Sepolia.
-2. **Read the chain to close the unconfirmed-settlement residual?** This would add a Base RPC host
-   to `allowedHosts`, so we could read `authorizationState(from, nonce)` and the transaction
-   receipt. **Recommended default:** not in v1. Keep the manual flag (Decision 5), and look again
-   if the flag is ever seen in production.
+No questions are open. Both questions in the first draft were answered by the product owner on
+2026-10-06 and are recorded in Decisions 5 and 7.
