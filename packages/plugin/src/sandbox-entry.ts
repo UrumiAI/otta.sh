@@ -11,7 +11,12 @@
  *  - construct `ctx.http` exactly like em-dash's `createHttpAccess`
  *    (`context.ts:619-671`): reject any host not in `ALLOWED_HOSTS`
  *    (`isHostAllowed`, `context.ts:601-611` — exact-match or `*`/`*.sub`
- *    wildcard) BEFORE ever calling the real `fetch`.
+ *    wildcard) BEFORE ever calling the real `fetch`. Its ANSWER has the shape
+ *    the production Worker Loader bridge gives a sandboxed plugin
+ *    (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`): a
+ *    plain `{status, ok, headers, text(), json()}` with the body already
+ *    buffered, and NO `url` and NO `body` stream — so a plugin that leans on
+ *    either fails here, in the sandbox suites, rather than only in production.
  *  - bind `ctx.storage` to the document store `sandbox-storage.ts` hands over,
  *    when there is one. That module is the injection seam the harness replaces
  *    (see its own doc): a store cannot be built inside the isolate, so the
@@ -68,7 +73,22 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 					`Plugin "otta" is not allowed to fetch from host "${hostname}". Allowed hosts: ${allowedHosts.join(", ")}`,
 				);
 			}
-			return globalThis.fetch(url, init);
+			const response = await globalThis.fetch(url, init);
+			const text = await response.text();
+			const headers: Record<string, string> = {};
+			response.headers.forEach((value, key) => {
+				headers[key] = value;
+			});
+			// The bridge's shape, not a `Response` (see the header). `HttpAccess`
+			// still says `Response` because em-dash's in-process `ctx.http` returns
+			// one; code that must run sandboxed uses only what both provide.
+			return {
+				status: response.status,
+				ok: response.status >= 200 && response.status < 300,
+				headers: new Headers(headers),
+				text: async () => text,
+				json: async () => JSON.parse(text) as unknown,
+			} as unknown as Response;
 		},
 	};
 }
