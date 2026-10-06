@@ -461,6 +461,12 @@ const BYTE_COUNT = /^(0|[1-9][0-9]{0,15})$/;
  * is a stale refusal. A retry the card makes after a lost answer carries a
  * FRESH watermark, so the key alone cannot dedupe it: the card's re-read does
  * (it finds its own key already attached and writes nothing).
+ *
+ * WHETHER THE OBJECT EXISTS IS NOT CHECKED HERE: the plugin cannot reach R2.
+ * The site holding the `DOWNLOADS` binding checks it before this write is
+ * dispatched (ADR-0029's 2026-10-06 amendment; the reference site's
+ * `download-attach-guard.ts`), so a key with nothing behind it never reaches
+ * this action there.
  */
 const attachDownloadAction: ProductsAction = async (client, payload) => {
 	const productId = readString(payload["productId"]);

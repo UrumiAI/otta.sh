@@ -108,9 +108,35 @@ forbids.
   uploaded file. Computing one would mean hashing the stream on the way to R2, which can be
   added without changing the wire.
 
+## Amendment, 2026-10-06: the save is checked against the bucket (issue #405)
+
+Decision 2 left one gap. The plugin validates the descriptor's shape, but it cannot reach R2,
+so a well-formed `dl/{productId}/{ULID}` key with no object behind it (from a console bug, or
+a stale or hand-made request) was saved, and every buyer's download of that product then
+answered 404.
+
+**The site's middleware checks the save before the plugin sees it**
+(`sites/staging/src/lib/download-attach-guard.ts`). On a POST to a plugin route by a user
+holding `plugins:manage`, if the body is the console's `products:attach-download` act, the
+middleware `head()`s the key in `DOWNLOADS`. With no object, or one of a different size from
+the descriptor's, it answers in the plugin's place with a refusal the Download file card
+shows ("Upload the file again"). With no `DOWNLOADS` binding it refuses too. If the bucket
+throws, it answers a retryable failure. Every other request passes through, and the body is
+read from a clone. The plugin and the card are unchanged, and the plugin is still the only
+writer.
+
+Two alternatives were rejected. The site could sign the descriptor for the plugin to verify,
+but that needs a secret shared between site and plugin. The endpoint could make the save
+itself, but that is a second write path into the plugin. Either is more machinery than one
+existence check needs.
+
+The check belongs to this site. Another site hosting the plugin needs the same check, or it
+keeps the gap.
+
 ### What would reopen this decision
 
 A second console request of any kind; the upload endpoint writing the product; the endpoint
 accepting a key, a path or a product kind from the request; the route moving under `/_`,
-dropping its origin guard, or going onto the middleware's exempt list; or a way to remove a
-product's file.
+dropping its origin guard, or going onto the middleware's exempt list; a way to remove a
+product's file; or a way for the descriptor's save to reach the plugin without the site's
+bucket check.

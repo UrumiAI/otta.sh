@@ -16,6 +16,8 @@
  *     (`products:attach-download`), where the domain validates it again. This
  *     endpoint writes NO product: the plugin stays the only writer of commerce
  *     truth, and the descriptor's switch is the one moment the file changes.
+ *     The site's middleware `head()`s the descriptor's key before that save
+ *     reaches the plugin (`download-attach-guard.ts`, issue #405).
  *
  * ── Who may upload ───────────────────────────────────────────────────────────
  * A signed-in EmDash user (`locals.user`, which EmDash's auth middleware sets
