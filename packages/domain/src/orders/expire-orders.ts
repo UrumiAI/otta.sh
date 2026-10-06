@@ -88,7 +88,20 @@ export async function expireOrdersBatch(
 	for (const id of ids) {
 		if (!mayContinue(options, attempted)) return { count: expired, drained: false };
 		attempted++;
-		const won = await deps.orderStore.expireWithOrder(id, now);
+		// ONE ORDER IS ONE UNIT (review round 2, A R2-A1): a throw from one order's
+		// flip or release is logged and the batch moves on, so it can neither end the
+		// tick early nor leave the orders after it holding their stock. Nothing is
+		// lost by catching: an order whose flip threw is still `pending` and listed
+		// next run; one whose release threw is `expired` with its release intent still
+		// outstanding (the document store records it with the flip), which the hold-intent
+		// sweeper completes.
+		let won: Awaited<ReturnType<OrderStore["expireWithOrder"]>>;
+		try {
+			won = await deps.orderStore.expireWithOrder(id, now);
+		} catch (err) {
+			logUnitFailure(`expiring order ${id}`, err);
+			continue;
+		}
 		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const { order } = won;
@@ -101,7 +114,11 @@ export async function expireOrdersBatch(
 				line.reservationId === null ? [] : [line.reservationId],
 			);
 			if (reservationIds.length > 0) {
-				await deps.inventoryStore.releaseAdoptedMany(reservationIds, order.id);
+				try {
+					await deps.inventoryStore.releaseAdoptedMany(reservationIds, order.id);
+				} catch (err) {
+					logUnitFailure(`releasing the holds of expired order ${order.id}`, err);
+				}
 			}
 		}
 		// Review I2: free the coupon too — symmetric with the inventory release.
@@ -113,8 +130,19 @@ export async function expireOrdersBatch(
 		// the plugin's coupon sweeper releases any redemption whose order is
 		// `expired` as the retry, which also covers an order whose stamp is missing.
 		if (order.totals.appliedCouponCode !== null) {
-			await deps.couponStore.releaseByOrder(order.id);
+			try {
+				await deps.couponStore.releaseByOrder(order.id);
+			} catch (err) {
+				logUnitFailure(`releasing the coupon of expired order ${order.id}`, err);
+			}
 		}
 	}
 	return { count: expired, drained: true };
+}
+
+/** One order's step failed; the batch goes on. The message only, never the stack's data. */
+function logUnitFailure(step: string, err: unknown): void {
+	console.error(`[domain] order expiry: ${step} failed; the batch continues`, {
+		error: err instanceof Error ? err.message : String(err),
+	});
 }

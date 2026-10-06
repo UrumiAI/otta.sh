@@ -48,38 +48,77 @@ export function toWellFormedText(value: string): string {
  */
 const FIELD_NAME = /^[a-z][A-Za-z0-9]{0,63}$/;
 
+/**
+ * The document fields whose value is a MAP keyed by data — a sku, an idempotency
+ * key, a variant key, a reservation or rate id — rather than by schema (the
+ * `Record<string, …>` fields of the stored documents). A key there can look like a
+ * field name (`beans250g`, a hex idempotency key) and still be a shopper's text,
+ * so every entry of such a map prints by position (review B L6).
+ */
+const MAP_FIELDS: ReadonlySet<string> = new Set([
+	"holds",
+	"lines",
+	"methods",
+	"mutations",
+	"pendingRenames",
+	"rates",
+	"refundRetries",
+	"stateCounts",
+	"variants",
+]);
+
+/**
+ * Whether an object's keys print by position: it is the value of a known map
+ * field, or any of its well-formed keys is not a field name (so it is a map keyed
+ * by data, and its field-name-shaped keys may be data too). An ill-formed key
+ * always prints by position, and on its own says nothing about its siblings.
+ */
+function keysArePositional(parentKey: string | undefined, keys: readonly string[]): boolean {
+	if (parentKey !== undefined && MAP_FIELDS.has(parentKey)) return true;
+	return keys.some((key) => isWellFormedText(key) && !FIELD_NAME.test(key));
+}
+
 /** A path segment for {@link findIllFormedText}'s answer: `a.b[2]`, `m.(key #1)`. */
 function join(path: string, segment: string | number): string {
 	if (typeof segment === "number") return `${path}[${String(segment)}]`;
 	return path === "" ? segment : `${path}.${segment}`;
 }
 
-function keySegment(key: string, position: number): string {
-	return FIELD_NAME.test(key) ? key : `(key #${String(position)})`;
+function keySegment(key: string, position: number, positional: boolean): string {
+	return positional || !FIELD_NAME.test(key) ? `(key #${String(position)})` : key;
 }
 
 /**
  * The path of the first string — value or object KEY — in a JSON-shaped value
  * that is not well formed, or `null` when there is none. The root string itself
  * is the empty path. The answer is safe to log: a key that is not a plain field
- * name (an ill-formed key included) is written `(key #n)`, its position in its
- * object, never its text.
+ * name (an ill-formed key included), and every key of a map keyed by data (see
+ * `MAP_FIELDS`), is written `(key #n)`, its position in its object, never its
+ * text.
  */
 export function findIllFormedText(value: unknown, path = ""): string | null {
+	return find(value, path, undefined);
+}
+
+function find(value: unknown, path: string, parentKey: string | undefined): string | null {
 	if (typeof value === "string") return isWellFormedText(value) ? null : path;
 	if (Array.isArray(value)) {
 		for (let i = 0; i < value.length; i++) {
-			const found = findIllFormedText(value[i], join(path, i));
+			const found = find(value[i], join(path, i), undefined);
 			if (found !== null) return found;
 		}
 		return null;
 	}
 	if (typeof value === "object" && value !== null) {
 		const entries = Object.entries(value);
+		const positional = keysArePositional(
+			parentKey,
+			entries.map(([key]) => key),
+		);
 		for (let i = 0; i < entries.length; i++) {
 			const [key, child] = entries[i] as [string, unknown];
 			if (!isWellFormedText(key)) return join(path, `(key #${String(i)})`);
-			const found = findIllFormedText(child, join(path, keySegment(key, i)));
+			const found = find(child, join(path, keySegment(key, i, positional)), key);
 			if (found !== null) return found;
 		}
 	}
@@ -103,19 +142,20 @@ export function findIllFormedText(value: unknown, path = ""): string | null {
  * row unreadable for good.
  */
 export function repairIllFormedText<T>(value: T, onDroppedKey?: (path: string) => void): T {
-	return repair(value, "", onDroppedKey) as T;
+	return repair(value, "", undefined, onDroppedKey) as T;
 }
 
 function repair(
 	value: unknown,
 	path: string,
+	parentKey: string | undefined,
 	onDroppedKey: ((path: string) => void) | undefined,
 ): unknown {
 	if (typeof value === "string") return toWellFormedText(value);
 	if (Array.isArray(value)) {
 		let out: unknown[] | undefined;
 		for (let i = 0; i < value.length; i++) {
-			const next = repair(value[i], join(path, i), onDroppedKey);
+			const next = repair(value[i], join(path, i), undefined, onDroppedKey);
 			if (next !== value[i]) {
 				out ??= value.slice();
 				out[i] = next;
@@ -125,6 +165,10 @@ function repair(
 	}
 	if (typeof value === "object" && value !== null) {
 		const entries = Object.entries(value);
+		const positional = keysArePositional(
+			parentKey,
+			entries.map(([key]) => key),
+		);
 		const repairedKeys = entries.map(([key]) => toWellFormedText(key));
 		// Which original entry each repaired key keeps: an already-well-formed key
 		// (only one can exist per repaired key — object keys are unique), else the first.
@@ -145,7 +189,7 @@ function repair(
 				onDroppedKey?.(join(path, `(key #${String(i)})`));
 				continue;
 			}
-			const next = repair(child, join(path, keySegment(key, i)), onDroppedKey);
+			const next = repair(child, join(path, keySegment(key, i, positional)), key, onDroppedKey);
 			if (nextKey !== key || next !== child) changed = true;
 			out.push([nextKey, next]);
 		}

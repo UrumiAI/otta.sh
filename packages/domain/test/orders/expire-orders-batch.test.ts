@@ -110,4 +110,42 @@ describe("bounded order expiry", () => {
 		}
 		expect(await expiredCount(orders)).toBe(0);
 	});
+
+	// Review round 2, A R2-A1: one order whose release throws (a legacy hold the
+	// store cannot address, say) must neither end the batch nor strand the holds of
+	// the orders after it. Each order is its own unit; its failure is logged.
+	test("a release that throws for one order: that order stays expired, the rest of the batch still runs", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		const release = vi.spyOn(h.inventory, "releaseAdoptedMany");
+		release.mockRejectedValueOnce(new Error("storage refused"));
+		const result = await expireOrdersBatch(h.expireDeps);
+		// The flip is durable, so the failed order still counts as expired.
+		expect(result).toEqual({ count: 3, drained: true });
+		expect(await expiredCount(orders)).toBe(3);
+		expect(release).toHaveBeenCalledTimes(3);
+		// The orders after the failing one had their holds returned.
+		expect(h.inventory.onHand("SKU-2")).toBe(5);
+		expect(h.inventory.onHand("SKU-3")).toBe(5);
+		expect(error).toHaveBeenCalledTimes(1);
+		expect(String(error.mock.calls[0]?.[0])).toMatch(/releasing the holds of expired order/);
+		error.mockRestore();
+	});
+
+	test("a flip that throws for one order: it stays pending for the next run, the rest still expire", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		const flip = vi.spyOn(h.orderStore, "expireWithOrder");
+		flip.mockRejectedValueOnce(new Error("storage down"));
+		const result = await expireOrdersBatch(h.expireDeps);
+		expect(result).toEqual({ count: 2, drained: true });
+		expect(await expiredCount(orders)).toBe(2);
+		expect((await h.orderStore.getById(orders[0]?.id ?? ("" as never)))?.state).toBe("pending");
+		expect(error).toHaveBeenCalledTimes(1);
+		expect(String(error.mock.calls[0]?.[0])).toMatch(/expiring order/);
+		error.mockRestore();
+		// The next run picks it up.
+		expect(await expireOrdersBatch(h.expireDeps)).toEqual({ count: 1, drained: true });
+		expect(h.inventory.onHand("SKU-1")).toBe(5);
+	});
 });

@@ -90,6 +90,45 @@ describe("findIllFormedText", () => {
 		expect(findIllFormedText({ shipTo: { city: "\uDC00" } })).toBe("shipTo.city");
 	});
 
+	test("every entry of a MAP prints by position, even one whose key looks like a field name (review B L6)", () => {
+		// A hex idempotency key or a sku like `beans250g` passes the field-name shape;
+		// below a map keyed by data it still prints as its position.
+		expect(findIllFormedText({ mutations: { abc123def456: { r: "\uD800" } } })).toBe(
+			"mutations.(key #0).r",
+		);
+		expect(findIllFormedText({ body: { lines: { beans250g: { title: "x\u0000" } } } })).toBe(
+			"body.lines.(key #0).title",
+		);
+		for (const map of [
+			"lines",
+			"mutations",
+			"holds",
+			"variants",
+			"pendingRenames",
+			"refundRetries",
+			"rates",
+			"methods",
+			"stateCounts",
+		]) {
+			expect(findIllFormedText({ [map]: { beans250g: "\uDC00" } }), map).toBe(`${map}.(key #0)`);
+		}
+		// An object with any key that is not a field name is a map too: all its keys
+		// print by position.
+		expect(findIllFormedText({ m: { "SKU-1": 1, beans250g: "\uD800" } })).toBe("m.(key #1)");
+		// A schema object below a map entry prints its field names again.
+		expect(findIllFormedText({ holds: { k1: { state: "held", note: "\uD800" } } })).toBe(
+			"holds.(key #0).note",
+		);
+	});
+
+	test("a key dropped under a map is reported by position (review B L6)", () => {
+		const dropped: string[] = [];
+		repairIllFormedText({ mutations: { abc123: 1, ["k\uD800"]: 2, ["k\uDC00"]: 3 } }, (p) =>
+			dropped.push(p),
+		);
+		expect(dropped).toEqual(["mutations.(key #2)"]);
+	});
+
 	test("a clean value — including non-string leaves — is null", () => {
 		expect(
 			findIllFormedText({ a: 1, b: null, c: true, d: ["x", { e: "\uD83D\uDE00" }], f: undefined }),
