@@ -1,11 +1,13 @@
 import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
+import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { CancellationReason, Order, OrderState } from "./model.js";
 import type { OrderStore, RefundRecord } from "../ports/order-store.js";
 import { cancelOrderWithRefund, type RestockSkip } from "./cancel-order.js";
 import { finishResolvedLatePaymentRefund } from "./late-payment.js";
 import { unverifiedRefundFlagPrefix } from "./refund-order.js";
+import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 
 /**
  * A person resolves a refund whose outcome is UNKNOWN (review round 2, ADR-0026
@@ -46,6 +48,15 @@ import { unverifiedRefundFlagPrefix } from "./refund-order.js";
  * The follow-up runs on a REPLAY of `confirmed` too, so a crash between the
  * finalize and the follow-up heals on the next click. Every step is keyed or
  * first-wins, so nothing is refunded, restocked or emailed twice.
+ *
+ * **Revocation (issue #376).** A `confirmed` answer that returned the buyer's money
+ * IN FULL revokes the order's download access, after the row and the follow-up are
+ * recorded: when the order is now `refunded` (the finalize completed the ceiling),
+ * or when the refund was a `cancellation`'s — which is always everything still
+ * refundable, whether or not the cancel itself then lands. A partial plain refund,
+ * a late payment's (an order that was never paid, so never granted anything) and a
+ * `voided` answer revoke nothing. It runs on the replay too, so a crash before it
+ * is finished by the next click.
  */
 export interface ResolveUnverifiedRefundCommand {
 	orderId: OrderId;
@@ -117,6 +128,12 @@ export interface ResolveUnverifiedRefundDeps {
 	inventoryStore?: InventoryStore;
 	/** Forwarded to the resumed cancel — see `CancelOrderWithRefundDeps`. */
 	isRetryable?: (err: unknown) => boolean;
+	/**
+	 * Revokes the order's download entitlements when a CONFIRMED refund returned the
+	 * money in full (issue #376) — see {@link resolveUnverifiedRefund}'s
+	 * "Revocation". Optional; the admin console's composition wires it.
+	 */
+	entitlementStore?: EntitlementStore;
 }
 
 export type ResolveUnverifiedRefundResult =
@@ -142,6 +159,12 @@ export async function resolveUnverifiedRefund(
 	const res = await attempt(deps, cmd, true);
 	if (!res.ok) return res;
 	const followUp = await finishPurpose(deps, cmd, res.row, res.changed);
+	if (res.outcome === "confirmed" && deps.entitlementStore !== undefined) {
+		const order = await deps.orderStore.getById(cmd.orderId);
+		if (order !== null && (order.state === "refunded" || res.row.purpose === "cancellation")) {
+			await revokeOrderEntitlements(deps.entitlementStore, order);
+		}
+	}
 	return {
 		ok: true,
 		outcome: res.outcome,

@@ -393,11 +393,11 @@ export interface CommerceClient {
 	 * `buyerRef`: the raw-email scope is operator-only and its secret is one the
 	 * sandbox does not and must not hold.
 	 *
-	 * DECLARED HERE, on the PORT: `entitlements/download-route.ts` calls it
-	 * through the client it is handed, so the port has to carry it. The
-	 * declaration was missing while that route constructed a concrete client
-	 * directly; INC-A6 routed it through `makeCommerceClient`, which returns the
-	 * port instead.
+	 * NOT THE DOWNLOAD GATE. It answers only "is a grant active". Since issue
+	 * #376 `entitlements/download-route.ts` no longer calls it: delivery also
+	 * needs the order's state, the product's kind and its file, so that route
+	 * reads the stores itself and keeps the whole gate in one place. This stays
+	 * the bare entitlement read, pinned by the client contract.
 	 */
 	checkEntitlement(
 		scope: { orderId?: string },

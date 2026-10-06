@@ -30,11 +30,13 @@ staging-only.
 > and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
-> customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Two page
-> surfaces are not built yet: the x402 payment gate and the download delivery page (both still
-> under issue #27). Deploying today gives you a browsable catalog, carts with real inventory
-> holds, magic-link customer accounts, and a Stripe card purchase end-to-end once Stripe is
-> configured (§3). When #27 closes, this banner shrinks to a version note.
+> customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
+> digital downloads are built too (issue #376): the merchant attaches a file to a digital
+> product in the admin, and a buyer downloads it from the order page. One page surface is not
+> built yet: the x402 payment gate (issue #27). Deploying today gives you a browsable
+> catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
+> and a Stripe card purchase end-to-end once Stripe is configured (§3). When #27 closes, this
+> banner shrinks to a version note.
 
 ## 1. Universal contracts
 
@@ -89,11 +91,56 @@ expired holds and queued emails drain at the Free pace (§5).
    wrangler whoami                                # confirm the right account
    wrangler d1 create YOUR-D1-DATABASE-NAME       # prints the database_id to paste in
    wrangler r2 bucket create your-media-bucket
+   wrangler r2 bucket create your-downloads-bucket  # PRIVATE: paid digital downloads
    ```
+
+   > **Never make the downloads bucket public.** It holds the files buyers pay for. The
+   > site Worker is its only reader, through the `DOWNLOADS` binding, and it re-checks the
+   > buyer's entitlement on every download (issue #376). So:
+   > - **never enable its Public Development URL** (r2.dev): in the dashboard, the bucket's
+   >   Settings → "Public Development URL"; on the command line,
+   >   `wrangler r2 bucket dev-url enable`;
+   > - **never connect a custom domain** to it: the bucket's Settings → "Custom Domains", or
+   >   `wrangler r2 bucket domain add`;
+   > - **never use the media bucket for it.** EmDash serves every key in the media bucket
+   >   publicly at `/_emdash/api/media/file/<key>`, so a paid file there is readable by
+   >   anyone who learns its key, including a buyer whose purchase was refunded. The build
+   >   fails if `DOWNLOADS` and `MEDIA` name the same bucket, and the site refuses media keys
+   >   under `dl/`, but neither can see a bucket's public-access settings.
+   >
+   > Check with `wrangler r2 bucket dev-url get your-downloads-bucket` (it should say
+   > disabled) and `wrangler r2 bucket domain list your-downloads-bucket` (it should list
+   > none). An existing deployment that leaves `DOWNLOADS` out of its config still builds:
+   > downloads are then off, the order pages show no Download link, and the download URL
+   > answers 404.
+   >
+   > **Attaching a file.** The merchant uploads it in the product editor: a Digital product's
+   > **Download file** card sends the file to the site's `POST /otta-admin/downloads/<productId>`
+   > (store admins only — the `plugins:manage` role), which stores it in this bucket under a
+   > fresh `dl/<productId>/<id>` key and hands the card a descriptor that it saves on the
+   > product ([ADR-0029](./adr/0029-console-uploads-download-files-to-a-site-endpoint.md)).
+   > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
+   > Without the binding, an upload is refused with a sentence saying downloads are not set
+   > up on this store (the card shows it once the merchant tries).
+   >
+   > **A file is replaced, never removed.** Past buyers keep access, so a product with a
+   > download file stays Digital: the editor disables the Physical choice and says why.
+   >
+   > **Replaced files are not deleted.** Replacing a file uploads a new object and points the
+   > product at it; every buyer's link serves the new file from then on. The old object stays
+   > in the bucket, because deleting it could cut off a download already in progress, and an
+   > upload whose save never happened (a closed tab) stays too. They cost storage, never access:
+   > nothing serves a key the product does not name. To tidy up, open the bucket in the
+   > Cloudflare dashboard (R2 → the bucket → Objects, filtered by the prefix
+   > `dl/<productId>/`; wrangler has no `object list`), compare with the current key — the
+   > product's Download file card shows it under the file's name — and remove the rest there or
+   > with `wrangler r2 object delete your-downloads-bucket/<key> --remote`. Each object's metadata
+   > records the product, the original filename and who uploaded it.
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
-   D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
+   D1 `database_name`/`database_id`, and the two R2 `bucket_name`s (`MEDIA` and
+   `DOWNLOADS`, which must differ). Leave the
    `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
 
 3. **Set the site's one secret** (the only secret first boot needs):

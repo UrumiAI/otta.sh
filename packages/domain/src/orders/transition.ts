@@ -6,6 +6,7 @@ import {
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { CustomerStore } from "../ports/customer-store.js";
+import type { EntitlementStore } from "../ports/entitlement-store.js";
 import {
 	type EmailSender,
 	isCutShortEmailTimeout,
@@ -16,6 +17,7 @@ import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
+import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
 	emailTemplateForNotice,
 	emailTemplateForState,
@@ -25,6 +27,14 @@ import {
 
 export interface TransitionOrderDeps {
 	orderStore: OrderStore;
+	/**
+	 * Revokes the order's download entitlements when a move lands it `refunded`
+	 * (Mark refunded — money returned in full outside Otta; issue #376). Run after
+	 * the flip is recorded, and on the already-`refunded` replay too, so a crash in
+	 * between is finished by the retry. Optional: suites that drive the state machine
+	 * need not wire it; the admin console's composition does, and a test pins it.
+	 */
+	entitlementStore?: EntitlementStore;
 }
 
 export interface TransitionOrderCommand {
@@ -65,8 +75,27 @@ export async function transitionOrder(
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderResult> {
 	const pre = await precheckTransition(deps, cmd);
-	if (pre.done !== undefined) return pre.done;
-	return applyTransition(deps, pre.order, cmd, emailTemplateForState(cmd.toState) !== null);
+	const res =
+		pre.done ??
+		(await applyTransition(deps, pre.order, cmd, emailTemplateForState(cmd.toState) !== null));
+	await revokeIfRefunded(deps, res);
+	return res;
+}
+
+/**
+ * A move that leaves the order `refunded` — fresh, or the idempotent replay of one
+ * already there — revokes its download access (see `revoke-entitlements.ts`).
+ * Mark refunded is only allowed when nothing is left for the provider to return
+ * ({@link markRefundedAllowed}), so `refunded` here means the money went back in
+ * full. Runs after the flip is recorded; the replay finishes a crash in between.
+ */
+async function revokeIfRefunded(
+	deps: TransitionOrderDeps,
+	res: { ok: boolean; order?: Order },
+): Promise<void> {
+	if (res.ok && res.order !== undefined && res.order.state === "refunded") {
+		await revokeOrderEntitlements(deps.entitlementStore, res.order);
+	}
 }
 
 /**
@@ -291,7 +320,10 @@ export async function transitionOrderAsAdmin(
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderAsAdminResult> {
 	const pre = await precheckTransition(deps, cmd);
-	if (pre.done !== undefined) return pre.done;
+	if (pre.done !== undefined) {
+		await revokeIfRefunded(deps, pre.done);
+		return pre.done;
+	}
 	const order = pre.order;
 	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
@@ -305,7 +337,9 @@ export async function transitionOrderAsAdmin(
 		if (refusal !== null) return { ok: false, reason: refusal };
 	}
 	const enqueueEmail = cmd.toState !== "refunded" && emailTemplateForState(cmd.toState) !== null;
-	return applyTransition(deps, order, cmd, enqueueEmail);
+	const res = await applyTransition(deps, order, cmd, enqueueEmail);
+	await revokeIfRefunded(deps, res);
+	return res;
 }
 
 // -- outbox dispatcher --------------------------------------------------------

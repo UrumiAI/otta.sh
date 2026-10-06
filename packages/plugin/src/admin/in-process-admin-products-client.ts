@@ -62,6 +62,7 @@ import {
 	SkuHeldStockError,
 	SkuStockConflictError,
 	updateProductCommerceFields,
+	type DownloadAsset,
 	type ProductCommerce as DomainProductCommerce,
 	type ProductListCursor,
 	type ProductListFilter,
@@ -85,6 +86,7 @@ import {
 import type { PluginContext } from "../types.js";
 import type {
 	AdminProductsSurface,
+	DownloadAssetWire,
 	ProductDetailWire,
 	ProductEditResult,
 	ProductEditWire,
@@ -492,6 +494,7 @@ function toProductDetailWire(
 		widthMm: product.widthMm,
 		heightMm: product.heightMm,
 		productKind: product.productKind,
+		downloadAsset: product.downloadAsset === null ? null : { ...product.downloadAsset },
 		active: product.active,
 		deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
 		onHand,
@@ -584,7 +587,18 @@ const PRODUCT_EDIT_KEYS = [
 	"heightMm",
 	"productKind",
 	"inventoryPolicy",
+	"downloadAsset",
 ] as const satisfies readonly (keyof ProductEditWire)[];
+
+/** The keys a download-file descriptor may carry — strict for the same reason
+ *  the edit body is: a stray key (a `url`, say) is refused, never stored. */
+const DOWNLOAD_ASSET_KEYS = [
+	"key",
+	"filename",
+	"contentType",
+	"size",
+	"sha256",
+] as const satisfies readonly (keyof DownloadAssetWire)[];
 
 /** `editProductCommerceBody`'s bounds, then the branding the use-case takes.
  *  Money is an integer minor amount carrying an explicit ISO-4217 currency —
@@ -636,7 +650,41 @@ function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductC
 		}
 		input.inventoryPolicy = "deny";
 	}
+	if (body.downloadAsset !== undefined) {
+		input.downloadAsset = toDownloadAsset(body.downloadAsset as unknown);
+	}
 	return input;
+}
+
+/**
+ * The download-file descriptor's SHAPE: `null` (detach), or an object of exactly
+ * the known keys with the right primitive types. Only an untyped caller can get
+ * this wrong, and it is refused as the strict body schema would refuse it — no
+ * field. The VALUE rules (the key minted for this product, the filename and type
+ * rules, a byte count, a digest) are the domain's `validateDownloadAsset`, run by
+ * the use-case, which names the sub-field it refused.
+ */
+function toDownloadAsset(value: unknown): DownloadAsset | null {
+	if (value === null) return null;
+	if (typeof value !== "object" || Array.isArray(value)) {
+		throw new CommerceInputError("downloadAsset", "must be an object or null");
+	}
+	const record = value as Record<string, unknown>;
+	for (const key of Object.keys(record)) {
+		if (!DOWNLOAD_ASSET_KEYS.includes(key as (typeof DOWNLOAD_ASSET_KEYS)[number])) {
+			throw new CommerceInputError(`downloadAsset.${key}`, "is not a field a download file has");
+		}
+	}
+	const { key, filename, contentType, size, sha256 } = record;
+	if (typeof key !== "string" || typeof filename !== "string" || typeof contentType !== "string") {
+		throw new CommerceInputError("downloadAsset", "key, filename and contentType must be strings");
+	}
+	if (typeof size !== "number")
+		throw new CommerceInputError("downloadAsset.size", "must be a number");
+	if (sha256 !== undefined && typeof sha256 !== "string") {
+		throw new CommerceInputError("downloadAsset.sha256", "must be a string when present");
+	}
+	return { key, filename, contentType, size, ...(sha256 !== undefined ? { sha256 } : {}) };
 }
 
 /** Compare-at and cost are NON-NEGATIVE money (unlike `price`: a cleared-to-zero

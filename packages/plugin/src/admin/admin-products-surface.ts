@@ -78,6 +78,9 @@ export interface ProductDetailWire {
 	widthMm: number | null;
 	heightMm: number | null;
 	productKind: string;
+	/** The digital product's download file (issue #376), or null when none is
+	 *  attached. Admin-only, like everything on this detail. */
+	downloadAsset: DownloadAssetWire | null;
 	active: boolean;
 	/** Soft-delete tombstone (product lifecycle surfacing). Non-null ⇒ this IS
 	 *  the read-only archive view — the detail leaf renders it instead of the
@@ -165,6 +168,25 @@ export interface ProductEditWire {
 	productKind?: string;
 	/** Out-of-stock policy — only `"deny"` is accepted this slice. */
 	inventoryPolicy?: string;
+	/**
+	 * Attach/replace (a descriptor) or detach (`null`) the digital product's
+	 * download file (issue #376); absent preserves. The descriptor is minted by
+	 * the upload endpoint (a later increment), never typed by a person: an
+	 * object of exactly these keys, else `invalid` with no field. Its value rules
+	 * (the key minted for THIS product, filename, type, size, digest) and "not on
+	 * a physical product" are `invalid` naming the sub-field.
+	 */
+	downloadAsset?: DownloadAssetWire | null;
+}
+
+/** The download-file descriptor on the wire — the domain's `DownloadAsset`,
+ *  field for field. `size` is bytes; `sha256` is lowercase hex when present. */
+export interface DownloadAssetWire {
+	key: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	sha256?: string;
 }
 
 /** One tax-class registry entry (mirrors the domain `TaxClass`) — the edit
