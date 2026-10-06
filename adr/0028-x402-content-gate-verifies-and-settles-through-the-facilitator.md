@@ -681,20 +681,44 @@ x402 client never produces such a proof, and the server would have to trust whoe
     secret** (Ed25519 or ES256, bound to the method, host and path, valid for 120 s).
   - Supporting it would mean a signing strategy plus a key id and secret in write-only kv.
   - That is a possible later increment, not part of this plan.
-- **Redirects.** `ctx.http.fetch` follows them itself, and the adapter cannot turn that off.
-  - EmDash 0.38's `createHttpAccess` forces `redirect: "manual"` and then follows up to five
-    redirects (`MAX_PLUGIN_REDIRECTS`). It re-checks each hop against `allowedHosts` and strips
-    credential headers when the origin changes (emdash `dist/context-C9PB8vGd.mjs:1038`,
-    `:1075-1096`). A redirect in production can therefore only land on an allowlisted host.
-  - The plugin's test sandbox does **not** mirror this. Its `createHttpAccess`
+- **The transport seam.** `ctx.http.fetch` does not return the same object everywhere the plugin
+  runs. The adapter therefore depends only on
+  `{status, headers.get, url?, body?, text()}`:
+  - **Trusted in-process** (EmDash 0.38's `createHttpAccess`) returns a real `Response`, with
+    `url` and a streaming `body`.
+  - **The Cloudflare Worker Loader sandbox** returns a plain
+    `{status, ok, headers, text(), json()}`, with **no `url` and no `body`**
+    (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`). The host-side bridge,
+    `sandboxHttpFetch` (`:164-209`), buffers the body as text.
+- **Redirects.** In every environment the platform follows them, and the adapter cannot turn that
+  off.
+  - EmDash's `createHttpAccess` forces `redirect: "manual"` and then follows up to five redirects
+    (`MAX_PLUGIN_REDIRECTS`). It re-checks each hop against `allowedHosts` and strips credential
+    headers when the origin changes (emdash `dist/context-C9PB8vGd.mjs:1038`, `:1075-1096`).
+  - The Worker Loader bridge does the same, hop by hop, inside `sandboxHttpFetch`
+    (`runner-CQpZcxVz.mjs:164-209`). It also blocks private and internal hosts.
+  - The plugin's test sandbox does **not** mirror either. Its `createHttpAccess`
     (`packages/plugin/src/sandbox-entry.ts:57-72`) checks the first host and then calls plain
-    `globalThis.fetch`, which follows redirects itself with no allowlist check.
-  - The adapter **treats a final response whose `url` differs from the URL it requested as
-    unavailable**, so a redirected answer is never trusted as a verdict. This works the same in both
-    environments: either way the final response carries the URL it actually came from.
-- **Bounds.** `/verify` has a 10 s timeout. `/settle` has 30 s, because it waits for inclusion
-  on-chain (`DEFAULT_FACILITATOR_TIMEOUT_MS`, `index.ts:229`). Response bodies are read up to
-  16 KiB.
+    `globalThis.fetch`, which follows redirects with no allowlist check.
+  - **The adapter detects a redirect only when `url` is present, non-empty and differs from the
+    URL it requested.** It treats that answer as unavailable, never as a verdict.
+  - **When `url` is absent, as in the Worker Loader sandbox, the platform's per-hop `allowedHosts`
+    check is the control.** That check is EmDash's `createHttpAccess` when trusted in-process, and
+    the bridge in the Worker Loader. A redirect can then land only on an allowlisted host: the
+    facilitator, Stripe's API or the email provider (`manifest.ts:97-104`). An answer from one of
+    those is still classified strictly by shape, so it cannot pass as a verdict or a settlement.
+- **Bounds.**
+  - `/verify` has a 10 s timeout, and `/settle` has 30 s, because it waits for inclusion on-chain
+    (`DEFAULT_FACILITATOR_TIMEOUT_MS`, `index.ts:229`).
+  - **An `AbortSignal` may not cross the Worker Loader bridge.** The sandbox passes `init` to
+    `bridge.httpFetch` (`runner-CQpZcxVz.mjs:999`), and the host-side `sandboxHttpFetch` spreads
+    whatever arrives into its own fetch. A signal does not survive that crossing reliably. So the
+    adapter's own timeout race (`Promise.race` against a timer) is what bounds the time, and the
+    signal is only a best effort.
+  - **Response bodies are capped at 16 KiB.** When `body` is present, the cap applies to the
+    stream. Otherwise it applies to `text()`'s UTF-8 byte length. In the Worker Loader the bridge
+    has already buffered the whole body by then, so the cap bounds what the adapter parses, not
+    what the host read.
 - **How answers are classified.**
   - **`/verify`:**
     - A JSON body that is exactly the v2 §5.4 shape with `isValid: true` (a JSON boolean) is
@@ -711,7 +735,7 @@ x402 client never produces such a proof, and the server would have to trust whoe
       - 401, 403, 408, 429 and 5xx;
       - a non-2xx without a well-formed verdict;
       - a body that is not JSON or not the shape;
-      - a redirected response;
+      - a redirected response (detected only when `url` is present);
       - an oversize body.
   - **`/settle`:**
     - `settled` needs a well-formed `success: true` with:
@@ -837,8 +861,11 @@ records every call and counts calls per path.
   - `/verify` with a 200, and with a 400, carrying a well-formed `isValid: false` is a verdict;
   - 401, 403, 408, 429 and 5xx are unavailable even with such a body (x402.org's 500
     `unexpected_error` included);
-  - a non-JSON 2xx, the wrong shape, a redirected response (`url` changed) and an oversize body
-    are unavailable;
+  - a non-JSON 2xx, the wrong shape, a redirected response (`url` present and changed) and an
+    oversize body are unavailable. The oversize case is tested both as a stream and as `text()`;
+  - a Worker Loader-shaped response (no `url`, no `body`, `text()` only) is classified the same as
+    a `Response`, and a hung transport that ignores `AbortSignal` is still cut off by the
+    adapter's own timeout;
   - a truthy-but-not-`true` answer is refused;
   - a settle answer with the wrong network, payer or amount is `unconfirmed`.
 - **Credentials:** with no key, no `Authorization` header is sent. With a key, it is sent only as
@@ -1033,6 +1060,10 @@ from five PRs into eight.
      `serveDownload`; `PAYMENT-RESPONSE` and both `Link` headers.
    - The #283 symbol renames and legacy-key cleanup.
    - Settings validation that the accepted networks are in the asset table.
+   - **The plugin's test sandbox exercises the Worker Loader response shape**, unless increment 6
+     already did. `sandbox-entry.ts`'s `ctx.http.fetch` should be able to return the bridge's
+     `{status, ok, headers, text(), json()}`, with no `url` and no `body`, so the sandbox suites run
+     the adapter against the shape production's sandbox returns.
    - **An x402 sale issues the ADR-0027 §7 tax document**, as the Stripe settle route does. The tax
      stack adds `issueTaxDocumentNow` (`packages/plugin/src/tax/issue-tax-document-now.ts` on
      `tax/4-invoices`), and `x402/pay` calls it after a fresh settle.
@@ -1127,3 +1158,15 @@ The amendments, against the 2026-10-05 draft:
 - `order-refunded` is attributed to the ledger refund path. Mark refunded enqueues no email.
 - A "skipped" row stores only its status and `skippedAt`, with no reason field.
 - Increment 8 issues the ADR-0027 §7 tax document for an x402 sale, as the Stripe settle route does.
+
+**Build feedback from increment 6:**
+- Decision 8 no longer claims the final-URL redirect check works the same everywhere. The
+  Cloudflare Worker Loader sandbox's `ctx.http.fetch` returns no `url` and no `body`, and its
+  bridge follows redirects itself with a per-hop `allowedHosts` check.
+- The adapter's transport seam is `{status, headers.get, url?, body?, text()}`.
+- The body cap applies to the stream, or else to `text()`'s UTF-8 byte length.
+- A redirect is detected only when `url` is present and differs. Otherwise the platform's per-hop
+  check is the control.
+- The adapter's own timeout race bounds the time, because an `AbortSignal` may not cross the
+  bridge.
+- Increment 8 makes the test sandbox exercise the bridge's response shape.
