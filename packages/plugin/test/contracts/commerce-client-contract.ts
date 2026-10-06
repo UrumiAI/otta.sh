@@ -4355,7 +4355,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
 
-		test("an edit attaches a download file to a digital product, the detail carries it, and null detaches it", async () => {
+		test("an edit attaches a download file to a digital product, the detail carries it, and null is REFUSED (replace only)", async () => {
 			const watermark = await seed({
 				productId: "adm-dl-ok",
 				sku: "ADM-DL-OK",
@@ -4383,8 +4383,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				{ expectedUpdatedAt: read?.updatedAt ?? "", downloadAsset: null },
 				"adm-dl-ok-2",
 			);
-			expect(detached.ok).toBe(true);
-			expect((await client.getProduct("adm-dl-ok"))?.downloadAsset).toBeNull();
+			// A file is replaced, never removed (ADR-0029 Decision 6): past buyers keep
+			// what they bought.
+			expect(detached).toEqual({ ok: false, reason: "invalid", field: "downloadAsset" });
+			expect((await client.getProduct("adm-dl-ok"))?.downloadAsset).toEqual(asset);
 		});
 
 		test("a download file on a physical product is refused, naming the field", async () => {
