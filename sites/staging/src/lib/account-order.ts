@@ -28,6 +28,10 @@ export interface AccountOrderExtras {
 	tracking: { carrier: string; trackingNumber: string; trackingUrl: string | null } | null;
 	/** The ship-to as display lines, or `null` when the order has none. */
 	addressLines: string[] | null;
+	/** What the address is called: "Billing address" on an order that ships
+	 *  nothing (an India-based Stripe account takes one for every order — issue
+	 *  #382), "Delivery address" otherwise. */
+	addressLabel: "Delivery address" | "Billing address";
 }
 
 /** Only an http(s) address is ever a link: a tracking URL is typed by an
@@ -52,7 +56,7 @@ function countryName(code: string): string {
 export function accountOrderExtras(
 	order: Pick<
 		AccountOrderWire,
-		"id" | "state" | "holdExpiresAt" | "fulfillment" | "shippingAddress"
+		"id" | "state" | "holdExpiresAt" | "fulfillment" | "shippingAddress" | "lines"
 	>,
 	now: Date,
 ): AccountOrderExtras {
@@ -68,6 +72,10 @@ export function accountOrderExtras(
 						trackingNumber: order.fulfillment.trackingNumber,
 						trackingUrl: trackingHref(order.fulfillment.trackingUrl),
 					},
+		addressLabel:
+			order.lines.length > 0 && order.lines.every((line) => line.fulfillmentKind === "digital")
+				? "Billing address"
+				: "Delivery address",
 		addressLines:
 			address === null
 				? null

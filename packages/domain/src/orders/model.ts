@@ -292,6 +292,17 @@ export interface Order {
 	 */
 	shippingAddress: OrderAddress | null;
 	/**
+	 * Whether the order was placed under the payment account's buyer-address
+	 * requirement (issue #382 — an India-based Stripe account): the
+	 * `addressRequired` its checkout enforced, frozen in the creating insert. It
+	 * also DECIDES whether the order's payment carries a provider-side customer
+	 * (`intentInputFor`), so the place check and every intent of the order —
+	 * first, replay, resume — answer from this one snapshot and can never
+	 * disagree. ABSENT on orders created before it existed; those keep the
+	 * gateway's own decision, as before.
+	 */
+	buyerAddressRequired?: boolean;
+	/**
 	 * Set when settle could not commit an adopted hold that should have been
 	 * present (§5): the order is `paid` (money received) but stock was lost, so
 	 * it is flagged for manual reconciliation — never a silent no-op. Null on the

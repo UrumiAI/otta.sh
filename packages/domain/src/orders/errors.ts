@@ -18,7 +18,9 @@ export type CreateOrderFailure =
 	 *  bound, or the country is not an ISO 3166-1 alpha-2 code (ADR-0021). */
 	| "INVALID_SHIPPING_ADDRESS"
 	// ADR-0021 — the zone is derived from the address:
-	/** A cart with a physical line, in a store with zones, and no address. */
+	/** No address where one is required: a cart with a physical line in a store
+	 *  with zones, or any cart when the command says `addressRequired` (a
+	 *  payment account that needs the buyer's address — issue #382). */
 	| "MISSING_SHIPPING_ADDRESS"
 	/** Zones exist and the address matches none of them ("we don't ship there"). */
 	| "SHIPPING_ZONE_NOT_MATCHED"

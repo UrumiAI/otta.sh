@@ -27,6 +27,13 @@
   [ADR-0024's amendment of the same date](./0024-storefront-themes-are-runtime-selected-full-templates.md):
   the store ships one theme and the admin offers no choice. The 2026-09-30 amendment below is
   history; `otta-console` serves the Orders page and the Pricing & stock field editor and list columns.
+- Amended: 2026-10-06 — **Decision 3 only**, and within it only "It gets no new data path", by
+  [ADR-0029](./0029-console-uploads-download-files-to-a-site-endpoint.md): the product editor's
+  Download file card may POST a digital product's file to ONE site endpoint,
+  `/otta-admin/downloads/{productId}`, which stores it in the private `DOWNLOADS` bucket and
+  answers a descriptor. Every read and write of commerce data, the descriptor's save included,
+  still goes through the `otta` admin route; zero capabilities, zero `allowedHosts`, no routes
+  and no hooks are unchanged. See "Amended 2026-10-06" at the end.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -419,4 +426,24 @@ same date](./0024-storefront-themes-are-runtime-selected-full-templates.md)). Th
 the `otta` admin route. Nothing else in this record changes: Decision 6's scope is Orders and
 Pricing & inventory (now the product editor cards and list columns) again, and the reasons recorded in the 2026-09-30 amendment for why such a
 screen could not be Block Kit still stand for any future one.
+
+## Amended 2026-10-06 — one upload request, to the site (Decision 3)
+
+Everything above is left as written. This block amends only Decision 3's "It gets no new data
+path", by [ADR-0029](./0029-console-uploads-download-files-to-a-site-endpoint.md) (issue #376,
+download increment 4).
+
+A digital product's file has to reach the private `DOWNLOADS` R2 bucket, and only the site holds
+that binding: the plugin can neither read R2 nor receive a byte stream, and EmDash's media bucket
+is public. So the product editor's Download file card POSTs the file to the site's
+`/otta-admin/downloads/{productId}`, which stores it under a server-minted key and answers a
+descriptor. The card then saves that descriptor through the `otta` admin route
+(`products:attach-download`), exactly like every other product edit. The upload carries bytes
+only: it reads no commerce data and writes none. It is the console's one request outside the
+`otta` admin route, it lives in its own module (`download-upload-api.ts`), and it stays the only
+one: a second such request reopens this amendment.
+
+Decision 3's other clauses are unchanged: `otta-console` declares zero capabilities and zero
+`allowedHosts` and owns no routes or hooks. The endpoint belongs to the site, not to the
+descriptor.
 

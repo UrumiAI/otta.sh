@@ -89,11 +89,24 @@ admin console's **Settings** page instead.
   `<meta http-equiv="refresh">` and never claims "paid" on the strength of Stripe's
   redirect — the webhook is the sole authority). `POST /checkout/new-cart` is the way out
   of the dead-cart trap. `allowedHosts` is unchanged: browser→Stripe is not plugin egress.
-- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer)
-  and the digital-download delivery page (the plugin route authorizes; the site serves the
-  bytes / signed URL). Note for that task: `entitlements/download` is a public existence oracle
-  (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
-  page must rate-limit and/or tokenize access to it rather than exposing raw probing.
+- **Digital downloads (issue #376).** `GET /orders/<orderId>/download/<sku>`
+  (`src/pages/orders/[orderId]/download/[sku].ts`, logic in `src/lib/download-delivery.ts`)
+  streams a paid file from the private `DOWNLOADS` R2 bucket. On every request it first asks
+  the plugin's `entitlements/download` gate in-process with `{orderId, sku}`; the gate
+  answers the file only for an active grant on a deliverable order of a digital product with
+  a file attached. The endpoint reads only the key the gate answers, never one from the
+  request. The order id in the path is the capability (ADR-0011, as amended), so the gate
+  is not an oracle: every refusal is the same 404, and a caller without the order id learns
+  nothing. Nothing is minted or cached, so a full refund closes the URL at once, and a
+  replaced file serves the new one. Range requests get 206/416; BUSY is 503 + `Retry-After`.
+  `/orders/<id>` and `/account/orders/<id>` show a Download link on each digital line the
+  gate authorizes (`src/lib/download-links.ts`). The middleware refuses EmDash's public media
+  route for any `dl/` key (`src/lib/media-deny.ts`), and the build refuses a wrangler config
+  whose `DOWNLOADS` is the `MEDIA` bucket (`src/lib/downloads-bucket.ts`; DEPLOYMENT.md
+  §2.1). Attaching a file from the admin is increment 4; until then a file is attached by
+  writing the descriptor through the admin product edit and putting the object with
+  `wrangler r2 object put`.
+- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer).
 - **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
   `/account/login` (email form → `POST /account/login/request` → the same generic
   "check your inbox" notice for every address), `/account/verify` (where the

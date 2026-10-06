@@ -350,3 +350,87 @@ describe("a store with NO zones", () => {
 		).toEqual({ ok: false, reason: "INVALID_SHIPPING_ADDRESS" });
 	});
 });
+
+/**
+ * Issue #382: an India-based Stripe account refuses a payment that does not
+ * carry the buyer's name and address — for EVERY cart, digital and no-zone ones
+ * included. The plugin learns the account's country and says so with
+ * `addressRequired`; the domain enforces it with the SAME refusal, at the SAME
+ * point, as a physical cart in a zoned store (ADR-0021), so nothing is minted
+ * or redeemed for an address-less checkout.
+ */
+describe("addressRequired — the payment account needs the buyer's address (issue #382)", () => {
+	beforeEach(async () => {
+		await seedCoupon();
+	});
+
+	test("a digital cart without an address → MISSING_SHIPPING_ADDRESS; nothing minted, no intent", async () => {
+		const cartId = await digitalCart();
+		expect(
+			await createOrderFromCart(
+				h.createDeps,
+				cmd(cartId, { addressRequired: true, couponCode: "SAVE5" }),
+			),
+		).toEqual({ ok: false, reason: "MISSING_SHIPPING_ADDRESS" });
+		await expectNothingMinted(cartId);
+		expect(h.stripeGw.intentCalls).toHaveLength(0);
+	});
+
+	test("a physical cart in a store with NO zones without an address → MISSING_SHIPPING_ADDRESS", async () => {
+		const cartId = await physicalCart();
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId, { addressRequired: true }))).toEqual(
+			{ ok: false, reason: "MISSING_SHIPPING_ADDRESS" },
+		);
+		await expectNothingMinted(cartId);
+	});
+
+	test("with a complete address it orders, and the intent carries the buyer's name and address", async () => {
+		const cartId = await digitalCart();
+		const res = await createOrderFromCart(
+			h.createDeps,
+			cmd(cartId, { addressRequired: true, shippingAddress: addressIn("US", "CA") }),
+		);
+		expect(res.ok).toBe(true);
+		expect(h.stripeGw.intentCalls).toHaveLength(1);
+		expect(h.stripeGw.intentCalls[0]?.shipTo).toEqual({
+			name: "Ada Lovelace",
+			line1: "1 Main St",
+			line2: null,
+			city: "Springfield",
+			region: "CA",
+			postalCode: "90001",
+			country: "US",
+		});
+	});
+
+	test("an incomplete address is still refused as one (INVALID_SHIPPING_ADDRESS)", async () => {
+		const cartId = await digitalCart();
+		expect(
+			await createOrderFromCart(
+				h.createDeps,
+				cmd(cartId, {
+					addressRequired: true,
+					shippingAddress: { ...addressIn("IN"), line1: "  " },
+				}),
+			),
+		).toEqual({ ok: false, reason: "INVALID_SHIPPING_ADDRESS" });
+	});
+
+	test("without the flag a digital cart still orders with no address (no change elsewhere)", async () => {
+		const cartId = await digitalCart();
+		expect(
+			(await createOrderFromCart(h.createDeps, cmd(cartId, { addressRequired: false }))).ok,
+		).toBe(true);
+	});
+
+	test("a replay of an order already placed WITH an address needs none (the locked review's retry)", async () => {
+		const cartId = await digitalCart();
+		const first = await createOrderFromCart(
+			h.createDeps,
+			cmd(cartId, { addressRequired: true, shippingAddress: addressIn("DE") }),
+		);
+		if (!first.ok) throw new Error(first.reason);
+		const replay = await createOrderFromCart(h.createDeps, cmd(cartId, { addressRequired: true }));
+		expect(replay.ok && replay.order.id).toBe(first.order.id);
+	});
+});

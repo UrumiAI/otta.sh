@@ -1,7 +1,7 @@
 // Otta storefront Worker — TEMPLATE (plan D5). This tracked file carries
 // PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
 // — or edit this file in place — and fill in YOUR Worker name, D1 database
-// name/id, and R2 bucket (see the root DEPLOYMENT.md §2.1 runbook).
+// name/id, and R2 buckets (see the root DEPLOYMENT.md §2.1 runbook).
 // When `wrangler.local.jsonc` exists, astro.config.ts points the Cloudflare
 // adapter at it (`configPath`) at BUILD time; plain `wrangler deploy` then
 // deploys those values via the adapter-generated dist config — do NOT use
@@ -62,6 +62,18 @@
 			"binding": "MEDIA",
 			// PLACEHOLDER — from `wrangler r2 bucket create <name>`.
 			"bucket_name": "your-media-bucket",
+		},
+		{
+			// PRIVATE — paid digital downloads (issue #376). The site's download
+			// endpoint (src/pages/orders/[orderId]/download/[sku].ts) is the ONLY
+			// reader, and it re-checks the buyer's entitlement on every request.
+			// MUST be a different bucket from MEDIA: EmDash serves every MEDIA key
+			// publicly. The build refuses a config that shares them
+			// (src/lib/downloads-bucket.ts). NEVER turn on r2.dev public access or
+			// a custom domain for this bucket (DEPLOYMENT.md §2.1).
+			"binding": "DOWNLOADS",
+			// PLACEHOLDER — from `wrangler r2 bucket create <name>`.
+			"bucket_name": "your-downloads-bucket",
 		},
 	],
 	"observability": {

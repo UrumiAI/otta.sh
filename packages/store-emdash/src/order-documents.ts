@@ -274,8 +274,10 @@ export interface OrderEventDoc {
 	actor: string | null;
 }
 
-/** An outbox entry's lifecycle, mirroring the `order_emails_outbox.status` set. */
-export type OutboxStatus = "pending" | "sending" | "sent" | "failed";
+/** An outbox entry's lifecycle, mirroring the `order_emails_outbox.status` set, plus
+ *  `skipped`: completed with no send because the order has no email recipient
+ *  (ADR-0028 Decision 7). `sent`, `skipped` and `failed` are terminal. */
+export type OutboxStatus = "pending" | "sending" | "sent" | "skipped" | "failed";
 
 /**
  * One email-outbox entry — **at most one per `(orderId, toState)`**, which is
@@ -306,6 +308,9 @@ export interface OutboxEntryDoc {
 	/** Why a `failed` entry was parked, when the dispatcher said (e.g. "provider
 	 *  kept timing out"). Absent for an ordinary failure. */
 	failureReason?: string;
+	/** When a `skipped` entry was completed (`markEmailSkipped`). ABSENT on every other
+	 *  entry, and on every entry written before skipping existed. */
+	skippedAt?: string;
 	/**
 	 * Set on a NOTICE entry (`enqueueNotice`): an email about the order that is not
 	 * a state transition — `late-payment-refunded` or `refund-issued`. ABSENT on every
@@ -333,6 +338,10 @@ export interface PaymentIntentEntryDoc {
 	cancelDueAt: string | null;
 	cancelAttempts: number;
 	cancelOutcome: PaymentIntentCancelOutcome | null;
+	/** The intent's provider-side customer decision (issue #382): `cus_…`, or
+	 *  `null` for a decided "none". ABSENT on entries written before it existed
+	 *  and on gateways without one — read back as absent, never as `null`. */
+	customerRef?: string | null;
 }
 
 /**
@@ -510,6 +519,9 @@ export interface OrderDoc {
 	totals: OrderTotalsDoc;
 	/** The ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
+	/** The buyer-address-requirement snapshot (issue #382); absent on documents
+	 *  written before it existed. Written once by the creating write. */
+	buyerAddressRequired?: boolean;
 	/** Append-only state-change audit; appended inside the guarded flip. */
 	events: OrderEventDoc[];
 	/** At most one entry per `toState`; first-wins. */
@@ -914,8 +926,8 @@ export function capturedPaymentTotal(payments: readonly PaymentEntryDoc[]): numb
  *
  * `pending` is due at its `dueAt` (a reschedule moved it) or at `createdAt`;
  * `sending` is due when its lease lapses, which is what makes a crashed
- * dispatcher's row claimable again; `sent` and `failed` are terminal and drop out
- * of the index entirely.
+ * dispatcher's row claimable again; `sent`, `skipped` and `failed` are terminal and
+ * drop out of the index entirely.
  */
 export function outboxDueAt(entry: OutboxEntryDoc): string | null {
 	const due = entry.dueAt ?? entry.createdAt;

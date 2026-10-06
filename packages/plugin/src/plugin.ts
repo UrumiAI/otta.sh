@@ -206,8 +206,10 @@ const plugin: SandboxedPlugin = {
 			handler: createStripeWebhookSettleHandler() as never,
 			public: true,
 		},
-		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
-		// the service's entitlement check over ctx.http.
+		// Phase 4 (§6), issue #376: PUBLIC download route — the delivery gate the
+		// site runs before it streams a file, answering the file's descriptor.
+		// PUBLIC because the site's in-process dispatcher reaches public routes
+		// only; why returning the bucket key there is safe is in the route's doc.
 		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,

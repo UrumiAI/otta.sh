@@ -272,6 +272,25 @@ export {
 	type StripeWebhookSettleReason,
 	type StripeWebhookSettleResult,
 } from "./webhooks/stripe-settle-route.js";
+// Issue #376 — the PUBLIC download gate. The site's download endpoint names the
+// route and reads its answer: the file to stream, or the refusal it maps to a
+// status. Only the constant and the shapes; the handler stays internal.
+export {
+	ENTITLEMENT_DOWNLOAD_ROUTE,
+	type EntitlementDownloadInput,
+	type EntitlementDownloadResult,
+} from "./entitlements/download-route.js";
+export { type DownloadAssetWire } from "./admin/admin-products-surface.js";
+// Issue #376 increment 4 — the site's admin upload endpoint mints the key and
+// coerces the filename and type with the SAME rules the admin save validates,
+// so what it uploads is always a descriptor the save accepts.
+export {
+	DOWNLOAD_FALLBACK_CONTENT_TYPE,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	downloadContentTypeFor,
+	mintDownloadAssetKey,
+	sanitizeDownloadFilename,
+} from "@otta-sh/domain";
 export {
 	CommerceClientError,
 	type CartFailureReason,

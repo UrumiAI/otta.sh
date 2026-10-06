@@ -212,6 +212,37 @@ export interface ProductListResult {
 export type ProductKind = "physical" | "digital";
 
 /**
+ * The file a DIGITAL product delivers (issue #376): a POINTER to bytes held in
+ * the site's private downloads bucket, never the bytes. One file per product,
+ * shared by every variant, in v1.
+ *
+ * The pointer lives on the product, not on the order, deliberately: replacing
+ * the file gives every past buyer the new one (product-owner decision). The
+ * order still snapshots the title and price it was sold at.
+ *
+ * Every field is checked on the admin write path (`updateProductCommerceFields`,
+ * `product-commerce/download-asset.ts`), and the checks ACCEPT OR REFUSE — they
+ * never rewrite a value — so what is stored is exactly what was submitted:
+ *  - `key` — `dl/{productId}/{ulid}`, minted by the server for THIS product and
+ *    never derived from the filename or any request input; the bucket object key.
+ *  - `filename` — what the buyer's browser saves the file as; 1–255 characters
+ *    of well-formed text, no control, quote, slash, backslash, line-separator or
+ *    bidi-control characters.
+ *  - `contentType` — a bare lowercase `type/subtype`. `text/*` is an allowlist
+ *    (`text/plain`, `text/csv`); elsewhere never one a browser would run as a
+ *    document (`*+xml` — SVG, XHTML —, `application/xml`, any JavaScript type).
+ *  - `size` — bytes, a non-negative safe integer.
+ *  - `sha256` — optional; the lowercase hex digest of the bytes when known.
+ */
+export interface DownloadAsset {
+	key: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	sha256?: string;
+}
+
+/**
  * How a product behaves when its available stock hits zero (product data-model
  * adds, Increment 2 slice 5).
  *
@@ -361,6 +392,15 @@ export interface UpdateProductCommerceFieldsInput {
 	heightMm?: number | null;
 	productKind?: ProductKind;
 	/**
+	 * Attach (a descriptor), replace (another), or detach (`null`) the product's
+	 * download file (issue #376). `undefined` PRESERVES. Only this guarded admin
+	 * edit writes it — the CMS-sync `upsert` has no such field, so a content save
+	 * can never drop or swap a merchant's file. A descriptor on a PHYSICAL product
+	 * (stored, or made physical by this same edit) is refused by the store with
+	 * `InvalidProductFieldError("downloadAsset")` — see `updateCommerceFields`.
+	 */
+	downloadAsset?: DownloadAsset | null;
+	/**
 	 * The out-of-stock policy (product data-model adds, Increment 2 slice 5).
 	 * Only `"deny"` is a legal value this slice (the `InventoryPolicy` union has
 	 * no other member); the field round-trips end-to-end but changes NO
@@ -428,6 +468,18 @@ export interface ProductCommerce {
 	widthMm: number | null;
 	heightMm: number | null;
 	productKind: ProductKind;
+	/**
+	 * The digital product's download file (issue #376), or `null` when none is
+	 * attached. A row written before the field existed reads `null`.
+	 *
+	 * The admin edit refuses a file on a physical product, but it is not the only
+	 * writer of `productKind`: the integrator `upsert` (`PUT /products/:id/commerce`)
+	 * can still flip a product to physical and leaves the file in place. So a
+	 * reader that serves bytes must require `productKind === "digital"` as well
+	 * as a non-null descriptor — a file on a physical product is inert, never
+	 * served.
+	 */
+	downloadAsset: DownloadAsset | null;
 	/** The publish gate (§6 step 7): `content:afterPublish` flips it true via
 	 *  `ProductCommerceStore.activate`, `content:afterUnpublish` flips it back
 	 *  false via `deactivate`. New/soft-deleted/unpublished = false. */
@@ -692,7 +744,15 @@ export interface ProductCommerceStore {
 	 *         a product repricing and a variant pricing cannot both pass by
 	 *         reading each other's "before" state. With no variants declared it
 	 *         matches nothing and this guard cannot fire.
-	 *  5. otherwise → applies the partial update, stamps `key` as the row's
+	 *  5. a download file on a PHYSICAL product → throws
+	 *     `InvalidProductFieldError("downloadAsset")`, writing nothing: the row as
+	 *     it WOULD be after this edit (its `productKind` and `downloadAsset`,
+	 *     each from the input when supplied, else stored) carries a file while
+	 *     being physical. Covers attaching to a physical product and making a
+	 *     product with a file physical; an edit that detaches (`null`) and goes
+	 *     physical at once applies. Decided on the row this compare-and-set read,
+	 *     so a concurrent kind flip cannot slip a file past it.
+	 *  6. otherwise → applies the partial update, stamps `key` as the row's
 	 *     last-applied replay key, bumps `updatedAt`, returns the updated row —
 	 *     and, when the update CHANGED the row's `sku`, carries that sku's
 	 *     inventory row with it under THE SKU-RENAME RULE on this interface
