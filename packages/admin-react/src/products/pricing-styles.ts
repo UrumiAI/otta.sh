@@ -283,6 +283,8 @@ export const PRICING_STYLES = `
 .otta-pricing-callout span { color: var(--op-subtle); }
 .otta-pricing-callout[data-tone="warn"] span { color: inherit; }
 
+.otta-pricing-segment label[data-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+
 /* ── Download file ──────────────────────────────────────────────────────── */
 .otta-pricing-file {
 	display: flex;

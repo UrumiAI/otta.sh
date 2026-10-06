@@ -456,9 +456,11 @@ const BYTE_COUNT = /^(0|[1-9][0-9]{0,15})$/;
  * THE EDIT IS SPARSE: only `downloadAsset` is on the wire, so the price, sku and
  * the rest are preserved, and the store refuses a file on a physical product
  * inside the same compare-and-set. The key is content-derived (the product, the
- * watermark, the descriptor), so a re-send of the same attach — a double click,
- * or a retry after a lost answer — writes once, while a different file on the
- * same watermark is a stale refusal.
+ * watermark, the descriptor), so the SAME payload sent twice — a double click,
+ * a transport retry — writes once, while a different file on the same watermark
+ * is a stale refusal. A retry the card makes after a lost answer carries a
+ * FRESH watermark, so the key alone cannot dedupe it: the card's re-read does
+ * (it finds its own key already attached and writes nothing).
  */
 const attachDownloadAction: ProductsAction = async (client, payload) => {
 	const productId = readString(payload["productId"]);

@@ -12,12 +12,20 @@
  * Only step 2 changes what buyers get: every buyer's link (order + sku) serves
  * whatever the descriptor names, so a replaced file reaches them all at once.
  *
- * A SAVE THAT FAILS AFTER AN UPLOAD keeps the uploaded descriptor and offers
- * "Save file again", so a lost answer or a concurrent edit never costs the
- * merchant a second 100 MB upload. The attach is keyed on its content, so a
- * re-send writes once. A save refused because the product moved under it (the
- * CMS saved the entry, which moves the watermark) is retried once on its own
- * with a fresh read.
+ * A SAVE THAT FAILS AFTER AN UPLOAD, for a reason a retry can fix — no answer,
+ * a 5xx, a busy store, or the product moving under the write — keeps the
+ * uploaded descriptor and offers "Save file again", so a lost answer never costs
+ * the merchant a second 100 MB upload. A refusal of the descriptor itself (the
+ * plugin's "invalid") clears it: saving it again would be refused again.
+ *
+ * NO LOST UPDATE, NO DOUBLE WRITE. The card remembers which file was attached
+ * when the merchant picked theirs, and every save re-reads the product first:
+ *  - already pointing at THIS upload's key → the earlier save landed and only its
+ *    answer was lost: reported as attached, with no second write;
+ *  - pointing at a file that is neither the remembered one nor this upload →
+ *    someone attached another file meanwhile: the card stops and says so, keeping
+ *    the upload for a deliberate "Save my file instead" (which then replaces the
+ *    file now shown). There is no automatic retry that would paper over it.
  *
  * Every sentence a refusal shows is the endpoint's or the plugin's own; this
  * card adds only what to do next.
@@ -52,6 +60,13 @@ export function formatFileSize(bytes: number): string {
 	return `${shown.replace(/\.0$/, "")} ${units[unit]!}`;
 }
 
+/** An uploaded file not yet attached, and the attached key it was meant to
+ *  replace (`null`: there was none). */
+interface Held {
+	readonly asset: UploadedAsset;
+	readonly expectedKey: string | null;
+}
+
 type Phase =
 	| { readonly step: "idle" }
 	| {
@@ -65,28 +80,68 @@ type Phase =
 			readonly step: "failed";
 			readonly title: string;
 			readonly description: string;
-			/** An uploaded file whose save failed — offered for "Save file again". */
-			readonly held: UploadedAsset | null;
+			/** An uploaded file a deliberate save may still attach, and that
+			 *  button's label. `null` when nothing is worth re-sending. */
+			readonly held: Held | null;
+			readonly retryLabel?: string;
 	  }
 	| { readonly step: "done"; readonly text: string };
 
 /** The save's outcome, before it is shown. */
 type SaveOutcome =
 	| { readonly ok: true; readonly text: string }
+	/** A retry may succeed: no answer, a 5xx, a busy store, a moved product. */
 	| {
 			readonly ok: false;
+			readonly kind: "retryable";
 			readonly title: string;
 			readonly description: string;
-			readonly moved: boolean;
+	  }
+	/** Another file was attached after the merchant picked theirs. */
+	| { readonly ok: false; readonly kind: "conflict"; readonly currentKey: string | null }
+	/** A definitive no (the descriptor refused, a 4xx): re-sending is pointless. */
+	| {
+			readonly ok: false;
+			readonly kind: "refused";
+			readonly title: string;
+			readonly description: string;
 	  };
 
-/** Save an uploaded descriptor: read the product's latest watermark, then
- *  attach. Never throws. */
-async function attach(productId: string, asset: UploadedAsset): Promise<SaveOutcome> {
+const attachedText = (asset: UploadedAsset): string =>
+	`Buyers' download links now serve ${asset.filename}.`;
+
+/** Is a transport/route failure worth a retry? No answer, a 5xx, or the
+ *  plugin's retryable BUSY are; a 4xx (signed out, not allowed) is not. */
+function retryable(failure: { status?: number; indeterminate?: true }): boolean {
+	return (
+		failure.indeterminate === true ||
+		failure.status === undefined ||
+		failure.status >= 500 ||
+		(failure as { retryable?: unknown }).retryable === true
+	);
+}
+
+/**
+ * Save an uploaded descriptor. Re-reads the product first (its watermark, and
+ * which file it points at now) — see the module doc for why that read decides
+ * between "already attached", "someone else attached a file" and a write.
+ * Never throws.
+ */
+async function attach(productId: string, held: Held): Promise<SaveOutcome> {
+	const { asset, expectedKey } = held;
 	const fresh = await fetchProductDetail(productId);
 	if (isFailure(fresh)) {
-		return { ok: false, title: fresh.title, description: fresh.description, moved: false };
+		return {
+			ok: false,
+			kind: retryable(fresh) ? "retryable" : "refused",
+			title: fresh.title,
+			description: fresh.description,
+		};
 	}
+	const currentKey = fresh.product.downloadAsset?.key ?? null;
+	// An earlier save of THIS upload landed and its answer was lost.
+	if (currentKey === asset.key) return { ok: true, text: attachedText(asset) };
+	if (currentKey !== expectedKey) return { ok: false, kind: "conflict", currentKey };
 	const result = await performAction(
 		"products:attach-download",
 		{
@@ -100,72 +155,102 @@ async function attach(productId: string, asset: UploadedAsset): Promise<SaveOutc
 		PRODUCTS_ACT_SUBJECT,
 	);
 	if (isFailure(result)) {
-		return { ok: false, title: result.title, description: result.description, moved: false };
+		return {
+			ok: false,
+			kind: retryable(result) ? "retryable" : "refused",
+			title: result.title,
+			description: result.description,
+		};
 	}
 	const notice = result.notice;
 	if (notice !== null && notice.variant === "error") {
-		return {
-			ok: false,
-			title: notice.title,
-			description: notice.description,
-			moved: result.recordMoved === true,
-		};
+		// The product moved between the read and the write. The plugin's stale
+		// copy speaks of a form ("latest values are shown below") this card does
+		// not have, so the card says what happened in its own words.
+		if (result.recordMoved === true) {
+			return {
+				ok: false,
+				kind: "retryable",
+				title: "The product changed while the file was being attached",
+				description: "Nothing was attached.",
+			};
+		}
+		return { ok: false, kind: "refused", title: notice.title, description: notice.description };
 	}
-	return {
-		ok: true,
-		text: notice?.description || `Buyers' download links now serve ${asset.filename}.`,
-	};
+	return { ok: true, text: notice?.description || attachedText(asset) };
 }
 
 export function DownloadFileCard({
 	record,
 	titleId,
 	onAttached,
+	onBusyChange,
 }: {
 	record: ProductRecord;
 	/** The id the card's heading carries, for `aria-labelledby`. */
 	titleId: string;
-	/** Called once a new file is attached, so the editor re-reads the product. */
+	/** Called once a new file is attached (or another one is found attached),
+	 *  so the editor re-reads the product. */
 	onAttached: () => void;
+	/** Told when an upload or its save starts and ends, so the editor's
+	 *  leave-page guard can ask before throwing an upload away. */
+	onBusyChange?: (busy: boolean) => void;
 }): React.ReactElement {
 	const [phase, setPhase] = React.useState<Phase>({ step: "idle" });
 	const picker = React.useRef<HTMLInputElement | null>(null);
 	const busy = phase.step === "uploading" || phase.step === "saving";
 	const current: DownloadAssetView | null = record.downloadAsset ?? null;
 
-	// Leaving mid-upload throws the upload away; the browser asks first.
+	// Leaving mid-upload throws the upload away. The editor's own guard (the
+	// browser's leave-page prompt, and a confirm on an in-app link) covers it.
 	React.useEffect(() => {
-		if (!busy) return;
-		const warn = (event: BeforeUnloadEvent): void => {
-			event.preventDefault();
-			event.returnValue = "";
-		};
-		window.addEventListener("beforeunload", warn);
-		return () => {
-			window.removeEventListener("beforeunload", warn);
-		};
-	}, [busy]);
+		onBusyChange?.(busy);
+	}, [busy, onBusyChange]);
+	React.useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
-	const save = async (asset: UploadedAsset): Promise<void> => {
-		setPhase({ step: "saving", name: asset.filename });
-		let outcome = await attach(record.productId, asset);
-		// The product moved between the read and the write (the CMS saved the
-		// entry): once more on a fresh read. A second move is shown, not chased.
-		if (!outcome.ok && outcome.moved) outcome = await attach(record.productId, asset);
+	const save = async (held: Held): Promise<void> => {
+		setPhase({ step: "saving", name: held.asset.filename });
+		const outcome = await attach(record.productId, held);
 		if (outcome.ok) {
 			setPhase({ step: "done", text: outcome.text });
 			onAttached();
 			return;
 		}
-		setPhase({
-			step: "failed",
-			title: outcome.title,
-			description: `${outcome.description} The file is uploaded; save it again to attach it.`,
-			held: asset,
-		});
+		switch (outcome.kind) {
+			case "conflict":
+				setPhase({
+					step: "failed",
+					title: "Another file was attached while you were uploading",
+					description: `Buyers' links serve that file now. Your upload, ${held.asset.filename}, is kept: save it to replace that file.`,
+					// A deliberate save replaces the file now attached, and no other.
+					held: { asset: held.asset, expectedKey: outcome.currentKey },
+					retryLabel: "Save my file instead",
+				});
+				onAttached();
+				return;
+			case "retryable":
+				setPhase({
+					step: "failed",
+					title: outcome.title,
+					description: `${outcome.description} The file is uploaded; save it again to attach it.`,
+					held,
+					retryLabel: "Save file again",
+				});
+				return;
+			case "refused":
+				setPhase({
+					step: "failed",
+					title: outcome.title,
+					description: outcome.description,
+					held: null,
+				});
+				return;
+		}
 	};
 
 	const choose = async (file: File): Promise<void> => {
+		// The file this upload replaces, as the merchant saw it when they chose.
+		const expectedKey = record.downloadAsset?.key ?? null;
 		if (file.size > MAX_DOWNLOAD_FILE_BYTES) {
 			setPhase({
 				step: "failed",
@@ -197,7 +282,7 @@ export function DownloadFileCard({
 			});
 			return;
 		}
-		await save(uploaded.asset);
+		await save({ asset: uploaded.asset, expectedKey });
 	};
 
 	const percent =
@@ -264,6 +349,16 @@ export function DownloadFileCard({
 						value={percent}
 						aria-label={`Uploading ${phase.name}`}
 					/>
+					{/* The running percent is for the eye; the progress element carries
+					    it for assistive tech, and the status below announces only the
+					    start and the end — not every percent. */}
+					<span
+						className="otta-pricing-hint"
+						aria-hidden="true"
+						data-testid="otta-download-percent"
+					>
+						{String(percent)}%
+					</span>
 				</div>
 			)}
 
@@ -281,7 +376,7 @@ export function DownloadFileCard({
 									if (phase.held !== null) void save(phase.held);
 								}}
 							>
-								Save file again
+								{phase.retryLabel ?? "Save file again"}
 							</button>
 						</div>
 					)}
@@ -320,7 +415,7 @@ export function DownloadFileCard({
 					data-tone={phase.step === "done" ? "ok" : "muted"}
 				>
 					{phase.step === "uploading"
-						? `Uploading ${phase.name} — ${String(percent)}%`
+						? `Uploading ${phase.name}…`
 						: phase.step === "saving"
 							? `Attaching ${phase.name}…`
 							: phase.step === "done"

@@ -30,6 +30,7 @@ const { PricingStockEditor } = await import("../src/products/pricing-cards.js");
 const { formatFileSize } = await import("../src/products/download-file-card.js");
 const { MAX_DOWNLOAD_FILE_BYTES, downloadUploadUrl } =
 	await import("../src/download-upload-api.js");
+const { DIGITAL_WITH_FILE } = await import("@otta-sh/admin-presentation");
 type ProductRecord = import("../src/console-api.js").ProductRecord;
 
 const KEY_1 = "dl/p_ebook/01KAZQ3V8K4M2N6P7R8S9T0VWX";
@@ -287,7 +288,13 @@ test("UPLOAD: one request to the site with the file, then the descriptor is save
 	await xhr.progress(1_250_000, 2_500_000);
 	const c = card(container)!;
 	expect(c.querySelector("progress")?.getAttribute("value")).toBe("50");
-	expect(c.textContent).toContain("Uploading Field Guide.pdf — 50%");
+	expect(c.querySelector("[data-testid='otta-download-percent']")?.textContent).toBe("50%");
+	// The live status announces the start (and later the end) — never each percent.
+	const status = c.querySelector(".otta-pricing-file-actions [role='status']")!;
+	expect(status.textContent).toBe("Uploading Field Guide.pdf…");
+	expect(
+		c.querySelector("[data-testid='otta-download-percent']")?.getAttribute("aria-hidden"),
+	).toBe("true");
 	expect(button(c, "Upload file").disabled).toBe(true);
 	expect(writes()).toEqual([]);
 
@@ -431,9 +438,8 @@ test("a save that fails AFTER the upload keeps the file: Save file again re-send
 	expect(card(container)!.textContent).toContain("Attached.");
 });
 
-test("a save refused because the product moved is retried once on a fresh read, by itself", async () => {
+test("a save refused because the product MOVED keeps the file for a deliberate save — no automatic retry, no form copy", async () => {
 	let acts = 0;
-	let reads = 0;
 	apiFetch.mockImplementation(async (_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		if (body["type"] === "otta_console_act") {
@@ -444,7 +450,8 @@ test("a save refused because the product moved is retried once on a fresh read, 
 						notice: {
 							variant: "error",
 							title: "This product changed since you opened it",
-							description: "Not applied.",
+							description:
+								"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
 						},
 						recordMoved: true,
 					})
@@ -453,8 +460,7 @@ test("a save refused because the product moved is retried once on a fresh read, 
 						notice: { variant: "default", title: "File attached", description: "Attached." },
 					});
 		}
-		reads += 1;
-		return detail({ updatedAt: `2026-10-06T10:0${String(Math.min(reads, 9))}:00.000Z` });
+		return detail();
 	});
 	const container = await mountPanel();
 	await choose(container, fileOf(100));
@@ -463,14 +469,100 @@ test("a save refused because the product moved is retried once on a fresh read, 
 		asset: { key: KEY_1, filename: "Field Guide.pdf", contentType: "application/pdf", size: 100 },
 	});
 	await flush();
-	const marks = writes().map((w) => (w["value"] as Record<string, string>)["expectedUpdatedAt"]);
-	expect(marks).toHaveLength(2);
-	expect(marks[0]).not.toBe(marks[1]);
-	expect(container.querySelector("[data-testid='otta-download-error']")).toBeNull();
+	expect(writes()).toHaveLength(1);
+	const error = container.querySelector<HTMLElement>("[data-testid='otta-download-error']")!;
+	expect(error.textContent).toContain("The product changed while the file was being attached");
+	expect(error.textContent).not.toContain("latest values are shown below");
+	await fire(button(error, "Save file again"), "click");
+	await flush();
+	expect(writes()).toHaveLength(2);
+	expect(FakeXhr.instances).toHaveLength(1);
 	expect(card(container)!.textContent).toContain("Attached.");
 });
 
-test("a plugin refusal of the descriptor is shown, with the file held for another try", async () => {
+test("LOST ANSWER: the save landed but its answer did not — Save file again finds the file attached and writes nothing more", async () => {
+	let landed = false;
+	apiFetch.mockImplementation(async (_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			landed = true; // the write lands…
+			return new Response("gateway timeout", { status: 504 }); // …the answer is lost
+		}
+		return landed
+			? detail({
+					updatedAt: "2026-10-06T10:09:00.000Z",
+					downloadAsset: {
+						key: KEY_1,
+						filename: "Field Guide.pdf",
+						contentType: "application/pdf",
+						size: 100,
+					},
+				})
+			: detail();
+	});
+	const container = await mountPanel();
+	await choose(container, fileOf(100));
+	await FakeXhr.instances[0]!.respond(201, {
+		ok: true,
+		asset: { key: KEY_1, filename: "Field Guide.pdf", contentType: "application/pdf", size: 100 },
+	});
+	await flush();
+	const error = container.querySelector<HTMLElement>("[data-testid='otta-download-error']")!;
+	await fire(button(error, "Save file again"), "click");
+	await flush();
+	// ONE write in all: the re-read showed this upload's key already attached.
+	expect(writes()).toHaveLength(1);
+	expect(container.querySelector("[data-testid='otta-download-error']")).toBeNull();
+	expect(card(container)!.textContent).toContain(
+		"Buyers' download links now serve Field Guide.pdf.",
+	);
+});
+
+test("CONFLICT: another file attached while uploading — the card stops, writes nothing, and only a deliberate save replaces it", async () => {
+	const KEY_3 = "dl/p_ebook/01KAZQ5000000000000000000Z";
+	const other = {
+		key: KEY_3,
+		filename: "someone-else.pdf",
+		contentType: "application/pdf",
+		size: 50,
+	};
+	let reads = 0;
+	apiFetch.mockImplementation(async (_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return json({
+				ok: true,
+				notice: { variant: "default", title: "File attached", description: "Attached." },
+			});
+		}
+		reads += 1;
+		// The editor loaded with no file; by the time the upload finished, a
+		// colleague had attached one.
+		return reads === 1 ? detail() : detail({ downloadAsset: other });
+	});
+	const container = await mountPanel();
+	await choose(container, fileOf(100, "mine.pdf"));
+	await FakeXhr.instances[0]!.respond(201, {
+		ok: true,
+		asset: { key: KEY_1, filename: "mine.pdf", contentType: "application/pdf", size: 100 },
+	});
+	await flush();
+	expect(writes()).toEqual([]);
+	const error = container.querySelector<HTMLElement>("[data-testid='otta-download-error']")!;
+	expect(error.textContent).toContain("Another file was attached while you were uploading");
+	expect(error.textContent).toContain("mine.pdf");
+	// The card re-read and now shows the colleague's file.
+	expect(card(container)!.querySelector("[data-testid='otta-download-name']")?.textContent).toBe(
+		"someone-else.pdf",
+	);
+	await fire(button(error, "Save my file instead"), "click");
+	await flush();
+	expect(writes()).toHaveLength(1);
+	expect((writes()[0]!["value"] as Record<string, string>)["key"]).toBe(KEY_1);
+	expect(FakeXhr.instances).toHaveLength(1);
+});
+
+test("a plugin refusal of the descriptor is shown in its own words, and the file is NOT offered again", async () => {
 	apiFetch.mockImplementation(async (_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		if (body["type"] === "otta_console_act") {
@@ -493,9 +585,64 @@ test("a plugin refusal of the descriptor is shown, with the file held for anothe
 	});
 	await flush();
 	const error = container.querySelector<HTMLElement>("[data-testid='otta-download-error']")!;
-	expect(error.textContent).toContain("This file wasn't attached");
-	expect(error.textContent).toContain("Only a Digital product can have a download file.");
-	button(error, "Save file again");
+	expect(error.textContent).toBe(
+		"This file wasn't attached. Only a Digital product can have a download file.",
+	);
+	// Saving it again would be refused again: no button, no "save it again" text.
+	expect(error.querySelector("button")).toBeNull();
+	expect(button(card(container)!, "Upload file").disabled).toBe(false);
+});
+
+test("REPLACE ONLY: with a file attached, Physical is disabled with the reason; without one it is offered", async () => {
+	apiFetch.mockResolvedValue(
+		detail({
+			downloadAsset: { key: KEY_1, filename: "a.pdf", contentType: "application/pdf", size: 10 },
+		}),
+	);
+	const container = await mountPanel();
+	const radio = (kind: string) =>
+		[...container.querySelectorAll<HTMLInputElement>("input[type='radio']")].find(
+			(r) => r.value === kind,
+		)!;
+	expect(radio("physical").disabled).toBe(true);
+	expect(radio("digital").disabled).toBe(false);
+	const help = container.querySelector("[data-testid='otta-kind-locked']")!;
+	expect(help.textContent).toBe(DIGITAL_WITH_FILE);
+	expect(radio("physical").getAttribute("aria-describedby")).toBe(help.id);
+	await mounted?.unmount();
+	mounted = null;
+
+	apiFetch.mockResolvedValue(detail());
+	const fresh = await mountPanel();
+	const physical = [...fresh.querySelectorAll<HTMLInputElement>("input[type='radio']")].find(
+		(r) => r.value === "physical",
+	)!;
+	expect(physical.disabled).toBe(false);
+	expect(fresh.querySelector("[data-testid='otta-kind-locked']")).toBeNull();
+});
+
+test("leaving by an in-app link mid-upload asks first, about the upload", async () => {
+	apiFetch.mockResolvedValue(detail());
+	const container = await mountPanel();
+	const link = document.createElement("a");
+	link.href = "/_emdash/admin/content/products";
+	document.body.append(link);
+	// happy-dom has no `window.confirm`; the page's real one is a blocking dialog.
+	const confirm = vi.fn<(message?: string) => boolean>(() => false);
+	const original = window.confirm;
+	window.confirm = confirm;
+	try {
+		await choose(container, fileOf(100));
+		const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+		link.dispatchEvent(event);
+		expect(confirm).toHaveBeenCalledWith(
+			"A download file is still uploading. Leave and cancel the upload?",
+		);
+		expect(event.defaultPrevented).toBe(true);
+	} finally {
+		window.confirm = original;
+		link.remove();
+	}
 });
 
 test("switched to Digital but not yet saved: the card asks for the save first, with no picker", async () => {
