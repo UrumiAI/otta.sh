@@ -60,6 +60,21 @@ const INVALID_INPUT = { authorized: false, reason: "INVALID_INPUT" } as const;
  *
  * A PARTIAL refund leaves the order in its paid-side state and still delivers —
  * the same line increment 1 drew for revocation.
+ *
+ * WHAT THIS CHECK CANNOT SEE (issue #405). It reads Otta's order state, so money
+ * that left through a path that does not move that state leaves the download
+ * OPEN until someone records it in the admin:
+ *  - a refund made in the Stripe DASHBOARD — the order stays paid-side until the
+ *    operator starts the refund in Money → Refunds (whose pre-flight finds the
+ *    provider refund and flags the order) and then uses Mark refunded;
+ *  - a CHARGEBACK — Otta acts on no `charge.dispute.*` event, and a dispute is
+ *    not a refund to the pre-flight, so Mark refunded stays refused while the
+ *    ledger shows the money captured: no console action closes access today;
+ *  - a cancellation whose refund came back UNVERIFIED — the order is not
+ *    cancelled; Mark refunded is refused while that refund is unresolved, and
+ *    confirming it in Money → Refunds finishes the cancel and revokes.
+ * DEPLOYMENT.md §2.1 and ADR-0011's 2026-10-05 amendment say the same to the
+ * merchant and the reviewer.
  */
 const DELIVERABLE_ORDER_STATES: Readonly<Record<OrderState, boolean>> = {
 	paid: true,

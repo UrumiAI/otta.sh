@@ -121,7 +121,21 @@ expired holds and queued emails drain at the Free pace (§5).
    > product ([ADR-0029](./adr/0029-console-uploads-download-files-to-a-site-endpoint.md)).
    > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
    > Without the binding, an upload is refused with a sentence saying downloads are not set
-   > up on this store (the card shows it once the merchant tries).
+   > up on this store (the card shows it once the merchant tries). Saving the file checks that
+   > its object is in this bucket at the uploaded size, and refuses it otherwise, so a save can
+   > never point buyers at a missing file.
+   >
+   > **Refunds made outside Otta keep the download open.** A buyer loses access when the order
+   > is refunded or cancelled in Otta. Money returned another way does not do that by itself:
+   > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
+   >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
+   > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the
+   >   payment shows as captured, so the console cannot close access for it today.
+   > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
+   >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
+   >   cancellation and closes access.
+   >
+   > A partial refund keeps access by design.
    >
    > **A file is replaced, never removed.** Past buyers keep access, so a product with a
    > download file stays Digital: the editor disables the Physical choice and says why.
