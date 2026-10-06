@@ -8,8 +8,9 @@
   Decision 3 stands: `otta-console` still declares zero capabilities and zero `allowedHosts`,
   owns no hooks and no routes, and every read and every write of commerce data still goes
   through the existing `otta` admin route.
-- Relates to: [ADR-0006](./0006-trusted-in-process-deployment.md) (its 2026-10-05 amendment:
-  the origin check runs once, in the site middleware, default-deny),
+- Relates to: [ADR-0006](./0006-trusted-in-process-deployment.md) (its CSRF section: every
+  site write route runs the origin guard first; PR #390 proposes moving that guard into the
+  site middleware, default-deny),
   [ADR-0011](./0011-entitlement-check-authentication.md) (its 2026-10-05 amendment: the
   download gate), issue #376 part 1.
 
@@ -58,10 +59,13 @@ forbids.
    capped at 100,000,000 bytes, below Cloudflare's 100 MB request limit on the Free and Pro
    plans. The coercions live in `@otta-sh/domain` beside the validator, so whatever the
    endpoint produces, the save accepts.
-4. **The endpoint is a storefront path, so the site middleware guards its origin.** It is
-   not under `/_emdash`, which EmDash guards itself. The middleware's route table lists it in
-   the GUARDED column, never the exempt one. `X-EmDash-Request` is required as well, so a
-   cross-site form cannot reach it even if the origin check were ever loosened.
+4. **The endpoint is a storefront path, so it guards its own origin, first.** It is not
+   under `/_emdash`, which EmDash guards itself. Like every other site write route it calls
+   `rejectCrossOrigin` (ADR-0006's CSRF section) before it trusts the session or reads a
+   byte, and it also requires `X-EmDash-Request: 1`, which a cross-site form cannot send. If
+   the origin check moves into the site middleware (PR #390, default-deny), the route is
+   guarded there automatically and is listed in that table's GUARDED column — never the
+   exempt one — by whichever of the two changes lands second.
 5. **A replaced file is a new object; the old one is left in place.** Each upload gets a
    fresh key. Once the save points the descriptor at it, every buyer's link (keyed by order
    and sku) serves the new file. The old object is not deleted: deleting it at upload or at
@@ -69,11 +73,21 @@ forbids.
    last one ends. An upload whose save never happens (a closed tab) is left too. These
    orphans cost storage, never access, since nothing serves a key the descriptor does not
    name. DEPLOYMENT.md §2.1 says how to find and remove them.
+6. **Replace only; a file is never removed (product-owner decision, 2026-10-06).** Past
+   buyers must never lose access to what they bought, so the console offers no Remove file
+   control and the product cannot be switched to Physical while it has a file: the editor
+   shows the Physical choice disabled, with the reason ("This product has a download file,
+   so it stays Digital. To change the file, use Replace file."), and the store's refusal of
+   a file on a physical product stays as the backstop, answered in the same words rather
+   than as an invalid price or measurement. The plugin's wire still accepts
+   `downloadAsset: null`; nothing in the console sends it.
 
 ## Consequences
 
 - `console-api.ts` stops being the console's only network code: the upload lives in its own
-  module, `download-upload-api.ts`, and both modules say so. The upload uses
+  module, `download-upload-api.ts`, and both modules say so. A source-scanning test
+  (`console-network-surface.test.ts`) fails on any other request — a global `fetch`, another
+  XHR, a beacon, a socket, a dynamic import — and pins the upload module to one `open()`. The upload uses
   `XMLHttpRequest` rather than `fetch`, because only XHR reports upload progress, and a
   100 MB upload with no progress reads as a hang.
 - The site gains its first admin-only endpoint. It trusts `locals.user` as EmDash's auth
@@ -92,5 +106,6 @@ forbids.
 ### What would reopen this decision
 
 A second console request of any kind; the upload endpoint writing the product; the endpoint
-accepting a key, a path or a product kind from the request; or the route moving under `/_`,
-or onto the middleware's exempt list.
+accepting a key, a path or a product kind from the request; the route moving under `/_`,
+dropping its origin guard, or going onto the middleware's exempt list; or a way to remove a
+product's file.

@@ -120,7 +120,11 @@ expired holds and queued emails drain at the Free pace (§5).
    > fresh `dl/<productId>/<id>` key and hands the card a descriptor that it saves on the
    > product ([ADR-0029](./adr/0029-console-uploads-download-files-to-a-site-endpoint.md)).
    > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
-   > Without the binding, the card says downloads are not set up.
+   > Without the binding, an upload is refused with a sentence saying downloads are not set
+   > up on this store (the card shows it once the merchant tries).
+   >
+   > **A file is replaced, never removed.** Past buyers keep access, so a product with a
+   > download file stays Digital: the editor disables the Physical choice and says why.
    >
    > **Replaced files are not deleted.** Replacing a file uploads a new object and points the
    > product at it; every buyer's link serves the new file from then on. The old object stays
