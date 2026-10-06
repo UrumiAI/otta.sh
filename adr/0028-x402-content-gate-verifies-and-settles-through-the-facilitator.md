@@ -618,14 +618,19 @@ x402 client never produces such a proof, and the server would have to trust whoe
   - Today it brands a guest order's `buyerRef` as an `Email` without checking it, so it would
     "send" to `x402:0x…`.
   - Increment 4 turns it into **"the order's email recipient, or none"**. A `buyerRef` that is not
-    an email address yields none, and the row is completed as "skipped: no recipient". That is not
-    an attempt and not a failure.
-  - This covers every notice that can fire for an x402 order (`EmailTemplate`,
-    `packages/domain/src/ports/email-sender.ts:10-27`):
+    an email address yields none, and the row is completed as "skipped". The row stores only its
+    status and a `skippedAt` time, with no reason field; today "no recipient" is the only cause.
+    That is not an attempt and not a failure.
+  - This covers every notice that can fire for an x402 order, **ten templates** in all
+    (`EmailTemplate`, `packages/domain/src/ports/email-sender.ts:10-27`):
     - `order-confirmation` (paid);
-    - `order-processing` and `order-completed` (if the operator moves a paid order on);
+    - `order-processing`, `order-shipped`, `order-delivered` and `order-completed`. An operator can
+      move a paid digital order on through any of these, because `adminNextStates`
+      (`transition.ts:224-234`) does not block shipping states for digital orders;
     - `order-cancelled` and `order-expired`;
-    - `order-refunded` (Mark refunded);
+    - `order-refunded`, sent by the ledger refund path when a recorded refund reaches the ceiling
+      (ADR-0026). It is not sent by Mark refunded: `transitionOrderAsAdmin` enqueues no email for
+      `→ refunded` (`transition.ts:307`);
     - `order-refund-issued` (ADR-0026's notice for a partial or announced refund);
     - `order-late-payment-refunded` (ADR-0022). This is unreachable for x402, which cannot refund,
       but it is covered anyway.
@@ -886,7 +891,8 @@ Postgres and D1; increments 4, 5 and 7).
 - **Type level:** a test-only `as`-free attempt to build a `page_gate` confirmation outside
   `pay-for-gated-product.ts` fails to compile (a `@ts-expect-error` case).
 - **Email and refunds:**
-  - each `EmailTemplate` listed in Decision 7 is skipped, with no recipient, for an `x402:` ref;
+  - each of the ten `EmailTemplate`s listed in Decision 7 is completed as "skipped" for an
+    `x402:` ref;
   - Mark refunded on a gate order revokes access.
 - **Shared code:**
   - the shared quote helper gives the gate and checkout the same total for the same product;
@@ -1027,6 +1033,11 @@ from five PRs into eight.
      `serveDownload`; `PAYMENT-RESPONSE` and both `Link` headers.
    - The #283 symbol renames and legacy-key cleanup.
    - Settings validation that the accepted networks are in the asset table.
+   - **An x402 sale issues the ADR-0027 §7 tax document**, as the Stripe settle route does. The tax
+     stack adds `issueTaxDocumentNow` (`packages/plugin/src/tax/issue-tax-document-now.ts` on
+     `tax/4-invoices`), and `x402/pay` calls it after a fresh settle.
+     - `tax/4-invoices` also wires that call into `x402-settle-route.ts`, which increment 2
+       deletes. Whichever of the two lands second drops that call.
    - DEPLOYMENT.md: the facilitator base URL, the edge token, and mandatory rate limiting before
      Base mainnet.
    - **This increment takes real money.** It depends on:
@@ -1109,3 +1120,10 @@ The amendments, against the 2026-10-05 draft:
 - The allowlist's safety is stated as the reference `catch` mapping any post-broadcast error only
   to `*_transaction_failed`.
 - Increment 4 adds a "skipped" store completion, so it is tagged [Domain][Adapters].
+
+**Review round 4 (build feedback from increment 4):**
+- Decision 7's list is ten templates, not eight. `order-shipped` and `order-delivered` can fire,
+  because an operator may move a paid digital order on through them.
+- `order-refunded` is attributed to the ledger refund path. Mark refunded enqueues no email.
+- A "skipped" row stores only its status and `skippedAt`, with no reason field.
+- Increment 8 issues the ADR-0027 §7 tax document for an x402 sale, as the Stripe settle route does.
