@@ -163,7 +163,8 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		expect(result.configured).toBe(true);
 		expect(result.sent).toEqual([]);
 		expect(result.skipped.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
-		expect(kvGet).not.toHaveBeenCalled();
+		// Only the provider choice, read before anything is claimed; no sender's reads.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
 		expect(harness.egressAttempts()).toBe(egressBefore);
 		expect(await cronView(id)).toBeNull(); // completed, not left for the cron
 	});
