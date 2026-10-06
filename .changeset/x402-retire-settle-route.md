@@ -23,7 +23,10 @@ reaches a `page_gate` confirmation.
   needs no transport and no longer reads `settings:x402FacilitatorApiKey`. The setting
   still saves, for the facilitator client a later increment adds. A deployment with a
   facilitator URL and a valid `payTo` still gets an x402 gateway, for its challenge, its
-  `refundable = false` and its `UNSUPPORTED` refund and cancel answers.
+  `refundable = false` and its `UNSUPPORTED` refund and cancel answers. The Settings
+  copy no longer promises an x402 checkout: the facilitator key's removal note and the
+  payment-settings note now say x402 payments are not available yet. Every field still
+  saves.
 - `@otta-sh/payments-x402`: removed `createHttpFacilitator`, `createTestFacilitator`,
   `signX402Proof`, `X402FacilitatorUnavailableError`, the `X402Facilitator` interface (and
   its `verifyReceipt`), `X402VerifyResult`, `HttpFacilitatorOptions` and

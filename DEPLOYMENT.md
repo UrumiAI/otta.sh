@@ -25,9 +25,9 @@ staging-only.
 > Workers deployment is coming soon.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
-> discounts, entitlements, reporting, and settings (the magic-link email needs the email API
-> and a sign-in page URL, §3 Email). The reference **storefront** covers
+> checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+> shipping, discounts, entitlements, reporting, and settings (the magic-link email needs the
+> email API and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Two page
@@ -659,4 +659,4 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
 | An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
-| An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
+| An outbound call to Stripe or the email provider never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

@@ -76,8 +76,9 @@ export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
  * party — a silent downgrade that no release note can undo, because nothing
  * forces the operator to act. A different key name IS the forcing function: the
  * old value is never read again, and the field reads as unset until someone
- * provisions a credential that was minted to be sent. The legacy key is deleted opportunistically on the next save of
- * this field (`settings-form.ts`) so the orphaned secret does not linger in kv.
+ * provisions a credential that was minted to be sent. The legacy key is deleted
+ * opportunistically on the next save of this field (`settings-form.ts`) so the
+ * orphaned secret does not linger in kv.
  *
  * The SERVICE's own offline facilitator keeps reading its own
  * `X402_FACILITATOR_SECRET` environment variable, which was never this key.

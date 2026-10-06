@@ -51,17 +51,16 @@ export const STRIPE_API_HOST = "api.stripe.com";
  * Both are URLs, not hostnames, because that is the shape the values already
  * have: the service derives its email host from `EMAIL_API_URL`
  * (`service/src/index.ts:74`). Neither has a sensible default — there is no
- * canonical email provider, and the service has NO facilitator-URL env var at
- * all today (`service/src/x402-wiring.ts` only ever builds the offline
- * `createTestFacilitator`) — so an absent value grants no host rather than
+ * canonical email provider, and no default x402 facilitator (ADR-0028 Decision 8:
+ * the deployer picks it) — so an absent value grants no host rather than
  * guessing one.
  */
 export interface InProcessEgressUrls {
 	/** Where `HttpEmailSender` posts; the in-process equivalent of
 	 *  `EMAIL_API_URL`. */
 	emailApiUrl?: string | undefined;
-	/** The x402 facilitator's base URL, for the day a real
-	 *  `HTTPFacilitatorClient` replaces the offline test facilitator. */
+	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
+	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
 	facilitatorUrl?: string | undefined;
 }
 

@@ -48,9 +48,9 @@ export class X402PaymentGateway implements PaymentGateway {
 	readonly id = "x402" as const;
 	/**
 	 * x402 CANNOT refund (ADR-0008). On-chain USDC settlement is irreversible and
-	 * this adapter holds no signing wallet. `refundable:false` is honest by construction; the domain
-	 * records an x402 refund as a `manual`, out-of-band entry instead of ever
-	 * pretending money moved.
+	 * this adapter holds no signing wallet. `refundable:false` is honest by
+	 * construction; the domain records an x402 refund as a `manual`, out-of-band
+	 * entry instead of ever pretending money moved.
 	 */
 	readonly refundable = false;
 	readonly #payTo: string;
@@ -100,10 +100,9 @@ export class X402PaymentGateway implements PaymentGateway {
 
 	/**
 	 * Nothing to withdraw: an x402 "intent" is a stateless page-gate challenge,
-	 * not a provider-side object that stays payable — a payment only exists once
-	 * the buyer brings back a settled receipt. When an x402 order expires, the
-	 * receipt path is what guards it (`settleOrder` refuses a dead order, and x402
-	 * is not refundable, so a late receipt is flagged for a manual refund). The
+	 * not a provider-side object that stays payable. When an x402 order expires,
+	 * nothing can settle it: `verifyConfirmation` refuses every confirmation until
+	 * ADR-0028 increment 7, and even then `settleOrder` refuses a dead order. The
 	 * capability statement `UNSUPPORTED`, never a throw, so the expiry sweep moves
 	 * on without logging it.
 	 */

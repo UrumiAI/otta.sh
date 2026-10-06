@@ -156,7 +156,7 @@ breaking changes before 1.0.
 ([`DEPLOYMENT.md`](./DEPLOYMENT.md)); a one-click / hosted Workers deployment is coming soon.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
-cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
+cart, checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
 shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
 an email API is configured and the Settings "Sign-in page address" (`settings:loginLinkUrl`)
 points at the storefront's `/account/verify` page.

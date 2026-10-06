@@ -51,11 +51,11 @@
  *
  * FAIL-CLOSED. Missing URL or missing `payTo` ⇒ NO GATEWAY. The URL still
  * gates the gateway although nothing calls it yet: "x402 is configured" keeps one
- * meaning across the increments (ADR-0028 Decision 1). The domain refuses a
- * checkout whose method has no gateway, so an unconfigured deployment gets a loud
- * refusal rather than a silently unverified settlement; and a kv rejection is
- * swallowed to the same `undefined`, because an unreadable `payTo` is exactly as
- * unconfigured as an unset one.
+ * meaning across the increments (ADR-0028 Decision 1). The domain refuses an
+ * order whose method has no gateway, so an unconfigured deployment gets a loud
+ * refusal rather than an order nobody can pay; and a kv rejection is swallowed to
+ * the same `undefined`, because an unreadable `payTo` is exactly as unconfigured
+ * as an unset one.
  */
 import { X402PaymentGateway } from "@otta-sh/payments-x402";
 import type { PluginContext } from "../types.js";
