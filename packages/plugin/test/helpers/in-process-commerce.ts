@@ -87,6 +87,10 @@ export interface MakeInProcessCommerceOptions {
 	 */
 	emailSender?: EmailSender;
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** Whether the payment account needs every buyer's address (issue #382) —
+	 *  what `makeCommerceClient` resolves from the Stripe account's country.
+	 *  Omitted ⇒ not wired: ADR-0021's rules alone. */
+	resolveAddressRequired?: () => Promise<boolean>;
 }
 
 export async function makeInProcessCommerce(
@@ -118,6 +122,9 @@ export async function makeInProcessCommerce(
 			...shared,
 			...(options.emailSender !== undefined
 				? { resolveEmailSender: async () => options.emailSender }
+				: {}),
+			...(options.resolveAddressRequired !== undefined
+				? { resolveAddressRequired: options.resolveAddressRequired }
 				: {}),
 		}),
 		stores,

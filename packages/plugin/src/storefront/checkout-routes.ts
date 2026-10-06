@@ -40,6 +40,7 @@ import type {
 	QuoteResult,
 	ResumeProof,
 } from "../product-commerce/commerce-client.js";
+import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { RouteHandler } from "../types.js";
 import {
 	buildCartPricing,
@@ -223,8 +224,16 @@ interface CheckoutSummaryViewBase {
 	/** Whether any line ships. */
 	requiresShipping: boolean;
 	shipping: CheckoutShippingView;
-	/** The page must collect an address (a physical cart in a zoned store). */
+	/** The page must collect an address: a physical cart in a zoned store, or
+	 *  any cart when {@link paymentAccountNeedsAddress}. */
 	addressRequired: boolean;
+	/**
+	 * The store's payment account needs EVERY buyer's name and address — an
+	 * India-based Stripe account (issue #382) — so the page collects them even
+	 * for a cart that ships nothing, and says why. The place route enforces it:
+	 * an address-less place is refused MISSING_SHIPPING_ADDRESS.
+	 */
+	paymentAccountNeedsAddress: boolean;
 	/**
 	 * The ONE answer to "may the page offer the place button?". Unlocked: the
 	 * cart ships nothing, or the store has no zones, or a zone matched and a
@@ -498,6 +507,10 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 
 			const methodSelected = selection.shippingMethodId !== undefined;
 			const status = quote.destination.status;
+			// Issue #382: a kv read of the cached account country (Stripe is asked
+			// only when nothing usable is cached). The SAME answer `createOrder`
+			// enforces at place, so the form never under-asks.
+			const paymentAccountNeedsAddress = await checkoutRequiresBuyerAddress(ctx);
 			const shipping: CheckoutShippingView = {
 				status,
 				matchedRegion: quote.destination.matchedRegion,
@@ -541,7 +554,9 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				selectionErrors,
 				requiresShipping: quote.requiresShipping,
 				shipping,
-				addressRequired: quote.requiresShipping && status !== "no_zones",
+				addressRequired:
+					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
+				paymentAccountNeedsAddress,
 				readyToPlace:
 					!quote.requiresShipping ||
 					status === "no_zones" ||
@@ -603,6 +618,7 @@ function lockedSummary(
 		// Nothing to collect: a same-key place replays the order before any
 		// address or method is looked at (createOrderFromCart's I1).
 		addressRequired: false,
+		paymentAccountNeedsAddress: false,
 		// The ONE source for the locked page: a pending order can still be paid.
 		readyToPlace: phase === "payable",
 		uncalculatedReason:

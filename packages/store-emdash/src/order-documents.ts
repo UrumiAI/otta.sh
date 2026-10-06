@@ -333,6 +333,10 @@ export interface PaymentIntentEntryDoc {
 	cancelDueAt: string | null;
 	cancelAttempts: number;
 	cancelOutcome: PaymentIntentCancelOutcome | null;
+	/** The intent's provider-side customer decision (issue #382): `cus_…`, or
+	 *  `null` for a decided "none". ABSENT on entries written before it existed
+	 *  and on gateways without one — read back as absent, never as `null`. */
+	customerRef?: string | null;
 }
 
 /**
@@ -510,6 +514,9 @@ export interface OrderDoc {
 	totals: OrderTotalsDoc;
 	/** The ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
+	/** The buyer-address-requirement snapshot (issue #382); absent on documents
+	 *  written before it existed. Written once by the creating write. */
+	buyerAddressRequired?: boolean;
 	/** Append-only state-change audit; appended inside the guarded flip. */
 	events: OrderEventDoc[];
 	/** At most one entry per `toState`; first-wins. */

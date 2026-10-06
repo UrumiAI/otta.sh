@@ -167,14 +167,29 @@ export function draftAddressValues(draft: CheckoutDraft | null): Record<DraftAdd
 	return values;
 }
 
+/** How the page asks for the address: `addressRequired` when it may not be left
+ *  blank. The checkout page sets it for an India-based Stripe account (issue
+ *  #382); a zoned delivery does not pass it yet, so its copy is unchanged. */
+export interface FieldErrorContext {
+	addressRequired?: boolean;
+}
+
 /** The sentence beside a refused field. */
-export function fieldErrorCopy(field: DraftField, error: DraftFieldError): string {
+export function fieldErrorCopy(
+	field: DraftField,
+	error: DraftFieldError,
+	context: FieldErrorContext = {},
+): string {
 	if (error === "too_long") {
 		const max = field === "email" ? BUYER_REF_MAX : ORDER_ADDRESS_MAX_LENGTHS[field];
 		return `Too long — use at most ${max} characters.`;
 	}
 	if (field === "email") return "Enter an email address like name@example.com.";
-	if (error === "missing") return "Fill this in, or leave the whole address blank.";
+	if (error === "missing") {
+		return context.addressRequired === true
+			? "Fill this in."
+			: "Fill this in, or leave the whole address blank.";
+	}
 	if (field === "country") return "Choose a country from the list.";
 	if (field === "region") return "Use a state/province code, e.g. CA — or leave it blank.";
 	return "Check this field.";
@@ -185,12 +200,13 @@ export function fieldErrorCopy(field: DraftField, error: DraftFieldError): strin
 export function shownFieldErrors(
 	draft: CheckoutDraft | null,
 	error: string | null,
+	context: FieldErrorContext = {},
 ): Partial<Record<DraftField, string>> {
 	const shown: Partial<Record<DraftField, string>> = {};
 	if (draft === null || error === null || draft.error !== error) return shown;
 	for (const field of DRAFT_FIELDS) {
 		const reason = draft.errors[field];
-		if (reason !== undefined) shown[field] = fieldErrorCopy(field, reason);
+		if (reason !== undefined) shown[field] = fieldErrorCopy(field, reason, context);
 	}
 	return shown;
 }

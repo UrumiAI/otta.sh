@@ -711,6 +711,7 @@ export class EmdashOrderStore implements OrderStore {
 					cancelDueAt: pending ? doc.holdExpiresAt : null,
 					cancelAttempts: 0,
 					cancelOutcome: pending ? null : ("not_needed" as const),
+					...(input.customerRef !== undefined ? { customerRef: input.customerRef } : {}),
 				},
 			];
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, {
@@ -1745,6 +1746,9 @@ export class EmdashOrderStore implements OrderStore {
 				taxBreakdown: input.totals.taxBreakdown ?? null,
 			},
 			shippingAddress: input.shippingAddress ?? null,
+			...(input.buyerAddressRequired !== undefined
+				? { buyerAddressRequired: input.buyerAddressRequired }
+				: {}),
 			events: [],
 			emailOutbox: [],
 			payments: [],
@@ -2709,6 +2713,7 @@ function intentsOf(doc: OrderDoc): PaymentIntentRecord[] {
 		cancelDueAt: intent.cancelDueAt,
 		cancelAttempts: intent.cancelAttempts,
 		cancelOutcome: intent.cancelOutcome,
+		...(intent.customerRef !== undefined ? { customerRef: intent.customerRef } : {}),
 	}));
 }
 
@@ -3151,6 +3156,9 @@ function toOrder(doc: OrderDoc): Order {
 			taxBreakdown: doc.totals.taxBreakdown,
 		},
 		shippingAddress: doc.shippingAddress,
+		...(doc.buyerAddressRequired !== undefined
+			? { buyerAddressRequired: doc.buyerAddressRequired }
+			: {}),
 		reconciliationFlag: doc.reconciliationFlag,
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,

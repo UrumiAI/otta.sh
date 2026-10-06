@@ -616,6 +616,8 @@ export interface AccountOrderModel {
 		tracking: { carrier: string; trackingNumber: string; trackingUrl: string | null } | null;
 		/** Where it is going, as display lines; `null` when no address was taken. */
 		addressLines: string[] | null;
+		/** "Delivery address", or "Billing address" for an order that ships nothing. */
+		addressLabel: "Delivery address" | "Billing address";
 	} | null;
 	errorMessage: string;
 	/** The signed-in email, named on the page; `null` when unknown. */

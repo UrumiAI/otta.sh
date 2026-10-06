@@ -211,6 +211,16 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * checkout's. Absent ⇒ no in-request withdrawal; the sweep does it.
 	 */
 	resolveWithdrawGateways?: () => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>;
+	/**
+	 * Whether the payment account needs EVERY buyer's name and address (issue
+	 * #382 — an India-based Stripe account refuses an export payment without
+	 * them). Asked by `createOrder` only, and resolved there rather than taken
+	 * from the request, because it is a fact about the store's payment account,
+	 * never the caller's to waive. `makeCommerceClient` answers it from the
+	 * cached account country (`payments/stripe-account-country.ts`). Absent, or
+	 * a resolver that throws (logged), ⇒ not required: ADR-0021's rules alone.
+	 */
+	resolveAddressRequired?: () => Promise<boolean>;
 }
 
 /** The provider bound for the in-request intent withdrawal: fixed, never
@@ -243,6 +253,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	readonly #resolveWithdrawGateways:
 		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
 		| undefined;
+	readonly #resolveAddressRequired: (() => Promise<boolean>) | undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -258,6 +269,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		this.#stores = createInProcessCommerceStores(ctx, options);
 		this.#resolveEmailSender = options.resolveEmailSender;
 		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
+		this.#resolveAddressRequired = options.resolveAddressRequired;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -1077,11 +1089,17 @@ export class InProcessCommerceClient implements CommerceClient {
 						},
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
+		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
+		// checkout only — x402 has no such rule. A kv read, made before the
+		// domain's same-key short-circuit (which lives inside the use-case); a
+		// replay short-circuits before the domain looks at it.
+		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
 			buyerRef: input.buyerRef,
 			...(customerId !== undefined ? { customerId } : {}),
+			...(addressRequired ? { addressRequired } : {}),
 			paymentMethod: input.paymentMethod,
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
@@ -1100,6 +1118,23 @@ export class InProcessCommerceClient implements CommerceClient {
 			buyerRefHint: buyerRefHint(result.order.buyerRef),
 			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
+	}
+
+	/** {@link InProcessCommerceClientOptions.resolveAddressRequired}, failing
+	 *  OPEN: a resolver that cannot answer must not refuse every checkout (the
+	 *  resolver itself treats an unknown country the same way, for the same
+	 *  reason — see `payments/stripe-account-country.ts`). */
+	async #addressRequired(): Promise<boolean> {
+		if (this.#resolveAddressRequired === undefined) return false;
+		try {
+			return await this.#resolveAddressRequired();
+		} catch (err) {
+			console.error(
+				"[otta] whether the payment account requires the buyer's address could not be resolved; not requiring it:",
+				err instanceof Error ? err.message : "unknown error",
+			);
+			return false;
+		}
 	}
 
 	/**

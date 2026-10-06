@@ -200,6 +200,9 @@ export class InMemoryOrderStore implements OrderStore {
 			// ADR-0009: freeze the submitted ship-to snapshot (a COPY — never a live
 			// pointer to the profile book), or null when none was captured.
 			shippingAddress: cloneAddress(input.shippingAddress ?? null),
+			...(input.buyerAddressRequired !== undefined
+				? { buyerAddressRequired: input.buyerAddressRequired }
+				: {}),
 			reconciliationFlag: null,
 			reconciliationResolution: null,
 			fulfillment: null,
@@ -300,6 +303,7 @@ export class InMemoryOrderStore implements OrderStore {
 			cancelDueAt: paid ? null : stored.order.holdExpiresAt,
 			cancelAttempts: 0,
 			cancelOutcome: paid ? "not_needed" : null,
+			...(input.customerRef !== undefined ? { customerRef: input.customerRef } : {}),
 		});
 		this.#intents.set(input.orderId, list);
 	}
