@@ -256,7 +256,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			deadline,
 		});
 		if (!result.configured) return "unconfigured";
-		return result.sent.some(announces) ? "sent" : "queued";
+		if (result.sent.some(announces)) return "sent";
+		// Skipped for want of a recipient: done, and it went nowhere — never "queued".
+		return result.skipped.some(announces) ? "no-recipient" : "queued";
 	}
 
 	/**

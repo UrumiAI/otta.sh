@@ -1646,6 +1646,24 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
+	 * Complete a claimed entry as SKIPPED — the order has no email recipient (an x402
+	 * gate buyer, ADR-0028 Decision 7). Terminal like `sent`, so it leaves the due index
+	 * the same way, but `sentAt` stays null: nothing reads it as delivered. The attempt
+	 * the claim counted is taken back off, because no send was tried. Guarded like every
+	 * settle (`#updateOutboxEntry` writes only a `sending` entry), so a double skip, or a
+	 * skip of an entry already sent, is a no-op.
+	 */
+	async markEmailSkipped(id: string, now: string): Promise<void> {
+		await this.#updateOutboxEntry(id, (entry) => ({
+			...entry,
+			status: "skipped",
+			skippedAt: now,
+			leaseUntil: null,
+			attempts: Math.max(0, entry.attempts - 1),
+		}));
+	}
+
+	/**
 	 * Hand a claimed entry back untried: `pending`, its due time unchanged (so it is
 	 * due at once), and the attempt its claim counted taken back off. Guarded like
 	 * every settle (`#updateOutboxEntry` writes only a `sending` entry), so a double
@@ -2548,7 +2566,7 @@ export class EmdashOrderStore implements OrderStore {
 			const doc = normalizeOrderDoc(current.value);
 			const entry = doc.emailOutbox.find((row) => row.id === id);
 			// Only a CLAIMED entry is settleable. A `pending` entry was never handed out,
-			// and a `sent`/`failed` one is terminal — settling either would be this file's
+			// and a `sent`/`skipped`/`failed` one is terminal — settling either would be this file's
 			// only unguarded write.
 			if (entry === undefined || entry.status !== "sending") return casDone(undefined);
 			const next = replaceOutboxEntry(doc, transform(entry));

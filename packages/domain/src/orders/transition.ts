@@ -1,5 +1,6 @@
 import {
 	customerId as toCustomerId,
+	isEmailAddress,
 	type Email,
 	type IdempotencyKey,
 	type OrderId,
@@ -356,6 +357,14 @@ export interface DispatchOrderEmailsOptions {
 	 * went out (the admin console, QA T1-6) needs which rows, not how many.
 	 */
 	onSent?: (row: OutboxEmail) => void;
+	/**
+	 * Told about every row the drain SKIPPED — completed with no send because the
+	 * order has no email recipient (an x402 gate buyer's `x402:0x…` reference,
+	 * ADR-0028 Decision 7) — after it is marked skipped. Never told about a row it
+	 * sent, and a skipped row is never passed to `onSent` or counted as sent, so a
+	 * caller can say "no email was sent, and none will be" rather than "queued".
+	 */
+	onSkipped?: (row: OutboxEmail) => void;
 }
 
 export interface DispatchOrderEmailsForOrderOptions extends DispatchOrderEmailsOptions {
@@ -417,7 +426,8 @@ const DEFAULT_ORDER_BATCH_LIMIT = 10;
  * delivery is only at-least-once — a crash after `send()` but before the row is
  * marked sent lets the lease lapse and the row be re-claimed and re-sent; dedup
  * to effectively-once relies on the provider's `Idempotency-Key` (§6,
- * `HttpEmailSender`). Returns the number of emails actually sent.
+ * `HttpEmailSender`). Returns the number of emails actually sent — a row skipped
+ * for want of a recipient (`markEmailSkipped`) is not one.
  */
 export async function dispatchOrderEmails(
 	deps: DispatchOrderEmailsDeps,
@@ -527,24 +537,35 @@ async function drainOutbox(
 			...(refundedSoFar !== null ? { refundedSoFarCents: refundedSoFar.amount } : {}),
 		};
 
+		let skipped = false;
 		try {
-			await deps.emailSender.send({
-				to: await resolveRecipient(deps, order),
-				template,
-				data:
-					refunded === null
-						? stateData
-						: {
-								...buildOrderEmailData(order, row.toState),
-								// The OWN figure — the money refunded, never the order total
-								// it may differ from.
-								noticeAmountCents: refunded.amount,
-								noticeCurrency: refunded.currency,
-							},
-				idempotencyKey: row.id,
-			});
-			await deps.orderStore.markEmailSent(row.id, nowIso);
-			sent++;
+			const to = await resolveRecipient(deps, order);
+			// No recipient: the row is done, and it went nowhere. Completed as SKIPPED —
+			// never as sent (ADR-0026: a write reports whether its email went) — inside
+			// the same try as `markEmailSent`, so a store error here is handled exactly as
+			// one there is.
+			if (to === null) {
+				await deps.orderStore.markEmailSkipped(row.id, nowIso);
+				skipped = true;
+			} else {
+				await deps.emailSender.send({
+					to,
+					template,
+					data:
+						refunded === null
+							? stateData
+							: {
+									...buildOrderEmailData(order, row.toState),
+									// The OWN figure — the money refunded, never the order total
+									// it may differ from.
+									noticeAmountCents: refunded.amount,
+									noticeCurrency: refunded.currency,
+								},
+					idempotencyKey: row.id,
+				});
+				await deps.orderStore.markEmailSent(row.id, nowIso);
+				sent++;
+			}
 		} catch (err) {
 			// A send cut off by the CALLER's timeout is not a failed attempt: hand the
 			// row back uncounted, and stop — the time is gone, and re-claiming the
@@ -585,7 +606,8 @@ async function drainOutbox(
 		}
 		// Outside the try: a caller's callback that throws must never be mistaken for a
 		// failed send and reschedule a row that already went out.
-		options.onSent?.(row);
+		if (skipped) options.onSkipped?.(row);
+		else options.onSent?.(row);
 	}
 	return sent;
 }
@@ -599,14 +621,24 @@ async function refundedTotal(
 	return total === 0 ? null : { amount: total, currency: order.totals.currency };
 }
 
-async function resolveRecipient(deps: DispatchOrderEmailsDeps, order: Order): Promise<Email> {
+/**
+ * The order's email recipient, or none — the ONE place it is decided (ADR-0028
+ * Decision 7). Every outbox row, state email or notice, reaches the buyer through
+ * this function, so an order with no recipient is never emailed whatever the
+ * template. `null` ⇒ the drain completes the row as skipped.
+ */
+async function resolveRecipient(
+	deps: DispatchOrderEmailsDeps,
+	order: Order,
+): Promise<Email | null> {
 	if (order.customerId !== null && deps.customerStore !== undefined) {
 		const customer = await deps.customerStore.get(toCustomerId(order.customerId));
 		if (customer !== null) return customer.email;
 	}
-	// Guest order: the email captured at checkout (buyerRef). Branded without
-	// re-validating — it was accepted at checkout and is not re-parsed here.
-	return order.buyerRef as Email;
+	// Guest order: the email captured at checkout (buyerRef), branded as it was
+	// accepted there and not re-normalized here. A buyerRef that is not an email
+	// address at all — an x402 gate buyer's `x402:0x…` payer wallet — is no recipient.
+	return isEmailAddress(order.buyerRef) ? (order.buyerRef as Email) : null;
 }
 
 /** Template data, rendered from order fields passed explicitly — no template

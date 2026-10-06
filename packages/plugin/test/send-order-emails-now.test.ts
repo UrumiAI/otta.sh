@@ -63,7 +63,11 @@ afterAll(async () => {
 });
 
 /** A pending order, optionally paid (which enqueues its confirmation row). */
-async function seedOrder(id: string, paid: boolean): Promise<OrderId> {
+async function seedOrder(
+	id: string,
+	paid: boolean,
+	buyerRef = "buyer@example.com",
+): Promise<OrderId> {
 	const usd = toCurrency("USD");
 	const oid = toOrderId(id);
 	await harness.stores.orderStore.createFromCart({
@@ -72,7 +76,7 @@ async function seedOrder(id: string, paid: boolean): Promise<OrderId> {
 		currency: usd,
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: FAR,
-		buyerRef: "buyer@example.com",
+		buyerRef,
 		paymentMethod: "stripe",
 		lines: [
 			{
@@ -141,6 +145,23 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		expect(kvGet).toHaveBeenCalled();
 		expect(harness.egressAttempts()).toBe(1); // the harness's ctx.http rejects it
 		expect(await cronView(id)).toMatchObject({ attempts: 2 }); // backed off for the cron
+	});
+
+	test("an order with no email address ⇒ its row is reported skipped, and no sender is built", async () => {
+		const id = await seedOrder("ord-x402", true, "x402:0x1111111111111111111111111111111111111111");
+		const kvGet = vi.spyOn(harness.ctx.kv, "get");
+		const egressBefore = harness.egressAttempts();
+
+		const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
+			egress: { apiUrl: MAIL_URL },
+		});
+
+		expect(result.configured).toBe(true);
+		expect(result.sent).toEqual([]);
+		expect(result.skipped.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
+		expect(kvGet).not.toHaveBeenCalled();
+		expect(harness.egressAttempts()).toBe(egressBefore);
+		expect(await cronView(id)).toBeNull(); // completed, not left for the cron
 	});
 
 	test("no email API URL ⇒ returns before claiming anything", async () => {

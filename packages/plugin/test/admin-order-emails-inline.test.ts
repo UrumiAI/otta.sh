@@ -12,6 +12,8 @@
  *  - `queued`       — it did not (the provider failed, or the wait ran out); the
  *                     cron retries it automatically;
  *  - `unconfigured` — this bundle has no email provider, so nothing will be sent;
+ *  - `no-recipient` — the order has no email address (an x402 buyer's `x402:0x…`
+ *                     reference, ADR-0028 Decision 7), so nothing was or will be sent;
  *  - absent         — the write enqueued no email (a replay, or Mark refunded).
  *
  * Driven over a REAL document store through `InProcessAdminOrdersClient`, with the
@@ -56,7 +58,13 @@ afterAll(async () => {
 
 /** A PAID card order with its $15.00 captured — `markPaid` enqueues its
  *  confirmation, exactly as a settlement does. */
-async function seedPaid(id: string): Promise<OrderId> {
+async function seedPaid(
+	id: string,
+	buyer: { buyerRef: string; paymentMethod: "stripe" | "x402" } = {
+		buyerRef: "buyer@example.com",
+		paymentMethod: "stripe",
+	},
+): Promise<OrderId> {
 	const oid = toOrderId(id);
 	await harness.stores.orderStore.createFromCart({
 		orderId: oid,
@@ -64,8 +72,8 @@ async function seedPaid(id: string): Promise<OrderId> {
 		currency: USD,
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: FAR,
-		buyerRef: "buyer@example.com",
-		paymentMethod: "stripe",
+		buyerRef: buyer.buyerRef,
+		paymentMethod: buyer.paymentMethod,
 		lines: [
 			{
 				productId: toProductId(`prod-${id}`),
@@ -83,7 +91,7 @@ async function seedPaid(id: string): Promise<OrderId> {
 	await harness.stores.orderStore.markPaid(oid);
 	await harness.stores.orderStore.recordPayment({
 		orderId: oid,
-		gateway: "stripe",
+		gateway: buyer.paymentMethod,
 		providerRef: `pi_${id}`,
 		amount: cents(1500),
 		currency: USD,
@@ -454,6 +462,23 @@ describe("the console is told the truth when the email did not go", () => {
 			email: "queued",
 		});
 		expect(sender.sends).toHaveLength(0);
+	});
+
+	test("an order with no email address (an x402 buyer) reports no-recipient — never queued — and sends nothing", async () => {
+		const id = await seedPaid("ord-x402", {
+			buyerRef: "x402:0x1111111111111111111111111111111111111111",
+			paymentMethod: "x402",
+		});
+		const sender = new FakeEmailSender();
+		const orders = adminClient({ emailSender: sender });
+		expect(await orders.transitionOrder(id, "processing", { idempotencyKey: "k" })).toEqual({
+			ok: true,
+			transitioned: true,
+			email: "no-recipient",
+		});
+		expect(sender.sends).toEqual([]);
+		// Completed, not left for the cron: nothing of the order is due again.
+		expect(await harness.stores.orderStore.claimNextEmailForOrder(id, FAR, FAR)).toBeNull();
 	});
 
 	test("a store with no email provider reports unconfigured, and claims nothing", async () => {
