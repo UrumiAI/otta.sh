@@ -281,6 +281,16 @@ export {
 	type EntitlementDownloadResult,
 } from "./entitlements/download-route.js";
 export { type DownloadAssetWire } from "./admin/admin-products-surface.js";
+// Issue #376 increment 4 — the site's admin upload endpoint mints the key and
+// coerces the filename and type with the SAME rules the admin save validates,
+// so what it uploads is always a descriptor the save accepts.
+export {
+	DOWNLOAD_FALLBACK_CONTENT_TYPE,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	downloadContentTypeFor,
+	mintDownloadAssetKey,
+	sanitizeDownloadFilename,
+} from "@otta-sh/domain";
 // INC-C5: the in-process x402 page-gate settle surface. Exported for the same
 // reason as the Stripe one above — the calling site reconstructs the HTTP status
 // from the returned `status` field.
