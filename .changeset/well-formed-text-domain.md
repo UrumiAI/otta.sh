@@ -33,4 +33,6 @@ orders that fail every time cannot take every call's bite and starve the orders
 behind them. A `stopsBatch` predicate (sweep options) names an error that ends the
 whole call — the cron tick's query ceiling — which is rethrown rather than logged as
 one order's failure. A unit failure is logged as the error's name, code and a short
-message with quoted values removed.
+message with quoted values (an unclosed quote runs to the end) and email-shaped text
+removed; the message is cut to 1 KB before it is scrubbed, so the work per log line
+is bounded whatever a driver puts in its message.

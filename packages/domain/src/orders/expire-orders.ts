@@ -171,6 +171,10 @@ function logUnitFailure(step: string, err: unknown): void {
 
 /** Longest message kept in a log line. */
 const LOG_MESSAGE_MAX = 160;
+/** Longest input the scrubber reads (review round 3 polish, P-1): the message is
+ *  cut to this BEFORE it is scrubbed, so the work per log line is bounded whatever
+ *  a driver puts in its message. */
+const SCRUB_INPUT_MAX = 1024;
 
 /**
  * An error as a log line may carry it (review round 3, B I5): its `name`, a
@@ -199,12 +203,22 @@ function describeErrorForLog(err: unknown): {
 	};
 }
 
+/**
+ * Linear in its input, which is cut to {@link SCRUB_INPUT_MAX} first (review round
+ * 3 polish, P-1: the unbounded email pattern backtracked quadratically on a long
+ * run with no space, `@` or `<>`; 100k characters took seconds, a stalled tick).
+ */
 function scrub(text: string): string {
 	return (
 		text
+			.slice(0, SCRUB_INPUT_MAX)
 			// Quoted runs: the usual place a driver puts a value.
 			.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "<value>")
-			.replace(/[^\s@<>]+@[^\s@<>]+/g, "<value>")
+			// A quote left open (or opened before the cut) runs to the end.
+			.replace(/["'`][^"'`]*$/, "<value>")
+			// Email-shaped text, with bounded repeats (RFC 5321's local and domain
+			// limits) so it cannot backtrack quadratically.
+			.replace(/[^\s@<>]{1,64}@[^\s@<>]{1,255}/g, "<value>")
 			// Control characters, lone surrogates and the like: printable text only.
 			.replace(/[^\x20-\x7E]/g, "?")
 	);

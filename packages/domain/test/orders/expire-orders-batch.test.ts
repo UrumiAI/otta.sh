@@ -260,4 +260,81 @@ describe("bounded order expiry", () => {
 		expect(logged).not.toMatch(/x{200}/);
 		error.mockRestore();
 	});
+
+	test("a stop raised by the coupon release is rethrown too (review round 3 polish, P-2)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		const ceiling = Object.assign(new Error("tick query ceiling reached"), {
+			name: "SweepQueryCeilingError",
+		});
+		// The order carried a coupon, so its expiry releases the redemption.
+		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
+			const won = await real(id, now);
+			if (won === null) return null;
+			const totals = { ...won.order.totals, appliedCouponCode: "SAVE10" as never };
+			return { ...won, order: { ...won.order, totals } };
+		});
+		const release = vi.spyOn(h.couponStore, "releaseByOrder").mockRejectedValueOnce(ceiling);
+		await expect(
+			expireOrdersBatch(h.expireDeps, undefined, {
+				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
+			}),
+		).rejects.toBe(ceiling);
+		expect(release).toHaveBeenCalledTimes(1);
+		expect(error).not.toHaveBeenCalled();
+		error.mockRestore();
+	});
+
+	test("an email outside quotes is redacted from the log line (review round 3 polish, P-2)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
+			new Error("insert failed for victim.person@example.com on orders"),
+		);
+		await expireOrdersBatch(h.expireDeps);
+		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(logged).toMatch(/insert failed for <value> on orders/);
+		expect(logged).not.toMatch(/victim|example\.com/);
+		error.mockRestore();
+	});
+
+	test("an unclosed quote is redacted to the end of the message (review round 3 polish, P-1)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
+			new Error('bad value "jane.doe-secret-without-closing-quote'),
+		);
+		await expireOrdersBatch(h.expireDeps);
+		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(logged).toMatch(/bad value <value>/);
+		expect(logged).not.toMatch(/jane|secret/);
+		error.mockRestore();
+	});
+
+	test("a 100k-character message with no spaces is scrubbed in linear time, and redacted (review round 3 polish, P-1)", async () => {
+		// The email pattern backtracked quadratically on a long run with no space, `@`
+		// or `<>`, over the WHOLE message (100k characters took 13 s). The message is
+		// now cut to about 1 KB first and the pattern's repeats are bounded.
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(3);
+		const messages = [
+			"a".repeat(100_000),
+			`${"a".repeat(300)}victim@example.com${"b".repeat(100_000)}`,
+			`value "${"s".repeat(100_000)}`,
+		];
+		const flip = vi.spyOn(h.orderStore, "expireWithOrder");
+		for (const message of messages) flip.mockRejectedValueOnce(new Error(message));
+		const started = performance.now();
+		await expireOrdersBatch(h.expireDeps);
+		const elapsed = performance.now() - started;
+		expect(elapsed, `${elapsed.toFixed(1)} ms`).toBeLessThan(50);
+		expect(error).toHaveBeenCalledTimes(3);
+		const logged = error.mock.calls.map((call) => JSON.stringify(call));
+		for (const line of logged) expect(line.length).toBeLessThan(600);
+		expect(logged[1]).not.toMatch(/victim|example\.com/);
+		expect(logged[2]).toMatch(/value <value>/);
+		expect(logged[2]).not.toMatch(/sss/);
+		error.mockRestore();
+	});
 });
