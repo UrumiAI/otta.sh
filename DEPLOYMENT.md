@@ -95,9 +95,11 @@ expired holds and queued emails drain at the Free pace (§5).
    > **Never make the downloads bucket public.** It holds the files buyers pay for. The
    > site Worker is its only reader, through the `DOWNLOADS` binding, and it re-checks the
    > buyer's entitlement on every download (issue #376). So:
-   > - **never enable r2.dev public access** on it (dashboard → R2 → the bucket → Settings →
-   >   Public access, or `wrangler r2 bucket dev-url enable`);
-   > - **never connect a custom domain** to it (`wrangler r2 bucket domain add`);
+   > - **never enable its Public Development URL** (r2.dev): in the dashboard, the bucket's
+   >   Settings → "Public Development URL"; on the command line,
+   >   `wrangler r2 bucket dev-url enable`;
+   > - **never connect a custom domain** to it: the bucket's Settings → "Custom Domains", or
+   >   `wrangler r2 bucket domain add`;
    > - **never use the media bucket for it.** EmDash serves every key in the media bucket
    >   publicly at `/_emdash/api/media/file/<key>`, so a paid file there is readable by
    >   anyone who learns its key, including a buyer whose purchase was refunded. The build

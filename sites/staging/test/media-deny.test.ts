@@ -6,9 +6,10 @@
  * build refuses a config that makes them the same bucket. This deny covers the
  * remaining mistake: a `dl/…` object put into the media bucket by hand (a
  * `wrangler r2 object put` to the wrong bucket). EmDash's
- * `/_emdash/api/media/file/<key>` would serve it to anyone, unauthenticated, and
- * the image endpoint would too through its `href`. The site middleware answers
- * 404 for both before EmDash's route runs.
+ * `/_emdash/api/media/file/<key>` would serve it to anyone, unauthenticated,
+ * so the site middleware answers 404 before EmDash's route runs. (EmDash's
+ * image endpoint cannot read a `dl/…` key at all: its storage path accepts no
+ * `/` in a key.)
  */
 import { describe, expect, test, vi } from "vitest";
 
@@ -35,8 +36,6 @@ describe("isPrivateDownloadMediaRequest", () => {
 		// Astro decodeURI-decodes the pathname before routing, so an escaped
 		// route segment still reaches EmDash's media route.
 		"/_emdash/api/media/%66ile/dl/x",
-		"/_image?href=/_emdash/api/media/file/dl/prod_1/x&w=100",
-		"/_image?href=https%3A%2F%2Fshop.example%2F_emdash%2Fapi%2Fmedia%2Ffile%2Fdl%2Fx",
 	])("%s is refused", (path) => {
 		expect(isPrivateDownloadMediaRequest(at(path))).toBe(true);
 	});
@@ -46,7 +45,6 @@ describe("isPrivateDownloadMediaRequest", () => {
 		"/_emdash/api/media/file/images/dl/x.jpg",
 		"/_emdash/api/media/file/dlx/a.jpg",
 		"/_emdash/api/media/file/DL/a.jpg",
-		"/_image?href=/_emdash/api/media/file/01JABC.jpg&w=100",
 		"/orders/abc/download/dl",
 		"/products/dl/thing",
 		"/_emdash/api/media",

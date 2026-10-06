@@ -365,3 +365,16 @@ describe("Ledger — a digital line the buyer may download carries its link (iss
 		expect(html).toMatch(/>Download<span class="u-sr-only"[^>]*> EBOOK-01<\/span><\/a>/);
 	});
 });
+
+describe("Ledger — the Download link is a big enough target (WCAG 2.2 SC 2.5.8)", () => {
+	test(".download is at least 24 × 24 CSS px", () => {
+		const css = readFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/components/Ledger.astro"),
+			"utf8",
+		);
+		const rule = /\.download\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(rule).toMatch(/min-height:\s*24px/);
+		expect(rule).toMatch(/min-width:\s*24px/);
+		expect(rule).toMatch(/display:\s*inline-flex/);
+	});
+});

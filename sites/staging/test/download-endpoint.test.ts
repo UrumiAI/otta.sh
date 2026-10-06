@@ -25,12 +25,18 @@ import {
 	type EntitlementDownloadResult,
 } from "@otta-sh/plugin";
 import { env as virtualEnv } from "./helpers/virtual-emdash-env.js";
+// Astro's own URL normalization (not exported; imported by file, as the dev
+// server and the Worker run it on every request — fetch-state.js).
+import { normalizeUrl } from "../node_modules/astro/dist/core/util/normalized-url.js";
 import { BUSY_RETRY_AFTER_SECONDS } from "../src/lib/otta-api.js";
 import {
 	contentDisposition,
-	DOWNLOAD_NOT_FOUND_BODY,
+	DOWNLOAD_CACHE_CONTROL,
+	DOWNLOAD_NOT_FOUND_TITLE,
 	downloadHref,
 	parseByteRange,
+	parseDownloadPath,
+	rangeRequest,
 } from "../src/lib/download-delivery.js";
 import { DOWNLOADS_BINDING } from "../src/lib/downloads-bucket.js";
 import { GET, HEAD } from "../src/pages/orders/[orderId]/download/[sku].js";
@@ -55,8 +61,14 @@ interface BucketCall {
 	op: "head" | "get";
 	key: string;
 	range?: unknown;
+	onlyIf?: unknown;
 }
 
+type FakeRange = { offset: number; length?: number } | { suffix: number };
+
+/** R2's observable `get`/`head`: a range starting past the end REJECTS (as R2
+ *  does), a longer one is clamped, and a failed `onlyIf` answers metadata with
+ *  no `body`. Every call is recorded. */
 function makeBucket(objects: Record<string, Uint8Array> = { [KEY]: BYTES }) {
 	const calls: BucketCall[] = [];
 	const meta = (key: string) => ({
@@ -69,18 +81,41 @@ function makeBucket(objects: Record<string, Uint8Array> = { [KEY]: BYTES }) {
 			calls.push({ op: "head", key });
 			return key in objects ? meta(key) : null;
 		},
-		async get(key: string, options?: { range?: { offset: number; length?: number } }) {
+		async get(key: string, options?: { range?: FakeRange; onlyIf?: { etagMatches: string } }) {
 			calls.push({
 				op: "get",
 				key,
 				...(options?.range !== undefined ? { range: options.range } : {}),
+				...(options?.onlyIf !== undefined ? { onlyIf: options.onlyIf } : {}),
 			});
 			const bytes = objects[key];
 			if (bytes === undefined) return null;
-			const { offset = 0, length = bytes.length - offset } = options?.range ?? {};
-			const slice = bytes.slice(offset, offset + length);
+			if (
+				options?.onlyIf !== undefined &&
+				`"${options.onlyIf.etagMatches}"` !== meta(key).httpEtag
+			) {
+				return meta(key);
+			}
+			let start = 0;
+			let end = bytes.length;
+			const range = options?.range;
+			if (range !== undefined) {
+				if ("suffix" in range) {
+					start = Math.max(0, bytes.length - range.suffix);
+				} else {
+					if (range.offset >= bytes.length)
+						throw new Error("get: The requested range is not satisfiable (10039)");
+					start = range.offset;
+					end =
+						range.length === undefined
+							? bytes.length
+							: Math.min(bytes.length, start + range.length);
+				}
+			}
+			const slice = bytes.slice(start, end);
 			return {
 				...meta(key),
+				...(range !== undefined ? { range } : {}),
 				body: new ReadableStream<Uint8Array>({
 					start(controller) {
 						controller.enqueue(slice);
@@ -117,10 +152,10 @@ function makeGate(
 
 /** The gate for one entitled (order, sku): the asset for exactly that pair, the
  *  one NOT_FOUND for everything else. */
-const entitledGate = (asset: DownloadAssetWire = ASSET) =>
+const entitledGate = (asset: DownloadAssetWire = ASSET, sku: string = SKU) =>
 	makeGate((input) =>
-		input["orderId"] === ORDER && input["sku"] === SKU
-			? { authorized: true, sku: SKU, asset }
+		input["orderId"] === ORDER && input["sku"] === sku
+			? { authorized: true, sku, asset }
 			: { authorized: false, reason: "NOT_FOUND" },
 	);
 
@@ -140,15 +175,17 @@ function makeContext(
 ) {
 	const orderId = options.orderId ?? ORDER;
 	const sku = options.sku ?? SKU;
-	const url = new URL(
+	const raw = new URL(
 		options.path ?? `/orders/${encodeURIComponent(orderId)}/download/${encodeURIComponent(sku)}`,
 		SITE,
 	);
-	const request = new Request(url, { method: options.method ?? "GET", headers: options.headers });
+	const request = new Request(raw, { method: options.method ?? "GET", headers: options.headers });
 	const cache = { set: vi.fn() };
 	const context = {
 		request,
-		url,
+		// What Astro 7 really hands an endpoint: the request URL put through its
+		// own `normalizeUrl` (repeated decodeURI). The endpoint must not read it.
+		url: normalizeUrl(new URL(raw)),
 		params: { orderId, sku },
 		locals: { emdash: { handlePublicPluginApiRoute: handler } },
 		cache,
@@ -196,12 +233,13 @@ describe("an entitled download streams the file the gate named", () => {
 	});
 
 	test("the exact response headers", async () => {
+		expect(DOWNLOAD_CACHE_CONTROL).toBe("private, no-store, no-transform");
 		const response = await GET(makeContext(entitledGate().handler).context);
 		const headers = Object.fromEntries(response.headers);
 
 		expect(headers).toEqual({
 			"accept-ranges": "bytes",
-			"cache-control": "private, no-store",
+			"cache-control": DOWNLOAD_CACHE_CONTROL,
 			"content-disposition": `attachment; filename="Field Guide.pdf"; filename*=UTF-8''Field%20Guide.pdf`,
 			"content-length": String(BYTES.length),
 			"content-security-policy": "sandbox; default-src 'none'",
@@ -244,10 +282,22 @@ describe("an entitled download streams the file the gate named", () => {
 
 // ── refusals ─────────────────────────────────────────────────────────────────
 
+/** The refusal page for a URL naming `orderId` — captured once from a plain
+ *  NOT_FOUND, so every other refusal is compared byte for byte against it. */
+async function referenceRefusal(orderId: string = ORDER): Promise<string> {
+	// A NOT_FOUND gate never reaches the bucket, so this records no call.
+	const response = await GET(makeContext(NOT_FOUND_GATE().handler, { orderId }).context);
+	return response.text();
+}
+
 /** The one refusal: same status, same body, private, and no file headers. */
-async function expectNotFound(response: Response): Promise<void> {
+async function expectNotFound(response: Response, orderId: string = ORDER): Promise<void> {
 	expect(response.status).toBe(404);
-	expect(await response.text()).toBe(DOWNLOAD_NOT_FOUND_BODY);
+	const body = await response.text();
+	expect(body).toBe(await referenceRefusal(orderId));
+	expect(body).toContain(DOWNLOAD_NOT_FOUND_TITLE);
+	expect(body).toContain(`href="/orders/${encodeURIComponent(orderId)}"`);
+	expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
 	expect(response.headers.get("Cache-Control")).toBe("private, no-store");
 	expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
 	expect(response.headers.get("Content-Disposition")).toBeNull();
@@ -256,7 +306,10 @@ async function expectNotFound(response: Response): Promise<void> {
 describe("every refusal is the same 404, and no object is touched", () => {
 	test("a wrong orderId", async () => {
 		const gate = entitledGate();
-		await expectNotFound(await GET(makeContext(gate.handler, { orderId: "not-my-order" }).context));
+		await expectNotFound(
+			await GET(makeContext(gate.handler, { orderId: "not-my-order" }).context),
+			"not-my-order",
+		);
 		expect(gate.calls[0]?.input).toEqual({ orderId: "not-my-order", sku: SKU });
 		expect(bucketCalls).toEqual([]);
 	});
@@ -335,12 +388,15 @@ describe("the request never names the key", () => {
 // ── busy and unavailable ─────────────────────────────────────────────────────
 
 describe("BUSY and a failed dispatch", () => {
-	test("BUSY is 503 + Retry-After", async () => {
+	test("BUSY is the site's busy page: 503, Retry-After, and a way back to the order", async () => {
 		const gate = makeGate(() => ({ authorized: false, reason: "BUSY", retryable: true }));
 		const response = await GET(makeContext(gate.handler).context);
 		expect(response.status).toBe(503);
 		expect(response.headers.get("Retry-After")).toBe(String(BUSY_RETRY_AFTER_SECONDS));
 		expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+		expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+		const html = await response.text();
+		expect(html).toContain(`<a href="/orders/${ORDER}">Go back</a>`);
 		// The gate's BUSY is not the storefront routes' shape, so no automatic
 		// retry: one ask, and the buyer's next click is the retry.
 		expect(gate.calls).toHaveLength(1);
@@ -366,10 +422,8 @@ describe("Range", () => {
 		expect(response.headers.get("Content-Range")).toBe(`bytes 10-19/${BYTES.length}`);
 		expect(response.headers.get("Content-Length")).toBe("10");
 		expect(await bodyBytes(response)).toEqual(BYTES.slice(10, 20));
-		expect(bucketCalls).toEqual([
-			{ op: "head", key: KEY },
-			{ op: "get", key: KEY, range: { offset: 10, length: 10 } },
-		]);
+		// ONE read: the headers come from the object the bytes come from.
+		expect(bucketCalls).toEqual([{ op: "get", key: KEY, range: { offset: 10, length: 10 } }]);
 		// The security headers ride the partial response too.
 		expect(response.headers.get("Content-Disposition")).toMatch(/^attachment;/);
 		expect(response.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
@@ -388,15 +442,42 @@ describe("Range", () => {
 			`bytes ${BYTES.length - 4}-${BYTES.length - 1}/${BYTES.length}`,
 		);
 		expect(await bodyBytes(suffix)).toEqual(BYTES.slice(-4));
+		expect(bucketCalls).toEqual([
+			{ op: "get", key: KEY, range: { offset: 30 } },
+			{ op: "get", key: KEY, range: { suffix: 4 } },
+		]);
 	});
 
-	test("a range past the end → 416 with bytes */size, and no body read", async () => {
+	test("a range running past the end is clamped (206 to the last byte)", async () => {
+		const response = await GET(
+			makeContext(entitledGate().handler, { headers: { Range: "bytes=30-999" } }).context,
+		);
+		expect(response.status).toBe(206);
+		expect(response.headers.get("Content-Range")).toBe(
+			`bytes 30-${BYTES.length - 1}/${BYTES.length}`,
+		);
+		expect(response.headers.get("Content-Length")).toBe(String(BYTES.length - 30));
+		expect(await bodyBytes(response)).toEqual(BYTES.slice(30));
+	});
+
+	test("a range past the end → 416 with bytes */size (R2 rejects the read; head() supplies the size)", async () => {
 		const response = await GET(
 			makeContext(entitledGate().handler, { headers: { Range: `bytes=${BYTES.length}-` } }).context,
 		);
 		expect(response.status).toBe(416);
 		expect(response.headers.get("Content-Range")).toBe(`bytes */${BYTES.length}`);
 		expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+		expect(bucketCalls).toEqual([
+			{ op: "get", key: KEY, range: { offset: BYTES.length } },
+			{ op: "head", key: KEY },
+		]);
+	});
+
+	test("bytes=-0 is 416 without reading any bytes", async () => {
+		const response = await GET(
+			makeContext(entitledGate().handler, { headers: { Range: "bytes=-0" } }).context,
+		);
+		expect(response.status).toBe(416);
 		expect(bucketCalls).toEqual([{ op: "head", key: KEY }]);
 	});
 
@@ -406,6 +487,24 @@ describe("Range", () => {
 		);
 		expect(response.status).toBe(404);
 		expect(bucketCalls).toEqual([]);
+	});
+
+	test("a matching If-Range is ONE conditional ranged read → 206", async () => {
+		const response = await GET(
+			makeContext(entitledGate().handler, {
+				headers: { Range: "bytes=0-1", "If-Range": `"etag-${KEY.length}"` },
+			}).context,
+		);
+		expect(response.status).toBe(206);
+		expect(await bodyBytes(response)).toEqual(BYTES.slice(0, 2));
+		expect(bucketCalls).toEqual([
+			{
+				op: "get",
+				key: KEY,
+				range: { offset: 0, length: 2 },
+				onlyIf: { etagMatches: `etag-${KEY.length}` },
+			},
+		]);
 	});
 
 	test("an If-Range that does not match the object's ETag gets the whole file", async () => {
@@ -418,6 +517,19 @@ describe("Range", () => {
 		expect(await bodyBytes(response)).toEqual(BYTES);
 	});
 
+	test("a weak or date If-Range can never match: the whole file, one plain read", async () => {
+		for (const ifRange of [`W/"etag-${KEY.length}"`, "Wed, 21 Oct 2026 07:28:00 GMT"]) {
+			provision();
+			const response = await GET(
+				makeContext(entitledGate().handler, {
+					headers: { Range: "bytes=0-1", "If-Range": ifRange },
+				}).context,
+			);
+			expect(response.status, ifRange).toBe(200);
+			expect(bucketCalls).toEqual([{ op: "get", key: KEY }]);
+		}
+	});
+
 	test("a malformed or multi-part Range is ignored (200, the whole file)", async () => {
 		for (const range of ["bytes=5-2", "items=0-1", "bytes=0-1,4-5", "bytes=abc"]) {
 			provision();
@@ -428,6 +540,45 @@ describe("Range", () => {
 			expect(await bodyBytes(response)).toEqual(BYTES);
 		}
 	});
+});
+
+describe("rangeRequest — the Range header as an R2 range, no size needed", () => {
+	test.each([
+		["bytes=10-19", { kind: "range", range: { offset: 10, length: 10 } }],
+		["bytes=30-", { kind: "range", range: { offset: 30 } }],
+		["bytes=-4", { kind: "range", range: { suffix: 4 } }],
+		["bytes=-0", { kind: "unsatisfiable" }],
+		["bytes=5-2", { kind: "none" }],
+		["bytes=0-1,2-3", { kind: "none" }],
+		["items=0-1", { kind: "none" }],
+		[null, { kind: "none" }],
+	] as const)("%j → %j", (header, expected) => {
+		expect(rangeRequest(header)).toEqual(expected);
+	});
+});
+
+describe("a sku holding % (or space, or unicode) round-trips from the link to the gate", () => {
+	const SKUS = ["100%COTTON", "A%41", "A%2541", "EBOOK 01", "Café-日本", "a+b&c=d", "50%"];
+
+	test.each(SKUS)(
+		"%j: the endpoint, behind Astro's URL normalization, asks the gate for it verbatim",
+		async (sku) => {
+			const gate = entitledGate(ASSET, sku);
+			const response = await GET(makeContext(gate.handler, { sku }).context);
+			expect(gate.calls[0]?.input).toEqual({ orderId: ORDER, sku });
+			expect(response.status).toBe(200);
+			expect(await bodyBytes(response)).toEqual(BYTES);
+		},
+	);
+
+	test.each(SKUS)(
+		"%j: downloadHref → raw request path → parseDownloadPath is the identity",
+		(sku) => {
+			const href = downloadHref(ORDER, sku);
+			const raw = new URL(href, SITE);
+			expect(parseDownloadPath(raw.pathname)).toEqual({ orderId: ORDER, sku });
+		},
+	);
 });
 
 describe("parseByteRange", () => {

@@ -41,8 +41,8 @@
  *
  * SCOPE. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
- * write — with ONE exception that runs first: EmDash's public media route (and
- * the image endpoint reading through it) never serves a key under `dl/`, where
+ * write — with ONE exception that runs first: EmDash's public media route never
+ * serves a key under `dl/`, where
  * paid downloads live (issue #376; `lib/media-deny.ts`). Paid files belong in
  * the private DOWNLOADS bucket, never MEDIA; this is the backstop for one put
  * in the wrong bucket by hand.

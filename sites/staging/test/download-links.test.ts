@@ -15,9 +15,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ENTITLEMENT_DOWNLOAD_ROUTE, type EntitlementDownloadResult } from "@otta-sh/plugin";
-import { downloadLinks } from "../src/lib/download-links.js";
+import { downloadHref } from "../src/lib/download-delivery.js";
+import { downloadLinks, MAX_DOWNLOAD_LINKS } from "../src/lib/download-links.js";
 import { splitAstro } from "./astro-source.js";
 
 const SITE = new URL("http://localhost:4321/orders/o-1");
@@ -154,4 +155,44 @@ describe("the order pages wire it", () => {
 			expect(source).toMatch(/downloadHref: (links|downloads)\.get\(line\.sku\)/);
 		},
 	);
+});
+
+describe("the number of skus a page asks about is capped", () => {
+	test(`more than MAX_DOWNLOAD_LINKS digital skus: only the first ${20} are asked, and it is logged`, async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const gate = makeGate(authorized);
+		const lines = Array.from({ length: MAX_DOWNLOAD_LINKS + 5 }, (_, i) => ({
+			sku: `EBOOK-${i}`,
+			fulfillmentKind: "digital",
+		}));
+		const links = await downloadLinks({
+			handler: gate.handler,
+			bucketPresent: true,
+			order: { id: "o-1", state: "paid", lines },
+			baseUrl: SITE,
+		});
+		expect(gate.calls).toHaveLength(MAX_DOWNLOAD_LINKS);
+		expect(links.size).toBe(MAX_DOWNLOAD_LINKS);
+		expect(links.has(`EBOOK-${MAX_DOWNLOAD_LINKS}`)).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(`${MAX_DOWNLOAD_LINKS + 5} digital skus`),
+		);
+		warn.mockRestore();
+	});
+
+	test("the page's link for a % / space / unicode sku is the endpoint's own encoding", async () => {
+		const skus = ["100%COTTON", "EBOOK 01", "Café-日本"];
+		const gate = makeGate(authorized);
+		const links = await downloadLinks({
+			handler: gate.handler,
+			bucketPresent: true,
+			order: {
+				id: "o-1",
+				state: "paid",
+				lines: skus.map((sku) => ({ sku, fulfillmentKind: "digital" })),
+			},
+			baseUrl: SITE,
+		});
+		for (const sku of skus) expect(links.get(sku)).toBe(downloadHref("o-1", sku));
+	});
 });

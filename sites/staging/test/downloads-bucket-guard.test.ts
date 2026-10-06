@@ -70,6 +70,25 @@ describe("assertDownloadsBucketPrivate", () => {
 		expect(() => assertDownloadsBucketPrivate(text, "x.jsonc")).toThrow(/"m"/);
 	});
 
+	test("EVERY entry counts: a second DOWNLOADS, or a second MEDIA, cannot hide the clash", () => {
+		const secondDownloads = `{
+	"r2_buckets": [
+		{ "binding": "MEDIA", "bucket_name": "m" },
+		{ "binding": "DOWNLOADS", "bucket_name": "d" },
+		{ "binding": "DOWNLOADS", "bucket_name": "m" }
+	]
+}`;
+		expect(() => assertDownloadsBucketPrivate(secondDownloads, "x.jsonc")).toThrow(/"m"/);
+		const secondMedia = `{
+	"r2_buckets": [
+		{ "binding": "MEDIA", "bucket_name": "m" },
+		{ "binding": "MEDIA", "bucket_name": "d" },
+		{ "binding": "DOWNLOADS", "bucket_name": "d" }
+	]
+}`;
+		expect(() => assertDownloadsBucketPrivate(secondMedia, "x.jsonc")).toThrow(/"d"/);
+	});
+
 	test("an env block is checked on its own (r2_buckets do not inherit), and named", () => {
 		const text = `{
 	"r2_buckets": [

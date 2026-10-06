@@ -172,9 +172,15 @@ const cells = rows.map((row) => {
 	/* A digital line's file: a plain underlined link under the reference, in the
 	   data face like the SKU above it, and in ink — not the muted reference
 	   colour — so it reads as the line's action. */
+	/* WCAG 2.2 SC 2.5.8: a target at least 24 × 24 CSS px. The line box of a
+	   0.75rem link is ~18px, so the box itself is given the height. */
 	.download {
+		display: inline-flex;
+		align-items: center;
+		min-height: 24px;
+		min-width: 24px;
 		align-self: flex-start;
-		margin-top: 0.25rem;
+		margin-top: 0.125rem;
 		font-size: 0.75rem;
 		font-weight: 500;
 		color: var(--u-ink);

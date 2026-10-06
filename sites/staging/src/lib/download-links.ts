@@ -14,7 +14,8 @@
  *  - only when a link could work at all: this deployment has a `DOWNLOADS`
  *    binding, and the order is in a deliverable state (a pending order's page
  *    polls itself every few seconds and asks nothing);
- *  - once per DISTINCT digital sku — never for a physical line;
+ *  - once per DISTINCT digital sku, at most {@link MAX_DOWNLOAD_LINKS} — never
+ *    for a physical line;
  *  - in parallel, each a few storage reads, in-process.
  * A link is drawn iff the gate authorizes, so the page never offers a link the
  * endpoint would refuse. The endpoint re-runs the gate on the click regardless.
@@ -44,6 +45,9 @@ const DELIVERABLE_STATES: ReadonlySet<string> = new Set([
 	"completed",
 ]);
 
+/** The most distinct digital skus one order page asks the gate about. */
+export const MAX_DOWNLOAD_LINKS = 20;
+
 export interface DownloadLinksInput {
 	handler: PublicPluginApiRouteHandler | undefined;
 	/** Whether this deployment has a `DOWNLOADS` binding at all. */
@@ -57,9 +61,18 @@ export async function downloadLinks(input: DownloadLinksInput): Promise<Map<stri
 	const { order } = input;
 	const links = new Map<string, string>();
 	if (!input.bucketPresent || !DELIVERABLE_STATES.has(order.state)) return links;
-	const skus = [
+	const distinct = [
 		...new Set(order.lines.filter((l) => l.fulfillmentKind === "digital").map((l) => l.sku)),
 	];
+	// A bound on what one page render may ask, whatever an order holds. Past it
+	// the remaining lines draw no link (the endpoint still serves them), and the
+	// log says so — an order this size is worth knowing about.
+	if (distinct.length > MAX_DOWNLOAD_LINKS) {
+		console.warn(
+			`[site-staging] order ${order.id} has ${distinct.length} digital skus; Download links drawn for the first ${MAX_DOWNLOAD_LINKS} only`,
+		);
+	}
+	const skus = distinct.slice(0, MAX_DOWNLOAD_LINKS);
 	const answers = await Promise.all(
 		skus.map((sku) =>
 			// One ask each, no automatic retry: a BUSY answer draws the link anyway.

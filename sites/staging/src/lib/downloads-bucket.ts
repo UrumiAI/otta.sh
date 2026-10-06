@@ -121,12 +121,14 @@ export function r2BucketScopes(
 	return scopes;
 }
 
-/** The real and preview bucket names an entry would reach. */
-function bucketNames(entry: R2BucketEntry | undefined): string[] {
-	if (entry === undefined) return [];
-	return [entry.bucket_name, entry.preview_bucket_name].filter(
-		(name): name is string => typeof name === "string" && name.length > 0,
-	);
+/** The real and preview bucket names EVERY entry bound as `binding` would
+ *  reach — not just the first: wrangler does not reject a duplicate binding, so
+ *  a second `DOWNLOADS` (or `MEDIA`) entry must not hide from the check. */
+function bucketNames(buckets: readonly R2BucketEntry[], binding: string): string[] {
+	return buckets
+		.filter((entry) => entry.binding === binding)
+		.flatMap((entry) => [entry.bucket_name, entry.preview_bucket_name])
+		.filter((name): name is string => typeof name === "string" && name.length > 0);
 }
 
 /**
@@ -139,10 +141,8 @@ function bucketNames(entry: R2BucketEntry | undefined): string[] {
  */
 export function assertDownloadsBucketPrivate(wranglerText: string, fileName: string): void {
 	for (const { scope, buckets } of r2BucketScopes(wranglerText, fileName)) {
-		const media = bucketNames(buckets.find((b) => b.binding === MEDIA_BINDING));
-		const shared = bucketNames(buckets.find((b) => b.binding === DOWNLOADS_BINDING)).find((name) =>
-			media.includes(name),
-		);
+		const media = bucketNames(buckets, MEDIA_BINDING);
+		const shared = bucketNames(buckets, DOWNLOADS_BINDING).find((name) => media.includes(name));
 		if (shared === undefined) continue;
 		const where = scope === "" ? fileName : `${fileName} (${scope})`;
 		throw new Error(

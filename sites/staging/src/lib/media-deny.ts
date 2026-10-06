@@ -7,9 +7,12 @@
  * bucket. What is left is a hand-made mistake: a `dl/…` object put into the
  * media bucket (`wrangler r2 object put` aimed at the wrong bucket). EmDash
  * serves every media key at `/_emdash/api/media/file/<key>` with no auth (it
- * holds back only `backups/`), and its image endpoint reads the same storage
- * through `/_image?href=…`. The middleware answers 404 for either before EmDash's
- * route runs.
+ * holds back only `backups/`). The middleware answers 404 before that route runs.
+ *
+ * THE IMAGE ENDPOINT NEEDS NO RULE. EmDash's `/_image` reads storage directly
+ * only for a key matching `^[A-Za-z0-9._-]+$` (`isSafeTransformKey`), which no
+ * `dl/…` key can — the `/` fails it — and every other `href` goes to Astro's
+ * stock endpoint, which fetches it over HTTP and so meets this same rule.
  *
  * MATCHING IS DELIBERATELY WIDE. Astro `decodeURI`-decodes the pathname before
  * routing (`%66ile` is `file`, `%64l` is `dl`), and a key may be escaped further
@@ -20,10 +23,6 @@
  */
 
 const MEDIA_FILE_PREFIX = "/_emdash/api/media/file/";
-
-/** Astro's image endpoint; EmDash replaces it with one that reads media keys
- *  named by `href` straight from storage. */
-const IMAGE_ENDPOINT = "/_image";
 
 /** The prefix every download key carries (`dl/{productId}/{ulid}`). */
 const DOWNLOAD_KEY_PREFIX = "dl/";
@@ -47,19 +46,7 @@ function isDownloadKey(key: string): boolean {
 	return key.replace(/^\/+/, "").startsWith(DOWNLOAD_KEY_PREFIX);
 }
 
-/** Does this request ask EmDash's public media route (directly, or through the
- *  image endpoint's `href`) for a key under `dl/`? */
+/** Does this request ask EmDash's public media route for a key under `dl/`? */
 export function isPrivateDownloadMediaRequest(url: URL): boolean {
-	const keys = mediaKeys(url.pathname);
-	if (keys.length > 0) return keys.some(isDownloadKey);
-	if (url.pathname !== IMAGE_ENDPOINT) return false;
-	const href = url.searchParams.get("href");
-	if (href === null) return false;
-	let hrefPath: string;
-	try {
-		hrefPath = new URL(href, "http://same-site.invalid").pathname;
-	} catch {
-		return false;
-	}
-	return mediaKeys(hrefPath).some(isDownloadKey);
+	return mediaKeys(url.pathname).some(isDownloadKey);
 }
