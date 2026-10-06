@@ -11,6 +11,10 @@ import {
 	type RefundResult,
 } from "@otta-sh/domain";
 
+export { createX402Rail, type X402RailOptions } from "./rail.js";
+export { X402_USDC_ASSETS, type X402UsdcAsset } from "./assets.js";
+export type { FacilitatorFetch } from "./facilitator.js";
+
 /**
  * The receipt-forwarding model is retired (ADR-0028, increment 2).
  *
@@ -20,9 +24,10 @@ import {
  * (`createTestFacilitator`). No standard x402 facilitator has that endpoint, only
  * the offline HMAC could ever produce `signature`, and nothing checked that the
  * money went to our `payTo`. ADR-0028 replaces the model: the resource server
- * calls the facilitator's standard `/verify` and `/settle` itself, through a new
- * `X402Rail` port (increment 6), from a domain use case that is the only thing
- * able to build a `page_gate` confirmation (increment 7).
+ * calls the facilitator's standard `/verify` and `/settle` itself, through the
+ * `X402Rail` port (increment 6: `createX402Rail`, `./rail.ts`), from a domain use
+ * case that is the only thing able to build a `page_gate` confirmation
+ * (increment 7).
  *
  * Until then the gateway settles nothing. Its one caller, the public
  * `entitlements/x402/settle` route, is deleted in the same increment, and
