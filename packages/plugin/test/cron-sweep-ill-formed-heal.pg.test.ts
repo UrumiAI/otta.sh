@@ -74,6 +74,11 @@ describe.skipIf(!PG)(
 				emailSender: recordingSender([]),
 				now,
 				queryBudget: SWEEP_TICK_QUERY_BUDGET,
+				// What is under test is the QUERY budget (D1's cap). The wall-clock box
+				// is a separate limit, and on a loaded machine a 2,000-row walk alone
+				// can outlast its 9.5 s, which stopped the leg early ("0, more next
+				// tick") in one full pg run. So it is opened wide here.
+				budgetMs: 60_000,
 			});
 
 			const leg = summary.legs.find((entry) => entry.leg === "expire-orders");
