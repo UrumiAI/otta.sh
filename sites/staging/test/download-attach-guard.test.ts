@@ -260,6 +260,34 @@ describe("the middleware gates the attach before the plugin's route runs", () =>
 		expect(next).not.toHaveBeenCalled();
 	});
 
+	test("a truthy tokenScopes that is not a list is checked, never skipped (EmDash's own truthiness)", async () => {
+		env["DOWNLOADS"] = bucket({});
+		const next = vi.fn(async () => new Response("plugin"));
+		await run(
+			context(attachBody(), ADMIN, {
+				csrfHeader: false,
+				tokenScopes: "admin" as unknown as readonly string[],
+			}),
+			next,
+		);
+		expect(next).not.toHaveBeenCalled();
+	});
+
+	test("an empty-string tokenScopes is a session to EmDash: the CSRF header decides", async () => {
+		const b = bucket({});
+		env["DOWNLOADS"] = b;
+		const next = vi.fn(async () => new Response("refused by emdash", { status: 403 }));
+		await run(
+			context(attachBody(), ADMIN, {
+				csrfHeader: false,
+				tokenScopes: "" as unknown as readonly string[],
+			}),
+			next,
+		);
+		expect(next).toHaveBeenCalledOnce();
+		expect(b.heads).toEqual([]);
+	});
+
 	test.each([
 		["no X-EmDash-Request header", { csrfHeader: false }],
 		["a token without the admin scope", { tokenScopes: ["content:read"] }],

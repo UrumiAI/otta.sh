@@ -208,10 +208,12 @@ export interface AttachCaller {
 function wouldDispatch(request: Request, caller: AttachCaller, minRole: number): boolean {
 	const role = (caller.user as { role?: unknown } | null | undefined)?.role;
 	if (typeof role !== "number" || !(role >= minRole)) return false;
-	if (caller.tokenScopes !== undefined) {
-		return Array.isArray(caller.tokenScopes) && caller.tokenScopes.includes("admin");
-	}
-	return request.headers.get("X-EmDash-Request") === "1";
+	// EmDash's own TRUTHINESS (`if (!locals.tokenScopes)` in the route and in
+	// `requireScope`), so a falsy value is a session and the header decides. A
+	// truthy value that is not a list is checked rather than skipped: when in
+	// doubt this errs toward the `head()`, never toward letting the save through.
+	if (!caller.tokenScopes) return request.headers.get("X-EmDash-Request") === "1";
+	return !Array.isArray(caller.tokenScopes) || caller.tokenScopes.includes("admin");
 }
 
 /** The middleware's whole step: `null` to pass the request on, or the answer
