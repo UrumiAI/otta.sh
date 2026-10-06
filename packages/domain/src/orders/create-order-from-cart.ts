@@ -25,8 +25,9 @@ import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
-import type { TotalsLineInput } from "../pricing/types.js";
+import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
 import type { CreateOrderFailure } from "./errors.js";
+import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 
@@ -236,7 +237,7 @@ export async function createOrderFromCart(
 	// rewrite it (immutability is structural).
 	const currency = cart.currency;
 	const lines: CreateOrderLineInput[] = [];
-	const totalsLines: TotalsLineInput[] = [];
+	const pricedLines: PricedLine[] = [];
 	// Bulk-fetch every priced line's product projection in ONE store round trip
 	// (kills the per-cart-line N+1). Branding only the non-null ids keeps a null
 	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
@@ -273,23 +274,24 @@ export async function createOrderFromCart(
 			// hold).
 			return { ok: false, reason: "RESERVATION_LOST" };
 		}
-		lines.push({
-			productId: pc.productId,
-			sku: brandSku(line.sku),
-			title: pc.title,
-			unitPrice: pc.price.amount,
-			currency: pc.price.currency,
-			quantity: line.qty,
-			fulfillmentKind: pc.productKind,
-			// Physical lines adopt their cart reservation; digital carry none (§6).
-			reservationId: physical ? asReservationId(line.reservationId) : null,
-		});
-		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
-		totalsLines.push({
-			unitPriceCents: pc.price.amount,
+		const priced: PricedLine = {
+			price: pc.price,
 			qty: line.qty,
-			taxClassId: pc.taxClass ?? "standard",
-		});
+			taxClass: pc.taxClass,
+			productKind: pc.productKind,
+		};
+		lines.push(
+			snapshotOrderLine({
+				...priced,
+				productId: pc.productId,
+				sku: brandSku(line.sku),
+				title: pc.title,
+				// Physical lines adopt their cart reservation; digital carry none (§6).
+				reservationId: physical ? asReservationId(line.reservationId) : null,
+			}),
+		);
+		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
+		pricedLines.push(priced);
 	}
 
 	// Phase 6: compute the full totals breakdown (subtotal → discount → shipping
@@ -297,7 +299,7 @@ export async function createOrderFromCart(
 	// engine after the store reads; read-only (no redemption here). The zone is
 	// derived from the address inside the quote (ADR-0021), so the review and
 	// the order resolve it identically.
-	const requiresShipping = lines.some((line) => line.fulfillmentKind === "physical");
+	// The same quote command the checkout review builds (`quoteCommandFor`).
 	const quote = await computeQuote(
 		{
 			shippingRules: deps.shippingRules,
@@ -305,16 +307,16 @@ export async function createOrderFromCart(
 			couponStore: deps.couponStore,
 			clock: deps.clock,
 		},
-		{
+		quoteCommandFor({
 			currency,
-			lines: totalsLines,
-			requiresShipping,
-			...(shippingAddress !== null
-				? { destination: { country: shippingAddress.country, region: shippingAddress.region } }
-				: {}),
-			...(command.shippingMethodId !== undefined ? { methodId: command.shippingMethodId } : {}),
-			...(command.couponCode !== undefined ? { couponCode: command.couponCode } : {}),
-		},
+			lines: pricedLines,
+			destination:
+				shippingAddress !== null
+					? { country: shippingAddress.country, region: shippingAddress.region }
+					: undefined,
+			methodId: command.shippingMethodId,
+			couponCode: command.couponCode,
+		}),
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;

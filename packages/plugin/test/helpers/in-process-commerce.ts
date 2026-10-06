@@ -16,7 +16,7 @@
  * and a suite can assert on the count, which is what turns "sends no mail" from a
  * claim into a test.
  */
-import type { Clock, EmailSender, PaymentGateway, PaymentMethod } from "@otta-sh/domain";
+import type { Clock, EmailSender, IdGen, PaymentGateway, PaymentMethod } from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
@@ -91,6 +91,9 @@ export interface MakeInProcessCommerceOptions {
 	 *  what `makeCommerceClient` resolves from the Stripe account's country.
 	 *  Omitted ⇒ not wired: ADR-0021's rules alone. */
 	resolveAddressRequired?: () => Promise<boolean>;
+	/** An id source the caller controls, for a suite that pins whole documents
+	 *  byte for byte. Omitted ⇒ random UUIDs, which is what a deployment gets. */
+	idGen?: IdGen;
 }
 
 export async function makeInProcessCommerce(
@@ -115,6 +118,7 @@ export async function makeInProcessCommerce(
 	const shared = {
 		...(options.clock !== undefined ? { clock: options.clock } : {}),
 		...(options.gateways !== undefined ? { gateways: options.gateways } : {}),
+		...(options.idGen !== undefined ? { idGen: options.idGen } : {}),
 	};
 	const stores = createInProcessCommerceStores(ctx, shared);
 	return {
