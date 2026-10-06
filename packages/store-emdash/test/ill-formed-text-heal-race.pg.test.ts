@@ -26,6 +26,8 @@ import {
 } from "@otta-sh/domain";
 import type { CreateOrderInput } from "@otta-sh/domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { collectionOf } from "../src/index.js";
+import { resetHealStateForTests } from "../src/well-formed-storage.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness } from "./order-harness.js";
@@ -82,6 +84,7 @@ describe.skipIf(!PG_ENABLED)("ill-formed text: read repair under concurrency [po
 	});
 	beforeEach(async () => {
 		await db.reset();
+		resetHealStateForTests();
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
@@ -150,4 +153,37 @@ describe.skipIf(!PG_ENABLED)("ill-formed text: read repair under concurrency [po
 			expect(await h.store.listExpirable("2099-01-01T00:00:00.000Z")).toEqual(["ord-clean"]);
 		}
 	});
+
+	test("increments racing the repair lose nothing (review B, repro A7)", async () => {
+		// A delta `updateIf` on a legacy row, beside where/orderBy queries and counts
+		// over a collection holding several: the heal is a compare-and-set from a
+		// fresh read, and a failed `updateIf` had no effect, so its retry is safe.
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		for (let round = 0; round < ROUNDS; round++) {
+			await db.reset();
+			resetHealStateForTests();
+			const raw = db.storage["orders"];
+			if (raw === undefined) throw new Error("orders collection missing");
+			await raw.put("stock", { state: "s", n: 0, note: "bad\uD800" });
+			for (let i = 0; i < 20; i++) {
+				await raw.put(`o${String(i)}`, { state: "s", n: 1, note: i % 3 === 0 ? "x\u0000" : "ok" });
+			}
+			const c = collectionOf<Record<string, unknown>>(db.storage, "orders");
+			const N = 30;
+			const ops: Promise<unknown>[] = [];
+			for (let i = 0; i < N; i++) {
+				ops.push(c.updateIf("stock", { where: {}, delta: { n: { inc: 1 } } } as never));
+				ops.push(c.query({ where: { state: "s" }, orderBy: { createdAt: "asc" } }));
+				ops.push(c.count({ state: "s" }));
+			}
+			const settled = await Promise.allSettled(ops);
+			expect(
+				settled.filter((s) => s.status === "rejected"),
+				`round ${String(round)}`,
+			).toEqual([]);
+			const final = (await c.get("stock")) as { n: number; note: string };
+			expect(final.n, `round ${String(round)}`).toBe(N);
+			expect(final.note).toBe("bad\uFFFD");
+		}
+	}, 120_000);
 });

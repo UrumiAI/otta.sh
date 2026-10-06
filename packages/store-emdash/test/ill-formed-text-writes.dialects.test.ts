@@ -13,8 +13,9 @@
  * belongs at the boundary, and lives there (the plugin's `commerce-input.ts`).
  */
 import { findIllFormedText } from "@otta-sh/domain";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectionOf } from "../src/index.js";
+import { IllFormedIdError, isIllFormedIdError } from "../src/well-formed-storage.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 
 const LAYOUT = { notes: { indexes: ["kind", "seq"] } };
@@ -28,6 +29,9 @@ interface Note {
 afterEach(() => {
 	vi.restoreAllMocks();
 });
+
+/** The id hash a log line carries. */
+const tag = (line: string | undefined) => /id#[0-9a-f]{8}/.exec(line ?? "")?.[0];
 
 describeEachDialect("ill-formed text: the write guard", (ctx) => {
 	const bound = ctx.useStorage(LAYOUT);
@@ -49,9 +53,10 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		});
 		// The caller's object is never mutated: the repair is a copy.
 		expect((doc.body as { city: string }).city).toBe("Ber\uD800lin");
-		// A repair is a boundary gap, so it is LOGGED — collection, id and path, no text.
+		// A repair is a boundary gap, so it is LOGGED — collection, a hash of the id,
+		// and the path, no text.
 		expect(warn).toHaveBeenCalledTimes(1);
-		expect(String(warn.mock.calls[0]?.[0])).toContain("notes/n1");
+		expect(String(warn.mock.calls[0]?.[0])).toMatch(/notes\/id#[0-9a-f]{8}\b/);
 		expect(String(warn.mock.calls[0]?.[0])).toContain("body.city");
 		expect(String(warn.mock.calls[0]?.[0])).not.toContain("Ber");
 	});
@@ -101,5 +106,113 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		expect(page.items.map((i) => i.id)).toEqual(["n0", "n1", "n2", "n3"]);
 		for (const item of page.items) expect(findIllFormedText(item.data)).toBeNull();
 		expect(await notes().count({ kind: "k" })).toBe(4);
+	});
+
+	describe("ids (review B L1, A A5): an id that is not well formed is REFUSED on every method", () => {
+		// Unlike document text, no row can already hold such an id on Postgres (the
+		// driver rewrites a lone surrogate to U+FFFD on the way in, merging distinct
+		// ids into one row), so refusing bricks nothing — and repairing would be the
+		// silent merge itself.
+		const BAD_IDS = { "lone high": "x\uD800", "lone low": "x\uDC00", NUL: "x\u0000" };
+
+		test.each(Object.entries(BAD_IDS))(
+			"%s: every id-taking method rejects with a typed error",
+			async (_l, id) => {
+				const c = notes();
+				const calls: Array<[string, () => Promise<unknown>]> = [
+					["get", () => c.get(id)],
+					["getVersioned", () => c.getVersioned(id)],
+					["put", () => c.put(id, { kind: "k" })],
+					["compareAndSet", () => c.compareAndSet(id, null, { kind: "k" })],
+					["delete", () => c.delete(id)],
+					["compareAndDelete", () => c.compareAndDelete(id, "1")],
+					["updateIf", () => c.updateIf(id, { where: { kind: "k" }, set: { body: "x" } })],
+				];
+				for (const [name, call] of calls) {
+					const err = await call().then(
+						() => new Error(`${name} resolved`),
+						(e: unknown) => e,
+					);
+					expect(err, name).toBeInstanceOf(IllFormedIdError);
+					expect(isIllFormedIdError(err), name).toBe(true);
+					// The refusal names the collection, never the id's text.
+					expect(String((err as Error).message), name).toContain("notes");
+					expect(String((err as Error).message), name).not.toContain(id);
+					expect(String((err as Error).message), name).not.toContain("x\uFFFD");
+				}
+				// Nothing was written.
+				expect((await bound.storage["notes"]?.query({ limit: 10 }))?.items).toEqual([]);
+			},
+		);
+
+		test("two ids that differ only in a lone surrogate can no longer collapse into one row", async () => {
+			await expect(notes().put("x\uD800", { kind: "a" })).rejects.toBeInstanceOf(IllFormedIdError);
+			await expect(notes().put("x\uDC00", { kind: "b" })).rejects.toBeInstanceOf(IllFormedIdError);
+			await notes().put("x\uFFFD", { kind: "c" });
+			expect(await notes().get("x\uFFFD")).toEqual({ kind: "c" });
+		});
+	});
+
+	test("keys that repair to the same text (review B L2): the already-well-formed key wins, the drop is logged without text", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await notes().put("cart", {
+			kind: "c",
+			body: {
+				mutations: {
+					["k\uD800"]: { result: "A" },
+					["k\uDC00"]: { result: "B" },
+					["k\uFFFD"]: { result: "C" },
+				},
+			},
+		});
+		expect(await rawGet("cart")).toEqual({
+			kind: "c",
+			body: { mutations: { ["k\uFFFD"]: { result: "C" } } },
+		});
+		const lines = error.mock.calls.map((a) => String(a[0]));
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("body.mutations.(key #0)");
+		expect(lines[0]).toContain("body.mutations.(key #1)");
+		expect(lines[0]).not.toMatch(/k\uFFFD|k\uD800|k\uDC00|cart/);
+	});
+
+	test("the log never carries the id or a key's text (review B L3)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await notes().put("victim.person@example.com", {
+			kind: "k",
+			body: { "buyer@example.com": { ["idem\uD800"]: 1 } },
+		});
+		await notes().put("victim.person@example.com", { kind: "k", body: "x\u0000" });
+		const [first, second] = warn.mock.calls.map((a) => String(a[0]));
+		for (const line of [first, second]) {
+			expect(line).not.toMatch(/victim|example|buyer|idem/);
+		}
+		expect(first).toContain("body.(key #0).(key #0)");
+		// The hash is stable, so two lines about one document can be matched up.
+		expect(tag(first)).toBeDefined();
+		expect(tag(first)).toBe(tag(second));
+	});
+
+	test("where operands are repaired the way stored text is (review A A5): a lookup by the raw value finds the stored row on every dialect", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		await notes().put("n1", { kind: "a\uD800b", seq: 1 });
+		expect(await rawGet("n1")).toEqual({ kind: "a\uFFFDb", seq: 1 });
+		for (const kind of ["a\uD800b", "a\uDBFFb", "a\u0000b", "a\uFFFDb"]) {
+			expect(
+				(await notes().query({ where: { kind } })).items.map((i) => i.id),
+				kind,
+			).toEqual(["n1"]);
+			expect(await notes().count({ kind }), kind).toBe(1);
+			expect(
+				(await notes().query({ where: { kind: { in: ["zzz", kind] } } })).items.map((i) => i.id),
+				kind,
+			).toEqual(["n1"]);
+		}
+		expect(
+			(await notes().query({ where: { kind: { startsWith: "a\u0000" } } })).items.map((i) => i.id),
+		).toEqual(["n1"]);
+		const updated = await notes().updateIf("n1", { where: { kind: "a\uDC00b" }, set: { seq: 2 } });
+		expect(updated.applied).toBe(true);
 	});
 });
