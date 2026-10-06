@@ -157,6 +157,7 @@ import {
 	isEmailSendTimeoutError,
 	orderId as toOrderId,
 	retryLatePaymentRefunds,
+	UnitBackoff,
 	type EmailSender,
 	type OrderId,
 	type OrderState,
@@ -552,6 +553,17 @@ const LIST_CANDIDATE_CALLS = 3;
  */
 const EXPIRY_SCAN_ORDERS = 100;
 
+/**
+ * Orders whose expiry flip threw, waiting before they are tried again (review
+ * round 3, B I4), so a few orders that fail every time cannot take every tick's
+ * bite and starve the orders listed behind them. Per process, like the storage
+ * guard's heal state; losing it (a restart, a fresh isolate) only means such an
+ * order is tried once more sooner. Bounded: at most
+ * {@link UnitBackoff.DEFAULT_MAX_ENTRIES} orders, so the due check reads at most
+ * that many more rows, still inside its one page ({@link EXPIRY_SCAN_ORDERS}).
+ */
+const ORDER_EXPIRY_BACKOFF = new UnitBackoff();
+
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
  *  listed candidate (it lists `batch + 1`). */
 function expireHoldsEntry(expiryBatch: number): number {
@@ -781,6 +793,9 @@ export interface CommerceSweepOptions {
 	/** Most holds, and most orders, each expiry leg attempts per tick. Default:
 	 *  scaled from the query budget (`batchesFor`) — 1 on the Free preset, 18 on Paid. */
 	readonly expiryBatchLimit?: number;
+	/** Where failed order expiries back off. Default: one per process. Tests pass
+	 *  their own. */
+	readonly expiryBackoff?: UnitBackoff;
 	/** Most outbox rows the email leg claims per tick. Default: scaled from the
 	 *  query budget — 10 on the Free preset, 25 on Paid. */
 	readonly emailBatchLimit?: number;
@@ -1341,13 +1356,21 @@ export async function runCommerceSweeps(
 	// a time — a dozen queries for 150 orders, charged to a check costed as one. An
 	// order the look did not reach is not listed, so it is never expired unchecked;
 	// it is read on a later tick, once `cancel-intents` has withdrawn the ones ahead.
+	//
+	// Orders still backing off after a failed flip (review round 3, B I4) are read
+	// past: the look lists that many more and leaves them out, in the same query.
+	const expiryBackoff = options.expiryBackoff ?? ORDER_EXPIRY_BACKOFF;
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
-		(expirable ??= stores.orderStore.listExpirable(nowIso, {
-			limit: expiryLimit + 1,
-			excludeIntentDue: true,
-			scanLimit: Math.max(expiryLimit + 1, EXPIRY_SCAN_ORDERS),
-		}));
+		(expirable ??= (async () => {
+			const waiting = expiryBackoff.waiting(now.getTime());
+			const listed = await stores.orderStore.listExpirable(nowIso, {
+				limit: expiryLimit + 1 + waiting.size,
+				excludeIntentDue: true,
+				scanLimit: Math.max(expiryLimit + 1 + waiting.size, EXPIRY_SCAN_ORDERS),
+			});
+			return waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
+		})());
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
@@ -1367,6 +1390,9 @@ export async function runCommerceSweeps(
 							limit,
 							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
 							due: await expirableIds(),
+							backoff: expiryBackoff,
+							// The tick's query ceiling ends the leg; it is not one order failing.
+							stopsBatch: isSweepQueryCeilingError,
 						},
 					),
 					(count) => noteUnits("expire-orders", count, legBudget),

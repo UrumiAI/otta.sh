@@ -30,3 +30,8 @@ The cron sweep's query-budget proxy exposes the collection it meters to the stor
 guard's repair walk (`UNMETERED_COLLECTION`), so on Postgres a legacy order deep in
 the collection is healed and expired on the next tick instead of the walk being cut
 off by the expiry leg's budget every minute.
+
+The expiry leg keeps a per-process back-off for orders whose expiry flip throws, and
+reads past them in the same one-page list, so they cannot starve the orders behind
+them; the tick's query ceiling inside an order now ends the leg as the ceiling
+instead of being logged as that order failing.
