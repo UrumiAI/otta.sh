@@ -134,6 +134,21 @@ describe("sanitizeDownloadFilename — a name the buyer's browser can save, neve
 		expect(sanitizeDownloadFilename("x\uD800y.txt")).toBe("xy.txt");
 	});
 
+	test("removes invisible characters: zero-width, word joiner, BOM, soft hyphen, tags", () => {
+		for (const cp of [
+			0x200b, 0x200c, 0x200d, 0x2060, 0x2061, 0x2064, 0xfeff, 0x00ad, 0xe0000, 0xe0041, 0xe007f,
+		]) {
+			const raw = `gui${String.fromCodePoint(cp)}de.pdf`;
+			expect(sanitizeDownloadFilename(raw), cp.toString(16)).toBe("guide.pdf");
+			expect(accepted(sanitizeDownloadFilename(raw), "application/pdf")).toBe(true);
+		}
+		// Neighbours that are visible stay.
+		expect(sanitizeDownloadFilename("a\u2065b\u00ACc.txt")).toBe("a\u2065b\u00ACc.txt");
+		expect(sanitizeDownloadFilename(`${String.fromCodePoint(0xfeff)}\u200B`)).toBe(
+			DOWNLOAD_FALLBACK_FILENAME,
+		);
+	});
+
 	test("trims, and falls back to a plain name when nothing is left", () => {
 		expect(sanitizeDownloadFilename("  report.pdf  ")).toBe("report.pdf");
 		for (const raw of ["", "   ", ".", "..", "\u202E", "/", null, undefined]) {

@@ -153,6 +153,16 @@ describe("updateProductCommerceFields — downloadAsset validation", () => {
 			["a trailing high surrogate", `guide.pdf${HIGH}`],
 			["a line separator", `guide${String.fromCharCode(0x2028)}.pdf`],
 			["a paragraph separator", `guide${String.fromCharCode(0x2029)}.pdf`],
+			// Invisible characters: two names that look alike, or hidden text.
+			["a zero-width space", `guide${String.fromCodePoint(0x200b)}.pdf`],
+			["a zero-width non-joiner", `guide${String.fromCodePoint(0x200c)}.pdf`],
+			["a zero-width joiner", `guide${String.fromCodePoint(0x200d)}.pdf`],
+			["a word joiner", `guide${String.fromCodePoint(0x2060)}.pdf`],
+			["an invisible operator", `guide${String.fromCodePoint(0x2064)}.pdf`],
+			["a BOM", `${String.fromCodePoint(0xfeff)}guide.pdf`],
+			["a soft hyphen", `gui${String.fromCodePoint(0x00ad)}de.pdf`],
+			["a tag character", `guide${String.fromCodePoint(0xe0041)}.pdf`],
+			["the last tag character", `guide${String.fromCodePoint(0xe007f)}.pdf`],
 		])("refuses %s", async (_label, filename) => {
 			await refusedOn(asset({ filename }), "downloadAsset.filename");
 		});

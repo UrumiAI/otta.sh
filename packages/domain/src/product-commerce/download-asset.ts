@@ -46,7 +46,13 @@ const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
  *    embeddings and overrides (U+202A–U+202E) and the isolates (U+2066–U+2069) —
  *    with which `invoice` + U+202E + `fdp.exe` displays as `invoiceexe.pdf`;
  *  - the line and paragraph separators (U+2028/U+2029), line breaks by another
- *    name in a header or a file dialog.
+ *    name in a header or a file dialog;
+ *  - the INVISIBLE characters — zero-width space, non-joiner and joiner
+ *    (U+200B–U+200D), word joiner and the invisible operators (U+2060–U+2064),
+ *    the BOM / zero-width no-break space (U+FEFF), the soft hyphen (U+00AD) and
+ *    the tag characters (U+E0000–U+E007F) — with which two names that look the
+ *    same in the buyer's file dialog are different strings, or a name hides
+ *    text nobody can see.
  *
  * Code points rather than a regex character class, so the invisible ones are
  * named by number in the source instead of sitting in it as invisible text.
@@ -64,7 +70,12 @@ function isForbiddenFilenameCodePoint(cp: number): boolean {
 		(cp >= 0x202a && cp <= 0x202e) ||
 		(cp >= 0x2066 && cp <= 0x2069) ||
 		cp === 0x2028 ||
-		cp === 0x2029
+		cp === 0x2029 ||
+		cp === 0x00ad ||
+		(cp >= 0x200b && cp <= 0x200d) ||
+		(cp >= 0x2060 && cp <= 0x2064) ||
+		cp === 0xfeff ||
+		(cp >= 0xe0000 && cp <= 0xe007f)
 	);
 }
 
@@ -196,7 +207,7 @@ function requireFilename(filename: unknown): void {
 	if ([...filename].some((ch) => isForbiddenFilenameCodePoint(ch.codePointAt(0) ?? 0))) {
 		throw new InvalidProductFieldError(
 			field,
-			`${field} must not contain control, quote, slash, backslash or bidirectional-control characters`,
+			`${field} must not contain control, quote, slash, backslash, bidirectional-control or invisible characters`,
 		);
 	}
 	if (filename.trim() !== filename || filename === "." || filename === "..") {
