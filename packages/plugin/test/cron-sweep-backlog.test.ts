@@ -75,7 +75,7 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const FREE = 30;
 const LAPSED_ORDERS = 50;
-/** The pinned pace. Measured on this simulation: all 50 expired by tick 72 (0.69 a
+/** The pinned pace. Measured on this simulation: all 50 expired by tick 73 (0.68 a
  *  minute) with every other leg busy at the same time — about twice QA's one every
  *  three minutes, which starved everything else. With only an expiry backlog it is
  *  one a minute (`cron-sweep-ceiling`). The floor leaves room for the cost table
@@ -87,8 +87,28 @@ const PROGRESS_WITHIN = 12;
 /** And is never passed over more than this many ticks in a row. */
 const MAX_WAIT = 8;
 
-/** Two hours on from now, so a late refund the setup leaves `reserved` is due. */
-const START = new Date(Math.floor((Date.now() + 2 * HOUR_MS) / MINUTE_MS) * MINUTE_MS);
+/**
+ * The seed's "now": a FIXED instant, never the wall clock (review I-2). The
+ * simulation's pace depends on the UTC day its orders fall in (orders created on a
+ * day that has closed are reporting-heal work too), so a start taken from
+ * `Date.now()` failed the pinned pace whenever a run began near 22:00 UTC (tick 91
+ * > 84). At 08:00 UTC the seed, START and all 240 ticks stay inside one UTC day.
+ *
+ * The wall clock is pinned with them (`atWallClock`): the sweep's stores stamp
+ * what they write (an expiry's queued email, among others) on the system clock,
+ * as production does, so the wall clock must read the seed's time while seeding
+ * and each tick's `now` while it runs. Only `Date` is faked; the tick's time box
+ * still runs on the real elapsed time (`performance.now`).
+ */
+const SEEDED_AT = new Date("2026-09-20T08:00:00.000Z");
+/** Two hours after the seed, so a late refund the setup leaves `reserved` is due. */
+const START = new Date(SEEDED_AT.getTime() + 2 * HOUR_MS);
+
+/** Fake `Date` only, reading `at`; real timers stay real. */
+function atWallClock(at: Date): void {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(at);
+}
 
 let storage: StorageAccess;
 const stripe = new FakePaymentGateway({ id: "stripe" });
@@ -97,12 +117,17 @@ beforeAll(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
 	vi.spyOn(console, "log").mockImplementation(() => undefined);
 	vi.spyOn(console, "warn").mockImplementation(() => undefined);
-	await seedEveryLeg();
+	atWallClock(SEEDED_AT);
+	try {
+		await seedEveryLeg();
+	} finally {
+		vi.useRealTimers();
+	}
 }, 300_000);
 
 /** Work in every leg, each through the adapters production uses. */
 async function seedEveryLeg(): Promise<void> {
-	const base = adapters(storage);
+	const base = adapters(storage, SEEDED_AT);
 
 	// expire-orders: 50 lapsed orders; cancel-intents: ten of them carry a recorded
 	// payment intent the buyer could still pay.
@@ -236,11 +261,11 @@ async function seedEveryLeg(): Promise<void> {
 	const late = await placeOrder(
 		storage,
 		"late-paid",
-		new Date(Date.now() - 30 * MINUTE_MS),
-		new Date(Date.now() - HOUR_MS),
+		new Date(SEEDED_AT.getTime() - 30 * MINUTE_MS),
+		new Date(SEEDED_AT.getTime() - HOUR_MS),
 	);
-	const now = adapters(storage);
-	expect(await now.orderStore.expire(toOrderId(late.id), new Date().toISOString())).toBe(true);
+	const now = adapters(storage, SEEDED_AT);
+	expect(await now.orderStore.expire(toOrderId(late.id), SEEDED_AT.toISOString())).toBe(true);
 	stripe.setRefundResult({ ok: false, reason: "RETRYABLE" });
 	const settled = await settleOrder(
 		{
@@ -338,12 +363,20 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 
 		for (; tick < 240; tick++) {
 			counter.calls = 0;
-			const summary: CommerceSweepSummary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
-				cursors,
-				emailSender: recordingSender(sent),
-				gateways: { stripe },
-				now: new Date(START.getTime() + tick * MINUTE_MS),
-			});
+			const at = new Date(START.getTime() + tick * MINUTE_MS);
+			atWallClock(at);
+			let summary: CommerceSweepSummary;
+			try {
+				summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+					cursors,
+					emailSender: recordingSender(sent),
+					gateways: { stripe },
+					now: at,
+					tickClock: () => performance.now(),
+				});
+			} finally {
+				vi.useRealTimers();
+			}
 			expect(counter.calls, `tick ${String(tick)} (outside count)`).toBeLessThanOrEqual(FREE);
 			expect(summary.budget.queriesUsed, `tick ${String(tick)}`).toBe(counter.calls);
 
