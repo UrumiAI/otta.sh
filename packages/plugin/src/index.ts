@@ -74,6 +74,8 @@ export {
 // declare. The read path's relocated helpers (`products-read.ts`) stay internal —
 // only `products-console-route.ts` consumes them.
 export {
+	ATTACH_DOWNLOAD_ACTION_ID,
+	DOWNLOAD_NOT_ATTACHED_TITLE,
 	PRODUCTS_ACTION_IDS,
 	dispatchProductsAction,
 	type ProductsActionPayload,
@@ -288,6 +290,9 @@ export {
 	DOWNLOAD_FALLBACK_CONTENT_TYPE,
 	DOWNLOAD_KEY_RANDOM_BYTES,
 	downloadContentTypeFor,
+	// The save's own key rule (`dl/{productId}/{ULID}`), so the site's bucket
+	// check refuses a junk key before it ever reaches R2 (issue #405).
+	isDownloadAssetKeyFor,
 	mintDownloadAssetKey,
 	sanitizeDownloadFilename,
 } from "@otta-sh/domain";

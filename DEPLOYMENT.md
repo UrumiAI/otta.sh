@@ -122,11 +122,14 @@ expired holds and queued emails drain at the Free pace (§5).
    > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
    > Without the binding, an upload is refused with a sentence saying downloads are not set
    > up on this store (the card shows it once the merchant tries). Saving the file checks that
-   > its object is in this bucket at the uploaded size, and refuses it otherwise, so a save can
-   > never point buyers at a missing file.
+   > its object is in this bucket at the uploaded size, and refuses it otherwise. The reference
+   > site's middleware makes this check, on whatever HTTP method the save arrives with, so on this
+   > site a save cannot point buyers at a missing file. A different site hosting the plugin needs
+   > the same check: the plugin cannot see the bucket.
    >
-   > **Refunds made outside Otta keep the download open.** A buyer loses access when the order
-   > is refunded or cancelled in Otta. Money returned another way does not do that by itself:
+   > **Refunds the order's state doesn't show yet keep the download open.** A buyer loses access
+   > when the order is refunded or cancelled in Otta. Money returned in a way the order does not
+   > show yet does not close access by itself:
    > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
    >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
    > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the

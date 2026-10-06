@@ -47,7 +47,8 @@
  * the private DOWNLOADS bucket, never MEDIA; this is the backstop for one put
  * in the wrong bucket by hand.
  *
- * ONE WRITE IS LOOKED AT, too (issue #405): a plugin-route POST that attaches a
+ * ONE WRITE IS LOOKED AT, too (issue #405): a plugin-route write (POST, PUT or
+ * PATCH — any method but GET, HEAD, DELETE and OPTIONS) that attaches a
  * download file has its key `head()`ed in the DOWNLOADS bucket before EmDash
  * dispatches it, because the plugin cannot reach R2 and a key with no object
  * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
@@ -88,16 +89,18 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 
 export const onRequest = defineMiddleware(async (context, next) => {
 	const { request, url, cookies } = context;
-	if (request.method === "POST") {
-		const refused = await guardAttachDownload(
-			request,
-			url,
-			(context.locals as { user?: unknown }).user,
-			UPLOAD_MIN_ROLE,
-			attachBucketFrom(env),
-		);
-		if (refused !== null) return refused;
-	}
+	// Every method that can carry a body — the guard decides (it gates all but
+	// GET, HEAD, DELETE and OPTIONS, as EmDash's plugin route parses a JSON body
+	// for POST, PUT and PATCH alike).
+	const locals = context.locals as { user?: unknown; tokenScopes?: unknown };
+	const refused = await guardAttachDownload(
+		request,
+		url,
+		{ user: locals.user, tokenScopes: locals.tokenScopes },
+		UPLOAD_MIN_ROLE,
+		attachBucketFrom(env),
+	);
+	if (refused !== null) return refused;
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
 	// Before the `/_` pass-through: the media route is under `/_emdash`. The same
 	// plain 404 EmDash answers for a key it does not have, and never stored.

@@ -31,24 +31,46 @@
  * second write path into the plugin, for what is one existence check.
  *
  * ── Scope ────────────────────────────────────────────────────────────────────
- * Only a POST to a plugin route (`/_emdash/api/plugins/…`, matched decoded and
- * with repeated slashes collapsed, as Astro routes it) by a signed-in user who
- * holds `plugins:manage` — the role the plugin's admin route itself requires.
- * Anyone else is left to EmDash's own refusal, so the bucket is never read for a
- * request that could not have saved anything. The body is read from a CLONE, so
- * EmDash still reads the original. The plugin's console act is matched exactly as
- * the plugin reads it: `type` and `action_id` compared as strings, the payload's
- * fields only when they are strings. A body that does not parse, or a payload
- * without a string key and size, passes through: the plugin refuses it as
- * unreadable on its own.
+ *  - EVERY METHOD THAT CAN CARRY THE WRITE ({@link gatesMethod}). EmDash's plugin
+ *    catch-all serves GET, POST, PUT, PATCH and DELETE from one handler, parses
+ *    a JSON body as the route's input for POST, PUT and PATCH, and the plugin
+ *    never reads the method — so a PUT or PATCH attach is the same write as a
+ *    POST. Only GET, HEAD, DELETE and OPTIONS pass unchecked: EmDash takes their
+ *    input from the query string, where `value` is a string and no descriptor
+ *    can ride. `download-attach-guard.test.ts` pins this against the installed
+ *    EmDash, so an upgrade that changes either set fails there.
+ *  - A path under `/_emdash/api/plugins/…`, matched decoded and with repeated
+ *    slashes collapsed, as Astro routes it.
+ *  - ONLY A REQUEST EMDASH WOULD DISPATCH: a user at `plugins:manage` or above,
+ *    and either the `X-EmDash-Request: 1` header or a token holding the `admin`
+ *    scope — the route's own CSRF and scope rules. Anything else is left to
+ *    EmDash's refusal, so this never answers first or reads the bucket for a
+ *    request that could not have saved anything.
+ *  - The body is read from a CLONE, so EmDash still reads the original, and the
+ *    act is matched exactly as the plugin reads it: `type` and `action_id`
+ *    compared to the plugin's exported constants, the payload's fields only when
+ *    they are strings. A body that does not parse, or a payload without a string
+ *    product id, key and size, passes through: the plugin refuses it as
+ *    unreadable on its own.
+ *  - A KEY NOT SHAPED `dl/{productId}/{ULID}` for that product (the save's own
+ *    rule, `isDownloadAssetKeyFor`) is never sent to R2: it passes through to
+ *    the plugin, which refuses it on that same rule. So a junk key costs no
+ *    bucket read and can never come back "retryable".
+ *
+ * ── Another host ─────────────────────────────────────────────────────────────
+ * This is the REFERENCE site's check. A site that hosts the plugin without it
+ * keeps the gap: the plugin alone cannot see the bucket (ADR-0029's 2026-10-06
+ * amendment).
  */
-import { CONSOLE_ACT_INTERACTION } from "@otta-sh/plugin";
+import {
+	ATTACH_DOWNLOAD_ACTION_ID,
+	CONSOLE_ACT_INTERACTION,
+	DOWNLOAD_NOT_ATTACHED_TITLE,
+	isDownloadAssetKeyFor,
+} from "@otta-sh/plugin";
 import type { DownloadsBucket } from "./download-delivery.js";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
-
-/** The plugin's attach action id (`products-actions.ts`). */
-export const ATTACH_DOWNLOAD_ACTION = "products:attach-download";
 
 /** EmDash's plugin API prefix — every plugin route, the `otta` admin route among them. */
 const PLUGIN_ROUTE_PREFIX = "/_emdash/api/plugins/";
@@ -56,9 +78,10 @@ const PLUGIN_ROUTE_PREFIX = "/_emdash/api/plugins/";
 /** The `DOWNLOADS` binding's one method this check uses. */
 export type AttachBucket = Pick<DownloadsBucket, "head">;
 
-/** What the check reads off an attach: the key and the claimed byte count, as
- *  the console sent them. */
+/** What the check reads off an attach: the product, the key and the claimed
+ *  byte count, as the console sent them. */
 export interface AttachClaim {
+	readonly productId: string;
 	readonly key: string;
 	readonly size: string;
 }
@@ -91,10 +114,12 @@ export function isPluginRoutePath(url: URL): boolean {
 export function readAttachDownload(body: unknown): AttachClaim | null {
 	if (typeof body !== "object" || body === null) return null;
 	const { type, action_id: actionId, value } = body as Record<string, unknown>;
-	if (type !== CONSOLE_ACT_INTERACTION || actionId !== ATTACH_DOWNLOAD_ACTION) return null;
+	if (type !== CONSOLE_ACT_INTERACTION || actionId !== ATTACH_DOWNLOAD_ACTION_ID) return null;
 	if (typeof value !== "object" || value === null) return null;
-	const { key, size } = value as Record<string, unknown>;
-	return typeof key === "string" && typeof size === "string" ? { key, size } : null;
+	const { productId, key, size } = value as Record<string, unknown>;
+	return typeof productId === "string" && typeof key === "string" && typeof size === "string"
+		? { productId, key, size }
+		: null;
 }
 
 /** An answer in EmDash's envelope, carrying what the plugin's route would. */
@@ -114,18 +139,27 @@ function answer(data: unknown): Response {
 function refused(description: string): Response {
 	return answer({
 		ok: true,
-		notice: { variant: "error", title: "This file wasn't attached", description },
+		notice: { variant: "error", title: DOWNLOAD_NOT_ATTACHED_TITLE, description },
 	});
 }
 
 /**
- * `null` when the claimed object is in the bucket at the claimed size; else the
- * response to send in the plugin's place.
+ * `null` when the claimed object is in the bucket at the claimed size, or when
+ * the key is not one the save accepts at all (the plugin refuses that itself —
+ * no bucket read); else the response to send in the plugin's place.
  */
 export async function attachDownloadRefusal(
 	bucket: AttachBucket | undefined,
 	claim: AttachClaim,
 ): Promise<Response | null> {
+	if (
+		!isDownloadAssetKeyFor(
+			claim.productId as Parameters<typeof isDownloadAssetKeyFor>[0],
+			claim.key,
+		)
+	) {
+		return null;
+	}
 	if (bucket === undefined) {
 		return refused(
 			`Downloads are not set up on this store: it has no private ${DOWNLOADS_BINDING} bucket, so buyers could not get this file. Your developer can add one (DEPLOYMENT.md §2.1).`,
@@ -152,18 +186,45 @@ export async function attachDownloadRefusal(
 	return null;
 }
 
+/** The methods whose route input EmDash takes from the query string, not a
+ *  JSON body — the only ones that cannot carry an attach. */
+const BODYLESS_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "DELETE", "OPTIONS"]);
+
+/** Whether a request of this method is checked: every method but the bodyless
+ *  ones, so a method EmDash starts serving later is checked by default. */
+export function gatesMethod(method: string): boolean {
+	return !BODYLESS_METHODS.has(method.toUpperCase());
+}
+
+/** Who and what EmDash's plugin route would dispatch, as far as the guard
+ *  needs to know (`locals.user`, `locals.tokenScopes`). */
+export interface AttachCaller {
+	readonly user: unknown;
+	readonly tokenScopes: unknown;
+}
+
+/** EmDash's plugin route would dispatch this: the role, then the token's
+ *  `admin` scope, or — for a session — the `X-EmDash-Request: 1` header. */
+function wouldDispatch(request: Request, caller: AttachCaller, minRole: number): boolean {
+	const role = (caller.user as { role?: unknown } | null | undefined)?.role;
+	if (typeof role !== "number" || !(role >= minRole)) return false;
+	if (caller.tokenScopes !== undefined) {
+		return Array.isArray(caller.tokenScopes) && caller.tokenScopes.includes("admin");
+	}
+	return request.headers.get("X-EmDash-Request") === "1";
+}
+
 /** The middleware's whole step: `null` to pass the request on, or the answer
  *  to send instead. Only a role at or above `minRole` is checked. */
 export async function guardAttachDownload(
 	request: Request,
 	url: URL,
-	user: unknown,
+	caller: AttachCaller,
 	minRole: number,
 	bucket: AttachBucket | undefined,
 ): Promise<Response | null> {
-	if (request.method !== "POST" || !isPluginRoutePath(url)) return null;
-	const role = (user as { role?: unknown } | null | undefined)?.role;
-	if (typeof role !== "number" || !(role >= minRole)) return null;
+	if (!gatesMethod(request.method) || !isPluginRoutePath(url)) return null;
+	if (!wouldDispatch(request, caller, minRole)) return null;
 	let body: unknown;
 	try {
 		body = JSON.parse(await request.clone().text()) as unknown;

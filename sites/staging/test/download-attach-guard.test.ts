@@ -10,6 +10,15 @@
  * write reaches the plugin, and refuses it in the console's own words when the
  * object is missing or is not the size the descriptor claims.
  */
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+	ATTACH_DOWNLOAD_ACTION_ID,
+	CONSOLE_ACT_INTERACTION,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	DOWNLOAD_NOT_ATTACHED_TITLE,
+	mintDownloadAssetKey,
+} from "@otta-sh/plugin";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("astro:middleware", () => ({
@@ -21,6 +30,7 @@ vi.mock("astro:middleware", () => ({
 import { env } from "./helpers/virtual-emdash-env.js";
 import {
 	attachDownloadRefusal,
+	gatesMethod,
 	isPluginRoutePath,
 	readAttachDownload,
 } from "../src/lib/download-attach-guard.js";
@@ -28,15 +38,21 @@ import { onRequest } from "../src/middleware.js";
 
 const SITE = "http://localhost:4321";
 const ADMIN_ROUTE = "/_emdash/api/plugins/otta/admin";
-const KEY = "dl/prod_1/01JABCDEFGHJKMNPQRSTVWXYZ0";
+const PRODUCT = "prod_1";
+/** A key exactly as the upload endpoint mints it for {@link PRODUCT}. */
+const KEY = mintDownloadAssetKey(
+	PRODUCT as Parameters<typeof mintDownloadAssetKey>[0],
+	Date.UTC(2026, 9, 6),
+	new Uint8Array(DOWNLOAD_KEY_RANDOM_BYTES).fill(7),
+);
 const ADMIN = { id: "user-admin", role: 50 };
 
 function attachBody(over: Record<string, string> = {}): Record<string, unknown> {
 	return {
-		type: "otta_console_act",
-		action_id: "products:attach-download",
+		type: CONSOLE_ACT_INTERACTION,
+		action_id: ATTACH_DOWNLOAD_ACTION_ID,
 		value: {
-			productId: "prod_1",
+			productId: PRODUCT,
 			expectedUpdatedAt: "2026-10-06T00:00:00.000Z",
 			key: KEY,
 			filename: "book.pdf",
@@ -68,13 +84,18 @@ async function dataOf(response: Response): Promise<Record<string, unknown>> {
 
 describe("readAttachDownload — which bodies are an attach", () => {
 	test("the console's attach act yields its key and size", () => {
-		expect(readAttachDownload(attachBody())).toEqual({ key: KEY, size: "1234" });
+		expect(readAttachDownload(attachBody())).toEqual({
+			productId: PRODUCT,
+			key: KEY,
+			size: "1234",
+		});
 	});
 
 	test.each([
 		["another action", { ...attachBody(), action_id: "products:save" }],
-		["a read", { type: "otta_console_read", resource: "products.detail", productId: "p" }],
-		["no value", { type: "otta_console_act", action_id: "products:attach-download" }],
+		["a read", { type: "otta_console_read", resource: "products.detail", productId: PRODUCT }],
+		["no value", { type: CONSOLE_ACT_INTERACTION, action_id: ATTACH_DOWNLOAD_ACTION_ID }],
+		["no product id", attachBody({ productId: 7 as unknown as string })],
 		["a non-string key", attachBody({ key: 7 as unknown as string })],
 		["not an object", "products:attach-download"],
 		["null", null],
@@ -86,19 +107,25 @@ describe("readAttachDownload — which bodies are an attach", () => {
 describe("attachDownloadRefusal — the check itself", () => {
 	test("an object of the descriptor's size passes", async () => {
 		const b = bucket({ [KEY]: 1234 });
-		expect(await attachDownloadRefusal(b, { key: KEY, size: "1234" })).toBeNull();
+		expect(
+			await attachDownloadRefusal(b, { productId: PRODUCT, key: KEY, size: "1234" }),
+		).toBeNull();
 		expect(b.heads).toEqual([KEY]);
 	});
 
 	test("a key with no object is refused as a notice, so the card shows it", async () => {
-		const response = await attachDownloadRefusal(bucket({}), { key: KEY, size: "1234" });
+		const response = await attachDownloadRefusal(bucket({}), {
+			productId: PRODUCT,
+			key: KEY,
+			size: "1234",
+		});
 		expect(response?.status).toBe(200);
 		expect(response?.headers.get("Cache-Control")).toBe("private, no-store");
 		expect(await dataOf(response as Response)).toEqual({
 			ok: true,
 			notice: {
 				variant: "error",
-				title: "This file wasn't attached",
+				title: DOWNLOAD_NOT_ATTACHED_TITLE,
 				description: expect.stringContaining("Upload the file again") as unknown,
 			},
 		});
@@ -106,24 +133,47 @@ describe("attachDownloadRefusal — the check itself", () => {
 
 	test("an object of another size is refused the same way", async () => {
 		const response = await attachDownloadRefusal(bucket({ [KEY]: 99 }), {
+			productId: PRODUCT,
 			key: KEY,
 			size: "1234",
 		});
 		expect(await dataOf(response as Response)).toMatchObject({
 			ok: true,
-			notice: { variant: "error", title: "This file wasn't attached" },
+			notice: { variant: "error", title: DOWNLOAD_NOT_ATTACHED_TITLE },
 		});
 	});
 
 	test("no DOWNLOADS binding: refused, downloads are not set up", async () => {
-		const response = await attachDownloadRefusal(undefined, { key: KEY, size: "1234" });
+		const response = await attachDownloadRefusal(undefined, {
+			productId: PRODUCT,
+			key: KEY,
+			size: "1234",
+		});
 		const data = await dataOf(response as Response);
 		expect(data).toMatchObject({ ok: true, notice: { variant: "error" } });
 		expect(JSON.stringify(data)).toContain("DOWNLOADS");
 	});
 
+	test.each([
+		["not a download key", "uploads/book.pdf"],
+		["another product's key", KEY.replace(`dl/${PRODUCT}/`, "dl/prod_2/")],
+		["no ULID", `dl/${PRODUCT}/book.pdf`],
+		["a path climb", `dl/${PRODUCT}/../prod_2/${KEY.slice(-26)}`],
+	])(
+		"%s: never sent to R2 — left to the plugin, which refuses it on the same rule",
+		async (_label, key) => {
+			const b = bucket({}, true);
+			expect(await attachDownloadRefusal(b, { productId: PRODUCT, key, size: "1234" })).toBeNull();
+			expect(b.heads).toEqual([]);
+		},
+	);
+
 	test("a bucket that throws is a retryable failure, not a refusal of the file", async () => {
-		const response = await attachDownloadRefusal(bucket({}, true), { key: KEY, size: "1234" });
+		const response = await attachDownloadRefusal(bucket({}, true), {
+			productId: PRODUCT,
+			key: KEY,
+			size: "1234",
+		});
 		expect(await dataOf(response as Response)).toMatchObject({ ok: false, retryable: true });
 	});
 });
@@ -160,28 +210,70 @@ describe("the middleware gates the attach before the plugin's route runs", () =>
 		delete env["DOWNLOADS"];
 	});
 
-	function context(body: unknown, user: unknown = ADMIN, path = ADMIN_ROUTE) {
-		const url = new URL(path, SITE);
+	interface Shape {
+		method?: string;
+		csrfHeader?: boolean;
+		tokenScopes?: readonly string[];
+	}
+
+	function context(body: unknown, user: unknown = ADMIN, shape: Shape = {}) {
+		const url = new URL(ADMIN_ROUTE, SITE);
+		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		if (shape.csrfHeader !== false) headers["X-EmDash-Request"] = "1";
 		return {
 			request: new Request(url, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "X-EmDash-Request": "1" },
+				method: shape.method ?? "POST",
+				headers,
 				body: JSON.stringify(body),
 			}),
 			url,
 			cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
-			locals: { user },
+			locals: {
+				user,
+				...(shape.tokenScopes !== undefined ? { tokenScopes: shape.tokenScopes } : {}),
+			},
 			cache: { set: vi.fn() },
 		};
 	}
 
-	test("an attach naming a missing object never reaches the plugin", async () => {
+	// EmDash's plugin catch-all exports PUT and PATCH to the same handler as POST
+	// and parses a JSON body for all three; the plugin never reads the method.
+	test.each(["POST", "PUT", "PATCH"])(
+		"%s: an attach naming a missing object never reaches the plugin",
+		async (method) => {
+			const b = bucket({});
+			env["DOWNLOADS"] = b;
+			const next = vi.fn(async () => new Response("plugin"));
+			const response = await run(context(attachBody(), ADMIN, { method }), next);
+			expect(next).not.toHaveBeenCalled();
+			expect(b.heads).toEqual([KEY]);
+			expect(await dataOf(response)).toMatchObject({
+				notice: { variant: "error", title: DOWNLOAD_NOT_ATTACHED_TITLE },
+			});
+		},
+	);
+
+	test("a token with the admin scope (no CSRF header needed) is checked too", async () => {
 		env["DOWNLOADS"] = bucket({});
 		const next = vi.fn(async () => new Response("plugin"));
-		const response = await run(context(attachBody()), next);
+		await run(context(attachBody(), ADMIN, { csrfHeader: false, tokenScopes: ["admin"] }), next);
 		expect(next).not.toHaveBeenCalled();
-		expect(await dataOf(response)).toMatchObject({ notice: { variant: "error" } });
 	});
+
+	test.each([
+		["no X-EmDash-Request header", { csrfHeader: false }],
+		["a token without the admin scope", { tokenScopes: ["content:read"] }],
+	] as const)(
+		"%s: left to EmDash's own refusal — answered by nobody but EmDash",
+		async (_label, shape) => {
+			const b = bucket({});
+			env["DOWNLOADS"] = b;
+			const next = vi.fn(async () => new Response("refused by emdash", { status: 403 }));
+			const response = await run(context(attachBody(), ADMIN, shape), next);
+			expect(response.status).toBe(403);
+			expect(b.heads).toEqual([]);
+		},
+	);
 
 	test("an attach naming a stored object goes through, its body still readable", async () => {
 		env["DOWNLOADS"] = bucket({ [KEY]: 1234 });
@@ -212,5 +304,59 @@ describe("the middleware gates the attach before the plugin's route runs", () =>
 		const response = await run(context(attachBody(), user), next);
 		expect(response.status).toBe(403);
 		expect(b.heads).toEqual([]);
+	});
+});
+
+describe("the methods the guard covers, against the INSTALLED EmDash", () => {
+	test("bodyless methods are the only ones not gated", () => {
+		for (const method of ["POST", "PUT", "PATCH", "post", "PROPFIND"]) {
+			expect(gatesMethod(method), method).toBe(true);
+		}
+		for (const method of ["GET", "HEAD", "DELETE", "OPTIONS", "get"]) {
+			expect(gatesMethod(method), method).toBe(false);
+		}
+	});
+
+	test("every method the plugin catch-all serves with a JSON body is gated", () => {
+		// The copy EmDash itself loads. If an upgrade adds a method to the
+		// catch-all, or a method to the set whose JSON body becomes the route's
+		// input, this fails until the guard is looked at again.
+		const emdashPackage = realpathSync(
+			fileURLToPath(new URL("../node_modules/emdash/package.json", import.meta.url)),
+		);
+		const dist = new URL("dist/", pathToFileURL(emdashPackage));
+		const route = readFileSync(
+			new URL("astro/routes/api/plugins/_pluginId_/_...path_.mjs", dist),
+			"utf8",
+		);
+		const exported = /export \{([^}]*)\};/.exec(route)?.[1] ?? "";
+		const methods = exported
+			.split(",")
+			.map((name) => name.trim())
+			.filter((name) => /^[A-Z]+$/.test(name));
+		expect(methods.toSorted()).toEqual(["DELETE", "GET", "PATCH", "POST", "PUT"]);
+		// The route reads its CSRF header and token scope exactly as the guard
+		// mirrors them (it answers only what EmDash would have dispatched).
+		expect(route).toContain('requireScope(locals, "admin")');
+		expect(route).toContain(
+			'if (!locals.tokenScopes && request.headers.get("X-EmDash-Request") !== "1") return apiError("CSRF_REJECTED"',
+		);
+
+		const bodyMethodSets = readdirSync(dist)
+			.filter((file) => file.endsWith(".mjs"))
+			.flatMap((file) => {
+				const text = readFileSync(new URL(file, dist), "utf8");
+				const match = /\nconst BODY_METHODS = new Set\(\[([^\]]*)\]\);/.exec(text);
+				return match === null ? [] : [match[1]!];
+			});
+		expect(bodyMethodSets).toHaveLength(1);
+		const bodyMethods = [...bodyMethodSets[0]!.matchAll(/"([A-Z]+)"/g)].map((m) => m[1]!);
+		expect(bodyMethods.toSorted()).toEqual(["PATCH", "POST", "PUT"]);
+		// A method the route serves WITHOUT the guard takes its input from the
+		// query string, where `value` is a string and no descriptor can ride.
+		for (const method of methods) {
+			if (!gatesMethod(method)) expect(bodyMethods, method).not.toContain(method);
+		}
+		for (const method of bodyMethods) expect(gatesMethod(method), method).toBe(true);
 	});
 });
