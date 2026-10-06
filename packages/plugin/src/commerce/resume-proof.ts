@@ -7,6 +7,18 @@
  * hold the cart the order was made from, a session whose customer owns the
  * order, or the order's email.
  *
+ * Only an EMAIL is a secret worth asking for. `buyerRef` is not always one: an
+ * x402 order's will be the paying wallet (`x402:0x…`), which anyone can read
+ * off the chain. So a buyerRef that is not shaped like an address never
+ * matches, nor does a typed value that is not one (issue #405 item 2); such an
+ * order resumes by its cart or its owner's session only. The shape is the
+ * domain's own rule (`isEmailAddress`: one `@`, something on each side).
+ *
+ * The rule is enforced HERE, not at checkout: the site's checkout form asks for
+ * an email, but the place route checks `buyerRef` for length only. So an order
+ * placed through the API with a non-email buyerRef loses this email route too —
+ * its cart and its owner's session still resume it.
+ *
  * The email is compared here, server-side: trimmed and case-folded on both sides
  * (the address a buyer types back is the one they typed, give or take case), as
  * SHA-256 digests compared byte by byte without an early exit — so the time the
@@ -28,6 +40,8 @@
  * close the email route for a window with `RESUME_EMAIL_ORDER_MAX_ATTEMPTS`
  * requests.
  */
+import { isEmailAddress } from "@otta-sh/domain";
+
 export type { ResumeProof } from "../product-commerce/commerce-client.js";
 
 /** Email guesses one device may make on one order per window. */
@@ -56,10 +70,14 @@ async function digest(value: string): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
 }
 
-/** Is `typed` the order's `buyerRef`? Never true for a blank `typed`. */
+/** Is `typed` the order's `buyerRef`? Never true unless BOTH are email
+ *  addresses — so never for a blank `typed`, and never for an order whose
+ *  buyerRef is public (an x402 wallet). Leaving early there tells a guesser only
+ *  that the buyerRef is not an email, which the order's payment method already
+ *  says. */
 export async function emailMatchesBuyer(typed: string, buyerRef: string): Promise<boolean> {
+	if (!isEmailAddress(buyerRef) || !isEmailAddress(typed)) return false;
 	const a = fold(typed);
-	if (a.length === 0) return false;
 	const [x, y] = await Promise.all([digest(a), digest(fold(buyerRef))]);
 	let diff = 0;
 	for (let i = 0; i < x.length; i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
