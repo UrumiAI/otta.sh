@@ -55,6 +55,14 @@
  *  - the idempotency key — non-empty, which is what every write route demanded of
  *    the header.
  *
+ * ADDED, with no wire counterpart (security review R3-B, X1): every free-text
+ * field is refused when it holds a lone UTF-16 surrogate or U+0000
+ * ({@link ILL_FORMED_TEXT_REASON}). `JSON.parse` keeps both, and Postgres's `jsonb`
+ * cannot read either back, so one such string stored once used to break every
+ * query over its collection. Refused rather than repaired, because no keyboard
+ * produces either and the person who sent it should hear so; the storage adapter
+ * repairs whatever slips past (and logs it as a gap here).
+ *
  * NOT mirrored, and why: the email on a login request is validated but never
  * REPORTED on — that surface answers identically whatever it is handed, so a
  * malformed address is a silent no-op rather than a refusal a caller could use as
@@ -67,7 +75,7 @@
  * here to carry one, and a caller branches on the code.
  */
 
-import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import { isCodeShapedRegion, isWellFormedText, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -136,6 +144,17 @@ function fail(field: string, reason: string): never {
 	throw new CommerceInputError(field, reason);
 }
 
+/** The reason every not-well-formed text refusal carries — one string, so the
+ *  admin's refusal banner can word it for an operator (`list-detail.ts`). */
+export const ILL_FORMED_TEXT_REASON =
+	"must not contain a broken character (an unpaired surrogate or NUL)";
+
+/** Refuse text Postgres cannot store: a lone surrogate or U+0000. */
+export function requireWellFormedText(field: string, value: string): string {
+	if (!isWellFormedText(value)) fail(field, ILL_FORMED_TEXT_REASON);
+	return value;
+}
+
 /** Whether `value` passes {@link requireIdToken}, without throwing — for a
  *  boundary that answers a bad id as a refused request. */
 export function isCommerceIdToken(value: string): boolean {
@@ -153,7 +172,7 @@ export function requireIdToken(field: string, value: string): string {
 /** A product id: non-empty, which is the whole of what the product routes checked. */
 export function requireProductId(value: string): string {
 	if (value.length === 0) fail("productId", "must not be empty");
-	return value;
+	return requireWellFormedText("productId", value);
 }
 
 /**
@@ -171,7 +190,7 @@ export function requireBoundedProductId(value: string): string {
  *  charset is imposed — a key carrying a slash or a space is legitimate. */
 export function requireVariantKey(value: string): string {
 	if (value.trim().length === 0) fail("variantKey", "must not be empty or whitespace");
-	return value;
+	return requireWellFormedText("variantKey", value);
 }
 
 /** The ordering / compare-and-set watermark. See this module's doc: the format is
@@ -185,7 +204,7 @@ export function requireWatermark(field: string, value: string): string {
 
 export function requireIdempotencyKey(value: string): string {
 	if (value.length === 0) fail("idempotencyKey", "must not be empty");
-	return value;
+	return requireWellFormedText("idempotencyKey", value);
 }
 
 export function requireSku(value: string, max?: number): string {
@@ -193,7 +212,7 @@ export function requireSku(value: string, max?: number): string {
 	if (max !== undefined && value.length > max) {
 		fail("sku", `must be at most ${String(max)} characters`);
 	}
-	return value;
+	return requireWellFormedText("sku", value);
 }
 
 export function requireCurrencyCode(field: string, value: string): string {
@@ -225,7 +244,7 @@ export function requireTitle(value: string | null): string | null {
 	if (value === null) return null;
 	if (value.length === 0) fail("title", "must not be empty");
 	if (value.length > 500) fail("title", "must be at most 500 characters");
-	return value;
+	return requireWellFormedText("title", value);
 }
 
 export function requireQty(value: number): number {
@@ -259,13 +278,13 @@ export function requireNonNegativeInteger(field: string, value: number): number 
 export function requireBoundedText(field: string, value: string, min: number, max: number): string {
 	if (value.length < min) fail(field, `must be at least ${String(min)} characters`);
 	if (value.length > max) fail(field, `must be at most ${String(max)} characters`);
-	return value;
+	return requireWellFormedText(field, value);
 }
 
 /** True when the string is a plausible email by the same loose bound the login
  *  surface applied. NOT a refusal: the caller answers identically either way. */
 export function looksLikeEmail(value: string): boolean {
-	return value.length >= 3 && value.length <= 320;
+	return value.length >= 3 && value.length <= 320 && isWellFormedText(value);
 }
 
 /** The optional ship-to snapshot's per-field bounds. The domain re-validates and

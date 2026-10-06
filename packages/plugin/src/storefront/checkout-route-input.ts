@@ -17,7 +17,7 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
-import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import { isCodeShapedRegion, isWellFormedText, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 import {
 	BUYER_REF_MAX,
 	COUNTRY_SHAPE,
@@ -59,6 +59,22 @@ export function exceedsAddressBounds(value: unknown): boolean {
 	return Object.entries(ADDRESS_FIELDS).some(([field, spec]) => {
 		const provided = raw[field];
 		return typeof provided === "string" && provided.trim().length > spec.max;
+	});
+}
+
+/**
+ * Does this ship-to hold a field that is not well-formed text — a lone UTF-16
+ * surrogate or U+0000, which Postgres cannot store (review R3-B X1)? The place
+ * route answers that as INVALID_SHIPPING_ADDRESS, as it does an over-long field:
+ * it is the buyer's address that needs retyping, not a malformed call. False for
+ * anything that is not an object.
+ */
+export function holdsIllFormedAddressText(value: unknown): boolean {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const raw = value as Record<string, unknown>;
+	return Object.keys(ADDRESS_FIELDS).some((field) => {
+		const provided = raw[field];
+		return typeof provided === "string" && !isWellFormedText(provided);
 	});
 }
 
@@ -110,10 +126,13 @@ export interface OrderRouteParsedInput {
 	locale: string;
 }
 
+/** Every string these parsers accept is also well-formed text — no lone UTF-16
+ *  surrogate, no U+0000 — because Postgres's `jsonb` cannot read either back, and
+ *  one stored copy used to break every order query (review R3-B X1). */
 function nonEmptyString(value: unknown, max = 200): string | null {
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim();
-	return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
+	return trimmed.length > 0 && trimmed.length <= max && isWellFormedText(trimmed) ? trimmed : null;
 }
 
 /** Absent, null or blank-after-trim ⇒ "not chosen" (a blank coupon field is
@@ -122,6 +141,7 @@ function optionalString(value: unknown): string | undefined | null {
 	if (value === undefined || value === null) return undefined;
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim();
+	if (!isWellFormedText(trimmed)) return null;
 	return trimmed.length === 0 ? undefined : trimmed;
 }
 
@@ -260,6 +280,7 @@ export function parseShippingAddress(value: unknown): ShippingAddressWire | null
 		if (typeof provided !== "string") return null;
 		const trimmed = provided.trim();
 		if (trimmed.length > spec.max) return null;
+		if (!isWellFormedText(trimmed)) return null;
 		if (trimmed.length === 0) {
 			// A required field of pure whitespace is a reject; an optional one is
 			// simply absent (matching the site form's "blank means not given").

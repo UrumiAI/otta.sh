@@ -11,6 +11,7 @@ import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import type { DownloadAssetWire } from "../admin/admin-products-surface.js";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import type { PluginContext, RouteHandler } from "../types.js";
+import { isWellFormedText } from "@otta-sh/domain";
 
 /** The PUBLIC route the site dispatches, in-process, before it streams a
  *  digital download (issue #376). */
@@ -166,15 +167,16 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 	};
 }
 
-/** A string the gate may read with: 1–200 characters and no U+0000, which
- *  Postgres `text` cannot hold — a NUL would fail the first read as a throw
- *  there rather than a refusal. */
+/** A string the gate may read with: 1–200 characters, well-formed text — no
+ *  U+0000, which Postgres `text` cannot hold (a NUL would fail the first read as
+ *  a throw there rather than a refusal), and no lone surrogate, which `jsonb`
+ *  cannot (review R3-B X1). */
 function isLookupValue(value: unknown): value is string {
 	return (
 		typeof value === "string" &&
 		value.length > 0 &&
 		value.length <= DOWNLOAD_ID_MAX &&
-		!value.includes("\u0000")
+		isWellFormedText(value)
 	);
 }
 

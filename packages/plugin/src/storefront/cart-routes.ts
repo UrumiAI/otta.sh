@@ -52,6 +52,7 @@ import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { sanitizeLocale } from "./route-input.js";
+import { isWellFormedText } from "@otta-sh/domain";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const STOREFRONT_CART_CREATE_ROUTE = "storefront/cart/create";
@@ -184,8 +185,10 @@ export type CartLineRemoveRouteResult =
 	| { ok: false; reason: CartFailureReason }
 	| RenderGuardFailure;
 
+/** Non-empty, and well-formed text (review R3-B X1): a lone surrogate or NUL
+ *  is refused here as INVALID_INPUT, before the commerce boundary would throw. */
 function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+	return typeof value === "string" && value.length > 0 && isWellFormedText(value);
 }
 
 function isPositiveInt(value: unknown): value is number {
