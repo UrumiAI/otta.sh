@@ -41,6 +41,22 @@ describe("UnitBackoff", () => {
 		expect([...b.waiting(t0 + 30)].toSorted()).toEqual(["b", "c"]);
 	});
 
+	test("`setMaxEntries` resizes the cap, dropping the units due soonest (polish P-3)", () => {
+		const b = new UnitBackoff({ baseMs: 1_000 });
+		expect(b.maxEntries).toBe(UnitBackoff.DEFAULT_MAX_ENTRIES);
+		b.failed("a", t0);
+		b.failed("b", t0 + 10);
+		b.failed("c", t0 + 20);
+		b.setMaxEntries(2);
+		expect(b.maxEntries).toBe(2);
+		expect([...b.waiting(t0 + 20)].toSorted()).toEqual(["b", "c"]);
+		b.setMaxEntries(98);
+		for (let i = 0; i < 100; i++) b.failed(`u${String(i)}`, t0 + 100 + i);
+		expect(b.size).toBe(98);
+		expect(() => b.setMaxEntries(0)).toThrow(RangeError);
+		expect(() => b.setMaxEntries(1.5)).toThrow(RangeError);
+	});
+
 	test("refuses a nonsensical configuration", () => {
 		expect(() => new UnitBackoff({ baseMs: 0 })).toThrow(RangeError);
 		expect(() => new UnitBackoff({ baseMs: 10, maxMs: 5 })).toThrow(RangeError);

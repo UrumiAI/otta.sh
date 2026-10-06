@@ -61,7 +61,10 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * `limit` orders that fail every time cannot hold the head of the list and starve
 	 * the orders behind them. The caller keeps it across calls (the scheduled sweep
 	 * holds one per process). Default: none, so a failed order is listed again next
-	 * call, as before.
+	 * call, as before. It holds starvation back only up to a bound (fewer always-
+	 * failing orders than its cap and than about 60 × `limit`; see `UnitBackoff`),
+	 * and the call reads past at most its cap, so size the cap to what the list can
+	 * afford (`UnitBackoff.setMaxEntries`).
 	 */
 	readonly backoff?: UnitBackoff;
 }

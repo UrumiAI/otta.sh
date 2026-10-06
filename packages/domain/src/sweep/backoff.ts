@@ -15,13 +15,28 @@
  * Held in memory by the caller, and bounded (`maxEntries`): losing it (a restart,
  * a fresh isolate) only means a failing unit is tried once more sooner, which is
  * what happened without it. Pure: the caller passes the time.
+ *
+ * THE BOUND (review round 3 polish, P-3). It holds back starvation, it does not end
+ * it. With F units failing on EVERY attempt ahead of a good one, a sweep with a bite
+ * of `limit` per call still reaches the good unit while F is below BOTH:
+ *  - the cap (`maxEntries`): past it, each new failure evicts a waiting unit, which
+ *    is retried at once, so failing units take the bite again. A sweep should size
+ *    the cap to what its one list call can read past (`setMaxEntries`);
+ *  - about `maxMs / interval × limit` (60 × `limit` at one call a minute and the
+ *    one-hour longest wait): each failing unit is still retried once per `maxMs`,
+ *    and past that many the retries alone fill every bite.
+ * Measured on the domain harness, cap sized to a 100-row look: bite 1 reaches the
+ * good order behind 59 failing ones (in about six hours), not behind 60; bite 18
+ * behind 88. Past the bound the rest starve, which before the back-off happened
+ * as soon as `limit` units failed.
  */
 export interface UnitBackoffOptions {
 	/** Wait after the first failure. Default {@link UnitBackoff.DEFAULT_BASE_MS}. */
 	readonly baseMs?: number;
 	/** Longest wait. Default {@link UnitBackoff.DEFAULT_MAX_MS}. */
 	readonly maxMs?: number;
-	/** Most units remembered; past it, the one due soonest is dropped. Default 32. */
+	/** Most units remembered; past it, the one due soonest is dropped. Default 32.
+	 *  See THE BOUND above, and `setMaxEntries`. */
 	readonly maxEntries?: number;
 }
 
@@ -40,7 +55,7 @@ export class UnitBackoff {
 
 	readonly #baseMs: number;
 	readonly #maxMs: number;
-	readonly #maxEntries: number;
+	#maxEntries: number;
 	readonly #entries = new Map<string, Entry>();
 
 	constructor(options: UnitBackoffOptions = {}) {
@@ -67,12 +82,36 @@ export class UnitBackoff {
 		return ids;
 	}
 
+	/** Most units remembered. */
+	get maxEntries(): number {
+		return this.#maxEntries;
+	}
+
+	/**
+	 * Remember at most `maxEntries` units from now on, dropping the ones due soonest
+	 * if more are held. A sweep sizes this to the candidates its one list call can
+	 * read past (review round 3 polish, P-3): the cap is where starvation returns, so
+	 * it should be as large as the list can afford, and no larger.
+	 */
+	setMaxEntries(maxEntries: number): void {
+		if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+			throw new RangeError("UnitBackoff maxEntries must be a positive integer");
+		}
+		this.#maxEntries = maxEntries;
+		this.#evict();
+	}
+
 	/** `id`'s step threw at `nowMs`. */
 	failed(id: string, nowMs: number): void {
 		const failures = (this.#entries.get(id)?.failures ?? 0) + 1;
 		const wait = Math.min(this.#baseMs * 2 ** Math.min(failures - 1, 30), this.#maxMs);
 		this.#entries.delete(id);
 		this.#entries.set(id, { failures, retryAt: nowMs + wait });
+		this.#evict();
+	}
+
+	/** Drop the units due soonest until at most `maxEntries` are held. */
+	#evict(): void {
 		while (this.#entries.size > this.#maxEntries) {
 			let soonest: string | undefined;
 			let soonestAt = Infinity;

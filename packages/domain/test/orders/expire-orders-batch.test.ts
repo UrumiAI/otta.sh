@@ -195,6 +195,59 @@ describe("bounded order expiry", () => {
 		error.mockRestore();
 	});
 
+	/**
+	 * Ticks (one a minute) until the one good order behind `failing` orders whose
+	 * flip throws every time is expired, or `null` if it is not within `ticks`. The
+	 * back-off's cap is sized as the plugin's expiry leg sizes it: the rows its one
+	 * 100-row look can read past, `100 - (limit + 1)`.
+	 */
+	async function ticksToReachGoodOrder(
+		failing: number,
+		limit: number,
+		cap: number,
+		ticks: number,
+	): Promise<number | null> {
+		const orders = await pendingOrders(failing + 1);
+		const good = orders[failing]?.id;
+		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
+			if (id !== good) throw new Error("poisoned order");
+			return real(id, now);
+		});
+		const backoff = new UnitBackoff();
+		backoff.setMaxEntries(cap);
+		for (let tick = 1; tick <= ticks; tick++) {
+			await expireOrdersBatch(h.expireDeps, undefined, { limit, backoff });
+			if ((await h.orderStore.getById(good ?? ("" as never)))?.state === "expired") return tick;
+			h.clock.advance(60_000);
+		}
+		return null;
+	}
+
+	test("33 always-failing orders at a bite of 1 no longer starve the order behind them (polish P-3)", async () => {
+		// Reviewer's simulation: with the old fixed cap of 32, the 33rd failing order
+		// evicted a waiting one every tick, so a failing order held the bite forever.
+		// Sized to the look's page (98 at a bite of 1), the good order is reached.
+		// Measured: tick 119 (each failing order is retried at most once an hour).
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(await ticksToReachGoodOrder(33, 1, 100 - (1 + 1), 600)).toBeLessThanOrEqual(130);
+	}, 60_000);
+
+	test("50 always-failing orders at the Paid bite of 18 no longer starve the order behind them (polish P-3)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		// Measured: tick 3 (sized cap 81; with the old cap of 32 it never was).
+		expect(await ticksToReachGoodOrder(50, 18, 100 - (18 + 1), 600)).toBeLessThanOrEqual(10);
+	}, 60_000);
+
+	test("the documented bound: past about 60 × the bite always-failing orders, the rest still starve (polish P-3)", async () => {
+		// Each failing order is retried at most once an hour; at one tick a minute a
+		// bite of 1 has room for fewer than 60 such retries an hour. Pinned so the
+		// docs' bound stays true; 59 is reached (tick 375 measured), 60 is not. If this
+		// starts failing because the good order IS reached, raise the documented bound.
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(await ticksToReachGoodOrder(60, 1, 100 - (1 + 1), 600)).toBeNull();
+	}, 60_000);
+
 	test("a pre-listed `due` set skips the orders still backing off", async () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(2);
