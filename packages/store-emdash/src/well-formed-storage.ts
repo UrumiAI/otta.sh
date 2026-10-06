@@ -74,11 +74,12 @@
  * - a walk that reaches its page budget remembers its cursor, and the next
  *   failing call RESUMES there, so a bad row past the budget is reached on a
  *   later call instead of never;
- * - a walk that started at the BEGINNING and reached the end having seen no
- *   unreadable row cannot help a retry, so for {@link HEAL_COOL_DOWN_MS} a failing
- *   call rethrows at once instead of re-walking the collection every time. A
- *   resumed walk never saw the rows before its cursor, so it arms nothing (review
- *   B L7).
+ * - when a walk that started at the BEGINNING reached the end having seen no
+ *   unreadable row, AND the retry after it still failed, walking cannot help, so
+ *   for {@link HEAL_COOL_DOWN_MS} a failing call rethrows at once instead of
+ *   re-walking the collection every time. A resumed walk never saw the rows
+ *   before its cursor, so it arms nothing (review B L7); nor does a clean walk
+ *   whose retry answered (a writer had repaired the row first).
  *
  * Across requests on workerd, a shared walk promise could outlive a cancelled
  * request; that does not arise today (the heal fires only on Postgres, and Otta on
@@ -195,7 +196,7 @@ export interface WellFormedGuardOptions {
 
 interface HealState {
 	/** The walk now running, shared by every caller of this collection. */
-	running?: Promise<void>;
+	running?: Promise<boolean>;
 	/** Where the last walk stopped at its page budget; the next walk starts here. */
 	resumeCursor?: string;
 	/** Until when a failing call rethrows without walking. */
@@ -300,13 +301,15 @@ async function healDocument(
 /**
  * Page the collection the one way Postgres never casts, healing as it goes —
  * from where the last budget-capped walk stopped, for at most `maxPages` pages.
+ * Answers whether it walked the WHOLE collection, from the start, and saw no
+ * unreadable row: the one outcome after which walking again cannot help.
  */
 async function healCollection(
 	inner: StorageCollection<unknown>,
 	collection: string,
 	state: HealState,
 	options: Required<WellFormedGuardOptions>,
-): Promise<void> {
+): Promise<boolean> {
 	let cursor = state.resumeCursor;
 	// Only a walk that began at the start of the collection has seen every row, so
 	// only it may conclude "walking cannot help" (review B L7).
@@ -325,11 +328,9 @@ async function healCollection(
 		}
 		if (!page.hasMore || page.cursor === undefined) {
 			state.resumeCursor = undefined;
-			// The whole collection walked, and nothing unreadable seen: a retry cannot
-			// succeed because of a walk, so stop walking for a while (review B L4). A
-			// RESUMED walk never saw the rows before its cursor, so it proves nothing.
-			if (fromStart && seen === 0) state.coolUntil = options.now() + options.coolDownMs;
-			return;
+			// A RESUMED walk never saw the rows before its cursor, so it proves
+			// nothing (review B L7).
+			return fromStart && seen === 0;
 		}
 		cursor = page.cursor;
 		// Saved per page, so even a walk cut off mid-way (a thrown error) resumes.
@@ -339,6 +340,7 @@ async function healCollection(
 		`[otta] storage: the repair walk over ${collection} reached its ` +
 			`${String(options.maxPages)}-page budget; the next failing call resumes past it`,
 	);
+	return false;
 }
 
 /** Run a read; if Postgres could not read a stored row, heal, then run it once more. */
@@ -360,23 +362,34 @@ async function retryAfterHeal<R>(op: () => Promise<R>, heal: () => Promise<unkno
  *   set a false cool-down;
  * - a walk is RUNNING: wait for it, then retry;
  * - otherwise, cooling down: rethrow; else walk, then retry.
+ *
+ * The cool-down (review B L4) is armed only when a walk covered the whole
+ * collection from the start, saw nothing unreadable, AND the retry still failed:
+ * then walking really cannot help. A clean walk alone proves nothing — a writer
+ * (a payment through this guard) may have repaired the row the failed query hit,
+ * and then the retry answers.
  */
 async function readHealing<R>(
 	op: () => Promise<R>,
 	state: HealState,
-	walk: () => Promise<void>,
+	walk: () => Promise<boolean>,
 	coolingDown: () => boolean,
+	armCoolDown: () => void,
 ): Promise<R> {
 	const generation = state.generation;
 	try {
 		return await op();
 	} catch (err) {
 		if (!isUnreadableDocumentError(err)) throw err;
-		if (state.generation === generation) {
-			if (state.running === undefined && coolingDown()) throw err;
-			await walk();
+		if (state.generation !== generation) return op();
+		if (state.running === undefined && coolingDown()) throw err;
+		const walkedCleanFromStart = await walk();
+		try {
+			return await op();
+		} catch (retryErr) {
+			if (walkedCleanFromStart && isUnreadableDocumentError(retryErr)) armCoolDown();
+			throw retryErr;
 		}
-		return op();
 	}
 }
 
@@ -462,7 +475,7 @@ export function guardWellFormed<T>(
 		(inner as { [UNMETERED_COLLECTION]?: StorageCollection<unknown> })[UNMETERED_COLLECTION] ??
 		(inner as StorageCollection<unknown>);
 	const state = healStateOf(healTarget(), collection);
-	const healAll = (): Promise<void> => {
+	const healAll = (): Promise<boolean> => {
 		if (state.running !== undefined) return state.running;
 		const walk = healCollection(healTarget(), collection, state, settings).finally(() => {
 			state.generation++;
@@ -473,6 +486,9 @@ export function guardWellFormed<T>(
 	};
 	const coolingDown = (): boolean =>
 		state.coolUntil !== undefined && settings.now() < state.coolUntil;
+	const armCoolDown = (): void => {
+		state.coolUntil = settings.now() + settings.coolDownMs;
+	};
 	/**
 	 * Run a CREATING write only for a well-formed id; otherwise reject with the
 	 * typed error. A method that addresses an EXISTING row passes its id through
@@ -511,11 +527,11 @@ export function guardWellFormed<T>(
 		},
 		query: (queryOptions) => {
 			const repaired = repairedQuery(queryOptions);
-			return readHealing(() => inner.query(repaired), state, healAll, coolingDown);
+			return readHealing(() => inner.query(repaired), state, healAll, coolingDown, armCoolDown);
 		},
 		count: (where) => {
 			const repaired = repairedWhere(where);
-			return readHealing(() => inner.count(repaired), state, healAll, coolingDown);
+			return readHealing(() => inner.count(repaired), state, healAll, coolingDown, armCoolDown);
 		},
 		// Update-only: it never inserts, so its id addresses an existing row.
 		updateIf: (id, args) => {
@@ -539,6 +555,7 @@ export function guardWellFormed<T>(
 						state,
 						healAll,
 						coolingDown,
+						armCoolDown,
 					),
 				{ applied: false },
 			);

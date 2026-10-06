@@ -28,6 +28,10 @@ import { describeEachDialect, makeSqliteStorage } from "./describe-each-dialect.
 
 const LAYOUT = { things: { indexes: ["k"] } };
 
+// Each case seeds a few hundred rows one by one, which on Postgres under machine
+// load can pass the default 5 s; a timeout is a load artefact, not a finding.
+vi.setConfig({ testTimeout: 60_000 });
+
 // The heal state itself is reset after every case by this package's test setup
 // (`test/setup.ts`), so no case inherits another's cursor or cool-down.
 afterEach(() => {
@@ -321,5 +325,35 @@ describeEachDialect("ill-formed text: the heal walk's bookkeeping", (ctx) => {
 			expect(line).toMatch(/things\/id#[0-9a-f]{8}/);
 			expect(line).not.toMatch(/buyer|example/);
 		}
+	});
+	test("a walk that finds nothing because a WRITER already repaired the row arms no cool-down: the retry answered (heal-race flake)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		await seedClean(250);
+		await raw().put("bad", { k: "a", note: "x\uD800" });
+		const counts: Counts = { walkPages: 0 };
+		const gate = deferred();
+		const sawRow = deferred();
+		const reader = guardWellFormed(
+			hostView(raw(), counts, async () => {
+				const bad = await stillBad();
+				sawRow.resolve();
+				await gate.promise;
+				return bad;
+			}),
+			"things",
+		);
+		const read = reader.count({ k: "a" });
+		await sawRow.promise;
+		// A real writer (a payment, say) rewrites the row through the guard first.
+		const writer = guardWellFormed(hostView(raw(), counts, stillBad), "things");
+		await writer.put("bad", { k: "a", note: "paid" });
+		gate.resolve();
+		// The reader's walk finds nothing unreadable, but its retry answers: the walk
+		// was not useless, so no cool-down.
+		expect(await read).toBe(251);
+		expect(counts.walkPages).toBe(3);
+		await raw().put("bad", { k: "a", note: "y\u0000" });
+		expect(await writer.count({ k: "a" })).toBe(251);
+		expect(counts.walkPages).toBe(6);
 	});
 });

@@ -30,8 +30,9 @@ a guarded collection:
   database (EmDash hands each request fresh collection objects, so it is keyed by the
   host's database handle and the collection name, not by object). A caller whose
   query failed before a walk finished retries without walking again. A walk resumes
-  where it stopped when it reaches its 1,000-page budget, a walk from the start that
-  saw no unreadable row makes failing calls fail fast for 60 s, and the walk runs
+  where it stopped when it reaches its 1,000-page budget, when a walk from the start
+  saw no unreadable row and the retry still failed, failing calls fail fast for
+  60 s, and the walk runs
   past the sweep's query meter (`UNMETERED_COLLECTION`), since that budget is for D1
   and the heal only runs on Postgres. A per-document repair that loses every
   compare-and-set logs it once.
