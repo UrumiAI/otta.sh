@@ -283,6 +283,47 @@ export const PRICING_STYLES = `
 .otta-pricing-callout span { color: var(--op-subtle); }
 .otta-pricing-callout[data-tone="warn"] span { color: inherit; }
 
+/* ── Download file ──────────────────────────────────────────────────────── */
+.otta-pricing-file {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 12px 14px;
+	border: 1px solid var(--op-hairline);
+	border-radius: 8px;
+	background: var(--op-tint);
+	min-inline-size: 0;
+}
+.otta-pricing-file-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	inline-size: 36px;
+	block-size: 36px;
+	border-radius: 8px;
+	background: var(--op-card);
+	border: 1px solid var(--op-hairline);
+	color: var(--op-subtle);
+}
+.otta-pricing-file-text { display: flex; flex-direction: column; gap: 2px; min-inline-size: 0; }
+.otta-pricing-file-text > strong { font-weight: 600; overflow-wrap: anywhere; }
+.otta-pricing-file-text > .otta-pricing-hint { overflow-wrap: anywhere; }
+.otta-pricing-file-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.otta-pricing-file-actions > .otta-pricing-status { flex: 1 1 220px; }
+.otta-pricing-progress {
+	appearance: none;
+	inline-size: 100%;
+	block-size: 6px;
+	border: 0;
+	border-radius: 999px;
+	background: var(--op-fill);
+	overflow: hidden;
+}
+.otta-pricing-progress::-webkit-progress-bar { background: var(--op-fill); border-radius: 999px; }
+.otta-pricing-progress::-webkit-progress-value { background: var(--op-brand); border-radius: 999px; transition: inline-size 120ms ease-out; }
+.otta-pricing-progress::-moz-progress-bar { background: var(--op-brand); border-radius: 999px; }
+
 /* ── Shipping & tax disclosure ──────────────────────────────────────────── */
 .otta-pricing details > summary {
 	list-style: none;

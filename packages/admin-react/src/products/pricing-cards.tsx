@@ -38,6 +38,7 @@ import {
 	type TaxClass,
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
+import { DownloadFileCard } from "./download-file-card.js";
 import { mintMovementNonce } from "./movement-nonce.js";
 import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
@@ -1087,6 +1088,28 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						</div>
 					</div>
 				</section>
+
+				{/* The file a buyer of a DIGITAL product downloads (issue #376). Only on
+				    a product SAVED as digital: the plugin refuses a file on a physical
+				    one, so a kind switched here but not yet saved asks for the save. */}
+				{p.productKind === "digital" ? (
+					<DownloadFileCard
+						record={p}
+						titleId={id("h-download")}
+						onAttached={() => {
+							rereadNow();
+						}}
+					/>
+				) : d.productKind === "digital" ? (
+					<section className="otta-pricing-card" aria-labelledby={id("h-download")}>
+						<h3 id={id("h-download")} className="otta-pricing-card-title">
+							Download file
+						</h3>
+						<p className="otta-pricing-hint">
+							Save this product as Digital first, then upload the file buyers get.
+						</p>
+					</section>
+				) : null}
 
 				<details
 					className="otta-pricing-card"
