@@ -178,7 +178,9 @@ interface Seeded {
  * through the store's own upsert rather than being hand-built, so the sku claim the
  * rename rules read is created the way a real write creates it.
  */
-async function seedProduct(options: { onHand?: number | null } = {}): Promise<Seeded> {
+async function seedProduct(
+	options: { onHand?: number | null; productKind?: "physical" | "digital" } = {},
+): Promise<Seeded> {
 	const n = ++seq;
 	const productId = `${NS}-prod-${n}`;
 	const sku = `${NS}-SKU-${n}`;
@@ -193,7 +195,7 @@ async function seedProduct(options: { onHand?: number | null } = {}): Promise<Se
 			lengthMm: 10,
 			widthMm: 20,
 			heightMm: 30,
-			productKind: "physical",
+			productKind: options.productKind ?? "physical",
 		},
 		idempotencyKey(`${NS}-seed-${String(n)}`),
 	);
@@ -244,9 +246,10 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 
 	test("EVERY id in PRODUCTS_ACTION_IDS dispatches, and the retired `-review` step is not among them", async () => {
 		// The set is read straight off the dispatch table, so the gate and the table
-		// cannot disagree about what exists — the combination that used to blank a
-		// console. FIVE writes: three split saves, a restock and a removal.
+		// console. Seven ids: the editor's save and the three split saves, a
+		// restock, a removal, and attaching a download file.
 		expect([...PRODUCTS_ACTION_IDS].toSorted()).toEqual([
+			"products:attach-download",
 			"products:remove-stock",
 			"products:restock",
 			"products:save",
@@ -1134,5 +1137,122 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		for (const outcome of [refusal, ok]) {
 			expect(JSON.stringify(outcome)).not.toMatch(banned);
 		}
+	});
+});
+
+/** A canonical ULID for a minted key — what the upload endpoint would mint. */
+const ULID = "01KAZQ3V8K4M2N6P7R8S9T0VWX";
+
+/** The flat payload the product editor's Download file card sends after an
+ *  upload: the watermark, and the descriptor the site endpoint answered. */
+function attachPayload(seeded: Seeded, over: Record<string, string> = {}): Record<string, string> {
+	return {
+		...carrierFor(seeded),
+		key: `dl/${seeded.productId}/${ULID}`,
+		filename: "Field Guide.pdf",
+		contentType: "application/pdf",
+		size: "307217",
+		...over,
+	};
+}
+
+describe("products:attach-download — saving an uploaded file's descriptor (issue #376, workerd sandbox)", () => {
+	test("attaches the descriptor to a digital product, exactly as sent", async () => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		const result = await act("products:attach-download", attachPayload(seeded));
+		expect(result.ok).toBe(true);
+		expect(result.notice?.variant, JSON.stringify(result)).not.toBe("error");
+		expect(result.notice?.title).toBe("File attached");
+
+		const row = await readProduct(seeded.productId);
+		expect(row.downloadAsset).toEqual({
+			key: `dl/${seeded.productId}/${ULID}`,
+			filename: "Field Guide.pdf",
+			contentType: "application/pdf",
+			size: 307217,
+		});
+		// Nothing else moved: the attach is a sparse edit of the one field.
+		expect(row.price).toEqual({ amount: 1999, currency: "USD" });
+		expect(row.sku).toBe(seeded.sku);
+	});
+
+	test("REPLACING points the descriptor at the new key; the old key is no longer stored anywhere", async () => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		await act("products:attach-download", attachPayload(seeded));
+		const first = await readProduct(seeded.productId);
+		const replacement = "01KAZQ4000000000000000000Z";
+		const result = await act("products:attach-download", {
+			...attachPayload(seeded, {
+				key: `dl/${seeded.productId}/${replacement}`,
+				filename: "Field Guide v2.pdf",
+				size: "1000",
+			}),
+			expectedUpdatedAt: first.updatedAt.toISOString(),
+		});
+		expect(result.notice?.title).toBe("File attached");
+		const row = await readProduct(seeded.productId);
+		expect(row.downloadAsset?.key).toBe(`dl/${seeded.productId}/${replacement}`);
+		expect(row.downloadAsset?.filename).toBe("Field Guide v2.pdf");
+		expect(row.downloadAsset?.size).toBe(1000);
+	});
+
+	test("THE REPLAY CASE: the same attach sent twice writes once and still reads attached", async () => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		await act("products:attach-download", attachPayload(seeded));
+		const afterFirst = await readProduct(seeded.productId);
+		const replay = await act("products:attach-download", attachPayload(seeded));
+		expect(replay.notice?.title).toBe("File attached");
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(
+			afterFirst.updatedAt.toISOString(),
+		);
+		// A DIFFERENT file on the same, now stale, watermark is refused as stale —
+		// so the replay above was answered by its key, not by luck.
+		const other = await act(
+			"products:attach-download",
+			attachPayload(seeded, { key: `dl/${seeded.productId}/01KAZQ5000000000000000000Z` }),
+		);
+		expect(other.recordMoved).toBe(true);
+		expect(other.notice?.variant).toBe("error");
+	});
+
+	test("a PHYSICAL product is refused with a sentence about the product type, and nothing is written", async () => {
+		const seeded = await seedProduct();
+		const result = await act("products:attach-download", attachPayload(seeded));
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("This file wasn't attached");
+		expect(result.notice?.description).toContain("Digital");
+		const row = await readProduct(seeded.productId);
+		expect(row.downloadAsset).toBeNull();
+		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
+	});
+
+	test("a key minted for ANOTHER product is refused, naming the file, not the price", async () => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		const result = await act(
+			"products:attach-download",
+			attachPayload(seeded, { key: `dl/someone-else/${ULID}` }),
+		);
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("This file wasn't attached");
+		expect(result.notice?.description).not.toMatch(/price/i);
+		expect((await readProduct(seeded.productId)).downloadAsset).toBeNull();
+	});
+
+	test("an unreadable payload — no watermark, a size that is not a whole number — refuses before any write", async () => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		for (const payload of [
+			{ ...attachPayload(seeded), expectedUpdatedAt: "" },
+			attachPayload(seeded, { size: "1.5" }),
+			attachPayload(seeded, { size: "-1" }),
+			attachPayload(seeded, { size: "" }),
+			attachPayload(seeded, { key: "" }),
+			(({ filename: _f, ...rest }) => rest)(attachPayload(seeded)),
+		]) {
+			const result = await act("products:attach-download", payload);
+			expect(result.notice?.variant, JSON.stringify(payload)).toBe("error");
+		}
+		const row = await readProduct(seeded.productId);
+		expect(row.downloadAsset).toBeNull();
+		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 });
