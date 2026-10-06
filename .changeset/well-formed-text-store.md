@@ -26,9 +26,11 @@ a guarded collection:
   compare-and-set — losing to, and never undoing, a concurrent writer — and runs the
   call once more. The host's query API has no way to skip an unreadable row, so
   repair-then-retry is the resilient read it allows. It is a one-time cost per
-  legacy row. The walk is shared by every concurrent caller of one collection in one
-  database (EmDash hands each request fresh collection objects, so it is keyed by the
-  host's database handle and the collection name, not by object). A caller whose
+  legacy row. The walk is shared by every concurrent caller of one collection
+  (EmDash hands each request fresh collection objects, so it is keyed by the
+  collection name, not by object; the host's collections expose no database handle,
+  so this assumes one store per process, and only a caller passing a bare
+  `PluginStorageRepository` gets per-database state). A caller whose
   query failed before a walk finished retries without walking again. A walk resumes
   where it stopped when it reaches its 1,000-page budget, when a walk from the start
   saw no unreadable row and the retry still failed, failing calls fail fast for
@@ -48,4 +50,6 @@ a guarded collection:
 - **`where` operands match both spellings.** An ill-formed string operand matches
   its repaired text (how the guard stores it now) and its raw text (how a legacy
   SQLite or D1 row still holds it); a raw spelling holding NUL is left out, since
-  Postgres refuses it.
+  Postgres refuses it. So a lookup by an ill-formed value can return more than one
+  document; and on Postgres two different ill-formed spellings address the one
+  existing row stored with U+FFFD, as sending U+FFFD itself does.

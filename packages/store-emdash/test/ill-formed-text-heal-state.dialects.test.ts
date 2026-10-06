@@ -4,10 +4,13 @@
  * The heal walk is the expensive half of the guard — it pages the WHOLE collection
  * the one way Postgres never casts. Three properties keep it a one-time cost:
  *
- * - **Shared by database and collection NAME, not by object.** EmDash builds a
- *   fresh `ctx.storage` (fresh collection objects) for every route call and hook,
- *   so keying the in-flight walk by object meant K concurrent requests ran K
- *   walks. A caller that failed before a walk finished retries without walking.
+ * - **Shared by collection NAME, not by object.** EmDash builds a fresh
+ *   `ctx.storage` (fresh collection objects) for every route call and hook, so
+ *   keying the in-flight walk by object meant K concurrent requests ran K walks. A
+ *   caller that failed before a walk finished retries without walking. The host's
+ *   collections expose no database handle, so in production the key is the name
+ *   alone (one store per process); a collection that does expose one (a bare
+ *   repository, as this harness passes) is keyed by database as well.
  * - **Resumable.** A walk that reaches its page budget remembers where it
  *   stopped, so the next failing call continues past it instead of re-walking the
  *   same pages and failing again forever (a bad row past page 1,000).
@@ -24,7 +27,11 @@ import { findIllFormedText } from "@otta-sh/domain";
 import { afterEach, expect, test, vi } from "vitest";
 import type { StorageCollection } from "../src/index.js";
 import { guardWellFormed, HEAL_COOL_DOWN_MS } from "../src/well-formed-storage.js";
-import { describeEachDialect, makeSqliteStorage } from "./describe-each-dialect.js";
+import {
+	describeEachDialect,
+	hostShapedCollection,
+	makeSqliteStorage,
+} from "./describe-each-dialect.js";
 
 const LAYOUT = { things: { indexes: ["k"] } };
 
@@ -56,10 +63,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 /**
- * A fresh host-collection OBJECT over the same rows, the way EmDash hands every
- * request its own. Its filtered queries fail while `blocked()` says so. It carries
- * the host collection's own fields (its database handle among them) the way a
- * fresh `PluginStorageRepository` over the same database does.
+ * A fresh collection OBJECT over the same rows, the way EmDash hands every request
+ * its own. Its filtered queries fail while `blocked()` says so. It carries `raw`'s
+ * own fields: a bare repository's database handle, or nothing for a
+ * {@link hostShapedCollection} (which is what production hands the guard).
  */
 function hostView(
 	raw: StorageCollection<unknown>,
@@ -264,7 +271,7 @@ describeEachDialect("ill-formed text: the heal walk's bookkeeping", (ctx) => {
 		expect(await oldestBad()).toBe(false);
 	});
 
-	test("two databases in one process never share a cursor, a walk or a cool-down (B L7, A R2-A4)", async () => {
+	test("collections that expose their database handle (bare repositories, as this harness passes) never share a cursor, a walk or a cool-down across databases (B L7, A R2-A4)", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		const other = await makeSqliteStorage(LAYOUT);
@@ -294,6 +301,54 @@ describeEachDialect("ill-formed text: the heal walk's bookkeeping", (ctx) => {
 			expect(await b.count({ k: "a" })).toBe(251);
 			expect(countsB.walkPages).toBe(2);
 			expect(await bBad()).toBe(false);
+		} finally {
+			await other.close();
+		}
+	});
+
+	test("host-shaped collections (production: no database handle) share heal state by collection NAME, as documented (round 3, A R3-A1 / B L8)", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		await seedClean(250);
+		const counts: Counts = { walkPages: 0 };
+		const now = 1_000_000;
+		const host = () => hostShapedCollection(raw());
+		expect((host() as { db?: unknown }).db).toBeUndefined();
+		// The heal still works on the production shape: a legacy row is repaired.
+		await raw().put("bad", { k: "a", note: "x\uD800" });
+		const first = guardWellFormed(hostView(host(), counts, stillBad), "things", {
+			now: () => now,
+		});
+		expect(await first.count({ k: "a" })).toBe(251);
+		expect(await stillBad()).toBe(false);
+
+		// An unfixable failure arms the cool-down for the NAME: a fresh host-shaped
+		// object (the next request's) fails fast without walking.
+		const pagesBefore = counts.walkPages;
+		const failing = guardWellFormed(
+			hostView(host(), counts, async () => true),
+			"things",
+			{
+				now: () => now,
+			},
+		);
+		await expect(failing.query({ where: { k: "a" } })).rejects.toThrow(/type json/);
+		const walked = counts.walkPages - pagesBefore;
+		expect(walked).toBe(3);
+		const other = await makeSqliteStorage(LAYOUT);
+		try {
+			// ...and so does a collection of the same name over ANOTHER database: with
+			// no handle to tell them apart, the state is one per process and name.
+			const otherDb = hostShapedCollection(other.storage["things"] as StorageCollection<unknown>);
+			const elsewhere = guardWellFormed(
+				hostView(otherDb, counts, async () => true),
+				"things",
+				{
+					now: () => now,
+				},
+			);
+			await expect(elsewhere.count({ k: "a" })).rejects.toThrow(/type json/);
+			expect(counts.walkPages - pagesBefore).toBe(walked);
 		} finally {
 			await other.close();
 		}

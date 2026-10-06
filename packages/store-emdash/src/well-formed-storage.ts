@@ -59,14 +59,24 @@
  *   boundary existed, which holds for every map a shopper can add to (their keys
  *   are token-checked ASCII), so a shopper cannot plant a winning U+FFFD key next
  *   to a legacy one (review B I1).
+ * - **TWO SPELLINGS CAN REACH ONE EXISTING ROW.** A lookup by an ill-formed value
+ *   can return more than one document (the repaired row and a legacy raw one), so
+ *   a caller taking the first match gets either (review round 3, A I1). On
+ *   Postgres two DIFFERENT ill-formed spellings (`"x\uD800"`, `"x\uDC00"`) address
+ *   the one existing row stored as `"x\uFFFD"`, because the driver folds both —
+ *   no more reach than sending U+FFFD itself (review round 3, B I3).
  *
- * THE HEAL'S BOOKKEEPING is per DATABASE and collection name, at module scope —
- * not per collection object, because EmDash builds a fresh `ctx.storage` for every
- * route call and hook, so object identity is per request. The database is the
- * host collection's own handle (`PluginStorageRepository#db`, read structurally);
- * a collection without one (the sandbox bridge, which only ever runs on D1, where
- * the heal never fires) falls back to the name alone, i.e. one store per process,
- * which is how Otta deploys.
+ * THE HEAL'S BOOKKEEPING is per collection NAME, at module scope — not per
+ * collection object, because EmDash builds a fresh `ctx.storage` for every route
+ * call and hook, so object identity is per request. In production the name is the
+ * whole key: the host's `ctx.storage` collections (emdash `createStorageCollection`)
+ * are plain objects of closures over a private repository, exposing no database
+ * handle, and the sandbox bridge exposes none either. So this assumes ONE STORE
+ * PER PROCESS, which is how Otta deploys; two databases in one process (a preview
+ * with its own) would share one collection's cursor and cool-down. Only a caller
+ * that passes the repository itself (`PluginStorageRepository`, whose `db` and
+ * `pluginId` are read structurally) gets per-database state — this package's
+ * test harness does (review round 3, A R3-A1 / B L8).
  *
  * - concurrent callers of one collection share one walk, across requests; a
  *   caller whose query failed before a walk finished retries at once, without
@@ -211,12 +221,12 @@ interface HealState {
 }
 
 /**
- * The heal state, keyed by STORE then collection name, at module scope (see the
- * module doc for why not per object). The store is the host database handle the
- * host's collection carries (`PluginStorageRepository#db`, one per process, or a
- * preview's own); a collection that exposes none — the workerd sandbox's bridged
- * collections, a test double — falls back to one process-wide map keyed by name
- * alone, which is the one-store-per-process assumption the module doc states.
+ * The heal state, at module scope (see the module doc for why not per object),
+ * keyed by collection name in one process-wide map. That is the PRODUCTION path:
+ * the host's `ctx.storage` collections and the sandbox bridge expose no database
+ * handle, so this assumes one store per process (the module doc). Only a
+ * collection that exposes its repository's `db` (a bare `PluginStorageRepository`,
+ * as the test harness passes) is keyed by that database first.
  */
 let healStatesByStore = new WeakMap<object, Map<string, HealState>>();
 let healStatesByName = new Map<string, HealState>();
