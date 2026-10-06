@@ -14,6 +14,12 @@
  *    pointer. Which grant it names is whichever committed its pointer first, and that
  *    is deliberately not load-bearing: the gate re-validates the pointer against the
  *    grant it names, so authorization is decided by the SET of grants.
+ *
+ * A third shape covers `revokeByOrder` (the full-refund revocation, issue #376): N
+ * concurrent revokes of one order flip each of its grants EXACTLY once between them —
+ * the counts they return sum to the order's grant total — and leave the gate shut. A
+ * refund replayed while its first attempt is still revoking must not double-count or
+ * leave a grant active.
  */
 import { idempotencyKey, orderId, sku } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
@@ -150,6 +156,55 @@ describe.skipIf(!PG_ENABLED)("entitlement grant [postgres]", () => {
 					await fx.harness.entitlementStore.check({ buyerRef: BUYER, sku: SKU }),
 					`loop ${String(loop)}: the gate`,
 				).toBe(true);
+			}
+			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+
+	test("N concurrent revokeByOrder calls flip each of the order's grants exactly once", async () => {
+		const N = 12;
+		const LOOPS = 10;
+		const SKUS = ["DIG-1", "DIG-2", "DIG-3"] as const;
+		const fx = await fresh(N + 4);
+		try {
+			for (let loop = 0; loop < LOOPS; loop++) {
+				await fx.reset();
+				for (const s of SKUS) {
+					for (const order of ["ord-1", "ord-2"]) {
+						await fx.harness.entitlementStore.grant({
+							orderId: orderId(order),
+							productId: null,
+							sku: sku(s),
+							buyerRef: BUYER,
+							source: "order_paid",
+							grantIdempotencyKey: idempotencyKey(`ent:${order}:${s}`),
+						});
+					}
+				}
+				const results = await Promise.all(
+					Array.from({ length: N }, () =>
+						settleOne(fx.harness.entitlementStore.revokeByOrder(orderId("ord-1"))),
+					),
+				);
+				expect(
+					results.filter((r) => r instanceof Error),
+					`loop ${String(loop)}: failures`,
+				).toHaveLength(0);
+				const total = (results as number[]).reduce((a, b) => a + b, 0);
+				expect(total, `loop ${String(loop)}: flips summed across callers`).toBe(SKUS.length);
+				for (const s of SKUS) {
+					expect(
+						await fx.harness.entitlementStore.check({ orderId: orderId("ord-1"), sku: sku(s) }),
+						`loop ${String(loop)}: ord-1 ${s}`,
+					).toBe(false);
+					// The other order is untouched, so the buyer keeps the sku through it.
+					expect(
+						await fx.harness.entitlementStore.check({ orderId: orderId("ord-2"), sku: sku(s) }),
+						`loop ${String(loop)}: ord-2 ${s}`,
+					).toBe(true);
+				}
 			}
 			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
 		} finally {

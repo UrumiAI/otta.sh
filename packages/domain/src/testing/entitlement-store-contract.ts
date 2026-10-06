@@ -4,8 +4,6 @@ import type { EntitlementStore, GrantEntitlementInput } from "../ports/entitleme
 
 export interface EntitlementStoreHarness {
 	store: EntitlementStore;
-	/** Revoke every entitlement for an order (the adapter's UPDATE / fake helper). */
-	revoke(orderId: string): Promise<void>;
 }
 
 export interface EntitlementStoreContractOptions {
@@ -26,7 +24,8 @@ function grantInput(overrides: Partial<GrantEntitlementInput> = {}): GrantEntitl
 
 /**
  * The reusable `EntitlementStore` behavioral spec (§7): grant-once, check
- * active/absent (by order and by buyer), and revoke.
+ * active/absent (by order and by buyer), and revoke-by-order (the full-refund
+ * revocation, issue #376).
  */
 export function entitlementStoreContract(
 	makeHarness: () => Promise<EntitlementStoreHarness>,
@@ -78,10 +77,94 @@ export function entitlementStoreContract(
 		});
 
 		test("a revoked entitlement is not returned by check", async () => {
-			const { store, revoke } = await makeHarness();
+			const { store } = await makeHarness();
 			await store.grant(grantInput());
-			await revoke("ord-1");
+			await store.revokeByOrder(orderId("ord-1"));
 			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(false);
+		});
+
+		// -- revokeByOrder: the full-refund revocation (issue #376) --------------
+
+		test("revokeByOrder revokes EVERY entitlement the order granted, on both scopes", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			await store.grant(
+				grantInput({ sku: sku("DIG-2"), grantIdempotencyKey: idempotencyKey("grant-2") }),
+			);
+
+			expect(await store.revokeByOrder(orderId("ord-1"))).toBe(2);
+
+			for (const s of ["DIG-1", "DIG-2"]) {
+				expect(await store.check({ orderId: orderId("ord-1"), sku: sku(s) })).toBe(false);
+				// The buyer scope is refused too: no other order covers this buyer.
+				expect(await store.check({ buyerRef: "buyer@example.com", sku: sku(s) })).toBe(false);
+				expect(
+					await store.check({
+						orderId: orderId("ord-1"),
+						buyerRef: "buyer@example.com",
+						sku: sku(s),
+					}),
+				).toBe(false);
+			}
+		});
+
+		test("revokeByOrder is idempotent: a replay revokes nothing more and still refuses", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			expect(await store.revokeByOrder(orderId("ord-1"))).toBe(1);
+			expect(await store.revokeByOrder(orderId("ord-1"))).toBe(0);
+			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(false);
+		});
+
+		test("revokeByOrder on an order that granted nothing is a no-op", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			expect(await store.revokeByOrder(orderId("ord-none"))).toBe(0);
+			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(true);
+		});
+
+		test("revokeByOrder leaves every other order's entitlements untouched — same buyer, same sku", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			await store.grant(
+				grantInput({
+					orderId: orderId("ord-2"),
+					grantIdempotencyKey: idempotencyKey("grant-ord2"),
+				}),
+			);
+			// Another buyer's order on the same sku, too.
+			await store.grant(
+				grantInput({
+					orderId: orderId("ord-3"),
+					buyerRef: "other@example.com",
+					grantIdempotencyKey: idempotencyKey("grant-ord3"),
+				}),
+			);
+
+			await store.revokeByOrder(orderId("ord-1"));
+
+			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(false);
+			expect(await store.check({ orderId: orderId("ord-2"), sku: sku("DIG-1") })).toBe(true);
+			expect(await store.check({ orderId: orderId("ord-3"), sku: sku("DIG-1") })).toBe(true);
+			// The buyer still owns the sku through the order that was NOT refunded.
+			expect(await store.check({ buyerRef: "buyer@example.com", sku: sku("DIG-1") })).toBe(true);
+			expect(await store.check({ buyerRef: "other@example.com", sku: sku("DIG-1") })).toBe(true);
+		});
+
+		// A settlement redelivered after the refund (a late Stripe webhook retry, or a
+		// crash-heal re-drive) replays the grant under the SAME grant key. Grant-once
+		// returns the RECORDED grant, so the replay must hand back the revoked one —
+		// never re-open access the refund closed.
+		test("a grant replayed after revokeByOrder does not resurrect the entitlement", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			await store.revokeByOrder(orderId("ord-1"));
+
+			const replay = await store.grant(grantInput());
+
+			expect(replay.state).toBe("revoked");
+			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(false);
+			expect(await store.check({ buyerRef: "buyer@example.com", sku: sku("DIG-1") })).toBe(false);
 		});
 	});
 }

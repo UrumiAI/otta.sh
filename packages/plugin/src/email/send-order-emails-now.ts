@@ -142,10 +142,16 @@ export interface SendOrderEmailsNowOptions {
  * did not deliver (a failed send, the wait running out, a spent budget) is not
  * there and is the cron's to send. A row sent AFTER the wait ran out is not listed
  * either — the conservative direction for a caller reporting it.
+ *
+ * `skipped` lists every row this attempt completed WITHOUT a send because the order
+ * has no email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028 Decision 7).
+ * Such a row is done: it was not sent and never will be, so a caller must not call it
+ * queued.
  */
 export interface InlineOrderEmails {
 	readonly configured: boolean;
 	readonly sent: readonly OutboxEmail[];
+	readonly skipped: readonly OutboxEmail[];
 }
 
 /**
@@ -162,20 +168,23 @@ export async function sendOrderEmailsNow(
 	options: SendOrderEmailsNowOptions = {},
 ): Promise<InlineOrderEmails> {
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
-	// as well, so a "the cron sweep will deliver it" line below would be false.
+	// as well, so a "the cron sweep will take it" line below would be false. (And
+	// "take", not "deliver": the sweep may complete a row as skipped — an order with
+	// no email recipient, ADR-0028 Decision 7 — rather than send it.)
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
 	if (options.emailSender === undefined && !emailSenderConfigured(egress)) {
-		return { configured: false, sent: [] };
+		return { configured: false, sent: [], skipped: [] };
 	}
 	const sent: OutboxEmail[] = [];
+	const skipped: OutboxEmail[] = [];
 
 	const deadline = options.deadline ?? settleDeadline();
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
 	if (waitMs <= 0) {
 		console.warn(
-			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will deliver it`,
+			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will take it`,
 		);
-		return { configured: true, sent: [] };
+		return { configured: true, sent: [], skipped: [] };
 	}
 	// The inline wait's own end — at most the request's deadline, sooner when the
 	// 5 s inline cap is the tighter of the two.
@@ -211,6 +220,9 @@ export async function sendOrderEmailsNow(
 			onSent: (row) => {
 				if (!expired) sent.push(row);
 			},
+			onSkipped: (row) => {
+				if (!expired) skipped.push(row);
+			},
 		},
 	).then(
 		() => undefined,
@@ -233,13 +245,13 @@ export async function sendOrderEmailsNow(
 		if ((await Promise.race([attempt, waitOver])) === "deadline") {
 			expired = true;
 			console.warn(
-				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will deliver it`,
+				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will take it`,
 			);
 		}
 	} finally {
 		clearTimeout(timer);
 	}
-	return { configured: true, sent: [...sent] };
+	return { configured: true, sent: [...sent], skipped: [...skipped] };
 }
 
 /**

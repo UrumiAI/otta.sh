@@ -186,10 +186,12 @@ const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
-/** The address block: an unlocked cart that ships. On a store with NO zones
- *  it also asks for the country; otherwise the country/region are the hidden
- *  destination above. */
-const showAddress = locked === null && summary.requiresShipping;
+/** The address block: an unlocked cart that ships, or ANY unlocked cart whose
+ *  address is required — an India-based Stripe account needs every buyer's
+ *  name and address, digital carts too (issue #382). Without the delivery
+ *  block it also asks for the country; otherwise the country/region are the
+ *  hidden destination above. */
+const showAddress = locked === null && (summary.requiresShipping || summary.addressRequired);
 /** Named in the same language the summary formatted the money in. */
 const countries = countryOptions(SITE_LOCALE);
 const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
@@ -251,10 +253,23 @@ const sumRows = [
  * token-to-sentence mapping (§10) is the page's, so no theme can print a raw
  * token or phrase one differently.
  */
+/** Issue #382: on a cart that ships nothing the address is not a delivery
+ *  address — it is asked for because the store's Stripe account (India) needs
+ *  the buyer's name and billing address — so its refusals say so. */
+const NO_DELIVERY_ADDRESS_ERRORS: Record<string, string> = {
+	MISSING_SHIPPING_ADDRESS: "BUYER_ADDRESS_REQUIRED",
+	INVALID_SHIPPING_ADDRESS: "BUYER_ADDRESS_INVALID",
+};
+const shownErrorToken =
+	shownError !== null && summary.paymentAccountNeedsAddress && !summary.requiresShipping
+		? (NO_DELIVERY_ADDRESS_ERRORS[shownError] ?? shownError)
+		: shownError;
 const model: CheckoutModel = {
 	summary,
 	errorMessage:
-		shownError !== null && placeCouponError === null ? cartErrorMessage(shownError) : null,
+		shownErrorToken !== null && placeCouponError === null
+			? cartErrorMessage(shownErrorToken)
+			: null,
 	checkedOut,
 	locked:
 		locked === null
@@ -291,7 +306,12 @@ const model: CheckoutModel = {
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
 	emailValue: draft?.values.email ?? accountEmail ?? "",
 	addressValues: draftAddressValues(draft),
-	fieldErrors: shownFieldErrors(draft, shownError),
+	/* Issue #382: on an India Stripe account the address may not be left blank,
+	   so a missing field says only to fill it in. (A zoned delivery still gets
+	   the older copy — unchanged here, flagged as a follow-up.) */
+	fieldErrors: shownFieldErrors(draft, shownError, {
+		addressRequired: summary.paymentAccountNeedsAddress,
+	}),
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,

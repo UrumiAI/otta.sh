@@ -87,6 +87,10 @@ export interface MakeInProcessCommerceOptions {
 	 */
 	emailSender?: EmailSender;
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** Whether the payment account needs every buyer's address (issue #382) —
+	 *  what `makeCommerceClient` resolves from the Stripe account's country.
+	 *  Omitted ⇒ not wired: ADR-0021's rules alone. */
+	resolveAddressRequired?: () => Promise<boolean>;
 	/** An id source the caller controls, for a suite that pins whole documents
 	 *  byte for byte. Omitted ⇒ random UUIDs, which is what a deployment gets. */
 	idGen?: IdGen;
@@ -122,6 +126,9 @@ export async function makeInProcessCommerce(
 			...shared,
 			...(options.emailSender !== undefined
 				? { resolveEmailSender: async () => options.emailSender }
+				: {}),
+			...(options.resolveAddressRequired !== undefined
+				? { resolveAddressRequired: options.resolveAddressRequired }
 				: {}),
 		}),
 		stores,

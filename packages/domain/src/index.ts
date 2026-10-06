@@ -127,6 +127,7 @@ export {
 	customerId,
 	email,
 	idempotencyKey,
+	isEmailAddress,
 	orderId,
 	productId,
 	reservationId,
@@ -276,6 +277,7 @@ export {
 	buildOrderEmailData,
 	dispatchOrderEmails,
 	dispatchOrderEmailsForOrder,
+	orderHasEmailRecipient,
 	MAX_UNCOUNTED_TIMEOUTS,
 	TIMEOUT_BACKOFF_BASE_MS,
 	TIMEOUT_BACKOFF_MAX_MS,
@@ -499,6 +501,7 @@ export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
 export type {
+	DownloadAsset,
 	InventoryPolicy,
 	ProductCommerce,
 	ProductCommerceStore,
@@ -544,6 +547,17 @@ export {
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
 export { isProductLive } from "./product-commerce/sellable.js";
+export {
+	DOWNLOAD_FALLBACK_CONTENT_TYPE,
+	DOWNLOAD_FALLBACK_FILENAME,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	downloadContentTypeFor,
+	isDownloadAssetKeyFor,
+	MAX_DOWNLOAD_FILENAME_LENGTH,
+	mintDownloadAssetKey,
+	sanitizeDownloadFilename,
+	validateDownloadAsset,
+} from "./product-commerce/download-asset.js";
 export {
 	HoldExpiredError,
 	type AdjustLineInput,

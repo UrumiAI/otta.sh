@@ -27,6 +27,7 @@
 import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
+import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
 import { ABANDON_CANCEL_CALL_MS, InProcessCommerceClient } from "./in-process-commerce-client.js";
@@ -63,5 +64,9 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
 		resolveWithdrawGateways: () =>
 			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
+		// Issue #382: an India-based Stripe account needs every buyer's name and
+		// address. A kv read of the cached account country — Stripe is asked only
+		// when nothing usable is cached (see stripe-account-country.ts).
+		resolveAddressRequired: () => checkoutRequiresBuyerAddress(ctx),
 	});
 }
