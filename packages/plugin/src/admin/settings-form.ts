@@ -6,6 +6,14 @@ import {
 } from "../cron/background-work-setting.js";
 import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import {
+	DEFAULT_EMAIL_PROVIDER,
+	DEFAULT_SMTP2GO_REGION,
+	EMAIL_PROVIDER_KEY,
+	type EmailProviderId,
+	isEmailProviderId,
+	SMTP2GO_REGION_KEY,
+} from "../email/email-provider.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
@@ -18,6 +26,7 @@ import {
 } from "../payments/stripe-account-country.js";
 import {
 	checkEmailApiKey,
+	checkSmtp2goApiKey,
 	checkOpaqueToken,
 	checkStripeSecretKey,
 	checkStripeWebhookSecret,
@@ -33,6 +42,7 @@ import {
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
+	SMTP2GO_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
@@ -201,21 +211,43 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		fieldId: "emailApiKey",
 		kvKey: EMAIL_API_KEY_KEY,
 		genKey: "settings:emailApiKeyGen",
-		label: "Email provider API key",
+		// The RESEND slot (or the build's Resend-compatible email URL). SMTP2GO has
+		// its own slot below: a key is only ever sent to the provider it belongs to.
+		label: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Resend API key (email)"
+			: "Email API key (the email URL set at build time)",
 		noun: "Email API key",
 		hint: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "re_…"
 			: "Your email provider's API key",
-		// Which provider the store sends through is fixed at build time
-		// (`IN_PROCESS_EGRESS_URLS`), so the shape is too.
+		// The build's email URL is fixed at build time (`IN_PROCESS_EGRESS_URLS`),
+		// so this slot's shape is too.
 		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl),
-		removeEffect: "Order and sign-in emails stop sending until a new key is saved.",
+		removeEffect:
+			"While Resend is the email provider, order and sign-in emails stop sending until a new key is saved.",
 		shapeHelp: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Starts with re_ — a Resend API key."
 			: "Your email provider's API key: one line, no spaces.",
 		whereToFind: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Resend → API Keys"
 			: "your email provider's dashboard",
+	},
+	{
+		// SMTP2GO's OWN slot (ADR-0005, 2026-10-05). Read only when "Email provider"
+		// is SMTP2GO; unset then, the store sends nothing (and claims nothing).
+		actionId: "save-smtp2go-api-key",
+		fieldId: "smtp2goApiKey",
+		kvKey: SMTP2GO_API_KEY_KEY,
+		genKey: "settings:emailSmtp2goApiKeyGen",
+		label: "SMTP2GO API key (email)",
+		noun: "SMTP2GO API key",
+		hint: "api-…",
+		check: checkSmtp2goApiKey,
+		removeEffect:
+			"While SMTP2GO is the email provider, order and sign-in emails stop sending until a new key is saved.",
+		shapeHelp:
+			"Starts with api- — an SMTP2GO API key allowed to send email. Used only when the email provider below is SMTP2GO.",
+		whereToFind: "SMTP2GO → Sending → API Keys",
 	},
 	{
 		actionId: "save-x402-facilitator-secret",
@@ -304,6 +336,18 @@ interface PlainSettingSpec {
 	kvKey: string;
 	label: string;
 	placeholder: string;
+	/** A CLOSED set: rendered as a radio, and a submitted value outside it is
+	 *  refused. Unset in kv ⇒ the form shows {@link PlainChoice.fallback}. */
+	choice?: PlainChoice;
+}
+
+interface PlainChoice {
+	options: ReadonlyArray<{ value: string; label: string }>;
+	fallback: string;
+	/** The field as a refusal names it ("the email provider"). */
+	field: string;
+	/** The refusal's rule, naming the field and the allowed values. */
+	rule: string;
 }
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
@@ -316,6 +360,41 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		// the save now refuses (`email/from-address.ts`). Shows the display-name
 		// form because that is what customers read in their inbox.
 		placeholder: "Your Shop <orders@yourdomain.com>",
+	},
+	// Which provider the store's email goes through, and SMTP2GO's region
+	// (`email/email-provider.ts`). Read back like the from-address: the operator
+	// must be able to see which one is in use.
+	{
+		fieldId: "emailProvider",
+		kvKey: EMAIL_PROVIDER_KEY,
+		label: "Email provider",
+		placeholder: "",
+		choice: {
+			options: [
+				{ value: "resend", label: "Resend (or a Resend-compatible URL set at build time)" },
+				{ value: "smtp2go", label: "SMTP2GO" },
+			],
+			fallback: DEFAULT_EMAIL_PROVIDER,
+			field: "the email provider",
+			rule: "The email provider must be Resend or SMTP2GO.",
+		},
+	},
+	{
+		fieldId: "emailSmtp2goRegion",
+		kvKey: SMTP2GO_REGION_KEY,
+		label: "SMTP2GO region (used only when the provider is SMTP2GO)",
+		placeholder: "",
+		choice: {
+			options: [
+				{ value: "global", label: "Global (api.smtp2go.com)" },
+				{ value: "us", label: "United States" },
+				{ value: "eu", label: "Europe" },
+				{ value: "au", label: "Australia" },
+			],
+			fallback: DEFAULT_SMTP2GO_REGION,
+			field: "the SMTP2GO region",
+			rule: "The SMTP2GO region must be Global, United States, Europe or Australia.",
+		},
 	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back for
@@ -408,7 +487,14 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
 	const entries = await Promise.all(
 		PLAIN_PAYMENT_SETTINGS.map(async (spec) => {
 			const value = await ctx.kv.get<string>(spec.kvKey).catch(() => null);
-			return [spec.kvKey, typeof value === "string" ? value : ""] as const;
+			const text = typeof value === "string" ? value : "";
+			// A closed choice shows what the sender will use: the default when
+			// nothing (or something unknown) is stored.
+			const shown =
+				spec.choice !== undefined && !spec.choice.options.some((o) => o.value === text)
+					? spec.choice.fallback
+					: text;
+			return [spec.kvKey, shown] as const;
 		}),
 	);
 	return new Map(entries);
@@ -810,6 +896,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					rule: "The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form).",
 				});
 			}
+			// The closed choices (email provider, SMTP2GO region): a value outside the
+			// set is refused — an empty one too, since a radio always submits one.
+			for (const spec of PLAIN_PAYMENT_SETTINGS) {
+				if (spec.choice === undefined || !submitted.has(spec.kvKey)) continue;
+				const value = submitted.get(spec.kvKey) ?? "";
+				if (!spec.choice.options.some((option) => option.value === value)) {
+					problems.push({ field: spec.choice.field, rule: spec.choice.rule });
+				}
+			}
 			if (problems.length > 0) {
 				// One problem: its rule IS the banner. Several: the banner names them
 				// all (the 240-character budget cannot hold every rule) and each rule
@@ -823,6 +918,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
 						const raw = input.values?.[spec.fieldId];
 						if (typeof raw !== "string") return [];
+						// A refused choice is not put back: a radio can only show one of its
+						// options, so it keeps showing what is saved.
+						if (
+							spec.choice !== undefined &&
+							!spec.choice.options.some((o) => o.value === raw.trim())
+						) {
+							return [];
+						}
 						// A sign-in URL with user:pw@ in it is put back WITHOUT them: the
 						// credentials are refused anyway, and are not echoed into the page.
 						const shown = spec.kvKey === LOGIN_LINK_URL_KEY ? withoutUserInfo(raw) : raw;
@@ -840,7 +943,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The from-address, sign-in page and x402 settings were saved.",
+				description: "The email, sign-in page and x402 settings were saved.",
 			});
 			return {
 				...page,
@@ -1341,7 +1444,7 @@ function paymentsGroup(
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
-		label: paymentsGroupLabel(state),
+		label: paymentsGroupLabel(state, emailProviderOf(plain)),
 		default_open: false,
 		blocks: [
 			{
@@ -1366,6 +1469,10 @@ function paymentsGroup(
 			{
 				type: "context",
 				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
+			},
+			{
+				type: "context",
+				text: "Email provider: each provider uses its own key above, and email goes only through the one chosen here. Choosing SMTP2GO sends nothing until the SMTP2GO API key is saved.",
 			},
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -1416,6 +1523,13 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 	}
 }
 
+/** The saved email provider, from the plain settings already read (the
+ *  default when unset or unknown — `readPlainSettings` already folded those). */
+function emailProviderOf(plain: Map<string, string>): EmailProviderId {
+	const value = plain.get(EMAIL_PROVIDER_KEY);
+	return isEmailProviderId(value) ? value : DEFAULT_EMAIL_PROVIDER;
+}
+
 /** A refused payment-settings save: every rule broken, and what was typed. */
 interface PaymentRefusal {
 	problems: string[];
@@ -1447,13 +1561,23 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
 		form: {
 			type: "form",
-			fields: PLAIN_PAYMENT_SETTINGS.map((spec) => ({
-				type: "text_input" as const,
-				action_id: spec.fieldId,
-				label: spec.label,
-				placeholder: spec.placeholder,
-				initial_value: plain.get(spec.kvKey) ?? "",
-			})),
+			fields: PLAIN_PAYMENT_SETTINGS.map((spec) =>
+				spec.choice === undefined
+					? {
+							type: "text_input" as const,
+							action_id: spec.fieldId,
+							label: spec.label,
+							placeholder: spec.placeholder,
+							initial_value: plain.get(spec.kvKey) ?? "",
+						}
+					: {
+							type: "radio" as const,
+							action_id: spec.fieldId,
+							label: spec.label,
+							options: spec.choice.options.map((option) => ({ ...option })),
+							initial_value: plain.get(spec.kvKey) ?? spec.choice.fallback,
+						},
+			),
 			submit: { label: "Save payment settings", action_id: SAVE_PAYMENT_SETTINGS_ACTION },
 		},
 	});
@@ -1472,7 +1596,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  key, not any part of it; no value is in scope here. The longest render
  *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
  *  the X-11 60-character budget. */
-function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
+function paymentsGroupLabel(
+	state: Map<string, SecretRenderState>,
+	provider: EmailProviderId,
+): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
 	const stripePart =
 		stripe?.set !== true
@@ -1482,7 +1609,9 @@ function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
 				: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
-	const emailPart = state.get(EMAIL_API_KEY_KEY)?.set === true ? "email set" : "no email";
+	// The CHOSEN provider's key: SMTP2GO's slot counts only while SMTP2GO is chosen.
+	const emailKey = provider === "smtp2go" ? SMTP2GO_API_KEY_KEY : EMAIL_API_KEY_KEY;
+	const emailPart = state.get(emailKey)?.set === true ? "email set" : "no email";
 	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }
 

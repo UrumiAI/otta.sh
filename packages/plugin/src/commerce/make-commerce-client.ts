@@ -56,7 +56,8 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	return new InProcessCommerceClient(ctx, {
 		gateways: await resolvePaymentGateways(ctx),
 		// Lazy: only the login request sends mail, and building the sender reads kv.
-		// `undefined` on a bundle with no email API URL — the unconfigured arm. The
+		// `undefined` when no provider is usable (Resend with no email API URL,
+		// SMTP2GO with no key, an unreadable provider choice) — the unconfigured arm. The
 		// LOGIN sender, with its short ceiling: the send is awaited inline.
 		resolveEmailSender: () =>
 			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),

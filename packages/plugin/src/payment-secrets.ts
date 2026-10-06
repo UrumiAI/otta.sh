@@ -56,6 +56,16 @@ export const STRIPE_WEBHOOK_SECRET_KEY = "settings:stripeWebhookSecret";
 export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
 
 /**
+ * The SMTP2GO API key — sent as `X-Smtp2go-Api-Key` when the store's "Email
+ * provider" is SMTP2GO (`email/email-provider.ts`). Its OWN slot, not
+ * {@link EMAIL_API_KEY_KEY}: the sender reads only the chosen provider's slot,
+ * so switching provider can never send one provider's key to the other. Absent
+ * ⇒ an SMTP2GO store is unconfigured: nothing is claimed or sent.
+ * (Not a renamed service env var: the service never spoke SMTP2GO.)
+ */
+export const SMTP2GO_API_KEY_KEY = "settings:emailSmtp2goApiKey";
+
+/**
  * The x402 facilitator CREDENTIAL — a bearer token for the facilitator API.
  * Until ADR-0028 increment 2 `createHttpFacilitator` attached it when it asked a
  * facilitator to verify a receipt; that call is retired, and nothing reads this
@@ -137,6 +147,7 @@ export const PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	EMAIL_API_KEY_KEY,
+	SMTP2GO_API_KEY_KEY,
 	X402_FACILITATOR_API_KEY_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 ] as const;
