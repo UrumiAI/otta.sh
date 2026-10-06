@@ -28,7 +28,13 @@ import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
 import { IN_PROCESS_EGRESS_URLS } from "../src/manifest.js";
 import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
-import { adapters, memoryCursors, sweepContext } from "./cron-sweep-fixtures.js";
+import {
+	adapters,
+	type CallCounter,
+	memoryCursors,
+	placeLapsedOrder,
+	sweepContext,
+} from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 let storage: StorageAccess;
@@ -96,7 +102,11 @@ describe("order-emails leg: the provider choice decides whether a URL-less build
 		expect(IN_PROCESS_EGRESS_URLS.emailApiUrl).toBeUndefined();
 	});
 
+	// Each "skipped" case has an email DUE: the leg asks "is any row due?" before it
+	// resolves the provider, so an unconfigured store with an empty outbox is simply
+	// idle — and `skipped` is the report for work that cannot be sent.
 	test("no URL and the default provider: skipped, as before", async () => {
+		await paidOrder(`ord-unwired-${crypto.randomUUID()}`);
 		const { ctx, urls } = ctxWith({});
 		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
 			cursors: memoryCursors(),
@@ -107,6 +117,7 @@ describe("order-emails leg: the provider choice decides whether a URL-less build
 	});
 
 	test("SMTP2GO chosen with only the Resend key saved: skipped, and that key never leaves", async () => {
+		await paidOrder(`ord-keyless-${crypto.randomUUID()}`);
 		const { ctx, urls } = ctxWith({
 			[EMAIL_PROVIDER_KEY]: "smtp2go",
 			[EMAIL_API_KEY_KEY]: "re_0123456789abcdef",
@@ -168,4 +179,115 @@ describe("order-emails leg on SMTP2GO: a timeout is a counted attempt (no idempo
 		// timeout would have left it at one, free to be re-sent without bound.
 		expect(row).toMatchObject({ attempts: 2, timeouts: 0 });
 	}, 30_000);
+});
+
+interface BusyTicks {
+	legs: ReturnType<typeof emailLeg>[];
+	/** `order-emails`' wait in the cadence state after each tick. */
+	waits: (number | undefined)[];
+	urls: string[];
+}
+
+function expectDeferredAndAging(result: BusyTicks): void {
+	// Three busy ticks: not reached, so deferred — never `skipped` — and its wait
+	// grows by one each tick instead of being cleared.
+	for (const leg of result.legs.slice(0, 3)) {
+		expect(leg.skipped).toBeUndefined();
+		expect(leg).toMatchObject({ count: 0, deferred: true });
+	}
+	expect(result.waits.slice(0, 3)).toEqual([1, 2, 3]);
+	// The store was configured all along: the first tick with room sends, and the
+	// wait is cleared by a run, not by a false "skipped".
+	expect(result.legs[3]?.skipped).toBeUndefined();
+	expect(result.legs[3]?.count).toBeGreaterThanOrEqual(1);
+	expect(result.waits[3]).toBeUndefined();
+}
+
+/**
+ * Review of #383: the provider resolve is part of the leg's gated work.
+ *
+ * It was once read BEFORE the leg's budget check, outside the leg's charge, and
+ * its fail-soft readers turned the tick's query-ceiling refusal into "no
+ * provider" — so on a busy tick a configured store's leg reported `skipped`, and
+ * `skipped` clears the leg's wait. Every busy tick did the same, the leg never
+ * aged to the head of a tick, and order emails could wait without bound.
+ *
+ * The busy tick is built for real: a lapsed order keeps `expire-orders` (ahead of
+ * the outbox in `LEG_PRIORITY`) due on every tick, and its body is replaced by
+ * one that spends the tick down to exactly `headroom` calls below the ceiling.
+ */
+describe("order-emails on a busy tick: a refused provider read is a deferral, never 'unconfigured'", () => {
+	const FREE = 30;
+	// The Free preset keeps one call for the cadence-state write and no commit
+	// window (`tick-budget.ts`): the units' ceiling is 29.
+	const CEILING = FREE - 1;
+	const SMTP2GO_SEED = {
+		[EMAIL_PROVIDER_KEY]: "smtp2go",
+		[SMTP2GO_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
+	};
+
+	async function busyTicks(seed: Record<string, unknown>, headroom: number): Promise<BusyTicks> {
+		const now = new Date();
+		await placeLapsedOrder(storage, `busy-${crypto.randomUUID()}`, now);
+		await paidOrder(`ord-busy-${crypto.randomUUID()}`);
+		const counter: CallCounter = { calls: 0 };
+		const urls: string[] = [];
+		const ctx: PluginContext = {
+			...sweepContext(storage, counter, seed),
+			http: {
+				fetch: (url: string) => {
+					urls.push(url);
+					return Promise.resolve(new Response(OK_BODY, { status: 200 }));
+				},
+			},
+		};
+		// Leaves exactly `headroom` calls under the ceiling for the legs after it.
+		const spendTheTick = async (counted: PluginContext): Promise<number> => {
+			while (counter.calls < CEILING - headroom) await counted.kv.get("busy-work");
+			return 0;
+		};
+		const cursors = memoryCursors();
+		const legs: ReturnType<typeof emailLeg>[] = [];
+		const waits: (number | undefined)[] = [];
+		// Three busy ticks, then a quiet one with room to spare.
+		for (let tick = 0; tick < 4; tick++) {
+			counter.calls = 0;
+			const summary = await runCommerceSweeps(
+				ctx,
+				SWEEP_TASK_NAME,
+				tick < 3
+					? { cursors, queryBudget: FREE, legBodies: { "expire-orders": spendTheTick } }
+					: { cursors, queryBudget: 100_000 },
+			);
+			legs.push(emailLeg(summary));
+			const state = JSON.parse((await cursors.read("state")) ?? "{}") as {
+				waits?: Record<string, number>;
+			};
+			waits.push(state.waits?.["order-emails"]);
+		}
+		return { legs, waits, urls };
+	}
+
+	test("SMTP2GO with room for the provider read but not the key read: deferred, and it ages", async () => {
+		const result = await busyTicks(SMTP2GO_SEED, 1);
+		expectDeferredAndAging(result);
+		expect(result.urls.length).toBeGreaterThanOrEqual(1);
+		expect(result.urls.every((url) => url === "https://api.smtp2go.com/v3/email/send")).toBe(true);
+	}, 60_000);
+
+	test("Resend with no room left at all (headroom 0): deferred, and it ages", async () => {
+		// A Resend store needs the build's email URL, which this bundle does not bake;
+		// set it for this case only, so the store is CONFIGURED and only the budget
+		// stands between it and its outbox.
+		const egress = IN_PROCESS_EGRESS_URLS as { emailApiUrl?: string | undefined };
+		egress.emailApiUrl = "https://mail.example.test/emails";
+		try {
+			const result = await busyTicks({}, 0);
+			expectDeferredAndAging(result);
+			expect(result.urls.length).toBeGreaterThanOrEqual(1);
+			expect(result.urls.every((url) => url === "https://mail.example.test/emails")).toBe(true);
+		} finally {
+			delete egress.emailApiUrl;
+		}
+	}, 60_000);
 });

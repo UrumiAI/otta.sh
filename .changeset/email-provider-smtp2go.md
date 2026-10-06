@@ -31,4 +31,6 @@ amendment.
   messages are unchanged.
 - **The cron sweep's email budget counts the real cost:** the provider is resolved once per
   tick (the leg's entry cost), and the email unit includes the sender's kv reads, so the
-  Workers Paid preset's email batch is 12 (was 15).
+  Workers Paid preset's email batch is 12 (was 15). The resolve runs inside the leg's budget
+  and only when an email is due: a tick too busy for it defers the leg, which keeps aging,
+  and an idle outbox costs only its due check.

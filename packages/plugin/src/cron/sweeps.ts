@@ -1158,27 +1158,33 @@ export async function runCommerceSweeps(
 	// ── the legs ──────────────────────────────────────────────────────────────
 
 	// An injected sender (a suite) needs no provider. Otherwise the store's email
-	// provider is resolved ONCE per tick, at the leg's start, through the counted
-	// context — the leg's `entry` cost in `LEG_QUERY_COSTS`, which its gate keeps
-	// room for — and handed to the sender build so it is not read again.
+	// provider is resolved INSIDE the leg's body — after its due check and its
+	// budget gate, under its charge — at most ONCE per tick (the second pass reuses
+	// it), and handed to the sender build so it is not read again. Its reads are the
+	// leg's `entry` cost in `LEG_QUERY_COSTS`, which `canStart` keeps room for, so a
+	// busy tick DEFERS the leg (and it ages) rather than reaching a read the ceiling
+	// refuses. (Review of #383: resolved before the gate, a refused read was
+	// swallowed by the fail-soft readers into "no provider" — `skipped`, which
+	// cleared the leg's wait on every busy tick, so order emails could starve.)
+	// Should a read be refused anyway, `run` sees `wasRefused` and reports the
+	// ceiling stop, never `skipped`. An idle outbox pays only the due check.
 	// Unresolvable (no URL for Resend, no SMTP2GO key, a failed or unknown provider
 	// read) ⇒ `skipped`: nothing is claimed, so no attempt is spent.
 	const injectedSender =
 		options.emailSender !== undefined || options.emailSenderFactory !== undefined;
+	let transportP: Promise<EmailTransport | undefined> | undefined;
 	const orderEmailsLeg = async (): Promise<void> => {
-		const transport = injectedSender
-			? undefined
-			: await resolveEmailTransport(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl });
-		if (!injectedSender && transport === undefined) {
-			const outcome = { leg: "order-emails" as const, ok: true, count: 0, skipped: true };
-			record(outcome);
-			reached.add("order-emails");
-			logOutcome(outcome);
-			return;
-		}
 		await run(
 			"order-emails",
 			async (legBudget) => {
+				let transport: EmailTransport | undefined;
+				if (!injectedSender) {
+					transportP ??= resolveEmailTransport(ctx, {
+						apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl,
+					});
+					transport = await transportP;
+					if (transport === undefined) return { count: 0, skipped: true };
+				}
 				const outbox = outboxSender(ctx, options, legBudget, transport);
 				if (outbox === undefined) return { count: 0, skipped: true };
 				// No idempotency key (SMTP2GO): a timeout — the sender's or the sweep's
