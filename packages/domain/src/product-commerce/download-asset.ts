@@ -46,7 +46,18 @@ const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
  *    embeddings and overrides (U+202A–U+202E) and the isolates (U+2066–U+2069) —
  *    with which `invoice` + U+202E + `fdp.exe` displays as `invoiceexe.pdf`;
  *  - the line and paragraph separators (U+2028/U+2029), line breaks by another
- *    name in a header or a file dialog.
+ *    name in a header or a file dialog;
+ *  - the INVISIBLE characters with no spelling job — the zero-width space
+ *    (U+200B), word joiner and the invisible operators (U+2060–U+2064), the
+ *    BOM / zero-width no-break space (U+FEFF), the soft hyphen (U+00AD) and the
+ *    tag characters (U+E0000–U+E007F) — with which two names that look the same
+ *    in the buyer's file dialog are different strings, or a name hides text
+ *    nobody can see.
+ *
+ * The zero-width NON-JOINER and JOINER (U+200C, U+200D) are deliberately
+ * ALLOWED: they are part of correct spelling in Persian, Urdu and the Indic
+ * scripts, select letter forms in Malayalam and Sinhala, and join emoji
+ * sequences (👩‍💻). Refusing them would refuse real names.
  *
  * Code points rather than a regex character class, so the invisible ones are
  * named by number in the source instead of sitting in it as invisible text.
@@ -64,7 +75,12 @@ function isForbiddenFilenameCodePoint(cp: number): boolean {
 		(cp >= 0x202a && cp <= 0x202e) ||
 		(cp >= 0x2066 && cp <= 0x2069) ||
 		cp === 0x2028 ||
-		cp === 0x2029
+		cp === 0x2029 ||
+		cp === 0x00ad ||
+		cp === 0x200b ||
+		(cp >= 0x2060 && cp <= 0x2064) ||
+		cp === 0xfeff ||
+		(cp >= 0xe0000 && cp <= 0xe007f)
 	);
 }
 
@@ -196,7 +212,7 @@ function requireFilename(filename: unknown): void {
 	if ([...filename].some((ch) => isForbiddenFilenameCodePoint(ch.codePointAt(0) ?? 0))) {
 		throw new InvalidProductFieldError(
 			field,
-			`${field} must not contain control, quote, slash, backslash or bidirectional-control characters`,
+			`${field} must not contain control, quote, slash, backslash, bidirectional-control or invisible characters`,
 		);
 	}
 	if (filename.trim() !== filename || filename === "." || filename === "..") {
@@ -221,4 +237,134 @@ function requireContentType(contentType: unknown): void {
 			`${field} must not be a type a browser runs as a page; upload it as application/octet-stream`,
 		);
 	}
+}
+
+// ── the upload side: coercions that always land inside the rules above ───────
+//
+// The validator above refuses and never rewrites. The upload endpoint (download
+// increment 4) is the one place a browser's filename and declared type become a
+// descriptor, so the coercions live HERE, beside the rules they must satisfy: a
+// change to one is a change to the other, in one file and one test. Each is
+// total — any input yields a value — and every value it yields passes
+// `validateDownloadAsset`.
+
+/** What the buyer saves the file as when the merchant's own name has nothing
+ *  usable left in it. */
+export const DOWNLOAD_FALLBACK_FILENAME = "download";
+
+/** The type a download is served as when the declared one is not on the list. */
+export const DOWNLOAD_FALLBACK_CONTENT_TYPE = "application/octet-stream";
+
+/** The longest extension kept whole when a long name is shortened. */
+const MAX_KEPT_EXTENSION = 16;
+
+/**
+ * A browser's declared type as a download's stored type: the essence (no
+ * parameters), lower-cased, kept when it is a well-formed type the validator
+ * accepts and `application/octet-stream` otherwise — `text/html`, SVG, any
+ * script type, a malformed value and a missing one alike. The client's type is
+ * never trusted for anything a browser could render as a page; at worst a safe
+ * file is served as opaque bytes, which every browser saves.
+ */
+export function downloadContentTypeFor(declared: unknown): string {
+	if (typeof declared !== "string") return DOWNLOAD_FALLBACK_CONTENT_TYPE;
+	const essence = (declared.split(";")[0] ?? "").trim().toLowerCase();
+	return MEDIA_TYPE.test(essence) && isSafeDownloadType(essence)
+		? essence
+		: DOWNLOAD_FALLBACK_CONTENT_TYPE;
+}
+
+/**
+ * A merchant's filename as a download's stored filename: only the last path
+ * segment (either slash — a name, never a path), every character the validator
+ * forbids removed (controls, quotes, slashes, bidi controls, line separators,
+ * lone surrogates), NFC-normalized, trimmed, and shortened to
+ * {@link MAX_DOWNLOAD_FILENAME_LENGTH} keeping a short extension. Nothing left,
+ * or only `.`/`..`, is {@link DOWNLOAD_FALLBACK_FILENAME}.
+ *
+ * Characters are REMOVED rather than replaced: a replacement character would be
+ * a visible lie about what the merchant typed, while removal leaves the readable
+ * part of the name intact.
+ */
+export function sanitizeDownloadFilename(raw: unknown): string {
+	if (typeof raw !== "string") return DOWNLOAD_FALLBACK_FILENAME;
+	const segments = raw.split(/[/\\]/);
+	let kept = "";
+	for (const ch of segments[segments.length - 1] ?? "") {
+		const cp = ch.codePointAt(0) ?? 0;
+		if ((cp >= 0xd800 && cp <= 0xdfff) || isForbiddenFilenameCodePoint(cp)) continue;
+		kept += ch;
+	}
+	const name = kept.normalize("NFC").trim();
+	if (name === "" || name === "." || name === "..") return DOWNLOAD_FALLBACK_FILENAME;
+	return name.length <= MAX_DOWNLOAD_FILENAME_LENGTH ? name : shortenFilename(name);
+}
+
+/** Cut a name to the limit, keeping its extension when it is short, and never
+ *  splitting a surrogate pair or leaving trailing space at the cut. */
+function shortenFilename(name: string): string {
+	const dot = name.lastIndexOf(".");
+	const extension = dot > 0 && name.length - dot <= MAX_KEPT_EXTENSION + 1 ? name.slice(dot) : "";
+	const budget = MAX_DOWNLOAD_FILENAME_LENGTH - extension.length;
+	let stem = "";
+	for (const ch of extension === "" ? name : name.slice(0, dot)) {
+		if (stem.length + ch.length > budget) break;
+		stem += ch;
+	}
+	stem = stem.trimEnd();
+	return `${stem === "" ? DOWNLOAD_FALLBACK_FILENAME : stem}${extension}`;
+}
+
+/** Crockford base-32, the ULID alphabet (no I, L, O or U). */
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** The bytes of randomness a ULID carries (80 bits). */
+export const DOWNLOAD_KEY_RANDOM_BYTES = 10;
+
+/**
+ * Mint a download's bucket key, `dl/{productId}/{ulid}`, from the upload's
+ * clock and {@link DOWNLOAD_KEY_RANDOM_BYTES} bytes of randomness the caller
+ * draws (pure: the domain neither reads a clock nor calls `crypto`). Nothing a
+ * request carries reaches it but the product id, which the caller has already
+ * resolved to a real product. A FRESH key per upload is what makes a replaced
+ * file safe: the old object is never overwritten under a buyer mid-download,
+ * and the descriptor's switch to the new key is the moment every link serves
+ * the new bytes.
+ *
+ * Throws `RangeError` for a clock outside a ULID's 48-bit millisecond range or
+ * the wrong amount of randomness, rather than mint a key the validator refuses
+ * or a weaker one.
+ */
+export function mintDownloadAssetKey(
+	productId: ProductId,
+	nowMs: number,
+	random: Uint8Array,
+): string {
+	if (!Number.isSafeInteger(nowMs) || nowMs < 0 || nowMs >= 2 ** 48) {
+		throw new RangeError("mintDownloadAssetKey: the clock must be a 48-bit millisecond count");
+	}
+	if (random.length !== DOWNLOAD_KEY_RANDOM_BYTES) {
+		throw new RangeError(
+			`mintDownloadAssetKey: exactly ${String(DOWNLOAD_KEY_RANDOM_BYTES)} random bytes are needed`,
+		);
+	}
+	let time = "";
+	let t = nowMs;
+	for (let i = 0; i < 10; i++) {
+		time = CROCKFORD[t % 32]! + time;
+		t = Math.floor(t / 32);
+	}
+	let entropy = "";
+	let buffer = 0;
+	let bits = 0;
+	for (const byte of random) {
+		buffer = (buffer << 8) | byte;
+		bits += 8;
+		while (bits >= 5) {
+			bits -= 5;
+			entropy += CROCKFORD[(buffer >> bits) & 31]!;
+		}
+		buffer &= (1 << bits) - 1;
+	}
+	return `${KEY_PREFIX}${productId}/${time}${entropy}`;
 }

@@ -327,3 +327,54 @@ describe("a coupon code keeps its spelling (QA round 2)", () => {
 		expect(source).toMatch(/\.code\s*\{[^}]*text-transform:\s*none/);
 	});
 });
+
+describe("Ledger — a digital line the buyer may download carries its link (issue #376)", () => {
+	const ledger = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(Ledger, { props });
+
+	test("a row WITH a downloadHref links to it, named for the line", async () => {
+		const html = await ledger({
+			rows: [
+				{
+					title: "Field Guide",
+					sku: "EBOOK-01",
+					qty: 1,
+					money: "$9.00",
+					downloadHref: "/orders/o-1/download/EBOOK-01",
+				},
+			],
+		});
+		expect(html).toMatch(/<a [^>]*href="\/orders\/o-1\/download\/EBOOK-01"[^>]*>/);
+		expect(html).toMatch(/>Download<span class="u-sr-only"[^>]*> Field Guide<\/span><\/a>/);
+	});
+
+	test("a row WITHOUT one draws no link at all", async () => {
+		const html = await ledger({
+			rows: [{ title: "Otta Tee", sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }],
+		});
+		expect(html).not.toContain("<a ");
+		expect(html).not.toContain("Download");
+	});
+
+	test("a title-less row names the link by its SKU", async () => {
+		const html = await ledger({
+			rows: [
+				{ sku: "EBOOK-01", qty: 1, money: "$9.00", downloadHref: "/orders/o/download/EBOOK-01" },
+			],
+		});
+		expect(html).toMatch(/>Download<span class="u-sr-only"[^>]*> EBOOK-01<\/span><\/a>/);
+	});
+});
+
+describe("Ledger — the Download link is a big enough target (WCAG 2.2 SC 2.5.8)", () => {
+	test(".download is at least 24 × 24 CSS px", () => {
+		const css = readFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/components/Ledger.astro"),
+			"utf8",
+		);
+		const rule = /\.download\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+		expect(rule).toMatch(/min-height:\s*24px/);
+		expect(rule).toMatch(/min-width:\s*24px/);
+		expect(rule).toMatch(/display:\s*inline-flex/);
+	});
+});

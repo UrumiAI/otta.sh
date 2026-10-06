@@ -544,8 +544,14 @@ export {
 } from "./product-commerce/use-cases.js";
 export { isProductLive } from "./product-commerce/sellable.js";
 export {
+	DOWNLOAD_FALLBACK_CONTENT_TYPE,
+	DOWNLOAD_FALLBACK_FILENAME,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	downloadContentTypeFor,
 	isDownloadAssetKeyFor,
 	MAX_DOWNLOAD_FILENAME_LENGTH,
+	mintDownloadAssetKey,
+	sanitizeDownloadFilename,
 	validateDownloadAsset,
 } from "./product-commerce/download-asset.js";
 export {
