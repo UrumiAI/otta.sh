@@ -108,6 +108,8 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	BACKORDERS_CONTEXT,
+	DIGITAL_WITH_FILE,
+	DIGITAL_WITH_FILE_TITLE,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LIST_INTRO,
 	REMOVE_STOCK_BANNER,
@@ -1236,6 +1238,39 @@ describe("products:attach-download — saving an uploaded file's descriptor (iss
 		expect(result.notice?.title).toBe("This file wasn't attached");
 		expect(result.notice?.description).not.toMatch(/price/i);
 		expect((await readProduct(seeded.productId)).downloadAsset).toBeNull();
+	});
+
+	test("REPLACE ONLY: saving a product WITH a file as Physical is refused in honest words, and nothing moves", async () => {
+		// The product owner's rule (ADR-0029): a download file is replaced, never
+		// removed, so past buyers never lose access. The store refuses a file on a
+		// physical product inside the save's compare-and-set; the refusal must say
+		// THAT — never the price/measurement copy a generic "invalid" gets.
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		await act("products:attach-download", attachPayload(seeded));
+		const withFile = await readProduct(seeded.productId);
+		const result = await act("products:save", {
+			productId: seeded.productId,
+			expectedUpdatedAt: withFile.updatedAt.toISOString(),
+			sku: seeded.sku,
+			price: "19.99",
+			currency: "USD",
+			compareAt: "",
+			unitCost: "",
+			productKind: "physical",
+			taxClass: "",
+			weightGrams: "300",
+			lengthMm: "",
+			widthMm: "",
+			heightMm: "",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe(DIGITAL_WITH_FILE_TITLE);
+		expect(result.notice?.description).toBe(`Nothing was saved. ${DIGITAL_WITH_FILE}`);
+		expect(result.notice?.description).not.toMatch(/price|measurement|greater than zero/i);
+		const row = await readProduct(seeded.productId);
+		expect(row.productKind).toBe("digital");
+		expect(row.downloadAsset?.key).toBe(`dl/${seeded.productId}/${ULID}`);
+		expect(row.updatedAt.toISOString()).toBe(withFile.updatedAt.toISOString());
 	});
 
 	test("an unreadable payload — no watermark, a size that is not a whole number — refuses before any write", async () => {

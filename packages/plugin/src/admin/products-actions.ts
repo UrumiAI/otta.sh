@@ -94,6 +94,8 @@
  */
 import {
 	ADD_STOCK_INVALID_QTY,
+	DIGITAL_WITH_FILE,
+	DIGITAL_WITH_FILE_TITLE,
 	NO_TAX_CLASS,
 	PRODUCT_DELETED_SINCE_LOADED,
 	PRODUCT_NOT_FOUND_TITLE,
@@ -625,6 +627,16 @@ function editOutcome(
 			);
 		}
 		case "invalid":
+			// The store refuses switching a product that has a download file to
+			// Physical (the product owner's rule: a file is replaced, never removed,
+			// so past buyers never lose access). Never the price/measurement copy.
+			if ((result.field ?? "").startsWith("downloadAsset")) {
+				return applied({
+					variant: "error",
+					title: DIGITAL_WITH_FILE_TITLE,
+					description: `Nothing was saved. ${DIGITAL_WITH_FILE}`,
+				});
+			}
 			return applied({
 				variant: "error",
 				title: "Invalid value",
