@@ -328,7 +328,8 @@ order of appearance in a deployment's life:
 > and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
 > and live alongside it in Settings.
 
-- **Email** — with no email API URL baked in at build time there is **no sender at all**:
+- **Email** — with no configured provider (no email API URL baked in for Resend, no SMTP2GO
+  key in Settings) there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
   whenever an email is due, rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
   With a sender, a settled payment's **order confirmation goes out inline** from the settle

@@ -33,4 +33,5 @@ amendment.
   tick (the leg's entry cost), and the email unit includes the sender's kv reads, so the
   Workers Paid preset's email batch is 12 (was 15). The resolve runs inside the leg's budget
   and only when an email is due: a tick too busy for it defers the leg, which keeps aging,
-  and an idle outbox costs only its due check.
+  and an idle outbox costs only its due check. So an unconfigured store with nothing due now
+  reports idle; it reports `skipped` (and logs "not wired") once an email is due.

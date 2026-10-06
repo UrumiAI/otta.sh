@@ -730,8 +730,9 @@ export interface CommerceSweepOptions {
 	 * unset, the tick builds the in-process `CtxHttpEmailSender` from the context
 	 * and this bundle's email API URL; a suite sets it to pin the outbox against a
 	 * fake without any egress. Neither one existing (no injection, no configured
-	 * URL) makes the `order-emails` leg report `skipped` rather than pretend to
-	 * drain an outbox — a silent no-op here would look exactly like an empty one.
+	 * provider) makes the `order-emails` leg report `skipped` whenever an email is
+	 * due, rather than pretend to drain an outbox — a silent no-op here would look
+	 * exactly like an empty one.
 	 */
 	readonly emailSender?: EmailSender;
 	/** Deterministic time, for a suite that pins deadlines. Default: real time. */
